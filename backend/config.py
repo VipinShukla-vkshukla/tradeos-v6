@@ -37,7 +37,7 @@ logger.add(lambda msg: print(msg, end=""), level="INFO",
 # ── Core settings ─────────────────────────────────────────────
 IST          = pytz.timezone("Asia/Kolkata")
 DRY_RUN      = os.getenv("DRY_RUN", "False").lower() == "true"
-TOTAL_CAPITAL= float(os.getenv("TOTAL_CAPITAL", "200000"))
+TOTAL_CAPITAL= float(os.getenv("TOTAL_CAPITAL" or "200000"))
 
 # ── Supabase ─────────────────────────────────────────────────
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
