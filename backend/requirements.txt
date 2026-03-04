@@ -39,3 +39,7 @@ kiteconnect==5.0.1
 schedule==1.2.2
 python-dateutil==2.9.0
 openpyxl==3.1.5
+
+# Chartink scraping
+playwright==1.49.0
+
