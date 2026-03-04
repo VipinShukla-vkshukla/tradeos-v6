@@ -1,0 +1,30 @@
+name: TradeOS v6 — Morning Pre-Market Cues
+
+on:
+  schedule:
+    # 8:00 AM IST = 2:30 UTC (weekdays only)
+    - cron: '30 2 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  morning-cues:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+      - name: Fetch morning global cues
+        working-directory: backend
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python ingestion/ingest_global_cues.py MORNING

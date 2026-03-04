@@ -1,0 +1,36 @@
+name: TradeOS v6 Weekly Evolution (ML Training + Rule Proposals)
+
+on:
+  schedule:
+    - cron: '30 3 * * 0'  # Sunday 9:00 AM IST (3:30 UTC)
+  workflow_dispatch:
+
+jobs:
+  evolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - run: pip install -r backend/requirements.txt
+
+      - name: Train ML model
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TZ: Asia/Kolkata
+        run: |
+          cd backend
+          python ai/providers/ml_provider.py
+
+      - name: Upload trained model
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml-model-${{ github.run_id }}
+          path: backend/models/
+          retention-days: 30

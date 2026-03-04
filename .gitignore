@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Environment — NEVER commit
+.env
+*.env
+
+# Credentials — NEVER commit
+credentials/
+*.json
+!package.json
+!tsconfig.json
+
+# Data and models
+backend/data/
+backend/logs/
+backend/models/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Node
+node_modules/

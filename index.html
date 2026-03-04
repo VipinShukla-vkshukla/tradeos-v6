@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TradeOS v6</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+</head>
+<body class="bg-slate-900">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    // ── STEP 1: REPLACE THESE TWO VALUES ──────────────────────
+    const SUPABASE_URL = "https://dbjfwpamxudnolfalpfm.supabase.co";
+    const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRiamZ3cGFteHVkbm9sZmFscGZtIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MjI5NTIzMywiZXhwIjoyMDg3ODcxMjMzfQ.RBgxCpqqZ63ZUmP01MHhsY1cfb8G0MrDg5Nt_8qpyQE";
+    // ──────────────────────────────────────────────────────────
+
+    // React hooks (replaces the import statement)
+    const { useState, useEffect, useCallback } = React;
+
+    // Supabase client (replaces the import statement)
+    const { createClient } = supabase;
+    const sb = SUPABASE_URL ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+
+    // ── Supabase query helper ─────────────────────────────────────
+    async function query(table, select = "*", filters = {}, order = null, limit = null) {
+      if (!sb) return [];
+      try {
+        let q = sb.from(table).select(select);
+        for (const [k, v] of Object.entries(filters)) q = q.eq(k, v);
+        if (order) q = q.order(order.col, { ascending: order.asc ?? false });
+        if (limit) q = q.limit(limit);
+        const { data, error } = await q;
+        if (error) throw error;
+        return data || [];
+      } catch (e) {
+        console.error(`query(${table}):`, e.message);
+        return [];
+      }
+    }
+
+    async function queryLatestDate(table, dateCol = "date") {
+      if (!sb) return null;
+      const { data } = await sb.from(table).select(dateCol).order(dateCol, { ascending: false }).limit(1);
+      return data?.[0]?.[dateCol] || null;
+    }
+
+    async function updateConfig(key, value) {
+      if (!sb) return;
+      await sb.from("system_config").update({ value: String(value) }).eq("key", key);
+    }
+
+    // ── Colour helpers ────────────────────────────────────────────
+    const signalColor = (type) => ({
+      BUY_CANDIDATE: "bg-amber-900/40 border-amber-500",
+      EXIT: "bg-red-900/40 border-red-500",
+      ADD: "bg-emerald-900/40 border-emerald-500",
+      HOLD: "bg-blue-900/40 border-blue-500",
+      WATCH: "bg-slate-800 border-slate-600",
+      BLOCKED_ASM: "bg-red-950/60 border-red-700",
+      AVOID_ENTRY_EVENT: "bg-orange-900/40 border-orange-500",
+    })[type] || "bg-slate-800 border-slate-600";
+
+    const regimeColor = (r) => ({
+      "RISK ON": "text-emerald-400 bg-emerald-900/30 border-emerald-600",
+      NEUTRAL: "text-yellow-400 bg-yellow-900/30 border-yellow-600",
+      "RISK OFF": "text-red-400 bg-red-900/30 border-red-600",
+    })[r] || "text-slate-400 bg-slate-800 border-slate-600";
+
+    const convColor = (c) => ({
+      HIGH: "text-emerald-400", MEDIUM: "text-yellow-400", LOW: "text-red-400"
+    })[c] || "text-slate-400";
+
+    const pnlColor = (v) => v > 0 ? "text-emerald-400" : v < 0 ? "text-red-400" : "text-slate-400";
+    const pct = (v, dec = 1) => v == null ? "—" : `${v >= 0 ? "+" : ""}${Number(v).toFixed(dec)}%`;
+    const inr = (v) => v == null ? "—" : `₹${Number(v).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+    const num = (v, dec = 1) => v == null ? "—" : Number(v).toFixed(dec);
+
+    // ── Components ────────────────────────────────────────────────
+    function Badge({ label, color = "slate" }) {
+      const colors = {
+        amber: "bg-amber-900/50 text-amber-300 border border-amber-700",
+        red: "bg-red-900/50 text-red-300 border border-red-700",
+        green: "bg-emerald-900/50 text-emerald-300 border border-emerald-700",
+        blue: "bg-blue-900/50 text-blue-300 border border-blue-700",
+        slate: "bg-slate-700 text-slate-300 border border-slate-600",
+        orange: "bg-orange-900/50 text-orange-300 border border-orange-700",
+      };
+      return <span className={`px-2 py-0.5 rounded text-xs font-medium ${colors[color] || colors.slate}`}>{label}</span>;
+    }
+
+    function Spinner() {
+      return <div className="flex items-center justify-center h-32 text-slate-500">
+        <div className="w-6 h-6 border-2 border-slate-600 border-t-blue-400 rounded-full animate-spin mr-2" />
+        Loading...
+      </div>;
+    }
+
+    function StatCard({ label, value, sub, color = "" }) {
+      return <div className="bg-slate-800 border border-slate-700 rounded-lg p-4">
+        <p className="text-slate-400 text-xs mb-1">{label}</p>
+        <p className={`text-xl font-bold ${color || "text-white"}`}>{value}</p>
+        {sub && <p className="text-slate-500 text-xs mt-1">{sub}</p>}
+      </div>;
+    }
+
+    // ── Tabs ──────────────────────────────────────────────────────
+    const TABS = ["Dashboard", "Signals", "Sectors", "Events", "History", "Settings"];
+
+    // ── App ───────────────────────────────────────────────────────
+    function App() {
+      const [tab, setTab] = useState("Dashboard");
+      const [loading, setLoading] = useState(true);
+      const [data, setData] = useState({
+        regime: null, positions: [], msl: [], sectors: [],
+        events: [], signals: [], closed: [], config: {}, lastDate: null
+      });
+
+      const load = useCallback(async () => {
+        setLoading(true);
+        try {
+          const latestDate = await queryLatestDate("master_shortlist");
+          const [regime, msl, positions, sectors, events, signals, closed, cfgRows] = await Promise.all([
+            query("market_regime", "*", {}, { col: "date", asc: false }, 1),
+            latestDate ? query("master_shortlist", "*", { date: latestDate }, { col: "final_score", asc: false }) : Promise.resolve([]),
+            query("open_positions", "*"),
+            query("sector_strength", "*", {}, { col: "rank", asc: true }),
+            query("event_calendar", "*", { is_active: true }, { col: "start_date", asc: true }),
+            query("signal_log", "*", {}, { col: "created_at", asc: false }, 200),
+            query("closed_positions", "*", {}, { col: "exit_date", asc: false }, 50),
+            query("system_config", "key,value"),
+          ]);
+          const config = Object.fromEntries(cfgRows.map(r => [r.key, r.value]));
+          setData({ regime: regime[0] || null, msl, positions, sectors, events, signals, closed, config, lastDate: latestDate });
+        } catch (e) {
+          console.error("load error:", e);
+        }
+        setLoading(false);
+      }, []);
+
+      useEffect(() => { load(); }, [load]);
+
+      const { regime, msl, positions, sectors, events, signals, closed, config } = data;
+
+      // ── Dashboard ─────────────────────────────────────────────
+      function Dashboard() {
+        const totalInvested = positions.reduce((s, p) => s + (p.invested_value || 0), 0);
+        const totalValue    = positions.reduce((s, p) => s + (p.current_value || 0), 0);
+        const totalPnl      = totalValue - totalInvested;
+        const capital       = parseFloat(config.total_capital || 200000);
+        const deployedPct   = (totalInvested / capital * 100).toFixed(1);
+        const buyCandidates = msl.filter(r => r.position_state === "BUY_CANDIDATE").slice(0, 5);
+        const exitSignals   = positions.filter(p => {
+          const action = (p.action_required || "").toUpperCase();
+          return action.includes("EXIT") || action.includes("SELL");
+        });
+
+        return <div className="space-y-4">
+          {regime && <div className={`border rounded-lg px-4 py-3 flex items-center justify-between ${regimeColor(regime.regime)}`}>
+            <div className="flex items-center gap-3">
+              <span className="font-bold text-lg">{regime.regime}</span>
+              <span className="text-sm opacity-75">Nifty {inr(regime.nifty_price)}</span>
+              <span className="text-sm opacity-75">VIX {num(regime.india_vix)}</span>
+              {regime.gift_nifty && <span className="text-sm opacity-75">Gift {inr(regime.gift_nifty)}</span>}
+            </div>
+            {regime.regime === "RISK OFF" && <Badge label="⚠️ RISK OFF — BUY signals shown with warning" color="red" />}
+          </div>}
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <StatCard label="Portfolio Value"  value={inr(totalValue)} sub={`${deployedPct}% deployed`} />
+            <StatCard label="Unrealized P&L"   value={inr(totalPnl)} color={pnlColor(totalPnl)} sub={pct(totalPnl / capital * 100)} />
+            <StatCard label="Open Positions"   value={positions.length} sub={`of max ${config.max_positions_risk_on || 8}`} />
+            <StatCard label="BUY Candidates"   value={buyCandidates.length} sub="at entry zone" color="text-amber-400" />
+          </div>
+
+          {buyCandidates.length > 0 && <div className="bg-slate-800 border border-slate-700 rounded-lg p-4">
+            <h3 className="text-sm font-semibold text-slate-300 mb-3">🟡 Top BUY Candidates</h3>
+            <div className="space-y-2">
+              {buyCandidates.map(s => <div key={s.symbol} className="flex items-center justify-between text-sm">
+                <div className="flex items-center gap-2">
+                  <Badge label={s.strategy_source || "?"} color="blue" />
+                  <span className="font-medium text-white">{s.symbol}</span>
+                  <span className="text-slate-400">{s.sector}</span>
+                  {s.regime_warning && <Badge label="⚠️ RISK OFF" color="red" />}
+                </div>
+                <div className="flex items-center gap-3 text-right">
+                  <span className="text-slate-300">₹{s.current_price}</span>
+                  <span className="text-emerald-400 font-medium">{num(s.final_score)}</span>
+                </div>
+              </div>)}
+            </div>
+          </div>}
+
+          {exitSignals.length > 0 && <div className="bg-red-900/20 border border-red-700 rounded-lg p-4">
+            <h3 className="text-sm font-semibold text-red-400 mb-3">🔴 Exit Signals</h3>
+            <div className="space-y-2">
+              {exitSignals.map(p => <div key={p.symbol} className="flex items-center justify-between text-sm">
+                <span className="text-white font-medium">{p.symbol}</span>
+                <span className="text-red-400">{p.action_required}</span>
+                <span className={pnlColor(p.unrealized_pnl)}>{inr(p.unrealized_pnl)} ({pct(p.pnl_pct)})</span>
+              </div>)}
+            </div>
+          </div>}
+        </div>;
+      }
+
+      // ── Signals ───────────────────────────────────────────────
+      function Signals() {
+        const [filter, setFilter] = useState("ALL");
+        const candidates = msl.filter(r => r.position_state === "BUY_CANDIDATE");
+        const openPos    = positions;
+        const watching   = msl.filter(r => r.position_state === "WATCHING").slice(0, 20);
+
+        const sections = [
+          { label: "BUY CANDIDATES", items: candidates, color: "amber", empty: "No stocks at entry zone today" },
+          { label: "OPEN POSITIONS", items: openPos,    color: "green", empty: "No open positions" },
+          ...(config.show_watching_stocks !== "false" ? [
+            { label: "WATCHING", items: watching, color: "slate", empty: "No stocks in watchlist" }
+          ] : []),
+        ];
+
+        return <div className="space-y-4">
+          <div className="flex gap-2 flex-wrap">
+            {["ALL","BUY CANDIDATES","OPEN POSITIONS","WATCHING"].map(f =>
+              <button key={f} onClick={() => setFilter(f)}
+                className={`px-3 py-1 rounded text-sm border ${filter === f ? "border-blue-500 bg-blue-900/40 text-blue-300" : "border-slate-600 text-slate-400 hover:border-slate-400"}`}>
+                {f}
+              </button>
+            )}
+          </div>
+
+          {sections.filter(s => filter === "ALL" || s.label === filter).map(section =>
+            <div key={section.label} className="space-y-2">
+              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider py-2 border-b border-slate-700">
+                {section.label} ({section.items.length})
+              </h3>
+              {section.items.length === 0
+                ? <p className="text-slate-500 text-sm py-4">{section.empty}</p>
+                : section.items.map(item => <SignalCard key={item.symbol || item.id} item={item} type={section.label} />)
+              }
+            </div>
+          )}
+        </div>;
+      }
+
+      function SignalCard({ item, type }) {
+        const [expanded, setExpanded] = useState(false);
+        const isPosition = type === "OPEN POSITIONS";
+        const isBuy      = type === "BUY CANDIDATES";
+
+        return <div className={`border rounded-lg p-3 cursor-pointer transition-colors ${
+          isBuy ? "bg-amber-900/20 border-amber-700/50 hover:border-amber-500" :
+          isPosition ? (item.unrealized_pnl >= 0 ? "bg-emerald-900/20 border-emerald-700/50" : "bg-red-900/20 border-red-700/50") :
+          "bg-slate-800/50 border-slate-700/50 hover:border-slate-500"
+        }`} onClick={() => setExpanded(!expanded)}>
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Badge label={isPosition ? item.strategy : (item.strategy_source || "?")} color={isBuy ? "amber" : isPosition ? "green" : "slate"} />
+              <span className="font-bold text-white">{item.symbol}</span>
+              <span className="text-slate-400 text-sm">{item.company_name}</span>
+              {item.regime_warning && <Badge label="⚠️ RISK OFF" color="red" />}
+              {item.asm_flag && <Badge label="⛔ ASM" color="red" />}
+              {item.eap_action === "PRIORITISE" && <Badge label="⚡ EAP PRIORITISE" color="green" />}
+              {item.eap_action === "AVOID_ENTRY" && <Badge label="⏸ AVOID ENTRY" color="orange" />}
+            </div>
+            <div className="text-right text-sm">
+              {isPosition
+                ? <span className={`font-bold ${pnlColor(item.unrealized_pnl)}`}>{inr(item.unrealized_pnl)} ({pct(item.pnl_pct)})</span>
+                : <span className="text-emerald-400 font-medium">{num(item.final_score)}</span>
+              }
+            </div>
+          </div>
+
+          {expanded && <div className="mt-3 pt-3 border-t border-slate-700 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+            {isPosition ? <>
+              <div><span className="text-slate-400">Entry</span><br/><span className="text-white">₹{item.entry_price}</span></div>
+              <div><span className="text-slate-400">Current</span><br/><span className="text-white">₹{item.current_price}</span></div>
+              <div><span className="text-slate-400">Active SL</span><br/><span className="text-red-400">₹{item.active_sl}</span></div>
+              <div><span className="text-slate-400">Lifecycle</span><br/><span className="text-white">{item.lifecycle}</span></div>
+              <div><span className="text-slate-400">Qty</span><br/><span className="text-white">{item.actual_qty}</span></div>
+              <div><span className="text-slate-400">Invested</span><br/><span className="text-white">{inr(item.invested_value)}</span></div>
+              <div><span className="text-slate-400">Action</span><br/><span className="text-amber-400">{item.action_required}</span></div>
+              {item.event_risk && <div><span className="text-slate-400">Event Risk</span><br/><span className="text-orange-400">{item.event_risk}</span></div>}
+            </> : <>
+              <div><span className="text-slate-400">Price</span><br/><span className="text-white">₹{item.current_price}</span></div>
+              <div><span className="text-slate-400">Entry Zone</span><br/><span className="text-white">₹{item.entry_zone_low} – ₹{item.entry_zone_high}</span></div>
+              <div><span className="text-slate-400">Score</span><br/><span className="text-emerald-400">{num(item.final_score)}</span></div>
+              <div><span className="text-slate-400">Validity</span><br/><span className="text-white">{num(item.validity_score)}</span></div>
+              <div><span className="text-slate-400">Lifecycle</span><br/><span className="text-white">{item.lifecycle}</span></div>
+              <div><span className="text-slate-400">Expected R</span><br/><span className="text-white">{num(item.expected_r)}</span></div>
+              <div><span className="text-slate-400">Entry Timing</span><br/><span className="text-white">{item.entry_timing_type}</span></div>
+              {item.ai_conviction && <div><span className="text-slate-400">AI Read</span><br/>
+                <span className={convColor(item.ai_conviction)}>{item.ai_conviction} — {item.ai_conviction_reason}</span></div>}
+            </>}
+          </div>}
+        </div>;
+      }
+
+      // ── Sectors ───────────────────────────────────────────────
+      function Sectors() {
+        const latestDate = sectors[0]?.date;
+        const todaySectors = sectors.filter(s => s.date === latestDate);
+        return <div className="space-y-3">
+          <p className="text-slate-500 text-xs">Sector rankings as of {latestDate || "—"}</p>
+          {todaySectors.map(s => {
+            const stateColor = s.sector_state === "STRONG" ? "text-emerald-400" : s.sector_state === "NORMAL" ? "text-yellow-400" : "text-red-400";
+            return <div key={s.sector} className={`bg-slate-800 border rounded-lg p-3 ${s.top4_flag ? "border-emerald-700" : "border-slate-700"}`}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-400 text-sm w-6 text-center">#{s.rank}</span>
+                  {s.top4_flag && <Badge label="TOP 4" color="green" />}
+                  <span className="font-medium text-white capitalize">{s.sector}</span>
+                </div>
+                <div className="flex items-center gap-3 text-sm">
+                  <span className={stateColor}>{s.sector_state}</span>
+                  <span className="text-slate-400">RSI {num(s.avg_rsi_daily)}</span>
+                  <span className={pnlColor(s.avg_ret_6m * 100)}>{pct(s.avg_ret_6m * 100)}</span>
+                  <span className="text-slate-400">{s.stock_count} stocks</span>
+                </div>
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <div className="flex-1 bg-slate-700 rounded-full h-1.5">
+                  <div className="bg-blue-500 h-1.5 rounded-full" style={{ width: `${Math.min(100, s.breadth_sma50 || 0)}%` }} />
+                </div>
+                <span className="text-slate-500 text-xs">{num(s.breadth_sma50)}% above SMA50</span>
+              </div>
+            </div>;
+          })}
+        </div>;
+      }
+
+      // ── Events ────────────────────────────────────────────────
+      function Events() {
+        const biasColor = (b) => b === "POSITIVE" ? "green" : b === "NEGATIVE" ? "red" : "slate";
+        return <div className="space-y-2">
+          {events.length === 0 && <p className="text-slate-500 text-sm py-8 text-center">No active events</p>}
+          {events.map(e => <div key={e.id} className="bg-slate-800 border border-slate-700 rounded-lg p-3">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <Badge label={e.event_category || "EVENT"} color="slate" />
+                  <Badge label={e.event_bias || "MIXED"} color={biasColor(e.event_bias)} />
+                  {e.priority <= 1 && <Badge label="HIGH PRIORITY" color="red" />}
+                </div>
+                <p className="font-medium text-white">{e.event_name}</p>
+                {e.notes && <p className="text-slate-400 text-sm mt-1">{e.notes}</p>}
+                {e.affected_sectors && <p className="text-slate-500 text-xs mt-1">Sectors: {e.affected_sectors}</p>}
+              </div>
+              <div className="text-right text-xs text-slate-400 whitespace-nowrap">
+                <div>{e.start_date}</div>
+                {e.end_date && e.end_date !== e.start_date && <div>to {e.end_date}</div>}
+              </div>
+            </div>
+            {e.strategy_impact && <p className="mt-2 text-xs text-amber-400 bg-amber-900/20 rounded px-2 py-1">{e.strategy_impact}</p>}
+          </div>)}
+        </div>;
+      }
+
+      // ── History ───────────────────────────────────────────────
+      function History() {
+        const totalClosed = closed.reduce((s, t) => s + (t.realized_pnl || 0), 0);
+        const wins = closed.filter(t => (t.realized_pnl || 0) > 0).length;
+        const losses = closed.filter(t => (t.realized_pnl || 0) < 0).length;
+        const winRate = closed.length > 0 ? (wins / closed.length * 100).toFixed(1) : 0;
+
+        return <div className="space-y-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <StatCard label="Total Trades"  value={closed.length} />
+            <StatCard label="Win Rate"      value={`${winRate}%`} color={winRate >= 50 ? "text-emerald-400" : "text-red-400"} />
+            <StatCard label="Realized P&L"  value={inr(totalClosed)} color={pnlColor(totalClosed)} />
+            <StatCard label="W/L"           value={`${wins}/${losses}`} sub="wins/losses" />
+          </div>
+          <div className="bg-slate-800 border border-slate-700 rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-700/50">
+                <tr>{["Symbol","Strategy","Entry","Exit","P&L","P&L%"].map(h =>
+                  <th key={h} className="px-3 py-2 text-left text-slate-400 text-xs">{h}</th>
+                )}</tr>
+              </thead>
+              <tbody>
+                {closed.slice(0, 30).map((t, i) => <tr key={i} className="border-t border-slate-700/50 hover:bg-slate-700/30">
+                  <td className="px-3 py-2 font-medium text-white">{t.symbol}</td>
+                  <td className="px-3 py-2 text-slate-400">{t.strategy}</td>
+                  <td className="px-3 py-2 text-slate-400">{t.entry_date?.slice(5)}</td>
+                  <td className="px-3 py-2 text-slate-400">{t.exit_date?.slice(5)}</td>
+                  <td className={`px-3 py-2 ${pnlColor(t.realized_pnl)}`}>{inr(t.realized_pnl)}</td>
+                  <td className={`px-3 py-2 ${pnlColor(t.pnl_pct)}`}>{pct(t.pnl_pct)}</td>
+                </tr>)}
+              </tbody>
+            </table>
+          </div>
+        </div>;
+      }
+
+      // ── Settings ──────────────────────────────────────────────
+      function Settings() {
+        const [localCfg, setLocalCfg] = useState({ ...config });
+        const [saved, setSaved] = useState(false);
+
+        const save = async (key, value) => {
+          setLocalCfg(c => ({ ...c, [key]: value }));
+          await updateConfig(key, value);
+          setSaved(true);
+          setTimeout(() => setSaved(false), 2000);
+        };
+
+        const Section = ({ title, children }) => (
+          <div className="bg-slate-800 border border-slate-700 rounded-lg p-4 space-y-3">
+            <h3 className="text-sm font-semibold text-slate-300 border-b border-slate-700 pb-2">{title}</h3>
+            {children}
+          </div>
+        );
+
+        const Row = ({ label, sub, children }) => (
+          <div className="flex items-center justify-between">
+            <div><p className="text-sm text-white">{label}</p>{sub && <p className="text-xs text-slate-500">{sub}</p>}</div>
+            {children}
+          </div>
+        );
+
+        const Toggle = ({ cfgKey, value }) => (
+          <button onClick={() => save(cfgKey, value === "true" ? "false" : "true")}
+            className={`w-12 h-6 rounded-full transition-colors ${value === "true" ? "bg-blue-600" : "bg-slate-600"}`}>
+            <div className={`w-5 h-5 bg-white rounded-full shadow transition-transform mx-0.5 ${value === "true" ? "translate-x-6" : "translate-x-0"}`} />
+          </button>
+        );
+
+        const Select = ({ cfgKey, options, value }) => (
+          <select value={value || ""} onChange={e => save(cfgKey, e.target.value)}
+            className="bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm text-white">
+            {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        );
+
+        const NumberInput = ({ cfgKey, value, min, max }) => (
+          <input type="number" value={value || ""} min={min} max={max}
+            onChange={e => save(cfgKey, e.target.value)}
+            className="w-20 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm text-white text-center" />
+        );
+
+        return <div className="space-y-4">
+          {saved && <div className="bg-emerald-900/40 border border-emerald-600 rounded px-3 py-2 text-emerald-400 text-sm">✓ Settings saved</div>}
+
+          <Section title="Position Management">
+            <Row label="Max positions (RISK ON)"   sub="Increase up to 10 in strong markets"><NumberInput cfgKey="max_positions_risk_on"  value={localCfg.max_positions_risk_on}  min={4} max={10} /></Row>
+            <Row label="Max positions (NEUTRAL)"                                             ><NumberInput cfgKey="max_positions_neutral"   value={localCfg.max_positions_neutral}   min={4} max={10} /></Row>
+            <Row label="Max positions (RISK OFF)"  sub="Capital protection mode"            ><NumberInput cfgKey="max_positions_risk_off"  value={localCfg.max_positions_risk_off}  min={4} max={8}  /></Row>
+            <Row label="Block BUY signals in RISK OFF" sub="Off = show with warning only"><Toggle cfgKey="block_buys_risk_off" value={localCfg.block_buys_risk_off} /></Row>
+            <Row label="Max sector concentration %" sub="Max % of portfolio in one sector"><NumberInput cfgKey="max_sector_concentration" value={localCfg.max_sector_concentration} min={15} max={40} /></Row>
+          </Section>
+
+          <Section title="AI Configuration">
+            <Row label="Active AI Provider" sub="Switch provider without any code changes">
+              <Select cfgKey="ai_provider" value={localCfg.ai_provider} options={[
+                { value: "disabled",  label: "Disabled (no AI)" },
+                { value: "claude",    label: "Claude (Anthropic)" },
+                { value: "openai",    label: "ChatGPT (OpenAI)" },
+                { value: "gemini",    label: "Gemini (Google)" },
+                { value: "deepseek",  label: "DeepSeek" },
+                { value: "grok",      label: "Grok (xAI)" },
+                { value: "copilot",   label: "Copilot (Azure)" },
+                { value: "ml",        label: "ML Model (Free)" },
+              ]} />
+            </Row>
+            <Row label="ML fallback when AI unavailable" sub="Free — uses your trade history"><Toggle cfgKey="ai_fallback_ml" value={localCfg.ai_fallback_ml} /></Row>
+            <Row label="Web scraping fallback"           sub="Free — NSE/Moneycontrol news"  ><Toggle cfgKey="ai_fallback_scraping" value={localCfg.ai_fallback_scraping} /></Row>
+            <Row label="Daily AI budget (₹)"            sub="0 = unlimited"                 ><NumberInput cfgKey="ai_daily_budget_inr" value={localCfg.ai_daily_budget_inr} min={0} max={2000} /></Row>
+            <Row label="Max stocks analyzed by AI/day"                                       ><NumberInput cfgKey="ai_max_stocks_per_day" value={localCfg.ai_max_stocks_per_day} min={5} max={50} /></Row>
+          </Section>
+
+          <Section title="Signal Filters">
+            <Row label="Min score to show signal" sub="Stocks below this score are hidden"><NumberInput cfgKey="min_score_to_show" value={localCfg.min_score_to_show} min={0} max={100} /></Row>
+            <Row label="Show WATCHING stocks"     sub="Stocks not yet at entry zone"      ><Toggle cfgKey="show_watching_stocks" value={localCfg.show_watching_stocks} /></Row>
+            <Row label="BUY CANDIDATE threshold %" sub="Entry vs current price tolerance (default 0.5%)"><NumberInput cfgKey="buy_candidate_threshold_pct" value={localCfg.buy_candidate_threshold_pct} min={0.1} max={2} /></Row>
+          </Section>
+
+          <Section title="System">
+            <Row label="Telegram alerts"><Toggle cfgKey="telegram_alerts_enabled" value={localCfg.telegram_alerts_enabled} /></Row>
+            <Row label="Autonomy Phase"  sub="0=manual, 1=intelligence, 2=kite, 3=supervised, 4=autonomous">
+              <span className="bg-blue-900/40 border border-blue-600 rounded px-3 py-1 text-blue-300 text-sm font-bold">
+                Phase {localCfg.autonomy_phase || 0}
+              </span>
+            </Row>
+            <Row label="Kill Switch" sub="Halts all pipeline activity immediately">
+              <button onClick={() => save("master_kill_switch", localCfg.master_kill_switch === "true" ? "false" : "true")}
+                className={`px-3 py-1 rounded text-sm border font-medium ${localCfg.master_kill_switch === "true" ? "bg-red-800 border-red-500 text-red-300" : "bg-slate-700 border-slate-600 text-slate-300"}`}>
+                {localCfg.master_kill_switch === "true" ? "⛔ ACTIVE — Click to Deactivate" : "Inactive"}
+              </button>
+            </Row>
+          </Section>
+        </div>;
+      }
+
+      // ── Render ────────────────────────────────────────────────
+      const tabContent = { Dashboard, Signals, Sectors, Events, History, Settings };
+      const ActiveTab  = tabContent[tab];
+
+      return <div className="min-h-screen bg-slate-900 text-white">
+        <div className="border-b border-slate-800 bg-slate-900/95 sticky top-0 z-10">
+          <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <span className="text-lg font-bold text-white">TradeOS</span>
+              <Badge label="v6" color="blue" />
+              {regime && <Badge label={regime.regime} color={regime.regime === "RISK ON" ? "green" : regime.regime === "RISK OFF" ? "red" : "amber"} />}
+            </div>
+            <div className="flex items-center gap-2">
+              {data.lastDate && <span className="text-slate-500 text-xs">{data.lastDate}</span>}
+              <button onClick={load} className="p-1.5 rounded hover:bg-slate-700 text-slate-400 hover:text-white transition-colors" title="Refresh">↻</button>
+            </div>
+          </div>
+          <div className="max-w-5xl mx-auto px-4 flex gap-1 overflow-x-auto">
+            {TABS.map(t => <button key={t} onClick={() => setTab(t)}
+              className={`px-4 py-2 text-sm font-medium border-b-2 whitespace-nowrap transition-colors ${
+                tab === t ? "border-blue-500 text-blue-400" : "border-transparent text-slate-400 hover:text-white"
+              }`}>{t}</button>)}
+          </div>
+        </div>
+        <div className="max-w-5xl mx-auto px-4 py-4">
+          {loading ? <Spinner /> : <ActiveTab />}
+        </div>
+      </div>;
+    }
+
+    // Mount the app
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
