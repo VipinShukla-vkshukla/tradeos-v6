@@ -78,14 +78,15 @@ def main():
 
     # Phase 0 steps (always run)
     steps_p0 = [
-        ("01_ingest_sheets",  step_ingest,  True),
-        ("02_signals",        step_signals, True),
-        ("03_history",        step_history, False),
+        ("01_fetch_chartink", step_fetch_chartink, True),
+        ("02_ingest_sheets",  step_ingest,  True),
+        ("03_signals",        step_signals, True),
+        ("04_history",        step_history, False),
     ]
 
     # Phase 1 extras
     steps_p1 = [
-        ("04_alerts",         step_alerts,  False),
+        ("05_alerts",         step_alerts,  False),
     ]
 
     all_steps = steps_p0 + (steps_p1 if phase >= 1 else [])
