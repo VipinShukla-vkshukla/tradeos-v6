@@ -266,6 +266,67 @@ create table industry_strength (
 CREATE INDEX IF NOT EXISTS idx_industry_strength_date ON industry_strength(date DESC);
 CREATE INDEX IF NOT EXISTS idx_industry_strength_rank ON industry_strength(rank);
 
+-- Chartink Raw Data: daily append, partitioned by date
+CREATE TABLE IF NOT EXISTS chartink_raw_data (
+    id               BIGSERIAL PRIMARY KEY,
+    date             DATE NOT NULL,
+    symbol           TEXT NOT NULL,
+    sector           TEXT,
+    industry         TEXT,
+    market_cap       NUMERIC,
+    market_cap_cat   TEXT,
+    daily_open       NUMERIC,
+    daily_high       NUMERIC,
+    daily_low        NUMERIC,
+    daily_close      NUMERIC,
+    week52_high      NUMERIC,
+    week52_low       NUMERIC,
+    high_30d         NUMERIC,
+    sma_10           NUMERIC,
+    sma_20           NUMERIC,
+    sma_50           NUMERIC,
+    sma_200          NUMERIC,
+    ema_10           NUMERIC,
+    ema_20           NUMERIC,
+    ema_50           NUMERIC,
+    rsi_daily        NUMERIC,
+    rsi_weekly       NUMERIC,
+    rsi_monthly      NUMERIC,
+    adx_14           NUMERIC,
+    adx_plus_di      NUMERIC,
+    adx_minus_di     NUMERIC,
+    volume           BIGINT,
+    avg_vol_20       NUMERIC,
+    avg_vol_50       NUMERIC,
+    vwap_daily       NUMERIC,
+    vwap_20d         NUMERIC,
+    vwap_50d         NUMERIC,
+    pct_change       NUMERIC,
+    atr_14           NUMERIC,
+    atr_pct          NUMERIC,
+    ha_high          NUMERIC,
+    ha_low           NUMERIC,
+    ha_close         NUMERIC,
+    supertrend       NUMERIC,
+    macd_line        NUMERIC,
+    macd_signal      NUMERIC,
+    macd_histogram   NUMERIC,
+    parabolic_sar    NUMERIC,
+    upper_bb         NUMERIC,
+    lower_bb         NUMERIC,
+    stochastic       NUMERIC,
+    ttm_net_profit   NUMERIC,
+    net_profit_yr    NUMERIC,
+    eps              NUMERIC,
+    qtr_net_profit   NUMERIC,
+    qtr_var_profit   NUMERIC,
+    ingested_at      TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (date, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chartink_date   ON chartink_raw_data (date DESC);
+CREATE INDEX IF NOT EXISTS idx_chartink_symbol ON chartink_raw_data (symbol);
+
 -- ── market_regime ────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS market_regime (
     date                    DATE        PRIMARY KEY,

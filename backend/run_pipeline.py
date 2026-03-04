@@ -61,6 +61,9 @@ def main():
     logger.info(f"{'═'*60}")
 
     # Lazy imports to avoid loading everything upfront
+    def step_fetch_chartink():
+        from ingestion.fetch_chartink import main as fn; return fn()
+
     def step_ingest():
         from ingestion.ingest_sheets import main as fn; return fn()
 

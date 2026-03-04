@@ -31,14 +31,15 @@ def load_today_data():
         regime = sb.table("market_regime").select("*").order("date", desc=True).limit(1).execute().data
     events = sb.table("event_calendar").select("*").eq("is_active", True).execute().data
     safety = sb.table("safety_lists").select("symbol,list_type").execute().data
-
+    industry_str = sb.table("industry_strength").select("*").eq("date", str(today_ist())).execute().data
+    industry_map = {r["industry"]: r for r in industry_str}  # keyed by industry name
     stock_map  = {s["symbol"]: s for s in stocks}
     open_map   = {p["symbol"]: p for p in open_p}
     regime_obj = regime[0] if regime else {}
     asm_set    = {r["symbol"] for r in safety if r["list_type"] in ("ASM","GSM","ASM_SHORTTERM")}
     fo_ban_set = {r["symbol"] for r in safety if r["list_type"] == "FO_BAN"}
 
-    return stock_map, msl, open_map, regime_obj, events, asm_set, fo_ban_set
+    return stock_map, msl, open_map, regime_obj, events, asm_set, fo_ban_set, industry_map
 
 
 # ── Strategy filters ─────────────────────────────────────────
@@ -146,7 +147,7 @@ def generate(run_date: date | None = None) -> list[dict]:
     run_date = run_date or today_ist()
     strat_cfg = get_strategy_config()
 
-    stock_map, msl, open_map, regime, events, asm_set, fo_ban_set = load_today_data()
+    stock_map, msl, open_map, regime, events, asm_set, fo_ban_set, industry_map = load_today_data()
 
     regime_name = regime.get("regime", "NEUTRAL")
     block_buys  = cfg_bool("block_buys_risk_off", False) and regime_name == "RISK OFF"
@@ -233,7 +234,20 @@ def generate(run_date: date | None = None) -> list[dict]:
         # EAP override
         if eap_action == "AVOID_ENTRY" and position_state == "BUY_CANDIDATE":
             signal_type = "AVOID_ENTRY_EVENT"
+        
+        # Industry strength context
+        industry     = msl_row.get("industry", "")
+        ind_ctx      = industry_map.get(industry, {})
+        ind_rank     = ind_ctx.get("rank")
+        ind_top5     = ind_ctx.get("top5_flag", False)
+        ind_state    = ind_ctx.get("industry_state", "")
+        ind_rsi_d    = ind_ctx.get("avg_rsi_daily")
 
+        # Boost score for top-5 industry
+        if ind_top5:
+            score = (score or 0) + 10
+        if ind_state == "STRONG":
+            score = (score or 0) + 5
         sig = {
             "date": str(run_date),
             "symbol": sym,
@@ -255,6 +269,11 @@ def generate(run_date: date | None = None) -> list[dict]:
             "ai_provider": None,
             "ai_fallback_used": False,
             "fii_flag": None,          # Phase 1
+            "industry": industry,
+            "industry_rank": ind_rank,
+            "industry_top5": ind_top5,
+            "industry_state": ind_state,
+            "industry_avg_rsi": ind_rsi_d,
         }
         signals.append(sig)
 

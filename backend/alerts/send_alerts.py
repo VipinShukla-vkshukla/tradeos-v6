@@ -45,8 +45,10 @@ def main():
         f"🟡 <b>BUY CANDIDATES ({len(buys)})</b>",
     ]
     for s in sorted(buys, key=lambda x: x.get("score", 0), reverse=True)[:5]:
+        for s in sorted(buys, key=lambda x: x.get("score", 0), reverse=True)[:5]:
         warn = " ⚠️RISK OFF" if s.get("regime_warning") else ""
-        lines.append(f"  {s['symbol']} [{s['strategy']}] Score:{s['score']:.0f}{warn}")
+        ind_line = f" | Ind: {s.get('industry_state','?')} #{s.get('industry_rank','?')}"
+        lines.append(f"  {s['symbol']} [{s['strategy']}] Score:{s['score']:.0f}{ind_line}{warn}")
 
     if exits:
         lines.extend(["", f"🔴 <b>EXIT SIGNALS ({len(exits)})</b>"])

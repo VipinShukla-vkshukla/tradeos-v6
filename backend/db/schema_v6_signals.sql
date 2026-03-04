@@ -152,6 +152,13 @@ CREATE TABLE IF NOT EXISTS ml_training_log (
     notes           TEXT
 );
 
+ALTER TABLE signal_log
+    ADD COLUMN IF NOT EXISTS industry          TEXT,
+    ADD COLUMN IF NOT EXISTS industry_rank     INT,
+    ADD COLUMN IF NOT EXISTS industry_top5     BOOLEAN DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS industry_state    TEXT,
+    ADD COLUMN IF NOT EXISTS industry_avg_rsi  NUMERIC;
+
 CREATE INDEX IF NOT EXISTS idx_signal_log_date   ON signal_log(date);
 CREATE INDEX IF NOT EXISTS idx_signal_log_symbol ON signal_log(symbol);
 CREATE INDEX IF NOT EXISTS idx_signal_log_type   ON signal_log(date, signal_type);

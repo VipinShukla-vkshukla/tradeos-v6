@@ -517,7 +517,7 @@ def ingest_industry_strength(service, sb):
             "date": str(today),
             "industry": ind,
             "stock_count": int(parse_num(r.get("stocks_count")) or 0),
-            "avg_rsi_daily": parse_num(r.get("avg_rsi_wee")),   # check col key with print(df.columns)
+            "avg_rsi_daily": parse_num(r.get("avg_rsi_daily")),   # check col key with print(df.columns)
             "avg_rsi_weekly": parse_num(r.get("avg_rsi_weekly")),
             "avg_rsi_monthly": parse_num(r.get("avg_rsi_monthly")),
             "avg_ret_6m": parse_num(r.get("avg_6m_return")),
