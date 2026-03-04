@@ -13,7 +13,9 @@ from supabase import create_client, Client
 
 # ── Load .env ────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
-load_dotenv(BASE_DIR / ".env", override=False)
+env_file = BASE_DIR / ".env"
+if env_file.exists():
+    load_dotenv(env_file, override=False)
 
 # ── Paths ────────────────────────────────────────────────────
 DATA      = BASE_DIR / "data"
