@@ -62,7 +62,8 @@ def fetch_chartink_csv() -> pd.DataFrame | None:
     import requests as req_lib
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        headless = os.getenv("CI", "false").lower() == "true"
+        browser = p.chromium.launch(headless=headless)
         context = browser.new_context(accept_downloads=True)
         page    = context.new_page()
         page.set_viewport_size({"width": 1400, "height": 900})
