@@ -169,7 +169,7 @@ python run_pipeline.py
 ### Step 10: Deploy frontend
 
 **Option A — Use with Claude.ai:**
-npx serve .
+use html
 
 **Option B — Deploy on Vercel/Netlify (recommended):**
 
@@ -194,6 +194,15 @@ git add .
 git commit -m "TradeOS v6 Phase 0"
 git remote add origin https://github.com/YOUR_USERNAME/tradeos-v6.git
 git push -u origin main
+```
+```
+1.1 Regular Git Commit Steps
+a. cd "C:\Users\vkshu\CRITICAL\Equity Indian Market Framework\tradeos-v6-complete\tradeos-v6"
+git add .
+b. git commit -m "describe what you changed"
+c. git push
+d. git status
+e. git log --oneline
 ```
 
 2. Go to GitHub → your repo → **Settings** → **Secrets and variables** → **Actions**
