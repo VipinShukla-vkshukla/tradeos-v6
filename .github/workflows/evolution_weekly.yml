@@ -34,3 +34,10 @@ jobs:
           name: ml-model-${{ github.run_id }}
           path: backend/models/
           retention-days: 30
+
+      - name: Create credentials file
+        env:
+          GOOGLE_CREDS: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          mkdir -p backend/credentials
+          echo "$GOOGLE_CREDS" > backend/credentials/service_account.json 

@@ -56,3 +56,10 @@ jobs:
           name: pipeline-logs-${{ github.run_id }}
           path: backend/logs/
           retention-days: 7
+      
+      - name: Create credentials file
+        env:
+          GOOGLE_CREDS: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          mkdir -p backend/credentials
+          echo "$GOOGLE_CREDS" > backend/credentials/service_account.json      

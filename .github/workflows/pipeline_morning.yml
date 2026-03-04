@@ -28,3 +28,10 @@ jobs:
           TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python ingestion/ingest_global_cues.py MORNING
+
+      - name: Create credentials file
+        env:
+          GOOGLE_CREDS: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          mkdir -p backend/credentials
+          echo "$GOOGLE_CREDS" > backend/credentials/service_account.json 
