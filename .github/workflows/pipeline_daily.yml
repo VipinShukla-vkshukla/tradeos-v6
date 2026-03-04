@@ -32,6 +32,8 @@ jobs:
         env:
           SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
+          CHARTINK_EMAIL:         ${{ secrets.CHARTINK_EMAIL }}
+          CHARTINK_PASSWORD:      ${{ secrets.CHARTINK_PASSWORD }}
           GOOGLE_SHEET_ID:        ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_CREDENTIALS_JSON: credentials/service_account.json
           TOTAL_CAPITAL:          ${{ secrets.TOTAL_CAPITAL }}
