@@ -88,12 +88,37 @@ def fetch_chartink_csv() -> pd.DataFrame | None:
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             time.sleep(2)
             page.evaluate("window.scrollTo(0, 0)")
-            time.sleep(3)
+            time.sleep(8)
 
             # ── Step 3: Dismiss any popups ────────────────────────────────────
+            try:
+                ok_btn = page.locator("button:has-text('Ok'), button:has-text('OK'), button:has-text('ok')")
+                if ok_btn.count() > 0:
+                    ok_btn.first.click()
+                    logger.info("Dismissed popup")
+                    time.sleep(1)
+            except Exception:
+                pass
             page.keyboard.press("Escape")
-            time.sleep(0.3)
-
+            time.sleep(0.5)
+            
+            # Check if widgets loaded — look for error messages
+            error_widgets = page.locator("text=Error while loading").count()
+            if error_widgets > 0:
+                logger.warning(f"{error_widgets} widgets failed to load — retrying page...")
+                page.reload(wait_until="networkidle")
+                time.sleep(10)  # wait longer after reload
+                # Dismiss popup again if present
+                try:
+                    ok_btn = page.locator("button:has-text('Ok'), button:has-text('OK')")
+                    if ok_btn.count() > 0:
+                        ok_btn.first.click()
+                        time.sleep(1)
+                except Exception:
+                    pass
+                page.keyboard.press("Escape")
+                time.sleep(0.5)
+            
             # ── Step 4: Get widget box & scroll header near top of viewport ───
             box = get_widget_box(page)
             if not box:
