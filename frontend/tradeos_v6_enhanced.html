@@ -1,0 +1,1449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TradeOS v6 · Intelligence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;0,600;1,400&family=Space+Grotesk:wght@400;500;600;700&family=Syne:wght@700;800&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.23.10/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0C0A07;--surface:#131009;--card:#1C1610;--card2:#231C12;
+  --border:#30261A;--border2:#3E3020;
+  --accent:#D4820A;--accent2:#B06808;
+  --green:#28C47A;--green2:#1A9A5E;
+  --red:#D93355;--red2:#B02844;
+  --yellow:#D4900A;--purple:#9B82F4;--orange:#D46820;
+  --text:#EDE8DF;--textdim:#8A7A66;--textmuted:#3C3226;
+  --font:'IBM Plex Mono',monospace;
+  --fontui:'Space Grotesk','IBM Plex Mono',sans-serif;
+  --fonthead:'Syne','Space Grotesk',sans-serif;
+}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font);font-size:12px;overflow:hidden}
+#root{height:100vh;display:flex}
+/* Grain overlay for editorial warmth */
+body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:9999;
+  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+  opacity:.5;}
+::-webkit-scrollbar{width:3px;height:3px}
+::-webkit-scrollbar-track{background:var(--surface)}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px}
+::-webkit-scrollbar-thumb:hover{background:var(--textmuted)}
+button{font-family:var(--font);cursor:pointer;border:none;background:none;color:inherit}
+input,select{font-family:var(--font);outline:none}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.fade{animation:fadeUp .18s ease both}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- ══════════════════════════════════════════════════════════
+  CONFIGURATION — add your Supabase credentials below
+  Without these, the dashboard runs in Demo Mode
+══════════════════════════════════════════════════════════ -->
+
+<script>
+  window.SUPABASE_URL = "https://dbjfwpamxudnolfalpfm.supabase.co";
+  window.SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRiamZ3cGFteHVkbm9sZmFscGZtIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MjI5NTIzMywiZXhwIjoyMDg3ODcxMjMzfQ.RBgxCpqqZ63ZUmP01MHhsY1cfb8G0MrDg5Nt_8qpyQE";
+</script>
+
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useMemo, useRef } = React;
+
+// ── Supabase (optional) ───────────────────────────────────────────────────────
+let sb = null;
+let sbReady = false;
+(async () => {
+  const url = window.SUPABASE_URL;
+  const key = window.SUPABASE_KEY;
+  if (url && key) {
+    try {
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
+      document.head.appendChild(script);
+      await new Promise(r => script.onload = r);
+      sb = window.supabase.createClient(url, key);
+    } catch(e) { console.warn('Supabase load failed:', e.message); }
+  }
+  sbReady = true;
+})();
+
+// ── Colors ────────────────────────────────────────────────────────────────────
+const C = {
+  bg:"#0C0A07", surface:"#131009", card:"#1C1610", card2:"#231C12",
+  border:"#30261A", border2:"#3E3020",
+  accent:"#D4820A", green:"#28C47A", red:"#D93355",
+  yellow:"#D4900A", purple:"#9B82F4", orange:"#D46820",
+  text:"#EDE8DF", textDim:"#8A7A66", textMuted:"#3C3226",
+};
+
+// ── Demo data ─────────────────────────────────────────────────────────────────
+const DEMO_REGIME = {date:"2026-03-02",regime:"RISK OFF",nifty_price:22150,nifty_50dma:22800,nifty_200dma:21400,india_vix:13.7,nifty_weekly_rsi:44.2,gift_nifty:22080,avg_sector_breadth:38};
+const DEMO_MSL = [
+  {symbol:"GVT&D",company_name:"GE Vernova T&D India",sector:"Industrials",strategy_source:"CTL",position_state:"BUY_CANDIDATE",current_price:3850,entry_zone_low:3820,entry_zone_high:3880,final_score:87.4,validity_score:82,expected_r:3.1,lifecycle:"TREND_MATURE",entry_timing_type:"BREAKOUT",rsi_daily:61,rsi_weekly:66,vol_ratio:1.8,delivery_pct:68,atr_pct:2.1,regime_warning:true,eap_action:"NO_CHANGE",days_in_list:14},
+  {symbol:"SBIN",company_name:"State Bank of India",sector:"Bank",strategy_source:"TPO",position_state:"BUY_CANDIDATE",current_price:1201,entry_zone_low:1190,entry_zone_high:1215,final_score:79.2,validity_score:74,expected_r:2.8,lifecycle:"PULLBACK",entry_timing_type:"PULLBACK",rsi_daily:48,rsi_weekly:52,vol_ratio:1.4,delivery_pct:58,atr_pct:2.4,regime_warning:true,eap_action:"PRIORITISE",days_in_list:8},
+  {symbol:"HINDALCO",company_name:"Hindalco Industries",sector:"Metals & Mining",strategy_source:"SBS",position_state:"BUY_CANDIDATE",current_price:925,entry_zone_low:918,entry_zone_high:935,final_score:74.6,validity_score:69,expected_r:2.4,lifecycle:"CONSOLIDATION",entry_timing_type:"BREAKOUT",rsi_daily:55,rsi_weekly:58,vol_ratio:2.1,delivery_pct:72,atr_pct:3.2,regime_warning:true,eap_action:"NO_CHANGE",days_in_list:5},
+  {symbol:"VEDL",company_name:"Vedanta Ltd",sector:"Metals & Mining",strategy_source:"CTL",position_state:"WATCHING",current_price:716,entry_zone_low:685,entry_zone_high:700,final_score:71.3,validity_score:65,expected_r:2.2,lifecycle:"EARLY_TREND",rsi_daily:59,rsi_weekly:62,vol_ratio:1.2,delivery_pct:55,atr_pct:3.8,days_in_list:3},
+  {symbol:"ONGC",company_name:"Oil & Natural Gas Corp",sector:"Energy",strategy_source:"CTL",position_state:"WATCHING",current_price:279,entry_zone_low:265,entry_zone_high:272,final_score:68.1,validity_score:61,expected_r:2.0,lifecycle:"EARLY_TREND",rsi_daily:56,rsi_weekly:59,vol_ratio:1.1,delivery_pct:49,atr_pct:2.9,days_in_list:2},
+  {symbol:"CUMMINSIND",company_name:"Cummins India",sector:"Industrials",strategy_source:"CTL",position_state:"WATCHING",current_price:3420,entry_zone_low:3200,entry_zone_high:3300,final_score:65.8,validity_score:60,expected_r:1.9,lifecycle:"EARLY_TREND",rsi_daily:54,rsi_weekly:57,vol_ratio:1.0,delivery_pct:51,atr_pct:2.7,days_in_list:1},
+];
+const DEMO_POS = [
+  {symbol:"BHARATFORG",company_name:"Bharat Forge",sector:"Industrials",strategy:"CTL",entry_date:"2026-01-15",entry_price:1720,current_price:1909,actual_qty:6,invested_value:10320,current_value:11454,unrealized_pnl:1134,pnl_pct:10.99,lifecycle:"TREND_MATURE",active_sl:1840,high_water_mark:1945,action_required:"HOLD",target_1:2050,target_2:2200},
+  {symbol:"TATASTEEL",company_name:"Tata Steel",sector:"Metals & Mining",strategy:"TPO",entry_date:"2026-02-10",entry_price:165,current_price:212,actual_qty:60,invested_value:9900,current_value:12720,unrealized_pnl:2820,pnl_pct:28.48,lifecycle:"TREND_MATURE",active_sl:195,high_water_mark:218,action_required:"ADD",target_1:235,target_2:260},
+  {symbol:"GVT&D",company_name:"GE Vernova T&D",sector:"Industrials",strategy:"CTL",entry_date:"2026-02-01",entry_price:3620,current_price:3850,actual_qty:3,invested_value:10860,current_value:11550,unrealized_pnl:690,pnl_pct:6.35,lifecycle:"TREND_MATURE",active_sl:3580,high_water_mark:3912,action_required:"HOLD",target_1:4200,target_2:4500},
+  {symbol:"FEDERALBNK",company_name:"Federal Bank",sector:"Bank",strategy:"SBS",entry_date:"2026-02-18",entry_price:192,current_price:174,actual_qty:50,invested_value:9600,current_value:8700,unrealized_pnl:-900,pnl_pct:-9.38,lifecycle:"PULLBACK",active_sl:168,high_water_mark:205,action_required:"HOLD",target_1:215},
+];
+const DEMO_SECTORS = [
+  {date:"2026-03-02",sector:"Metals & Mining",rank:1,top4_flag:true,sector_state:"STRONG",avg_rsi_daily:59,avg_ret_6m:0.182,breadth_sma50:72,stock_count:18},
+  {date:"2026-03-02",sector:"Industrials",rank:2,top4_flag:true,sector_state:"STRONG",avg_rsi_daily:63,avg_ret_6m:0.241,breadth_sma50:78,stock_count:22},
+  {date:"2026-03-02",sector:"Energy",rank:3,top4_flag:true,sector_state:"NORMAL",avg_rsi_daily:55,avg_ret_6m:0.128,breadth_sma50:58,stock_count:12},
+  {date:"2026-03-02",sector:"Bank",rank:4,top4_flag:true,sector_state:"NORMAL",avg_rsi_daily:51,avg_ret_6m:0.094,breadth_sma50:61,stock_count:14},
+  {date:"2026-03-02",sector:"Healthcare",rank:7,top4_flag:false,sector_state:"NORMAL",avg_rsi_daily:56,avg_ret_6m:0.071,breadth_sma50:55,stock_count:16},
+  {date:"2026-03-02",sector:"FMCG",rank:12,top4_flag:false,sector_state:"NORMAL",avg_rsi_daily:48,avg_ret_6m:0.042,breadth_sma50:45,stock_count:14},
+  {date:"2026-03-02",sector:"Realty",rank:18,top4_flag:false,sector_state:"WEAK",avg_rsi_daily:41,avg_ret_6m:-0.089,breadth_sma50:38,stock_count:8},
+  {date:"2026-03-02",sector:"I.T",rank:22,top4_flag:false,sector_state:"WEAK",avg_rsi_daily:38,avg_ret_6m:-0.112,breadth_sma50:32,stock_count:20},
+];
+const DEMO_EVENTS = [
+  {id:1,event_name:"RBI Policy Meeting",event_category:"MACRO",start_date:"2026-03-07",affected_sectors:"Bank, Financials",event_bias:"POSITIVE",event_intensity:"HIGH",is_active:true,priority:1,notes:"Rate pause expected. Bank sector catalyst."},
+  {id:2,event_name:"US CPI Data",event_category:"GLOBAL",start_date:"2026-03-12",affected_sectors:"All",event_bias:"NEGATIVE",event_intensity:"HIGH",is_active:true,priority:1,notes:"Could trigger FII outflows if above expectations."},
+  {id:3,event_name:"Union Budget Impact Review",event_category:"MACRO",start_date:"2026-03-15",affected_sectors:"Industrials, Defence",event_bias:"POSITIVE",event_intensity:"MEDIUM",is_active:true,priority:2,notes:""},
+  {id:4,event_name:"F&O Monthly Expiry",event_category:"MARKET",start_date:"2026-03-26",affected_sectors:"All",event_bias:"MIXED",event_intensity:"MEDIUM",is_active:true,priority:2,notes:"Elevated volatility expected."},
+];
+const DEMO_CLOSED = [
+  {symbol:"NATIONALUM",strategy:"TPO",entry_date:"2025-11-01",exit_date:"2025-12-28",entry_price:205,exit_price:354,actual_qty:49,realized_pnl:7301,pnl_pct:72.68,exit_reason:"TARGET_HIT"},
+  {symbol:"CUMMINSIND",strategy:"CTL",entry_date:"2025-11-10",exit_date:"2026-01-08",entry_price:3820,exit_price:4909,actual_qty:3,realized_pnl:3267,pnl_pct:28.51,exit_reason:"TARGET_HIT"},
+  {symbol:"BANKBARODA",strategy:"CTL",entry_date:"2025-10-20",exit_date:"2025-12-15",entry_price:250,exit_price:320,actual_qty:40,realized_pnl:2800,pnl_pct:28.0,exit_reason:"TARGET_HIT"},
+  {symbol:"AXISBANK",strategy:"SBS",entry_date:"2025-12-10",exit_date:"2026-02-01",entry_price:1100,exit_price:1384,actual_qty:9,realized_pnl:2556,pnl_pct:25.82,exit_reason:"TARGET_HIT"},
+  {symbol:"KIRLOSENG",strategy:"CTL",entry_date:"2025-12-01",exit_date:"2026-01-22",entry_price:1210,exit_price:1395,actual_qty:8,realized_pnl:1480,pnl_pct:15.29,exit_reason:"TARGET_HIT"},
+  {symbol:"POLYCAB",strategy:"SBS",entry_date:"2025-10-15",exit_date:"2025-12-20",entry_price:7200,exit_price:8606,actual_qty:1,realized_pnl:1406,pnl_pct:19.53,exit_reason:"TARGET_HIT"},
+  {symbol:"SAIL",strategy:"CTL",entry_date:"2025-09-12",exit_date:"2025-11-30",entry_price:142,exit_price:165,actual_qty:70,realized_pnl:1610,pnl_pct:16.20,exit_reason:"TARGET_HIT"},
+  {symbol:"RBLBANK",strategy:"TPO",entry_date:"2025-11-20",exit_date:"2026-01-15",entry_price:250,exit_price:195,actual_qty:40,realized_pnl:-2200,pnl_pct:-22.0,exit_reason:"STOP_LOSS"},
+  {symbol:"VEDL",strategy:"SBS",entry_date:"2025-08-05",exit_date:"2025-10-10",entry_price:435,exit_price:392,actual_qty:23,realized_pnl:-989,pnl_pct:-9.89,exit_reason:"STOP_LOSS"},
+  {symbol:"IOC",strategy:"CTL",entry_date:"2025-09-25",exit_date:"2025-10-30",entry_price:170,exit_price:148,actual_qty:58,realized_pnl:-1276,pnl_pct:-12.94,exit_reason:"STOP_LOSS"},
+];
+const DEMO_CFG = {
+  ai_provider:"disabled",autonomy_phase:"0",total_capital:"200000",
+  max_positions_risk_on:"8",max_positions_neutral:"7",max_positions_risk_off:"6",
+  block_buys_risk_off:"false",telegram_alerts_enabled:"false",
+  master_kill_switch:"false",ai_fallback_ml:"true",ai_fallback_scraping:"true",
+  ai_daily_budget_inr:"200",ai_max_stocks_per_day:"20",
+  min_score_to_show:"50",show_watching_stocks:"true",max_sector_concentration:"25",
+};
+
+// ── Data layer ────────────────────────────────────────────────────────────────
+async function qry(table, select="*", filters={}, order=null, lim=null) {
+  if (!sb) return null;
+  try {
+    let r = sb.from(table).select(select);
+    for (const [k,v] of Object.entries(filters)) r = r.eq(k,v);
+    if (order) r = r.order(order.col, {ascending: order.asc ?? false});
+    if (lim) r = r.limit(lim);
+    const { data, error } = await r;
+    if (error) throw error;
+    return data || [];
+  } catch(e) { console.error(`❌ Supabase query FAILED [${table}]:`, e.message);return null; }
+}
+async function saveCfg(key, val) {
+  if (!sb) return;
+  await sb.from("system_config").update({value: String(val)}).eq("key", key);
+}
+
+// ── Formatters ────────────────────────────────────────────────────────────────
+const inr  = v => v==null ? "—" : `₹${Number(v).toLocaleString("en-IN",{maximumFractionDigits:0})}`;
+const pct  = (v,d=1) => v==null ? "—" : `${v>=0?"+":""}${Number(v).toFixed(d)}%`;
+const num  = (v,d=1) => v==null ? "—" : Number(v).toFixed(d);
+const clr  = v => Number(v)>0 ? C.green : Number(v)<0 ? C.red : C.textDim;
+
+// ── Strategy colors ───────────────────────────────────────────────────────────
+const SC = {CTL:C.accent, SBS:C.green, TPO:C.purple, EAP:C.orange};
+const sc  = s => SC[s] || C.textDim;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHARED COMPONENTS
+// ─────────────────────────────────────────────────────────────────────────────
+const s = (style) => style; // passthrough for inline style objects
+
+const Pill = ({children, color=C.textDim}) => (
+  <span style={{fontSize:9,fontWeight:700,letterSpacing:"0.07em",textTransform:"uppercase",
+    color, background:color+"22", border:`1px solid ${color}44`,
+    borderRadius:3, padding:"2px 7px", whiteSpace:"nowrap", flexShrink:0}}>
+    {children}
+  </span>
+);
+
+const Card = ({children, style={}}) => (
+  <div style={{background:C.card, border:`1px solid ${C.border}`, borderRadius:8, padding:14, ...style}}>
+    {children}
+  </div>
+);
+
+const SecHead = ({label, right}) => (
+  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+    marginBottom:10, paddingBottom:8, borderBottom:`1px solid ${C.border}`}}>
+    <span style={{fontSize:9,color:C.textMuted,textTransform:"uppercase",letterSpacing:"0.12em",fontWeight:700}}>{label}</span>
+    {right && <span style={{fontSize:9,color:C.textDim}}>{right}</span>}
+  </div>
+);
+
+const KPI = ({label, value, sub, color, icon}) => (
+  <div style={{background:C.card, border:`1px solid ${C.border}`, borderRadius:8, padding:"14px 16px"}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:4}}>
+      <span style={{fontSize:9,color:C.textMuted,textTransform:"uppercase",letterSpacing:"0.1em"}}>{label}</span>
+      {icon && <span style={{fontSize:14,opacity:.45}}>{icon}</span>}
+    </div>
+    <div style={{fontSize:21,fontWeight:700,color:color||C.text,fontVariantNumeric:"tabular-nums",letterSpacing:"-0.01em",lineHeight:1}}>{value}</div>
+    {sub && <div style={{fontSize:10,color:C.textDim,marginTop:4}}>{sub}</div>}
+  </div>
+);
+
+const Bar = ({v, max=100, h=3, color}) => {
+  const c = color || (v>=70?C.green : v>=50?C.yellow : C.red);
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:6}}>
+      <div style={{flex:1,height:h,background:C.border,borderRadius:2}}>
+        <div style={{width:`${Math.min(100,(v/max)*100)}%`,height:"100%",background:c,borderRadius:2,transition:"width .5s"}}/>
+      </div>
+      <span style={{fontSize:9,color:c,fontWeight:700,width:22,textAlign:"right",flexShrink:0}}>{Math.round(v)}</span>
+    </div>
+  );
+};
+
+const Toggle = ({on, onChange}) => (
+  <button onClick={()=>onChange(!on)} style={{
+    width:36, height:20, borderRadius:10,
+    background: on ? C.green : C.border,
+    position:"relative", border:"none", cursor:"pointer", transition:"background .2s", flexShrink:0}}>
+    <div style={{position:"absolute", top:3, left: on?18:3, width:14, height:14,
+      borderRadius:"50%", background:C.bg, transition:"left .2s"}}/>
+  </button>
+);
+
+// ── SVG Sparkline ─────────────────────────────────────────────────────────────
+const Sparkline = ({data, width=100, height=32, color=C.accent, fill=true}) => {
+  if (!data || data.length < 2) return <div style={{width,height,background:C.border+"44",borderRadius:4}}/>;
+  const vals = data.map(d => typeof d === "number" ? d : d.value || 0);
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const range = max - min || 1;
+  const pts = vals.map((v,i) => [
+    (i/(vals.length-1)) * width,
+    height - ((v - min) / range) * (height-4) - 2
+  ]);
+  const line = pts.map((p,i) => `${i===0?"M":"L"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+  const area = `${line} L${width},${height} L0,${height} Z`;
+  return (
+    <svg width={width} height={height} style={{overflow:"visible"}}>
+      <defs>
+        <linearGradient id={`sg-${color.replace("#","")}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity={0.25}/>
+          <stop offset="100%" stopColor={color} stopOpacity={0.01}/>
+        </linearGradient>
+      </defs>
+      {fill && <path d={area} fill={`url(#sg-${color.replace("#","")})`}/>}
+      <path d={line} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round"/>
+    </svg>
+  );
+};
+
+// ── SVG Area Chart ────────────────────────────────────────────────────────────
+const AreaChart = ({data, width="100%", height=140, color=C.accent, xKey="date", yKey="value", showGrid=true, yFormat=v=>`₹${(v/1000).toFixed(0)}k`}) => {
+  const ref = useRef(null);
+  const [w, setW] = useState(400);
+  useEffect(()=>{
+    if(!ref.current) return;
+    const ro = new ResizeObserver(e => setW(e[0].contentRect.width));
+    ro.observe(ref.current);
+    return ()=>ro.disconnect();
+  },[]);
+
+  const vals = data.map(d=>d[yKey]||0);
+  const min = Math.min(...vals) * 0.995;
+  const max = Math.max(...vals) * 1.005;
+  const range = max - min || 1;
+  const pad = {l:48, r:8, t:8, b:24};
+  const cw = w - pad.l - pad.r;
+  const ch = height - pad.t - pad.b;
+
+  const px = i => pad.l + (i/(data.length-1||1)) * cw;
+  const py = v => pad.t + ch - ((v-min)/range)*ch;
+
+  const pts = data.map((d,i) => [px(i), py(d[yKey]||0)]);
+  const line = pts.map((p,i)=>`${i===0?"M":"L"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+  const area = `${line} L${pad.l+cw},${pad.t+ch} L${pad.l},${pad.t+ch} Z`;
+
+  const gid = `ac${color.replace(/[^a-z0-9]/gi,"")}`;
+  const yTicks = [min, min+range*0.25, min+range*0.5, min+range*0.75, max];
+  const xStep = Math.max(1, Math.floor(data.length/5));
+
+  return (
+    <div ref={ref} style={{width, position:"relative"}}>
+      <svg width={w} height={height}>
+        <defs>
+          <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity={0.2}/>
+            <stop offset="100%" stopColor={color} stopOpacity={0.01}/>
+          </linearGradient>
+        </defs>
+        {showGrid && yTicks.map((v,i)=>(
+          <g key={i}>
+            <line x1={pad.l} y1={py(v)} x2={pad.l+cw} y2={py(v)} stroke={C.border} strokeDasharray="2,4"/>
+            <text x={pad.l-6} y={py(v)+4} textAnchor="end" fontSize={10} fill={C.textDim}>{yFormat(v)}</text>
+          </g>
+        ))}
+        {data.map((d,i)=> i%xStep===0 && (
+          <text key={i} x={px(i)} y={height-4} textAnchor="middle" fontSize={10} fill={C.textDim}>
+            {String(d[xKey]||"").slice(-5)}
+          </text>
+        ))}
+        <path d={area} fill={`url(#${gid})`}/>
+        <path d={line} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round"/>
+      </svg>
+    </div>
+  );
+};
+
+// ── SVG Bar Chart ─────────────────────────────────────────────────────────────
+const BarChart = ({data, width="100%", height=100, xKey="name", yKey="value", colorKey="color", labelKey=null}) => {
+  const ref = useRef(null);
+  const [w, setW] = useState(300);
+  useEffect(()=>{
+    if(!ref.current) return;
+    const ro = new ResizeObserver(e => setW(e[0].contentRect.width));
+    ro.observe(ref.current);
+    return ()=>ro.disconnect();
+  },[]);
+
+  const vals = data.map(d=>d[yKey]||0);
+  const max = Math.max(...vals.map(Math.abs)) || 1;
+  const pad = {l:8, r:8, t:8, b:20};
+  const cw = w - pad.l - pad.r;
+  const ch = height - pad.t - pad.b;
+  const bw = cw/data.length - 4;
+  const mid = pad.t + ch/2;
+
+  return (
+    <div ref={ref} style={{width}}>
+      <svg width={w} height={height}>
+        <line x1={pad.l} y1={mid} x2={pad.l+cw} y2={mid} stroke={C.border}/>
+        {data.map((d,i)=>{
+          const v = d[yKey]||0;
+          const x = pad.l + i*(cw/data.length) + 2;
+          const barH = Math.abs(v)/max * (ch/2);
+          const y = v>=0 ? mid-barH : mid;
+          const color = d[colorKey] || (v>=0 ? C.green : C.red);
+          return (
+            <g key={i}>
+              <rect x={x} y={y} width={bw} height={barH} fill={color} rx={2} fillOpacity={0.85}/>
+              <text x={x+bw/2} y={height-4} textAnchor="middle" fontSize={8} fill={C.textMuted}>
+                {String(d[xKey]||"").slice(0,6)}
+              </text>
+              {labelKey && <text x={x+bw/2} y={v>=0?y-3:y+barH+10} textAnchor="middle" fontSize={8} fill={color} fontWeight="700">
+                {d[labelKey]}
+              </text>}
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SIGNAL CARD
+// ─────────────────────────────────────────────────────────────────────────────
+const SignalCard = ({item, isPos=false}) => {
+  const [open, setOpen] = useState(false);
+  const isBuy = item.position_state === "BUY_CANDIDATE";
+  const strat = item.strategy_source || item.strategy || "";
+  const stratC = sc(strat);
+  const edgeC  = isPos ? clr(item.pnl_pct) : isBuy ? C.yellow : C.textDim;
+
+  return (
+    <div onClick={()=>setOpen(!open)} style={{
+      background:C.card2, borderRadius:6, marginBottom:5, cursor:"pointer",
+      border:`1px solid ${isBuy ? C.yellow+"55" : isPos ? (item.pnl_pct>=0 ? C.green+"33" : C.red+"33") : C.border}`,
+      transition:"border-color .2s", overflow:"hidden"}}>
+      <div style={{display:"flex",gap:6,padding:"9px 11px",alignItems:"center"}}>
+        <div style={{width:3,minHeight:38,background:edgeC,borderRadius:2,flexShrink:0}}/>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}>
+            <span style={{fontSize:13,fontWeight:700,color:C.text,letterSpacing:"0.02em"}}>{item.symbol}</span>
+            <Pill color={stratC}>{strat}</Pill>
+            {isBuy && item.regime_warning && <Pill color={C.red}>⚠ RISK OFF</Pill>}
+            {item.asm_flag && <Pill color={C.red}>⛔ ASM</Pill>}
+            {item.eap_action==="PRIORITISE" && <Pill color={C.green}>⚡ EAP</Pill>}
+            {item.eap_action==="AVOID_ENTRY" && <Pill color={C.orange}>⏸ AVOID</Pill>}
+            {isPos && (item.action_required||"").toUpperCase().includes("ADD") && <Pill color={C.green}>+ ADD</Pill>}
+            {isPos && (item.action_required||"").toUpperCase().includes("EXIT") && <Pill color={C.red}>EXIT ↗</Pill>}
+            {item.ai_conviction === "HIGH" && <Pill color={C.green}>AI: HIGH</Pill>}
+          </div>
+          <div style={{display:"flex",gap:10,alignItems:"center"}}>
+            <span style={{fontSize:10,color:C.textDim,flexShrink:0}}>{item.sector}</span>
+            {isPos
+              ? <span style={{fontSize:11,fontWeight:700,color:clr(item.pnl_pct)}}>{pct(item.pnl_pct)} · {inr(item.unrealized_pnl)}</span>
+              : <div style={{flex:1,display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:10,color:C.textDim}}>₹{item.current_price}</span>
+                  <div style={{flex:1,maxWidth:70}}><Bar v={item.final_score||0}/></div>
+                </div>
+            }
+          </div>
+        </div>
+        <span style={{fontSize:9,color:C.textMuted,flexShrink:0}}>{open?"▲":"▼"}</span>
+      </div>
+      {open && (
+        <div style={{padding:"10px 11px 11px 20px",borderTop:`1px solid ${C.border}`,
+          display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"8px 12px"}}>
+          {isPos ? <>
+            <div><div style={lbl}>ENTRY</div><div style={val}>₹{item.entry_price}</div></div>
+            <div><div style={lbl}>CMP</div><div style={val}>₹{item.current_price}</div></div>
+            <div><div style={lbl}>ACTIVE SL</div><div style={{...val,color:C.red}}>₹{item.active_sl}</div></div>
+            <div><div style={lbl}>TARGET 1</div><div style={{...val,color:C.green}}>₹{item.target_1}</div></div>
+            <div><div style={lbl}>QTY</div><div style={val}>{item.actual_qty}</div></div>
+            <div><div style={lbl}>INVESTED</div><div style={val}>{inr(item.invested_value)}</div></div>
+            <div><div style={lbl}>HWM</div><div style={val}>₹{item.high_water_mark}</div></div>
+            <div><div style={lbl}>LIFECYCLE</div><div style={{...val,color:C.accent,fontSize:9}}>{item.lifecycle}</div></div>
+          </> : <>
+            <div><div style={lbl}>ENTRY ZONE</div><div style={val}>₹{item.entry_zone_low}–{item.entry_zone_high}</div></div>
+            <div><div style={lbl}>VALIDITY</div><div style={val}>{num(item.validity_score)}</div></div>
+            <div><div style={lbl}>EXP R</div><div style={{...val,color:C.green}}>{num(item.expected_r)}x</div></div>
+            <div><div style={lbl}>LIFECYCLE</div><div style={{...val,color:C.accent,fontSize:9}}>{item.lifecycle}</div></div>
+            <div><div style={lbl}>RSI D/W</div><div style={val}>{item.rsi_daily}/{item.rsi_weekly}</div></div>
+            <div><div style={lbl}>VOL RATIO</div><div style={{...val,color:item.vol_ratio>=1.5?C.green:C.text}}>{num(item.vol_ratio)}x</div></div>
+            <div><div style={lbl}>DELIVERY%</div><div style={{...val,color:item.delivery_pct>=60?C.green:C.text}}>{num(item.delivery_pct)}%</div></div>
+            <div><div style={lbl}>ATR%</div><div style={val}>{num(item.atr_pct)}%</div></div>
+            {item.entry_timing_type && <div style={{gridColumn:"span 2"}}><div style={lbl}>TIMING</div><div style={{...val,color:C.accent}}>{item.entry_timing_type}</div></div>}
+            {item.days_in_list != null && <div><div style={lbl}>DAYS IN LIST</div><div style={val}>{item.days_in_list}d</div></div>}
+          </>}
+        </div>
+      )}
+    </div>
+  );
+};
+const lbl = {fontSize:9,color:C.textMuted,marginBottom:2,textTransform:"uppercase",letterSpacing:"0.06em"};
+const val = {fontSize:11,color:C.text,fontWeight:500};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DASHBOARD PANEL
+// ─────────────────────────────────────────────────────────────────────────────
+const PanelDashboard = ({d}) => {
+  const {regime,positions,msl,sectors,events,closed,config} = d;
+  const invested = positions.reduce((s,p)=>s+(p.invested_value||0),0);
+  const curVal   = positions.reduce((s,p)=>s+(p.current_value||0),0);
+  const pnl      = curVal - invested;
+  const capital  = parseFloat(config.total_capital||200000);
+  const deployed = capital>0 ? (invested/capital)*100 : 0;
+  const buys     = msl.filter(r=>r.position_state==="BUY_CANDIDATE");
+  const wins     = closed.filter(t=>(t.realized_pnl||0)>0);
+  const winRate  = closed.length > 0 ? (wins.length/closed.length)*100 : 0;
+  const realized = closed.reduce((s,t)=>s+(t.realized_pnl||0),0);
+  const exits    = positions.filter(p=>(p.action_required||"").toUpperCase().includes("EXIT"));
+  const adds     = positions.filter(p=>(p.action_required||"").toUpperCase().includes("ADD"));
+  const rC       = {"RISK ON":C.green,"NEUTRAL":C.yellow,"RISK OFF":C.red}[regime?.regime]||C.textDim;
+
+  const equityCurve = useMemo(()=>{
+    const sorted = [...closed].sort((a,b)=>new Date(a.exit_date||0)-new Date(b.exit_date||0));
+    let running = capital;
+    return sorted.map(t=>{ running+=t.realized_pnl||0; return {date:t.exit_date||"",value:running}; });
+  },[closed,capital]);
+
+  const topSectors = [...sectors].sort((a,b)=>(a.rank||99)-(b.rank||99)).slice(0,4);
+  const topIndustries = [...(d.industries||[])].sort((a,b)=>(a.rank||99)-(b.rank||99)).slice(0,5);
+
+  return (
+    <div className="fade" style={{display:"flex",flexDirection:"column",gap:12}}>
+      {/* Regime Banner */}
+      <div style={{background:`${rC}12`,border:`1px solid ${rC}44`,borderRadius:8,
+        padding:"11px 16px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div style={{display:"flex",alignItems:"center",gap:18,flexWrap:"wrap"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <div style={{width:8,height:8,borderRadius:"50%",background:rC,animation:"pulse 2s infinite"}}/>
+            <span style={{fontSize:14,fontWeight:800,color:rC,fontFamily:"'Syne',sans-serif",letterSpacing:"0.05em"}}>
+              {regime?.regime||"—"}
+            </span>
+          </div>
+          {[["NIFTY",inr(regime?.nifty_price)],["50DMA",inr(regime?.nifty_50dma)],
+            ["200DMA",inr(regime?.nifty_200dma)],["VIX",num(regime?.india_vix)],
+            ["W.RSI",num(regime?.nifty_weekly_rsi)],["GIFT",inr(regime?.gift_nifty)],
+            ["BREADTH",`${num(regime?.avg_sector_breadth,0)}%`]
+          ].map(([k,v])=>(
+            <div key={k}>
+              <div style={{fontSize:8,color:C.textMuted,letterSpacing:"0.08em"}}>{k}</div>
+              <div style={{fontSize:11,color:C.textDim,fontWeight:600}}>{v}</div>
+            </div>
+          ))}
+        </div>
+        {regime?.regime==="RISK OFF" && <Pill color={C.red}>⚠ RISK OFF — trade with caution</Pill>}
+      </div>
+
+      {/* KPIs */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8}}>
+        <KPI label="Portfolio Value" value={inr(curVal)} sub={`${deployed.toFixed(1)}% deployed`} icon="💼"/>
+        <KPI label="Unrealized P&L"  value={inr(pnl)} sub={pct(capital>0?pnl/capital*100:0)} color={clr(pnl)} icon="📈"/>
+        <KPI label="Realized P&L"    value={inr(realized)} sub={`${closed.length} closed`} color={clr(realized)} icon="✅"/>
+        <KPI label="Win Rate"        value={`${winRate.toFixed(1)}%`} sub={`${wins.length}W / ${closed.length-wins.length}L`}
+          color={winRate>=55?C.green:winRate>=45?C.yellow:C.red} icon="🎯"/>
+        <KPI label="Buy Candidates"  value={buys.length} sub={`${positions.length} open · ${exits.length} exit`} color={C.yellow} icon="🟡"/>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 320px",gap:12}}>
+        {/* Equity curve */}
+        <Card>
+          <SecHead label="Equity Curve" right={`${closed.length} trades`}/>
+          {equityCurve.length >= 5
+            ? <AreaChart data={equityCurve} height={300} color={C.accent} xKey="date" yKey="value"/>
+            : <div style={{height:80,display:"flex",alignItems:"center",justifyContent:"center",color:C.textMuted,fontSize:11}}>
+                Equity curve appears after first closed trade
+              </div>
+          }
+        </Card>
+
+        
+        {/* Right column */}
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {/* Top sectors */}
+          <Card style={{flex:1}}>
+            <SecHead label="Top Sectors"/>
+            {topSectors.map(s=>{
+              const sc2 = s.sector_state==="STRONG"?C.green:s.sector_state==="WEAK"?C.red:C.yellow;
+              return (
+                <div key={s.sector} style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                  <span style={{fontSize:9,color:C.textMuted,width:14,textAlign:"right",flexShrink:0}}>#{s.rank}</span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
+                      <span style={{fontSize:11,color:C.text}}>{s.sector}</span>
+                      <span style={{fontSize:9,fontWeight:700,color:sc2}}>{pct(s.avg_ret_6m*100)}</span>
+                    </div>
+                    <Bar v={s.breadth_sma50||0} color={sc2} h={2}/>
+                  </div>
+                </div>
+              );
+            })}
+          </Card>
+          
+          {/* Top Industries */}
+          <Card style={{flex:1}}>
+            <SecHead label="Top Industry"/>
+            {topIndustries.length === 0
+              ? <div style={{color:C.textMuted,fontSize:10,padding:"8px 0"}}>No industry data</div>
+              : topIndustries.map(i=>{
+                  const ic = i.industry_state==="STRONG"?C.green:i.industry_state==="WEAK"?C.red:C.yellow;
+                  return (
+                    <div key={i.industry} style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                      <span style={{fontSize:9,color:C.textMuted,width:14,textAlign:"right",flexShrink:0}}>#{i.rank}</span>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
+                          <span style={{fontSize:11,color:C.text}}>{i.industry}</span>
+                          <span style={{fontSize:9,fontWeight:700,color:ic}}>{pct((i.avg_ret_6m||0)*100)}</span>
+                        </div>
+                        <Bar v={i.breadth_sma50||0} color={ic} h={2}/>
+                      </div>
+                    </div>
+                  );
+              })
+            }
+          </Card>
+
+          {/* Action alerts */}
+          {(exits.length>0||adds.length>0) && (
+            <Card>
+              <SecHead label="Action Required"/>
+              {exits.map(p=>(
+                <div key={p.symbol} style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <Pill color={C.red}>EXIT</Pill>
+                    <span style={{fontSize:11,color:C.text}}>{p.symbol}</span>
+                  </div>
+                  <span style={{fontSize:10,color:clr(p.pnl_pct),fontWeight:700}}>{pct(p.pnl_pct)}</span>
+                </div>
+              ))}
+              {adds.map(p=>(
+                <div key={p.symbol} style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <Pill color={C.green}>ADD</Pill>
+                    <span style={{fontSize:11,color:C.text}}>{p.symbol}</span>
+                  </div>
+                  <span style={{fontSize:10,color:C.green,fontWeight:700}}>{pct(p.pnl_pct)}</span>
+                </div>
+              ))}
+            </Card>
+          )}
+        </div>
+      </div>
+
+      {/* Buy candidates grid */}
+      {buys.length>0 && (
+        <Card>
+          <SecHead label="Buy Candidates at Entry Zone" right={<Pill color={C.yellow}>{buys.length} ready</Pill>}/>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(190px,1fr))",gap:8}}>
+            {buys.map(s=>(
+              <div key={s.symbol} style={{background:C.bg,border:`1px solid ${C.yellow}33`,borderRadius:6,padding:"9px 11px"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                  <span style={{fontSize:12,fontWeight:700,color:C.text}}>{s.symbol}</span>
+                  <Pill color={sc(s.strategy_source)}>{s.strategy_source}</Pill>
+                </div>
+                <div style={{fontSize:9,color:C.textDim,marginBottom:5}}>
+                  ₹{s.current_price} · Zone: ₹{s.entry_zone_low}–{s.entry_zone_high}
+                </div>
+                <Bar v={s.final_score||0}/>
+                {s.regime_warning && <div style={{marginTop:4}}><Pill color={C.red}>⚠ RISK OFF</Pill></div>}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Events strip */}
+      {events.length>0 && (
+        <Card>
+          <SecHead label="Upcoming Events" right={`${events.length} active`}/>
+          <div style={{display:"flex",gap:8,overflowX:"auto",paddingBottom:4}}>
+            {events.map(e=>{
+              const bc=e.event_bias==="POSITIVE"?C.green:e.event_bias==="NEGATIVE"?C.red:C.yellow;
+              return (
+                <div key={e.id} style={{background:C.bg,border:`1px solid ${bc}33`,borderRadius:6,
+                  padding:"8px 10px",minWidth:165,flexShrink:0}}>
+                  <div style={{fontSize:8,color:bc,fontWeight:700,marginBottom:3}}>{e.start_date}</div>
+                  <div style={{fontSize:11,color:C.text,fontWeight:600,lineHeight:1.3,marginBottom:3}}>{e.event_name}</div>
+                  <div style={{fontSize:9,color:C.textMuted}}>{e.affected_sectors}</div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SIGNALS PANEL
+// ─────────────────────────────────────────────────────────────────────────────
+const PanelSignals = ({d}) => {
+  const {msl, positions, regime} = d;
+  const [filter, setFilter] = useState("ALL");
+  const buys    = msl.filter(r=>r.position_state==="BUY_CANDIDATE");
+  const watching= msl.filter(r=>r.position_state==="WATCHING");
+  const rC = {"RISK ON":C.green,"NEUTRAL":C.yellow,"RISK OFF":C.red}[regime?.regime]||C.textDim;
+  const cols = filter==="ALL" ? "repeat(3,1fr)" : "1fr";
+  const showBuys = filter==="ALL"||filter==="BUY";
+  const showPos  = filter==="ALL"||filter==="POSITIONS";
+  const showWatch= filter==="ALL"||filter==="WATCHING";
+
+  return (
+    <div className="fade" style={{display:"flex",flexDirection:"column",gap:12}}>
+      {/* Filter bar */}
+      <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+        {[["ALL","All"],["BUY","Buy Candidates"],["POSITIONS","Open Positions"],["WATCHING","Watching"]].map(([v,l])=>(
+          <button key={v} onClick={()=>setFilter(v)} style={{
+            fontSize:10,fontWeight:700,letterSpacing:"0.06em",padding:"5px 12px",borderRadius:4,
+            background:filter===v?`${C.accent}22`:"transparent",
+            border:`1px solid ${filter===v?C.accent:C.border}`,
+            color:filter===v?C.accent:C.textDim,transition:"all .15s"
+          }}>{l}</button>
+        ))}
+        <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:9,color:C.textMuted}}>REGIME</span>
+          <Pill color={rC}>{regime?.regime||"—"}</Pill>
+          <span style={{fontSize:9,color:C.textMuted}}>VIX {num(regime?.india_vix)}</span>
+        </div>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:cols,gap:12}}>
+        {showBuys && (
+          <div>
+            <SecHead label={`🟡 Buy Candidates`} right={<Pill color={C.yellow}>{buys.length}</Pill>}/>
+            {buys.length===0 ? <div style={{color:C.textMuted,fontSize:11,padding:"12px 0"}}>No stocks at entry zone today</div>
+              : buys.map(s=><SignalCard key={s.symbol} item={s}/>)}
+          </div>
+        )}
+        {showPos && (
+          <div>
+            <SecHead label={`📊 Open Positions`} right={<Pill color={C.green}>{positions.length}</Pill>}/>
+            {positions.length===0 ? <div style={{color:C.textMuted,fontSize:11,padding:"12px 0"}}>No open positions</div>
+              : positions.map(p=><SignalCard key={p.symbol} item={p} isPos={true}/>)}
+          </div>
+        )}
+        {showWatch && (
+          <div>
+            <SecHead label={`👁 Watching`} right={<Pill color={C.textDim}>{watching.length}</Pill>}/>
+            {watching.slice(0,10).map(s=><SignalCard key={s.symbol} item={s}/>)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POSITIONS PANEL
+// ─────────────────────────────────────────────────────────────────────────────
+const PanelPositions = ({d}) => {
+  const {positions, closed} = d;
+  const capital = parseFloat(d.config?.total_capital||200000);
+  const invested= positions.reduce((s,p)=>s+(p.invested_value||0),0);
+  const curVal  = positions.reduce((s,p)=>s+(p.current_value||0),0);
+  const pnl     = curVal - invested;
+  const wins    = closed.filter(t=>(t.realized_pnl||0)>0);
+  const losses  = closed.filter(t=>(t.realized_pnl||0)<0);
+  const avgWin  = wins.length>0 ? wins.reduce((s,t)=>s+(t.pnl_pct||0),0)/wins.length : 0;
+  const avgLoss = losses.length>0 ? losses.reduce((s,t)=>s+(t.pnl_pct||0),0)/losses.length : 0;
+
+  const stratPerf = useMemo(()=>{
+    const m={};
+    closed.forEach(t=>{
+      if(!m[t.strategy]) m[t.strategy]={w:0,l:0,pnl:0};
+      if((t.realized_pnl||0)>0) m[t.strategy].w++; else m[t.strategy].l++;
+      m[t.strategy].pnl += t.realized_pnl||0;
+    });
+    return Object.entries(m).map(([s,v])=>({name:s,pnl:v.pnl,wr:v.w+v.l>0?v.w/(v.w+v.l)*100:0,w:v.w,l:v.l}));
+  },[closed]);
+
+  return (
+    <div className="fade" style={{display:"flex",flexDirection:"column",gap:12}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8}}>
+        <KPI label="Total Invested" value={inr(invested)} icon="💰"/>
+        <KPI label="Current Value"  value={inr(curVal)} color={clr(pnl)} icon="📊"/>
+        <KPI label="Unrealized P&L" value={inr(pnl)} color={clr(pnl)} sub={pct(invested>0?pnl/invested*100:0)} icon="📈"/>
+        <KPI label="Avg Win"  value={`+${avgWin.toFixed(1)}%`}  color={C.green} icon="✅"/>
+        <KPI label="Avg Loss" value={`${avgLoss.toFixed(1)}%`}  color={C.red}   icon="❌"/>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 260px",gap:12}}>
+        {/* Positions table */}
+        <Card style={{overflow:"hidden"}}>
+          <SecHead label="Open Positions" right={`${positions.length} active`}/>
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+              <thead>
+                <tr>{["SYMBOL","STRAT","ENTRY","CMP","QTY","INVESTED","P&L","P&L%","SL","LIFECYCLE","ACTION"].map(h=>(
+                  <th key={h} style={{textAlign:"left",padding:"5px 7px",color:C.textMuted,fontSize:8,
+                    letterSpacing:"0.08em",borderBottom:`1px solid ${C.border}`,fontWeight:700,whiteSpace:"nowrap"}}>{h}</th>
+                ))}</tr>
+              </thead>
+              <tbody>
+                {positions.map(p=>(
+                  <tr key={p.symbol} style={{borderBottom:`1px solid ${C.border}`,background:p.pnl_pct>=0?`${C.green}05`:`${C.red}06`}}>
+                    <td style={{padding:"7px",color:C.text,fontWeight:700}}>{p.symbol}</td>
+                    <td style={{padding:"7px"}}><Pill color={sc(p.strategy)}>{p.strategy}</Pill></td>
+                    <td style={{padding:"7px",color:C.textDim}}>₹{p.entry_price}</td>
+                    <td style={{padding:"7px",color:C.text}}>₹{p.current_price}</td>
+                    <td style={{padding:"7px",color:C.textDim}}>{p.actual_qty}</td>
+                    <td style={{padding:"7px",color:C.textDim}}>{inr(p.invested_value)}</td>
+                    <td style={{padding:"7px",color:clr(p.unrealized_pnl),fontWeight:700}}>{inr(p.unrealized_pnl)}</td>
+                    <td style={{padding:"7px",color:clr(p.pnl_pct),fontWeight:700}}>{pct(p.pnl_pct)}</td>
+                    <td style={{padding:"7px",color:C.red}}>₹{p.active_sl}</td>
+                    <td style={{padding:"7px",color:C.accent,fontSize:9}}>{p.lifecycle}</td>
+                    <td style={{padding:"7px"}}>
+                      <Pill color={(p.action_required||"").includes("EXIT")?C.red:(p.action_required||"").includes("ADD")?C.green:C.textDim}>
+                        {p.action_required||"HOLD"}
+                      </Pill>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+
+        {/* Right column */}
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          <Card>
+            <SecHead label="Strategy Performance"/>
+            {stratPerf.map(s=>(
+              <div key={s.name} style={{marginBottom:12}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:3}}>
+                  <Pill color={sc(s.name)}>{s.name}</Pill>
+                  <span style={{fontSize:10,color:clr(s.pnl),fontWeight:700}}>{inr(s.pnl)}</span>
+                </div>
+                <div style={{display:"flex",gap:10,marginBottom:3}}>
+                  <span style={{fontSize:9,color:C.green}}>{s.w}W</span>
+                  <span style={{fontSize:9,color:C.red}}>{s.l}L</span>
+                  <span style={{fontSize:9,fontWeight:700,color:s.wr>=55?C.green:s.wr>=45?C.yellow:C.red}}>{s.wr.toFixed(0)}%</span>
+                </div>
+                <Bar v={s.wr} max={100}/>
+              </div>
+            ))}
+          </Card>
+          <Card>
+            <SecHead label="Allocation"/>
+            {positions.map(p=>(
+              <div key={p.symbol} style={{marginBottom:7}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
+                  <span style={{fontSize:10,color:C.text}}>{p.symbol}</span>
+                  <span style={{fontSize:9,color:C.textDim}}>{invested>0?((p.invested_value/invested)*100).toFixed(0):0}%</span>
+                </div>
+                <Bar v={invested>0?(p.invested_value/invested)*100:0} max={100} h={3} color={clr(p.unrealized_pnl)}/>
+              </div>
+            ))}
+          </Card>
+        </div>
+      </div>
+
+      {/* Trade history */}
+      <Card>
+        <SecHead label="Trade History" right={`${closed.length} total · ${wins.length}W · ${losses.length}L`}/>
+        <div style={{overflowX:"auto",maxHeight:280,overflowY:"auto"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+            <thead>
+              <tr>{["SYMBOL","STRAT","ENTRY","EXIT","BUY ₹","SELL ₹","P&L","P&L%","REASON"].map(h=>(
+                <th key={h} style={{textAlign:"left",padding:"5px 7px",color:C.textMuted,fontSize:8,
+                  letterSpacing:"0.08em",borderBottom:`1px solid ${C.border}`,fontWeight:700,
+                  position:"sticky",top:0,background:C.card}}>{h}</th>
+              ))}</tr>
+            </thead>
+            <tbody>
+              {closed.map((t,i)=>(
+                <tr key={i} style={{borderBottom:`1px solid ${C.border}`,
+                  background:(t.realized_pnl||0)>=0?`${C.green}05`:`${C.red}05`}}>
+                  <td style={{padding:"6px 7px",color:C.text,fontWeight:700}}>{t.symbol}</td>
+                  <td style={{padding:"6px 7px"}}><Pill color={sc(t.strategy)}>{t.strategy}</Pill></td>
+                  <td style={{padding:"6px 7px",color:C.textDim}}>{(t.entry_date||"").slice(5)}</td>
+                  <td style={{padding:"6px 7px",color:C.textDim}}>{(t.exit_date||"").slice(5)}</td>
+                  <td style={{padding:"6px 7px",color:C.textDim}}>₹{t.entry_price}</td>
+                  <td style={{padding:"6px 7px",color:C.textDim}}>₹{t.exit_price}</td>
+                  <td style={{padding:"6px 7px",color:clr(t.realized_pnl),fontWeight:700}}>{inr(t.realized_pnl)}</td>
+                  <td style={{padding:"6px 7px",color:clr(t.pnl_pct),fontWeight:700}}>{pct(t.pnl_pct)}</td>
+                  <td style={{padding:"6px 7px"}}>
+                    <Pill color={t.exit_reason==="TARGET_HIT"?C.green:t.exit_reason==="STOP_LOSS"?C.red:C.textDim}>
+                      {(t.exit_reason||"—").replace(/_/g," ")}
+                    </Pill>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARKET PANEL
+// ─────────────────────────────────────────────────────────────────────────────
+const PanelMarket = ({d}) => {
+  const {sectors, events} = d;
+  const sorted = [...sectors].sort((a,b)=>(a.rank||99)-(b.rank||99));
+
+  return (
+    <div className="fade" style={{display:"flex",flexDirection:"column",gap:12}}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+        {/* Sector list */}
+        <Card>
+          <SecHead label="Sector Rankings" right={sorted[0]?.date}/>
+          {sorted.map(s=>{
+            const sc2=s.sector_state==="STRONG"?C.green:s.sector_state==="WEAK"?C.red:C.yellow;
+            return (
+              <div key={s.sector} style={{display:"flex",alignItems:"center",gap:8,marginBottom:9,
+                padding:"6px 8px",background:s.top4_flag?`${sc2}08`:C.bg,
+                borderRadius:5,border:`1px solid ${s.top4_flag?sc2+"33":C.border}`}}>
+                <span style={{fontSize:9,color:C.textMuted,width:18,textAlign:"right",flexShrink:0}}>#{s.rank}</span>
+                {s.top4_flag && <Pill color={sc2}>TOP4</Pill>}
+                {!s.top4_flag && <div style={{width:30}}/>}
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
+                    <span style={{fontSize:11,color:C.text}}>{s.sector}</span>
+                    <div style={{display:"flex",gap:10}}>
+                      <span style={{fontSize:9,color:C.textDim}}>RSI {num(s.avg_rsi_daily,0)}</span>
+                      <span style={{fontSize:9,fontWeight:700,color:clr(s.avg_ret_6m)}}>{pct(s.avg_ret_6m*100,0)}</span>
+                      <span style={{fontSize:9,color:sc2}}>{s.sector_state}</span>
+                    </div>
+                  </div>
+                  <Bar v={s.breadth_sma50||0} color={sc2} h={2}/>
+                </div>
+              </div>
+            );
+          })}
+        </Card>
+
+        {/* Heatmap */}
+        <Card>
+          <SecHead label="Heatmap — 6M Return"/>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6}}>
+            {sorted.map(s=>{
+              const ret=s.avg_ret_6m*100;
+              const intensity=Math.min(1,Math.abs(ret)/25);
+              const bg=ret>0?`rgba(0,229,160,${intensity*0.32})`:`rgba(255,61,107,${intensity*0.32})`;
+              const bc=ret>0?C.green:C.red;
+              return (
+                <div key={s.sector} style={{background:bg,border:`1px solid ${bc}33`,borderRadius:6,
+                  padding:"8px 10px",textAlign:"center"}}>
+                  <div style={{fontSize:8,color:C.textMuted,marginBottom:2}}>{s.sector}</div>
+                  <div style={{fontSize:15,fontWeight:700,color:bc}}>{pct(ret,0)}</div>
+                  <div style={{fontSize:8,color:C.textDim}}>RSI {num(s.avg_rsi_daily,0)}</div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      </div>
+
+      {/* Events */}
+      <Card>
+        <SecHead label="Event Calendar" right={`${events.length} active`}/>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(250px,1fr))",gap:8}}>
+          {events.map(e=>{
+            const bc=e.event_bias==="POSITIVE"?C.green:e.event_bias==="NEGATIVE"?C.red:C.yellow;
+            return (
+              <div key={e.id} style={{background:C.bg,border:`1px solid ${bc}33`,borderRadius:6,padding:"10px 12px"}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                  <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                    <Pill color={bc}>{e.event_bias||"MIXED"}</Pill>
+                    <Pill color={C.textDim}>{e.event_category}</Pill>
+                    {e.priority===1 && <Pill color={C.red}>HIGH</Pill>}
+                  </div>
+                  <span style={{fontSize:9,color:C.textMuted,marginLeft:8,flexShrink:0}}>{e.start_date}</span>
+                </div>
+                <div style={{fontSize:12,color:C.text,fontWeight:600,marginBottom:3}}>{e.event_name}</div>
+                {e.affected_sectors && <div style={{fontSize:9,color:C.textMuted,marginBottom:3}}>Sectors: {e.affected_sectors}</div>}
+                {e.notes && <div style={{fontSize:10,color:C.textDim,borderTop:`1px solid ${C.border}`,paddingTop:4,marginTop:4}}>{e.notes}</div>}
+                <div style={{marginTop:6,height:2,background:C.border,borderRadius:1}}>
+                  <div style={{width:e.event_intensity==="HIGH"?"100%":e.event_intensity==="MEDIUM"?"60%":"30%",
+                    height:"100%",background:bc,borderRadius:1}}/>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ANALYTICS PANEL
+// ─────────────────────────────────────────────────────────────────────────────
+const PanelAnalytics = ({d}) => {
+  const {closed, msl} = d;
+  const capital = parseFloat(d.config?.total_capital||200000);
+
+  const {curve, maxDD, finalVal} = useMemo(()=>{
+    const sorted=[...closed].sort((a,b)=>new Date(a.exit_date||0)-new Date(b.exit_date||0));
+    let running=capital, peak=capital, maxDD=0;
+    const curve=sorted.map(t=>{
+      running+=t.realized_pnl||0;
+      if(running>peak) peak=running;
+      const dd=peak>0?(peak-running)/peak*100:0;
+      if(dd>maxDD) maxDD=dd;
+      return {date:t.exit_date||"",value:running,drawdown:dd};
+    });
+    return {curve, maxDD, finalVal:running};
+  },[closed,capital]);
+
+  const wins=closed.filter(t=>(t.realized_pnl||0)>0);
+  const losses=closed.filter(t=>(t.realized_pnl||0)<0);
+  const totalPnl=closed.reduce((s,t)=>s+(t.realized_pnl||0),0);
+  const wr=closed.length>0?(wins.length/closed.length)*100:0;
+  const expectancy=closed.length>0?totalPnl/closed.length:0;
+
+  const stratBar = useMemo(()=>{
+    const m={};
+    closed.forEach(t=>{ if(!m[t.strategy]) m[t.strategy]=0; m[t.strategy]+=t.realized_pnl||0; });
+    return Object.entries(m).map(([name,pnl])=>({name,value:pnl,color:pnl>=0?C.green:C.red}));
+  },[closed]);
+
+  const monthBar = useMemo(()=>{
+    const m={};
+    closed.forEach(t=>{
+      const mo=(t.exit_date||"").slice(0,7);
+      if(!m[mo]) m[mo]=0;
+      m[mo]+=t.realized_pnl||0;
+    });
+    return Object.entries(m).sort().map(([d,v])=>({name:d.slice(5),value:v,color:v>=0?C.green:C.red}));
+  },[closed]);
+
+  return (
+    <div className="fade" style={{display:"flex",flexDirection:"column",gap:12}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8}}>
+        <KPI label="Total Trades"  value={closed.length} icon="📋"/>
+        <KPI label="Win Rate"      value={`${wr.toFixed(1)}%`} color={wr>=55?C.green:wr>=45?C.yellow:C.red} icon="🎯"/>
+        <KPI label="Total P&L"     value={inr(totalPnl)} color={clr(totalPnl)} icon="💰"/>
+        <KPI label="Max Drawdown"  value={`${maxDD.toFixed(1)}%`} color={maxDD>15?C.red:maxDD>8?C.yellow:C.green} icon="📉"/>
+        <KPI label="Expectancy"    value={inr(expectancy)} sub="avg per trade" color={clr(expectancy)} icon="⚡"/>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 300px",gap:8,alignItems:"start",marginBottom:0}}>
+        <div style={{display:"flex",flexDirection:"column",gap:10}}>
+          <Card style={{alignSelf:"start"}}>
+            <SecHead label="Equity Curve" right={`${closed.length} trades`}/>
+            {curve.length>=2
+              ? <AreaChart data={curve} height={150} color={C.accent} xKey="date" yKey="value"/>
+              : <div style={{height:150,display:"flex",alignItems:"center",justifyContent:"center",color:C.textMuted,fontSize:11}}>No data yet</div>
+            }
+          </Card>
+          <Card>
+            <SecHead label="Drawdown"/>
+            {curve.length>=2
+              ? <AreaChart data={curve} height={80} color={C.red} xKey="date" yKey="drawdown"
+                  yFormat={v=>`-${v.toFixed(0)}%`}/>
+              : <div style={{height:80}}/>
+            }
+          </Card>
+          <Card>
+            <SecHead label="Monthly P&L"/>
+            {monthBar.length>0
+              ? <BarChart data={monthBar} height={80} xKey="name" yKey="value" colorKey="color"/>
+              : <div style={{height:80,display:"flex",alignItems:"center",justifyContent:"center",color:C.textMuted,fontSize:11}}>No data</div>
+            }
+          </Card>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:10}}>
+          <Card>
+            <SecHead label="Strategy P&L"/>
+            {stratBar.length>0
+              ? <BarChart data={stratBar} height={100} xKey="name" yKey="value" colorKey="color"/>
+              : <div style={{height:100}}/>
+            }
+          </Card>
+          <Card>
+            <SecHead label="Win / Loss"/>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+              <div style={{textAlign:"center",padding:"10px",background:`${C.green}11`,borderRadius:6,border:`1px solid ${C.green}22`}}>
+                <div style={{fontSize:24,fontWeight:700,color:C.green}}>{wins.length}</div>
+                <div style={{fontSize:9,color:C.textMuted}}>WINS</div>
+              </div>
+              <div style={{textAlign:"center",padding:"10px",background:`${C.red}11`,borderRadius:6,border:`1px solid ${C.red}22`}}>
+                <div style={{fontSize:24,fontWeight:700,color:C.red}}>{losses.length}</div>
+                <div style={{fontSize:9,color:C.textMuted}}>LOSSES</div>
+              </div>
+            </div>
+            <div style={{height:8,background:C.border,borderRadius:4,overflow:"hidden",marginBottom:4}}>
+              <div style={{width:`${closed.length>0?wr:0}%`,height:"100%",
+                background:`linear-gradient(90deg,${C.green},${C.accent})`,borderRadius:4}}/>
+            </div>
+            <div style={{fontSize:9,color:C.textMuted,textAlign:"center"}}>{wr.toFixed(1)}% win rate</div>
+          </Card>
+          <Card>
+            <SecHead label="Risk Metrics"/>
+            {[
+              ["Max Drawdown",`${maxDD.toFixed(1)}%`,maxDD>15?C.red:maxDD>8?C.yellow:C.green],
+              ["Best Trade",  inr(Math.max(...closed.map(t=>t.realized_pnl||0))), C.green],
+              ["Worst Trade", inr(Math.min(...closed.map(t=>t.realized_pnl||0))), C.red],
+              ["Avg Win",     `+${(wins.length>0?wins.reduce((s,t)=>s+(t.pnl_pct||0),0)/wins.length:0).toFixed(1)}%`, C.green],
+              ["Avg Loss",    `${(losses.length>0?losses.reduce((s,t)=>s+(t.pnl_pct||0),0)/losses.length:0).toFixed(1)}%`, C.red],
+            ].map(([k,v,c])=>(
+              <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${C.border}`}}>
+                <span style={{fontSize:10,color:C.textMuted}}>{k}</span>
+                <span style={{fontSize:10,fontWeight:700,color:c}}>{v}</span>
+              </div>
+            ))}
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INTELLIGENCE PANEL
+// ─────────────────────────────────────────────────────────────────────────────
+const PanelIntelligence = ({d}) => {
+  const phase = parseInt(d.config?.autonomy_phase||0);
+  return (
+    <div className="fade" style={{display:"flex",flexDirection:"column",gap:12}}>
+      {phase < 1 ? (
+        <Card>
+          <div style={{textAlign:"center",padding:"24px 16px"}}>
+            <div style={{fontSize:40,marginBottom:12}}>🧠</div>
+            <div style={{fontSize:16,fontWeight:800,color:C.yellow,fontFamily:"'Syne',sans-serif",marginBottom:8}}>
+              Intelligence Layer — Phase 1
+            </div>
+            <div style={{fontSize:11,color:C.textDim,marginBottom:20,lineHeight:1.7,maxWidth:520,margin:"0 auto 20px"}}>
+              Activate Phase 1 to unlock AI conviction analysis, FII/DII flow monitoring, global cues tracking, independent pattern scanner, and web scraping fallback.
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,maxWidth:540,margin:"0 auto 20px"}}>
+              {[["🤖","Multi-LLM Support","Claude, GPT, Gemini,\nDeepSeek, Grok, Copilot"],
+                ["📊","Free ML Fallback","Trains on your 54\nclosed trades"],
+                ["🌐","Web Scraping","NSE/Moneycontrol/BSE\nsentiment — free"],
+                ["💹","FII/DII Flows","Daily institutional\nflow from NSE"],
+                ["🌏","Global Cues","Gift Nifty, USD/INR,\nCrude — 8 AM check"],
+                ["🔍","Pattern Scanner","Volume, RS, breakout\nbeyond rule engine"],
+              ].map(([icon,title,desc])=>(
+                <div key={title} style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:6,padding:"12px 10px",textAlign:"center"}}>
+                  <div style={{fontSize:20,marginBottom:4}}>{icon}</div>
+                  <div style={{fontSize:10,fontWeight:700,color:C.text,marginBottom:3}}>{title}</div>
+                  <div style={{fontSize:9,color:C.textMuted,lineHeight:1.4,whiteSpace:"pre-line"}}>{desc}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{fontSize:10,color:C.textMuted}}>
+              Set <code style={{color:C.accent,background:C.card,padding:"1px 6px",borderRadius:3}}>autonomy_phase = 1</code> in Settings after Phase 0 validation.
+            </div>
+          </div>
+        </Card>
+      ) : (
+        <div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:12}}>
+            <KPI label="AI Provider"    value={d.config?.ai_provider||"disabled"} icon="🤖"/>
+            <KPI label="ML Model"       value={d.config?.ai_fallback_ml==="true"?"Active":"Disabled"}
+              color={d.config?.ai_fallback_ml==="true"?C.green:C.textDim} icon="📊"/>
+            <KPI label="Daily Budget"   value={`₹${d.config?.ai_daily_budget_inr||200}`} icon="💰"/>
+          </div>
+          <Card><SecHead label="AI Conviction Queue"/>
+            <div style={{color:C.textMuted,fontSize:11,padding:"16px 0",textAlign:"center"}}>
+              AI conviction analysis will appear here once the backend is configured with an API key.
+            </div>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SETTINGS PANEL
+// ─────────────────────────────────────────────────────────────────────────────
+const PanelSettings = ({d}) => {
+  const [cfg, setCfg] = useState({...d.config});
+  const [flash, setFlash] = useState("");
+
+  const save = async (k,v) => {
+    const sv = String(v);
+    setCfg(c=>({...c,[k]:sv}));
+    await saveCfg(k, sv);
+    setFlash(k);
+    setTimeout(()=>setFlash(""),1200);
+  };
+
+  const Tog = ({k}) => {
+    const on = cfg[k]==="true";
+    return <Toggle on={on} onChange={v=>save(k, v?"true":"false")}/>;
+  };
+  const Num = ({k,min,max}) => (
+    <input type="number" value={cfg[k]||""} min={min} max={max}
+      onChange={e=>save(k,e.target.value)}
+      style={{width:60,background:C.card2,border:`1px solid ${C.border2}`,borderRadius:4,
+        color:C.text,fontSize:11,padding:"3px 7px",textAlign:"center"}}/>
+  );
+  const Sel = ({k,opts}) => (
+    <select value={cfg[k]||""} onChange={e=>save(k,e.target.value)}
+      style={{background:C.card2,border:`1px solid ${C.border2}`,borderRadius:4,
+        color:C.text,fontSize:11,padding:"3px 8px"}}>
+      {opts.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}
+    </select>
+  );
+  const Row = ({label,sub,children}) => (
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+      padding:"7px 0",borderBottom:`1px solid ${C.border}`}}>
+      <div>
+        <div style={{fontSize:11,color:C.text}}>{label}</div>
+        {sub && <div style={{fontSize:9,color:C.textMuted,marginTop:1}}>{sub}</div>}
+      </div>
+      {children}
+    </div>
+  );
+  const Sec = ({title,children}) => (
+    <Card style={{marginBottom:10}}>
+      <div style={{fontSize:9,color:C.textMuted,textTransform:"uppercase",letterSpacing:"0.1em",
+        fontWeight:700,marginBottom:12,paddingBottom:8,borderBottom:`1px solid ${C.border}`}}>{title}</div>
+      {children}
+    </Card>
+  );
+
+  const phase = parseInt(cfg.autonomy_phase||0);
+  const phases = ["0 · Operational","1 · Intelligence","2 · Kite Prices","3 · Supervised","4 · Autonomous"];
+
+  return (
+    <div className="fade">
+      {flash && <div style={{position:"fixed",bottom:20,right:20,zIndex:999,
+        background:C.green,color:C.bg,borderRadius:6,padding:"8px 16px",fontSize:11,fontWeight:700}}>✓ Saved</div>}
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+        <div>
+          {/* Phase bar */}
+          <Card style={{marginBottom:10}}>
+            <SecHead label="Autonomy Phase Progression"/>
+            <div style={{display:"flex",gap:0,marginBottom:10}}>
+              {phases.map((p,i)=>(
+                <div key={i} style={{flex:1,textAlign:"center",padding:"5px 3px",
+                  background:i===phase?`${C.accent}22`:i<phase?`${C.green}11`:"transparent",
+                  border:`1px solid ${i===phase?C.accent:i<phase?C.green:C.border}`,
+                  borderRadius:i===0?"4px 0 0 4px":i===phases.length-1?"0 4px 4px 0":"0",
+                  marginLeft:i>0?-1:0}}>
+                  <div style={{fontSize:8,color:i===phase?C.accent:i<phase?C.green:C.textMuted,fontWeight:700}}>{p}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{fontSize:10,color:C.textDim}}>
+              {["Phase 0: Sheet ingestion + signals + frontend live.",
+                "Phase 1: AI enrichment, FII/DII, global cues, scanner.",
+                "Phase 2: Kite live prices. Sheet becomes read-only.",
+                "Phase 3: Trade execution via Telegram approval.",
+                "Phase 4: Full autonomy with guardrails + self-evolution."][phase]}
+            </div>
+          </Card>
+
+          <Sec title="Position Management">
+            <Row label="Max positions — RISK ON"   sub="Max open in bull market"><Num k="max_positions_risk_on" min={4} max={12}/></Row>
+            <Row label="Max positions — NEUTRAL"                                ><Num k="max_positions_neutral" min={4} max={10}/></Row>
+            <Row label="Max positions — RISK OFF"  sub="Capital protection mode"><Num k="max_positions_risk_off" min={3} max={8}/></Row>
+            <Row label="Block BUY in RISK OFF"     sub="Off = show with warning only"><Tog k="block_buys_risk_off"/></Row>
+            <Row label="Max sector concentration %" sub="Max % in single sector"><Num k="max_sector_concentration" min={15} max={40}/></Row>
+            <Row label="Total Capital (₹)"         sub="Used for P&L %"><Num k="total_capital" min={50000} max={10000000}/></Row>
+          </Sec>
+
+          <Sec title="Signal Filters">
+            <Row label="Min score to show" sub="Signals below hidden"><Num k="min_score_to_show" min={0} max={100}/></Row>
+            <Row label="Show WATCHING stocks"><Tog k="show_watching_stocks"/></Row>
+            <Row label="BUY threshold %" sub="Entry vs price tolerance"><Num k="buy_candidate_threshold_pct" min={0.1} max={3}/></Row>
+          </Sec>
+        </div>
+
+        <div>
+          <Sec title="AI Configuration">
+            <Row label="Active Provider" sub="No code change needed">
+              <Sel k="ai_provider" opts={[
+                {v:"disabled",l:"Disabled"},{v:"claude",l:"Claude (Anthropic)"},
+                {v:"openai",l:"ChatGPT (OpenAI)"},{v:"gemini",l:"Gemini (Google)"},
+                {v:"deepseek",l:"DeepSeek"},{v:"grok",l:"Grok (xAI)"},
+                {v:"copilot",l:"Copilot (Azure)"},{v:"ml",l:"ML Model (Free)"},
+              ]}/>
+            </Row>
+            <Row label="ML fallback"         sub="Free — trained on your trades"><Tog k="ai_fallback_ml"/></Row>
+            <Row label="Web scraping fallback" sub="Free — NSE/Moneycontrol news"><Tog k="ai_fallback_scraping"/></Row>
+            <Row label="Daily AI budget (₹)"  sub="0 = unlimited"><Num k="ai_daily_budget_inr" min={0} max={2000}/></Row>
+            <Row label="Max stocks/day for AI"><Num k="ai_max_stocks_per_day" min={5} max={50}/></Row>
+          </Sec>
+
+          <Sec title="System">
+            <Row label="Telegram alerts"><Tog k="telegram_alerts_enabled"/></Row>
+            <Row label="Kill Switch" sub="Halts ALL pipeline activity">
+              <button onClick={()=>save("master_kill_switch",cfg.master_kill_switch==="true"?"false":"true")}
+                style={{padding:"5px 12px",borderRadius:4,fontSize:9,fontWeight:700,cursor:"pointer",
+                  background:cfg.master_kill_switch==="true"?C.red:`${C.red}22`,
+                  border:`1px solid ${C.red}`,color:cfg.master_kill_switch==="true"?C.bg:C.red}}>
+                {cfg.master_kill_switch==="true"?"⛔ ACTIVE — DEACTIVATE":"⛔ ACTIVATE KILL SWITCH"}
+              </button>
+            </Row>
+          </Sec>
+
+          <Card>
+            <SecHead label="Data Connection"/>
+            <div style={{fontSize:10,color:C.textMuted,marginBottom:8}}>
+              Open this HTML file in Notepad and add near the bottom:
+            </div>
+            <div style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:4,
+              padding:"8px 10px",fontSize:10,color:C.accent,lineHeight:1.8}}>
+              {"<script>\n  window.SUPABASE_URL = \"https://...\";\n  window.SUPABASE_KEY = \"anon-key\";\n<" + "/script>"}
+            </div>
+            <div style={{marginTop:8,display:"flex",justifyContent:"space-between"}}>
+              <span style={{fontSize:9,color:C.textMuted}}>Status</span>
+              <span style={{fontSize:9,fontWeight:700,color:window.SUPABASE_URL?C.green:C.yellow}}>
+                {window.SUPABASE_URL ? "✓ Connected to Supabase" : "Demo mode — sample data"}
+              </span>
+            </div>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NAV + APP
+// ─────────────────────────────────────────────────────────────────────────────
+const NAV = [
+  {id:"dashboard",  icon:"◈", label:"Dashboard"},
+  {id:"signals",    icon:"⚡",label:"Signals"},
+  {id:"positions",  icon:"◉", label:"Positions"},
+  {id:"market",     icon:"⬡", label:"Market"},
+  {id:"analytics",  icon:"∿", label:"Analytics"},
+  {id:"intelligence",icon:"⬡",label:"Intelligence"},
+  {id:"settings",   icon:"⚙", label:"Settings"},
+];
+
+function App() {
+  const [panel, setPanel] = useState("dashboard");
+  const [loading, setLoading] = useState(true);
+  const [time, setTime] = useState(new Date());
+  const [d, setD] = useState({
+    regime:null, positions:[], msl:[], sectors:[], industries:[],
+    events:[], signals:[], closed:[], config:{}, lastDate:null
+  });
+
+  useEffect(()=>{ const t=setInterval(()=>setTime(new Date()),1000); return()=>clearInterval(t); },[]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    
+    // ── Wait for Supabase to finish loading ──
+    let waited = 0;
+    while (!sbReady && waited < 5000) {
+      await new Promise(r => setTimeout(r, 100));
+      waited += 100;
+    }
+    // ────────────────────────────────────────
+    const [regimeRows, latestDate] = await Promise.all([
+      qry("market_regime","*",{},{col:"date",asc:false},1),
+      (async()=>{ if(!sb) return null; const {data}=await sb.from("master_shortlist").select("date").order("date",{ascending:false}).limit(1); return data?.[0]?.date||null; })()
+    ]);
+    const [mslRows, posRows, secRows, indRows, evtRows, closedRows, cfgRows] = await Promise.all([
+      qry("master_shortlist","*",{date:latestDate},{col:"final_score",asc:false}, 5000),
+      qry("open_positions","*",{},{col:"entry_date",asc:false}, 500),
+      qry("sector_strength","*",{},{col:"rank",asc:true}, 500),
+      qry("industry_strength","*",{},{col:"rank",asc:true}, 500),
+      qry("event_calendar","*",{is_active:true},{col:"start_date",asc:true}, 5000),
+      qry("closed_positions","*",{},{col:"exit_date",asc:false},5000),
+      qry("system_config","key,value"),
+    ]);
+    
+    const config = cfgRows ? Object.fromEntries(cfgRows.map(r=>[r.key,r.value])) : {...DEMO_CFG};
+    setD({
+      regime: regimeRows?.[0] || DEMO_REGIME,
+      msl:    mslRows || DEMO_MSL,
+      positions: posRows || DEMO_POS,
+      sectors: secRows || DEMO_SECTORS,
+      industries: indRows || [],
+      events: evtRows || DEMO_EVENTS,
+      closed: closedRows || DEMO_CLOSED,
+      config,
+      lastDate: latestDate,
+    });
+    setLoading(false);
+  }, []);
+
+  useEffect(()=>{ load(); },[load]);
+
+  const regime = d.regime;
+  const rC = {"RISK ON":C.green,"NEUTRAL":C.yellow,"RISK OFF":C.red}[regime?.regime]||C.textDim;
+  const phase = parseInt(d.config?.autonomy_phase||0);
+  const phaseLabels = ["MANUAL","INTEL","KITE","SUPER","AUTO"];
+  const buyCnt = d.msl.filter(r=>r.position_state==="BUY_CANDIDATE").length;
+  const exitCnt = d.positions.filter(p=>(p.action_required||"").toUpperCase().includes("EXIT")).length;
+  const kills = d.config?.master_kill_switch === "true";
+
+  const panels = {
+    dashboard:   <PanelDashboard    d={d}/>,
+    signals:     <PanelSignals      d={d}/>,
+    positions:   <PanelPositions    d={d}/>,
+    market:      <PanelMarket       d={d}/>,
+    analytics:   <PanelAnalytics    d={d}/>,
+    intelligence:<PanelIntelligence d={d}/>,
+    settings:    <PanelSettings     d={d}/>,
+  };
+
+  const istStr = time.toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour12:false,
+    hour:"2-digit",minute:"2-digit",second:"2-digit"});
+  const dateStr = time.toLocaleDateString("en-IN",{timeZone:"Asia/Kolkata",
+    day:"2-digit",month:"short",year:"numeric"});
+
+  return (
+    <div style={{display:"flex",width:"100vw",height:"100vh",background:C.bg,overflow:"hidden"}}>
+
+      {/* ── Sidebar ── */}
+      <div style={{width:186,flexShrink:0,background:C.surface,borderRight:`1px solid ${C.border}`,
+        display:"flex",flexDirection:"column",height:"100vh"}}>
+        {/* Logo */}
+        <div style={{padding:"16px 14px",borderBottom:`1px solid ${C.border}`}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:kills?6:0}}>
+            <div style={{width:28,height:28,borderRadius:6,flexShrink:0,
+              background:`linear-gradient(135deg,${C.accent},${C.purple})`,
+              display:"flex",alignItems:"center",justifyContent:"center",fontSize:13}}>◈</div>
+            <div>
+              <div style={{fontSize:14,fontWeight:800,color:C.text,fontFamily:"'Syne',sans-serif",letterSpacing:"0.04em",lineHeight:1}}>TRADEOS</div>
+              <div style={{fontSize:7,color:C.textMuted,letterSpacing:"0.14em",fontFamily:"'Space Grotesk',sans-serif",fontWeight:600,textTransform:"uppercase"}}>v6 · INTELLIGENCE</div>
+            </div>
+          </div>
+          {kills && <div style={{background:`${C.red}22`,border:`1px solid ${C.red}44`,borderRadius:3,
+            padding:"2px 7px",fontSize:8,color:C.red,fontWeight:700,textAlign:"center"}}>⛔ KILL SWITCH ACTIVE</div>}
+        </div>
+
+        {/* Nav */}
+        <nav style={{flex:1,padding:"10px 8px",overflowY:"auto"}}>
+          {NAV.map(item=>{
+            const active = panel===item.id;
+            const badge  = item.id==="signals"&&buyCnt>0 ? buyCnt : item.id==="positions"&&exitCnt>0 ? exitCnt : 0;
+            return (
+              <button key={item.id} onClick={()=>setPanel(item.id)} style={{
+                width:"100%",display:"flex",alignItems:"center",justifyContent:"space-between",
+                padding:"7px 9px",marginBottom:2,borderRadius:5,
+                background:active?`${C.accent}18`:"transparent",
+                border:`1px solid ${active?C.accent+"44":"transparent"}`,
+                color:active?C.accent:C.textDim,
+                cursor:"pointer",transition:"all .15s",fontSize:11,fontWeight:active?700:400}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:11,opacity:.6}}>{item.icon}</span>
+                  <span>{item.label}</span>
+                </div>
+                {badge>0&&<span style={{background:C.yellow,color:C.bg,borderRadius:9,
+                  padding:"0 5px",fontSize:8,fontWeight:700}}>{badge}</span>}
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Status footer */}
+        <div style={{padding:"10px 14px",borderTop:`1px solid ${C.border}`}}>
+          <div style={{fontSize:8,color:C.textMuted,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:6}}>System</div>
+          {[
+            ["PHASE", `${phase} / ${phaseLabels[phase]}`, phase===4?C.green:phase>=2?C.accent:C.yellow],
+            ["REGIME", regime?.regime||"—", rC],
+            ["MODE", window.SUPABASE_URL?"LIVE":"DEMO", window.SUPABASE_URL?C.green:C.yellow],
+          ].map(([k,v,c])=>(
+            <div key={k} style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+              <span style={{fontSize:9,color:C.textMuted}}>{k}</span>
+              <span style={{fontSize:9,fontWeight:700,color:c}}>{v}</span>
+            </div>
+          ))}
+          <div style={{marginTop:6}}>
+            <div style={{fontSize:11,fontWeight:600,color:C.textDim,fontVariantNumeric:"tabular-nums"}}>{istStr} IST</div>
+            <div style={{fontSize:9,color:C.textMuted}}>{dateStr}</div>
+          </div>
+          {d.lastDate && <div style={{fontSize:8,color:C.textMuted,marginTop:3}}>Data: {d.lastDate}</div>}
+          <button onClick={load} style={{marginTop:6,width:"100%",padding:"3px",borderRadius:4,
+            background:C.border,border:"none",color:C.textDim,fontSize:9,cursor:"pointer"}}>
+            ↻ Refresh
+          </button>
+        </div>
+      </div>
+
+      {/* ── Main ── */}
+      <div style={{flex:1,display:"flex",flexDirection:"column",height:"100vh",overflow:"hidden"}}>
+        {/* Topbar */}
+        <div style={{height:44,background:C.surface,borderBottom:`1px solid ${C.border}`,
+          display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 18px",flexShrink:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <span style={{fontSize:14,fontWeight:800,color:C.text,fontFamily:"'Syne',sans-serif",letterSpacing:"0.02em"}}>
+              {NAV.find(n=>n.id===panel)?.label}
+            </span>
+            {!window.SUPABASE_URL && <Pill color={C.yellow}>Demo Mode — add Supabase credentials for live data</Pill>}
+          </div>
+          <div style={{display:"flex",gap:12,alignItems:"center"}}>
+            {regime && (
+              <div style={{display:"flex",alignItems:"center",gap:8,
+                background:`${rC}12`,border:`1px solid ${rC}33`,borderRadius:5,padding:"3px 10px"}}>
+                <div style={{width:5,height:5,borderRadius:"50%",background:rC,animation:"pulse 2s infinite"}}/>
+                <span style={{fontSize:9,fontWeight:700,color:rC}}>{regime.regime}</span>
+                <span style={{fontSize:9,color:C.textDim}}>· Nifty {inr(regime.nifty_price)} · VIX {num(regime.india_vix)}</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Content */}
+        <div style={{flex:1,overflow:"auto",padding:14}}>
+          {loading ? (
+            <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",
+              flexDirection:"column",gap:12}}>
+              <div style={{width:32,height:32,border:`2px solid ${C.border}`,
+                borderTop:`2px solid ${C.accent}`,borderRadius:"50%",animation:"spin 1s linear infinite"}}/>
+              <span style={{color:C.textDim,fontSize:11}}>Loading TradeOS v6...</span>
+            </div>
+          ) : panels[panel]}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
