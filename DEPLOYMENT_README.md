@@ -21,6 +21,7 @@ Your Google Sheet (Brain)
    Full Autonomy + Self-Evolution
 ```
 
+#testing for git upload# 
 ---
 
 ## PHASE 0 — Operational (Do this first)
