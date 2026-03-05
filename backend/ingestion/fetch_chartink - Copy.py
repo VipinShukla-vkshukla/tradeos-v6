@@ -8,12 +8,17 @@ import sys
 import time
 import pandas as pd
 from loguru import logger
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import GOOGLE_SHEET_ID, GOOGLE_CREDENTIALS
-
+from config import get_supabase
+supabase = get_supabase()
+import re
+from datetime import datetime
 from googleapiclient.discovery import build
 from google.oauth2.service_account import Credentials
+from playwright.sync_api import sync_playwright
+import requests as req_lib
+
 
 CHARTINK_EMAIL    = os.getenv("CHARTINK_EMAIL", "")
 CHARTINK_PASSWORD = os.getenv("CHARTINK_PASSWORD", "")
@@ -58,9 +63,6 @@ def get_widget_box(page):
 
 
 def fetch_chartink_csv() -> pd.DataFrame | None:
-    from playwright.sync_api import sync_playwright
-    import requests as req_lib
-
     with sync_playwright() as p:
         headless = os.getenv("CI", "false").lower() == "true"
         browser = p.chromium.launch(headless=headless)
@@ -112,27 +114,164 @@ def fetch_chartink_csv() -> pd.DataFrame | None:
                 if "csv" in url or "text/csv" in ct or "download" in url:
                     csv_urls.append(response.url)
                     logger.info(f"[NET] {response.url}")
+            page.on("response", lambda res: logger.info(f"[RES] {res.status} {res.url} | CT: {res.headers.get('content-type','')}") if "chartink" in res.url else None)
             page.on("response", on_response)
 
-            # ── Step 6: Glide mouse → header title → CSV button ───────────────
-            title_x = box["x"] + 60
-            title_y = box["y"] + 15
-            csv_x   = box["x"] + box["width"] - 50
-            csv_y   = box["y"] + 15
+            def on_all_requests(request):
+                if any(k in request.url.lower() for k in ["csv", "export", "download", "widget"]):
+                    logger.info(f"[REQ] {request.method} {request.url}")
+            page.on("request", on_all_requests)
 
-            logger.info(f"Moving mouse: neutral → title ({title_x:.0f},{title_y:.0f}) → CSV ({csv_x:.0f},{csv_y:.0f})")
-            page.mouse.move(400, 50, steps=5)
-            time.sleep(0.2)
-            page.mouse.move(title_x, title_y, steps=30)
-            time.sleep(2)
-            page.mouse.move(csv_x, csv_y, steps=30)
-            time.sleep(1)
+             # ── Step 6: Headless-safe CSV trigger ─────────────────────────────
+            # In headless mode, mouse hover doesn't trigger CSS :hover reliably.
+            # Strategy: JS dispatchEvent to force hover state, then find & click
+            # the CSV button directly without relying on physical mouse movement.
 
-            # ── Step 7: Click & capture download ──────────────────────────────
+            if headless:
+                logger.info("Headless mode: using JS dispatchEvent strategy...")
+
+                # Fire hover events on widget container via JS
+                page.evaluate(f"""
+                    () => {{
+                        const target = "{TARGET_WIDGET}";
+                        const headings = [...document.querySelectorAll('*')]
+                            .filter(el =>
+                                el.childElementCount === 0 &&
+                                el.textContent.trim() === target
+                            );
+                        if (!headings.length) return;
+                        const h = headings[headings.length - 1];
+                        let container = h;
+                        for (let i = 0; i < 12; i++) {{
+                            container = container.parentElement;
+                            if (!container) break;
+                            const r = container.getBoundingClientRect();
+                            if (r.width > 200 && r.height > 100) break;
+                        }}
+                        ['mouseenter','mouseover','mousemove','pointerenter','pointerover']
+                            .forEach(t => container.dispatchEvent(
+                                new MouseEvent(t, {{bubbles:true, cancelable:true, view:window}})
+                            ));
+                    }}
+                """)
+                time.sleep(2)
+
+                # Poll for CSV button up to 15s
+                csv_btn_coords = None
+                for attempt in range(30):
+                    coords = page.evaluate(f"""
+                        () => {{
+                            const target = "{TARGET_WIDGET}";
+                            const headings = [...document.querySelectorAll('*')]
+                                .filter(el =>
+                                    el.childElementCount === 0 &&
+                                    el.textContent.trim() === target
+                                );
+                            if (!headings.length) return null;
+                            const h = headings[headings.length - 1];
+                            let container = h;
+                            for (let i = 0; i < 12; i++) {{
+                                container = container.parentElement;
+                                if (!container) break;
+                                const r = container.getBoundingClientRect();
+                                if (r.width > 200 && r.height > 100) break;
+                            }}
+                            const btn = [...container.querySelectorAll('a,button')]
+                                .find(el => {{
+                                    const r = el.getBoundingClientRect();
+                                    return r.width > 0 && r.height > 0 && (
+                                        /csv/i.test(el.textContent.trim()) ||
+                                        /csv/i.test(el.title || '') ||
+                                        /csv/i.test(el.href || '')
+                                    );
+                                }});
+                            if (!btn) return null;
+                            const r = btn.getBoundingClientRect();
+                            return {{ x: r.x + r.width/2, y: r.y + r.height/2 }};
+                        }}
+                    """)
+                    if coords and coords.get("x", 0) > 0:
+                        csv_btn_coords = coords
+                        logger.info(f"✓ CSV button found at attempt {attempt}: {coords}")
+                        break
+                    # Re-fire hover events every 3 attempts
+                    if attempt % 3 == 2:
+                        page.evaluate(f"""
+                            () => {{
+                                const target = "{TARGET_WIDGET}";
+                                const h = [...document.querySelectorAll('*')]
+                                    .filter(el => el.childElementCount === 0 && el.textContent.trim() === target)
+                                    .pop();
+                                if (!h) return;
+                                let c = h;
+                                for (let i = 0; i < 12; i++) {{
+                                    c = c.parentElement;
+                                    if (!c) break;
+                                    const r = c.getBoundingClientRect();
+                                    if (r.width > 200 && r.height > 100) break;
+                                }}
+                                ['mouseenter','mouseover','mousemove']
+                                    .forEach(t => c.dispatchEvent(
+                                        new MouseEvent(t, {{bubbles:true, cancelable:true, view:window}})
+                                    ));
+                            }}
+                        """)
+                    time.sleep(0.5)
+
+                if not csv_btn_coords:
+                    logger.error("CSV button not found in headless mode")
+                    page.screenshot(path="chartink_headless_debug.png")
+                    return None
+
+                logger.info("Clicking CSV button via coordinates...")
+                
+                with page.expect_download(timeout=15000) as dl_info:
+                    page.mouse.click(csv_btn_coords["x"], csv_btn_coords["y"])
+
+            else:
+                # ── Headed mode (local): physical mouse glide ──────────────────
+                title_x = box["x"] + 60
+                title_y = box["y"] + 15
+                csv_x   = box["x"] + box["width"] - 50
+                csv_y   = box["y"] + 15
+
+                logger.info(f"Moving mouse: neutral → title ({title_x:.0f},{title_y:.0f}) → CSV ({csv_x:.0f},{csv_y:.0f})")
+                page.mouse.move(400, 50, steps=5)
+                time.sleep(0.2)
+                page.mouse.move(title_x, title_y, steps=30)
+                time.sleep(2)
+                page.mouse.move(csv_x, csv_y, steps=30)
+                time.sleep(1)
+
+                # Capture the CSV href before clicking
+            csv_href = page.evaluate(f"""
+                () => {{
+                    const target = "{TARGET_WIDGET}";
+                    const headings = [...document.querySelectorAll('*')]
+                        .filter(el => el.childElementCount === 0 && el.textContent.trim() === target);
+                    if (!headings.length) return null;
+                    const h = headings[headings.length - 1];
+                    let container = h;
+                    for (let i = 0; i < 12; i++) {{
+                        container = container.parentElement;
+                        if (!container) break;
+                        const r = container.getBoundingClientRect();
+                        if (r.width > 200 && r.height > 100) break;
+                    }}
+                    const btn = [...container.querySelectorAll('a,button')]
+                        .find(el => /csv/i.test(el.textContent.trim()) ||
+                                   /csv/i.test(el.title||'') ||
+                                   /csv/i.test(el.href||''));
+                    return btn ? (btn.href || btn.getAttribute('href') || btn.outerHTML.slice(0,200)) : null;
+                }}
+            """)
+            logger.info(f"[CSV HREF] {csv_href}")
+
             logger.info("Clicking CSV button...")
             with page.expect_download(timeout=10000) as dl_info:
                 page.mouse.click(csv_x, csv_y)
 
+            # ── Step 7: Read downloaded CSV ────────────────────────────────────
             download = dl_info.value
             df = pd.read_csv(download.path())
             logger.info(f"✓ CSV downloaded: {len(df)} rows")
@@ -202,7 +341,6 @@ def write_to_sheet(service, df: pd.DataFrame):
 
 def upsert_to_supabase(df: pd.DataFrame):
     """Appends today's Chartink data to Supabase. UNIQUE(date,symbol) prevents duplicates."""
-    from config import supabase
     import math
 
     logger.info(f"Upserting {len(df)} rows to Supabase chartink_raw_data...")
@@ -240,12 +378,30 @@ def upsert_to_supabase(df: pd.DataFrame):
     df = df.rename(columns=col_map)
 
     # Clean NaN → None for Supabase
+    import re
+    from datetime import datetime
+
+    def parse_chartink_date(raw: str) -> str:
+        """Convert "4th Mar'26" → "2026-03-04" """
+        try:
+            clean_d = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', raw.strip())
+            clean_d = clean_d.replace("'", " 20")
+            return datetime.strptime(clean_d.strip(), "%d %b %Y").strftime("%Y-%m-%d")
+        except Exception:
+            from config import today_ist
+            return str(today_ist())
+
     def clean(v):
         if v is None: return None
         if isinstance(v, float) and math.isnan(v): return None
         return v
 
-    rows = [{k: clean(v) for k, v in r.items()} for r in df.to_dict("records")]
+    rows = []
+    for r in df.to_dict("records"):
+        row = {k: clean(v) for k, v in r.items()}
+        if "date" in row and row["date"]:
+            row["date"] = parse_chartink_date(str(row["date"]))
+        rows.append(row)
 
     # Upsert in batches of 100
     for i in range(0, len(rows), 100):

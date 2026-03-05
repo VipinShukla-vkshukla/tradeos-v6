@@ -26,6 +26,9 @@ jobs:
       - name: Install Playwright browsers
         run: playwright install chromium --with-deps
 
+      - name: Install Xvfb
+        run: sudo apt-get install -y xvfb
+
       - name: Create credentials file
         run: |
           mkdir -p backend/credentials
@@ -50,7 +53,10 @@ jobs:
           TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
           TZ: Asia/Kolkata
+          DISPLAY: ':99'
         run: |
+          Xvfb :99 -screen 0 1400x900x24 &
+          sleep 1
           cd backend
           python run_pipeline.py
 
@@ -60,11 +66,4 @@ jobs:
         with:
           name: pipeline-logs-${{ github.run_id }}
           path: backend/logs/
-          retention-days: 7
-      
-      - name: Create credentials file
-        env:
-          GOOGLE_CREDS: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-        run: |
-          mkdir -p backend/credentials
-          echo "$GOOGLE_CREDS" > backend/credentials/service_account.json      
+          retention-days: 7   
