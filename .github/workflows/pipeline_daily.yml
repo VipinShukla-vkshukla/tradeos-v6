@@ -66,4 +66,14 @@ jobs:
         with:
           name: pipeline-logs-${{ github.run_id }}
           path: backend/logs/
-          retention-days: 7   
+          retention-days: 7
+      -
+         name: Upload debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chartink-debug-${{ github.run_id }}
+          path: |
+            backend/chartink_hover_debug.png
+            backend/chartink_debug.png
+          retention-days: 3
