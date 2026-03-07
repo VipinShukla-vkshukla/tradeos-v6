@@ -59,8 +59,10 @@ def main():
     logger.info(f"{'═'*60}")
     logger.info(f"  TradeOS v6 Pipeline | Phase {phase}")
     logger.info(f"{'═'*60}")
+# ── Step definitions ────────────────────────────────────────────────────
+    # All defined here so --step can reference any of them by name.
+    # Lazy imports keep startup fast — each module only loads if the step runs.
 
-    # Lazy imports to avoid loading everything upfront
     def step_fetch_chartink():
         from ingestion.fetch_chartink import main as fn; return fn()
 
@@ -75,6 +77,9 @@ def main():
 
     def step_alerts():
         from alerts.send_alerts import main as fn; return fn()
+    
+    def step_post_trade():
+        from ai.post_trade_analysis import main as fn; return fn()
 
     # Phase 0 steps (always run)
     steps_p0 = [
@@ -86,7 +91,10 @@ def main():
 
     # Phase 1 extras
     steps_p1 = [
-        ("05_alerts",         step_alerts,  False),
+        #("05_post_trade_analysis",  step_post_trade, False),
+        #("06_ai_enrich",            step_ai_enrich,  False),
+        ("07_alerts",               step_alerts,  False),
+        
     ]
 
     all_steps = steps_p0 + (steps_p1 if phase >= 1 else [])

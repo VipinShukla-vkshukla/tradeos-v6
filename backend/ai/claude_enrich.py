@@ -25,10 +25,26 @@ def build_context(msl_row: dict, sd_row: dict, regime: dict, events: list, lesso
     }
 
 
-def get_relevant_lessons(symbol: str, sector: str, sb) -> list:
-    """Fetch lessons relevant to this stock's sector."""
-    rows = sb.table("lessons").select("*").ilike("impacted_sector", f"%{sector}%").limit(3).execute().data
-    return rows
+def get_relevant_lessons(symbol: str, sector: str, strategy: str, lifecycle: str, sb) -> list:
+    # First: same sector + same strategy (most specific)
+    rows = sb.table("lessons").select("scenario_type,root_cause,corrective_rule,what_failed") \
+        .ilike("impacted_sector", f"%{sector}%") \
+        .ilike("scenario_context", f"%{strategy}%") \
+        .order("date", desc=True).limit(2).execute().data
+
+    # Supplement with same lifecycle scenario if under 2 results
+    if len(rows) < 2:
+        extra = sb.table("lessons").select("scenario_type,root_cause,corrective_rule,what_failed") \
+            .ilike("scenario_type", f"%{lifecycle[:4]}%") \
+            .order("date", desc=True).limit(2).execute().data
+        rows += extra
+
+    return rows[:3]
+
+#def get_relevant_lessons(symbol: str, sector: str, sb) -> list:
+#    """Fetch lessons relevant to this stock's sector."""
+#    rows = sb.table("lessons").select("*").ilike("impacted_sector", f"%{sector}%").limit(3).execute().data
+#   return rows
 
 
 def main():

@@ -32,6 +32,24 @@ def _get_provider(name: str):
     factory = providers.get(name)
     return factory() if factory else None
 
+# Build separate stock_data and context dicts before calling analyze()
+stock_data = {
+    "symbol": sym, "sector": sector,
+    "final_score": msl.get("final_score"), "current_price": msl.get("current_price"),
+    "rsi_daily": sd.get("rsi_daily"), "rsi_weekly": sd.get("rsi_weekly"),
+    "adx": sd.get("adx_14"), "vol_ratio": sd.get("vol_ratio"),
+    "delivery_pct": sd.get("delivery_pct"), "atr_pct": sd.get("atr_pct"),
+    "ret_6m": sd.get("ret_6m"), "lifecycle": msl.get("lifecycle"),
+    "eap_action": sig.get("eap_action", "NO_CHANGE"),
+}
+ai_context = {
+    "regime": regime.get("regime", "UNKNOWN"),
+    "fii_flag": sig.get("fii_flag", "NEUTRAL"),
+    "active_events": [e.get("purpose") for e in sym_events],
+    "relevant_lessons": lessons,
+}
+result = analyze(stock_data, ai_context)
+#result = analyze(stock_data, ai_context)   # ← correct call
 
 def analyze(stock_data: dict, context: dict) -> ConvictionResult:
     """
