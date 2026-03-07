@@ -75,6 +75,9 @@ def main():
         
     def step_signals():
         from signals.generate_signals import main as fn; return fn()
+    
+    def step_fii_dii():
+        from ingestion.ingest_fii_dii import main as fn; return fn()
 
     def step_history():
         from history.append_history import main as fn; return fn()
@@ -88,10 +91,11 @@ def main():
     # Phase 0 core steps (must-run for signals/history)
     steps_p0 = [
     ("01_fetch_chartink",   step_fetch_chartink,   True),
-    ("02_ingest_sheets",    step_ingest,           True),
-    ("03_ingest_bhavcopy",  step_ingest_bhavcopy,  False),  # non-fatal: signals can run without it
-    ("04_signals",          step_signals,          True),
-    ("05_history",          step_history,          False),
+    ("02_ingest_bhavcopy",  step_ingest_bhavcopy,  False),  # non-fatal: signals can run without it
+    ("03_ingest_sheets",    step_ingest,           True),
+    ("04_fii_dii",          step_fii_dii,          False),
+    ("05_signals",          step_signals,          True),
+    ("06_history",          step_history,          False),
     ]
 
     # Phase 1 extras
