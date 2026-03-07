@@ -12,7 +12,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import get_supabase, get_config_float, today_ist, check_kill_switch, logger
+from config import get_supabase, cfg_float, today_ist, is_kill_switch_active, logger
 
 NSE_FII_URL = "https://www.nseindia.com/api/fiidiiTradeReact"
 NSE_HEADERS = {
@@ -77,8 +77,8 @@ def compute_rolling_flows(sb, today: date) -> dict:
         n10 = sum(nets[:10]) if len(nets) >= 10 else None
         n20 = sum(nets[:20]) if len(nets) >= 20 else None
 
-        caution_thresh     = get_config_float("fii_caution_threshold",     -2000)
-        accelerator_thresh = get_config_float("fii_accelerator_threshold",  1000)
+        caution_thresh     = cfg_float("fii_caution_threshold",     -2000)
+        accelerator_thresh = cfg_float("fii_accelerator_threshold",  1000)
 
         # Signal logic
         signal = "NEUTRAL"
@@ -101,7 +101,9 @@ def compute_rolling_flows(sb, today: date) -> dict:
                 "fii_net_20d_cumulative": None, "fii_signal": "NEUTRAL"}
 
 def main():
-    check_kill_switch()
+    if is_kill_switch_active():
+        logger.warning("⛔ Kill switch active — FII/DII ingestion skipped")
+        return {"status": "skipped", "reason": "kill_switch"}
     logger.info("FII/DII Ingestion starting")
     sb = get_supabase()
     today = today_ist()
