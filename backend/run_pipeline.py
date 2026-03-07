@@ -78,6 +78,9 @@ def main():
     
     def step_fii_dii():
         from ingestion.ingest_fii_dii import main as fn; return fn()
+    
+    def step_nse_events():
+        from ingestion.ingest_nse_events import main as fn; return fn()
 
     def step_history():
         from history.append_history import main as fn; return fn()
@@ -94,8 +97,9 @@ def main():
     ("02_ingest_bhavcopy",  step_ingest_bhavcopy,  False),  # non-fatal: signals can run without it
     ("03_ingest_sheets",    step_ingest,           True),
     ("04_fii_dii",          step_fii_dii,          False),
-    ("05_signals",          step_signals,          True),
-    ("06_history",          step_history,          False),
+    ("05_nse_events",       step_nse_events,       False),
+    ("06_signals",          step_signals,          True),
+    ("07_history",          step_history,          False),
     ]
 
     # Phase 1 extras

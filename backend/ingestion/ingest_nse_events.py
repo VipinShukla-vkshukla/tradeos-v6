@@ -12,7 +12,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import get_supabase, today_ist, check_kill_switch, logger
+from config import get_supabase, today_ist, is_kill_switch_active, logger  # ✅ correct name
 
 NSE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -66,13 +66,13 @@ def parse_events(raw_events: list, today: date) -> list[dict]:
 
             days_to = (ev_date - today).days
             rows.append({
-                "symbol":       symbol,
-                "company_name": company,
-                "purpose":      purpose,
-                "details":      details,
-                "event_date":   ev_date.isoformat(),
+                "symbol":        symbol,
+                "company_name":  company,
+                "purpose":       purpose,
+                "details":       details,
+                "event_date":    ev_date.isoformat(),
                 "days_to_event": days_to,
-                "source":       "NSE_API",
+                "source":        "NSE_API",
             })
         except Exception as e:
             logger.debug(f"Skipping event row: {e}")
@@ -80,7 +80,10 @@ def parse_events(raw_events: list, today: date) -> list[dict]:
     return rows
 
 def main():
-    check_kill_switch()
+    if is_kill_switch_active():                                              # ✅ correct call
+        logger.warning("⛔ Kill switch active — NSE Events ingestion skipped")
+        return {"status": "skipped", "reason": "kill_switch"}
+
     logger.info("NSE Events Ingestion starting")
     sb = get_supabase()
     today = today_ist()
