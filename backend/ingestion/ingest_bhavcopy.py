@@ -119,7 +119,7 @@ def _clean_numeric(df: pd.DataFrame, cols: list) -> pd.DataFrame:
 
 
 # ── NSE download ──────────────────────────────────────────────────────────
-#def try_nse(trade_date: date, session: requests.Session) -> pd.DataFrame:
+def try_nse(trade_date: date, session: requests.Session) -> pd.DataFrame:
     """
     Download NSE sec_bhavdata_full plain CSV for trade_date.
 
@@ -299,7 +299,7 @@ def try_bse_delivery(trade_date: date, session: requests.Session) -> pd.DataFram
     empty = pd.DataFrame(columns=["symbol", "delivery_qty", "delivery_pct"])
 
     # ── Attempt 1: sec_bhavdata_full (preferred) ──────────────────────────
-    '''try:
+    try:
         ddmmyyyy = trade_date.strftime("%d%m%Y")
         url = NSE_BHAV_URL.format(ddmmyyyy=ddmmyyyy)
         logger.info(f"[DELIVERY] Fetching from NSE sec_bhavdata_full: {url}")
@@ -322,7 +322,7 @@ def try_bse_delivery(trade_date: date, session: requests.Session) -> pd.DataFram
                 logger.info(f"[DELIVERY] ✓ {len(df)} records from sec_bhavdata_full")
                 return df
     except Exception as e:
-        logger.warning(f"[DELIVERY] sec_bhavdata_full attempt failed: {e}")'''
+        logger.warning(f"[DELIVERY] sec_bhavdata_full attempt failed: {e}")
 
     # ── Attempt 2: NSE MTO DAT fallback ──────────────────────────────────
     try:
