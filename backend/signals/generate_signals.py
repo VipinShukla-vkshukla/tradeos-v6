@@ -243,11 +243,13 @@ def generate(run_date: date | None = None) -> list[dict]:
         ind_state    = ind_ctx.get("industry_state", "")
         ind_rsi_d    = ind_ctx.get("avg_rsi_daily")
 
-        # Boost score for top-5 industry
-        if ind_top5:
-            score = (score or 0) + 10
-        if ind_state == "STRONG":
-            score = (score or 0) + 5
+        # Industry rank and state — two scoring dimensions among ~10 total
+        # Gated until industry_strength table has 30+ days of history
+        if cfg("industry_scoring_active") == "true":
+            if ind_top5:
+                score = (score or 0) + 10
+            if ind_state == "STRONG":
+                score = (score or 0) + 5
         sig = {
             "date": str(run_date),
             "symbol": sym,
