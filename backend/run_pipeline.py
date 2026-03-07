@@ -10,6 +10,7 @@ from loguru import logger
 from config import today_ist, is_kill_switch_active, cfg, cfg_bool
 
 
+
 def run_step(name: str, fn, fatal: bool = True) -> dict:
     logger.info(f"\n{'─'*60}")
     logger.info(f"  {name}")
@@ -64,7 +65,7 @@ def main():
     # Lazy imports keep startup fast — each module only loads if the step runs.
     def step_fetch_chartink():
         from ingestion.fetch_chartink import main as fn; return fn()
-
+        
     def step_ingest():
         from ingestion.ingest_sheets import main as fn; return fn()
 
@@ -84,12 +85,13 @@ def main():
     def step_post_trade():
         from ai.post_trade_analysis import main as fn; return fn()
 
-    # Phase 0 steps (always run)
+    # Phase 0 core steps (must-run for signals/history)
     steps_p0 = [
-        ("01_fetch_chartink", step_fetch_chartink, True),
-        ("02_ingest_sheets",  step_ingest,  True),
-        ("03_signals",        step_signals, True),
-        ("04_history",        step_history, False),
+    ("01_fetch_chartink",   step_fetch_chartink,   True),
+    ("02_ingest_sheets",    step_ingest,           True),
+    ("03_ingest_bhavcopy",  step_ingest_bhavcopy,  False),  # non-fatal: signals can run without it
+    ("04_signals",          step_signals,          True),
+    ("05_history",          step_history,          False),
     ]
 
     # Phase 1 extras

@@ -86,7 +86,7 @@ steps = [
 **Test:**
 ```bash
 cd backend
-python run_pipeline.py --step bhavcopy
+python run_pipeline.py --step ingest_bhavcopy
 ```
 
 Expected: `Bhavcopy: upserted 500 rows to stock_data_daily`
