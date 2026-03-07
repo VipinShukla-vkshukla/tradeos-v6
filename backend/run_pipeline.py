@@ -62,13 +62,16 @@ def main():
 # ── Step definitions ────────────────────────────────────────────────────
     # All defined here so --step can reference any of them by name.
     # Lazy imports keep startup fast — each module only loads if the step runs.
-
     def step_fetch_chartink():
         from ingestion.fetch_chartink import main as fn; return fn()
 
     def step_ingest():
         from ingestion.ingest_sheets import main as fn; return fn()
 
+    def step_ingest_bhavcopy():
+        # Script exists in codebase. Wired here as Step 1.1 from deployment README.
+        from ingestion.ingest_bhavcopy import main as fn; return fn()
+        
     def step_signals():
         from signals.generate_signals import main as fn; return fn()
 
