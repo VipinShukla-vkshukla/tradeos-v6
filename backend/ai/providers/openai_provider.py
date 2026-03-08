@@ -1,5 +1,6 @@
 """OpenAI (ChatGPT) Provider"""
 import json
+import re
 from .base_provider import BaseProvider, ConvictionResult, UNKNOWN_RESULT
 
 class OpenAIProvider(BaseProvider):
@@ -18,7 +19,12 @@ class OpenAIProvider(BaseProvider):
                 max_tokens=500,
                 messages=[{"role": "user", "content": self.build_prompt(stock_data, context)}]
             )
-            data = json.loads(resp.choices[0].message.content.strip())
+            raw = resp.choices[0].message.content.strip()
+            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if not json_match:
+                raise ValueError(f"No JSON in response: {raw[:100]}")
+            data = json.loads(json_match.group())
+            
             return ConvictionResult(provider="openai", **{k: data.get(k, "") for k in
                 ["conviction","conviction_reason","catalyst","suggested_action",
                  "strategy_validation","conflicts","ai_note"]},

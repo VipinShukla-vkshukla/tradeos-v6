@@ -1,5 +1,6 @@
 """Google Gemini Provider"""
 import json
+import re
 from .base_provider import BaseProvider, ConvictionResult, UNKNOWN_RESULT
 
 class GeminiProvider(BaseProvider):
@@ -13,9 +14,13 @@ class GeminiProvider(BaseProvider):
         try:
             import google.generativeai as genai
             genai.configure(api_key=self.api_key)
-            model = genai.GenerativeModel("gemini-1.5-flash")
+            model = genai.GenerativeModel("gemini-2.5-flash")
             resp  = model.generate_content(self.build_prompt(stock_data, context))
-            data  = json.loads(resp.text.strip())
+            raw = resp.text.strip()
+            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if not json_match:
+                raise ValueError(f"No JSON in response: {raw[:100]}")
+            data = json.loads(json_match.group())
             return ConvictionResult(provider="gemini", **{k: data.get(k,"") for k in
                 ["conviction","conviction_reason","catalyst","suggested_action",
                  "strategy_validation","conflicts","ai_note"]},

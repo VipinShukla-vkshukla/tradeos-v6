@@ -24,6 +24,14 @@ def load_today_data():
     today = str(today_ist())
 
     stocks = sb.table("stock_data_daily").select("*").eq("date", today).execute().data
+    if not stocks:
+        # Weekend or holiday — use last available trading day
+        latest = sb.table("stock_data_daily").select("date").order("date", desc=True).limit(1).execute().data
+        if latest:
+            last_date = latest[0]["date"]
+            stocks = sb.table("stock_data_daily").select("*").eq("date", last_date).execute().data
+            logger.info(f"No stock_data_daily for {today} — using last trading day {last_date}")
+
     msl    = sb.table("master_shortlist").select("*").eq("date", today).execute().data
     open_p = sb.table("open_positions").select("*").execute().data
     regime = sb.table("market_regime").select("*").eq("date", today).execute().data
@@ -255,22 +263,32 @@ def generate(run_date: date | None = None) -> list[dict]:
             "position_state": position_state,
             "score": score,
             "in_rule_engine": in_engine,
-            "in_scanner": False,  # Phase 1
+            "in_scanner": False,
             "eap_action": eap_action,
             "regime": regime_name,
             "regime_warning": regime_warning,
             "asm_flag": asm_flag,
             "fo_ban_flag": fo_ban_flag,
-            "ai_conviction": None,     # Phase 1
+            "ai_conviction": None,
             "ai_suggested_action": None,
             "ai_provider": None,
             "ai_fallback_used": False,
-            "fii_flag": None,          # Phase 1
+            "fii_flag": None,
             "industry": industry,
             "industry_rank": ind_rank,
             "industry_top5": ind_top5,
             "industry_state": ind_state,
             "industry_avg_rsi": ind_rsi_d,
+            # ── G1 FIX: ML feature columns ──────────────────────
+            "rsi_daily":     stock_map.get(sym, {}).get("rsi_daily"),
+            "rsi_weekly":    stock_map.get(sym, {}).get("rsi_weekly"),
+            "adx":           stock_map.get(sym, {}).get("adx"),
+            "vol_ratio":     stock_map.get(sym, {}).get("vol_ratio"),
+            "delivery_pct":  stock_map.get(sym, {}).get("delivery_pct"),
+            "atr_pct":       stock_map.get(sym, {}).get("atr_pct"),
+            "ret_6m":        stock_map.get(sym, {}).get("ret_6m"),
+            "dist_sma50":    stock_map.get(sym, {}).get("dist_sma50"),
+            "days_in_list":  msl_row.get("days_in_list"),
         }
         signals.append(sig)
 

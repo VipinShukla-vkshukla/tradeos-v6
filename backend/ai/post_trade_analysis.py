@@ -10,8 +10,8 @@ import json
 from datetime import date
 from pathlib import Path
 import re
-from config import cfg, AI_KEYS
-provider_name = cfg("ai_provider", "disabled").lower()
+from config import cfg, AI_KEYS, cfg_float, cfg_int
+
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import get_supabase, today_ist, is_kill_switch_active, logger
@@ -187,7 +187,7 @@ def _call_provider(provider_name: str, ai_keys: dict, prompt: str) -> str:
     elif provider_name == "gemini":
         import google.generativeai as genai
         genai.configure(api_key=ai_keys["gemini"])
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
         resp = model.generate_content(prompt)
         return resp.text.strip()
 
@@ -195,7 +195,7 @@ def _call_provider(provider_name: str, ai_keys: dict, prompt: str) -> str:
         from openai import OpenAI
         client = OpenAI(api_key=ai_keys["grok"], base_url="https://api.x.ai/v1")
         resp = client.chat.completions.create(
-            model="grok-beta", max_tokens=600,
+            model="grok-4-latest", max_tokens=600,
             messages=[{"role": "user", "content": prompt}]
         )
         return resp.choices[0].message.content.strip()
@@ -216,8 +216,10 @@ def _call_provider(provider_name: str, ai_keys: dict, prompt: str) -> str:
 
     return ""
 
-def analyze_trade(trade: dict, sb) -> dict | None:
-    """Run analysis on a single closed trade. Rule-based first, AI enriches if available."""
+def analyze_trade(trade: dict, sb, provider_override: str = None) -> dict | None:
+    """Run analysis on a single closed trade. Rule-based first, AI enriches if available."""  # ← MOVE HERE
+    from config import cfg, AI_KEYS  # ← DELETE this, already imported at top
+    active_provider = provider_override if provider_override else cfg("ai_provider", "disabled").lower()
 
     # Always generate rule-based first — guaranteed to succeed
     lesson_data = generate_rule_based_lesson(trade)
@@ -251,15 +253,30 @@ def analyze_trade(trade: dict, sb) -> dict | None:
     )
  
     # Attempt AI enrichment — non-fatal if anything fails
-    if provider_name not in ("disabled", "ml"):
+    if active_provider not in ("disabled", "ml"):
         try:
-            raw = _call_provider(provider_name, AI_KEYS, prompt)
+            raw = _call_provider(active_provider, AI_KEYS, prompt)
             if raw:
                 json_match = re.search(r'\{.*\}', raw, re.DOTALL)
                 if json_match:
-                    lesson_data = json.loads(json_match.group())
-                    source = f"AI:{provider_name}"
-                    logger.debug(f"AI lesson generated for {trade.get('symbol')} via {provider_name}")
+                    json_str = json_match.group()
+                    # Clean common JSON breaking characters from LLM responses
+                    json_str = json_str.replace('\n', ' ').replace('\r', '')
+                    # Remove control characters
+                    json_str = re.sub(r'[\x00-\x1f\x7f]', ' ', json_str)
+                    try:
+                        lesson_data = json.loads(json_str)
+                        source = f"AI:{active_provider}"
+                    except json.JSONDecodeError:
+                        # Try with json5/relaxed parsing as last resort
+                        import ast
+                        logger.debug(f"Standard JSON parse failed for {trade.get('symbol')} — trying cleanup")
+                        # Fix trailing commas and other common LLM JSON issues
+                        json_str = re.sub(r',\s*}', '}', json_str)
+                        json_str = re.sub(r',\s*]', ']', json_str)
+                        lesson_data = json.loads(json_str)
+                        source = f"AI:{active_provider}"
+                    logger.debug(f"AI lesson generated for {trade.get('symbol')} via {active_provider}")
         except Exception as e:
             logger.warning(f"AI enrichment skipped for {trade.get('symbol')} — using rule-based: {e}")
 
@@ -307,6 +324,51 @@ def main():
     .gte("date", cutoff).execute().data   # no source filter — catches AI and RULE_BASED
     analyzed = {r.get("scenario_context", "")[:10] for r in existing}
 
+    # Cost controls
+    max_stocks = cfg_int("ai_max_stocks_per_day", 20)
+    daily_budget = cfg_float("ai_daily_budget_inr", 200.0)
+
+    # Approximate cost per call in INR
+    PROVIDER_COST_INR = {
+        "deepseek": 0.15,
+        "claude":   0.40,
+        "openai":   0.30,
+        "gemini":   0.08,
+        "grok":     0.50,
+        "copilot":  0.60,
+    }
+
+    # Count how many AI lessons already generated today
+    today_str = str(today_ist())
+    todays_ai = sb.table("lessons") \
+        .select("id") \
+        .like("source", "AI:%") \
+        .gte("date", today_str) \
+        .execute().data
+    ai_count_today = len(todays_ai)
+
+    active_provider = cfg("ai_provider", "disabled").lower()
+    cost_per_call = PROVIDER_COST_INR.get(active_provider, 0.30)
+    estimated_spend_today = ai_count_today * cost_per_call
+
+    if estimated_spend_today >= daily_budget:
+        logger.warning(
+            f"Estimated daily AI spend ₹{estimated_spend_today:.1f} >= "
+            f"budget ₹{daily_budget:.0f} — using rule-based only"
+        )
+        provider_override = "disabled"
+    elif ai_count_today >= max_stocks:
+        logger.warning(
+            f"AI daily limit reached ({ai_count_today}/{max_stocks}) — using rule-based only"
+        )
+        provider_override = "disabled"
+    else:
+        logger.info(
+            f"AI usage today: {ai_count_today} calls | "
+            f"~₹{estimated_spend_today:.1f} spent | budget ₹{daily_budget:.0f}"
+        )
+        provider_override = None
+
     analyzed_count = 0
     signal_match_count = 0
     for trade in trades:
@@ -314,7 +376,7 @@ def main():
         if sym[:10] in analyzed:
             continue
 
-        lesson = analyze_trade(trade, sb)
+        lesson = analyze_trade(trade, sb, provider_override=provider_override)
         if lesson:
             # APPEND: insert new lesson
             sb.table("lessons").insert(lesson).execute()
@@ -326,8 +388,11 @@ def main():
                 pnl = float(trade.get("pnl_pct", 0) or 0)
                 outcome = "WIN" if pnl > 0 else "LOSS"
                 entry_date = str(trade.get("entry_date", ""))
-                response =sb.table("signal_log") \
-                    .update({"outcome": outcome}) \
+                response = sb.table("signal_log") \
+                    .update({
+                        "outcome":         outcome,
+                        "outcome_pnl_pct": pnl,       # ← G2 FIX
+                    }) \
                     .eq("symbol", sym) \
                     .eq("date", entry_date) \
                     .execute()
@@ -338,8 +403,9 @@ def main():
                 logger.warning(f"Could not write outcome for {sym}: {e}")
 
     logger.success(
-        f"Post-trade analysis done: {analyzed_count} lessons generated | "
-        f"{signal_match_count}/{len(trades)} trades matched to signal_log"
+    f"Post-trade analysis done: {analyzed_count} lessons generated | "
+    f"{signal_match_count}/{len(trades)} trades matched to signal_log | "
+    f"AI spend today: ~₹{estimated_spend_today + (analyzed_count * cost_per_call):.1f} / ₹{daily_budget:.0f} budget"
     )
     return {"status": "ok", "analyzed": analyzed_count, "signal_matches": signal_match_count}
 

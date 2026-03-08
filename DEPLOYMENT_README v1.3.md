@@ -377,6 +377,52 @@ Provider: deepseek or whatever you want to configure
 python -m ai.post_trade_analysis
 
 ```
+## Step 1.7 — AI Signal Enrichment (ai_enrich.py)
+
+### Prerequisites
+- Step 1.1 (bhavcopy) and Step 1.2 (post_trade_analysis) working
+- At least one AI provider configured and tested (Step 1.6)
+- `lessons` table has rows (from post_trade_analysis)
+- `ai_context` table exists in Supabase (schema_v6_signals.sql)
+
+### What it does
+Reads today's BUY_CANDIDATE, EXIT, ADD signals from signal_log.
+Enriches top N (ai_max_stocks_per_day) with AI conviction scoring.
+Writes results to: signal_log, ai_context, master_shortlist.
+
+### Activation
+1. Rename file: `claude_enrich.py` → `ai_enrich.py`
+2. Uncomment in run_pipeline.py steps_p1:
+   `("09_ai_enrich", step_ai_enrich, False)`
+3. Update step function in run_pipeline.py:
+   `from ai.ai_enrich import main as fn; return fn()`
+4. Set Phase 1 active:
+   `UPDATE system_config SET value = '1' WHERE key = 'autonomy_phase';`
+
+### Cost controls (already set in Step 1.6)
+```sql
+UPDATE system_config SET value = '20' WHERE key = 'ai_max_stocks_per_day';
+UPDATE system_config SET value = '200' WHERE key = 'ai_daily_budget_inr';
+```
+
+### Expected output
+```
+STEP 4: AI Signal Enrichment
+FEDERALBNK: HIGH (deepseek) — Strong breakout setup with volume confirmation
+KARURVYSYA: MEDIUM (deepseek) — Watch for confirmation above resistance
+AI enrichment: 4/4 signals enriched in 12.3s
+```
+
+### Verification
+Check signal_log in Supabase — ai_conviction, ai_provider columns
+should be populated for today's BUY_CANDIDATE rows.
+
+### Switching providers
+No code change needed. Update Supabase only:
+`UPDATE system_config SET value = 'claude' WHERE key = 'ai_provider';`
+Supported: deepseek, claude, openai, gemini, grok, copilot, ml
+
+```
 **Always set cost controls regardless of provider:**
 ```sql
 UPDATE system_config SET value = '200' WHERE key = 'ai_daily_budget_inr';
@@ -395,6 +441,7 @@ UPDATE system_config SET value = '20'  WHERE key = 'ai_max_stocks_per_day';
 4. Open your new bot in Telegram and press Start
 5. Get your chat ID: open `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` in a browser after pressing Start. Find `"chat":{"id":XXXXXXXXX}` — that number is your chat ID
 
+**update .env file**
 **Add to GitHub Actions secrets:**
 - `TELEGRAM_BOT_TOKEN` = your bot token
 - `TELEGRAM_CHAT_ID` = your numeric chat ID
@@ -1302,7 +1349,7 @@ tradeos-v6/
     │
     ├── ai/
     │   ├── ai_router.py                ← [Phase 1] Routes to configured provider, tracks cost
-    │   ├── claude_enrich.py            ← [Phase 1] Adds AI conviction to master_shortlist rows
+    │   ├── ai_enrich.py            ← [Phase 1] Adds AI conviction to master_shortlist rows
     │   ├── post_trade_analysis.py      ← [Phase 1] AI retrospective on closed trades → lessons
     │   ├── generate_shortlist.py       ← [Phase 1] AI shortlist review and ranking
     │   ├── providers/

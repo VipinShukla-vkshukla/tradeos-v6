@@ -1,6 +1,7 @@
 """Claude (Anthropic) Provider"""
 import json
 from .base_provider import BaseProvider, ConvictionResult, UNKNOWN_RESULT
+import re
 
 class ClaudeProvider(BaseProvider):
     def __init__(self, api_key: str):
@@ -26,7 +27,11 @@ class ClaudeProvider(BaseProvider):
                 messages=[{"role": "user", "content": self.build_prompt(stock_data, context)}]
             )
             raw = msg.content[0].text.strip()
-            data = json.loads(raw)
+            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if not json_match:
+                raise ValueError(f"No JSON in response: {raw[:100]}")
+            data = json.loads(json_match.group())
+
             return ConvictionResult(
                 conviction=data.get("conviction", "MEDIUM"),
                 conviction_reason=data.get("conviction_reason", ""),

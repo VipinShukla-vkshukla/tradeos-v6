@@ -90,6 +90,9 @@ def main():
     
     def step_post_trade():
         from ai.post_trade_analysis import main as fn; return fn()
+    
+    def step_ai_enrich():
+        from ai.ai_enrich import main as fn; return fn()
 
     # Phase 0 core steps (must-run for signals/history)
     steps_p0 = [
@@ -105,7 +108,7 @@ def main():
     ("06_fii_dii",          step_fii_dii,          False),
     ("07_nse_events",       step_nse_events,       False),
     ("08_post_trade",       step_post_trade,       False),
-    #("09_ai_enrich",       step_ai_enrich,        False),  # wire when claude_enrich.py is fixed
+    ("09_ai_enrich",       step_ai_enrich,        False),
     ("10_alerts",           step_alerts,           False),  
     ]
 
