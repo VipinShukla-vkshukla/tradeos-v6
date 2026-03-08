@@ -9,11 +9,14 @@ import sys
 import json
 from datetime import date
 from pathlib import Path
+import re
+from config import cfg, AI_KEYS
+provider_name = cfg("ai_provider", "disabled").lower()
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import get_supabase, today_ist, is_kill_switch_active, logger
 sys.path.insert(0, str(Path(__file__).parent))
-from ai_router import analyze as analyze_trade # main AI provider
+from ai_router import analyze as ai_analyze # main AI provider
 
 ANALYSIS_PROMPT = """You are an expert Indian swing trader reviewing a completed trade. Analyze this trade and generate a structured lesson.
 
@@ -150,46 +153,117 @@ def generate_rule_based_lesson(trade: dict) -> dict:
         "corrective_rule": corrective_rule,
     }
 
-def analyze_trade(trade: dict, sb) -> dict | None:
-    """Run analysis on a single closed trade. Rule-based is always generated first,
-    AI enriches it if available."""
+def _call_provider(provider_name: str, ai_keys: dict, prompt: str) -> str:
+    """Call the configured AI provider directly with the lesson prompt.
+    Returns raw text response or empty string on failure."""
 
-    # Always generate rule-based first — guaranteed to succeed regardless of data quality
+    if provider_name == "deepseek":
+        from openai import OpenAI
+        client = OpenAI(api_key=ai_keys["deepseek"], base_url="https://api.deepseek.com")
+        resp = client.chat.completions.create(
+            model="deepseek-chat", max_tokens=600,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return resp.choices[0].message.content.strip()
+
+    elif provider_name == "claude":
+        import anthropic
+        client = anthropic.Anthropic(api_key=ai_keys["claude"])
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001", max_tokens=600,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return msg.content[0].text.strip()
+
+    elif provider_name == "openai":
+        from openai import OpenAI
+        client = OpenAI(api_key=ai_keys["openai"])
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini", max_tokens=600,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return resp.choices[0].message.content.strip()
+
+    elif provider_name == "gemini":
+        import google.generativeai as genai
+        genai.configure(api_key=ai_keys["gemini"])
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        resp = model.generate_content(prompt)
+        return resp.text.strip()
+
+    elif provider_name == "grok":
+        from openai import OpenAI
+        client = OpenAI(api_key=ai_keys["grok"], base_url="https://api.x.ai/v1")
+        resp = client.chat.completions.create(
+            model="grok-beta", max_tokens=600,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return resp.choices[0].message.content.strip()
+
+    elif provider_name == "copilot":
+        from openai import AzureOpenAI
+        from config import AZURE_ENDPOINT, AZURE_DEPLOYMENT
+        client = AzureOpenAI(
+            api_key=ai_keys["copilot"],
+            azure_endpoint=AZURE_ENDPOINT,
+            api_version="2024-02-01"
+        )
+        resp = client.chat.completions.create(
+            model=AZURE_DEPLOYMENT, max_tokens=600,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return resp.choices[0].message.content.strip()
+
+    return ""
+
+def analyze_trade(trade: dict, sb) -> dict | None:
+    """Run analysis on a single closed trade. Rule-based first, AI enriches if available."""
+
+    # Always generate rule-based first — guaranteed to succeed
     lesson_data = generate_rule_based_lesson(trade)
     source = "RULE_BASED"
 
-    # Attempt AI enrichment on top — non-fatal if anything fails
-    try:
-        entry_ctx    = get_entry_context(sb, trade.get("symbol", ""), str(trade.get("entry_date", "") or ""))
-        events_entry = get_events_at_entry(sb, trade.get("symbol", ""), str(trade.get("entry_date", "") or ""))
+    # Build context
+    entry_ctx    = get_entry_context(sb, trade.get("symbol", ""), str(trade.get("entry_date", "") or ""))
+    events_entry = get_events_at_entry(sb, trade.get("symbol", ""), str(trade.get("entry_date", "") or ""))
 
-        stock_data = {
-            "symbol":      trade.get("symbol", ""),
-            "sector":      trade.get("sector", ""),
-            "strategy":    trade.get("strategy", ""),
-            "pnl_pct":     float(trade.get("pnl_pct", 0) or 0),
-            "exit_reason": trade.get("exit_reason", ""),
-            "lifecycle":   trade.get("lifecycle_at_entry", ""),
-        }
-        context = {
-            "regime":            entry_ctx,
-            "active_events":     events_entry,
-            "relevant_lessons":  [],
-        }
+    # Build the prompt here — not inside context dict
+    prompt = ANALYSIS_PROMPT.format(
+        symbol             = trade.get("symbol", ""),
+        company_name       = trade.get("company_name", ""),
+        sector             = trade.get("sector", ""),
+        strategy           = trade.get("strategy", ""),
+        entry_date         = trade.get("entry_date", ""),
+        entry_price        = trade.get("entry_price", 0),
+        exit_date          = trade.get("exit_date", ""),
+        exit_price         = trade.get("exit_price", 0),
+        actual_qty         = trade.get("actual_qty", 0),
+        invested_value     = float(trade.get("invested_value", 0) or 0),
+        realized_pnl       = float(trade.get("realized_pnl", 0) or 0),
+        pnl_pct            = float(trade.get("pnl_pct", 0) or 0),
+        exit_reason        = trade.get("exit_reason", "Unknown"),
+        lifecycle_at_entry = trade.get("lifecycle_at_entry", "Unknown"),
+        expected_r         = trade.get("expected_r_at_entry", "N/A"),
+        high_water_mark    = trade.get("high_water_mark", 0),
+        mfe                = trade.get("max_favorable_excursion", "N/A"),
+        entry_context      = entry_ctx,
+        events_at_entry    = events_entry,
+    )
+ 
+    # Attempt AI enrichment — non-fatal if anything fails
+    if provider_name not in ("disabled", "ml"):
+        try:
+            raw = _call_provider(provider_name, AI_KEYS, prompt)
+            if raw:
+                json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+                if json_match:
+                    lesson_data = json.loads(json_match.group())
+                    source = f"AI:{provider_name}"
+                    logger.debug(f"AI lesson generated for {trade.get('symbol')} via {provider_name}")
+        except Exception as e:
+            logger.warning(f"AI enrichment skipped for {trade.get('symbol')} — using rule-based: {e}")
 
-        result = ai_analyze(stock_data, context)
-
-        if result is not None and result.conviction != "UNKNOWN":
-            import re
-            json_match = re.search(r'\{.*\}', result.conviction_reason or "", re.DOTALL)
-            if json_match:
-                lesson_data = json.loads(json_match.group())
-                source = f"AI:{result.provider}"
-
-    except Exception as e:
-        logger.debug(f"AI enrichment skipped for {trade.get('symbol')} — using rule-based: {e}")
-
-    # Build lesson record from whatever lesson_data we have
+    # Build final lesson record
     trigger = str(lesson_data.get("trigger_event", ""))
     linked_type = "RESULTS"   if "result" in trigger.lower() \
              else "STOP_LOSS" if "stop"   in trigger.lower() \
@@ -245,7 +319,7 @@ def main():
             # APPEND: insert new lesson
             sb.table("lessons").insert(lesson).execute()
             analyzed_count += 1
-            logger.info(f"Lesson generated for {sym}: {lesson.get('scenario_type')}")
+            logger.info(f"Lesson generated for {sym}: {lesson.get('scenario_type')} | source: {lesson.get('source')}")
 
             # Write outcome back to signal_log for ML training
             try:

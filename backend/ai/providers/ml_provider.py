@@ -60,7 +60,8 @@ class MLProvider(BaseProvider):
                 float(context.get("sector_rank") or 5),
                 _encode_eap(stock_data.get("eap_action")),
             ]
-            prob = self._model.predict_proba([feat])[0][1]  # P(win)
+            proba = self._model.predict_proba([feat])[0]
+            prob = proba[1] if len(proba) > 1 else (1.0 if self._model.classes_[0] == 1 else 0.0)
             if prob >= 0.7:
                 conviction = "HIGH"
             elif prob >= 0.45:

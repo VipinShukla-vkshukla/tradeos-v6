@@ -280,17 +280,103 @@ UPDATE system_config SET value = 'ml' WHERE key = 'ai_provider';
 ---
 
 **Option B — DeepSeek (Cheapest paid, ~10x cheaper than Claude)**
+```
+OPENAI
 
-1. Get API key at platform.deepseek.com
-2. Add to GitHub Actions secrets as `DEEPSEEK_API_KEY`
-3. Enable: `UPDATE system_config SET value = 'deepseek' WHERE key = 'ai_provider';`
+Go to platform.openai.com → Sign up / Log in
+Click your profile → API Keys → Create new secret key → name it tradeos
+Copy the key immediately
+Add credits: Settings → Billing → Add payment method
+Add to .env: OPENAI_API_KEY=sk-xxxxxxxx
+Add to GitHub secrets: Name = OPENAI_API_KEY
+Enable: UPDATE system_config SET value = 'openai' WHERE key = 'ai_provider';
 
-**Option C — Claude (Best reasoning quality)**
 
-1. Get API key at console.anthropic.com
-2. Add as `ANTHROPIC_API_KEY` in GitHub Actions secrets
-3. Enable: `UPDATE system_config SET value = 'claude' WHERE key = 'ai_provider';`
+DEEPSEEK
 
+Go to platform.deepseek.com → Sign up / Log in
+Click profile icon → API Keys → Create new API key → name it tradeos
+Copy the key immediately
+Add credits: Top Up → minimum $5 lasts months
+Add to .env: DEEPSEEK_API_KEY=sk-xxxxxxxx
+Add to GitHub secrets: Name = DEEPSEEK_API_KEY
+Enable: UPDATE system_config SET value = 'deepseek' WHERE key = 'ai_provider';
+
+
+CLAUDE
+
+Go to console.anthropic.com → Sign up / Log in
+Click API Keys in left sidebar → Create Key → name it tradeos
+Copy the key immediately
+Add credits: Plans & Billing → Add payment method
+Add to .env: ANTHROPIC_API_KEY=sk-ant-xxxxxxxx
+Add to GitHub secrets: Name = ANTHROPIC_API_KEY
+Enable: UPDATE system_config SET value = 'claude' WHERE key = 'ai_provider';
+
+
+GEMINI
+
+Go to aistudio.google.com → Sign in with Google account
+Click Get API Key → Create API key → select or create a Google Cloud project
+Copy the key
+Free tier available — no billing needed to start
+Add to .env: GEMINI_API_KEY=AIzaxxxxxxxx
+Add to GitHub secrets: Name = GEMINI_API_KEY
+Enable: UPDATE system_config SET value = 'gemini' WHERE key = 'ai_provider';
+
+
+GROK (xAI)
+
+Go to console.x.ai → Sign in with X (Twitter) account
+Click API Keys → Create API Key → name it tradeos
+Copy the key immediately
+Add credits: Billing → Add payment method
+Add to .env: GROK_API_KEY=xai-xxxxxxxx
+Add to GitHub secrets: Name = GROK_API_KEY
+Enable: UPDATE system_config SET value = 'grok' WHERE key = 'ai_provider';
+
+
+COPILOT (Azure OpenAI)
+
+Go to portal.azure.com → Sign in with Microsoft account
+Search Azure OpenAI → Create → fill in subscription, resource group, region
+Once deployed, go to the resource → Keys and Endpoint → copy Key 1 and Endpoint
+Go to Azure OpenAI Studio → Deployments → Create new deployment → select gpt-4o → note the deployment name
+Add to .env:
+
+envAZURE_OPENAI_API_KEY=xxxxxxxx
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
+AZURE_OPENAI_DEPLOYMENT=gpt-4o
+
+Add to GitHub secrets: AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT
+Enable: UPDATE system_config SET value = 'copilot' WHERE key = 'ai_provider';
+
+
+Cost controls — run once regardless of provider:
+sqlUPDATE system_config SET value = '200' WHERE key = 'ai_daily_budget_inr';
+UPDATE system_config SET value = '20'  WHERE key = 'ai_max_stocks_per_day';
+
+Recommendation for getting started: DeepSeek first — cheapest, no billing complexity, works immediately after top-up. Switch to Claude later if you want better reasoning quality on enrichment prompts.
+
+Validation 
+## Step a - python -c "from config import AI_KEYS; print(AI_KEYS)"
+```
+Expected output — your configured provider should show a key, others empty:
+```
+{'claude': '', 'openai': '', 'gemini': '', 'deepseek': 'sk-xxxx...', 'grok': '', 'copilot': ''}
+
+## Step b
+python -c "from config import cfg; print('Provider:', cfg('ai_provider'))"
+```
+
+Expected:
+```
+Provider: deepseek or whatever you want to configure
+
+## Step b
+python -m ai.post_trade_analysis
+
+```
 **Always set cost controls regardless of provider:**
 ```sql
 UPDATE system_config SET value = '200' WHERE key = 'ai_daily_budget_inr';

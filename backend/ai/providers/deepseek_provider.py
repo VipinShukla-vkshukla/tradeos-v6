@@ -1,6 +1,7 @@
 """DeepSeek Provider (OpenAI-compatible API)"""
 import json
 from .base_provider import BaseProvider, ConvictionResult, UNKNOWN_RESULT
+import re
 
 class DeepSeekProvider(BaseProvider):
     def __init__(self, api_key: str):
@@ -18,7 +19,13 @@ class DeepSeekProvider(BaseProvider):
                 max_tokens=500,
                 messages=[{"role": "user", "content": self.build_prompt(stock_data, context)}]
             )
-            data = json.loads(resp.choices[0].message.content.strip())
+            raw = resp.choices[0].message.content.strip()
+            # Strip markdown code fences if present
+            import re
+            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if not json_match:
+                raise ValueError(f"No JSON in response: {raw[:100]}")
+            data = json.loads(json_match.group())
             return ConvictionResult(provider="deepseek", **{k: data.get(k,"") for k in
                 ["conviction","conviction_reason","catalyst","suggested_action",
                  "strategy_validation","conflicts","ai_note"]},
