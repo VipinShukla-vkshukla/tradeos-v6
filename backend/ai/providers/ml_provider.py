@@ -139,12 +139,18 @@ def train_model():
         y  = df["win"].values
 
         model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
-        cv_scores = cross_val_score(model, X, y, cv=min(5, len(rows)//10 + 1), scoring="accuracy")
+        cv_scores = cross_val_score(model, X, y, cv=min(5, max(2, len(rows)//10 + 1)), scoring="accuracy")
         model.fit(X, y)
 
+        # Log top features by importance
+        importances = zip(FEATURES, model.feature_importances_)
+        top_features = sorted(importances, key=lambda x: x[1], reverse=True)[:3]
+        top_str = " > ".join(f"{f} ({v:.2f})" for f, v in top_features)
+        logger.info(f"Top features: {top_str}")
+        
         MODEL_PATH.parent.mkdir(exist_ok=True)
         joblib.dump(model, MODEL_PATH)
-
+        logger.info(f"Model saved → {MODEL_PATH}")
         logger.info(f"✓ ML model trained on {len(rows)} labelled trades | CV accuracy: {cv_scores.mean():.2%}")
 
         sb.table("ml_training_log").insert({
@@ -161,4 +167,9 @@ def train_model():
 
 
 if __name__ == "__main__":
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    # Re-import without relative import for direct execution
+    from ai.providers.base_provider import BaseProvider, ConvictionResult, UNKNOWN_RESULT
     train_model()

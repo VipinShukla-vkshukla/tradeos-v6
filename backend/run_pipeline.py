@@ -65,13 +65,13 @@ def main():
     # Lazy imports keep startup fast — each module only loads if the step runs.
     def step_fetch_chartink():
         from ingestion.fetch_chartink import main as fn; return fn()
-        
-    def step_ingest():
-        from ingestion.ingest_sheets import main as fn; return fn()
-
+    
     def step_ingest_bhavcopy():
         # Script exists in codebase. Wired here as Step 1.1 from deployment README.
         from ingestion.ingest_bhavcopy import main as fn; return fn()
+            
+    def step_ingest():
+        from ingestion.ingest_sheets import main as fn; return fn()
         
     def step_signals():
         from signals.generate_signals import main as fn; return fn()
@@ -96,18 +96,17 @@ def main():
     ("01_fetch_chartink",   step_fetch_chartink,   True),
     ("02_ingest_bhavcopy",  step_ingest_bhavcopy,  False),  # non-fatal: signals can run without it
     ("03_ingest_sheets",    step_ingest,           True),
-    ("04_fii_dii",          step_fii_dii,          False),
-    ("05_nse_events",       step_nse_events,       False),
-    ("06_signals",          step_signals,          True),
-    ("07_history",          step_history,          False),
+    ("04_signals",          step_signals,          True),
+    ("05_history",          step_history,          False),
     ]
 
     # Phase 1 extras
     steps_p1 = [
-        #("05_post_trade_analysis",  step_post_trade, False),
-        #("06_ai_enrich",            step_ai_enrich,  False),
-        ("07_alerts",               step_alerts,  False),
-        
+    ("06_fii_dii",          step_fii_dii,          False),
+    ("07_nse_events",       step_nse_events,       False),
+    ("08_post_trade",       step_post_trade,       False),
+    #("09_ai_enrich",       step_ai_enrich,        False),  # wire when claude_enrich.py is fixed
+    ("10_alerts",           step_alerts,           False),  
     ]
 
     all_steps = steps_p0 + (steps_p1 if phase >= 1 else [])

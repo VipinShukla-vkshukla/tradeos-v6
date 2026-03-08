@@ -157,11 +157,6 @@ def generate(run_date: date | None = None) -> list[dict]:
     sectors = sb.table("sector_strength").select("sector,rank").eq("date", str(run_date)).execute().data
     sector_rank = {s["sector"]: s["rank"] for s in sectors if s.get("rank")}
 
-    # Build sector rank lookup
-    sb = get_supabase()
-    sectors = sb.table("sector_strength").select("sector,rank").eq("date", str(run_date)).execute().data
-    sector_rank = {s["sector"]: s["rank"] for s in sectors if s.get("rank")}
-
     cfg_ctl = json.loads(strat_cfg["CTL"]) if isinstance(strat_cfg.get("CTL"), str) else strat_cfg.get("CTL", {})
     cfg_sbs = json.loads(strat_cfg["SBS"]) if isinstance(strat_cfg.get("SBS"), str) else strat_cfg.get("SBS", {})
     cfg_tpo = json.loads(strat_cfg["TPO"]) if isinstance(strat_cfg.get("TPO"), str) else strat_cfg.get("TPO", {})

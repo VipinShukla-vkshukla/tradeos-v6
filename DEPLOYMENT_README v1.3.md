@@ -163,6 +163,7 @@ steps = [
 
 **Test locally:**
 ```bash
+
 python ingestion/ingest_nse_events.py --dry-run
 ```
 
@@ -220,26 +221,63 @@ You have 7 provider options. Start with ML (free) — it trains on your own trad
 
 **Option A — ML Model (Recommended first)**
 
-No API key needed. Uses your 54 closed trades.
+No API key needed. Trains on your closed trade history.
 
+Before training, you must back-fill signal outcomes from your 54 closed trades.
+The ML model learns from `signal_log.outcome` (WIN/LOSS) — this field is populated
+by `post_trade_analysis.py` when it matches closed positions back to their original signals.
+
+**Step 1: Ensure signal_log has rows**
 ```bash
-# Train the model once manually (Sunday's scheduled job will retrain weekly after this)
+# Run the full pipeline at least once so signal_log is populated
 cd backend
-python ai/providers/ml_provider.py --train
+python run_pipeline.py
+```
+
+**Step 2: Back-fill outcomes from closed trades**
+```bash
+# post_trade_analysis matches closed_positions → signal_log and writes WIN/LOSS outcomes
+# Also generates lessons from each closed trade → lessons table
+cd backend
+python -m ai.post_trade_analysis
 ```
 
 Expected output:
 ```
-Training on 54 closed trades...
-Test accuracy: 62%
-Top features: industry_rank (0.18) > rsi_weekly (0.14) > vol_ratio (0.12)
-Model saved → models/ml_model.pkl
+Processing 54 closed trades...
+Matched 38 trades to signal_log entries
+Outcomes written: 38 (WIN/LOSS)
+Lessons generated: 38 → lessons table
 ```
+
+> Note: Not all 54 closed trades will match — only trades that have a corresponding
+> entry in signal_log (i.e. were active while the pipeline was running). Unmatched
+> trades are skipped silently. This improves over time as the pipeline accumulates history.
+
+**Step 3: Train the ML model**
+```bash
+cd backend
+python -m ai.providers.ml_provider
+```
+
+Expected output:
+```
+Training on 38 labelled trades...
+CV accuracy: 62%
+Top features: rsi_weekly (0.18) > vol_ratio (0.14) > delivery_pct (0.12)
+Model saved → models/ml_conviction.pkl
+```
+
+> If you see "No labelled signal outcomes yet — skipping ML training", Step 2 produced
+> no matches. This means signal_log was empty when trades closed. In that case, skip ML
+> for now and come back after the pipeline has been running for 2–3 weeks.
 
 Enable in Supabase:
 ```sql
 UPDATE system_config SET value = 'ml' WHERE key = 'ai_provider';
 ```
+
+---
 
 **Option B — DeepSeek (Cheapest paid, ~10x cheaper than Claude)**
 
