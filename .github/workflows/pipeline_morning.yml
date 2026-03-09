@@ -3,7 +3,7 @@ name: TradeOS v6 — Morning Pre-Market Cues
 on:
   schedule:
     # 8:00 AM IST = 2:30 UTC (weekdays only)
-    - cron: '30 2 * * 1-5'
+    - cron: '30 1 * * 1-5'
   workflow_dispatch:
 
 jobs:
@@ -28,7 +28,17 @@ jobs:
           TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python ingestion/ingest_global_cues.py MORNING
+      
 
+      - name: Send morning Telegram alert
+        working-directory: backend
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python alerts/send_alerts.py --morning
+        
       - name: Create credentials file
         env:
           GOOGLE_CREDS: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}

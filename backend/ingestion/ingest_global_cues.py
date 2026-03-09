@@ -93,6 +93,7 @@ def main(time_slot: str = "EVENING"):
     gold       = fetch_from_yahoo("GC=F", session)
     dow        = fetch_from_yahoo("^DJI", session)
     nasdaq     = fetch_from_yahoo("^IXIC", session)
+    sp500      = fetch_from_yahoo("^GSPC", session)
 
     # ── Previous evening row for change % calculations ────────────
     try:
@@ -107,12 +108,14 @@ def main(time_slot: str = "EVENING"):
     inr_prev   = float(prev.get("usd_inr", 0) or 0) or None
     dow_prev   = float(prev.get("us_dow_close", 0) or 0) or None       # ✅ correct col name
     nas_prev   = float(prev.get("us_nasdaq_close", 0) or 0) or None    # ✅ correct col name
+    sp5_prev   = float(prev.get("sp500_close", 0) or 0) or None
 
     # ── Change percentages ────────────────────────────────────────
     usd_inr_chg_pct = round((usd_inr - inr_prev)  / inr_prev  * 100, 4) if usd_inr and inr_prev else None
     brent_chg_pct   = round((brent   - crude_prev) / crude_prev * 100, 4) if brent and crude_prev else None
     dow_chg_pct     = round((dow     - dow_prev)   / dow_prev  * 100, 4) if dow and dow_prev else None
     nas_chg_pct     = round((nasdaq  - nas_prev)   / nas_prev  * 100, 4) if nasdaq and nas_prev else None
+    sp500_chg_pct    = round((sp500   - sp5_prev)   / sp5_prev  * 100, 4) if sp500 and sp5_prev else None
 
     # ── Gift Nifty gap ────────────────────────────────────────────
     gift_nifty_chg_pct, gap_signal = None, "UNKNOWN"
@@ -144,6 +147,10 @@ def main(time_slot: str = "EVENING"):
         "gold_price":         gold,                 # ✅ was gold_usd
         "us_dow_close":       dow,                  # ✅ was dow_jones
         "us_nasdaq_close":    nasdaq,               # ✅ was nasdaq
+        "us_dow_chg_pct":     dow_chg_pct,
+        "us_nasdaq_chg_pct":  nas_chg_pct,
+        "sp500_close":        sp500,
+        "sp500_chg_pct":      sp500_chg_pct,
         "sector_impacts":     sector_impacts,       # ✅ was 3 flat cols → 1 jsonb
     }
 
@@ -152,7 +159,8 @@ def main(time_slot: str = "EVENING"):
     logger.success(
         f"Global cues saved: Gift={gift_nifty or 'N/A'} | "
         f"USD/INR={usd_inr or 'N/A'} | Crude={brent or 'N/A'} | "
-        f"Gap={gap_signal} | Bias={sector_impacts['global_bias']}"
+        f"DOW={dow or 'N/A'} ({dow_chg_pct:+.2f}%)" if dow_chg_pct else f"DOW={dow or 'N/A'} | "
+        f"S&P={sp500 or 'N/A'} | Gap={gap_signal} | Bias={sector_impacts['global_bias']}"
     )
     return row
 

@@ -353,7 +353,8 @@ Enable: UPDATE system_config SET value = 'copilot' WHERE key = 'ai_provider';
 
 
 Cost controls — run once regardless of provider:
-sqlUPDATE system_config SET value = '200' WHERE key = 'ai_daily_budget_inr';
+sql
+UPDATE system_config SET value = '200' WHERE key = 'ai_daily_budget_inr';
 UPDATE system_config SET value = '20'  WHERE key = 'ai_max_stocks_per_day';
 
 Recommendation for getting started: DeepSeek first — cheapest, no billing complexity, works immediately after top-up. Switch to Claude later if you want better reasoning quality on enrichment prompts.
@@ -397,7 +398,7 @@ Writes results to: signal_log, ai_context, master_shortlist.
 3. Update step function in run_pipeline.py:
    `from ai.ai_enrich import main as fn; return fn()`
 4. Set Phase 1 active:
-   `UPDATE system_config SET value = '1' WHERE key = 'autonomy_phase';`
+   UPDATE system_config SET value = '1' WHERE key = 'autonomy_phase';
 
 ### Cost controls (already set in Step 1.6)
 ```sql
