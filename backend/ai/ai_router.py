@@ -91,3 +91,71 @@ def analyze(stock_data: dict, context: dict) -> ConvictionResult:
             logger.warning(f"Scraping fallback failed: {e}")
 
     return UNKNOWN_RESULT
+
+
+def raw_completion(prompt: str, max_tokens: int = 1500) -> str:
+    """
+    Send a raw text prompt to the configured AI provider and return the
+    raw string response. Used by evolution_tracker.py for free-form analysis
+    that doesn't fit the ConvictionResult structure.
+
+    Falls back through the same provider chain; raises RuntimeError if
+    no LLM provider is configured (disabled or ml-only).
+    """
+    provider_name = cfg("ai_provider", "disabled").lower()
+    if provider_name in ("disabled", "ml"):
+        raise RuntimeError(
+            "No LLM provider available for raw_completion "
+            "(ai_provider is 'disabled' or 'ml')"
+        )
+
+    provider = _get_provider(provider_name)
+    if not provider or not provider.is_available():
+        raise RuntimeError(
+            f"Provider '{provider_name}' is not available — check API key in .env"
+        )
+
+    if provider_name == "claude":
+        import anthropic
+        client = anthropic.Anthropic(api_key=provider.api_key)
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return msg.content[0].text.strip()
+
+    if provider_name in ("openai", "grok", "deepseek", "copilot"):
+        import openai
+        client = openai.OpenAI(
+            api_key=provider.api_key,
+            base_url=getattr(provider, "base_url", None),
+        )
+        model = getattr(provider, "model", "gpt-4o-mini")
+        resp = client.chat.completions.create(
+            model=model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return resp.choices[0].message.content.strip()
+
+    if provider_name == "gemini":
+        import google.generativeai as genai
+        genai.configure(api_key=provider.api_key)
+        model_obj = genai.GenerativeModel("gemini-1.5-flash")
+        resp = model_obj.generate_content(prompt)
+        return resp.text.strip()
+
+    raise RuntimeError(f"raw_completion not implemented for provider: {provider_name}")
+
+
+def is_ai_available() -> bool:
+    """
+    Returns True if a non-ML LLM provider is configured and has an API key.
+    Used by evolution_tracker.py to decide whether to attempt proposal generation.
+    """
+    provider_name = cfg("ai_provider", "disabled").lower()
+    if provider_name in ("disabled", "ml"):
+        return False
+    provider = _get_provider(provider_name)
+    return bool(provider and provider.is_available())

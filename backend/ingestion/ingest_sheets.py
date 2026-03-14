@@ -411,10 +411,67 @@ def ingest_open_positions(service, sb):
         logger.info(f"[DRY RUN] Would sync {len(rows)} open positions")
         return len(rows)
 
+    # Upsert snapshot (use normalized symbol as key)
     if rows:
         sb.table("open_positions").upsert(rows, on_conflict="symbol").execute()
-    logger.info(f"✓ OPEN_POSITIONS: {len(rows)} rows synced")
-    return len(rows)
+        logger.info(f"✓ OPEN_POSITIONS: {len(rows)} rows upserted")
+    else:
+        logger.info("No rows to upsert")
+
+    # --- place after your upsert and before returning ---
+    def _norm(s):
+        return s.strip().upper() if s and isinstance(s, str) else None
+
+    # current snapshot symbols (normalized)
+    current_symbols = {_norm(r["symbol"]) for r in rows if r.get("symbol")}
+
+    # fetch existing open_positions symbols and statuses
+    res = sb.table("open_positions").select("symbol,status").execute()
+    existing_rows = res.data or []
+    existing_map = {_norm(r.get("symbol")): r.get("status") for r in existing_rows if r.get("symbol")}
+
+    # symbols present in DB but missing from sheet
+    removed = [s for s in existing_map.keys() if s not in current_symbols]
+    if removed:
+        # fetch closed symbols that have an exit_date
+        closed_res = sb.table("closed_positions").select("symbol,exit_date").execute()
+        closed_symbols = {
+            _norm(r.get("symbol"))
+            for r in (closed_res.data or [])
+            if r.get("symbol") and r.get("exit_date")
+        }
+
+        to_delete = [s for s in removed if s in closed_symbols]
+        to_mark_inactive = [s for s in removed if s not in closed_symbols]
+
+        if DRY_RUN:
+            logger.info(f"[DRY RUN] Would delete {len(to_delete)} symbols: {to_delete}")
+            logger.info(f"[DRY RUN] Would mark INACTIVE {len(to_mark_inactive)} symbols: {to_mark_inactive}")
+        else:
+            batch_size = 100
+            # delete closed ones in batches
+            if to_delete:
+                logger.info(f"Deleting {len(to_delete)} symbol(s) (found in closed_positions): {', '.join(to_delete)}")
+                for i in range(0, len(to_delete), batch_size):
+                    batch = to_delete[i:i+batch_size]
+                    sb.table("open_positions").delete().in_("symbol", batch).execute()
+                    logger.info(f"  ✓ Deleted batch {i//batch_size + 1}: {', '.join(batch)}")
+
+            # mark the rest INACTIVE
+            if to_mark_inactive:
+                logger.info(f"Marking {len(to_mark_inactive)} symbol(s) as INACTIVE (missing from sheet, not in closed_positions): {', '.join(to_mark_inactive)}")
+                for i in range(0, len(to_mark_inactive), batch_size):
+                    batch = to_mark_inactive[i:i+batch_size]
+                    sb.table("open_positions").update({"status": "INACTIVE", "synced_at": "now()"}).in_("symbol", batch).execute()
+                    logger.info(f"  ✓ Marked INACTIVE batch {i//batch_size + 1}: {', '.join(batch)}")
+
+            logger.info(f"✓ Reconciliation complete — Deleted: {len(to_delete)}, Marked INACTIVE: {len(to_mark_inactive)}")
+    else:
+        logger.info("No removed symbols to reconcile")
+    
+    
+
+    
 
 
 def ingest_closed_positions(service, sb):
@@ -950,7 +1007,7 @@ def main():
             logger.error(f"✗ {name} failed: {e}")
             results[name] = 0
 
-    total = sum(results.values())
+    total = sum(v for v in results.values() if v is not None)
     logger.info(f"\n✓ Ingestion complete: {total} total rows across {len(results)} tables")
     return results
 

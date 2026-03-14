@@ -64,53 +64,144 @@ class BaseProvider(ABC):
         pass
 
     def build_prompt(self, stock_data: dict, context: dict) -> str:
-        """Standard prompt used by all LLM providers."""
-        sym    = stock_data.get("symbol", "")
-        sector = stock_data.get("sector", "")
-        score  = stock_data.get("final_score", 0)
-        price  = stock_data.get("current_price", 0)
-        rsi_d  = stock_data.get("rsi_daily", 0)
-        rsi_w  = stock_data.get("rsi_weekly", 0)
-        adx    = stock_data.get("adx", 0)
-        vol_r  = stock_data.get("vol_ratio", 0)
-        del_p  = stock_data.get("delivery_pct", 0)
-        atr_p  = stock_data.get("atr_pct", 0)
-        ret_6m = stock_data.get("ret_6m", 0)
-        lifecycle = stock_data.get("lifecycle", "")
-        eap_action = stock_data.get("eap_action", "NO_CHANGE")
-        regime = context.get("regime", "NEUTRAL")
-        fii_flag = context.get("fii_flag", "NEUTRAL")
-        events = context.get("active_events", [])
-        lessons = context.get("relevant_lessons", [])
+        """
+        Standard prompt used by all LLM providers.
 
-        events_txt  = "; ".join(events[:3]) if events else "None"
-        lessons_txt = "; ".join(lessons[:2]) if lessons else "None"
+        PATCHED: Reads new ai_context structure from ai_enrich.py (G6/G13/G17/G18 patches).
+          - context["market_regime"]    dict  (was: context["regime"] string)
+          - context["fii_dii"]          dict  (was: context["fii_flag"] string)
+          - context["upcoming_events"]  list  (was: context["active_events"])
+          - context["global_cues"]      dict  (NEW)
+          - context["sector_context"]   dict  (NEW — G13)
+          - context["industry_context"] dict  (NEW — G13)
+          - context["portfolio"]        dict  (NEW — G18)
+          - context["relevant_lessons"] list  (unchanged)
+
+        G3: Zero-data guard — warns AI when Phase 2 computed indicators are absent.
+        """
+        sym      = stock_data.get("symbol", "")
+        sector   = stock_data.get("sector", "")
+        industry = stock_data.get("industry", "")
+        score    = stock_data.get("final_score", 0)
+        price    = stock_data.get("current_price", 0)
+        rsi_d    = stock_data.get("rsi_daily", 0)
+        rsi_w    = stock_data.get("rsi_weekly", 0)
+        adx      = stock_data.get("adx", 0)
+        vol_r    = stock_data.get("vol_ratio", 0)
+        del_p    = stock_data.get("delivery_pct", 0)
+        atr_p    = stock_data.get("atr_pct", 0)
+        ret_6m   = stock_data.get("ret_6m", 0)
+        lifecycle   = stock_data.get("lifecycle", "")
+        eap_action  = stock_data.get("eap_action", "NO_CHANGE")
+        signal_type = stock_data.get("signal_type", "BUY_CANDIDATE")
+
+        # ── G3: Zero-data guard ────────────────────────────────────────────────
+        computed_missing = all(
+            v == 0 or v is None
+            for v in [vol_r, adx, ret_6m, atr_p]
+        )
+        computed_note = (
+            "\nNOTE: Computed technical indicators (vol_ratio, adx, ret_6m, atr_pct) are "
+            "not yet populated — compute_indicators.py (Phase 2) not yet deployed. "
+            "Base your conviction on RSI, sector/industry context, FII flow, and events only. "
+            "Do NOT return empty JSON or UNKNOWN — use the available fields."
+        ) if computed_missing else ""
+
+        # ── Market regime (G17: full object) ──────────────────────────────────
+        regime_obj    = context.get("market_regime", {})
+        regime_str    = regime_obj.get("regime", "NEUTRAL") if isinstance(regime_obj, dict) else str(regime_obj)
+        breadth_pct   = regime_obj.get("breadth_pct",     "") if isinstance(regime_obj, dict) else ""
+        regime_score  = regime_obj.get("regime_score",    "") if isinstance(regime_obj, dict) else ""
+        pred_regime   = regime_obj.get("predicted_regime","") if isinstance(regime_obj, dict) else ""
+
+        # ── FII/DII (G17: full object from fii_dii_flow) ─────────────────────
+        fii_obj       = context.get("fii_dii", {})
+        fii_flag      = fii_obj.get("fii_flag",    "NEUTRAL") if isinstance(fii_obj, dict) else "NEUTRAL"
+        fii_net       = fii_obj.get("fii_net",     "")        if isinstance(fii_obj, dict) else ""
+        fii_net_5d    = fii_obj.get("fii_net_5d",  "")        if isinstance(fii_obj, dict) else ""
+        fii_net_20d   = fii_obj.get("fii_net_20d", "")        if isinstance(fii_obj, dict) else ""
+
+        # ── Global cues (G17) ─────────────────────────────────────────────────
+        gcues         = context.get("global_cues", {})
+        gift_nifty    = gcues.get("gift_nifty_chg_pct", "") if isinstance(gcues, dict) else ""
+        gap_signal    = gcues.get("gap_signal",          "") if isinstance(gcues, dict) else ""
+        dow_chg       = gcues.get("us_dow_chg_pct",      "") if isinstance(gcues, dict) else ""
+        nq_chg        = gcues.get("us_nasdaq_chg_pct",   "") if isinstance(gcues, dict) else ""
+        sec_impacts   = gcues.get("sector_impacts",       "") if isinstance(gcues, dict) else ""
+
+        # ── Events (G6) ───────────────────────────────────────────────────────
+        events        = context.get("upcoming_events", context.get("active_events", []))
+        events_txt    = "; ".join(str(e) for e in events[:4]) if events else "None"
+
+        # ── Sector + industry (G13) ───────────────────────────────────────────
+        sec_ctx       = context.get("sector_context", {})
+        sec_rank      = sec_ctx.get("rank",           "") if isinstance(sec_ctx, dict) else ""
+        sec_trend     = sec_ctx.get("trend",          "") if isinstance(sec_ctx, dict) else ""
+        sec_strength  = sec_ctx.get("strength_score", "") if isinstance(sec_ctx, dict) else ""
+
+        ind_ctx       = context.get("industry_context", {})
+        ind_rank      = ind_ctx.get("rank",           "") if isinstance(ind_ctx, dict) else ""
+        ind_state     = ind_ctx.get("industry_state", "") if isinstance(ind_ctx, dict) else ""
+        ind_rsi       = ind_ctx.get("avg_rsi_daily",  "") if isinstance(ind_ctx, dict) else ""
+        ind_top5      = ind_ctx.get("top5_flag",      "") if isinstance(ind_ctx, dict) else ""
+
+        # ── Portfolio context (G18) ───────────────────────────────────────────
+        port          = context.get("portfolio", {})
+        total_open    = port.get("total_open",        0)  if isinstance(port, dict) else 0
+        already_held  = port.get("already_held",      False) if isinstance(port, dict) else False
+        sec_exposure  = port.get("this_sector_count", 0)  if isinstance(port, dict) else 0
+        port_note     = port.get("note",              "") if isinstance(port, dict) else ""
+
+        # ── Lessons ───────────────────────────────────────────────────────────
+        lessons       = context.get("relevant_lessons", [])
+        lessons_txt   = "\n".join(f"  - {l}" for l in lessons[:3]) if lessons else "  None"
 
         return f"""You are an expert Indian equity swing trader with 15+ years of NSE experience.
-Analyze this trade setup and return ONLY valid JSON.
+Analyze this trade setup and return ONLY valid JSON.{computed_note}
 
-STOCK: {sym} | Sector: {sector} | Strategy Score: {score:.1f}
-Price: ₹{price} | RSI(D/W): {rsi_d:.0f}/{rsi_w:.0f} | ADX: {adx:.0f}
+SIGNAL: {sym} | {signal_type} | Sector: {sector} | Industry: {industry}
+Score: {score:.1f} | Price: ₹{price} | Lifecycle: {lifecycle}
+
+TECHNICALS:
+RSI Daily/Weekly: {rsi_d:.0f}/{rsi_w:.0f} | ADX: {adx:.0f}
 Volume Ratio: {vol_r:.1f}x | Delivery%: {del_p:.0f}% | ATR%: {atr_p:.1f}%
-6M Return: {ret_6m:.1f}% | Lifecycle: {lifecycle}
+6M Return: {ret_6m:.1f}%
 
-MARKET CONTEXT:
-Regime: {regime} | FII Flow: {fii_flag}
-Active Events: {events_txt}
+MARKET REGIME:
+Regime: {regime_str}{f" (ML predicted: {pred_regime})" if pred_regime and pred_regime != regime_str else ""}
+Breadth: {breadth_pct} | Score: {regime_score}
 EAP Signal: {eap_action}
 
-RELEVANT LESSONS FROM HISTORY:
+GLOBAL CUES (today):
+Gift Nifty: {gift_nifty}% | Gap: {gap_signal} | DOW: {dow_chg}% | NASDAQ: {nq_chg}%
+Sector impacts: {sec_impacts}
+
+FII/DII FLOWS:
+Today: ₹{fii_net}Cr | 5-day: ₹{fii_net_5d}Cr | 20-day: ₹{fii_net_20d}Cr | Flag: {fii_flag}
+
+SECTOR & INDUSTRY:
+Sector rank: {sec_rank} | Trend: {sec_trend} | Strength: {sec_strength}
+Industry: {industry} | Rank: {ind_rank} | State: {ind_state} | Avg RSI: {ind_rsi} | Top5: {ind_top5}
+
+PORTFOLIO:
+Open positions: {total_open} | Already holding: {already_held}
+This sector exposure: {sec_exposure} positions | {port_note}
+
+UPCOMING EVENTS (next 14 days):
+{events_txt}
+
+LESSONS FROM HISTORY:
 {lessons_txt}
 
 Return ONLY this JSON (no markdown, no explanation):
 {{
   "conviction": "HIGH|MEDIUM|LOW",
-  "conviction_reason": "one sentence",
+  "conviction_reason": "one sentence — specific to this stock's setup",
   "risks": ["risk1", "risk2"],
   "catalyst": "one sentence",
   "suggested_action": "ENTER|WAIT|AVOID",
-  "strategy_validation": "one sentence about rule engine agreement",
-  "conflicts": "any disagreements or NONE",
-  "ai_note": "historical pattern or lesson reference",
-  "confidence": 0.0-1.0
+  "strategy_validation": "one sentence about whether rule engine signal is sound",
+  "conflicts": "any disagreements between signals or NONE",
+  "ai_note": "relevant historical pattern, lesson reference, or portfolio context",
+  "confidence": 0.0
 }}"""

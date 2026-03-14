@@ -16,6 +16,237 @@
 9. [Troubleshooting Reference](#9-troubleshooting-reference)
 10. [Full Repository Structure & Script Reference](#10-full-repository-structure--script-reference)
 
+
+---
+
+## Architecture Overview
+
+```
+Your Google Sheet (Brain)
+       ↓ ingest_sheets.py (6 PM daily)
+   Supabase (Database)
+       ↓ generate_signals.py
+   Signal Log + Frontend
+       ↓ (Phase 1+)
+   AI Enrichment + Telegram
+       ↓ (Phase 2+)
+   Kite Live Prices + Auto Indicators
+       ↓ (Phase 3+)
+   Supervised Execution + Kill Switch
+       ↓ (Phase 4+)
+   Full Autonomy + Self-Evolution
+```
+
+---
+
+## PHASE 0 — Operational (Do this first)
+
+**Goal:** Frontend working with live data from your Sheet. Pipeline runs at 6 PM daily.
+
+---
+
+### Step 1: Prerequisites
+
+Install on your local machine (for testing):
+```bash
+python --version        # Must be 3.11 or 3.12
+git --version           # Any recent version
+```
+
+---
+
+### Step 2: Clone and configure
+
+```bash
+# Clone or unzip the package
+cd tradeos-v6/backend
+
+# Copy .env template
+cp .env.example .env
+
+# Edit .env — fill in these required values:
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_KEY=your-service-role-key
+GOOGLE_SHEET_ID=1yclJSWpRtnenZcd3M1lKbYOnh9CGEnRbMCwlTwv-1Dw
+GOOGLE_CREDENTIALS_JSON=credentials/service_account.json
+TOTAL_CAPITAL=200000
+```
+
+---
+
+### Step 3: Google Sheets API setup
+
+You only do this once.
+
+1. Go to https://console.cloud.google.com
+2. Create a new project (or use existing)
+3. Enable the **Google Sheets API** for that project
+4. Go to **IAM & Admin → Service Accounts**
+5. Click **Create Service Account** → give it any name → Done
+6. Click the service account → **Keys** tab → **Add Key** → JSON
+7. A JSON file downloads — rename it `service_account.json`
+8. Create folder `backend/credentials/` and put the file there
+9. Open your Google Sheet → Share → paste the service account email (ends in `@...iam.gserviceaccount.com`) → Viewer access
+10. Update `.env`: `GOOGLE_CREDENTIALS_JSON=credentials/service_account.json`
+
+---
+
+### Step 4: Install Python dependencies
+
+```bash
+cd tradeos-v6/backend
+pip install -r requirements.txt
+```
+
+On Windows if pip fails:
+```bash
+pip install -r requirements.txt --break-system-packages
+```
+
+---
+
+### Step 5: Set up Supabase database
+
+1. Go to your Supabase project → **SQL Editor**
+2. Copy and run each file in this exact order:
+
+```
+backend/db/schema_v6_base.sql      ← Run FIRST
+backend/db/schema_v6_signals.sql   ← Run SECOND
+backend/db/schema_rls.sql          ← Run LAST
+```
+
+3. Verify tables exist: go to **Table Editor** → you should see:
+   `stock_data_daily, master_shortlist, open_positions, closed_positions,`
+   `sector_strength, market_regime, event_calendar, lessons, msl_history,`
+   `nse_holidays, raw_prices, system_config, strategy_config, signal_log,`
+   `regime_history, nifty_upcoming_events, nifty_total_market`
+
+---
+
+### Step 6: Test ingestion locally
+
+```bash
+cd tradeos-v6/backend
+
+# Test a single step first
+python ingestion/ingest_sheets.py
+
+# Check output — you should see something like:
+# ✓ STOCK_DATA: 500 rows upserted
+# ✓ MASTER_SHORTLIST: 35 rows upserted
+# ✓ OPEN_POSITIONS: 8 rows synced
+# ... etc
+```
+
+If you see errors:
+- `GOOGLE_CREDENTIALS` error → check Step 3 above
+- `SUPABASE` error → check your SUPABASE_URL and SUPABASE_SERVICE_KEY
+- `column not found` → re-run the SQL schema files
+
+---
+
+### Step 7: One-time MSL history backfill
+
+```bash
+python scripts/backfill_msl_history.py
+# Loads the 708 existing MSL history rows from your Sheet
+# Only run this once
+```
+
+---
+
+### Step 8: Test signal generation
+
+```bash
+python signals/generate_signals.py
+
+# You should see:
+# Signal breakdown: {'BUY_CANDIDATE': X, 'WATCH': Y, 'OPEN_POSITION': Z}
+# Regime: RISK OFF
+# BUY CANDIDATES: X
+```
+
+---
+
+### Step 9: Run full pipeline test
+
+```bash
+python run_pipeline.py --dry-run
+# Tests all steps without writing to Supabase
+# All steps should show ✅ OK
+
+python run_pipeline.py
+# Real run — writes to Supabase
+```
+
+---
+
+### Step 10: Deploy frontend
+
+**Option A — Use with Claude.ai:**
+use html
+
+**Option B — Deploy on Vercel/Netlify (recommended):**
+
+npm run dev
+# Opens at http://localhost:5173
+
+**Option C — Run locally:**
+cd tradeos-v6/frontend
+npx vite
+
+---
+
+### Step 11: Automate with GitHub Actions
+
+This runs the pipeline every weekday at 6 PM IST.
+
+1. Push your code to GitHub:
+```bash
+cd tradeos-v6
+git init
+git add .
+git commit -m "TradeOS v6 Phase 0"
+git remote add origin https://github.com/YOUR_USERNAME/tradeos-v6.git
+git push -u origin main
+```
+```
+1.1 Regular Git Commit Steps
+a. cd "C:\Users\vkshu\CRITICAL\Equity Indian Market Framework\tradeos-v6-complete\tradeos-v6"
+git add .
+b. git commit -m "describe what you changed"
+c. git push
+d. git status
+e. git log --oneline
+```
+
+2. Go to GitHub → your repo → **Settings** → **Secrets and variables** → **Actions**
+
+3. Add these secrets (click "New repository secret" for each):
+```
+SUPABASE_URL            → your Supabase project URL
+SUPABASE_SERVICE_KEY    → your service role key
+GOOGLE_SHEET_ID         → 1yclJSWpRtnenZcd3M1lKbYOnh9CGEnRbMCwlTwv-1Dw
+GOOGLE_CREDENTIALS_JSON → paste the ENTIRE contents of service_account.json
+TOTAL_CAPITAL           → 200000
+```
+
+4. Go to **Actions** tab → you should see the workflows listed
+5. Click "TradeOS v6 Daily Pipeline" → "Run workflow" → test it manually once
+6. From tomorrow it runs automatically at 6 PM IST weekdays
+
+---
+
+### Phase 0 is complete when:
+- ✅ `python run_pipeline.py` completes without errors
+- ✅ Supabase tables populated with your Sheet data
+- ✅ Frontend shows your positions, sectors, and BUY candidates
+- ✅ RISK OFF warning banner visible (current regime)
+- ✅ GitHub Actions running at 6 PM IST
+
+---
+
 ---
 
 ## 1. Where You Are Now

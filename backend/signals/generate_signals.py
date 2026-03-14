@@ -108,27 +108,80 @@ def run_tpo(ctl_candidates: set, stocks: dict, cfg_tpo: dict) -> set:
 
 
 def get_eap_action(symbol: str, sector: str, events: list, cfg_eap: dict) -> str:
-    """EAP overlay — checks event calendar for timing signals."""
-    pre_days  = int(cfg_eap.get("pre_event_days", 2))
+    """
+    EAP overlay — checks event calendar for timing signals.
+
+    PATCHED Fix #6: Event-type weighting.
+      HIGH   (RESULTS/EARNINGS/BOARD_MEETING): AVOID_ENTRY pre + PRIORITISE post
+      MEDIUM (AGM/CONCALL):                    AVOID_ENTRY pre only
+      LOW    (DIVIDEND/BONUS/SPLIT):           PRIORITISE post only, never AVOID_ENTRY
+
+    Also added: per-symbol event check (event_calendar.symbol field).
+    Sector-level events still checked as before.
+    """
+    from datetime import date as _date
+
+    pre_days = int(cfg_eap.get("pre_event_days", 2))
+
+    HIGH_IMPACT   = {"RESULTS", "EARNINGS", "QUARTERLY_RESULTS", "BOARD_MEETING",
+                     "BOARD MEETING", "FINANCIAL RESULTS"}
+    MEDIUM_IMPACT = {"AGM", "ANALYST_MEET", "CONCALL", "INVESTOR_MEET"}
+    LOW_IMPACT    = {"DIVIDEND", "BONUS", "SPLIT", "BUYBACK", "RIGHTS"}
+
+    def _classify(ev: dict) -> str:
+        raw = (str(ev.get("event_type") or "") + " " +
+               str(ev.get("purpose") or "")).upper()
+        if any(k in raw for k in HIGH_IMPACT):
+            return "HIGH"
+        if any(k in raw for k in MEDIUM_IMPACT):
+            return "MEDIUM"
+        if any(k in raw for k in LOW_IMPACT):
+            return "LOW"
+        return "MEDIUM"  # unknown events default to medium caution
+
+    best_action = "NO_CHANGE"
+
     for ev in events:
         if not ev.get("is_active"):
             continue
-        affected = str(ev.get("affected_sectors", "")).lower()
-        if sector and sector.lower() in affected or ev.get("event_category") == "GLOBAL":
-            start_d = ev.get("start_date")
-            if not start_d:
-                continue
-            try:
-                from datetime import date as _date
-                sd = _date.fromisoformat(start_d[:10])
-                days = (sd - today_ist()).days
-                if 0 <= days <= pre_days:
-                    return "AVOID_ENTRY"
-                if -pre_days <= days < 0:
-                    return "PRIORITISE"
-            except Exception:
-                pass
-    return "NO_CHANGE"
+
+        # Check relevance: per-symbol OR sector-level OR global
+        ev_symbol   = ev.get("symbol", "")
+        affected    = str(ev.get("affected_sectors", "")).lower()
+        is_relevant = (
+            (ev_symbol and ev_symbol == symbol) or
+            (sector and sector.lower() in affected) or
+            ev.get("event_category") == "GLOBAL"
+        )
+        if not is_relevant:
+            continue
+
+        start_d = ev.get("start_date") or ev.get("event_date")
+        if not start_d:
+            continue
+        try:
+            sd   = _date.fromisoformat(str(start_d)[:10])
+            days = (sd - today_ist()).days  # positive = upcoming, negative = past
+        except Exception:
+            continue
+
+        impact = _classify(ev)
+
+        if impact == "HIGH":
+            if 0 <= days <= pre_days:
+                return "AVOID_ENTRY"        # immediate — stop checking
+            if -pre_days <= days < 0:
+                best_action = "PRIORITISE"
+        elif impact == "MEDIUM":
+            if 0 <= days <= pre_days:
+                if best_action != "AVOID_ENTRY":
+                    best_action = "AVOID_ENTRY"
+        elif impact == "LOW":
+            if -pre_days <= days < 0:
+                if best_action == "NO_CHANGE":
+                    best_action = "PRIORITISE"
+
+    return best_action
 
 
 def is_buy_candidate(msl_row: dict, open_map: dict) -> bool:
@@ -157,7 +210,35 @@ def generate(run_date: date | None = None) -> list[dict]:
 
     stock_map, msl, open_map, regime, events, asm_set, fo_ban_set, industry_map = load_today_data()
 
-    regime_name = regime.get("regime", "NEUTRAL")
+    def _resolve_regime(regime_obj: dict) -> str:
+        """
+        PATCHED Fix #4 Edit B: Prefer ml_regime_classifier predicted_regime when:
+          - predicted_regime field exists and is non-null
+          - regime_predicted_at is within the last 24 hours
+        Falls back to manual 'regime' field otherwise.
+        This bridges Phase 2 ML predictions into signal scoring without
+        changing the existing 'regime' column.
+        """
+        from datetime import datetime, timezone
+        manual    = regime_obj.get("regime", "NEUTRAL")
+        predicted = regime_obj.get("predicted_regime")
+        pred_at   = regime_obj.get("regime_predicted_at")
+        if not predicted or not pred_at:
+            return manual
+        try:
+            if isinstance(pred_at, str):
+                pred_dt = datetime.fromisoformat(pred_at.replace("Z", "+00:00"))
+            else:
+                pred_dt = pred_at
+            if pred_dt.tzinfo is None:
+                pred_dt = pred_dt.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - pred_dt).total_seconds() / 3600 <= 24:
+                return predicted
+        except Exception:
+            pass
+        return manual
+    # PATCHED Fix #4 Edit C: regime_name now resolved from ML prediction when fresh
+    regime_name = _resolve_regime(regime)
     block_buys  = cfg_bool("block_buys_risk_off", False) and regime_name == "RISK OFF"
 
     # Build sector rank lookup
@@ -227,12 +308,18 @@ def generate(run_date: date | None = None) -> list[dict]:
         if asm_flag:
             signal_type = "BLOCKED_ASM"
 
-        # Regime gate
+        # ── PATCHED Fix #4 Edit D: Regime gate (RISK OFF + CAUTION) ──────────────
         regime_warning = False
-        if position_state == "BUY_CANDIDATE" and regime_name == "RISK OFF":
-            regime_warning = True
-            if block_buys:
-                signal_type = "BUY_BLOCKED_REGIME"
+        if position_state == "BUY_CANDIDATE":
+            if regime_name == "RISK OFF":
+                regime_warning = True
+                if block_buys:
+                    signal_type = "BUY_BLOCKED_REGIME"
+            elif regime_name == "CAUTION":
+                # CAUTION: warn but don't block — penalise score 15%
+                regime_warning = True
+                score = round(score * 0.85, 1)
+                logger.debug(f"{sym}: CAUTION regime — score penalised 15% to {score}")
 
         # EAP override
         if eap_action == "AVOID_ENTRY" and position_state == "BUY_CANDIDATE":

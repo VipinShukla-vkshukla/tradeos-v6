@@ -19,11 +19,11 @@ from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import get_supabase, today_ist, MODELS, is_kill_switch_active, logger
+from config import get_supabase, today_ist, MODELS, check_kill_switch, logger
 
 EVOLUTION_PROMPT = """You are a quantitative trading strategy analyst reviewing the performance of a systematic trading system.
 
-RECENT PERFORMANCE (last 90 closed trades):
+RECENT PERFORMANCE (last 30 closed trades):
 {performance_summary}
 
 CURRENT STRATEGY PARAMETERS:
@@ -34,9 +34,6 @@ LESSONS LEARNED (from trade journal — active lessons only):
 
 SIGNAL LOG ANALYSIS (signals fired vs outcomes):
 {signal_analysis}
-
-AI PROVIDER PERFORMANCE (last 14 days):
-{provider_performance}
 
 Your task: Propose specific, evidence-based parameter improvements.
 
@@ -160,45 +157,14 @@ def retrain_ml_model(sb) -> dict:
 
 
 def generate_proposals(sb) -> list[dict]:
-    """
-    Use AI to generate rule change proposals.
-    G8:  Uses is_ai_available() / raw_completion() — AIRouter class removed in v6.
-    G15: Feeds ai_model_performance (14-day provider accuracy) into AI prompt.
-    """
-    from ai.ai_router import raw_completion, is_ai_available
-
-    if not is_ai_available():
-        logger.info("No AI provider configured — evolution proposals skipped")
+    from ai.ai_router import AIRouter
+    router = AIRouter()
+    if not router.is_available():
+        logger.info("No AI available for evolution proposals")
         return []
 
     perf_summary    = get_performance_summary(sb)
     signal_analysis = get_signal_analysis(sb)
-
-    strategy_params = {}
-    try:
-        configs = sb.table("strategy_config").select("strategy,params,enabled").execute().data
-        strategy_params = {r["strategy"]: r["params"] for r in configs}
-    except Exception:
-        pass
-
-    # ── G15: ai_model_performance — 14-day provider accuracy summary ──────────
-    provider_summary = "No provider performance data available"
-    try:
-        perf_rows = (sb.table("ai_model_performance")
-                       .select("provider,accuracy,calls_today,cost_today,date")
-                       .order("date", desc=True).limit(14).execute().data)
-        if perf_rows:
-            by_provider: dict = {}
-            for r in perf_rows:
-                p = r.get("provider", "unknown")
-                by_provider.setdefault(p, []).append(r)
-            lines = []
-            for prov, rows in by_provider.items():
-                avg_acc = sum(float(r.get("accuracy") or 0) for r in rows) / len(rows)
-                lines.append(f"  {prov}: avg_accuracy={avg_acc:.1%} over {len(rows)} days")
-            provider_summary = "\n".join(lines)
-    except Exception as e:
-        logger.debug(f"ai_model_performance fetch skipped: {e}")
 
     strategy_params = {}
     try:
@@ -224,16 +190,15 @@ def generate_proposals(sb) -> list[dict]:
         pass
 
     prompt = EVOLUTION_PROMPT.format(
-        performance_summary  = perf_summary,
-        strategy_params      = json.dumps(strategy_params, indent=2),
-        lessons_summary      = "\n".join(lessons[:5]) or "No active lessons yet",
-        signal_analysis      = signal_analysis,
-        provider_performance = provider_summary,    # G15
+        performance_summary = perf_summary,
+        strategy_params     = json.dumps(strategy_params, indent=2),
+        lessons_summary     = "\n".join(lessons[:5]) or "No active lessons yet",
+        signal_analysis     = signal_analysis,
     )
 
     try:
         import re
-        raw = raw_completion(prompt, max_tokens=1500)
+        raw = router.raw_completion(prompt, max_tokens=1500)
         json_match = re.search(r'\[.*\]', raw, re.DOTALL)
         if not json_match:
             return []
@@ -244,9 +209,7 @@ def generate_proposals(sb) -> list[dict]:
 
 
 def main():
-    if is_kill_switch_active():
-        logger.warning("Kill switch active — evolution_tracker skipped")
-        return {"status": "skipped", "reason": "kill_switch"}
+    check_kill_switch()
     logger.info("Evolution Tracker starting (Sunday run)")
     sb    = get_supabase()
     today = today_ist()

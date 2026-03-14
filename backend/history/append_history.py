@@ -66,7 +66,40 @@ def main():
             ).execute()
 
     logger.info(f"✓ MSL History: {len(hist_rows)} rows snapshotted for {today}")
+
+    # ── G14: Snapshot today's market_regime into regime_history ───────────────
+    # Required by evolution_tracker (Phase 4) for drift analysis.
+    # Non-fatal — MSL snapshot already written above.
+    _snapshot_regime(sb, today)
+
     return {"snapshotted": len(hist_rows), "date": today}
+
+
+def _snapshot_regime(sb, today: str) -> None:
+    """
+    G14: Write today's market_regime row into regime_history.
+    Gives evolution_tracker a time-series of regime changes to analyse.
+    Non-fatal — called after MSL snapshot, failure does not affect pipeline.
+    """
+    try:
+        regime_rows = (sb.table("market_regime")
+                         .select("*")
+                         .order("date", desc=True).limit(1).execute().data)
+        if not regime_rows:
+            logger.debug("G14: No market_regime rows found — regime_history skipped")
+            return
+
+        row = {k: v for k, v in regime_rows[0].items() if k != "id"}
+        row["snapshot_date"] = today
+
+        if not DRY_RUN:
+            sb.table("regime_history").upsert(
+                row, on_conflict="snapshot_date"
+            ).execute()
+
+        logger.info(f"✓ regime_history snapshot: {regime_rows[0].get('regime', '?')} for {today}")
+    except Exception as e:
+        logger.warning(f"regime_history snapshot failed (non-fatal): {e}")
 
 
 if __name__ == "__main__":
