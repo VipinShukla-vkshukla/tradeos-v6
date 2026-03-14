@@ -36,7 +36,7 @@
 |-------|--------|-------------|
 | **Phase 0** | ✅ **COMPLETE** | Pipeline running, signals generated, frontend live |
 | **Phase 1** | ✅ **COMPLETE** | AI conviction, FII/DII, NSE events, Telegram alerts, scanner |
-| **Patches** | 🔴 **APPLY NOW** | 8 strategic bugs fixed + G1–G18 intelligence gaps |
+| **Patches** | ✅ **APPLIED 03.14.2026** | Fix #1–#6 + NEW-A + NEW-B deployed. G1–G18 next. |
 | **Phase 2** | 🔲 Next | Computation engine, auto indicators, ASM/GSM, ML regime |
 | **Phase 3** | 🔲 Future | Supervised execution via Telegram approval |
 | **Phase 4** | 🔲 Future | Full autonomy, self-evolution, Google Sheet eliminated |
@@ -465,17 +465,17 @@ cp strategic_patches/new_workflows/pipeline_morning_updated.yml .github/workflow
 ### Strategic Patch Deployment Checklist
 
 ```
-[ ] Step 0:  Run migration_strategic_fixes.sql in Supabase      ← MUST BE FIRST
-[ ] Step 1:  Replace ingest_fii_dii.py          (Fix #1)        ← CRITICAL
-[ ] Step 2:  Replace post_trade_analysis.py     (Fix #2)        ← CRITICAL
-[ ] Step 3:  Replace ai_enrich.py               (Fix #3)        ← CRITICAL
-[ ] Step 4:  Edit generate_signals.py (4 spots) (Fix #4 + #6)
-[ ] Step 5:  Replace evolution_tracker.py       (Fix #5)
-[ ] Step 6:  Add sl_monitor.py                  (NEW-A)
-[ ] Step 7:  Add kite_reconcile.py              (NEW-B)
-[ ] Step 8:  Add pipeline_intraday.yml          (new workflow)
-[ ] Step 9:  Replace pipeline_morning.yml       (updated workflow)
-[ ] Step 10: git push → verify GitHub Actions   (both new workflows appear)
+[x] Step 0:  Run migration_strategic_fixes.sql in Supabase      ✅ Done 03.14.2026
+[x] Step 1:  Replace ingest_fii_dii.py          (Fix #1)        ✅ Done 03.14.2026
+[x] Step 2:  Replace post_trade_analysis.py     (Fix #2)        ✅ Done 03.14.2026
+[x] Step 3:  Replace ai_enrich.py               (Fix #3)        ✅ Done 03.14.2026
+[x] Step 4:  Edit generate_signals.py (4 spots) (Fix #4 + #6)   ✅ Done 03.14.2026
+[x] Step 5:  Replace evolution_tracker.py       (Fix #5)        ✅ Done 03.14.2026
+[x] Step 6:  Add sl_monitor.py                  (NEW-A)         ✅ Done 03.14.2026
+[x] Step 7:  Add kite_reconcile.py              (NEW-B)         ✅ Done 03.14.2026
+[x] Step 8:  Add pipeline_intraday.yml          (new workflow)  ✅ Done 03.14.2026
+[x] Step 9:  Replace pipeline_morning.yml       (updated)       ✅ Done 03.14.2026
+[x] Step 10: git push → verify GitHub Actions   ✅ Done 03.14.2026
 ```
 
 **Minimum viable deploy before tonight's pipeline:** Steps 0, 1, 2, 3 — these are independent and safe to deploy immediately.
@@ -795,31 +795,33 @@ nq_chg_pct  = round((us_nasdaq_close - nasdaq_prev) / nasdaq_prev * 100, 4) if n
 
 ```
 Critical (must apply before Phase 2):
-[ ] G1:  SQL (9 cols) + generate_signals.py sig dict
-[ ] G2:  post_trade_analysis.py outcome_pnl_pct  (in Fix #2 patch file)
-[ ] G6:  ai_enrich.py — event_calendar in context
-[ ] G17: ai_enrich.py — market_regime + global_cues in context
-[ ] G18: ai_enrich.py — open_positions portfolio in context
-[ ] G7:  SQL — lessons quality columns             (in SQL migration)
-[ ] G10: Already fixed by Fix #1 ✅
+[x] G1:  SQL (9 cols) + generate_signals.py sig dict ✅ Done 03.14.2026
+[x] G2:  post_trade_analysis.py outcome_pnl_pct  (in Fix #2 patch file) ✅ Done 03.14.2026
+[x] G6:  ai_enrich.py — event_calendar in context ✅ Done 03.14.2026
+[x] G17: ai_enrich.py — market_regime + global_cues in context ✅ Done 03.14.2026
+[x] G18: ai_enrich.py — open_positions portfolio in context ✅ Done 03.14.2026
+[x] G7:  SQL — lessons quality columns             (in SQL migration)✅ Done 03.14.2026
+[x] G10: Already fixed by Fix #1 ✅ Done 03.14.2026
 
 Moderate (apply before Phase 2):
-[ ] G3:  ai_enrich.py — zero-data prompt guard
-[ ] G5:  4 provider files — JSON fence strip
-[ ] G13: ai_enrich.py — sector + industry in context
-[ ] G8:  evolution_tracker.py kill switch          (in Fix #5 patch file)
-[ ] G9:  evolution_tracker.py rich lessons context (in Fix #5 patch file)
+[] G3:  ai_enrich.py — zero-data prompt guard
+[x] G5:  4 provider files — JSON fence strip ✅ Done 03.14.2026
+[x] G13: ai_enrich.py — sector + industry in context ✅ Done 03.14.2026
+[x] G8:  evolution_tracker.py kill switch          (in Fix #5 patch) ✅ Done 03.14.2026
+[x] G9:  evolution_tracker.py rich lessons context (in Fix #5 patch) ✅ Done 03.14.2026
 
 Minor (apply before Phase 4):
-[ ] G4:  ai_enrich.py + SQL — ai_strategy_validation
-[ ] G14: append_history.py — regime_history snapshot
-[ ] G15: evolution_tracker.py — provider performance in AI
-[ ] G16: ingest_global_cues.py — S&P500 + change%
+[x] G4:  ai_enrich.py + SQL — ai_strategy_validation ✅ Done 03.14.2026
+[x] G14: append_history.py — regime_history snapshot ✅ Done 03.14.2026
+[x] G15: evolution_tracker.py — provider performance in AI ✅ Done 03.14.2026
+[x] G16: ingest_global_cues.py — S&P500 + change% ✅ Done 03.14.2026
 
 Resolved:
-[✅] G11: pipeline_morning.yml cron — confirmed correct
-[✅] G12: Morning alert — confirmed wired
-[✅] G10: FII column names — fixed by Fix #1
+[x] G11: pipeline_morning.yml cron — confirmed correct ✅
+[x] G12: Morning alert — confirmed wired ✅
+[x] G10: FII column names — fixed by Fix #1 ✅ Done 03.14.2026
+[x] G8:  Kill switch pattern — fixed by Fix #5 ✅ Done 03.14.2026
+[x] G9:  Lesson dedup/filtering — fixed by Fix #5 ✅ Done 03.14.2026
 ```
 
 ---
@@ -2032,6 +2034,6 @@ After all G-patches applied, every AI signal conviction call receives:
 
 *TradeOS v6 · Golden Copy v4.0 · March 2026*
 *Google Sheet ID: 1yclJSWpRtnenZcd3M1lKbYOnh9CGEnRbMCwlTwv-1Dw*
-*Phases: 0 ✅ · 1 ✅ · Patches 🔴 · 2 🔲 · 3 🔲 · 4 🔲*
+*Phases: 0 ✅ · 1 ✅ · Patches ✅ (03.14.2026) · G1–G18 🔴 · 2 🔲 · 3 🔲 · 4 🔲*
 *Scripts: 30 live · 8 to build · 4 to patch*
 *Tables: 24 active · 3 pending (safety_lists, discovery_proposals, + data_anomalies extended)*

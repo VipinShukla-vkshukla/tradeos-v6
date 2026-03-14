@@ -1,0 +1,1379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TradeOS v6 — Full Connectivity Map</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+:root {
+  --bg:#07090d; --s1:#0d1117; --s2:#161b22; --s3:#1c2230;
+  --b1:#21262d; --b2:#30363d; --b3:#444c56;
+  --text:#e6edf3; --muted:#7d8590; --dim:#484f58;
+  --green:#56d364; --gd:#0d2114; --gb:#1a4428;
+  --blue:#58a6ff; --bd:#0c1e3a; --bb:#1a3a6e;
+  --yellow:#e3b341; --yd:#2a1f00; --yb:#4a3800;
+  --red:#f85149; --rdd:#2a0a0a; --rb:#5a1a1a;
+  --purple:#bc8cff; --pd:#1a0a2e; --pb:#3a1a5e;
+  --cyan:#39c5cf; --cd:#0a1e22; --cb:#1a3e44;
+  --orange:#f0883e; --od:#2a1000; --ob:#5a2a00;
+  --pink:#db61a2; --pkd:#2a0a1a;
+  --phase0:#56d364; --phase1:#58a6ff; --phase2:#bc8cff; --phase3:#f0883e; --phase4:#e3b341;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:13px;height:100vh;overflow:hidden;display:flex;flex-direction:column;}
+.mono{font-family:'JetBrains Mono',monospace;}
+
+/* ─── TOP BAR ─── */
+.topbar{background:var(--s1);border-bottom:1px solid var(--b1);padding:0 16px;display:flex;align-items:center;gap:16px;height:44px;flex-shrink:0;}
+.logo{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;color:var(--cyan);letter-spacing:.1em;}
+.title{font-size:13px;font-weight:600;}
+.subtitle{font-size:11px;color:var(--muted);}
+.tabs{display:flex;gap:2px;margin-left:auto;}
+.tab{padding:5px 14px;border-radius:5px;border:1px solid var(--b2);background:transparent;color:var(--muted);font-size:11px;font-weight:600;cursor:pointer;font-family:'IBM Plex Sans',sans-serif;transition:all .15s;}
+.tab:hover{border-color:var(--blue);color:var(--blue);}
+.tab.on{background:var(--bd);border-color:var(--blue);color:var(--blue);}
+
+/* ─── MAIN LAYOUT ─── */
+.shell{display:flex;flex:1;overflow:hidden;}
+
+/* ─── LEGEND ─── */
+.legend{width:180px;background:var(--s1);border-right:1px solid var(--b1);padding:12px 10px;overflow-y:auto;flex-shrink:0;}
+.leg-section{margin-bottom:14px;}
+.leg-title{font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;padding:0 4px;}
+.leg-item{display:flex;align-items:center;gap:7px;padding:4px;border-radius:4px;cursor:pointer;font-size:11px;color:var(--muted);transition:all .1s;}
+.leg-item:hover{background:var(--s2);color:var(--text);}
+.leg-item.on{background:var(--s2);color:var(--text);}
+.leg-dot{width:8px;height:8px;border-radius:2px;flex-shrink:0;}
+
+/* ─── VIEWS ─── */
+.view{display:none;flex:1;overflow:hidden;}
+.view.on{display:flex;}
+
+/* ─── PIPELINE VIEW ─── */
+#view-pipeline{flex-direction:column;overflow-y:auto;padding:20px;}
+.pipeline-title{font-size:15px;font-weight:600;margin-bottom:4px;}
+.pipeline-sub{font-size:11px;color:var(--muted);margin-bottom:20px;}
+
+.pipe-grid{display:grid;grid-template-columns:1fr;gap:0;}
+.pipe-row{display:flex;align-items:stretch;border-bottom:1px solid var(--b1);}
+.pipe-row:last-child{border-bottom:none;}
+.pipe-label{width:160px;flex-shrink:0;padding:12px 14px;background:var(--s1);border-right:1px solid var(--b1);display:flex;flex-direction:column;justify-content:center;}
+.pipe-label-name{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;}
+.pipe-label-time{font-size:10px;color:var(--muted);margin-top:2px;}
+.pipe-steps{display:flex;align-items:center;gap:0;flex:1;overflow-x:auto;padding:12px 16px;gap:6px;}
+.pipe-step{flex-shrink:0;background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:8px 12px;cursor:pointer;transition:all .15s;min-width:130px;}
+.pipe-step:hover{border-color:var(--blue);background:var(--bd);}
+.pipe-step.selected{border-color:var(--cyan);background:var(--cd);}
+.pipe-step-num{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--muted);margin-bottom:3px;}
+.pipe-step-name{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;margin-bottom:4px;}
+.pipe-step-desc{font-size:10px;color:var(--muted);line-height:1.4;}
+.pipe-arrow{color:var(--b3);font-size:14px;flex-shrink:0;margin:0 2px;}
+.pipe-fatal{font-size:8px;font-weight:700;padding:1px 5px;border-radius:3px;display:inline-block;margin-top:4px;}
+.fatal-y{background:var(--rdd);color:var(--red);border:1px solid var(--red);}
+.fatal-n{background:var(--gd);color:var(--green);border:1px solid var(--green);}
+
+/* step detail panel */
+.step-detail{background:var(--s2);border-top:1px solid var(--b1);padding:16px 20px;flex-shrink:0;max-height:280px;overflow-y:auto;}
+.sd-title{font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700;color:var(--cyan);margin-bottom:8px;}
+.sd-desc{font-size:12px;color:var(--text);line-height:1.6;margin-bottom:12px;}
+.sd-io{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+.sd-col-title{font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px;}
+.reads-lbl{color:var(--blue);}
+.writes-lbl{color:var(--green);}
+.io-table{background:var(--s1);border:1px solid var(--b1);border-radius:6px;margin-bottom:6px;overflow:hidden;}
+.io-table-head{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg);border-bottom:1px solid var(--b1);}
+.io-tname{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;color:var(--yellow);}
+.io-action{font-size:9px;color:var(--muted);margin-left:auto;}
+.io-fields{display:flex;flex-wrap:wrap;gap:3px;padding:7px 10px;}
+.ftag{font-family:'JetBrains Mono',monospace;font-size:9px;padding:2px 6px;border-radius:3px;display:inline-block;}
+.fr{background:var(--bd);color:var(--blue);border:1px solid #1a3060;}
+.fw{background:var(--gd);color:var(--green);border:1px solid #1a3020;}
+.fk{background:var(--yd);color:var(--yellow);border:1px solid #3a2a10;}
+.fai{background:var(--pd);color:var(--purple);border:1px solid #2a1060;}
+.fml{background:var(--cd);color:var(--cyan);border:1px solid #1a3040;}
+
+/* ─── MATRIX VIEW ─── */
+#view-matrix{overflow:auto;padding:20px;}
+.matrix-wrap{min-width:max-content;}
+.matrix-table{border-collapse:collapse;font-size:10px;}
+.matrix-table th{padding:6px 8px;background:var(--s1);border:1px solid var(--b1);font-weight:600;position:sticky;top:0;z-index:2;}
+.matrix-table th.script-header{writing-mode:vertical-rl;text-orientation:mixed;transform:rotate(180deg);padding:10px 4px;font-family:'JetBrains Mono',monospace;font-size:9px;max-width:28px;white-space:nowrap;min-height:100px;}
+.matrix-table th.row-header{position:sticky;left:0;z-index:3;background:var(--s1);min-width:160px;}
+.matrix-table td{padding:4px;border:1px solid var(--b1);text-align:center;font-size:10px;min-width:28px;}
+.matrix-table td.row-header{text-align:left;padding:4px 10px;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:600;color:var(--yellow);background:var(--s1);position:sticky;left:0;z-index:1;white-space:nowrap;}
+.cell-rw{background:#0d2920;color:var(--green);font-weight:700;font-size:9px;}
+.cell-r{background:var(--bd);color:var(--blue);font-size:9px;}
+.cell-w{background:var(--gd);color:var(--green);font-size:9px;}
+.phase-row-0 td.row-header{border-left:3px solid var(--phase0);}
+.phase-row-1 td.row-header{border-left:3px solid var(--phase1);}
+.phase-row-2 td.row-header{border-left:3px solid var(--phase2);}
+.phase-row-3 td.row-header{border-left:3px solid var(--phase3);}
+.phase-row-4 td.row-header{border-left:3px solid var(--phase4);}
+.matrix-legend{display:flex;gap:16px;margin-bottom:14px;align-items:center;flex-wrap:wrap;}
+.ml-item{display:flex;align-items:center;gap:5px;font-size:11px;}
+.ml-box{width:20px;height:14px;border-radius:2px;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;}
+
+/* ─── AI CONTEXT VIEW ─── */
+#view-ai{flex-direction:column;overflow-y:auto;padding:20px;}
+.ai-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;}
+.ai-card{background:var(--s1);border:1px solid var(--b1);border-radius:10px;overflow:hidden;}
+.ai-card-head{padding:12px 14px;background:var(--bg);border-bottom:1px solid var(--b1);}
+.ai-card-title{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;margin-bottom:2px;}
+.ai-card-sub{font-size:10px;color:var(--muted);}
+.ai-card-body{padding:14px;}
+.ai-source{display:flex;align-items:baseline;gap:8px;margin-bottom:8px;padding:7px;background:var(--s2);border-radius:5px;}
+.ai-source-table{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:600;color:var(--yellow);min-width:140px;}
+.ai-source-fields{display:flex;flex-wrap:wrap;gap:3px;}
+.ai-output-box{background:var(--s2);border:1px solid var(--b1);border-radius:6px;padding:10px 12px;font-size:11px;font-family:'JetBrains Mono',monospace;line-height:2;}
+
+/* ─── EVOLUTION VIEW ─── */
+#view-evolution{flex-direction:column;overflow-y:auto;padding:20px;}
+.evo-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:20px;}
+.evo-card{background:var(--s1);border:1px solid var(--b1);border-radius:10px;padding:14px;}
+.evo-card-title{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--b1);display:flex;align-items:center;gap:8px;}
+.evo-step{display:flex;gap:10px;margin-bottom:10px;padding:8px;background:var(--s2);border-radius:6px;}
+.evo-n{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;flex-shrink:0;color:var(--muted);}
+.evo-text{font-size:11px;}
+.evo-sub{font-size:10px;color:var(--muted);margin-top:3px;}
+.ml-features{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:10px;}
+.ml-feat{background:var(--s2);border:1px solid var(--b2);border-radius:5px;padding:7px;}
+.ml-feat-name{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;color:var(--purple);margin-bottom:3px;}
+.ml-feat-desc{font-size:10px;color:var(--muted);line-height:1.4;}
+
+/* ─── PHASE BADGES ─── */
+.ph{padding:2px 7px;border-radius:3px;font-size:9px;font-weight:700;font-family:'JetBrains Mono',monospace;display:inline-block;}
+.ph0{background:var(--gd);color:var(--phase0);border:1px solid var(--phase0);}
+.ph1{background:var(--bd);color:var(--phase1);border:1px solid var(--phase1);}
+.ph2{background:var(--pd);color:var(--phase2);border:1px solid var(--phase2);}
+.ph3{background:var(--od);color:var(--phase3);border:1px solid var(--phase3);}
+.ph4{background:var(--yd);color:var(--phase4);border:1px solid var(--phase4);}
+.phw{background:var(--pkd);color:var(--pink);border:1px solid var(--pink);}
+
+/* utils */
+.section-h{font-size:15px;font-weight:600;margin-bottom:4px;display:flex;align-items:center;gap:10px;}
+.section-sub{font-size:11px;color:var(--muted);margin-bottom:18px;}
+hr.div{border:none;border-top:1px solid var(--b1);margin:18px 0;}
+::-webkit-scrollbar{width:5px;height:5px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:var(--b2);border-radius:3px;}
+</style>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<div class="topbar">
+  <div><div class="logo">TRADEOS v6</div></div>
+  <div>
+    <div class="title">Full Connectivity Map</div>
+    <div class="subtitle">Every script · Every table · Every field · AI + Evolution deep-dive</div>
+  </div>
+  <div class="tabs">
+    <button class="tab on" onclick="switchTab('pipeline',this)">Pipeline Flow</button>
+    <button class="tab" onclick="switchTab('matrix',this)">R/W Matrix</button>
+    <button class="tab" onclick="switchTab('ai',this)">AI Context</button>
+    <button class="tab" onclick="switchTab('evolution',this)">Evolution Loop</button>
+    <button class="tab" style="background:var(--green);color:#000;font-weight:700;" onclick="switchTab('patches',this)">✅ Patch Status</button>
+  </div>
+</div>
+
+<div class="shell">
+<!-- LEGEND -->
+<div class="legend">
+  <div class="leg-section">
+    <div class="leg-title">Phase</div>
+    <div class="leg-item"><div class="leg-dot" style="background:var(--phase0)"></div>Phase 0 — Now</div>
+    <div class="leg-item"><div class="leg-dot" style="background:var(--phase1)"></div>Phase 1 — Month 1-2</div>
+    <div class="leg-item"><div class="leg-dot" style="background:var(--phase2)"></div>Phase 2 — Month 3-4</div>
+    <div class="leg-item"><div class="leg-dot" style="background:var(--phase3)"></div>Phase 3 — Month 5-6</div>
+    <div class="leg-item"><div class="leg-dot" style="background:var(--phase4)"></div>Phase 4 — Month 7+</div>
+  </div>
+  <div class="leg-section">
+    <div class="leg-title">Data Flow</div>
+    <div class="leg-item"><div class="leg-dot" style="background:var(--blue)"></div>READ from table</div>
+    <div class="leg-item"><div class="leg-dot" style="background:var(--green)"></div>WRITE to table</div>
+    <div class="leg-item"><div class="leg-dot" style="background:var(--yellow)"></div>Key/unique field</div>
+    <div class="leg-item"><div class="leg-dot" style="background:var(--purple)"></div>AI output field</div>
+    <div class="leg-item"><div class="leg-dot" style="background:var(--cyan)"></div>ML feature field</div>
+  </div>
+  <div class="leg-section">
+    <div class="leg-title">Fatal</div>
+    <div class="leg-item"><div class="leg-dot" style="background:var(--red)"></div>FATAL — stops pipeline</div>
+    <div class="leg-item"><div class="leg-dot" style="background:var(--green)"></div>Non-fatal — continues</div>
+  </div>
+  <div class="leg-section">
+    <div class="leg-title">Quick Help</div>
+    <div style="font-size:10px;color:var(--muted);padding:0 4px;line-height:1.6">
+      Click any step in Pipeline view to see full field detail.<br><br>
+      R/W Matrix shows every script × table relationship at a glance.<br><br>
+      AI Context shows exactly what fields go into each AI prompt.
+    </div>
+  </div>
+</div>
+
+<!-- VIEWS -->
+<div id="view-pipeline" class="view on">
+  <div id="pipeline-content" style="flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:0;">
+    <div class="pipeline-title">Pipeline Flow — All Schedules</div>
+    <div class="pipeline-sub">Click any step to see its complete read/write field detail below</div>
+    <!-- pipeline rows injected by JS -->
+  </div>
+  <div id="step-detail-panel" style="display:none;" class="step-detail">
+    <!-- step detail injected by JS -->
+  </div>
+</div>
+
+<div id="view-matrix" class="view">
+  <!-- matrix injected by JS -->
+</div>
+
+<div id="view-ai" class="view">
+  <!-- AI context injected by JS -->
+</div>
+
+<div id="view-evolution" class="view">
+  <!-- evolution injected by JS -->
+</div>
+
+<div id="view-patches" class="view" style="padding:24px;overflow-y:auto;">
+  <!-- patch status injected by JS -->
+</div>
+
+</div><!-- /shell -->
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// DATA — ALL STEPS with complete field info from actual code
+// ═══════════════════════════════════════════════════════════════
+const STEPS = [
+  // ── DAILY EVENING PIPELINE ──────────────────────────────────
+  {
+    id:'fetch_chartink', group:'Evening 6 PM', num:'01', fatal:true, phase:0,
+    name:'fetch_chartink.py', path:'backend/ingestion/',
+    desc:'Playwright browser → Chartink Atlas → downloads Nifty 500 CSV → upserts ~500 rows to Supabase + writes to Google Sheet tab. First script every evening. PRIMARY data source for all technical indicators.',
+    reads:[],
+    writes:[
+      {table:'chartink_raw_data', action:'UPSERT', conflict:'date,symbol',
+       fields:[
+         'date','symbol','sector','industry','market_cap','market_cap_cat',
+         '-- OHLC [⚠ col names differ from stock_data_daily] --',
+         'daily_open [→open]','daily_high [→high]','daily_low [→low]','daily_close [→close]',
+         'week52_high [→high_52w]','week52_low [→low_52w]','high_30d',
+         '-- Moving Averages [match] --',
+         'sma_10','sma_20','sma_50','sma_200','ema_10','ema_20','ema_50',
+         '-- RSI/ADX [⚠ adx_14→adx, di names differ] --',
+         'rsi_daily','rsi_weekly','rsi_monthly',
+         'adx_14 [→adx]','adx_plus_di [→di_plus]','adx_minus_di [→di_minus]',
+         '-- Volume/VWAP [⚠ col names differ] --',
+         'volume','avg_vol_20 [→avg_vol_20d]','avg_vol_50 [→avg_vol_50d]',
+         'vwap_daily [→vwap]','vwap_20d','vwap_50d',
+         '-- Indicators [⚠ some col names differ] --',
+         'pct_change','atr_14','atr_pct',
+         'ha_high','ha_low','ha_close','supertrend',
+         'macd_line','macd_signal','macd_histogram [→macd_hist]',
+         'parabolic_sar [→psar]',
+         'upper_bb [→bb_upper]','lower_bb [→bb_lower]',
+         'stochastic [→stoch]',
+         '-- Fundamentals [⚠ col names differ] --',
+         'ttm_net_profit','net_profit_yr [→net_profit_yearly]','eps',
+         'qtr_net_profit [→quarterly_net_profit]','qtr_var_profit [→quarterly_variance]',
+         'ingested_at'
+       ],
+       key:['date','symbol'],
+       note:'⚠ 21 col name mismatches vs stock_data_daily — compute_indicators.py must rename all [→target] fields before upsert. Exact rename map: daily_open→open, daily_high→high, daily_low→low, daily_close→close, week52_high→high_52w, week52_low→low_52w, adx_14→adx, adx_plus_di→di_plus, adx_minus_di→di_minus, avg_vol_20→avg_vol_20d, avg_vol_50→avg_vol_50d, vwap_daily→vwap, macd_histogram→macd_hist, parabolic_sar→psar, upper_bb→bb_upper, lower_bb→bb_lower, stochastic→stoch, net_profit_yr→net_profit_yearly, market_cap_cat→market_cap_category, qtr_net_profit→quarterly_net_profit, qtr_var_profit→quarterly_variance'},
+      {table:'Google Sheet: Chartink Raw Data_Nifty 500', action:'REPLACE', conflict:'',
+       fields:['~50 raw CSV columns from Chartink'], key:[]}
+    ],
+    external:[{name:'Chartink Atlas (atlas.chartink.com)', note:'Playwright login — CHARTINK_EMAIL + PASSWORD. ~500 rows. Saves hover_debug.png on failure.'}]
+  },
+  {
+    id:'ingest_bhavcopy', group:'Evening 6 PM', num:'02', fatal:false, phase:0,
+    name:'ingest_bhavcopy.py', path:'backend/ingestion/',
+    desc:'Downloads NSE end-of-day bhavcopy CSV — no API key. Extracts delivery %, delivery qty, value_cr, prev_close. Joins on symbol+date and upserts ONLY delivery columns to stock_data_daily. Falls back to BSE if NSE unavailable.',
+    reads:[],
+    writes:[
+      {table:'stock_data_daily', action:'UPSERT (delivery cols only)', conflict:'date,symbol',
+       fields:['delivery_pct','delivery_qty','value_cr','prev_close'], key:['date','symbol']}
+    ],
+    external:[{name:'NSE Archives (public)', note:'archives.nseindia.com — no auth. BSE as fallback.'}]
+  },
+  {
+    id:'ingest_sheets', group:'Evening 6 PM', num:'03', fatal:true, phase:0,
+    name:'ingest_sheets.py', path:'backend/ingestion/',
+    desc:'Reads 15 Google Sheet tabs → Supabase. Row offsets hardcoded to your exact Sheet layout. FATAL — if this fails, no signals. Deprecated in Phase 4 when all ingestion is direct Python.',
+    reads:[{table:'Google Sheet (17 tabs)', fields:['STOCK_DATA (500×78 cols)','MASTER_SHORTLIST (35 rows)','OPEN_POSITIONS','CLOSED_POSITIONS','SECTOR_STRENGTH','INDUSTRY_STRENGTH','MARKET_REGIME','EVENT_CALENDAR','LESSONS','MSL_HISTORY','NSE_HOLIDAYS','NIFTY_BHAVCOPY','NIFTY_UPCOMING_EVENTS','NIFTY_TOTAL_MARKET','Chartink Raw Data_Nifty 500','STRATEGY_CONTROLS','SYSTEM_PARAMETERS'], note:'Service account with Editor access on Sheet ID 1yclJSWp...'}],
+    writes:[
+      {table:'stock_data_daily', action:'UPSERT daily', conflict:'date,symbol',
+        fields:[
+          '── Identity ──','date','symbol','company_name [GAP: no chartink source]','index_membership [GAP]',
+          '── Classification ──','sector','industry','market_cap','market_cap_category',
+          '── Price / OHLC ──','current_price','open','high','low','close',
+          'high_52w','low_52w','high_30d','low_30d [Phase4: rolling min of chartink daily_low over 30d window]','close_30d [Phase4: close on day of highest close in 30d window from chartink history]',
+          'price_6m_ago [compute_indicators: derive from history]','price_12m_ago [compute_indicators: derive]',
+          '── Returns ──','ret_1w','ret_1m','ret_3m','ret_6m','ret_12m',
+          '── Moving Averages ──','sma_10','sma_20','sma_50','sma_200','ema_10','ema_20','ema_50',
+          '── Momentum / Oscillators ──','rsi_daily','rsi_weekly','rsi_monthly',
+          'adx','di_plus','di_minus',
+          '── Volume ──','volume','avg_vol_20d','avg_vol_50d',
+          '── VWAP ──','vwap','vwap_20d','vwap_50d',
+          '── Misc Technical ──','pct_change','atr_14','atr_pct',
+          'ha_high','ha_low','ha_close','supertrend',
+          'macd_line','macd_signal','macd_hist','psar','bb_upper','bb_lower','stoch',
+          '── Fundamentals (Chartink) ──','ttm_net_profit','net_profit_yearly','eps','quarterly_net_profit','quarterly_variance',
+          '── Boolean Flags ──','above_sma50','sma50_gt_200',
+          'above_st [compute_indicators: close > supertrend]',
+          'wk_hi_high [Phase4: last5d_high > prev5d_high rolling window on daily_high — mirrors Sheet formula]','wk_hi_low [Phase4: last5d_low > prev5d_low rolling window on daily_low — mirrors Sheet formula]',
+          '── Computed Cols ──','dist_sma50','vol_ratio','consol_range','breakout_setup',
+          'bk_trigger [GAP: breakout trigger vs setup differ]',
+          'price_location','rs_vs_nifty [compute_indicators]',
+          '── Bhavcopy (ingest_bhavcopy) ──','value_cr','delivery_pct',
+          '── Sheet-only / Deprecated in P2 ──',
+          'upcoming_events [→ event_calendar table P2]','upcoming_event_type [→ event_calendar P2]',
+          'in_master_shortlist [redundant — MSL table exists]'
+        ],
+        key:['date','symbol'],
+        note:'78 fields total. Phase 4 sources: Chartink→57 fields (via compute_indicators with name-mapping); Bhavcopy→2; compute_indicators→13 derived; 6 flagged as GAP (no confirmed alternate). NAME MISMATCHES between chartink_raw_data and stock_data_daily (compute_indicators must translate): daily_close→close, adx_14→adx, avg_vol_20→avg_vol_20d, upper_bb→bb_upper, net_profit_yr→net_profit_yearly, week52_high→high_52w, vwap_daily→vwap, parabolic_sar→psar, macd_histogram→macd_hist, stochastic→stoch, qtr_net_profit→quarterly_net_profit, adx_plus_di→di_plus, adx_minus_di→di_minus'},
+      {table:'master_shortlist', action:'REPLACE daily', conflict:'date,symbol', fields:['date','symbol','company_name','sector','industry','base_rank','strategy_source','current_price','entry_zone_low','entry_zone_high','stop_loss','target','lifecycle','validity_score','final_score','in_position','days_in_list','price_location','dist_fv_pct','momentum_phase','velocity_state','trend_maturity','struct_edge','entry_timing_type','expected_r','reentry_mode'], key:['date','symbol']},
+      {table:'open_positions', action:'REPLACE (auth — deletes removed symbols)', conflict:'symbol', fields:['symbol','company_name','sector','strategy','entry_date','entry_price','current_price','actual_qty','invested_value','pnl_pct','lifecycle','action_required','lifecycle_at_entry','high_water_mark','max_favorable_excursion','expected_r_at_entry'], key:['symbol']},
+      {table:'closed_positions', action:'APPEND (immutable)', conflict:'symbol,exit_date', fields:['symbol','company_name','sector','strategy','entry_date','entry_price','exit_date','exit_price','actual_qty','invested_value','realized_pnl','pnl_pct','exit_reason','lifecycle_at_entry','high_water_mark','max_favorable_excursion','expected_r_at_entry'], key:['symbol','exit_date']},
+      {table:'sector_strength', action:'REPLACE daily', conflict:'date,sector', fields:['date','sector','strength_score','trend','rank','top3_flag'], key:['date','sector']},
+      {table:'industry_strength', action:'REPLACE daily', conflict:'date,industry', fields:['date','industry','sector','rank','top5_flag','industry_state','avg_rsi_daily','avg_rsi_weekly'], key:['date','industry']},
+      {table:'market_regime', action:'UPSERT daily', conflict:'date', fields:['date','regime','regime_score','breadth_pct','advance_decline','nifty_price','india_vix'], key:['date']},
+      {table:'event_calendar', action:'UPSERT', conflict:'symbol,event_date', fields:['symbol','sector','event_type','event_date','event_category','is_active','affected_sectors','detail','start_date'], key:[]},
+      {table:'lessons', action:'UPSERT from Sheet LESSONS tab', conflict:'scenario_context', fields:['date','scenario_type','impacted_sector','corrective_rule','root_cause','what_failed','source'], key:[]},
+      {table:'nse_holidays', action:'Annual refresh', conflict:'date', fields:['date','description'], key:['date']},
+      {table:'nifty_total_market', action:'Periodic refresh', conflict:'date', fields:['date','close','advance','decline','breadth_pct'], key:['date']},
+      {table:'nifty_upcoming_events', action:'REPLACE weekly', conflict:'symbol,event_date,purpose', fields:['symbol','purpose','event_date','sector'], key:[]},
+      {table:'strategy_config', action:'UPDATE on approval', conflict:'strategy', fields:['strategy','params','enabled'], key:['strategy']},
+      {table:'system_config', action:'UPDATE on change', conflict:'key', fields:['key','value'], key:['key']}
+    ]
+  },
+  {
+    id:'generate_signals', group:'Evening 6 PM', num:'04', fatal:true, phase:0,
+    name:'generate_signals.py', path:'backend/signals/',
+    desc:'Core rule engine. Applies CTL + SBS + TPO + EAP strategies. Scores each MSL stock. Determines signal_type (BUY_CANDIDATE/WATCH/EXIT/ADD/BLOCKED_ASM). Writes 9 ML feature columns alongside signal (G1 fix). Industry scoring bonus gated by industry_scoring_active config. 🟡 PATCH APPLIED (Fix #4): CAUTION regime was completely ignored — only RISK OFF was handled. Fix: CAUTION now penalises BUY_CANDIDATE score by 15% and sets regime_warning=True (does not block). Also added _resolve_regime() helper: prefers ml_regime_classifier predicted_regime over manual regime field when prediction is <24h old — this is the bridge that makes Phase 2 ML predictions actually affect signal generation. 🟡 PATCH APPLIED (Fix #6): EAP get_eap_action() now weights by event_type — RESULTS/EARNINGS=HIGH (AVOID_ENTRY pre + PRIORITISE post), AGM/CONCALL=MEDIUM (AVOID_ENTRY pre only), DIVIDEND/BONUS=LOW (PRIORITISE post only, never AVOID_ENTRY). Also added per-symbol event check (was sector-only). Deploy: 4 surgical edits to generate_signals.py — see patch_generate_signals_regime_eap.py.',
+    reads:[
+      {table:'stock_data_daily', fields:['rsi_daily','rsi_weekly','rsi_monthly','vol_ratio','consol_range','dist_sma50','atr_pct','ret_6m','adx','market_cap','delivery_pct'], note:'All technical indicator cols per stock per day. adx (not adx_14) after RENAME_MAP applied.'},
+      {table:'master_shortlist', fields:['symbol','sector','final_score','entry_zone_low','entry_zone_high','current_price','lifecycle','strategy_source','days_in_list','industry'], note:'Source of truth for which stocks to score'},
+      {table:'open_positions', fields:['symbol','action_required'], note:'Determines BUY_CANDIDATE (not in pos) vs EXIT/ADD/HOLD (in pos)'},
+      {table:'market_regime', fields:['regime','predicted_regime','regime_predicted_at'],
+       note:'PATCHED: _resolve_regime() uses predicted_regime if <24h old (Phase 2+), else falls back to manual regime. RISK OFF → block buys. CAUTION (NEW) → 15% score penalty + regime_warning.'},
+      {table:'event_calendar', fields:['is_active','affected_sectors','event_category','event_type','start_date','symbol'],
+       note:'EAP PATCHED: event_type now used for weighting. HIGH (results)=AVOID+PRIORITISE, MEDIUM (AGM)=AVOID only, LOW (dividend)=PRIORITISE only. Per-symbol check added.'},
+      {table:'safety_lists', fields:['symbol','list_type'], note:'ASM/GSM → BLOCKED_ASM. FO_BAN → fo_ban_flag=true'},
+      {table:'industry_strength', fields:['industry','rank','top5_flag','industry_state','avg_rsi_daily'], note:'if industry_scoring_active: top5→+10pts, STRONG→+5pts'},
+      {table:'sector_strength', fields:['sector','rank'], note:'sector_rank used in CTL/SBS filters'}
+    ],
+    writes:[
+      {table:'signal_log', action:'UPSERT daily', conflict:'date,symbol',
+       fields:['date','symbol','company_name','sector','strategy','signal_type','position_state','score (PATCHED: penalised 15% if CAUTION regime)','in_rule_engine','in_scanner','eap_action (PATCHED: event_type weighted)','regime (PATCHED: resolved from predicted_regime if fresh)','regime_warning (PATCHED: now also True for CAUTION)','asm_flag','fo_ban_flag','ai_conviction (null)','ai_suggested_action (null)','ai_provider (null)','ai_fallback_used','fii_flag (null)','industry','industry_rank','industry_top5','industry_state','industry_avg_rsi',
+         'rsi_daily [ML]','rsi_weekly [ML]','adx [ML]','vol_ratio [ML]','delivery_pct [ML]','atr_pct [ML]','ret_6m [ML]','dist_sma50 [ML]','days_in_list [ML]'],
+       key:['date','symbol'],
+       note:'ML-tagged fields are the 9 G1-fix columns. score field now reflects CAUTION penalty if applicable.'}
+    ]
+  },
+  {
+    id:'independent_scanner', group:'Evening 6 PM', num:'04b', fatal:false, phase:1,
+    name:'independent_scanner.py', path:'backend/signals/',
+    desc:'Pattern scanner — Layer B. 5 patterns independent of CTL/SBS/TPO rules: VOLUME_SURGE (vol_ratio>2.0 + price near 30D high), RS_BREAKOUT (beats Nifty by >5% in 20D), POST_CONSOLIDATION (consol_range<5%, vol expanding), MEAN_REVERSION (RSI 40-48 in strong 6M uptrend), DELIVERY_SURGE (delivery_pct>70% on breakout). Stocks in both scanner + rule engine get score bonus.',
+    reads:[
+      {table:'stock_data_daily', fields:['rsi_daily','vol_ratio','delivery_pct','ret_6m','dist_sma50','consol_range','high_30d','close','breakout_setup'], note:'All 5 patterns derived from these fields'},
+      {table:'master_shortlist', fields:['symbol','final_score'], note:'Cross-reference — scanner hit on MSL stock = in_scanner=true bonus'}
+    ],
+    writes:[
+      {table:'scanner_signals', action:'APPEND daily', conflict:'none', fields:['date','symbol','pattern_type','confidence','vol_ratio','delivery_pct','rsi_daily','ret_6m','in_msl'], key:[]}
+    ]
+  },
+  {
+    id:'append_history', group:'Evening 6 PM', num:'05', fatal:false, phase:0,
+    name:'append_history.py', path:'backend/history/',
+    desc:'Daily snapshot of full master_shortlist for time-series analysis. Captures score, rank, lifecycle, velocity_state per stock. Skips if already snapshotted today. Also writes regime_history snapshot (G14 patch) — used by post_trade_analysis to get market context AT the entry date of closed trades.',
+    reads:[
+      {table:'master_shortlist', fields:['date','symbol','company_name','base_rank','sector','strategy_source','current_price','price_location','dist_fv_pct','entry_timing_type','momentum_phase','velocity_state','trend_maturity','struct_edge','in_position','reentry_mode','lifecycle','expected_r','validity_score','final_score'], note:'Full snapshot of today\'s MSL state'}
+    ],
+    writes:[
+      {table:'msl_history', action:'UPSERT (append only)', conflict:'snapshot_date,symbol', fields:['snapshot_date','symbol','company_name','priority_rank','sector','strategy_source','close_price','price_location','dist_fv_pct','entry_timing_type','momentum_phase','velocity_state','trend_maturity','struct_edge','in_position','reentry_mode','lifecycle','expected_r','validity_score','final_score'], key:['snapshot_date','symbol']},
+      {table:'regime_history', action:'UPSERT daily (G14 patch)', conflict:'snapshot_date', fields:['snapshot_date','regime','regime_score','nifty_price','india_vix','breadth_pct'], key:['snapshot_date']}
+    ]
+  },
+  // Phase 1 steps
+  {
+    id:'ingest_fii_dii', group:'Evening 6 PM', num:'06', fatal:false, phase:1,
+    name:'ingest_fii_dii.py', path:'backend/ingestion/',
+    desc:'Fetches FII/DII daily equity flows from NSE public API. Computes rolling 5d/10d/20d cumulative net flows. Sets fii_flag: CAUTION if 5d net < -₹2000cr, ACCELERATOR if 5d net > +₹1000cr, NEUTRAL otherwise. This flag flows into every signal_log row and every AI prompt. 🔴 PATCH APPLIED (Fix #1): Was writing fii_net_cr, dii_net_cr, fii_net_5d_cumulative, fii_signal — all wrong column names causing DB errors on every run. Now writes canonical schema names: fii_net, dii_net, fii_net_5d/10d/20d, fii_flag. _cr alias columns also written for backward compat. compute_rolling_flows() was reading fii_net_cr back — now reads fii_net. Deploy: replace with patch_ingest_fii_dii.py.',
+    reads:[],
+    writes:[
+      {table:'fii_dii_flow', action:'UPSERT daily', conflict:'date',
+       fields:['date',
+         'fii_gross_buy (canonical schema name — was fii_gross_buy_cr)',
+         'fii_gross_sell (canonical — was fii_gross_sell_cr)',
+         'fii_net (canonical — was fii_net_cr)',
+         'dii_gross_buy (canonical — was dii_gross_buy_cr)',
+         'dii_gross_sell (canonical — was dii_gross_sell_cr)',
+         'dii_net (canonical — was dii_net_cr)',
+         'fii_gross_buy_cr (alias — written for backward compat)',
+         'fii_gross_sell_cr (alias)','fii_net_cr (alias)','dii_gross_buy_cr (alias)','dii_gross_sell_cr (alias)','dii_net_cr (alias)',
+         'fii_net_5d (was fii_net_5d_cumulative)','fii_net_10d (was fii_net_10d_cumulative)','fii_net_20d (was fii_net_20d_cumulative)',
+         'fii_flag (was fii_signal)'],
+       key:['date'], note:'fii_flag: CAUTION/ACCELERATOR/NEUTRAL'}
+    ],
+    external:[{name:'NSE FII/DII API (public)', note:'nseindia.com public endpoint — no auth. Available by 6 PM IST.'}]
+  },
+  {
+    id:'ingest_nse_events', group:'Evening 6 PM', num:'07', fatal:false, phase:1,
+    name:'ingest_nse_events.py', path:'backend/ingestion/',
+    desc:'Auto-fetches NSE corporate action calendar — results, dividends, AGMs, board meetings. Replaces manual Sheet Event Calendar updates from Phase 1 onwards. Computes EAP timing: PRIORITISE 2 days before, AVOID_ENTRY 2 days after any corporate event. ⚡ ENHANCEMENT (Phase 2+): Add a position-aware variant that runs at market open (8:30 AM) — reads open_positions symbols only, fetches upcoming events for held stocks only, and sends ad-hoc Telegram alert if any event falls within 3 days. This catches event risk on held positions intraday, not just in the evening pipeline. Implement as ingest_nse_events.py --positions-only flag wired to pipeline_morning.yml.',
+    reads:[],
+    writes:[
+      {table:'nifty_upcoming_events', action:'REPLACE weekly', conflict:'symbol,event_date,purpose', fields:['symbol','purpose','event_date','sector'], key:[]}
+    ],
+    external:[{name:'NSE Corporate Calendar (public)', note:'nseindia.com — no auth required.'}]
+  },
+  {
+    id:'post_trade_analysis', group:'Evening 6 PM', num:'08', fatal:false, phase:1,
+    name:'post_trade_analysis.py', path:'backend/ai/',
+    desc:'Lesson generator. For each closed trade (last 7 days), uses AI (or deterministic rule-based fallback) to generate structured lesson: scenario_type, root_cause, corrective_rule. Reads regime_history to get market context AT the entry date — not today. Also writes outcome (WIN/LOSS) + outcome_pnl_pct to signal_log for ML training labels (G2 fix). Budget-gated. 🔴 PATCH APPLIED (Fix #2): Had two compounding bugs: (1) unused import of ai_router at top of file caused circular import → maximum recursion depth exceeded before main() ran; (2) duplicate "from config import cfg, AI_KEYS" inside analyze_trade() re-triggered module resolution chain. Both removed. Added API key guard in _call_provider(). New lessons now written with is_active=True, times_applied=0 defaults. Deploy: replace with patch_post_trade_analysis.py.',
+    reads:[
+      {table:'closed_positions', fields:['symbol','company_name','sector','strategy','entry_date','entry_price','exit_date','exit_price','actual_qty','invested_value','realized_pnl','pnl_pct','exit_reason','lifecycle_at_entry','high_water_mark','max_favorable_excursion','expected_r_at_entry'], note:'Last 7 days — cutoff configurable'},
+      {table:'regime_history', fields:['regime','nifty_price','india_vix'], note:'Reads regime AT THE ENTRY DATE — critical for quality lessons (entry context)'},
+      {table:'nifty_upcoming_events', fields:['symbol','purpose','event_date'], note:'Events active around entry — fed into AI lesson prompt'},
+      {table:'lessons', fields:['scenario_context'], note:'De-dup check: avoids re-analyzing already-processed trades'}
+    ],
+    writes:[
+      {table:'lessons', action:'INSERT (append only)', conflict:'none',
+       fields:['date','scenario_type','trigger_event','linked_event_type','impacted_sector','scenario_context','what_expected','what_happened','what_failed','root_cause','corrective_rule','source (AI:provider or RULE_BASED)',
+         'is_active (TRUE on insert — set FALSE by evolution_tracker retire_stale_lessons)',
+         'times_applied (0 on insert)','times_worked (0 on insert)','confidence (1.0 on insert)'],
+       key:[], note:'Requires SQL migration to add is_active/times_applied/times_worked/confidence cols'},
+      {table:'signal_log', action:'UPDATE outcome (G2 fix)', conflict:'symbol,date',
+       fields:['outcome (WIN/LOSS)','outcome_pnl_pct'], key:['symbol','date'],
+       note:'ML training label. outcome_pnl_pct = continuous return %'}
+    ]
+  },
+  {
+    id:'ai_enrich', group:'Evening 6 PM', num:'09', fatal:false, phase:1,
+    name:'ai_enrich.py', path:'backend/ai/',
+    desc:'Daily AI conviction engine. Reads signals and assembles 10-table context packet per stock. Routes to configured AI provider via ai_router.py. Writes results to 3 tables. Budget-gated. Runs AFTER post_trade_analysis so today\'s lessons are available. 🔴 PATCH APPLIED (Fix #3): Previously all signal types (BUY/EXIT/ADD) were loaded together, sorted by score DESC, hard-limited to max_stocks. EXIT signals score ~50 while BUY_CANDIDATEs score higher — on busy days EXIT analysis for open positions was silently dropped. Fix: EXIT+ADD signals now loaded first with NO limit (bounded by open positions count ~20). BUY_CANDIDATEs fill remaining budget slots. Also fixed: reads sd.get("adx") not "adx_14" (column name after RENAME_MAP). get_relevant_lessons() now filters is_active=True to exclude retired lessons. Deploy: replace with patch_ai_enrich.py.',
+    reads:[
+      {table:'signal_log', fields:['id','date','symbol','sector','strategy','signal_type','score','eap_action','fii_flag'],
+       note:'PATCHED: EXIT+ADD loaded first with no budget limit. BUY_CANDIDATEs fill remaining slots. Previously all sorted by score → EXIT signals could be dropped.'},
+      {table:'master_shortlist', fields:['lifecycle','current_price','all MSL fields'], note:'Full MSL context per stock'},
+      {table:'stock_data_daily', fields:['rsi_daily','rsi_weekly','adx (was adx_14 — fixed)','vol_ratio','delivery_pct','atr_pct','ret_6m'], note:'Technical indicators for AI prompt. adx field name corrected.'},
+      {table:'market_regime', fields:['regime'], note:'Injected as "regime" in AI context'},
+      {table:'nifty_upcoming_events', fields:['symbol','purpose','event_date'], note:'Next 14 days — stock-specific events'},
+      {table:'lessons', fields:['scenario_type','root_cause','corrective_rule','what_failed'],
+       note:'PATCHED: now filters is_active=True — retired/stale lessons excluded from AI context'},
+      {table:'fii_dii_flow', fields:['fii_flag'], note:'G17: fii_flag in AI context'},
+      {table:'global_cues', fields:['gift_nifty_chg_pct','gap_signal','sector_impacts'], note:'G17: global context'},
+      {table:'open_positions', fields:['count','sector_exposure'], note:'G18: portfolio concentration context'}
+    ],
+    writes:[
+      {table:'signal_log', action:'UPDATE (ai_ cols only)', conflict:'id', fields:['ai_conviction','ai_note','ai_provider','ai_strategy_validation'], key:['id']},
+      {table:'ai_context', action:'UPSERT daily', conflict:'date,symbol', fields:['date','symbol','conviction','conviction_reason','risks','catalyst','suggested_action','conflicts','ai_note','provider','fallback_used','confidence'], key:['date','symbol']},
+      {table:'master_shortlist', action:'UPDATE (ai_ cols only)', conflict:'date,symbol', fields:['ai_conviction','ai_conviction_reason','ai_risks','ai_suggested_action','ai_note','ai_provider','ai_fallback_used'], key:['date','symbol']}
+    ]
+  },
+  {
+    id:'generate_shortlist', group:'Evening 6 PM', num:'09b', fatal:false, phase:1,
+    name:'generate_shortlist.py', path:'backend/ai/',
+    desc:'AI-powered shortlist review. Sends top MSL candidates to AI to select and rank TOP 12 for the week. Considers regime, open positions (sector concentration), events in next 5 days, lifecycle state, entry zone proximity. Output overwrites master_shortlist ordering. Optional — supplements ai_enrich.py.',
+    reads:[
+      {table:'master_shortlist', fields:['symbol','final_score','lifecycle','sector','entry_zone_low','current_price'], note:'Top candidates by score sent to AI'},
+      {table:'market_regime', fields:['regime','india_vix'], note:'Regime summary in prompt'},
+      {table:'event_calendar', fields:['is_active','start_date','affected_sectors'], note:'Events in next 5 days shown to AI'},
+      {table:'open_positions', fields:['symbol','sector'], note:'AI avoids recommending same sector as existing positions'}
+    ],
+    writes:[
+      {table:'master_shortlist', action:'UPDATE (rank + ai_shortlist_reason)', conflict:'date,symbol', fields:['ai_shortlist_rank','ai_shortlist_reason'], key:['date','symbol']}
+    ]
+  },
+  {
+    id:'send_alerts', group:'Evening 6 PM', num:'10', fatal:false, phase:1,
+    name:'send_alerts.py', path:'backend/alerts/',
+    desc:'Evening Telegram digest. Sends formatted signal cards with AI conviction, FII context, industry rank+state, EAP flags. Phase 3+: adds APPROVE/REJECT/DEFER inline keyboard buttons to BUY signals. Also used for morning brief (triggered by ingest_global_cues.py).',
+    reads:[
+      {table:'signal_log', fields:['symbol','signal_type','score','strategy','ai_conviction','fii_flag','eap_action','regime','industry','industry_rank','industry_state'], note:'BUY_CANDIDATE + EXIT signals for evening digest'},
+      {table:'master_shortlist', fields:['current_price','entry_zone_low','entry_zone_high','ai_conviction','ai_risks','ai_suggested_action','lifecycle'], note:''},
+      {table:'fii_dii_flow', fields:['fii_flag','fii_net_equity','rolling_5d_fii'], note:'Footer: "FII: CAUTION (5d net: -₹3,420 Cr)"'},
+      {table:'market_regime', fields:['regime','india_vix'], note:'Regime banner in alert header'},
+      {table:'ai_context', fields:['conviction','conviction_reason','risks','catalyst','suggested_action'], note:'Full AI output per BUY_CANDIDATE'},
+      {table:'open_positions', fields:['symbol','pnl_pct','lifecycle','action_required'], note:'Morning brief: positions near SL'},
+      {table:'global_cues', fields:['gift_nifty_chg_pct','gap_signal','sector_impacts','brent_chg_pct','usd_inr_chg_pct'], note:'Morning brief only'}
+    ],
+    writes:[]
+  },
+  // MORNING PIPELINE
+  {
+    id:'ingest_global_cues', group:'Morning 8 AM', num:'M1', fatal:false, phase:1,
+    name:'ingest_global_cues.py', path:'backend/ingestion/',
+    desc:'Morning pipeline script. Fetches Gift Nifty gap, USD/INR, Brent crude, Gold, Dow, Nasdaq, S&P500 from Yahoo Finance (yfinance). Maps each market to affected sectors. Triggers morning Telegram brief. G16 patch adds sp500_close + sp500_chg_pct.',
+    reads:[],
+    writes:[
+      {table:'global_cues', action:'UPSERT per session', conflict:'date,session', fields:['date','session (MORNING/EVENING)','gift_nifty_chg_pct','gap_signal','usd_inr_close','usd_inr_chg_pct','brent_close','brent_chg_pct','gold_close','gold_chg_pct','us_dow_close','us_dow_chg_pct','us_nasdaq_close','us_nasdaq_chg_pct','sp500_close [G16]','sp500_chg_pct [G16]','sector_impacts'], key:['date','session']}
+    ],
+    external:[{name:'Yahoo Finance (yfinance)', note:'^NSEI, INR=X, BZ=F, GC=F, ^DJI, ^IXIC, ^GSPC — all public, no auth.'}]
+  },
+  // PHASE 2
+  {
+    id:'compute_indicators', group:'Evening 6 PM', num:'P2-A', fatal:true, phase:2,
+    name:'compute_indicators.py', path:'backend/compute/',
+    desc:'Phase 2 — replaces ALL Google Sheet formula columns. Reads chartink_raw_data + bhavcopy cols, computes vol_ratio, all returns, distances, breakout signals, RS vs Nifty. Inserts to stock_data_daily. Runs BEFORE generate_signals so signals use Python-computed values. Sheet formula columns become redundant.',
+    reads:[
+      {table:'chartink_raw_data', fields:['date','symbol','daily_open→open','daily_high→high','daily_low→low','daily_close→close','week52_high→high_52w','week52_low→low_52w','high_30d','sma_10/20/50/200','ema_10/20/50','rsi_daily','rsi_weekly','rsi_monthly','adx_14→adx','adx_plus_di→di_plus','adx_minus_di→di_minus','volume','avg_vol_20→avg_vol_20d','avg_vol_50→avg_vol_50d','vwap_daily→vwap','vwap_20d','vwap_50d','pct_change','atr_14','atr_pct','ha_high/ha_low/ha_close','supertrend','macd_line','macd_signal','macd_histogram→macd_hist','parabolic_sar→psar','upper_bb→bb_upper','lower_bb→bb_lower','stochastic→stoch','market_cap','market_cap_cat→market_cap_category','ttm_net_profit','net_profit_yr→net_profit_yearly','eps','qtr_net_profit→quarterly_net_profit','qtr_var_profit→quarterly_variance'], note:'21 col names differ from stock_data_daily (shown as chartink_name→target_name). compute_indicators must apply RENAME_MAP dict before upsert to stock_data_daily. Also reads last 30 rows of daily_low/daily_high history for low_30d and wk_hi/lo computations.'},
+      {table:'stock_data_daily', fields:['delivery_pct','delivery_qty'], note:'Bhavcopy cols already written by ingest_bhavcopy'},
+      {table:'nifty_total_market', fields:['date','close'], note:'For rs_vs_nifty calculation — stock return vs Nifty return'}
+    ],
+    writes:[
+      {table:'stock_data_daily', action:'UPSERT (computed cols only)', conflict:'date,symbol',
+       fields:['-- Computed --','vol_ratio','above_sma50','sma50_gt_200','above_st [close>supertrend]','dist_sma50','consol_range','price_location','breakout_setup','bk_trigger','ret_1w','ret_1m','ret_3m','ret_6m','ret_12m','price_6m_ago','price_12m_ago','rs_vs_nifty','-- Pass-through renamed from chartink_raw_data --','open','high','low','close','high_52w','low_52w','high_30d','sma_10','sma_20','sma_50','sma_200','ema_10','ema_20','ema_50','rsi_daily','rsi_weekly','rsi_monthly','adx','di_plus','di_minus','volume','avg_vol_20d','avg_vol_50d','vwap','vwap_20d','vwap_50d','pct_change','atr_14','atr_pct','ha_high','ha_low','ha_close','supertrend','macd_line','macd_signal','macd_hist','psar','bb_upper','bb_lower','stoch','ttm_net_profit','net_profit_yearly','eps','quarterly_net_profit','quarterly_variance','market_cap','market_cap_category'], key:['date','symbol'],
+       note:'Full Sheet replacement in P2. Apply RENAME_MAP (21 cols): daily_open→open, daily_high→high, daily_low→low, daily_close→close, week52_high→high_52w, week52_low→low_52w, adx_14→adx, adx_plus_di→di_plus, adx_minus_di→di_minus, avg_vol_20→avg_vol_20d, avg_vol_50→avg_vol_50d, vwap_daily→vwap, macd_histogram→macd_hist, parabolic_sar→psar, upper_bb→bb_upper, lower_bb→bb_lower, stochastic→stoch, net_profit_yr→net_profit_yearly, market_cap_cat→market_cap_category, qtr_net_profit→quarterly_net_profit, qtr_var_profit→quarterly_variance. Phase 4 also needs: company_name (NSE master CSV), index_membership (Nifty500/200 CSV), low_30d (rolling min daily_low 30d), wk_hi_high/wk_hi_low (last5d vs prev5d high/low)'}
+    ]
+  },
+  {
+    id:'ingest_asm_gsm', group:'Evening 6 PM', num:'P2-B', fatal:false, phase:2,
+    name:'ingest_asm_gsm.py', path:'backend/ingestion/',
+    desc:'Phase 2 — fetches ASM Stage 1/2, GSM Stage 1-6, and FO_BAN lists from NSE. generate_signals already reads safety_lists (Phase 0 code path exists), but this script populates it from NSE directly instead of the Sheet.',
+    reads:[],
+    writes:[
+      {table:'safety_lists', action:'REPLACE daily', conflict:'date,symbol,list_type', fields:['date','symbol','list_type (ASM/GSM/ASM_SHORTTERM/FO_BAN)','stage'], key:['date','symbol']}
+    ],
+    external:[{name:'NSE ASM/GSM Lists (public)', note:'nseindia.com — no auth required. Daily refresh.'}]
+  },
+  {
+    id:'data_quality_monitor', group:'Evening 6 PM', num:'P2-C', fatal:false, phase:2,
+    name:'data_quality_monitor.py', path:'backend/compute/',
+    desc:'Always-last pipeline step. Validates: RSI range (0-100), vol_ratio max (50), delivery_pct range, chartink_raw_data row count (450-510 expected), score range. Auto-corrects outliers where safe. Logs failures to data_anomalies and sends Telegram alert.',
+    reads:[
+      {table:'stock_data_daily', fields:['rsi_daily','vol_ratio','delivery_pct'], note:'Range checks'},
+      {table:'chartink_raw_data', fields:['symbol'], note:'Count check — expects 450-510 rows'},
+      {table:'master_shortlist', fields:['final_score'], note:'Score range check (0-120)'}
+    ],
+    writes:[
+      {table:'data_anomalies', action:'INSERT on failure', conflict:'none', fields:['date','table_name','column_name','check_type','value','expected','auto_fixed','resolved'], key:[]}
+    ]
+  },
+  // WEEKLY
+  {
+    id:'ml_train', group:'Weekly Sunday', num:'W1', fatal:false, phase:1,
+    name:'ml_provider.py --train', path:'backend/ai/providers/',
+    desc:'Trains RandomForest conviction model from labelled signal history. Reads signal_log WHERE outcome IS NOT NULL (labelled by post_trade_analysis). 12 features. 100 trees, max_depth=5. Cross-validation accuracy logged. Needs 30+ labelled trades. Model saved to models/ml_conviction.pkl.',
+    reads:[
+      {table:'signal_log', fields:['rsi_daily','rsi_weekly','adx','vol_ratio','delivery_pct','atr_pct','ret_6m','dist_sma50','days_in_list','regime (encoded)','sector_rank','eap_action (encoded)','outcome (WIN/LOSS label)'], note:'Only rows WHERE outcome IS NOT NULL — these are training examples'},
+      {table:'closed_positions', fields:['*'], note:'Count check — needs 30+ trades before training'}
+    ],
+    writes:[
+      {table:'models/ml_conviction.pkl', action:'SAVE local file', conflict:'', fields:['RandomForest (100 trees, max_depth=5)','Predict: win probability 0.0-1.0','HIGH if prob≥0.7, MEDIUM if ≥0.45, LOW otherwise'], key:[]},
+      {table:'ml_training_log', action:'INSERT weekly', conflict:'none', fields:['date','trades_used','features_used','accuracy','model_version','top_features'], key:[]}
+    ]
+  },
+  {
+    id:'evolution_tracker', group:'Weekly Sunday', num:'W3', fatal:false, phase:4,
+    name:'evolution_tracker.py', path:'backend/history/',
+    desc:'Self-improvement engine. Analyzes 90 days of closed trade performance vs current strategy parameters. Sends comprehensive performance summary to AI for parameter change proposals (up to 5). Proposals always PENDING — you approve in frontend or via SQL before strategy_config is touched. Does NOT read stock_data_daily directly — evolution works at trade/outcome level: signal_log already carries indicator snapshots captured at signal-fire time (G1 fix). Raw indicator mining is discovery_engine.py\'s job. 🟡 PATCH APPLIED (Fix #5): Added retire_stale_lessons() — runs BEFORE proposal generation each Sunday. Sets is_active=False for lessons applied 5+ times with <30% success rate (times_worked/times_applied < 0.30). Prevents stale bull-market rules from polluting bear-market AI context. Added week_of field to proposals (was written but missing from schema). Lesson query now filters is_active=True for AI context. Deploy: replace with patch_evolution_tracker.py.',
+    reads:[
+      {table:'closed_positions', fields:['symbol','strategy','sector','pnl_pct','exit_date','exit_reason'], note:'90 days — win rate, avg P&L, by strategy/sector'},
+      {table:'signal_log', fields:['strategy','signal_type','score','regime','outcome'], note:'60 days WITH outcomes — signal win rate by type'},
+      {table:'strategy_config', fields:['strategy','params','enabled'], note:'Current param values shown to AI as baseline'},
+      {table:'lessons', fields:['corrective_rule','scenario_type','is_active','times_applied','times_worked'],
+       note:'PATCHED: reads only is_active=True lessons. Retires stale ones (≥5× applied, <30% success) before proposal generation.'},
+      {table:'msl_history', fields:['snapshot_date','symbol','final_score','lifecycle','velocity_state'], note:'Score velocity and trajectory over time'},
+      {table:'ai_model_performance', fields:['provider','accuracy','calls_today','cost_today'], note:'G15: provider performance for provider switch proposals'}
+    ],
+    writes:[
+      {table:'evolution_proposals', action:'INSERT (PENDING always)', conflict:'none',
+       fields:['week_of (PATCHED: now written correctly)','proposed_date','strategy','param_name','current_value','proposed_value','evidence','confidence (from AI response)','status (always PENDING)','notes'],
+       key:[], note:'NEVER auto-applied. Human approves → strategy_config updated.'},
+      {table:'lessons', action:'UPDATE is_active=False (new retire_stale_lessons step)', conflict:'id',
+       fields:['is_active (set to False)'], key:['id'],
+       note:'Retirement criteria: times_applied ≥ 5 AND times_worked/times_applied < 0.30. Runs weekly.'}
+    ]
+  },
+  {
+    id:'discovery_engine', group:'Weekly Sunday', num:'W4', fatal:false, phase:4,
+    name:'discovery_engine.py', path:'backend/history/',
+    desc:'Pattern discovery engine. Mines chartink_raw_data history (accumulating since Phase 0) for hidden signal dimensions not in current framework. Correlates with trade outcomes. Writes candidate signals with backtested evidence. Same approval workflow as evolution_proposals.',
+    reads:[
+      {table:'chartink_raw_data', fields:['date','symbol','delivery_pct','vol_ratio','rsi_daily','close','sector'], note:'Full history mining — patterns over 6+ months of data'},
+      {table:'closed_positions', fields:['symbol','entry_date','pnl_pct'], note:'Outcome correlation for discovered patterns'}
+    ],
+    writes:[
+      {table:'discovery_proposals', action:'INSERT weekly', conflict:'none',
+       fields:['week_of','pattern_type','description','backtested_accuracy','baseline_accuracy','evidence_count','estimated_score_impact','status (PENDING)'], key:[]}
+    ]
+  },
+  // KITE (Phase 2-3)
+  {
+    id:'kite_token_refresh', group:'Manual 8:30 AM', num:'KIT', fatal:false, phase:2,
+    name:'kite_token_refresh.py', path:'backend/kite/',
+    desc:'MANUAL DAILY STEP — cannot be automated (Zerodha security requirement). Opens browser for Zerodha login, captures request_token from redirect URL, exchanges for access_token via Kite API. Saves token to system_config. All subsequent Kite usage reads this token.',
+    reads:[],
+    writes:[
+      {table:'system_config', action:'UPDATE', conflict:'key', fields:['kite_access_token','kite_token_expiry'], key:['key']}
+    ],
+    external:[{name:'Zerodha Kite Connect API', note:'kite.trade/apps — ₹2000/month subscription. Manual browser login unavoidable.'}]
+  },
+  {
+    id:'ml_regime_predict', group:'Evening 6 PM', num:'P2-D', fatal:false, phase:2,
+    name:'ml_regime_classifier.py --predict', path:'backend/ai/providers/',
+    desc:'Phase 2 daily step. Runs AFTER compute_indicators (P2-A) and BEFORE generate_signals (04) so every signal is scored against the ML-predicted regime, not just the manual Sheet regime. Loads saved ml_regime_model.pkl, builds today\'s 7-feature vector, writes predicted_regime + regime_confidence to market_regime. If ML and manual regime differ by 2+ tiers, logs a WARN to data_anomalies. Falls back silently if model file absent.',
+    reads:[
+      {table:'regime_history', fields:['snapshot_date','regime'], note:'Primary training source (G14 fix required). Fallback to market_regime if <30 samples'},
+      {table:'market_regime', fields:['advance_decline','breadth_pct','regime'], note:'Feature source (breadth/A-D) + manual regime for disagreement check'},
+      {table:'nifty_total_market', fields:['date','close'], note:'nifty_ret_5d and nifty_ret_20d feature computation (last 22 rows)'},
+      {table:'fii_dii_flow', fields:['date','net_equity'], note:'fii_net_5d and fii_net_20d features (last 20 sessions)'},
+      {table:'sector_strength', fields:['strength_score'], note:'sector_dispersion feature — std dev of sector scores (market breadth proxy)'}
+    ],
+    writes:[
+      {table:'market_regime', action:'UPDATE today\'s row', conflict:'date', fields:['predicted_regime (TRENDING|NEUTRAL|CAUTION|RISK OFF)','regime_confidence (0.0-1.0)','regime_predicted_at (timestamp)'], key:['date'], note:'If no row exists yet for today, inserts placeholder (ingest_sheets will fill manual cols)'},
+      {table:'data_anomalies', action:'INSERT on disagreement', conflict:'none', fields:['date','check_name (regime_ml_vs_manual)','severity (WARN|ERROR)','value','message','affected'], key:[], note:'Only written when ML vs manual tier diff ≥2. ERROR if diff=3 (TRENDING vs RISK OFF)'}
+    ]
+  },
+  {
+    id:'ml_regime_train', group:'Weekly Sunday', num:'W2', fatal:false, phase:2,
+    name:'ml_regime_classifier.py --train', path:'backend/ai/providers/',
+    desc:'Phase 2 weekly Sunday step. Trains RandomForest regime classifier on up to 1 year of labelled regime history. 7 features from 5 tables. StratifiedKFold CV (2-5 folds). 200 trees, max_depth=6, class_weight=balanced (handles regime imbalance). Saves model to models/ml_regime_model.pkl. Requires G14 fix (regime_history populated). Falls back to market_regime table if regime_history has <30 samples.',
+    reads:[
+      {table:'regime_history', fields:['snapshot_date','regime'], note:'Primary: 365-day lookback, labelled by append_history (G14 fix required)'},
+      {table:'market_regime', fields:['date','regime'], note:'Fallback: supplements if regime_history < 30 samples. Merge deduped by date'},
+      {table:'nifty_total_market', fields:['date','close'], note:'nifty_ret_5d, nifty_ret_20d features for each training date'},
+      {table:'fii_dii_flow', fields:['date','net_equity'], note:'fii_net_5d, fii_net_20d features for each training date'},
+      {table:'sector_strength', fields:['strength_score'], note:'sector_dispersion feature (std dev of scores)'}
+    ],
+    writes:[
+      {table:'ml_training_log', action:'INSERT weekly', conflict:'none', fields:['model_type (regime_classifier)','training_samples','accuracy (CV mean)','feature_names','feature_importance (JSON)','notes (CV folds + std + label distribution)','trained_at'], key:[], note:'7 features: nifty_ret_5d/20d, advance_decline, breadth_pct, fii_net_5d/20d, sector_dispersion. 4 labels: TRENDING/NEUTRAL/CAUTION/RISK OFF'}
+    ]
+  },
+  {
+    id:'shadow_trade_logger', group:'Phase 3 Approval', num:'P3-A', fatal:false, phase:3,
+    name:'shadow_trade_logger.py', path:'backend/control/',
+    desc:'2-week mandatory paper-trade shadow period before live execution. Called by telegram_bot.py when you tap APPROVE/REJECT/DEFER on a signal. Mirrors execution_engine EXACTLY — same risk_manager checks, same position sizing formula, same Telegram notification format. Writes would_execute=true only when APPROVED + all risk checks pass. After 14 days: --summary flag prints readiness report (≥5 approved + ≥60% would_execute = ready for live).',
+    reads:[
+      {table:'signal_log', fields:['symbol','strategy','score','ai_conviction','date'], note:'Fetch full signal context for the approved signal_id'},
+      {table:'stock_data_daily', fields:['close','kite_price'], note:'Entry price source: kite_price if available (Phase 2+), else close'},
+      {table:'open_positions', fields:['invested_value'], note:'Calculate deployed capital to compute available budget for position sizing'},
+      {table:'strategy_config', fields:['config_json (allocation_pct)'], note:'Per-strategy allocation % for position size calculation'},
+      {table:'system_config', fields:['TOTAL_CAPITAL','MAX_POSITIONS'], note:'Capital and position limit for sizing formula'},
+      {table:'safety_lists', fields:['symbol','list_type'], note:'Via risk_manager.run_all_checks() — same checks as execution_engine'}
+    ],
+    writes:[
+      {table:'shadow_trades', action:'INSERT per decision', conflict:'none',
+       fields:['signal_id','symbol','strategy','action (APPROVED|REJECTED|DEFERRED)','entry_price','qty','approved_at','would_execute (bool)','notes (risk checks + AI conviction + score)'],
+       key:[], note:'would_execute=true only when APPROVED AND all risk_manager checks pass. Telegram confirmation sent after every write.'}
+    ]
+  },
+  {
+    id:'sl_monitor', group:'Intraday (30 min)', num:'P3-B', fatal:false, phase:2,
+    name:'sl_monitor.py', path:'backend/control/',
+    desc:'NEW SCRIPT (Strategic Fix NEW-A). Runs every 30 min during market hours (9:15–15:30 IST) via pipeline_intraday.yml. Fetches live Kite LTP for all open positions, compares against active_sl. BREACH (LTP ≤ active_sl): urgent Telegram alert + data_anomaly ERROR + sets sl_breach_alerted=True. PROXIMITY (within 2% of SL): warning Telegram + WARN anomaly. Updates current_price on every run. Alert deduplication: sl_breach_alerted flag prevents re-alerting same breach. Non-fatal if Kite token unavailable — exits cleanly. Deploy: (1) copy to backend/control/sl_monitor.py, (2) add pipeline_intraday.yml to .github/workflows/, (3) ensure KITE_ACCESS_TOKEN secret is updated daily.',
+    reads:[
+      {table:'open_positions', fields:['symbol','active_sl','actual_qty','entry_price','invested_value','sl_breach_alerted','sl_proximity_alerted','current_price'], note:'All open positions. sl_breach_alerted prevents duplicate breach alerts.'},
+      {table:'system_config', fields:['kill_switch'], note:'Via is_kill_switch_active() — exits immediately if active'}
+    ],
+    writes:[
+      {table:'open_positions', action:'UPDATE on every run', conflict:'symbol',
+       fields:['current_price (live LTP from Kite)','last_reconciled_at (run timestamp)',
+         'sl_breach_alerted (True on first breach — prevents re-alert)',
+         'sl_proximity_alerted (True when within 2% of SL)'],
+       key:['symbol'], note:'Requires migration_strategic_fixes.sql for sl_breach_alerted and sl_proximity_alerted columns'},
+      {table:'data_anomalies', action:'INSERT on breach/proximity', conflict:'none',
+       fields:['date','check_name (sl_breach | sl_proximity)','severity (ERROR for breach, WARN for proximity)','value (LTP vs SL)','message','affected (open_positions:SYMBOL)'],
+       key:[], note:'One row per event per symbol per market session'}
+    ],
+    external:[{name:'Kite Connect API — live quotes', note:'kite.quote(NSE:SYMBOL) via kite_client.fetch_quotes(). Requires valid daily token. Fails gracefully with warning if token stale.'}]
+  },
+  {
+    id:'kite_reconcile', group:'Morning 8:45 AM', num:'M2', fatal:false, phase:2,
+    name:'kite_reconcile.py', path:'backend/kite/',
+    desc:'NEW SCRIPT (Strategic Fix NEW-B). Runs at 8:45 AM IST daily via updated pipeline_morning.yml, after kite_token_refresh.py. Compares actual Zerodha CNC holdings (kite.holdings()) against Supabase open_positions. Detects 4 divergence types: MATCHED (no action), QTY_MISMATCH (diff qty — partial fill, corporate action), KITE_ONLY (in Kite but not DB — untracked position, critical), DB_ONLY (in DB but not Kite — likely GTT-closed or manual exit). Sends per-mismatch Telegram alerts. Updates current_price and reconcile_status on every matched symbol. Non-fatal: stale/missing Kite token logs warning and exits cleanly without failing the morning pipeline. Replaces the earlier position_reconciler.py concept — same purpose, now a real deployed script. Deploy: (1) copy to backend/kite/kite_reconcile.py, (2) replace pipeline_morning.yml with pipeline_morning_updated.yml.',
+    reads:[
+      {table:'open_positions', fields:['symbol','actual_qty','entry_price','invested_value','strategy'], note:'Supabase side of reconciliation — compared against Kite holdings'},
+      {table:'system_config', fields:['kill_switch'], note:'kill switch check'}
+    ],
+    writes:[
+      {table:'open_positions', action:'UPDATE per position', conflict:'symbol',
+       fields:['current_price (last Kite LTP)','kite_qty (actual qty from Kite)',
+         'reconcile_status (MATCHED | QTY_MISMATCH | DB_ONLY)',
+         'last_reconciled_at (run timestamp)'],
+       key:['symbol'], note:'Requires migration_strategic_fixes.sql for kite_qty, reconcile_status, last_reconciled_at columns'},
+      {table:'data_anomalies', action:'INSERT per mismatch', conflict:'none',
+       fields:['date','check_name (reconcile_qty_mismatch | reconcile_kite_only | reconcile_db_only)','severity (ERROR for kite_only, WARN for others)','value','message','affected (open_positions:SYMBOL)'],
+       key:[], note:'One anomaly row per mismatch type per symbol per run'}
+    ],
+    external:[{name:'Kite Connect API — holdings', note:'kite.holdings() — returns CNC delivery positions. Requires manual token refresh at 8:30 AM via kite_token_refresh.py.'}]
+  },
+  {
+    id:'position_event_monitor', group:'Morning 8 AM', num:'M3', fatal:false, phase:1,
+    name:'position_event_monitor.py', path:'backend/ingestion/',
+    desc:'Runs at 8:35 AM IST via pipeline_morning.yml, after ingest_nse_events has refreshed the calendar. Scans open_positions symbols only (not full MSL) for upcoming corporate events. Risk tiers: HIGH (results/earnings within 3d) → 🔴, MEDIUM (board meeting within 2d) → 🟡, LOW (AGM/dividend within 5d) → 🟢. Writes HIGH+MEDIUM to data_anomalies. Sends consolidated morning Telegram before market opens so you can act pre-market, not at 6 PM. Supports --days N flag for custom lookahead.',
+    reads:[
+      {table:'open_positions', fields:['symbol','strategy','sector','entry_price','active_sl','company_name','pnl_pct'], note:'Only held positions are scanned — not full MSL'},
+      {table:'nifty_upcoming_events', fields:['symbol','purpose','event_date','sector'], note:'Primary events source — auto-refreshed by ingest_nse_events at 6 PM previous evening'},
+      {table:'event_calendar', fields:['symbol','event_type','event_date','detail','is_active'], note:'Secondary source — deduplicated against nifty_upcoming_events by (symbol, event_date)'}
+    ],
+    writes:[
+      {table:'data_anomalies', action:'INSERT per HIGH/MEDIUM event', conflict:'none', fields:['date','check_name (position_event_high|medium)','severity (ERROR for HIGH, WARN for MEDIUM)','value','message','affected (open_positions)'], key:[], note:'LOW risk events logged to Telegram only — not written to data_anomalies'}
+    ]
+  }
+];
+
+// Matrix data: which scripts read/write which tables
+const ALL_TABLES = [
+  'chartink_raw_data','stock_data_daily','master_shortlist','open_positions','closed_positions',
+  'signal_log','msl_history','market_regime','sector_strength','industry_strength',
+  'event_calendar','nifty_upcoming_events','lessons','fii_dii_flow','global_cues',
+  'ai_context','scanner_signals','strategy_config','system_config','regime_history',
+  'safety_lists','data_anomalies','ml_training_log','evolution_proposals','discovery_proposals',
+  'ai_model_performance','nse_holidays','nifty_total_market','shadow_trades'
+];
+
+const ALL_SCRIPTS = [
+  {id:'fetch_chartink',short:'chartink',phase:0},
+  {id:'ingest_bhavcopy',short:'bhavcopy',phase:0},
+  {id:'ingest_sheets',short:'sheets',phase:0},
+  {id:'generate_signals',short:'signals',phase:0},
+  {id:'independent_scanner',short:'scanner',phase:1},
+  {id:'append_history',short:'history',phase:0},
+  {id:'ingest_fii_dii',short:'fii_dii',phase:1},
+  {id:'ingest_nse_events',short:'events',phase:1},
+  {id:'post_trade',short:'post_trade',phase:1},
+  {id:'ai_enrich',short:'ai_enrich',phase:1},
+  {id:'generate_shortlist',short:'shortlist',phase:1},
+  {id:'send_alerts',short:'alerts',phase:1},
+  {id:'ingest_global_cues',short:'global',phase:1},
+  {id:'compute_indicators',short:'compute',phase:2},
+  {id:'ingest_asm_gsm',short:'asm_gsm',phase:2},
+  {id:'data_quality',short:'quality',phase:2},
+  {id:'ml_train',short:'ml_train',phase:1},
+  {id:'ml_regime_predict',short:'ml_reg_p',phase:2},
+  {id:'ml_regime_train',short:'ml_reg_t',phase:2},
+  {id:'sl_monitor',short:'sl_mon',phase:3},
+  {id:'kite_reconcile',short:'recon',phase:2},
+  {id:'position_event_monitor',short:'pos_ev',phase:1},
+  {id:'shadow_trade_logger',short:'shadow',phase:3},
+  {id:'evolution_tracker',short:'evol',phase:4},
+  {id:'discovery_engine',short:'discov',phase:4}
+];
+
+// R=reads, W=writes, RW=both
+const MATRIX = {
+  'chartink_raw_data':     {fetch_chartink:'W', ingest_sheets:'R', compute_indicators:'R', discovery_engine:'R', data_quality:'R'},
+  'stock_data_daily':      {ingest_bhavcopy:'W', ingest_sheets:'W', generate_signals:'R', independent_scanner:'R', compute_indicators:'RW', data_quality:'RW', shadow_trade_logger:'R'},
+  'master_shortlist':      {ingest_sheets:'W', generate_signals:'R', ai_enrich:'RW', generate_shortlist:'RW', append_history:'R', send_alerts:'R'},
+  'open_positions':        {ingest_sheets:'W', generate_signals:'R', ai_enrich:'R', generate_shortlist:'R', send_alerts:'R', shadow_trade_logger:'R', sl_monitor:'RW', kite_reconcile:'RW', position_event_monitor:'R'},
+  'closed_positions':      {ingest_sheets:'W', post_trade:'R', ml_train:'R', evolution_tracker:'R', discovery_engine:'R'},
+  'signal_log':            {generate_signals:'W', independent_scanner:'R', ai_enrich:'RW', post_trade:'W', send_alerts:'R', ml_train:'R', evolution_tracker:'R', shadow_trade_logger:'R', data_quality:'R'},
+  'msl_history':           {append_history:'W', ml_train:'R', evolution_tracker:'R'},
+  'market_regime':         {ingest_sheets:'W', generate_signals:'R', ai_enrich:'R', send_alerts:'R', ml_regime_predict:'RW', ml_regime_train:'R'},
+  'sector_strength':       {ingest_sheets:'W', generate_signals:'R', ml_regime_predict:'R', ml_regime_train:'R'},
+  'industry_strength':     {ingest_sheets:'W', generate_signals:'R', ai_enrich:'R'},
+  'event_calendar':        {ingest_sheets:'W', generate_signals:'R', ai_enrich:'R', generate_shortlist:'R', position_event_monitor:'R'},
+  'nifty_upcoming_events': {ingest_sheets:'W', ingest_nse_events:'W', ai_enrich:'R', post_trade:'R', generate_shortlist:'R', position_event_monitor:'R'},
+  'lessons':               {ingest_sheets:'W', post_trade:'W', ai_enrich:'R', evolution_tracker:'R', send_alerts:'R'},
+  'fii_dii_flow':          {ingest_fii_dii:'W', ai_enrich:'R', send_alerts:'R', ml_regime_predict:'R', ml_regime_train:'R'},
+  'global_cues':           {ingest_global_cues:'W', ai_enrich:'R', send_alerts:'R'},
+  'ai_context':            {ai_enrich:'W', generate_shortlist:'W', send_alerts:'R', data_quality:'R'},
+  'scanner_signals':       {independent_scanner:'W'},
+  'strategy_config':       {ingest_sheets:'W', generate_signals:'R', evolution_tracker:'R', shadow_trade_logger:'R'},
+  'system_config':         {ingest_sheets:'W', generate_signals:'R', ai_enrich:'R', kite_token_refresh:'W', shadow_trade_logger:'R'},
+  'regime_history':        {append_history:'W', post_trade:'R', evolution_tracker:'R', ml_regime_predict:'R', ml_regime_train:'R'},
+  'safety_lists':          {ingest_asm_gsm:'W', generate_signals:'R', data_quality:'R'},
+  'data_anomalies':        {data_quality:'W', ml_regime_predict:'W', sl_monitor:'W', kite_reconcile:'W', position_event_monitor:'W'},
+  'ml_training_log':       {ml_train:'W', ml_regime_train:'W', evolution_tracker:'R'},
+  'evolution_proposals':   {evolution_tracker:'W'},
+  'discovery_proposals':   {discovery_engine:'W'},
+  'ai_model_performance':  {ai_enrich:'W', evolution_tracker:'R'},
+  'shadow_trades':         {shadow_trade_logger:'W'},
+  'shadow_trades':          {shadow_trade_logger:'W'},
+  'nse_holidays':          {ingest_sheets:'W', generate_signals:'R'},
+  'nifty_total_market':    {ingest_sheets:'W', compute_indicators:'R'}
+};
+
+// ═══════════════════════════════════════════════════════════════
+// PIPELINE VIEW BUILDER
+// ═══════════════════════════════════════════════════════════════
+function buildPipeline() {
+  const cont = document.getElementById('pipeline-content');
+  const groups = ['Evening 6 PM','Morning 8 AM','Morning 8:45 AM','Manual 8:30 AM','Intraday (30 min)','Phase 3 Approval','Weekly Sunday'];
+  const groupColors = {'Evening 6 PM':'var(--blue)','Morning 8 AM':'var(--cyan)','Morning 8:45 AM':'var(--teal,#0d9488)','Manual 8:30 AM':'var(--orange)','Intraday (30 min)':'var(--red)','Phase 3 Approval':'var(--green)','Weekly Sunday':'var(--purple)'};
+  let html = `<div class="pipeline-title">Pipeline Flow — All Schedules</div>
+    <div class="pipeline-sub">Click any step to see complete field-level connectivity detail</div>`;
+
+  for (const g of groups) {
+    const steps = STEPS.filter(s => s.group === g);
+    if (!steps.length) continue;
+    html += `<div class="pipe-row">
+      <div class="pipe-label">
+        <div class="pipe-label-name mono" style="color:${groupColors[g]}">${g}</div>
+        <div class="pipe-label-time" style="font-size:9px;color:var(--muted)">${steps.length} steps</div>
+      </div>
+      <div class="pipe-steps">`;
+    steps.forEach((s, i) => {
+      const phc = ['ph0','ph1','ph1','ph2','ph3','ph4'][s.phase] || 'ph0';
+      html += `
+        <div class="pipe-step" id="ps-${s.id}" onclick="selectStep('${s.id}')">
+          <div class="pipe-step-num">${s.num}</div>
+          <div class="pipe-step-name" style="color:${groupColors[g]}">${s.name}</div>
+          <div class="pipe-step-desc">${s.writes.length?s.writes[0].table+(s.writes.length>1?` +${s.writes.length-1}`:'')+' →':'No Supabase write'}</div>
+          <div><span class="ph ${phc}">P${s.phase}</span> <span class="pipe-fatal ${s.fatal?'fatal-y':'fatal-n'}">${s.fatal?'FATAL':'OPTIONAL'}</span></div>
+        </div>`;
+      if (i < steps.length-1) html += `<div class="pipe-arrow">→</div>`;
+    });
+    html += `</div></div>`;
+  }
+  cont.innerHTML = html;
+}
+
+function selectStep(id) {
+  document.querySelectorAll('.pipe-step').forEach(e=>e.classList.remove('selected'));
+  document.getElementById('ps-'+id)?.classList.add('selected');
+  const s = STEPS.find(x=>x.id===id);
+  if (!s) return;
+  const panel = document.getElementById('step-detail-panel');
+  const phc = ['ph0','ph1','ph1','ph2','ph3','ph4'][s.phase] || 'ph0';
+  let html = `<div class="sd-title">${s.name} <span class="ph ${phc}" style="margin-left:8px">Phase ${s.phase}</span> <span class="pipe-fatal ${s.fatal?'fatal-y':'fatal-n'}" style="margin-left:4px">${s.fatal?'FATAL':'NON-FATAL'}</span></div>
+    <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-family:var(--mono)">${s.path}${s.name} · ${s.group}</div>
+    <div class="sd-desc">${s.desc}</div>`;
+
+  if (s.external?.length) {
+    html += `<div style="margin-top:10px;margin-bottom:4px;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--orange)">▶ External Sources</div>`;
+    s.external.forEach(e=>{
+      html += `<div style="background:var(--od);border:1px solid var(--orange);border-radius:5px;padding:6px 10px;margin-bottom:5px;font-size:10.5px"><span style="color:var(--orange);font-weight:600">${e.name}</span> — <span style="color:var(--muted)">${e.note}</span></div>`;
+    });
+  }
+
+  html += `<div class="sd-io">`;
+
+  if (s.reads?.length) {
+    html += `<div><div class="sd-col-title reads-lbl">← Reads From</div>`;
+    s.reads.forEach(r=>{
+      html += `<div class="io-table"><div class="io-table-head"><span class="io-tname">${r.table}</span><span class="io-action" style="color:var(--blue)">READ</span></div>`;
+      if (r.note) html += `<div style="padding:4px 10px;font-size:9.5px;color:var(--muted)">${r.note}</div>`;
+      html += `<div class="io-fields">${r.fields.map(f=>`<span class="ftag fr">${f}</span>`).join('')}</div></div>`;
+    });
+    html += `</div>`;
+  } else {
+    html += `<div><div class="sd-col-title reads-lbl">← Reads From</div><div style="color:var(--muted);font-size:11px;padding:10px 0">No Supabase reads — external data source</div></div>`;
+  }
+
+  if (s.writes?.length) {
+    html += `<div><div class="sd-col-title writes-lbl">→ Writes To</div>`;
+    s.writes.forEach(w=>{
+      html += `<div class="io-table"><div class="io-table-head"><span class="io-tname">${w.table}</span><span style="font-size:9px;color:var(--muted);margin:0 6px">${w.action||''}</span><span class="io-action" style="color:var(--green)">WRITE</span></div>`;
+      if (w.note) html += `<div style="padding:4px 10px;font-size:9.5px;color:var(--muted)">${w.note}</div>`;
+      html += `<div class="io-fields">${w.fields.map(f=>{
+        const isKey = w.key?.includes(f);
+        const isAI = f.startsWith('ai_') || f.includes('conviction') || f.includes('risks') || f.includes('catalyst');
+        const isML = f.includes('[ML]');
+        const cls = isKey?'fk':isAI?'fai':isML?'fml':'fw';
+        return `<span class="ftag ${cls}">${f}</span>`;
+      }).join('')}</div></div>`;
+    });
+    html += `</div>`;
+  }
+
+  html += `</div>`;
+  panel.innerHTML = html;
+  panel.style.display = 'block';
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MATRIX VIEW BUILDER
+// ═══════════════════════════════════════════════════════════════
+function buildMatrix() {
+  const view = document.getElementById('view-matrix');
+  const phColors = ['var(--phase0)','var(--phase1)','var(--phase1)','var(--phase2)','var(--phase3)','var(--phase4)'];
+  
+  let html = `<div style="padding:20px">
+    <div class="section-h">Script × Table Read/Write Matrix <span style="font-size:11px;color:var(--muted);font-weight:400">Every script-to-table relationship at a glance</span></div>
+    <div class="matrix-legend">
+      <div class="ml-item"><div class="ml-box cell-rw">RW</div> Reads + Writes</div>
+      <div class="ml-item"><div class="ml-box cell-r">R</div> Reads only</div>
+      <div class="ml-item"><div class="ml-box cell-w">W</div> Writes only</div>
+      <div style="width:1px;height:16px;background:var(--b2);margin:0 4px"></div>
+      ${[0,1,2,4].map(p=>`<div class="ml-item"><span class="ph ph${p>1?p==4?4:p:p}">P${p}</span> Phase ${p}</div>`).join('')}
+    </div>
+    <div class="matrix-wrap"><table class="matrix-table">
+      <thead><tr>
+        <th class="row-header">Table ↓ &nbsp; Script →</th>
+        ${ALL_SCRIPTS.map(s=>`<th class="script-header" style="color:${phColors[s.phase]}">${s.short}</th>`).join('')}
+      </tr></thead><tbody>`;
+
+  const tablePhase = (t) => {
+    const w = Object.entries(MATRIX[t]||{}).filter(([,v])=>v==='W'||v==='RW');
+    if (!w.length) return 0;
+    const sid = w[0][0];
+    const scriptData = ALL_SCRIPTS.find(s=>s.id===sid||s.id.includes(sid.split('_')[0]));
+    return scriptData?.phase || 0;
+  };
+
+  ALL_TABLES.forEach(t => {
+    const phase = tablePhase(t);
+    const phcls = `phase-row-${Math.min(phase,4)}`;
+    html += `<tr class="${phcls}"><td class="row-header">${t}</td>`;
+    ALL_SCRIPTS.forEach(s => {
+      const rel = MATRIX[t]?.[s.id] || '';
+      const cls = rel==='RW'?'cell-rw':rel==='R'?'cell-r':rel==='W'?'cell-w':'';
+      html += `<td class="${cls}">${rel||''}</td>`;
+    });
+    html += `</tr>`;
+  });
+
+  html += `</tbody></table></div></div>`;
+  view.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// AI CONTEXT VIEW
+// ═══════════════════════════════════════════════════════════════
+function buildAI() {
+  const view = document.getElementById('view-ai');
+  let h = '';
+  h += '<div class="section-h">AI Context Assembly \u2014 Field-Level Detail <span>Exactly what each AI call receives and returns</span></div>';
+  h += '<div class="section-sub">Two separate AI calls per evening: ai_enrich.py (per-signal conviction) and post_trade_analysis.py (lesson generation)</div>';
+  h += '<div class="ai-grid">';
+
+  // ── ai_enrich INPUTS ──────────────────────────────────────────
+  h += '<div class="ai-card" style="border-color:var(--bb)">';
+  h += '<div class="ai-card-head" style="background:var(--bd)">';
+  h += '<div class="ai-card-title" style="color:var(--blue)">ai_enrich.py \u2014 Context Input per Stock</div>';
+  h += '<div class="ai-card-sub">Built in get_relevant_lessons() + main() \u00b7 Sent to ai_router \u2192 configured provider</div>';
+  h += '</div><div class="ai-card-body">';
+  const enrichInputs = [
+    ['signal_log', ['signal_type','score','strategy','eap_action','fii_flag','sector'], 'Which signals to enrich (BUY_CANDIDATE/EXIT/ADD, score DESC)'],
+    ['stock_data_daily', ['rsi_daily','rsi_weekly','adx_14','vol_ratio','delivery_pct','atr_pct','ret_6m'], 'Technical indicators \u2192 fills stock_data{} dict in prompt'],
+    ['master_shortlist', ['lifecycle','current_price','entry_zone_low'], 'Position state context'],
+    ['market_regime', ['regime'], 'Goes into ai_context{regime: "RISK OFF"}'],
+    ['nifty_upcoming_events', ['symbol','purpose','event_date'], 'Next 14 days only \u2192 active_events list in prompt (G6 patch)'],
+    ['lessons', ['scenario_type','root_cause','corrective_rule','what_failed','confidence','times_applied','times_worked'], 'get_relevant_lessons(): sector+strategy+lifecycle match, is_active=true, confidence\u22650.5, up to 3 results (G7)'],
+    ['fii_dii_flow [G17]', ['fii_flag'], 'Added to ai_context{fii_flag}'],
+    ['global_cues [G17]', ['gift_nifty_chg_pct','gap_signal','dow_chg_pct','sp500_chg_pct'], 'Global market context in prompt'],
+    ['open_positions [G18]', ['count of positions','sector_exposure'], 'Portfolio concentration \u2192 AI avoids adding to crowded sectors']
+  ];
+  enrichInputs.forEach(function(row) {
+    var t = row[0], fields = row[1], note = row[2];
+    h += '<div class="ai-source">';
+    h += '<div class="ai-source-table">' + t + '</div>';
+    h += '<div><div class="ai-source-fields">';
+    fields.forEach(function(f){ h += '<span class="ftag fr">' + f + '</span>'; });
+    h += '</div><div style="font-size:9px;color:var(--muted);margin-top:4px">' + note + '</div></div></div>';
+  });
+  h += '</div></div>';
+
+  // ── ai_enrich OUTPUT ──────────────────────────────────────────
+  h += '<div class="ai-card" style="border-color:var(--gb)">';
+  h += '<div class="ai-card-head" style="background:var(--gd)">';
+  h += '<div class="ai-card-title" style="color:var(--green)">ai_enrich.py \u2014 Output (ConvictionResult)</div>';
+  h += '<div class="ai-card-sub">ConvictionResult dataclass \u2192 to_dict() \u2192 written to 3 tables</div>';
+  h += '</div><div class="ai-card-body">';
+  h += '<div style="font-size:10px;color:var(--muted);margin-bottom:10px">The AI prompt (base_provider.py build_prompt) asks for this exact JSON:</div>';
+  h += '<div class="ai-output-box">';
+  h += '<span style="color:var(--purple)">conviction</span>: <span style="color:var(--yellow)">"HIGH | MEDIUM | LOW"</span><br>';
+  h += '<span style="color:var(--purple)">conviction_reason</span>: <span style="color:var(--muted)">"one sentence"</span><br>';
+  h += '<span style="color:var(--purple)">risks</span>: <span style="color:var(--muted)">["risk1", "risk2"]</span><br>';
+  h += '<span style="color:var(--purple)">catalyst</span>: <span style="color:var(--muted)">"one sentence"</span><br>';
+  h += '<span style="color:var(--purple)">suggested_action</span>: <span style="color:var(--yellow)">"ENTER | WAIT | AVOID"</span><br>';
+  h += '<span style="color:var(--purple)">strategy_validation</span>: <span style="color:var(--muted)">"rule engine agreement"</span><br>';
+  h += '<span style="color:var(--purple)">conflicts</span>: <span style="color:var(--muted)">"disagreements or NONE"</span><br>';
+  h += '<span style="color:var(--purple)">ai_note</span>: <span style="color:var(--muted)">"historical pattern ref"</span><br>';
+  h += '<span style="color:var(--purple)">confidence</span>: <span style="color:var(--green)">0.0\u20131.0</span>';
+  h += '</div>';
+  h += '<div style="margin-top:12px;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--green);margin-bottom:8px">Written to 3 tables:</div>';
+  const enrichOutputs = [
+    ['signal_log (UPDATE)', ['ai_conviction','ai_note','ai_provider','ai_strategy_validation [G4]'], 'Update by signal id'],
+    ['ai_context (UPSERT)', ['conviction','conviction_reason','risks','catalyst','suggested_action','conflicts','ai_note','provider','fallback_used','confidence'], 'Full output \u2014 read by frontend and send_alerts'],
+    ['master_shortlist (UPDATE)', ['ai_conviction','ai_conviction_reason','ai_risks','ai_suggested_action','ai_note','ai_provider','ai_fallback_used'], 'Frontend display + Telegram alert source']
+  ];
+  enrichOutputs.forEach(function(row) {
+    var t = row[0], fields = row[1], note = row[2];
+    h += '<div class="ai-source" style="background:var(--gd);border:1px solid var(--gb)">';
+    h += '<div class="ai-source-table">' + t + '</div>';
+    h += '<div><div class="ai-source-fields">';
+    fields.forEach(function(f){ h += '<span class="ftag fai">' + f + '</span>'; });
+    h += '</div><div style="font-size:9px;color:var(--muted);margin-top:4px">' + note + '</div></div></div>';
+  });
+  h += '</div></div>';
+
+  // ── post_trade_analysis INPUTS ─────────────────────────────────
+  h += '<div class="ai-card" style="border-color:var(--cb)">';
+  h += '<div class="ai-card-head" style="background:var(--cd)">';
+  h += '<div class="ai-card-title" style="color:var(--cyan)">post_trade_analysis.py \u2014 Lesson Prompt Input</div>';
+  h += '<div class="ai-card-sub">Called for each closed trade in last 7 days \u00b7 AI or deterministic fallback</div>';
+  h += '</div><div class="ai-card-body">';
+  const ptaInputs = [
+    ['closed_positions', ['symbol','company_name','sector','strategy','entry_date','entry_price','exit_date','exit_price','pnl_pct','exit_reason','lifecycle_at_entry','high_water_mark','max_favorable_excursion','expected_r_at_entry'], 'Full trade details for the lesson prompt'],
+    ['regime_history', ['regime','nifty_price','india_vix'], 'Context AT ENTRY DATE \u2014 not today. "Entry was made when regime=RISK OFF, Nifty=22,400, VIX=14.2"'],
+    ['nifty_upcoming_events', ['purpose','event_date'], 'Events active around entry date \u2014 shows AI what events were present at entry']
+  ];
+  ptaInputs.forEach(function(row) {
+    var t = row[0], fields = row[1], note = row[2];
+    h += '<div class="ai-source"><div class="ai-source-table">' + t + '</div>';
+    h += '<div><div class="ai-source-fields">';
+    fields.forEach(function(f){ h += '<span class="ftag fr">' + f + '</span>'; });
+    h += '</div><div style="font-size:9px;color:var(--muted);margin-top:4px">' + note + '</div></div></div>';
+  });
+  h += '<div style="background:var(--s2);border-radius:5px;padding:8px 10px;margin-top:8px;font-size:10px;color:var(--muted);line-height:1.6">';
+  h += '<strong style="color:var(--cyan)">Prompt template</strong> includes: symbol, sector, strategy, entry/exit dates + prices, P&amp;L%, exit reason, lifecycle at entry, high water mark, MFE, market context at entry, upcoming events at entry.<br>';
+  h += 'AI returns JSON: scenario_type, trigger_event, what_expected, what_happened, what_failed, root_cause, corrective_rule.</div>';
+  h += '</div></div>';
+
+  // ── post_trade_analysis OUTPUT ────────────────────────────────
+  h += '<div class="ai-card" style="border-color:var(--pb)">';
+  h += '<div class="ai-card-head" style="background:var(--pd)">';
+  h += '<div class="ai-card-title" style="color:var(--purple)">post_trade_analysis.py \u2014 Output</div>';
+  h += '<div class="ai-card-sub">Written to lessons table + signal_log outcome labelling</div>';
+  h += '</div><div class="ai-card-body">';
+  h += '<div class="ai-output-box">';
+  h += '<span style="color:var(--cyan)">scenario_type</span>: <span style="color:var(--yellow)">"Win/Trend-Follow | Loss/Stop-Hunt | ..."</span><br>';
+  h += '<span style="color:var(--cyan)">trigger_event</span>: <span style="color:var(--muted)">"what caused exit"</span><br>';
+  h += '<span style="color:var(--cyan)">what_expected</span>: <span style="color:var(--muted)">"1 sentence"</span><br>';
+  h += '<span style="color:var(--cyan)">what_happened</span>: <span style="color:var(--muted)">"1 sentence"</span><br>';
+  h += '<span style="color:var(--cyan)">what_failed</span>: <span style="color:var(--muted)">"specific failure or Nothing"</span><br>';
+  h += '<span style="color:var(--cyan)">root_cause</span>: <span style="color:var(--muted)">"underlying reason"</span><br>';
+  h += '<span style="color:var(--cyan)">corrective_rule</span>: <span style="color:var(--green)">"Rule: start with this word"</span></div>';
+  h += '<div style="margin-top:12px">';
+  const ptaOutputs = [
+    ['lessons (INSERT)', ['date','scenario_type','trigger_event','linked_event_type','impacted_sector','scenario_context','what_expected','what_happened','what_failed','root_cause','corrective_rule','source','confidence [G7]','times_applied [G7]','times_worked [G7]','is_active [G7]'], 'APPEND only \u2014 never updated. source = AI:deepseek or RULE_BASED'],
+    ['signal_log (UPDATE)', ['outcome (WIN/LOSS)','outcome_pnl_pct [G2]'], 'G2 fix: outcome_pnl_pct = actual return %. ML model uses this as training label.']
+  ];
+  ptaOutputs.forEach(function(row) {
+    var t = row[0], fields = row[1], note = row[2];
+    h += '<div class="ai-source" style="background:var(--pd);border:1px solid var(--pb)">';
+    h += '<div class="ai-source-table">' + t + '</div>';
+    h += '<div><div class="ai-source-fields">';
+    fields.forEach(function(f){ h += '<span class="ftag fai">' + f + '</span>'; });
+    h += '</div><div style="font-size:9px;color:var(--muted);margin-top:4px">' + note + '</div></div></div>';
+  });
+  h += '</div>';
+  h += '<div style="background:var(--s2);border:1px solid var(--b2);border-radius:5px;padding:8px 10px;margin-top:10px;font-size:10.5px;line-height:1.6">';
+  h += '<strong style="color:var(--purple)">The feedback loop:</strong> Next time ai_enrich.py runs on a similar stock (same sector + strategy + lifecycle), it reads these lessons and the AI explicitly sees past mistakes before giving conviction. This is how the system learns.';
+  h += '</div></div></div>';
+
+  // ── evolution_tracker PROMPT (full-width) ─────────────────────
+  h += '<div class="ai-card" style="border-color:var(--yb);grid-column:1/-1">';
+  h += '<div class="ai-card-head" style="background:var(--yd)">';
+  h += '<div class="ai-card-title" style="color:var(--yellow)">evolution_tracker.py \u2014 Weekly AI Analysis Prompt (Phase 4)</div>';
+  h += '<div class="ai-card-sub">Every Sunday \u00b7 Analyzes 90 days \u00b7 Proposes up to 5 parameter changes \u00b7 Never auto-applies</div>';
+  h += '</div><div class="ai-card-body">';
+  h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px">';
+
+  // col 1: performance reads
+  h += '<div><div style="font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--blue);margin-bottom:8px">Performance Data Reads</div>';
+  [['closed_positions','pnl_pct, strategy, sector (90 days) \u2192 win rate / avg P&L / strategy breakdown'],
+   ['signal_log','strategy, signal_type, outcome (60 days WITH labels) \u2192 signal win rate by type'],
+   ['msl_history','final_score, lifecycle, velocity_state \u2192 score velocity over time']
+  ].forEach(function(row){
+    h += '<div style="background:var(--s2);border-radius:5px;padding:6px 8px;margin-bottom:6px;font-size:10px">';
+    h += '<span style="color:var(--yellow);font-weight:600;font-family:JetBrains Mono,monospace">' + row[0] + '</span>';
+    h += '<div style="color:var(--muted);font-size:9.5px;margin-top:3px">' + row[1] + '</div></div>';
+  });
+  h += '</div>';
+
+  // col 2: strategy context reads
+  h += '<div><div style="font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--purple);margin-bottom:8px">Strategy Context Reads</div>';
+  [['strategy_config','strategy, params, enabled \u2192 CURRENT parameter values (what AI proposes to change from \u2192 to)'],
+   ['lessons','corrective_rule, scenario_type (last 10) \u2192 rules already applied, avoids duplicates'],
+   ['ai_model_performance','provider, accuracy, calls_today, cost (G15) \u2192 can propose provider switches']
+  ].forEach(function(row){
+    h += '<div style="background:var(--s2);border-radius:5px;padding:6px 8px;margin-bottom:6px;font-size:10px">';
+    h += '<span style="color:var(--yellow);font-weight:600;font-family:JetBrains Mono,monospace">' + row[0] + '</span>';
+    h += '<div style="color:var(--muted);font-size:9.5px;margin-top:3px">' + row[1] + '</div></div>';
+  });
+  h += '</div>';
+
+  // col 3: AI prompt structure
+  h += '<div><div style="font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--cyan);margin-bottom:8px">AI Prompt Contains</div>';
+  h += '<div style="background:var(--s2);border-radius:5px;padding:8px;font-size:10px;line-height:1.8;font-family:JetBrains Mono,monospace">';
+  h += '<div style="color:var(--cyan)">{performance_summary}</div><div style="color:var(--muted);font-size:9px;margin-bottom:6px">Win rate / avg P&L / by strategy</div>';
+  h += '<div style="color:var(--cyan)">{strategy_params}</div><div style="color:var(--muted);font-size:9px;margin-bottom:6px">Current CTL/SBS/TPO threshold values</div>';
+  h += '<div style="color:var(--cyan)">{lessons_summary}</div><div style="color:var(--muted);font-size:9px;margin-bottom:6px">Last 10 corrective_rules</div>';
+  h += '<div style="color:var(--cyan)">{signal_analysis}</div><div style="color:var(--muted);font-size:9px">Signal win rate by strategy/type</div>';
+  h += '</div></div>';
+
+  // col 4: output
+  h += '<div><div style="font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--green);margin-bottom:8px">Output \u2192 evolution_proposals</div>';
+  h += '<div class="ai-output-box" style="font-size:9.5px">';
+  h += '<span style="color:var(--yellow)">strategy</span>: "CTL"<br>';
+  h += '<span style="color:var(--yellow)">param_name</span>: "min_weekly_rsi"<br>';
+  h += '<span style="color:var(--yellow)">current_value</span>: "58"<br>';
+  h += '<span style="color:var(--yellow)">proposed_value</span>: "62"<br>';
+  h += '<span style="color:var(--yellow)">evidence</span>: "3 losses had RSI 58-61"<br>';
+  h += '<span style="color:var(--yellow)">confidence</span>: 0.72<br>';
+  h += '<span style="color:var(--red)">status</span>: "PENDING"</div>';
+  h += '<div style="margin-top:8px;background:var(--rdd);border:1px solid var(--red);border-radius:5px;padding:7px;font-size:10px;color:var(--red)">';
+  h += '&#x26A0; NEVER auto-applied. You approve via frontend or SQL. After approval, strategy_config updated.</div>';
+  h += '</div>';
+
+  h += '</div></div></div>'; // close grid + card-body + card
+  h += '</div>'; // close ai-grid
+  view.innerHTML = h;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// EVOLUTION VIEW
+// ═══════════════════════════════════════════════════════════════
+function buildEvolution() {
+  const view = document.getElementById('view-evolution');
+  let h = '';
+  h += '<div class="section-h">Self-Evolution Loop \u2014 Complete Learning Architecture</div>';
+  h += '<div class="section-sub">Three interlinked loops: Daily lessons \u2192 Weekly ML retraining \u2192 Weekly strategy proposals</div>';
+  h += '<div class="evo-grid">';
+
+  // Daily lesson loop
+  h += '<div class="evo-card" style="border-color:var(--gb)">';
+  h += '<div class="evo-card-title" style="color:var(--green)">&#x1F4D3; Daily Lesson Loop</div>';
+  [['1.','Trade closes \u2014 you exit position in Zerodha','Sheet updated \u2192 ingest_sheets.py syncs closed_positions. Fields: exit_date, exit_price, pnl_pct, exit_reason, lifecycle_at_entry'],
+   ['2.','post_trade_analysis.py runs (Step 08, 6 PM)','Reads closed_positions + regime_history (context at ENTRY DATE) + nifty_upcoming_events (events at entry)'],
+   ['3.','AI generates structured lesson','scenario_type, root_cause, corrective_rule \u2192 INSERT to lessons. source = "AI:deepseek" or "RULE_BASED" if AI unavailable. G7 adds confidence score.'],
+   ['4.','signal_log receives outcome label','outcome = WIN/LOSS, outcome_pnl_pct = actual % return. These rows become ML training data.'],
+   ['5.','Next evening: ai_enrich reads this lesson','get_relevant_lessons() matches sector+strategy+lifecycle. AI sees your past failures before scoring tomorrow\'s signals.']
+  ].forEach(function(row){
+    h += '<div class="evo-step"><div class="evo-n">' + row[0] + '</div><div>';
+    h += '<div class="evo-text">' + row[1] + '</div>';
+    h += '<div class="evo-sub">' + row[2] + '</div>';
+    h += '</div></div>';
+  });
+  h += '</div>';
+
+  // Weekly ML loop
+  h += '<div class="evo-card" style="border-color:var(--pb)">';
+  h += '<div class="evo-card-title" style="color:var(--purple)">&#x1F9E0; Weekly ML Retraining Loop</div>';
+  [['1.','signal_log accumulates labelled rows','Each BUY_CANDIDATE signal gets: 9 feature cols (G1) from generate_signals.py + outcome label (G2) from post_trade_analysis.py. Needs 30+ rows.'],
+   ['2.','ml_provider.py --train runs every Sunday 6 AM','Reads signal_log WHERE outcome IS NOT NULL. 12 features. RandomForest 100 trees, max_depth=5. CV accuracy computed.'],
+   ['3.','ml_conviction.pkl saved + ml_training_log updated','Model file checked by MLProvider.is_available(). Training log: trades_used, accuracy, top 3 feature importances.'],
+   ['4.','ML used as fallback in ai_router.py','Primary AI \u2192 ML (if primary fails or budget exceeded) \u2192 web scraping \u2192 UNKNOWN. Same ConvictionResult struct. fallback_used=True.'],
+   ['5.','ai_model_performance tracked','ai_router logs accuracy per provider daily. evolution_tracker reads this (G15) \u2014 can propose switching providers.']
+  ].forEach(function(row){
+    h += '<div class="evo-step"><div class="evo-n">' + row[0] + '</div><div>';
+    h += '<div class="evo-text">' + row[1] + '</div>';
+    h += '<div class="evo-sub">' + row[2] + '</div>';
+    h += '</div></div>';
+  });
+  h += '</div>';
+
+  // Weekly strategy evolution loop
+  h += '<div class="evo-card" style="border-color:var(--yb)">';
+  h += '<div class="evo-card-title" style="color:var(--yellow)">&#x2699;&#xFE0F; Weekly Strategy Evolution Loop (Phase 4)</div>';
+  [['1.','evolution_tracker.py runs every Sunday 6 AM','Reads 90 days closed_positions + 60 days signal_log outcomes + strategy_config + lessons + msl_history + ai_model_performance'],
+   ['2.','Performance summary built','Win rate / avg P&L / by strategy/sector. Signal analysis: win rate by strategy+type. Lessons already applied: last 10 corrective_rules.'],
+   ['3.','AI proposes up to 5 parameter changes','Evidence-based: "3 losses had weekly_rsi 58-61 at entry \u2192 raise threshold to 62. Confidence: 72%. Would improve win rate from 57% to 63%."'],
+   ['4.','Proposals written as PENDING to evolution_proposals','Fields: strategy, param_name, current_value, proposed_value, evidence, confidence, status=PENDING.'],
+   ['5.','You approve in frontend or via SQL','After approval: strategy_config updated \u2192 generate_signals.py uses new thresholds next run. NEVER auto-applied.']
+  ].forEach(function(row){
+    h += '<div class="evo-step"><div class="evo-n">' + row[0] + '</div><div>';
+    h += '<div class="evo-text">' + row[1] + '</div>';
+    h += '<div class="evo-sub">' + row[2] + '</div>';
+    h += '</div></div>';
+  });
+  h += '</div>';
+
+  h += '</div>'; // close evo-grid
+
+  // ML Features
+  h += '<hr class="div">';
+  h += '<div class="section-h" style="font-size:13px">ML Model \u2014 12 Features Explained <span>signal_log columns used for training and prediction</span></div>';
+  h += '<div class="ml-features">';
+  [['rsi_daily','RSI on daily chart. Primary momentum signal. Range 40-80 for quality setups. Source: stock_data_daily \u2192 signal_log (G1)'],
+   ['rsi_weekly','Weekly RSI. CTL requires \u226558. Filters short-term bounces in weak underlying trends. Strongest predictor in early models.'],
+   ['adx','ADX-14. Trend strength 0-100. ML uses this to distinguish trending (>25) vs ranging markets. Source: stock_data_daily.'],
+   ['vol_ratio',"Today's volume / 20-day avg volume. SBS requires \u22651.3x. ML sees volume expansion as a key breakout quality signal."],
+   ['delivery_pct','% of volume that was delivery (not intraday). Higher = institutional conviction. Source: ingest_bhavcopy (NSE direct).'],
+   ['atr_pct','ATR as % of price. Volatility. CTL requires \u22644%. ML uses this to detect risk \u2014 high ATR signals tend to be noisy.'],
+   ['ret_6m','6-month price return. CTL requires >0%. ML uses this to filter stocks in overall downtrends entering brief bounces.'],
+   ['dist_sma50','Distance from 50-day SMA as %. TPO requires |dist|\u22643%. ML uses this to identify pullbacks close to support.'],
+   ['days_in_list','Days on master_shortlist. Longer = more validated by your framework. ML finds this surprisingly predictive.'],
+   ['regime_encoded','Market regime encoded: RISK OFF=0, NEUTRAL=1, RISK ON=2. One of the strongest predictors in initial models.'],
+   ['sector_rank','Sector rank from sector_strength table. Computed at training time from sector_strength join.'],
+   ['eap_encoded','EAP timing encoded: AVOID_ENTRY=-1, NO_CHANGE=0, PRIORITISE=1. Event timing impact on win rate.']
+  ].forEach(function(row){
+    h += '<div class="ml-feat"><div class="ml-feat-name">' + row[0] + '</div>';
+    h += '<div class="ml-feat-desc">' + row[1] + '</div></div>';
+  });
+  h += '</div>';
+
+  // Lesson quality G7
+  h += '<hr class="div">';
+  h += '<div class="section-h" style="font-size:13px">Lesson Quality (G7 Patch) \u2014 lessons table added fields</div>';
+  h += '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:20px">';
+  [['confidence','0.5 (AI-generated), 0.7 (manual LESSONS tab). get_relevant_lessons() filters \u22650.5. Higher confidence lessons shown first.'],
+   ['times_applied','Incremented each time this lesson was shown to AI in ai_enrich.py context. Tracks how often the rule is being used.'],
+   ['times_worked','Incremented when a signal that received this lesson resulted in a WIN. Used to compute effectiveness rate.'],
+   ['is_active','Boolean \u2014 false = lesson retired (proven wrong or superseded). ai_enrich only reads is_active=true lessons.'],
+   ['linked_symbols','Array of stock symbols this lesson is known to apply to. Allows symbol-specific lesson lookup alongside sector/strategy.']
+  ].forEach(function(row){
+    h += '<div class="ml-feat"><div class="ml-feat-name" style="color:var(--green)">' + row[0] + '</div>';
+    h += '<div class="ml-feat-desc">' + row[1] + '</div></div>';
+  });
+  h += '</div>';
+
+  view.innerHTML = h;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TAB SWITCHING
+// ═══════════════════════════════════════════════════════════════
+function switchTab(name, btn) {
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
+  document.getElementById('view-'+name).classList.add('on');
+  btn.classList.add('on');
+  document.querySelector('.legend').style.display = name==='matrix' ? 'none' : '';
+}
+
+function buildPatches() {
+  const patches = [
+    {
+      id:'#1', sev:'CRITICAL', status:'COMPLETED', resolvedDate:'03.14.2026', file:'backend/ingestion/ingest_fii_dii.py',
+      deploy:'Replace with patch_ingest_fii_dii.py',
+      bug:'Script wrote fii_net_cr, dii_net_cr, fii_net_5d_cumulative, fii_signal — none of these exist in the schema. compute_rolling_flows() read fii_net_cr back → DB error every run. FII data was never written. FII flag in all signals and AI prompts was always NULL.',
+      fix:'Renamed to canonical schema columns: fii_net, dii_net, fii_net_5d/10d/20d, fii_flag. Legacy _cr aliases also written for backward compat. compute_rolling_flows() now reads fii_net.',
+      sql:'migration_strategic_fixes.sql Step 1 (adds _cr alias columns, backfills from canonical)'
+    },
+    {
+      id:'#2', sev:'CRITICAL', status:'COMPLETED', resolvedDate:'03.14.2026', file:'backend/ai/post_trade_analysis.py',
+      deploy:'Replace with patch_post_trade_analysis.py',
+      bug:'Two compounding bugs: (1) unused "from ai.ai_router import analyze" at top caused circular import → maximum recursion depth exceeded before main() ran. (2) duplicate "from config import cfg, AI_KEYS" inside analyze_trade() re-triggered module resolution chain. Learning loop completely non-functional.',
+      fix:'Removed unused ai_router import. Removed duplicate config import inside analyze_trade(). Added API key guard in _call_provider(). New lessons written with is_active=True, times_applied=0 defaults.',
+      sql:'migration_strategic_fixes.sql Step 2 (adds is_active, times_applied, times_worked, confidence to lessons)'
+    },
+    {
+      id:'#3', sev:'CRITICAL', status:'COMPLETED', resolvedDate:'03.14.2026', file:'backend/ai/ai_enrich.py',
+      deploy:'Replace with patch_ai_enrich.py',
+      bug:'All signals loaded together with .order("score", desc=True).limit(max_stocks). EXIT signals score ~50, BUY_CANDIDATEs score higher. On days with 20+ buy candidates, EXIT analysis for open positions silently dropped from AI queue. Also: reads sd.get("adx_14") — wrong column name after RENAME_MAP.',
+      fix:'EXIT+ADD signals now loaded first with NO budget limit (bounded by open positions count). BUY_CANDIDATEs fill remaining budget. Fixed adx field read. get_relevant_lessons() now filters is_active=True.',
+      sql:'None (code-only fix)'
+    },
+    {
+      id:'#4', sev:'STRATEGIC', status:'COMPLETED', resolvedDate:'03.14.2026', file:'backend/signals/generate_signals.py',
+      deploy:'4 surgical edits — see patch_generate_signals_regime_eap.py for instructions',
+      bug:'CAUTION regime (ml_regime_classifier output) was completely ignored. Only RISK OFF was handled. Also: generate_signals always reads manual regime column — Phase 2 ML predictions had zero effect on signal generation.',
+      fix:'Added _resolve_regime() helper: uses predicted_regime if <24h old. CAUTION now penalises BUY_CANDIDATE score 15% + sets regime_warning=True.',
+      sql:'migration_strategic_fixes.sql Step 4 (adds predicted_regime, regime_confidence, regime_predicted_at to market_regime)'
+    },
+    {
+      id:'#5', sev:'STRATEGIC', status:'COMPLETED', resolvedDate:'03.14.2026', file:'backend/history/evolution_tracker.py',
+      deploy:'Replace with patch_evolution_tracker.py',
+      bug:'lessons.is_active existed in schema but nothing ever set it False. Old bull-market lessons fed to AI in bear-market conditions indefinitely. week_of field was written in code but not in schema. Lesson query used stale lessons in proposals.',
+      fix:'Added retire_stale_lessons(): sets is_active=False when times_applied≥5 AND win_rate<30%. Runs before proposal generation each Sunday. Lesson query now filters is_active=True. week_of now correctly written.',
+      sql:'migration_strategic_fixes.sql Step 2 + Step 3 (lessons columns + evolution_proposals.week_of)'
+    },
+    {
+      id:'#6', sev:'STRATEGIC', status:'COMPLETED', resolvedDate:'03.14.2026', file:'backend/signals/generate_signals.py (same edit as #4)',
+      deploy:'Included in Edit A of patch_generate_signals_regime_eap.py',
+      bug:'EAP treated all event types identically. A dividend and a quarterly results announcement both triggered AVOID_ENTRY. event_type field existed in event_calendar but was never read.',
+      fix:'get_eap_action() now classifies by event_type: HIGH (results/earnings)=AVOID+PRIORITISE, MEDIUM (AGM/concall)=AVOID only, LOW (dividend/bonus)=PRIORITISE only, never AVOID. Per-symbol event check added.',
+      sql:'None (code-only fix)'
+    },
+    {
+      id:'NEW-A', sev:'CRITICAL', status:'COMPLETED', resolvedDate:'03.14.2026', file:'backend/control/sl_monitor.py',
+      deploy:'Copy new_scripts/sl_monitor.py → backend/control/sl_monitor.py. Add pipeline_intraday.yml.',
+      bug:'active_sl was stored in Supabase but nothing checked it intraday. A stock could breach its stop by 3-5% between 6 PM pipeline runs. Evening EXIT signal would come 7+ hours too late.',
+      fix:'New script runs every 30 min (9:15–15:30 IST). Fetches live Kite LTP. BREACH → urgent Telegram + ERROR anomaly + sl_breach_alerted flag. PROXIMITY (within 2%) → warning Telegram + WARN anomaly. Updates current_price on every run.',
+      sql:'migration_strategic_fixes.sql Step 6 (adds sl_breach_alerted, sl_proximity_alerted to open_positions)'
+    },
+    {
+      id:'NEW-B', sev:'CRITICAL', status:'COMPLETED', resolvedDate:'03.14.2026', file:'backend/kite/kite_reconcile.py',
+      deploy:'Copy new_scripts/kite_reconcile.py → backend/kite/kite_reconcile.py. Replace pipeline_morning.yml.',
+      bug:'No reconciliation between actual Kite holdings and open_positions. GTT fires, manual exits, partial fills, silent order rejections → Supabase diverges from reality. risk_manager works from stale data → wrong position sizing.',
+      fix:'New script runs 8:45 AM daily. Compares kite.holdings() vs open_positions. MATCHED=no action, QTY_MISMATCH/KITE_ONLY/DB_ONLY → Telegram alert + data_anomaly. Updates current_price, kite_qty, reconcile_status on all matched positions.',
+      sql:'migration_strategic_fixes.sql Step 5 (adds kite_qty, reconcile_status, last_reconciled_at to open_positions)'
+    },
+  ];
+
+  const sevColor = {CRITICAL:'#ef4444', STRATEGIC:'#f59e0b', 'NEW SCRIPT':'#3b82f6', COMPLETED:'#22c55e'};
+  const statusLabel = {PATCHED:'✅ PATCHED', 'NEW SCRIPT':'🆕 NEW SCRIPT', COMPLETED:'✅ COMPLETED'};
+
+  let h = '<div style="max-width:1000px;margin:0 auto;">';
+  h += '<h2 style="color:var(--fg);margin-bottom:4px;">Strategic Patch Status</h2>';
+  h += '<p style="color:var(--dim);margin-bottom:16px;font-size:13px;">All patches validated against actual source code. Run migration_strategic_fixes.sql in Supabase before deploying any patch. See DEPLOYMENT_README.md for full step-by-step instructions.</p>';
+
+  // Completion banner
+  h += '<div style="background:#052e16;border:1px solid #22c55e;border-radius:8px;padding:14px 18px;margin-bottom:24px;font-size:13px;line-height:1.6;">';
+  h += '<div style="color:#22c55e;font-weight:700;margin-bottom:6px;font-size:14px;">✅ ALL STRATEGIC PATCHES COMPLETED — 03.14.2026</div>';
+  h += '<div style="color:#86efac;font-size:12px;">Fix #1–#6 (strategic bugs) + NEW-A (sl_monitor.py) + NEW-B (kite_reconcile.py) deployed and verified.<br>';
+  h += 'migration_strategic_fixes.sql run in Supabase. pipeline_intraday.yml + pipeline_morning.yml updated. Git pushed.</div>';
+  h += '</div>';
+
+  // Deployment order banner — completed
+  h += '<div style="background:#052e16;border:1px solid #22c55e;border-radius:8px;padding:14px 18px;margin-bottom:24px;font-size:13px;line-height:1.8;">';
+  h += '<div style="color:#22c55e;font-weight:700;margin-bottom:8px;">📋 Deployment Order — All Steps Completed 03.14.2026</div>';
+  h += '<code style="color:#86efac;">[x] Step 0  → Run migration_strategic_fixes.sql &nbsp;&nbsp; ✅ Done<br>';
+  h += '[x] Step 1  → Replace ingest_fii_dii.py &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ✅ Done (Fix #1)<br>';
+  h += '[x] Step 2  → Replace post_trade_analysis.py &nbsp;&nbsp;&nbsp; ✅ Done (Fix #2)<br>';
+  h += '[x] Step 3  → Replace ai_enrich.py &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ✅ Done (Fix #3)<br>';
+  h += '[x] Step 4  → Edit generate_signals.py x4 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ✅ Done (Fix #4 + #6)<br>';
+  h += '[x] Step 5  → Replace evolution_tracker.py &nbsp;&nbsp;&nbsp;&nbsp; ✅ Done (Fix #5)<br>';
+  h += '[x] Step 6  → Add sl_monitor.py &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ✅ Done (NEW-A)<br>';
+  h += '[x] Step 7  → Add kite_reconcile.py &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ✅ Done (NEW-B)<br>';
+  h += '[x] Step 8  → Add pipeline_intraday.yml &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ✅ Done<br>';
+  h += '[x] Step 9  → Replace pipeline_morning.yml &nbsp;&nbsp;&nbsp; ✅ Done<br>';
+  h += '[x] Step 10 → git push → GitHub Actions verified ✅ Done</code>';
+  h += '</div>';
+
+  patches.forEach(p => {
+    const sc = p.status === 'COMPLETED' ? '#22c55e' : (sevColor[p.sev] || '#888');
+    const borderStyle = p.status === 'COMPLETED' ? '2px solid #22c55e' : `4px solid ${sc}`;
+    const bgStyle = p.status === 'COMPLETED' ? 'background:#052e16;' : 'background:var(--card);';
+    h += `<div style="${bgStyle}border-radius:10px;padding:18px 20px;margin-bottom:16px;border-left:${borderStyle};">`;
+    h += `<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap;">`;
+    h += `<span style="background:${sc};color:#000;font-weight:700;font-size:12px;padding:3px 10px;border-radius:20px;">Fix ${p.id}</span>`;
+    h += `<span style="background:#1e293b;color:${sc};font-size:12px;padding:3px 10px;border-radius:20px;font-weight:600;">${p.sev}</span>`;
+    h += `<span style="color:#22c55e;font-size:13px;font-weight:700;">${statusLabel[p.status]||p.status}</span>`;
+    if(p.resolvedDate) h += `<span style="color:#86efac;font-size:11px;background:#052e16;border:1px solid #22c55e;padding:2px 8px;border-radius:12px;">Resolved ${p.resolvedDate}</span>`;
+    h += `<code style="color:var(--yellow);font-size:12px;background:#1e293b;padding:3px 8px;border-radius:4px;">${p.file}</code>`;
+    h += `</div>`;
+    h += `<div style="margin-bottom:8px;"><span style="color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.05em;">Root Cause</span><br><span style="color:var(--fg);font-size:13px;">${p.bug}</span></div>`;
+    h += `<div style="margin-bottom:8px;"><span style="color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.05em;">Fix Applied</span><br><span style="color:#4ade80;font-size:13px;">${p.fix}</span></div>`;
+    h += `<div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:10px;">`;
+    h += `<div><span style="color:var(--dim);font-size:12px;">Deploy: </span><span style="color:var(--cyan);font-size:12px;">${p.deploy}</span></div>`;
+    if(p.sql && p.sql !== 'None (code-only fix)') {
+      h += `<div><span style="color:var(--dim);font-size:12px;">SQL: </span><span style="color:var(--orange);font-size:12px;">${p.sql}</span></div>`;
+    }
+    h += `</div></div>`;
+  });
+
+  h += '<div style="margin-top:24px;background:#0f172a;border:1px solid #f59e0b;border-radius:8px;padding:16px 18px;">';
+  h += '<div style="color:#f59e0b;font-weight:700;margin-bottom:6px;font-size:13px;">⏳ Next Up — Gap Register G1–G18 (Apply Before Phase 2)</div>';
+  h += '<div style="color:#94a3b8;font-size:11px;margin-bottom:10px;">Strategic patches complete. These intelligence-completeness patches are the remaining gate before Phase 2 can start.</div>';
+  const remaining = [
+    '🔴 G1 — SQL (9 cols) + generate_signals.py sig dict — 9 ML feature columns missing from signal_log write',
+    '🔴 G2 — post_trade_analysis.py — outcome_pnl_pct never written back to signal_log (included in Fix #2 patch file)',
+    '🔴 G6 — ai_enrich.py — event_calendar never passed into AI context',
+    '🔴 G17 — ai_enrich.py — market_regime + global_cues never in AI context',
+    '🔴 G18 — ai_enrich.py — open_positions portfolio never in AI context',
+    '🟡 G3 — ai_enrich.py — zero-data prompt guard (warn AI when Phase 2 indicators not yet available)',
+    '🟡 G5 — 4 provider files — JSON fence ```json not stripped before parsing',
+    '🟡 G13 — ai_enrich.py — sector_strength + industry_strength not in AI context',
+    '🟡 G8/G9 — evolution_tracker.py — kill switch pattern + lesson dedup (included in Fix #5 patch)',
+    '⚪ G4 — ai_enrich.py + SQL — ai_strategy_validation not persisted to signal_log',
+    '⚪ G14 — append_history.py — regime_history snapshot never wired',
+    '⚪ G15 — evolution_tracker.py — ai_model_performance not fed to evolution AI',
+    '⚪ G16 — ingest_global_cues.py — S&P500 + change% columns missing',
+    '✅ G10 — Already fixed by Fix #1 (FII column names)',
+    '✅ G11 — pipeline_morning.yml cron — confirmed correct',
+    '✅ G12 — Morning alert — confirmed wired',
+    '—— RENAME_MAP in compute_indicators.py — 21 column renames chartink_raw_data → stock_data_daily (Phase 2 build)',
+    '—— lessons.times_applied increment — ai_enrich.py should increment times_applied / times_worked on outcome',
+    '—— Morning position risk scan — send_alerts.py --position-risk flag pre-market Telegram',
+  ];
+  remaining.forEach(r => {
+    const col = r.startsWith('🔴') ? '#fca5a5' : r.startsWith('🟡') ? '#fde68a' : r.startsWith('✅') ? '#86efac' : '#6b7280';
+    h += `<div style="color:${col};font-size:12px;padding:5px 0;border-bottom:1px solid #1f2937;">${r}</div>`;
+  });
+  h += '</div>';
+
+  h += '</div>';
+  document.getElementById('view-patches').innerHTML = h;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════════
+buildPipeline();
+buildMatrix();
+buildAI();
+buildEvolution();
+buildPatches();
+setTimeout(()=>selectStep('fetch_chartink'), 100);
+</script>
+</body>
+</html>

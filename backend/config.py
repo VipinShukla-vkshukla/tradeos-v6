@@ -78,6 +78,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 # ── Kite ─────────────────────────────────────────────────────
 KITE_API_KEY    = os.getenv("KITE_API_KEY", "")
 KITE_API_SECRET = os.getenv("KITE_API_SECRET", "")
+KITE_ACCESS_TOKEN = os.getenv("KITE_ACCESS_TOKEN", "")
 
 # ── System config cache ───────────────────────────────────────
 _sys_config: dict | None = None
