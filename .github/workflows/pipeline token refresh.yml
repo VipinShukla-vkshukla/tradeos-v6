@@ -1,4 +1,4 @@
-name: TradeOS v6 Daily Pipeline
+name: pipeline token refresh
 
 on:
   schedule:
