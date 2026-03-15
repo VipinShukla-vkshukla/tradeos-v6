@@ -65,7 +65,7 @@ def main():
     # Lazy imports keep startup fast — each module only loads if the step runs.
     
     def step_global_cues_evening():
-        from ingestion.ingest_global_cues import main as fn; return fn(session=None, force_evening=True)
+        from ingestion.ingest_global_cues import main as fn; return fn("EVENING")
     
     def step_fetch_chartink():
         from ingestion.fetch_chartink import main as fn; return fn()
