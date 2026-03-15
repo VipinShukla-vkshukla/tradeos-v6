@@ -400,7 +400,8 @@ def main():
                 "ai_provider":            r["ai_provider"],
                 "ai_strategy_validation": r.get("ai_strategy_validation"),  # G4
                 "ai_suggested_action":    r.get("ai_suggested_action"),
-                "ai_confidence": r.get("ai_confidence"),
+                "ai_confidence":          r.get("ai_confidence"),
+                "ai_conviction_reason":   r.get("ai_conviction_reason"),
             }).eq("id", sig["id"]).execute()
 
             sb.table("ai_context").upsert({
