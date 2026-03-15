@@ -300,6 +300,7 @@ def analyze_trade(trade: dict, sb, provider_override: str = None) -> dict | None
         "times_applied":     0,
         "times_worked":      0,
         "confidence":        1.0,
+        "linked_symbols": [trade.get("symbol", "")],
     }
 
 
@@ -356,10 +357,10 @@ def main():
             try:
                 pnl        = float(trade.get("pnl_pct", 0) or 0)
                 outcome    = "WIN" if pnl > 0 else "LOSS"
-                entry_date = str(trade.get("entry_date", ""))
-                response   = sb.table("signal_log") \
+                signal_date = str(trade.get("signal_date") or trade.get("entry_date", ""))
+                response    = sb.table("signal_log") \
                     .update({"outcome": outcome, "outcome_pnl_pct": pnl}) \
-                    .eq("symbol", sym).eq("date", entry_date).execute()
+                    .eq("symbol", sym).eq("date", signal_date).execute()
                 if response.data:
                     signal_match_count += 1
             except Exception as e:

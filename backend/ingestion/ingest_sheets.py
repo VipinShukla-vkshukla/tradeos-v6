@@ -165,8 +165,7 @@ def ingest_stock_data(service, sb):
     df  = rows_to_df(raw, 1, 2)
     if df.empty:
         logger.warning("STOCK_DATA empty")
-        return 0
-
+        return 0  
     today = today_ist()
     rows  = []
     for _, r in df.iterrows():
@@ -212,11 +211,11 @@ def ingest_stock_data(service, sb):
             "rsi_monthly": parse_num(r.get("rsi_monthly")),
             "adx": parse_num(r.get("adx_14")),
             "di_plus": parse_num(r.get("adx_di")),
-            "di_minus": parse_num(r.get("adx_di_1")),
+            "di_minus": parse_num(r.get("adx_di_2")),
             "volume": int(parse_num(r.get("volume")) or 0) or None,
             "avg_vol_20d": int(parse_num(r.get("20_avg_volume")) or 0) or None,
             "avg_vol_50d": int(parse_num(r.get("50_avg_volume")) or 0) or None,
-            "vwap": parse_num(r.get("latest_vwap")),
+            "vwap": parse_num(r.get("daily_vwap")),
             "vwap_20d": parse_num(r.get("20_day_vwap")),
             "vwap_50d": parse_num(r.get("50_day_vwap")),
             "pct_change": parse_num(r.get("change_prev_day")),
@@ -238,21 +237,21 @@ def ingest_stock_data(service, sb):
             "eps": parse_num(r.get("eps")),
             "quarterly_net_profit": parse_num(r.get("quarterly_net_profit")),
             "quarterly_variance": parse_num(r.get("quarterly_variance_net_profit")),
-            "above_sma50": parse_bool(r.get("price_sma50_yn")),
-            "sma50_gt_200": parse_bool(r.get("sma50_sma200_yn")),
-            "above_st": parse_bool(r.get("close_supertrend_yn")),
-            "wk_hi_high": parse_bool(r.get("weekly_higher_high_yn")),
-            "wk_hi_low": parse_bool(r.get("weekly_higher_low_yn")),
+            "above_sma50":  1 if parse_bool(r.get("price__sma50_yn")) else 0,
+            "sma50_gt_200": 1 if parse_bool(r.get("sma50__sma200_yn")) else 0,
+            "above_st":     1 if parse_bool(r.get("close__supertrend_yn")) else 0,
+            "wk_hi_high":   1 if parse_bool(r.get("weekly_higher_high_yn")) else 0,
+            "wk_hi_low":    1 if parse_bool(r.get("weekly_higher_low_yn")) else 0,
             "dist_sma50": parse_num(r.get("price_distance_from_sma50_")),
-            "vol_ratio": parse_num(r.get("volume_ratio_today_20_avg_volume")),
-            "value_cr": parse_num(r.get("value_traded_cr")),
+            "vol_ratio": parse_num(r.get("volume_ratio_today__20_avg_volume")),
+            "value_cr": parse_num(r.get("value_traded__cr")),
             "delivery_pct": parse_num(r.get("delivery_")),
             "consol_range": parse_num(r.get("consolidation_range_")),
-            "breakout_setup": parse_bool(r.get("breakout_set_up_flag_yn")),
-            "bk_trigger": parse_bool(r.get("breakout_trigger_flag_yn")),
+            "breakout_setup": 1 if parse_bool(r.get("breakout_set_up_flag_yn")) else 0,
+            "bk_trigger":   1 if parse_bool(r.get("breakout_trigger_flag_yn")) else 0,
             "upcoming_events": safe_str(r.get("upcoming_events")),
             "upcoming_event_type": safe_str(r.get("upcoming_event_type")),
-            "in_master_shortlist": parse_bool(r.get("part_of_master_shortlist")),
+            "in_master_shortlist": 1 if parse_bool(r.get("part_of_master_shortlist")) else 0,
         })
 
     if DRY_RUN:
@@ -266,8 +265,7 @@ def ingest_stock_data(service, sb):
         ).execute()
     logger.info(f"✓ STOCK_DATA: {len(rows)} rows upserted")
     return len(rows)
-
-
+    
 def ingest_master_shortlist(service, sb):
     logger.info("Ingesting MASTER_SHORTLIST...")
     raw = read_tab(service, "MASTER_SHORTLIST", 200)
@@ -314,7 +312,7 @@ def ingest_master_shortlist(service, sb):
             "trend_maturity": safe_str(r.get("trend_maturity")),
             "fv_low": parse_num(r.get("fair_value_zone_low")),
             "fv_high": parse_num(r.get("fair_value_zone_high")),
-            "price_location": parse_num(r.get("price_location")),
+            "price_location": safe_str(r.get("price_location")),
             "dist_fv_pct": parse_num(r.get("distance_from_fair_value_")),
             "struct_edge": safe_str(r.get("structural_edge")),
             "entry_timing_type": safe_str(r.get("entry_timing_type")),
@@ -343,7 +341,7 @@ def ingest_master_shortlist(service, sb):
             "notes": safe_str(r.get("notes")),
             "position_state": state,
         })
-
+    
     if DRY_RUN:
         logger.info(f"[DRY RUN] Would upsert {len(rows)} MSL rows")
         return len(rows)
@@ -353,7 +351,22 @@ def ingest_master_shortlist(service, sb):
             rows[i:i+200], on_conflict="date,symbol"
         ).execute()
     logger.info(f"✓ MASTER_SHORTLIST: {len(rows)} rows upserted")
+    # Reconcile — remove symbols no longer in today's sheet
+    sheet_symbols = {r["symbol"] for r in rows}
+    existing = sb.table("master_shortlist").select("symbol").eq("date", str(today)).execute()
+    db_symbols = {r["symbol"] for r in (existing.data or [])}
+    removed = db_symbols - sheet_symbols
+    if removed:
+        logger.info(f"Removing {len(removed)} symbols no longer in MSL: {removed}")
+        sb.table("master_shortlist").delete()\
+            .eq("date", str(today))\
+            .in_("symbol", list(removed))\
+            .execute()
+    else:
+        logger.info("No removed MSL symbols to reconcile")
+
     return len(rows)
+
 
 
 def ingest_open_positions(service, sb):
@@ -368,7 +381,7 @@ def ingest_open_positions(service, sb):
     rows = []
     for _, r in df.iterrows():
         sym = safe_str(r.get("symbol"))
-        if not sym or sym.startswith("Total") or sym.startswith("─"):
+        if not sym or sym.startswith("─") or sym.startswith("=") or sym.startswith("#"):
             continue
         
         # ── 03.04.2026 - Additional filter to ignore stocks where Entry Price = Current Price ──────────────────────────────────────────────
@@ -469,10 +482,26 @@ def ingest_open_positions(service, sb):
     else:
         logger.info("No removed symbols to reconcile")
     
-    
-
-    
-
+def find_signal_date(sb, symbol: str, entry_date: str) -> str | None:
+    """
+    Auto-detect signal_date from signal_log.
+    Looks for BUY_CANDIDATE/WATCH signal within 5 days before entry_date.
+    """
+    try:
+        from datetime import date, timedelta
+        entry    = date.fromisoformat(str(entry_date)[:10])
+        lookback = (entry - timedelta(days=5)).isoformat()
+        rows = (sb.table("signal_log")
+                  .select("date")
+                  .eq("symbol", symbol)
+                  .in_("signal_type", ["BUY_CANDIDATE", "WATCH"])
+                  .gte("date", lookback)
+                  .lte("date", str(entry))
+                  .order("date", desc=True)
+                  .limit(1).execute().data)
+        return rows[0]["date"] if rows else None
+    except Exception:
+        return None 
 
 def ingest_closed_positions(service, sb):
     logger.info("Ingesting CLOSED_POSITIONS...")
@@ -486,28 +515,32 @@ def ingest_closed_positions(service, sb):
         sym = safe_str(r.get("symbol"))
         if not sym or sym.startswith("Total"):
             continue
+
+        entry_date = str(parse_date(r.get("entry_date"))) if parse_date(r.get("entry_date")) else None  # ← extract first
+
         rows.append({
-            "symbol": sym,
-            "company_name": safe_str(r.get("company_name")),
-            "sector": safe_str(r.get("sector")),
-            "strategy": safe_str(r.get("strategy")),
-            "entry_date": str(parse_date(r.get("entry_date"))) if parse_date(r.get("entry_date")) else None,
-            "entry_price": parse_num(r.get("entry_price")),
-            "proposed_qty": parse_num(r.get("proposed_quantity")),
-            "actual_qty": parse_num(r.get("actual_quantity")),
-            "invested_value": parse_num(r.get("invested_value")),
-            "exit_date": str(parse_date(r.get("exit_date"))) if parse_date(r.get("exit_date")) else None,
-            "exit_price": parse_num(r.get("exit_price")),
-            "exit_value": parse_num(r.get("exit_value")),
-            "realized_pnl": parse_num(r.get("realized_pl")),
-            "pnl_pct": parse_num(r.get("pl_")),
-            "high_water_mark": parse_num(r.get("high_water_mark")),
+            "symbol":                  sym,
+            "company_name":            safe_str(r.get("company_name")),
+            "sector":                  safe_str(r.get("sector")),
+            "strategy":                safe_str(r.get("strategy")),
+            "entry_date":              entry_date,                                                        # ← use extracted var
+            "signal_date":             find_signal_date(sb, sym, entry_date) if entry_date else None,    # ← add here
+            "entry_price":             parse_num(r.get("entry_price")),
+            "proposed_qty":            parse_num(r.get("proposed_quantity")),
+            "actual_qty":              parse_num(r.get("actual_quantity")),
+            "invested_value":          parse_num(r.get("invested_value")),
+            "exit_date":               str(parse_date(r.get("exit_date"))) if parse_date(r.get("exit_date")) else None,
+            "exit_price":              parse_num(r.get("exit_price")),
+            "exit_value":              parse_num(r.get("exit_value")),
+            "realized_pnl":            parse_num(r.get("realized_pl")),
+            "pnl_pct":                 parse_num(r.get("pl_")),
+            "high_water_mark":         parse_num(r.get("high_water_mark")),
             "max_favorable_excursion": parse_num(r.get("max_favorable_excursion_")),
-            "lifecycle_at_entry": safe_str(r.get("lifecycle_at_entry")),
-            "entry_timing_type": safe_str(r.get("entry_timing_type_at_entr")),
-            "reentry_mode": safe_str(r.get("reentry_mode_at_entry")),
-            "expected_r_at_entry": parse_num(r.get("expected_r_at_entry")),
-            "exit_reason": safe_str(r.get("exit_reason")),
+            "lifecycle_at_entry":      safe_str(r.get("lifecycle_at_entry")),
+            "entry_timing_type":       safe_str(r.get("entry_timing_type_at_entr")),
+            "reentry_mode":            safe_str(r.get("reentry_mode_at_entry")),
+            "expected_r_at_entry":     parse_num(r.get("expected_r_at_entry")),
+            "exit_reason":             safe_str(r.get("exit_reason")),
         })
 
     if DRY_RUN:
@@ -543,7 +576,7 @@ def ingest_sector_strength(service, sb):
             "avg_rsi_weekly": parse_num(r.get("avg_rsi_weekly")),
             "avg_rsi_monthly": parse_num(r.get("avg_rsi_monthly")),
             "avg_ret_6m": parse_num(r.get("avg_6m_return")),
-            "breadth_sma50": parse_num(r.get("stocks_above_50_dma_se")),
+            "breadth_sma50": parse_num(r.get("stocks_above_50_dma_sector_bredth")),
             "rank": int(parse_num(r.get("rank")) or 0) or None,
             "top4_flag": (int(parse_num(r.get("rank")) or 99) <= 5),
             "sector_state": safe_str(r.get("sector_state")),
@@ -570,15 +603,16 @@ def ingest_industry_strength(service, sb):
         ind = safe_str(r.get("industry"))
         if not ind:
             continue
+        
         rows.append({
             "date": str(today),
             "industry": ind,
             "stock_count": int(parse_num(r.get("stocks_count")) or 0),
-            "avg_rsi_daily": parse_num(r.get("avg_rsi_daily")),   # check col key with print(df.columns)
+            "avg_rsi_daily": parse_num(r.get("avg_rsi_daily")), 
             "avg_rsi_weekly": parse_num(r.get("avg_rsi_weekly")),
             "avg_rsi_monthly": parse_num(r.get("avg_rsi_monthly")),
             "avg_ret_6m": parse_num(r.get("avg_6m_return")),
-            "breadth_sma50": parse_num(r.get("stocks_above_50_dma_se")),
+            "breadth_sma50": parse_num(r.get("stocks_above_50_dma_sector_bredth")),
             "rank": int(parse_num(r.get("rank")) or 0) or None,
             "top5_flag": (int(parse_num(r.get("rank")) or 99) <= 5),         # col still named top_4 in sheet
             "industry_state": safe_str(r.get("industry_state")),
@@ -592,48 +626,258 @@ def ingest_industry_strength(service, sb):
     logger.info(f"✓ INDUSTRY_STRENGTH: {len(rows)} industries upserted")
     return len(rows)
 
+def compute_regime_score(
+    breadth_pct:        float | None,
+    india_vix:          float | None,
+    nifty_vs_50dma_pct: float | None,
+    weekly_rsi:         float | None,
+) -> float:
+    """
+    Deterministic 0.0–1.0 score representing regime strength.
+    Weights: breadth 40% | VIX 30% | price vs 50DMA 20% | RSI 10%
+ 
+    Thresholds for regime label (used in ingest_market_regime):
+        score >= 0.65  → RISK_ON
+        score >= 0.35  → NEUTRAL
+        score <  0.35  → RISK_OFF
+ 
+    NOTE: regime *label* still comes from the Google Sheet (human-reviewed).
+    regime_score is the numeric confidence behind that label — used by AI
+    to distinguish "borderline RISK_OFF (0.32)" from "deep RISK_OFF (0.05)".
+    """
+    score = 0.0
+ 
+    # Breadth — 40% weight (most important: is the market move broad?)
+    if breadth_pct is not None:
+        if breadth_pct > 60:    score += 0.40
+        elif breadth_pct > 40:  score += 0.20
+        # else 0
+ 
+    # VIX — 30% weight (fear gauge)
+    if india_vix is not None:
+        if india_vix < 14:      score += 0.30
+        elif india_vix < 20:    score += 0.15
+        # else 0 (VIX >= 20 = elevated fear)
+ 
+    # Price vs 50DMA — 20% weight
+    if nifty_vs_50dma_pct is not None:
+        if nifty_vs_50dma_pct > 2:      score += 0.20
+        elif nifty_vs_50dma_pct > -2:   score += 0.10
+        # else 0 (price well below 50DMA)
+ 
+    # Weekly RSI — 10% weight
+    if weekly_rsi is not None:
+        if weekly_rsi > 60:     score += 0.10
+        elif weekly_rsi > 45:   score += 0.05
+        # else 0
+ 
+    return round(score, 2)
+ 
+ 
 def ingest_market_regime(service, sb):
     logger.info("Ingesting MARKET_REGIME...")
-    raw = read_tab(service, "MARKET_REGIME", 30)
+    raw = read_tab(service, "MARKET_REGIME", 50)
     if not raw:
         return 0
-
-    # Parse as key-value pairs — row format: [key, value, ...]
-    kv = {}
+ 
+    kv    = {}
+    flags = {}
+ 
+    NUMERIC_STOP = {"STRATEGY WEIGHT CONTROLS", "POSITION & EXPOSURE LIMITS",
+                    "STRATEGY ENABLE / DISABLE FLAGS"}
+    FLAG_KEYS    = {"CTL", "SBS", "TPO", "EAP"}
+    POSITION_KEY = "Max Positions Allowed"
+ 
+    in_numeric = True
+    in_flags   = False
+ 
     for row in raw:
-        if len(row) >= 2:
-            k, v = str(row[0]).strip(), row[1]
-            kv[k] = v
-
+        if len(row) < 1:
+            continue
+        k = str(row[0]).strip()
+        if not k:
+            continue
+ 
+        if k in NUMERIC_STOP:
+            in_numeric = False
+            if k == "STRATEGY ENABLE / DISABLE FLAGS":
+                in_flags = True
+            continue
+ 
+        if in_numeric:
+            if len(row) >= 2:
+                kv[k] = row[1]
+        elif in_flags:
+            if len(row) >= 3 and k in FLAG_KEYS:
+                flags[k] = row[2]
+ 
+        if k == POSITION_KEY and len(row) >= 3:
+            flags[k] = row[2]
+ 
     today = today_ist()
+ 
+    # ── Core values from sheet ────────────────────────────────────
+    nifty_price   = parse_num(kv.get("Index Current Price"))
+    nifty_50dma   = parse_num(kv.get("Index 50 DMA"))
+    nifty_200dma  = parse_num(kv.get("Index 200 DMA"))
+    weekly_rsi    = parse_num(kv.get("Index Weekly RSI"))
+    india_vix     = parse_num(kv.get("India VIX"))
+    breadth       = parse_num(kv.get("Avg Sector Breadth"))
+ 
+    # ── regime_score: deterministic numeric confidence ────────────
+    nifty_vs_50dma_pct = (
+        round((nifty_price - nifty_50dma) / nifty_50dma * 100, 4)
+        if nifty_price and nifty_50dma else None
+    )
+    regime_score = compute_regime_score(
+        breadth_pct        = breadth,
+        india_vix          = india_vix,
+        nifty_vs_50dma_pct = nifty_vs_50dma_pct,
+        weekly_rsi         = weekly_rsi,
+    )
+ 
+    # ── nifty change %: read previous rows from market_regime ─────
+    # Fetch last 21 rows (covers 1d, 5d, 20d lookbacks)
+    nifty_1d_chg_pct  = None
+    nifty_5d_chg_pct  = None
+    nifty_20d_chg_pct = None
+    try:
+        prev_rows = (
+            sb.table("market_regime")
+            .select("date,nifty_price")
+            .lt("date", str(today))          # strictly before today
+            .order("date", desc=True)
+            .limit(21)
+            .execute().data
+        )
+        if prev_rows and nifty_price:
+            # index 0 = yesterday, 4 = 5 days ago, 19 = 20 days ago
+            def chg(prev_price):
+                return round((nifty_price - prev_price) / prev_price * 100, 4)
+ 
+            if len(prev_rows) >= 1 and prev_rows[0].get("nifty_price"):
+                nifty_1d_chg_pct  = chg(float(prev_rows[0]["nifty_price"]))
+            if len(prev_rows) >= 5 and prev_rows[4].get("nifty_price"):
+                nifty_5d_chg_pct  = chg(float(prev_rows[4]["nifty_price"]))
+            if len(prev_rows) >= 20 and prev_rows[19].get("nifty_price"):
+                nifty_20d_chg_pct = chg(float(prev_rows[19]["nifty_price"]))
+    except Exception as e:
+        logger.warning(f"Could not compute nifty change %: {e}")
+ 
+    # ── advance_decline_ratio: from today's chartink_raw_data ─────
+    # Runs after fetch_chartink (step 01) so data is already present.
+    # ratio = advancing stocks / declining stocks
+    # > 1.0 = more advances, < 1.0 = more declines
+    advance_decline_ratio = None
+    try:
+        cd_rows = (
+            sb.table("chartink_raw_data")
+            .select("pct_change")
+            .eq("date", str(today))
+            .execute().data
+        )
+        if cd_rows:
+            advances = sum(1 for r in cd_rows if (r.get("pct_change") or 0) > 0)
+            declines  = sum(1 for r in cd_rows if (r.get("pct_change") or 0) < 0)
+            if declines > 0:
+                advance_decline_ratio = round(advances / declines, 4)
+            elif advances > 0:
+                advance_decline_ratio = 99.0   # all advancing, no declines
+            logger.debug(
+                f"A/D: {advances} advances / {declines} declines "
+                f"= {advance_decline_ratio}"
+            )
+    except Exception as e:
+        logger.warning(f"Could not compute advance/decline ratio: {e}")
+ 
+    # ── above_200dma_pct: top 200 stocks by market_cap ───────────
+    # Phase 4 will replace this with actual Nifty 200 constituent list.
+    # Until then: top 200 by market_cap is the best approximation.
+    # Formula: % of top-200 stocks where daily_close > sma_200
+    above_200dma_pct = None
+    try:
+        top200_rows = (
+            sb.table("chartink_raw_data")
+            .select("daily_close,sma_200,market_cap")
+            .eq("date", str(today))
+            .not_.is_("market_cap", "null")
+            .not_.is_("sma_200", "null")
+            .order("market_cap", desc=True)
+            .limit(200)
+            .execute().data
+        )
+        if top200_rows:
+            above = sum(
+                1 for r in top200_rows
+                if (r.get("daily_close") or 0) > (r.get("sma_200") or 0)
+            )
+            above_200dma_pct = round(above / len(top200_rows) * 100, 2)
+            logger.debug(
+                f"Above 200DMA (top-200 proxy): {above}/{len(top200_rows)} "
+                f"= {above_200dma_pct}%"
+            )
+    except Exception as e:
+        logger.warning(f"Could not compute above_200dma_pct: {e}")
+ 
+    # ── Build row ─────────────────────────────────────────────────
+    _max = parse_num(flags.get("Max Positions Allowed"))
     row = {
-        "date": str(today),
-        "regime":             safe_str(kv.get("Market Regime")),
-        "nifty_price":        parse_num(kv.get("Index Current Price")),
-        "nifty_50dma":        parse_num(kv.get("Index 50 DMA")),
-        "nifty_200dma":       parse_num(kv.get("Index 200 DMA")),
-        "nifty_weekly_rsi":   parse_num(kv.get("Index Weekly RSI")),
-        "india_vix":          parse_num(kv.get("India VIX")),
-        "gift_nifty":         parse_num(kv.get("Gift Nifty")),
-        "avg_sector_breadth": parse_num(kv.get("Avg Sector Breadth")),
-        "ctl_enabled":        parse_bool(kv.get("CTL Enabled")),
-        "sbs_enabled":        parse_bool(kv.get("SBS Enabled")),
-        "tpo_enabled":        parse_bool(kv.get("TPO Enabled")),
-        "eap_enabled":        parse_bool(kv.get("EAP Enabled")),
-        "raw_data":           json.dumps({str(k): str(v) for k, v in kv.items() if v not in (None, "")}),
+        "date":                  str(today),
+        "regime":                safe_str(kv.get("Market Regime")),
+        "nifty_price":           nifty_price,
+        "nifty_50dma":           nifty_50dma,
+        "nifty_200dma":          nifty_200dma,
+        "nifty_weekly_rsi":      weekly_rsi,
+        "india_vix":             india_vix,
+        "gift_nifty":            parse_num(kv.get("Gift Nifty")),
+        "avg_sector_breadth":    breadth,
+        # ── New computed fields ──
+        "regime_score":          regime_score,
+        "nifty_1d_chg_pct":      nifty_1d_chg_pct,
+        "nifty_5d_chg_pct":      nifty_5d_chg_pct,
+        "nifty_20d_chg_pct":     nifty_20d_chg_pct,
+        "advance_decline_ratio": advance_decline_ratio,
+        "above_200dma_pct":      above_200dma_pct,       # top-200 proxy until Phase 4
+        # ── Flags ──
+        "ctl_enabled":           parse_bool(flags.get("CTL")),
+        "sbs_enabled":           parse_bool(flags.get("SBS")),
+        "tpo_enabled":           parse_bool(flags.get("TPO")),
+        "eap_enabled":           parse_bool(flags.get("EAP")),
+        "max_positions":         int(_max) if _max is not None else None,
+        "raw_data":              json.dumps({
+                                     str(k): str(v)
+                                     for k, v in {**kv, **flags}.items()
+                                     if v not in (None, "")
+                                 }),
     }
-
+ 
     if DRY_RUN:
-        logger.info(f"[DRY RUN] Would upsert regime: {row['regime']}")
+        logger.info(
+            f"[DRY RUN] Would upsert regime: {row['regime']} | "
+            f"score={regime_score} | A/D={advance_decline_ratio} | "
+            f"above200={above_200dma_pct}% | "
+            f"Nifty 1d={nifty_1d_chg_pct} 5d={nifty_5d_chg_pct} 20d={nifty_20d_chg_pct}"
+        )
         return 1
-
+ 
     sb.table("market_regime").upsert(row, on_conflict="date").execute()
-    # Also log to regime_history
-    hist = {k: row[k] for k in ["date","regime","nifty_price","nifty_50dma",
-            "nifty_200dma","nifty_weekly_rsi","india_vix","avg_sector_breadth",
-            "ctl_enabled","sbs_enabled","tpo_enabled","eap_enabled"]}
+ 
+    # ── regime_history snapshot (keep in sync) ────────────────────
+    hist = {k: row[k] for k in [
+        "date", "regime", "nifty_price", "nifty_50dma",
+        "nifty_200dma", "nifty_weekly_rsi", "india_vix",
+        "avg_sector_breadth", "regime_score",
+        "advance_decline_ratio", "above_200dma_pct",
+        "nifty_1d_chg_pct", "nifty_5d_chg_pct", "nifty_20d_chg_pct",
+        "ctl_enabled", "sbs_enabled", "tpo_enabled", "eap_enabled",
+    ]}
     sb.table("regime_history").upsert(hist, on_conflict="date").execute()
-    logger.info(f"✓ MARKET_REGIME: {row['regime']} | VIX={row['india_vix']} | Nifty={row['nifty_price']}")
+ 
+    logger.info(
+        f"✓ MARKET_REGIME: {row['regime']} | score={regime_score} | "
+        f"A/D={advance_decline_ratio} | above200={above_200dma_pct}% | "
+        f"Nifty 1d={nifty_1d_chg_pct}% 5d={nifty_5d_chg_pct}% 20d={nifty_20d_chg_pct}%"
+    )
     return 1
 
 
@@ -745,7 +989,7 @@ def ingest_msl_history(service, sb):
             "sector": safe_str(r.get("sector")),
             "strategy_source": safe_str(r.get("strategy_source")),
             "close_price": parse_num(r.get("close_price")),
-            "price_location": parse_num(r.get("price_location")),
+            "price_location": safe_str(r.get("price_location")),
             "dist_fv_pct": parse_num(r.get("distance_from_fair_v")),
             "entry_timing_type": safe_str(r.get("entry_timing_type")),
             "momentum_phase": safe_str(r.get("momentum_phase")),

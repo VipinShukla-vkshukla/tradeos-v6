@@ -71,26 +71,64 @@ def get_fii_context(sb, trade_date: str) -> dict:
 
 
 def get_global_cues_context(sb) -> dict:
-    """G17: Fetch today's global cues for AI context."""
+    """
+    G17: Fetch today's EVENING global cues for AI context.
+    Falls back to most recent EVENING row if today's not yet written.
+    """
+    today = today_ist().isoformat()
+
     rows = (sb.table("global_cues")
-              .select("gift_nifty_chg_pct,gap_signal,brent_chg_pct,usd_inr_chg_pct,"
-                      "us_dow_chg_pct,us_nasdaq_chg_pct,sector_impacts")
-              .order("date", desc=True).limit(1).execute().data)
+              .select("gift_nifty_chg_pct,gap_signal,"
+                      "usd_inr,usd_inr_chg_pct,"
+                      "brent_crude,brent_chg_pct,"
+                      "gold_price,"
+                      "us_dow_chg_pct,us_nasdaq_chg_pct,sp500_chg_pct,"
+                      "sector_impacts")
+              .eq("session", "EVENING")
+              .eq("date", today)
+              .limit(1).execute().data)
+
+    if not rows:
+        # Fall back to most recent EVENING row (e.g. if pipeline runs before cues written)
+        rows = (sb.table("global_cues")
+                  .select("gift_nifty_chg_pct,gap_signal,"
+                          "usd_inr,usd_inr_chg_pct,"
+                          "brent_crude,brent_chg_pct,"
+                          "gold_price,"
+                          "us_dow_chg_pct,us_nasdaq_chg_pct,sp500_chg_pct,"
+                          "sector_impacts")
+                  .eq("session", "EVENING")
+                  .order("date", desc=True).limit(1).execute().data)
+
     if rows:
-        return rows[0]
-    return {"note": "No global cues today"}
+        r = rows[0]
+        # Unpack sector_impacts JSONB so AI gets flat keys, not a nested dict string
+        impacts = r.pop("sector_impacts", {}) or {}
+        return {**r, **impacts}
+
+    return {"note": "No global cues available"}
 
 
 def get_regime_context(sb, trade_date: str) -> dict:
-    """G17: Full regime object — not just the regime string."""
+    """
+    G17: Full regime object for AI context.
+    Selects only columns that exist after sql_market_regime_new_cols.sql is run.
+    """
+    cols = (
+        "regime,regime_score,"
+        "nifty_price,nifty_50dma,nifty_200dma,"
+        "nifty_weekly_rsi,india_vix,avg_sector_breadth,"
+        "nifty_1d_chg_pct,nifty_5d_chg_pct,nifty_20d_chg_pct,"
+        "advance_decline_ratio,above_200dma_pct,"
+        "predicted_regime,regime_confidence"
+    )
+
     rows = (sb.table("market_regime")
-              .select("regime,regime_score,breadth_pct,advance_decline,"
-                      "predicted_regime,regime_confidence")
+              .select(cols)
               .eq("date", trade_date).execute().data)
     if not rows:
         rows = (sb.table("market_regime")
-                  .select("regime,regime_score,breadth_pct,advance_decline,"
-                          "predicted_regime,regime_confidence")
+                  .select(cols)
                   .order("date", desc=True).limit(1).execute().data)
     return rows[0] if rows else {"regime": "UNKNOWN"}
 
@@ -127,59 +165,74 @@ def get_portfolio_context(sb, symbol: str, sector: str) -> dict:
 
 def get_sector_industry_context(sb, sector: str, industry: str, trade_date: str) -> dict:
     """G13: sector_strength + industry_strength context."""
+
+    sec_cols = (
+    "sector,rank,top4_flag,sector_state,"
+    "avg_rsi_daily,avg_rsi_weekly,avg_rsi_monthly,"
+    "avg_ret_6m,breadth_sma50,fii_flow_sector"
+    )
+    ind_cols = (
+        "industry,rank,top5_flag,industry_state,"
+        "avg_rsi_daily,avg_rsi_weekly,avg_rsi_monthly,"
+        "avg_ret_6m,breadth_sma50"
+    )
+
     sec_rows = (sb.table("sector_strength")
-                  .select("sector,strength_score,trend,rank")
+                  .select(sec_cols)
                   .eq("sector", sector)
                   .eq("date", trade_date).limit(1).execute().data)
     if not sec_rows:
         sec_rows = (sb.table("sector_strength")
-                      .select("sector,strength_score,trend,rank")
+                      .select(sec_cols)
                       .eq("sector", sector)
                       .order("date", desc=True).limit(1).execute().data)
 
     ind_rows = (sb.table("industry_strength")
-                  .select("industry,rank,industry_state,avg_rsi_daily,top5_flag")
+                  .select(ind_cols)
                   .eq("industry", industry)
                   .eq("date", trade_date).limit(1).execute().data)
     if not ind_rows:
         ind_rows = (sb.table("industry_strength")
-                      .select("industry,rank,industry_state,avg_rsi_daily,top5_flag")
+                      .select(ind_cols)
                       .eq("industry", industry)
                       .order("date", desc=True).limit(1).execute().data)
 
     return {
-        "sector_context":   sec_rows[0]   if sec_rows   else {"note": f"No sector data for {sector}"},
-        "industry_context": ind_rows[0]   if ind_rows   else {"note": f"No industry data for {industry}"},
+        "sector_context":   sec_rows[0] if sec_rows else {"note": f"No sector data for {sector}"},
+        "industry_context": ind_rows[0] if ind_rows else {"note": f"No industry data for {industry}"},
     }
 
 
 def get_event_calendar_context(sb, symbol: str, sector: str, trade_date: str) -> list:
     """
     G6: event_calendar (next 14 days).
-    Checks both per-symbol events and sector-level events.
+    Checks sector-level and global events.
+    NOTE: no symbol column in event_calendar — matching is sector/global only.
     """
     lookahead = (today_ist() + timedelta(days=14)).isoformat()
+
     rows = (sb.table("event_calendar")
-              .select("event_type,event_date,detail,affected_sectors")
+              .select("event_type,event_name,event_category,"
+                      "start_date,end_date,affected_sectors,notes")
               .eq("is_active", True)
-              .gte("event_date", trade_date)
-              .lte("event_date", lookahead)
-              .order("event_date")
+              .gte("start_date", trade_date)
+              .lte("start_date", lookahead)
+              .order("start_date")
               .limit(10).execute().data)
 
     relevant = []
     for ev in rows:
-        ev_sym  = ev.get("symbol", "")
         aff_sec = str(ev.get("affected_sectors", "")).lower()
-        if (ev_sym == symbol
-                or (sector and sector.lower() in aff_sec)
-                or ev.get("event_category") == "GLOBAL"):
-            label = f"{ev.get('event_type', '')} on {ev.get('event_date', '')}"
-            if ev.get("detail"):
-                label += f": {ev['detail']}"
+        is_global = ev.get("event_category") == "GLOBAL"
+        is_sector_match = sector and sector.lower() in aff_sec
+
+        if is_global or is_sector_match:
+            label = f"{ev.get('event_type', '')} — {ev.get('event_name', '')} on {ev.get('start_date', '')}"
+            if ev.get("notes"):
+                label += f": {ev['notes']}"
             relevant.append(label)
 
-    return relevant if relevant else ["No corporate events in next 14 days"]
+    return relevant if relevant else ["No relevant events in next 14 days"]
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -296,12 +349,17 @@ def main():
             ai_context = {
                 # Core regime (G17: full object, not just string)
                 "market_regime": {
-                    "regime":             regime_ctx.get("regime", "UNKNOWN"),
-                    "regime_score":       regime_ctx.get("regime_score"),
-                    "breadth_pct":        regime_ctx.get("breadth_pct"),
-                    "advance_decline":    regime_ctx.get("advance_decline"),
-                    "predicted_regime":   regime_ctx.get("predicted_regime"),
-                    "regime_confidence":  regime_ctx.get("regime_confidence"),
+                    "regime":                regime_ctx.get("regime", "UNKNOWN"),
+                    "regime_score":          regime_ctx.get("regime_score"),          # 0.0-1.0 strength
+                    "nifty_1d_chg_pct":      regime_ctx.get("nifty_1d_chg_pct"),     # today's move
+                    "nifty_5d_chg_pct":      regime_ctx.get("nifty_5d_chg_pct"),     # weekly momentum
+                    "nifty_20d_chg_pct":     regime_ctx.get("nifty_20d_chg_pct"),    # monthly momentum
+                    "india_vix":             regime_ctx.get("india_vix"),
+                    "breadth_pct":           regime_ctx.get("avg_sector_breadth"),
+                    "advance_decline_ratio": regime_ctx.get("advance_decline_ratio"),
+                    "above_200dma_pct":      regime_ctx.get("above_200dma_pct"),
+                    "predicted_regime":      regime_ctx.get("predicted_regime"),
+                    "regime_confidence":     regime_ctx.get("regime_confidence"),
                 },
                 # FII/DII (G17: direct from fii_dii_flow, not signal_log.fii_flag)
                 "fii_dii": fii_ctx,
@@ -341,6 +399,8 @@ def main():
                 "ai_note":                r["ai_note"],
                 "ai_provider":            r["ai_provider"],
                 "ai_strategy_validation": r.get("ai_strategy_validation"),  # G4
+                "ai_suggested_action":    r.get("ai_suggested_action"),
+                "ai_confidence": r.get("ai_confidence"),
             }).eq("id", sig["id"]).execute()
 
             sb.table("ai_context").upsert({
@@ -351,6 +411,7 @@ def main():
                 "risks":             r["ai_risks"],
                 "catalyst":          r["ai_catalyst"],
                 "suggested_action":  r["ai_suggested_action"],
+                "strategy_validation":  r.get("ai_strategy_validation"),
                 "conflicts":         r["ai_conflicts"],
                 "ai_note":           r["ai_note"],
                 "provider":          r["ai_provider"],

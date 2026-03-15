@@ -47,7 +47,13 @@ def load_today_data():
     asm_set    = {r["symbol"] for r in safety if r["list_type"] in ("ASM","GSM","ASM_SHORTTERM")}
     fo_ban_set = {r["symbol"] for r in safety if r["list_type"] == "FO_BAN"}
 
-    return stock_map, msl, open_map, regime_obj, events, asm_set, fo_ban_set, industry_map
+    fii_rows = (sb.table("fii_dii_flow")
+                  .select("fii_flag")
+                  .order("date", desc=True)
+                  .limit(1).execute().data)
+    fii_flag = fii_rows[0].get("fii_flag", "NEUTRAL") if fii_rows else "NEUTRAL"
+
+    return stock_map, msl, open_map, regime_obj, events, asm_set, fo_ban_set, industry_map, fii_flag
 
 
 # ── Strategy filters ─────────────────────────────────────────
@@ -208,7 +214,8 @@ def generate(run_date: date | None = None) -> list[dict]:
     run_date = run_date or today_ist()
     strat_cfg = get_strategy_config()
 
-    stock_map, msl, open_map, regime, events, asm_set, fo_ban_set, industry_map = load_today_data()
+    stock_map, msl, open_map, regime, events, asm_set, fo_ban_set, industry_map, fii_flag = load_today_data()
+
 
     def _resolve_regime(regime_obj: dict) -> str:
         """
@@ -326,7 +333,7 @@ def generate(run_date: date | None = None) -> list[dict]:
             signal_type = "AVOID_ENTRY_EVENT"
         
         # Industry strength context
-        industry     = msl_row.get("industry", "")
+        industry = stock_map.get(sym, {}).get("industry", "") or msl_row.get("industry", "")
         ind_ctx      = industry_map.get(industry, {})
         ind_rank     = ind_ctx.get("rank")
         ind_top5     = ind_ctx.get("top5_flag", False)
@@ -356,11 +363,7 @@ def generate(run_date: date | None = None) -> list[dict]:
             "regime_warning": regime_warning,
             "asm_flag": asm_flag,
             "fo_ban_flag": fo_ban_flag,
-            "ai_conviction": None,
-            "ai_suggested_action": None,
-            "ai_provider": None,
-            "ai_fallback_used": False,
-            "fii_flag": None,
+            "fii_flag": fii_flag,
             "industry": industry,
             "industry_rank": ind_rank,
             "industry_top5": ind_top5,
@@ -376,6 +379,7 @@ def generate(run_date: date | None = None) -> list[dict]:
             "ret_6m":        stock_map.get(sym, {}).get("ret_6m"),
             "dist_sma50":    stock_map.get(sym, {}).get("dist_sma50"),
             "days_in_list":  msl_row.get("days_in_list"),
+            
         }
         signals.append(sig)
 

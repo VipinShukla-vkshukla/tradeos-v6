@@ -63,6 +63,10 @@ def main():
 # ── Step definitions ────────────────────────────────────────────────────
     # All defined here so --step can reference any of them by name.
     # Lazy imports keep startup fast — each module only loads if the step runs.
+    
+    def step_global_cues_evening():
+        from ingestion.ingest_global_cues import main as fn; return fn(session=None, force_evening=True)
+    
     def step_fetch_chartink():
         from ingestion.fetch_chartink import main as fn; return fn()
     
@@ -96,6 +100,7 @@ def main():
 
     # Phase 0 core steps (must-run for signals/history)
     steps_p0 = [
+    ("00_global_cues",      step_global_cues_evening, False),  # non-fatal: signals can run without it, but it fixes a key bug in the change % calculation so should be enabled asap
     ("01_fetch_chartink",   step_fetch_chartink,   True),
     ("02_ingest_bhavcopy",  step_ingest_bhavcopy,  False),  # non-fatal: signals can run without it
     ("03_ingest_sheets",    step_ingest,           True),
