@@ -18,7 +18,7 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import get_supabase, today_ist, check_kill_switch, logger
+from config import get_supabase, today_ist, is_kill_switch_active, logger
 
 # ── Pattern thresholds (all tunable) ─────────────────────────
 THRESHOLDS = {
@@ -96,7 +96,9 @@ def check_delivery_surge(s: dict) -> tuple[bool, float, dict]:
     return ok, conf, {"delivery_pct": deliv, "vol_ratio": vol}
 
 def main():
-    check_kill_switch()
+    if is_kill_switch_active():
+        logger.warning("Kill switch active — independent_scanner skipped")
+        return {"status": "skipped", "reason": "kill_switch"}
     logger.info("Independent Scanner starting")
     sb = get_supabase()
     today = today_ist()

@@ -15,7 +15,7 @@ from pathlib import Path
 from datetime import timedelta, date as _date
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
-from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, cfg_bool, today_ist
+from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, cfg_bool, today_ist, is_kill_switch_active
 
 # ── Evening format switch ──────────────────────────────────────────────────
 # Options: "compact" | "structured"
@@ -121,6 +121,45 @@ def sl_proximity_pct(current_price, active_sl) -> float | None:
     return None
 
 
+def fii_footer_line(fii: dict) -> str:
+    """Build the FII context footer line from fii_dii_flow data."""
+    if not fii:
+        return ""
+    flag     = str(fii.get("fii_flag") or "").upper()
+    net      = fii.get("fii_net")
+    net_5d   = fii.get("fii_net_5d")
+    flag_ico = {"CAUTION": "🔴", "ACCELERATOR": "🟢", "NEUTRAL": "⚪"}.get(flag, "⚪")
+    parts    = [f"{flag_ico} FII: <b>{flag}</b>"]
+    if net is not None:
+        try: parts.append(f"Today: ₹{float(net):+,.0f} Cr")
+        except: pass
+    if net_5d is not None:
+        try: parts.append(f"5d net: ₹{float(net_5d):+,.0f} Cr")
+        except: pass
+    return "  ".join(parts)
+
+
+def entry_zone_line(symbol: str, msl_map: dict) -> str:
+    """Build entry zone line from master_shortlist for a BUY_CANDIDATE."""
+    msl = msl_map.get(symbol, {})
+    if not msl:
+        return ""
+    parts = []
+    ez_lo = msl.get("entry_zone_low")
+    ez_hi = msl.get("entry_zone_high")
+    cmp   = msl.get("current_price")
+    lc    = msl.get("lifecycle") or ""
+    if ez_lo and ez_hi:
+        try: parts.append(f"Zone: ₹{float(ez_lo):,.0f}–{float(ez_hi):,.0f}")
+        except: pass
+    if cmp:
+        try: parts.append(f"CMP: ₹{float(cmp):,.0f}")
+        except: pass
+    if lc:
+        parts.append(f"Lifecycle: {lc}")
+    return "  ".join(parts) if parts else ""
+
+
 # ── Data loading ────────────────────────────────────────────────────────────
 
 def load_data(sb, today: str) -> dict:
@@ -163,6 +202,22 @@ def load_data(sb, today: str) -> dict:
     week_ago = str(today_ist() - timedelta(days=7))
     lessons  = sb.table("lessons").select("id,source").gte("date", week_ago).execute().data
 
+    # FII/DII latest row — for footer context
+    fii_rows = sb.table("fii_dii_flow").select(
+        "fii_net,fii_net_5d,fii_flag,date"
+    ).order("date", desc=True).limit(1).execute().data
+    fii = fii_rows[0] if fii_rows else {}
+
+    # Master shortlist — entry zones for BUY_CANDIDATE signal enrichment
+    msl_rows = sb.table("master_shortlist").select(
+        "symbol,entry_zone_low,entry_zone_high,current_price,lifecycle"
+    ).eq("date", today).execute().data
+    if not msl_rows:
+        msl_rows = sb.table("master_shortlist").select(
+            "symbol,entry_zone_low,entry_zone_high,current_price,lifecycle"
+        ).order("date", desc=True).limit(200).execute().data
+    msl_map = {r["symbol"]: r for r in (msl_rows or [])}
+
     return {
         "signals":     signals,
         "signal_date": signal_date,
@@ -172,6 +227,8 @@ def load_data(sb, today: str) -> dict:
         "open_pos":    sorted(open_pos or [], key=lambda x: float(x.get("pnl_pct") or 0), reverse=True),
         "lessons_ai":  len([l for l in lessons if str(l.get("source","")).startswith("AI:")]),
         "lessons_rb":  len([l for l in lessons if l.get("source") == "RULE_BASED"]),
+        "fii":         fii,
+        "msl_map":     msl_map,
     }
 
 
@@ -447,6 +504,7 @@ def build_compact(data: dict) -> str:
     regime   = data["regime"]
     cues     = data["cues"]
     open_pos = data["open_pos"]
+    fii      = data.get("fii", {})
 
     buys  = sorted([enrich_signal(s, ai_map) for s in signals if s["signal_type"] == "BUY_CANDIDATE"],
                    key=lambda x: x.get("score", 0), reverse=True)
@@ -524,6 +582,9 @@ def build_compact(data: dict) -> str:
             lines.append("🟢 <b>ADD:</b> " + " · ".join(s["symbol"] for s in adds))
 
     lines += ["", f"<i>Lessons 7d: {data['lessons_ai']} AI · {data['lessons_rb']} rule-based</i>"]
+    fii_line = fii_footer_line(fii)
+    if fii_line:
+        lines.append(fii_line)
     return "\n".join(lines)
 
 
@@ -537,6 +598,8 @@ def build_structured(data: dict) -> str:
     regime   = data["regime"]
     cues     = data["cues"]
     open_pos = data["open_pos"]
+    fii      = data.get("fii", {})
+    msl_map  = data.get("msl_map", {})
 
     buys  = sorted([enrich_signal(s, ai_map) for s in signals if s["signal_type"] == "BUY_CANDIDATE"],
                    key=lambda x: x.get("score", 0), reverse=True)
@@ -624,6 +687,9 @@ def build_structured(data: dict) -> str:
                 lines.append(f"  ⚡ Conflict: {(conflicts,)}")
             if ind_st or ind_rk:
                 lines.append(f"  🏭 Industry: {ind_st}  Rank #{ind_rk}")
+            ez = entry_zone_line(s["symbol"], msl_map)
+            if ez:
+                lines.append(f"  📍 {ez}")
     else:
         lines.append("  — no setups today")
 
@@ -677,6 +743,10 @@ def build_structured(data: dict) -> str:
             )
         lines.append("")
 
+    fii_line = fii_footer_line(fii)
+    if fii_line:
+        lines.append(fii_line)
+
     lines.append(
         f"<i>━━━ {len(buys)} buy · {len(exits)} exit · {len(adds)} add  "
         f"| Lessons 7d: {data['lessons_ai']} AI · {data['lessons_rb']} rule-based ━━━</i>"
@@ -688,6 +758,10 @@ def build_structured(data: dict) -> str:
 # ── MAIN ───────────────────────────────────────────────────────────────────
 
 def main():
+    if is_kill_switch_active():
+        logger.warning("Kill switch active — send_alerts skipped")
+        return {"status": "skipped", "reason": "kill_switch"}
+
     if not cfg_bool("telegram_alerts_enabled", False):
         logger.info("Telegram alerts disabled — skipping")
         return {}
