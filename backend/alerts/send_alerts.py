@@ -28,17 +28,33 @@ def send_message(text: str):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         logger.warning("Telegram not configured — skipping alert")
         return False
+
+    MAX_LEN = 4000  # safe buffer below 4096
+
+    # Split on double newlines to avoid breaking mid-line
+    chunks, current = [], ""
+    for para in text.split("\n\n"):
+        block = para + "\n\n"
+        if len(current) + len(block) > MAX_LEN:
+            chunks.append(current.strip())
+            current = block
+        else:
+            current += block
+    if current.strip():
+        chunks.append(current.strip())
+
     try:
         import requests
-        url  = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        resp = requests.post(url, json={
-            "chat_id":    TELEGRAM_CHAT_ID,
-            "text":       text,
-            "parse_mode": "HTML"
-        })
-        if not resp.ok:
-            logger.error(f"Telegram API error: {resp.status_code} — {resp.text[:200]}")
-            return False
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        for chunk in chunks:
+            resp = requests.post(url, json={
+                "chat_id":    TELEGRAM_CHAT_ID,
+                "text":       chunk,
+                "parse_mode": "HTML"
+            })
+            if not resp.ok:
+                logger.error(f"Telegram API error: {resp.status_code} — {resp.text[:200]}")
+                return False
         return True
     except Exception as e:
         logger.error(f"Telegram send failed: {e}")
@@ -90,8 +106,8 @@ def truncate(text, n=80) -> str:
 def top_risk(risks) -> str:
     if not risks: return ""
     if isinstance(risks, list) and risks:
-        return truncate(str(risks[0]), 70)
-    return truncate(str(risks), 70)
+        return (str(risks[0]))
+    return (str(risks),)
 
 def sl_proximity_pct(current_price, active_sl) -> float | None:
     """How far current price is above SL as a percentage."""
@@ -326,7 +342,7 @@ def build_morning(data: dict) -> str:
             conv     = s.get("ai_conviction") or "—"
             c_ico    = conviction_icon(conv)
             action   = s.get("ai_suggested_action") or "—"
-            reason   = truncate(s.get("ai_conviction_reason") or "", 85)
+            reason   = (s.get("ai_conviction_reason") or "")
             risk1    = top_risk(s.get("ai_risks"))
             conflicts = s.get("ai_conflicts") or ""
             conf     = s.get("ai_confidence")
@@ -357,7 +373,7 @@ def build_morning(data: dict) -> str:
             if risk1:
                 lines.append(f"  ⚠️ {risk1}")
             if conflicts and conflicts.upper() not in ("NONE", ""):
-                lines.append(f"  ⚡ {truncate(conflicts, 70)}")
+                lines.append(f"  ⚡ {(conflicts)}")
             lines.append("")
 
     else:
@@ -578,7 +594,7 @@ def build_structured(data: dict) -> str:
             c_ico     = conviction_icon(conv)
             reason    = s.get("ai_conviction_reason") or ""
             risk1     = top_risk(s.get("ai_risks"))
-            catalyst  = truncate(s.get("ai_catalyst") or "", 70)
+            catalyst  = (s.get("ai_catalyst") or "")
             conflicts = s.get("ai_conflicts") or ""
             action    = s.get("ai_suggested_action") or "—"
             provider  = s.get("ai_provider") or ""
@@ -599,13 +615,13 @@ def build_structured(data: dict) -> str:
                 f"  <i>{provider}{fallback}</i>"
             )
             if reason:
-                lines.append(f"  💬 {truncate(reason, 90)}")
+                lines.append(f"  💬 {(reason)}")
             if risk1:
                 lines.append(f"  ⚠️ Risk: {risk1}")
             if catalyst and catalyst.lower() not in ("none", "no catalyst", "no immediate catalyst", ""):
                 lines.append(f"  💡 Catalyst: {catalyst}")
             if conflicts and conflicts.upper() not in ("NONE", ""):
-                lines.append(f"  ⚡ Conflict: {truncate(conflicts, 70)}")
+                lines.append(f"  ⚡ Conflict: {(conflicts,)}")
             if ind_st or ind_rk:
                 lines.append(f"  🏭 Industry: {ind_st}  Rank #{ind_rk}")
     else:
@@ -644,7 +660,7 @@ def build_structured(data: dict) -> str:
         lines.append(f"<b>🔴 EXIT SIGNALS ({len(exits)})</b>")
         for s in exits:
             c_ico  = conviction_icon(s.get("ai_conviction"))
-            reason = truncate(s.get("ai_conviction_reason") or "", 70)
+            reason = (s.get("ai_conviction_reason") or "")
             lines.append(
                 f"  {c_ico} <b>{s['symbol']}</b> [{s.get('strategy','?')}]"
                 + (f"\n  💬 {reason}" if reason else "")
