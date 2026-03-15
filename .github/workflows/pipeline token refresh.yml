@@ -1,4 +1,4 @@
-name: pipeline token refresh
+name: TradeS v6 Pipeline Token Refresh
 
 on:
   schedule:
