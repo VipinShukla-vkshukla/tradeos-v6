@@ -218,6 +218,35 @@ def load_data(sb, today: str) -> dict:
         ).order("date", desc=True).limit(200).execute().data
     msl_map = {r["symbol"]: r for r in (msl_rows or [])}
 
+    # Position events — upcoming corporate events for held symbols only (morning use)
+    pos_symbols = [p["symbol"] for p in (open_pos or [])]
+    pos_events = []
+    if pos_symbols:
+        try:
+            from datetime import timedelta as _td
+            _today = today_ist()
+            _cutoff = (_today + _td(days=5)).isoformat()
+            _today_s = str(_today)
+            primary_ev = sb.table("nifty_upcoming_events").select(
+                "symbol,purpose,event_date"
+            ).in_("symbol", pos_symbols).gte("event_date", _today_s).lte("event_date", _cutoff).execute().data or []
+            secondary_ev = sb.table("event_calendar").select(
+                "symbol,event_type,event_date,detail,is_active"
+            ).in_("symbol", pos_symbols).eq("is_active", True).gte("event_date", _today_s).lte("event_date", _cutoff).execute().data or []
+            seen_ev = set()
+            for e in primary_ev:
+                k = (e["symbol"], e["event_date"])
+                if k not in seen_ev:
+                    seen_ev.add(k)
+                    pos_events.append({"symbol": e["symbol"], "event_type": e.get("purpose",""), "event_date": e["event_date"]})
+            for e in secondary_ev:
+                k = (e["symbol"], e["event_date"])
+                if k not in seen_ev:
+                    seen_ev.add(k)
+                    pos_events.append({"symbol": e["symbol"], "event_type": e.get("event_type",""), "event_date": e["event_date"]})
+        except Exception as _e:
+            logger.debug(f"Position events fetch failed (non-fatal): {_e}")
+
     return {
         "signals":     signals,
         "signal_date": signal_date,
@@ -229,6 +258,7 @@ def load_data(sb, today: str) -> dict:
         "lessons_rb":  len([l for l in lessons if l.get("source") == "RULE_BASED"]),
         "fii":         fii,
         "msl_map":     msl_map,
+        "pos_events":  pos_events,
     }
 
 
@@ -260,12 +290,13 @@ def enrich_signal(sig: dict, ai_map: dict) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build_morning(data: dict) -> str:
-    signals  = data["signals"]
-    ai_map   = data["ai_map"]
-    regime   = data["regime"]
-    cues     = data["cues"]
-    open_pos = data["open_pos"]
-    today    = data["signal_date"]
+    signals   = data["signals"]
+    ai_map    = data["ai_map"]
+    regime    = data["regime"]
+    cues      = data["cues"]
+    open_pos  = data["open_pos"]
+    pos_events = data.get("pos_events", [])
+    today     = data["signal_date"]
 
     buys = sorted(
         [enrich_signal(s, ai_map) for s in signals if s["signal_type"] == "BUY_CANDIDATE"],
@@ -482,6 +513,33 @@ def build_morning(data: dict) -> str:
                 )
 
         lines.append("")
+
+    # ── SECTION 4: POSITION EVENT RISK ───────────────────────────
+    if pos_events:
+        HIGH_EV   = {"results","earnings","quarterly results","annual results","financial results"}
+        MEDIUM_EV = {"board meeting","board meeting for results","egm"}
+
+        def _tier(etype: str, edate: str) -> str:
+            try: days = (_date.fromisoformat(str(edate)) - _date.fromisoformat(str(today))).days
+            except: return "LOW"
+            et = str(etype or "").lower()
+            if any(h in et for h in HIGH_EV):   return "HIGH"   if days <= 3 else ("LOW" if days <= 5 else "")
+            if any(m in et for m in MEDIUM_EV): return "MEDIUM" if days <= 2 else ("LOW" if days <= 5 else "")
+            return "LOW" if days <= 5 else ""
+
+        ev_lines = []
+        for e in pos_events:
+            tier = _tier(e["event_type"], e["event_date"])
+            if not tier: continue
+            ico = "🔴" if tier == "HIGH" else ("🟡" if tier == "MEDIUM" else "🟢")
+            try: days = (_date.fromisoformat(str(e["event_date"])) - _date.fromisoformat(str(today))).days
+            except: days = "?"
+            ev_lines.append(f"  {ico} <b>{e['symbol']}</b> — {e['event_type']} in {days}d ({e['event_date']})")
+
+        if ev_lines:
+            lines.append(f"<b>📅 POSITION EVENT RISK ({len(ev_lines)})</b>")
+            lines.extend(ev_lines)
+            lines.append("")
 
     # ── FOOTER ────────────────────────────────────────────────
     lines.append(
@@ -765,6 +823,14 @@ def main():
     if not cfg_bool("telegram_alerts_enabled", False):
         logger.info("Telegram alerts disabled — skipping")
         return {}
+
+    # --position-risk was previously wired in pipeline_morning.yml but had no
+    # handler — it fell through to the full evening digest causing a duplicate.
+    # Position risk is now fully covered by: morning brief (7 AM SL watch section),
+    # position_event_monitor.py (8:35 AM event scan), and sl_monitor.py (intraday).
+    if "--position-risk" in sys.argv:
+        logger.info("--position-risk flag received — covered by morning brief + sl_monitor. No duplicate alert sent.")
+        return {"status": "skipped", "reason": "position_risk_covered_by_other_steps"}
 
     is_morning = "--morning" in sys.argv
 

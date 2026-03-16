@@ -1,37 +1,35 @@
-name: TradeOS v6 — Morning Pre-Market Cues
+name: TradeOS v6 — Morning Pre-Market Brief
 
-# Timing sequence:
-#   08:00 AM IST (2:30 UTC)  — global cues + morning brief
-#   08:30 AM IST (3:00 UTC)  — kite_token_refresh (manual step — see note)
-#   08:45 AM IST (3:15 UTC)  — kite_reconcile + position risk scan
+# ONE job, ONE Telegram message at 7:00 AM IST.
 #
-# Note on kite_token_refresh: Kite requires a manual browser login once daily
-# to generate the access token. This cannot be automated via GitHub Actions.
-# Run it manually from your local machine at 8:30 AM before market open:
-#   python backend/kite/kite_token_refresh.py
-# Then copy KITE_ACCESS_TOKEN into GitHub Secrets for the day.
+# Sequence inside the job:
+#   1. ingest_global_cues.py MORNING  — fetches true US close-to-close prices
+#   2. send_alerts.py --morning       — ONE consolidated brief containing:
+#        • Overnight global cues (Gift Nifty gap, DOW, S&P, crude, USD/INR)
+#        • BUY candidates + AI conviction + entry zones
+#        • Open positions SL proximity watch
+#        • Position event risk (results/board meetings on held stocks, next 5d)
+#
+# Kite reconcile (kite_reconcile.py) is Phase 2+.
+# Wire it here when autonomy_phase is set to 2 and Kite token is active.
+#
+# sl_monitor.py runs separately every 30 min during market hours via pipeline_intraday.yml
+# Evening digest runs at 6 PM via pipeline_daily.yml
 
 on:
   schedule:
-    - cron: '30 1 * * 1-5'    # 7:00 AM IST (1:30 UTC) — global cues
-    - cron: '15 3 * * 1-5'    # 8:45 AM IST (3:15 UTC) — reconcile + risk scan
-  workflow_dispatch:
-    inputs:
-      job:
-        description: 'Which job to run (cues | reconcile | all)'
-        required: false
-        default: 'all'
+    - cron: '30 1 * * 1-5'    # 7:00 AM IST (1:30 UTC), Mon–Fri
+  workflow_dispatch:           # Manual trigger from GitHub UI
 
 jobs:
-  # ── JOB 1: Morning global cues + Telegram brief (7:00 AM) ──────────────────
-  morning-cues:
+  morning-brief:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 1 * * 1-5'
+    timeout-minutes: 12
 
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v4
+
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -47,7 +45,7 @@ jobs:
           mkdir -p backend/credentials
           echo "$GOOGLE_CREDS" > backend/credentials/service_account.json
 
-      - name: Fetch morning global cues
+      - name: Fetch morning global cues (MORNING session)
         working-directory: backend
         env:
           SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
@@ -57,7 +55,8 @@ jobs:
           TZ: Asia/Kolkata
         run: python ingestion/ingest_global_cues.py MORNING
 
-      - name: Send morning Telegram brief
+      - name: Send consolidated morning brief
+        # Single Telegram message — global cues + BUY candidates + SL watch + event risk
         working-directory: backend
         env:
           SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
@@ -67,47 +66,10 @@ jobs:
           TZ: Asia/Kolkata
         run: python alerts/send_alerts.py --morning
 
-  # ── JOB 2: Kite reconciliation + position risk scan (8:45 AM) ──────────────
-  # Runs after kite_token_refresh.py has been run manually at 8:30 AM.
-  # Requires KITE_API_KEY and KITE_ACCESS_TOKEN in GitHub Secrets.
-  # If Kite token is not yet set, kite_reconcile exits with "kite_unavailable"
-  # warning — non-fatal, no pipeline failure.
-  kite-reconcile:
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '15 3 * * 1-5'
-
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v4
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
         with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install dependencies
-        working-directory: backend
-        run: pip install -r requirements.txt
-
-      - name: Kite position reconciliation
-        working-directory: backend
-        env:
-          SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
-          TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
-          KITE_API_KEY:           ${{ secrets.KITE_API_KEY }}
-          KITE_ACCESS_TOKEN:      ${{ secrets.KITE_ACCESS_TOKEN }}
-          TZ: Asia/Kolkata
-        run: python kite/kite_reconcile.py
-        continue-on-error: true     # stale token shouldn't fail the whole morning
-
-      - name: Morning position risk scan
-        working-directory: backend
-        env:
-          SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
-          TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
-          TZ: Asia/Kolkata
-        run: python alerts/send_alerts.py --position-risk
-        continue-on-error: true
+          name: morning-logs-${{ github.run_id }}
+          path: backend/logs/
+          retention-days: 3

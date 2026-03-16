@@ -50,7 +50,7 @@ def fetch_open_positions(sb) -> list[dict]:
     """Fetch all currently open positions."""
     rows = sb.table("open_positions").select(
         "symbol,strategy,sector,entry_price,active_sl,company_name,pnl_pct"
-    ).execute().data
+    ).eq("status", "ACTIVE").execute().data   # ← add this line
     return rows or []
 
 
