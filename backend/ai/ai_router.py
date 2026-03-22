@@ -94,14 +94,6 @@ def analyze(stock_data: dict, context: dict) -> ConvictionResult:
 
 
 def raw_completion(prompt: str, max_tokens: int = 1500) -> str:
-    """
-    Send a raw text prompt to the configured AI provider and return the
-    raw string response. Used by evolution_tracker.py for free-form analysis
-    that doesn't fit the ConvictionResult structure.
-
-    Falls back through the same provider chain; raises RuntimeError if
-    no LLM provider is configured (disabled or ml-only).
-    """
     provider_name = cfg("ai_provider", "disabled").lower()
     if provider_name in ("disabled", "ml"):
         raise RuntimeError(
@@ -115,36 +107,53 @@ def raw_completion(prompt: str, max_tokens: int = 1500) -> str:
             f"Provider '{provider_name}' is not available — check API key in .env"
         )
 
+    # ── Claude ────────────────────────────────────────────────────────────
     if provider_name == "claude":
         import anthropic
         client = anthropic.Anthropic(api_key=provider.api_key)
         msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model="claude-sonnet-4-20250514",
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
         return msg.content[0].text.strip()
 
-    if provider_name in ("openai", "grok", "deepseek", "copilot"):
+    # ── Gemini ────────────────────────────────────────────────────────────
+    if provider_name == "gemini":
+        import google.generativeai as genai
+        genai.configure(api_key=provider.api_key)
+        model_name = getattr(provider, "model", None) or "gemini-2.0-flash"
+        model_obj = genai.GenerativeModel(model_name)
+        resp = model_obj.generate_content(prompt)
+        return resp.text.strip()
+
+    # ── OpenAI-compatible: openai / deepseek / grok / copilot ────────────
+    # DeepSeek and Grok use the OpenAI SDK but point to different base URLs.
+    # Copilot sets base_url via its constructor from AZURE_ENDPOINT.
+    # OpenAI uses base_url=None which defaults to api.openai.com.
+    if provider_name in ("openai", "deepseek", "grok", "copilot"):
         import openai
+        _base_urls = {
+            "deepseek": "https://api.deepseek.com",
+            "grok":     "https://api.x.ai/v1",
+        }
+        _models = {
+            "openai":   "gpt-4o-mini",
+            "deepseek": "deepseek-chat",
+            "grok":     "grok-2-latest",
+            "copilot":  "gpt-4o",
+        }
         client = openai.OpenAI(
             api_key=provider.api_key,
-            base_url=getattr(provider, "base_url", None),
+            base_url=getattr(provider, "base_url", None) or _base_urls.get(provider_name),
         )
-        model = getattr(provider, "model", "gpt-4o-mini")
+        model = getattr(provider, "model", None) or _models.get(provider_name, "gpt-4o-mini")
         resp = client.chat.completions.create(
             model=model,
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
         return resp.choices[0].message.content.strip()
-
-    if provider_name == "gemini":
-        import google.generativeai as genai
-        genai.configure(api_key=provider.api_key)
-        model_obj = genai.GenerativeModel("gemini-1.5-flash")
-        resp = model_obj.generate_content(prompt)
-        return resp.text.strip()
 
     raise RuntimeError(f"raw_completion not implemented for provider: {provider_name}")
 

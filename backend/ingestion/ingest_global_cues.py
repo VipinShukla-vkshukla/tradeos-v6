@@ -112,6 +112,13 @@ def main(time_slot: str = "EVENING"):
     dow        = fetch_from_yahoo("^DJI",     http)
     nasdaq     = fetch_from_yahoo("^IXIC",    http)
     sp500      = fetch_from_yahoo("^GSPC",    http)
+    # SG1: US 10-year Treasury yield — primary driver of FII EM outflows.
+    # A yield spike from 4.2% to 4.8% predicts FII selling 1-2 days before flows show in data.
+    # ^TNX quotes yield in % (e.g. 4.52 = 4.52%). Change in basis points = chg_pct * 100.
+    us_10yr    = fetch_from_yahoo("^TNX",     http)
+    # SG2: Silver price — Jewellery (Titan, Kalyan, Senco) + Metals Mining (Hindustan Zinc).
+    # Silver has higher beta than gold; was missing from commodity coverage entirely.
+    silver     = fetch_from_yahoo("SI=F",     http)
 
     # ── Previous row — same session type for apples-to-apples change % ──
     # MORNING vs MORNING = true US close-to-close (US closed at 1:30 AM IST)
@@ -130,11 +137,13 @@ def main(time_slot: str = "EVENING"):
     except Exception:
         prev = {}
 
-    crude_prev = float(prev.get("brent_crude",    0) or 0) or None
-    inr_prev   = float(prev.get("usd_inr",        0) or 0) or None
-    dow_prev   = float(prev.get("us_dow_close",   0) or 0) or None
-    nas_prev   = float(prev.get("us_nasdaq_close",0) or 0) or None
-    sp5_prev   = float(prev.get("sp500_close",    0) or 0) or None
+    crude_prev  = float(prev.get("brent_crude",    0) or 0) or None
+    inr_prev    = float(prev.get("usd_inr",        0) or 0) or None
+    dow_prev    = float(prev.get("us_dow_close",   0) or 0) or None
+    nas_prev    = float(prev.get("us_nasdaq_close",0) or 0) or None
+    sp5_prev    = float(prev.get("sp500_close",    0) or 0) or None
+    us10yr_prev = float(prev.get("us_10yr_yield",  0) or 0) or None  # SG1
+    silver_prev = float(prev.get("silver_price",   0) or 0) or None  # SG2
 
     # ── Change percentages ────────────────────────────────────────
     usd_inr_chg_pct = round((usd_inr - inr_prev)   / inr_prev   * 100, 4) if usd_inr and inr_prev   else None
@@ -142,6 +151,11 @@ def main(time_slot: str = "EVENING"):
     dow_chg_pct     = round((dow     - dow_prev)    / dow_prev   * 100, 4) if dow     and dow_prev   else None
     nas_chg_pct     = round((nasdaq  - nas_prev)    / nas_prev   * 100, 4) if nasdaq  and nas_prev   else None
     sp500_chg_pct   = round((sp500   - sp5_prev)    / sp5_prev   * 100, 4) if sp500   and sp5_prev   else None
+    # SG1: US 10-yr change in basis points (yield moves quoted in bps, not pct)
+    # e.g. yield 4.52→4.68 = +16 bps — that's what triggers FII EM outflows
+    us_10yr_chg_bps = round((us_10yr - us10yr_prev) * 100, 1) if us_10yr and us10yr_prev else None
+    # SG2: Silver change in pct (same pattern as gold/crude)
+    silver_chg_pct  = round((silver  - silver_prev) / silver_prev * 100, 4) if silver and silver_prev else None
 
     # ── Gift Nifty gap vs previous Nifty close ────────────────────
     # Only meaningful for MORNING (pre-market gap signal)
@@ -163,9 +177,21 @@ def main(time_slot: str = "EVENING"):
 
     # ── Sector impacts JSONB ──────────────────────────────────────
     sector_impacts = {
-        "crude_impact": classify_crude_impact(brent, crude_prev),
-        "inr_impact":   classify_inr_impact(usd_inr, inr_prev),
-        "global_bias":  classify_global_bias(dow_chg_pct, nas_chg_pct),
+        "crude_impact":  classify_crude_impact(brent, crude_prev),
+        "inr_impact":    classify_inr_impact(usd_inr, inr_prev),
+        "global_bias":   classify_global_bias(dow_chg_pct, nas_chg_pct),
+        # SG1: bond yield signal — high yield = FII selling pressure on India
+        "us10yr_signal": (
+            "RATE_PRESSURE_HIGH" if us_10yr_chg_bps and us_10yr_chg_bps > 10
+            else "RATE_PRESSURE_LOW" if us_10yr_chg_bps and us_10yr_chg_bps < -10
+            else "NEUTRAL"
+        ),
+        # SG2: precious metals signal
+        "silver_signal": (
+            "PRECIOUS_METALS_RALLY" if silver_chg_pct and silver_chg_pct > 2
+            else "PRECIOUS_METALS_SELL" if silver_chg_pct and silver_chg_pct < -2
+            else "NEUTRAL"
+        ),
     }
 
     row = {
@@ -186,6 +212,12 @@ def main(time_slot: str = "EVENING"):
         "sp500_close":        sp500,
         "sp500_chg_pct":      sp500_chg_pct,
         "sector_impacts":     sector_impacts,
+        # SG1: US 10-year Treasury yield
+        "us_10yr_yield":      us_10yr,
+        "us_10yr_chg_bps":    us_10yr_chg_bps,
+        # SG2: Silver price
+        "silver_price":       silver,
+        "silver_chg_pct":     silver_chg_pct,
     }
 
     # APPEND: upsert on date+session composite key

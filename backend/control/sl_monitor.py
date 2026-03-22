@@ -101,7 +101,9 @@ def main():
     # Load all open positions with stop-loss data
     positions = sb.table("open_positions") \
         .select("symbol, active_sl, actual_qty, entry_price, invested_value, "
-                "sl_breach_alerted, sl_proximity_alerted, current_price") \
+                "sl_breach_alerted, sl_proximity_alerted, current_price, "
+                "trailing_sl_pct, high_water_mark") \
+        .eq("status", "ACTIVE") \
         .execute().data
 
     if not positions:
@@ -179,6 +181,53 @@ def main():
                     .eq("symbol", sym).execute()
             except Exception:
                 pass
+
+        # ── SG7: TRAILING SL UPDATE ───────────────────────────────────────
+        # If position has trailing_sl_pct set, update active_sl when new high is made.
+        # position_target_monitor.py also updates high_water_mark on target hits;
+        # sl_monitor is the authoritative source of current_price + SL during market hours.
+        trail_pct = pos.get("trailing_sl_pct")
+        hwm       = float(pos.get("high_water_mark") or pos.get("entry_price") or 0)
+        if trail_pct and ltp and hwm and ltp > hwm:
+            new_hwm = ltp
+            new_sl  = round(new_hwm * (1 - float(trail_pct) / 100), 2)
+            try:
+                sb.table("open_positions").update({
+                    "high_water_mark": new_hwm,
+                    "active_sl":       new_sl,
+                }).eq("symbol", sym).execute()
+                msg = (
+                    f"📈 <b>TRAILING SL UPDATED: {sym}</b>\n"
+                    f"  SL: ₹{active_sl:,.2f} → ₹{new_sl:,.2f}  (+{new_sl-active_sl:,.2f})\n"
+                    f"  New high water mark: ₹{new_hwm:,.2f} | Trail: {float(trail_pct):.1f}%"
+                )
+                send_telegram(msg)
+                logger.info(f"TRAILING SL: {sym} SL ₹{active_sl:.2f}→₹{new_sl:.2f} (HWM ₹{new_hwm:.2f})")
+            except Exception as e:
+                logger.warning(f"Trailing SL update failed for {sym}: {e}")
+
+        # ── SG8: CIRCUIT BREAKER DETECTION ───────────────────────────────
+        # NSE applies 20% daily circuit limits. If LTP is frozen exactly at the
+        # upper or lower circuit, a normal SL check misreads it as a live price.
+        # Detection: compare LTP to ±20% of entry_price as proxy for circuit level.
+        # (prev_close would be more accurate but entry_price is always available.)
+        entry = float(pos.get("entry_price") or 0)
+        if entry and ltp:
+            lower_circuit = round(entry * 0.80, 2)
+            upper_circuit = round(entry * 1.20, 2)
+            tolerance = entry * 0.001   # 0.1% tolerance for float precision
+            if abs(ltp - lower_circuit) < tolerance or abs(ltp - upper_circuit) < tolerance:
+                circuit_dir = "LOWER" if ltp < entry else "UPPER"
+                log_anomaly(sb, sym, "circuit_hit", "WARN",
+                            f"LTP={ltp}, {circuit_dir}_CIRCUIT={ltp}",
+                            f"{sym} appears locked at {circuit_dir} circuit ₹{ltp:.2f} — SL check paused")
+                msg = (
+                    f"⚡ <b>CIRCUIT HIT: {sym}</b>\n"
+                    f"  Locked at {circuit_dir} circuit: ₹{ltp:,.2f}\n"
+                    f"  <i>SL check paused — price may be frozen, not live</i>"
+                )
+                send_telegram(msg)
+                logger.warning(f"CIRCUIT HIT: {sym} locked at {circuit_dir} circuit ₹{ltp:.2f}")
 
     # Bulk-update current_price for all positions
     if price_updates:

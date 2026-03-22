@@ -1,0 +1,19 @@
+SELECT string_agg(create_table_sql, chr(10) || chr(10))
+FROM (
+  SELECT 'CREATE TABLE ' || quote_ident(n.nspname) || '.' || quote_ident(c.relname) || ' (' ||
+    chr(10) ||
+    string_agg('    ' || quote_ident(a.attname) || ' ' ||
+      pg_catalog.format_type(a.atttypid, a.atttypmod) ||
+      CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE '' END ||
+      CASE WHEN ad.adbin IS NOT NULL THEN ' DEFAULT ' || pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) ELSE '' END,
+      ',' || chr(10) ORDER BY a.attnum
+    ) || chr(10) || ');' AS create_table_sql
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+  LEFT JOIN pg_attrdef ad ON ad.adrelid = c.oid AND ad.adnum = a.attnum
+  WHERE c.relkind = 'r'
+    AND n.nspname = 'public'
+  GROUP BY n.nspname, c.relname, c.oid
+  ORDER BY c.relname
+) t;

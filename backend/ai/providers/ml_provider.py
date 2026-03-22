@@ -10,9 +10,18 @@ from .base_provider import BaseProvider, ConvictionResult, UNKNOWN_RESULT
 MODEL_PATH = Path(__file__).parent.parent.parent / "models" / "ml_conviction.pkl"
 
 FEATURES = [
-    "rsi_daily","rsi_weekly","adx","vol_ratio","delivery_pct",
-    "atr_pct","ret_6m","dist_sma50","days_in_list",
-    "regime_encoded","sector_rank","eap_encoded"
+    # existing 12 — trained from Phase 0/1 data
+    "rsi_daily", "rsi_weekly", "adx", "vol_ratio", "delivery_pct",
+    "atr_pct", "ret_6m", "dist_sma50", "days_in_list",
+    "regime_encoded", "sector_rank", "eap_encoded",
+    # CC5 additions — accumulate from Phase 0/1 CC4 fields, weight increases with data
+    "rsi_monthly",       # monthly timeframe alignment — 3rd RSI gate
+    "rs_vs_nifty",       # relative strength vs Nifty — momentum quality
+    "consol_range",      # base tightness — lower = tighter coil = cleaner setup
+    "validity_score",    # Sheet's 0-100 entry quality gate
+    "expected_r_msl",    # R multiple from MSL — minimum reward/risk
+    "trend_maturity_enc", # Fresh=3, Developing=2, Late=1, Exhausted=0
+    "velocity_enc",      # Accelerating=2, Stable=1, Flat=0
 ]
 
 def _encode_regime(r: str) -> int:
@@ -20,6 +29,14 @@ def _encode_regime(r: str) -> int:
 
 def _encode_eap(e: str) -> int:
     return {"AVOID_ENTRY": -1, "NO_CHANGE": 0, "PRIORITISE": 1}.get(e or "", 0)
+
+def _encode_trend_maturity(t: str) -> int:
+    """Fresh=3 (early, SL stays tight), Developing=2, Late=1, Exhausted=0 (avoid entry)."""
+    return {"Fresh": 3, "Developing": 2, "Late": 1, "Exhausted": 0}.get(str(t or ""), 2)
+
+def _encode_velocity(v: str) -> int:
+    """Accelerating=2 (expanding momentum), Stable=1, Flat=0 (losing steam)."""
+    return {"Accelerating": 2, "Stable": 1, "Flat": 0}.get(str(v or ""), 1)
 
 
 class MLProvider(BaseProvider):
@@ -47,6 +64,7 @@ class MLProvider(BaseProvider):
         try:
             import numpy as np
             feat = [
+                # existing 12 features
                 float(stock_data.get("rsi_daily") or 50),
                 float(stock_data.get("rsi_weekly") or 50),
                 float(stock_data.get("adx") or 20),
@@ -59,6 +77,14 @@ class MLProvider(BaseProvider):
                 _encode_regime(context.get("regime")),
                 float(context.get("sector_rank") or 5),
                 _encode_eap(stock_data.get("eap_action")),
+                # CC5: 7 new features — default to neutral when NULL (Phase 0/1)
+                float(stock_data.get("rsi_monthly") or 55),       # neutral monthly RSI
+                float(stock_data.get("rs_vs_nifty") or 0),        # no relative strength bias
+                float(stock_data.get("consol_range") or 8),       # average consolidation
+                float(stock_data.get("validity_score") or 60),    # average validity
+                float(stock_data.get("expected_r_msl") or 1.5),   # average R multiple
+                float(_encode_trend_maturity(stock_data.get("trend_maturity"))),
+                float(_encode_velocity(stock_data.get("velocity_state"))),
             ]
             proba = self._model.predict_proba([feat])[0]
             prob = proba[1] if len(proba) > 1 else (1.0 if self._model.classes_[0] == 1 else 0.0)
@@ -77,7 +103,7 @@ class MLProvider(BaseProvider):
                 suggested_action="ENTER" if conviction == "HIGH" else ("WAIT" if conviction == "MEDIUM" else "AVOID"),
                 strategy_validation="ML agrees with rule engine" if stock_data.get("in_rule_engine") else "ML sees signal not in rule engine",
                 conflicts="NONE",
-                ai_note=f"Win probability: {prob:.1%}",
+                ai_note=f"Win probability: {prob:.1%} | Features: {len(feat)} ({len(FEATURES[:12])} original + {len(FEATURES[12:])} CC5)",
                 provider="ml_model",
                 fallback_used=True,
                 confidence=prob,
@@ -105,8 +131,14 @@ def train_model():
         closed = sb.table("closed_positions").select("*").execute().data
         signals = sb.table("signal_log").select("*").not_.is_("outcome", "null").execute().data
 
-        if len(closed) < 30:
-            logger.warning(f"Only {len(closed)} closed trades — need 30 minimum to train ML model")
+        if len(closed) < 60:
+            # AG2 FIX: raised from 30 to 60.
+            # A 19-feature RandomForest needs more samples to avoid overfitting.
+            # Rule of thumb: at least 3x the number of features per class.
+            # 19 features × 2 classes × ~1.6 safety = ~61 minimum.
+            # Pre-AG2 rows (sector_rank hardcoded 5.0) still contribute safely —
+            # they default to neutral for that feature, reducing but not breaking signal.
+            logger.warning(f"Only {len(closed)} closed trades — need 60 minimum for 19-feature model")
             return False
 
         # Build training data from signal_log (has features + outcomes)
@@ -125,8 +157,21 @@ def train_model():
                 "dist_sma50": float(s.get("dist_sma50") or 0),
                 "days_in_list": float(s.get("days_in_list") or 0),
                 "regime_encoded": _encode_regime(s.get("regime")),
-                "sector_rank": 5.0,
+                # AG2 FIX: use sector_rank_at_entry (point-in-time rank when signal fired).
+                # Previous: hardcoded 5.0 (neutral) for all training rows — model never
+                # learned anything from sector rank. Now uses the actual rank stored at
+                # signal time by generate_signals.py AG2 fix.
+                # Falls back to 5.0 for pre-AG2 rows that predate this column.
+                "sector_rank": float(s.get("sector_rank_at_entry") or 5),
                 "eap_encoded": _encode_eap(s.get("eap_action")),
+                # CC5: 7 new features
+                "rsi_monthly":       float(s.get("rsi_monthly") or 55),
+                "rs_vs_nifty":       float(s.get("rs_vs_nifty") or 0),
+                "consol_range":      float(s.get("consol_range") or 8),
+                "validity_score":    float(s.get("validity_score") or 60),
+                "expected_r_msl":    float(s.get("expected_r_msl") or 1.5),
+                "trend_maturity_enc": float(_encode_trend_maturity(s.get("trend_maturity"))),
+                "velocity_enc":      float(_encode_velocity(s.get("velocity_state"))),
                 "win": 1 if s.get("outcome") == "WIN" else 0,
             }
             rows.append(row)

@@ -31,6 +31,9 @@ def get_relevant_lessons(symbol: str, sector: str, strategy: str, lifecycle: str
     """
     Fetch lessons relevant to this stock.
     PATCHED Fix #3: filters is_active=True — retired/stale lessons excluded.
+    AG6 FIX: third query always fetches recent source=AI:market_intel lessons
+             regardless of sector — market-wide patterns (FII, crude, geopolitical)
+             were previously blocked for stocks in non-matching sectors.
     """
     rows = (sb.table("lessons")
               .select("scenario_type,root_cause,corrective_rule,what_failed")
@@ -47,7 +50,28 @@ def get_relevant_lessons(symbol: str, sector: str, strategy: str, lifecycle: str
                    .order("date", desc=True).limit(2).execute().data)
         rows += extra
 
-    return rows[:3]
+    # ── AG6 FIX: always include recent market-intel lessons ──────────────────
+    # source=AI:market_intel lessons are market-wide (FII outlook, commodity impacts,
+    # geopolitical patterns). They apply to ALL stocks regardless of sector.
+    # Without this, a "Rule: avoid entries during FII selling" lesson written for
+    # sector=Banking never reaches an Industrials stock even though it is universally relevant.
+    try:
+        market_intel_rows = (sb.table("lessons")
+                               .select("scenario_type,root_cause,corrective_rule,what_failed")
+                               .eq("is_active", True)
+                               .eq("source", "AI:market_intel")
+                               .order("date", desc=True)
+                               .limit(2).execute().data)
+        # Deduplicate by corrective_rule before merging
+        existing_rules = {r.get("corrective_rule") for r in rows}
+        for r in market_intel_rows:
+            if r.get("corrective_rule") not in existing_rules:
+                rows.append(r)
+                existing_rules.add(r.get("corrective_rule"))
+    except Exception as _e:
+        pass   # non-fatal — sector-filtered rows still returned
+
+    return rows[:4]   # was [:3] — allow 1 extra slot for market_intel
 
 
 def get_fii_context(sb, trade_date: str) -> dict:

@@ -98,31 +98,6 @@ def main():
     def step_ai_enrich():
         from ai.ai_enrich import main as fn; return fn()
 
-    def step_generate_shortlist():
-        from ai.generate_shortlist import main as fn; return fn()
-
-    # ── Phase 2 step stubs — defined here, only activated when phase >= 2 ──────────
-    # These functions are never called in Phase 0/1; they just need to exist so
-    # --step CLI can reference them by name during Phase 2 testing.
-    def step_market_news():
-        from ingestion.ingest_market_news import main as fn; return fn()
-
-    def step_macro_indicators():
-        # SG5: domestic macro data (CPI/WPI/GDP/IIP) + US 10-yr/silver backup
-        from ingestion.ingest_macro_indicators import main as fn; return fn()
-
-    def step_compute_indicators():
-        from compute.compute_indicators import main as fn; return fn()
-
-    def step_asm_gsm():
-        from ingestion.ingest_asm_gsm import main as fn; return fn()
-
-    def step_market_intel():
-        from ai.market_intelligence_engine import main as fn; return fn()
-
-    def step_quality_check():
-        from compute.data_quality_monitor import main as fn; return fn()
-
     # Phase 0 core steps (must-run for signals/history)
     steps_p0 = [
     ("00_global_cues",      step_global_cues_evening, False),  # non-fatal: signals can run without it, but it fixes a key bug in the change % calculation so should be enabled asap
@@ -135,42 +110,14 @@ def main():
 
     # Phase 1 extras
     steps_p1 = [
-    ("06_fii_dii",             step_fii_dii,              False),
-    ("07_nse_events",          step_nse_events,           False),
-    ("08_post_trade",          step_post_trade,           False),
-    ("09_ai_enrich",           step_ai_enrich,            False),
-    ("10_generate_shortlist",  step_generate_shortlist,   False),  # AI top-12 ranking after enrich
-    ("11_alerts",              step_alerts,               False),
+    ("06_fii_dii",          step_fii_dii,          False),
+    ("07_nse_events",       step_nse_events,       False),
+    ("08_post_trade",       step_post_trade,       False),
+    ("09_ai_enrich",       step_ai_enrich,        False),
+    ("10_alerts",           step_alerts,           False),  
     ]
 
-    # Phase 2 additions — only activated when autonomy_phase >= 2.
-    # Each is inserted into the sequence at the correct position below.
-    # step_market_news   : step 00a — first step, before global_cues
-    # step_compute_indicators: step 03a — before ingest_sheets
-    # step_asm_gsm       : step 08a — after nse_events
-    # step_market_intel  : step 11a — after generate_shortlist, before alerts
-    # step_quality_check : step 99  — always last, never fatal
-
-    if phase >= 2:
-        all_steps = (
-            [("00a_market_news",       step_market_news,       False)]   # scrape news first
-            + [("00b_macro_indicators", step_macro_indicators,  False)]   # SG5: structured macro data
-            + [steps_p0[0]]                                               # 00_global_cues
-            + [steps_p0[1]]                                               # 01_fetch_chartink
-            + [steps_p0[2]]                                               # 02_ingest_bhavcopy
-            + [("03a_compute_ind",     step_compute_indicators,False)]    # compute before sheets
-            + [steps_p0[3]]                                               # 03_ingest_sheets
-            + [steps_p0[4]]                                               # 04_signals
-            + [steps_p0[5]]                                               # 05_history
-            + steps_p1[:2]                                                # 06_fii_dii, 07_nse_events
-            + [("08a_asm_gsm",         step_asm_gsm,           False)]   # safety lists
-            + steps_p1[2:5]                                               # 08_post_trade, 09_ai_enrich, 10_shortlist
-            + [("11a_market_intel",    step_market_intel,      False)]   # market intelligence
-            + [steps_p1[5]]                                               # 11_alerts
-            + [("99_quality_check",   step_quality_check,     False)]   # always last
-        )
-    else:
-        all_steps = steps_p0 + (steps_p1 if phase >= 1 else [])
+    all_steps = steps_p0 + (steps_p1 if phase >= 1 else [])
 
     if args.step:
         # Single step mode

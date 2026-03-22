@@ -43,36 +43,22 @@ def send_message(text: str):
     if current.strip():
         chunks.append(current.strip())
 
-    import requests, time
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    for chunk in chunks:
-        # SG4: Exponential backoff retry — 3 attempts with 5s/15s/30s delays.
-        # Previously a single network blip silently dropped the message.
-        sent = False
-        for attempt, wait in enumerate([0, 5, 15], start=1):
-            try:
-                if wait:
-                    time.sleep(wait)
-                resp = requests.post(url, json={
-                    "chat_id":    TELEGRAM_CHAT_ID,
-                    "text":       chunk,
-                    "parse_mode": "HTML",
-                }, timeout=10)
-                if resp.ok:
-                    sent = True
-                    break
-                if resp.status_code == 429:   # rate limit — must wait
-                    retry_after = int(resp.json().get("parameters", {}).get("retry_after", 30))
-                    logger.warning(f"Telegram rate limit (429) — waiting {retry_after}s")
-                    time.sleep(retry_after)
-                    continue
-                logger.warning(f"Telegram attempt {attempt} HTTP {resp.status_code}")
-            except Exception as e:
-                logger.warning(f"Telegram attempt {attempt} failed: {e}")
-        if not sent:
-            logger.error(f"Telegram send failed after 3 attempts for chunk len={len(chunk)}")
-            return False
-    return True
+    try:
+        import requests
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        for chunk in chunks:
+            resp = requests.post(url, json={
+                "chat_id":    TELEGRAM_CHAT_ID,
+                "text":       chunk,
+                "parse_mode": "HTML"
+            })
+            if not resp.ok:
+                logger.error(f"Telegram API error: {resp.status_code} — {resp.text[:200]}")
+                return False
+        return True
+    except Exception as e:
+        logger.error(f"Telegram send failed: {e}")
+        return False
 
 
 def conviction_icon(c: str) -> str:
@@ -261,20 +247,6 @@ def load_data(sb, today: str) -> dict:
         except Exception as _e:
             logger.debug(f"Position events fetch failed (non-fatal): {_e}")
 
-    # ── AG3 FIX: data_anomalies — surface quality errors in morning brief ────
-    # data_quality_monitor, sl_monitor, kite_reconcile all write ERROR rows here.
-    # Previously: written by 5 scripts, read by none. Quality failures were silent.
-    # Now: morning brief shows a Section 0 alert if any ERROR rows exist today.
-    anomalies = []
-    try:
-        anomalies = (sb.table("data_anomalies")
-                       .select("check_name,message,severity,affected")
-                       .eq("date", today)
-                       .eq("severity", "ERROR")
-                       .execute().data or [])
-    except Exception as _ae:
-        logger.debug(f"data_anomalies fetch failed (non-fatal): {_ae}")
-
     return {
         "signals":     signals,
         "signal_date": signal_date,
@@ -287,7 +259,6 @@ def load_data(sb, today: str) -> dict:
         "fii":         fii,
         "msl_map":     msl_map,
         "pos_events":  pos_events,
-        "anomalies":   anomalies,   # AG3: ERROR-severity data quality issues for today
     }
 
 
@@ -355,23 +326,6 @@ def build_morning(data: dict) -> str:
         "",
     ]
 
-    # ── SECTION 0 (AG3): DATA QUALITY ALERT ───────────────────
-    # Rendered only when data_anomalies has ERROR-severity rows for today.
-    # Surfaces pipeline failures (stale bhavcopy, NULL indicators, regime errors)
-    # before any signals are shown — prevents acting on bad data silently.
-    anomalies = data.get("anomalies", [])
-    if anomalies:
-        lines.append("🔴 <b>DATA ALERT — Pipeline quality issue detected</b>")
-        for a in anomalies[:3]:   # cap at 3 to avoid message bloat
-            check = a.get("check_name", "unknown_check")
-            msg   = a.get("message", "")[:120]
-            aff   = a.get("affected", "")
-            lines.append(f"  • <b>{check}</b>: {msg}" + (f" [{aff}]" if aff else ""))
-        if len(anomalies) > 3:
-            lines.append(f"  <i>…and {len(anomalies) - 3} more. Check data_anomalies table.</i>")
-        lines.append("<i>Signals below may be based on incomplete data. Verify before acting.</i>")
-        lines.append("")
-
     # ── SECTION 1: GLOBAL OVERNIGHT ────────────────────────────
     lines.append("<b>🌍 OVERNIGHT GLOBAL CUES</b>")
 
@@ -429,15 +383,12 @@ def build_morning(data: dict) -> str:
     crude     = cues.get("brent_crude")
     crude_chg = cues.get("brent_chg_pct")
     gold      = cues.get("gold_price")
-    silver    = cues.get("silver_price")    # SG2
-    silver_chg = cues.get("silver_chg_pct") # SG2
-    if crude or gold or silver:
+    if crude or gold:
         parts = []
         if crude: parts.append(
             f"Crude <b>{fmt_price(crude)}</b> {chg_icon(crude_chg)}{fmt_chg(crude_chg)}"
         )
         if gold: parts.append(f"Gold <b>{fmt_price(gold)}</b>")
-        if silver: parts.append(f"Silver <b>{fmt_price(silver)}</b> {chg_icon(silver_chg)}{fmt_chg(silver_chg)}")  # SG2
         lines.append("  🛢️ " + "  ".join(parts))
 
     # ── Line 5: USD/INR ───────────────────────────────────────
@@ -448,16 +399,6 @@ def build_morning(data: dict) -> str:
         lines.append(
             f"  💱 USD/INR: <b>₹{fmt_price(usd)}</b>  "
             f"{chg_icon(usd_chg)}{fmt_chg(usd_chg)}{rupee_warn}"
-        )
-
-    # SG1: US 10-year yield — FII signal. Spike = capital flows out of EM including India.
-    us_10yr     = cues.get("us_10yr_yield")
-    us_10yr_bps = cues.get("us_10yr_chg_bps")
-    if us_10yr:
-        bps_str = f" ({us_10yr_bps:+.0f} bps)" if us_10yr_bps is not None else ""
-        yield_warn = "  ⚠️ Yield spike — FII pressure" if us_10yr_bps and float(us_10yr_bps) > 10 else ""
-        lines.append(
-            f"  🏦 US 10-yr: <b>{fmt_price(us_10yr)}%</b>{bps_str}{yield_warn}"
         )
 
     lines.append("")

@@ -33,6 +33,16 @@ def load_today_data():
             logger.info(f"No stock_data_daily for {today} — using last trading day {last_date}")
 
     msl    = sb.table("master_shortlist").select("*").eq("date", today).execute().data
+    # ── AG1 FIX: MSL weekend/holiday fallback ────────────────────────────────
+    # stock_data_daily already has this pattern; MSL was missing it.
+    # Without it: if ingest_sheets fails or runs on a holiday, msl=[] →
+    # generate() loops over nothing → 0 signals → silent failure, no Telegram alert.
+    if not msl:
+        latest_msl = sb.table("master_shortlist").select("date").order("date", desc=True).limit(1).execute().data
+        if latest_msl:
+            last_msl_date = latest_msl[0]["date"]
+            msl = sb.table("master_shortlist").select("*").eq("date", last_msl_date).execute().data
+            logger.warning(f"No MSL for {today} — using last available date {last_msl_date} ({len(msl)} rows)")
     open_p = sb.table("open_positions").select("*").execute().data
     regime = sb.table("market_regime").select("*").eq("date", today).execute().data
     if not regime:
@@ -379,9 +389,87 @@ def generate(run_date: date | None = None) -> list[dict]:
             "ret_6m":        stock_map.get(sym, {}).get("ret_6m"),
             "dist_sma50":    stock_map.get(sym, {}).get("dist_sma50"),
             "days_in_list":  msl_row.get("days_in_list"),
-            
+            # ── CC4: Phase 2 context columns ──────────────────────
+            "rsi_monthly":    stock_map.get(sym, {}).get("rsi_monthly"),
+            "rs_vs_nifty":    stock_map.get(sym, {}).get("rs_vs_nifty"),
+            "consol_range":   stock_map.get(sym, {}).get("consol_range"),
+            "ret_1m":         stock_map.get(sym, {}).get("ret_1m"),
+            "ret_3m":         stock_map.get(sym, {}).get("ret_3m"),
+            "above_sma50":    stock_map.get(sym, {}).get("above_sma50"),
+            "breakout_setup": stock_map.get(sym, {}).get("breakout_setup"),
+            "validity_score":  msl_row.get("validity_score"),
+            "expected_r_msl":  msl_row.get("expected_r"),
+            "trend_maturity":  msl_row.get("trend_maturity"),
+            "velocity_state":  msl_row.get("velocity_state"),
+            "momentum_phase":  msl_row.get("momentum_phase"),
+            # ── AG2 FIX: sector_rank_at_entry — point-in-time rank stored at signal time.
+            # ML training was hardcoding 5.0; inference was using today's rank retroactively.
+            # Now: the rank that existed when the signal fired is preserved for clean training.
+            "sector_rank_at_entry": sector_rank.get(sector) if sector else None,
+            # Phase 2 redesign placeholders
+            "signal_subtype":      None,
+            "score_adjusted":      score,
+            "sheet_conflict":      False,
+            "sheet_conflict_type": None,
+            "days_to_trigger_est": None,
         }
         signals.append(sig)
+
+    # ── AG4 FIX: scanner_signals cross-reference pass ────────────────────────
+    signals = _apply_scanner_crossref(signals, sb, run_date)
+
+    return signals
+
+
+def _apply_scanner_crossref(signals: list, sb, run_date) -> list:
+    """
+    AG4 FIX: scanner_signals cross-reference.
+
+    independent_scanner.py writes VOLUME_SURGE, RS_BREAKOUT, POST_CONSOL,
+    MEAN_REVERSION, DELIVERY_SURGE to scanner_signals daily. Previously
+    generate_signals never read it -- in_scanner was always False.
+
+    Now: reads scanner_signals for today after the signals list is built.
+    Sets in_scanner=True and scanner_patterns on matching symbols.
+    Adds +5 to score_adjusted for entry signals where both rule engine AND
+    scanner confirm (triple confirmation: MSL + rule engine + scanner).
+    """
+    try:
+        scanner_rows = (sb.table("scanner_signals")
+                          .select("symbol,pattern_type")
+                          .eq("date", str(run_date))
+                          .execute().data)
+        if not scanner_rows:
+            return signals
+
+        scanner_map = {}
+        for row in scanner_rows:
+            sym = row.get("symbol") or ""
+            pat = row.get("pattern_type") or ""
+            if sym:
+                scanner_map.setdefault(sym, []).append(pat)
+
+        entry_types = {"BUY_CANDIDATE", "PRIME_SETUP", "STAGED_ENTRY", "REENTRY_SETUP"}
+        updated = 0
+        for sig in signals:
+            sym = sig["symbol"]
+            if sym in scanner_map:
+                sig["in_scanner"] = True
+                sig["scanner_patterns"] = ",".join(scanner_map[sym])
+                if sig.get("in_rule_engine") and sig.get("signal_type") in entry_types:
+                    current = sig.get("score_adjusted") or sig.get("score") or 0
+                    sig["score_adjusted"] = round(float(current) + 5, 1)
+                    updated += 1
+                    logger.debug(
+                        f"{sym}: scanner cross-ref +5 -> score_adjusted={sig['score_adjusted']} "
+                        f"patterns={sig['scanner_patterns']}"
+                    )
+
+        logger.info(
+            f"Scanner cross-reference: {len(scanner_map)} scanner hits | {updated} signals boosted +5"
+        )
+    except Exception as e:
+        logger.warning(f"Scanner cross-reference failed (non-fatal): {e}")
 
     return signals
 
