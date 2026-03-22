@@ -15,6 +15,19 @@ CREATE TABLE public.ai_context (
     created_at timestamp with time zone DEFAULT now()
 );
 
+CREATE TABLE public.ai_model_performance (
+    id bigint NOT NULL DEFAULT nextval('ai_model_performance_id_seq'::regclass),
+    date date NOT NULL DEFAULT CURRENT_DATE,
+    provider text NOT NULL,
+    model text,
+    calls_today integer DEFAULT 0,
+    cost_today numeric DEFAULT 0,
+    accuracy numeric,
+    avg_confidence numeric,
+    fallback_used boolean DEFAULT false,
+    created_at timestamp with time zone DEFAULT now()
+);
+
 CREATE TABLE public.chartink_raw_data (
     id bigint NOT NULL DEFAULT nextval('chartink_raw_data_id_seq'::regclass),
     date date NOT NULL,
@@ -339,7 +352,9 @@ CREATE TABLE public.master_shortlist (
     ai_note text,
     ai_provider text,
     ai_fallback_used boolean,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    ai_shortlist_rank integer,
+    ai_shortlist_reason text
 );
 
 CREATE TABLE public.ml_training_log (
@@ -522,7 +537,8 @@ CREATE TABLE public.scanner_signals (
     confidence numeric,
     details jsonb,
     in_msl boolean,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    pattern_type text
 );
 
 CREATE TABLE public.sector_strength (
