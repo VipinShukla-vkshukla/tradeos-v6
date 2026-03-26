@@ -200,23 +200,118 @@ def get_eap_action(symbol: str, sector: str, events: list, cfg_eap: dict) -> str
     return best_action
 
 
-def is_buy_candidate(msl_row: dict, open_map: dict) -> bool:
-    """entry_price ≈ current_price means ready to buy but not yet bought."""
-    if msl_row.get("symbol") in open_map:
-        return False  # already in position
-    threshold = buy_candidate_threshold()
+def is_buy_candidate(msl_row: dict, open_map: dict, threshold: float = None) -> tuple[bool, str]:
+    """
+    Enhanced is_buy_candidate — dynamic zone model.
+
+    Returns (is_candidate: bool, entry_note: str)
+
+    Decision is driven by actual MSL fields:
+        entry_timing_type, momentum_phase, velocity_state,
+        struct_edge, lifecycle (ADD/HOLD/INITIATE/REDUCE/EXIT)
+
+    Price zones:
+        BELOW ZONE     cp < ep*(1-tolerance)              → False (wait)
+        NEAR LOW       ep*(1-tolerance) <= cp < ep        → True  (approaching)
+        IN ZONE        ep <= cp <= eh                     → True  (ideal)
+        ABOVE ZONE     cp > eh                            → context-dependent (see below)
+
+    Above-zone rules (from closed trade analysis):
+        chase_soft = 3%  → allow if momentum is strong and timing isn't Extended
+        chase_hard = 6%  → allow only if HOT momentum + Accelerating velocity
+        > 6%             → always False regardless of conditions
+    """
+    sym = msl_row.get("symbol")
+
+    # Gate 1: already held
+    if sym in open_map:
+        return False, "already_in_position"
+
     ep = msl_row.get("entry_zone_low")
     cp = msl_row.get("current_price")
-    if not ep or not cp:
-        return False
-    eh = msl_row.get("entry_zone_high") or ep * 1.01
-    # In zone
+    if not ep or not cp or ep <= 0:
+        return False, "missing_price_data"
+
+    eh = msl_row.get("entry_zone_high") or ep * 1.02
+
+    # Pull actual fields from MSL
+    lifecycle         = (msl_row.get("lifecycle") or "").upper()          # EXIT/ADD/HOLD/INITIATE/REDUCE
+    entry_timing_type = (msl_row.get("entry_timing_type") or "").upper()  # Optimal/Chasing/Extended
+    momentum_state    = (msl_row.get("momentum_state") or "").upper()     # HOT/WEAK/NEUTRAL
+    momentum_phase    = (msl_row.get("momentum_phase") or "").upper()     # Early/Expansion/Extended/Flat
+    velocity_state    = (msl_row.get("velocity_state") or "").upper()     # Accelerating/Flat/Decelerating
+    struct_edge       = (msl_row.get("struct_edge") or "").upper()        # YES/NO
+    reentry_mode      = (msl_row.get("reentry_mode") or "").upper()       # ELIGIBLE/NO
+
+    if threshold is None:
+        threshold = buy_candidate_threshold()
+
+    chase_soft = 0.03   # 3% above zone high
+    chase_hard = 0.06   # 6% above zone high
+
+    dist_from_high = (cp - eh) / eh  # negative = inside or below zone
+
+    # ── Hard veto: EXIT lifecycle — trend exhausting, never a new entry ───────
+    if lifecycle == "EXIT":
+        return False, "exit_lifecycle_no_entry"
+
+    # ── Hard veto: Extended timing with no reentry eligibility ───────────────
+    # Closed trades show Extended+no-reentry = consistent rule violations
+    if entry_timing_type == "EXTENDED" and reentry_mode != "ELIGIBLE":
+        return False, "extended_timing_no_reentry"
+
+    # ── BELOW ZONE — price hasn't reached entry yet ───────────────────────────
+    if cp < ep * (1 - threshold):
+        return False, "below_zone_wait"
+
+    # ── NEAR LOW — approaching zone (within tolerance) ───────────────────────
+    if cp < ep:
+        return True, "near_zone_low"
+
+    # ── IN ZONE — ideal entry ────────────────────────────────────────────────
     if ep <= cp <= eh:
-        return True
-    # Very close to low
-    if ep > 0 and abs(cp - ep) / ep <= threshold:
-        return True
-    return False
+        return True, "in_zone"
+
+    # ── ABOVE ZONE — dynamic assessment ──────────────────────────────────────
+    # From here: cp > eh, dist_from_high > 0
+
+    # Momentum quality score — derived from your actual fields
+    # Strong = HOT + Accelerating (your best winners: NATIONALUM, UNIONBANK, MOTHERSON)
+    # Weak   = WEAK + Flat/Extended (your consistent losers above zone)
+    is_strong_momentum = (
+        momentum_state == "HOT" and
+        momentum_phase in ("EARLY", "EXPANSION") and
+        velocity_state == "ACCELERATING"
+    )
+    is_decent_momentum = (
+        momentum_state not in ("WEAK",) and
+        momentum_phase not in ("EXTENDED", "FLAT") and
+        velocity_state != "DECELERATING"
+    )
+
+    # Chasing timing above zone = compounding chase risk
+    is_chasing_type = entry_timing_type == "CHASING"
+
+    # 0–3% above zone
+    if dist_from_high <= chase_soft:
+        # Allow if momentum is at least decent and not already flagged as chasing
+        if is_strong_momentum:
+            return True, "slight_above_strong_momentum"
+        if is_decent_momentum and not is_chasing_type:
+            return True, "slight_above_acceptable"
+        # Weak momentum + chasing type above zone = skip
+        return False, "slight_above_weak_momentum"
+
+    # 3–6% above zone
+    if dist_from_high <= chase_hard:
+        # Only allow if strongly momentum-driven (HOT + Accelerating)
+        # Closed trades: Extended timing chases in this range were all rule violations
+        if is_strong_momentum and struct_edge == "YES" and not is_chasing_type:
+            return True, "moderate_above_strong_confirmation"
+        return False, "moderate_above_insufficient_momentum"
+
+    # >6% above zone — always skip
+    return False, "far_above_extended"
 
 
 # ── Main signal generation ───────────────────────────────────
