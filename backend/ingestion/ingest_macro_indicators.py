@@ -57,95 +57,96 @@ YAHOO_BASE = "https://query1.finance.yahoo.com/v8/finance/chart"
 
 # ── Source 1: RBI DBIE ────────────────────────────────────────────────────
 
+# REPLACE entire fetch_rbi_rates function
+# REPLACE entire fetch_rbi_rates function
 def fetch_rbi_rates() -> list[dict]:
-    """Fetch RBI policy rates from DBIE API."""
+    """
+    Fetch RBI policy rates from Wikipedia's RBI page.
+    Wikipedia's rates table is static HTML — no JS rendering, no auth.
+    Updated within days of each MPC decision.
+    URL verified working 2026-03-29.
+    """
     results = []
-    for name, url in RBI_SERIES.items():
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=10)
-            if resp.status_code != 200:
-                continue
-            data = resp.json()
-            # DBIE returns {data: [{date: ..., value: ...}]}
-            series_data = data.get("data") or data.get("series") or []
-            if series_data:
-                # Take most recent observation
-                latest = series_data[-1] if isinstance(series_data, list) else series_data
-                val = latest.get("value") or latest.get("obs_value")
-                obs_date = latest.get("date") or latest.get("time_period")
-                if val and obs_date:
-                    results.append({
-                        "indicator_name":  name,
-                        "indicator_value": float(str(val).replace(",", "")),
-                        "indicator_date":  str(obs_date)[:10],
-                        "source":          "RBI_DBIE",
-                        "release_date":    str(today_ist()),
-                    })
-        except Exception as e:
-            logger.debug(f"RBI DBIE {name} failed (non-fatal): {e}")
+    try:
+        resp = requests.get(
+            "https://en.wikipedia.org/wiki/Reserve_Bank_of_India",
+            headers=HEADERS, timeout=15,
+        )
+        if resp.status_code != 200:
+            logger.debug(f"Wikipedia RBI page returned HTTP {resp.status_code}")
+            return results
+
+        idx = resp.text.find("Policy repo rate")
+        if idx == -1:
+            logger.debug("Wikipedia RBI: rates table not found in page")
+            return results
+
+        section = resp.text[idx:idx + 1200]
+        rate_map = {
+            "REPO_RATE":    r"Policy repo rate</td>\s*<td>([\d.]+)%",
+            "REV_REPO":     r"Reverse repo rate</td>\s*<td>([\d.]+)%",
+            "CRR":          r"Cash reserve ratio \(CRR\)</td>\s*<td>([\d.]+)%",
+            "SLR":          r"Statutory liquidity ratio \(SLR\)</td>\s*<td>([\d.]+)%",
+            "MSF_RATE":     r"Marginal standing facility rate</td>\s*<td>([\d.]+)%",
+        }
+        obs_date = str(today_ist())
+        for name, pattern in rate_map.items():
+            m = re.search(pattern, section)
+            if m:
+                results.append({
+                    "indicator_name":  name,
+                    "indicator_value": float(m.group(1)),
+                    "indicator_date":  obs_date,
+                    "source":          "WIKIPEDIA_RBI",
+                    "release_date":    obs_date,
+                })
+    except Exception as e:
+        logger.debug(f"Wikipedia RBI rates fetch failed (non-fatal): {e}")
     return results
 
 
 # ── Source 2: MOSPI (GDP + IIP via gov.in RSS) ───────────────────────────
 
+# REPLACE entire fetch_mospi_data function
+# REPLACE entire fetch_mospi_data function
 def fetch_mospi_data() -> list[dict]:
     """
-    Attempt to fetch GDP/IIP from MOSPI press releases.
-    These are published as PDFs/HTML — we parse the RSS for release dates
-    and extract numbers from the headline text.
+    Fetch GDP and IIP from TradingEconomics meta description tags.
+    Values are embedded in <meta name="description"> — no JS needed.
+    URLs verified working 2026-03-29.
     """
     results = []
-    try:
-        import xml.etree.ElementTree as ET
-        resp = requests.get(
-            "https://www.mospi.gov.in/rss/releases",
-            headers=HEADERS, timeout=12
-        )
-        if resp.status_code != 200:
-            return results
-
-        root = ET.fromstring(resp.text)
-        for item in root.iter("item"):
-            title = item.findtext("title") or ""
-            pub_date = item.findtext("pubDate") or ""
-
-            # Extract GDP figure
-            gdp_match = re.search(r"GDP.*?(\d+\.?\d*)\s*%", title, re.IGNORECASE)
-            if gdp_match:
+    indicators = [
+        ("https://tradingeconomics.com/india/gdp-growth-annual", "GDP_YOY",
+         r"(?:GDP|gross domestic product)[^\d]*?([\d\.]+)\s*percent", ),
+        ("https://tradingeconomics.com/india/industrial-production", "IIP_YOY",
+         r"(?:industrial production|IIP)[^\d]*?([+-]?[\d\.]+)\s*percent",),
+        ("https://tradingeconomics.com/india/wholesale-prices", "WPI_YOY",
+         r"(?:wholesale price|WPI)[^\d]*?([+-]?[\d\.]+)\s*percent",),
+    ]
+    for url, name, pattern in indicators:
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=15)
+            if resp.status_code != 200:
+                logger.debug(f"TradingEconomics {name} HTTP {resp.status_code}")
+                continue
+            meta = re.search(r'<meta[^>]+name="description"[^>]+content="([^"]{0,400})"', resp.text)
+            if not meta:
+                logger.debug(f"TradingEconomics {name}: no meta description found")
+                continue
+            desc = meta.group(1)
+            m = re.search(pattern, desc, re.IGNORECASE)
+            if m:
                 results.append({
-                    "indicator_name":  "GDP_YOY",
-                    "indicator_value": float(gdp_match.group(1)),
+                    "indicator_name":  name,
+                    "indicator_value": float(m.group(1)),
                     "indicator_date":  str(today_ist()),
-                    "source":          "MOSPI",
+                    "source":          "TRADING_ECONOMICS",
                     "release_date":    str(today_ist()),
                 })
-
-            # Extract IIP figure
-            iip_match = re.search(r"IIP.*?([+-]?\d+\.?\d*)\s*%", title, re.IGNORECASE)
-            if iip_match:
-                results.append({
-                    "indicator_name":  "IIP_YOY",
-                    "indicator_value": float(iip_match.group(1)),
-                    "indicator_date":  str(today_ist()),
-                    "source":          "MOSPI",
-                    "release_date":    str(today_ist()),
-                })
-
-            # Extract CPI from MOSPI (MoSPI also publishes CPI)
-            cpi_match = re.search(r"CPI.*?(\d+\.?\d*)\s*%", title, re.IGNORECASE)
-            if cpi_match:
-                results.append({
-                    "indicator_name":  "CPI_YOY",
-                    "indicator_value": float(cpi_match.group(1)),
-                    "indicator_date":  str(today_ist()),
-                    "source":          "MOSPI",
-                    "release_date":    str(today_ist()),
-                })
-
-            if len(results) >= 6:
-                break
-    except Exception as e:
-        logger.debug(f"MOSPI fetch failed (non-fatal): {e}")
+                logger.debug(f"TradingEconomics {name}: {m.group(1)}% — from: {desc[:80]}")
+        except Exception as e:
+            logger.debug(f"TradingEconomics {name} failed (non-fatal): {e}")
     return results
 
 
@@ -185,50 +186,48 @@ def fetch_yahoo_finance(symbol: str, indicator_name: str) -> dict | None:
 
 # ── Source 4: ET RSS — CPI/WPI from headlines ────────────────────────────
 
+# REPLACE entire fetch_cpi_wpi_from_et function
 def fetch_cpi_wpi_from_et() -> list[dict]:
     """
-    Parse ET Markets RSS for CPI/WPI release data.
-    ET publishes structured data releases within 30 mins of announcement.
+    Fetch CPI from TradingEconomics meta description.
+    ET RSS only has CPI on release day (~12th of month) — TradingEconomics
+    always has the latest published value.
     """
     results = []
     try:
-        import xml.etree.ElementTree as ET
         resp = requests.get(
-            "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
-            headers=HEADERS, timeout=10
+            "https://tradingeconomics.com/india/inflation-cpi",
+            headers=HEADERS, timeout=15,
         )
         if resp.status_code != 200:
+            logger.debug(f"TradingEconomics CPI HTTP {resp.status_code}")
             return results
-        root = ET.fromstring(resp.text)
-        for item in root.iter("item"):
-            title = item.findtext("title") or ""
-
-            # CPI: "India CPI inflation rises to 5.8% in November"
-            cpi = re.search(r"CPI\s+(?:inflation|data).*?(\d+\.?\d*)\s*%", title, re.IGNORECASE)
-            if cpi:
-                results.append({
-                    "indicator_name":  "CPI_YOY",
-                    "indicator_value": float(cpi.group(1)),
-                    "indicator_date":  str(today_ist()),
-                    "source":          "ET_RSS",
-                    "release_date":    str(today_ist()),
-                })
-
-            # WPI
-            wpi = re.search(r"WPI\s+(?:inflation|data).*?([+-]?\d+\.?\d*)\s*%", title, re.IGNORECASE)
-            if wpi:
-                results.append({
-                    "indicator_name":  "WPI_YOY",
-                    "indicator_value": float(wpi.group(1)),
-                    "indicator_date":  str(today_ist()),
-                    "source":          "ET_RSS",
-                    "release_date":    str(today_ist()),
-                })
-
-            if len(results) >= 4:
-                break
+        meta = re.search(r'<meta[^>]+name="description"[^>]+content="([^"]{0,400})"', resp.text)
+        if not meta:
+            logger.debug("TradingEconomics CPI: no meta description found")
+            return results
+        desc = meta.group(1)
+        # e.g. "Inflation Rate in India increased to 3.21 percent in February from 2.74 percent"
+        current = re.search(r"to\s+([+-]?[\d\.]+)\s+percent", desc, re.IGNORECASE)
+        previous = re.search(r"from\s+([+-]?[\d\.]+)\s+percent", desc, re.IGNORECASE)
+        if current:
+            results.append({
+                "indicator_name":  "CPI_YOY",
+                "indicator_value": float(current.group(1)),
+                "indicator_date":  str(today_ist()),
+                "source":          "TRADING_ECONOMICS",
+                "release_date":    str(today_ist()),
+            })
+        if previous:
+            results.append({
+                "indicator_name":  "CPI_YOY_PREV",
+                "indicator_value": float(previous.group(1)),
+                "indicator_date":  str(today_ist()),
+                "source":          "TRADING_ECONOMICS",
+                "release_date":    str(today_ist()),
+            })
     except Exception as e:
-        logger.debug(f"ET CPI/WPI fetch failed (non-fatal): {e}")
+        logger.debug(f"TradingEconomics CPI fetch failed (non-fatal): {e}")
     return results
 
 

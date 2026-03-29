@@ -60,29 +60,30 @@ def main():
     logger.info(f"{'═'*60}")
     logger.info(f"  TradeOS v6 Pipeline | Phase {phase}")
     logger.info(f"{'═'*60}")
-# ── Step definitions ────────────────────────────────────────────────────
+
+    # ── Step definitions ─────────────────────────────────────────────────
     # All defined here so --step can reference any of them by name.
     # Lazy imports keep startup fast — each module only loads if the step runs.
-    
+
     def step_global_cues_evening():
         from ingestion.ingest_global_cues import main as fn; return fn("EVENING")
-    
+
     def step_fetch_chartink():
         from ingestion.fetch_chartink import main as fn; return fn()
-    
+
     def step_ingest_bhavcopy():
         # Script exists in codebase. Wired here as Step 1.1 from deployment README.
         from ingestion.ingest_bhavcopy import main as fn; return fn()
-            
+
     def step_ingest():
         from ingestion.ingest_sheets import main as fn; return fn()
-        
+
     def step_signals():
         from signals.generate_signals import main as fn; return fn()
-    
+
     def step_fii_dii():
         from ingestion.ingest_fii_dii import main as fn; return fn()
-    
+
     def step_nse_events():
         from ingestion.ingest_nse_events import main as fn; return fn()
 
@@ -91,19 +92,19 @@ def main():
 
     def step_alerts():
         from alerts.send_alerts import main as fn; return fn()
-    
+
     def step_post_trade():
         from ai.post_trade_analysis import main as fn; return fn()
-    
+
     def step_ai_enrich():
         from ai.ai_enrich import main as fn; return fn()
 
     def step_generate_shortlist():
         from ai.generate_shortlist import main as fn; return fn()
 
-    # ── Phase 2 step stubs — defined here, only activated when phase >= 2 ──────────
-    # These functions are never called in Phase 0/1; they just need to exist so
-    # --step CLI can reference them by name during Phase 2 testing.
+    # ── Phase 2 step stubs — defined here, only activated when phase >= 2 ─
+    # These functions are never called in Phase 0/1; they just need to exist
+    # so --step CLI can reference them by name during Phase 2 testing.
     def step_market_news():
         from ingestion.ingest_market_news import main as fn; return fn()
 
@@ -123,57 +124,64 @@ def main():
     def step_quality_check():
         from compute.data_quality_monitor import main as fn; return fn()
 
-    # Phase 0 core steps (must-run for signals/history)
+    # ── Phase 0 core steps (must-run for signals/history) ─────────────────
+    # Numbers are stable across all phases — same step = same number always.
     steps_p0 = [
-    ("00_global_cues",      step_global_cues_evening, False),  # non-fatal: signals can run without it, but it fixes a key bug in the change % calculation so should be enabled asap
-    ("01_fetch_chartink",   step_fetch_chartink,   True),
-    ("02_ingest_bhavcopy",  step_ingest_bhavcopy,  False),  # non-fatal: signals can run without it
-    ("03_ingest_sheets",    step_ingest,           True),
-    ("04_signals",          step_signals,          True),
-    ("05_history",          step_history,          False),
+        ("01_global_cues",      step_global_cues_evening, False),  # non-fatal: fixes change % bug, enable asap
+        ("02_fetch_chartink",   step_fetch_chartink,      True),
+        ("03_ingest_bhavcopy",  step_ingest_bhavcopy,     False),  # non-fatal: signals can run without it
+        ("04_ingest_sheets",    step_ingest,              True),
+        ("05_signals",          step_signals,             True),
+        ("06_history",          step_history,             False),
     ]
 
-    # Phase 1 extras
+    # ── Phase 1 extras ────────────────────────────────────────────────────
     steps_p1 = [
-    ("06_fii_dii",             step_fii_dii,              False),
-    ("07_nse_events",          step_nse_events,           False),
-    ("08_post_trade",          step_post_trade,           False),
-    ("09_ai_enrich",           step_ai_enrich,            False),
-    ("10_generate_shortlist",  step_generate_shortlist,   False),  # AI top-12 ranking after enrich
-    ("11_alerts",              step_alerts,               False),
+        ("07_fii_dii",            step_fii_dii,            False),
+        ("08_nse_events",         step_nse_events,         False),
+        ("09_post_trade",         step_post_trade,         False),
+        ("10_ai_enrich",          step_ai_enrich,          False),
+        ("11_generate_shortlist", step_generate_shortlist, False),  # AI top-12 ranking after enrich
+        ("12_alerts",             step_alerts,             False),
     ]
 
-    # Phase 2 additions — only activated when autonomy_phase >= 2.
-    # Each is inserted into the sequence at the correct position below.
-    # step_market_news   : step 00a — first step, before global_cues
-    # step_compute_indicators: step 03a — before ingest_sheets
-    # step_asm_gsm       : step 08a — after nse_events
-    # step_market_intel  : step 11a — after generate_shortlist, before alerts
-    # step_quality_check : step 99  — always last, never fatal
-
+    # ── Phase 2 — full sequence replacing phases 0+1 ──────────────────────
+    # Two new ingestion steps prepended (market_news, macro_indicators).
+    # compute_indicators inserted after ingest_sheets — it reads sheet values
+    # as safe fallback, computes its own, reconciles field-by-field, and
+    # overwrites where confident. Sheet values persist where compute diverges.
+    # asm_gsm inserted after nse_events (needs events data to be fresh).
+    # market_intel inserted after shortlist, before alerts.
+    # quality_check always runs last, never fatal.
+    #
+    # Phase 0 step numbers shift by +2 to accommodate the two new leading steps.
+    # Phase 1 step numbers shift by +3 to also accommodate compute_indicators.
     if phase >= 2:
-        all_steps = (
-            [("00a_market_news",       step_market_news,       False)]   # scrape news first
-            + [("00b_macro_indicators", step_macro_indicators,  False)]   # SG5: structured macro data
-            + [steps_p0[0]]                                               # 00_global_cues
-            + [steps_p0[1]]                                               # 01_fetch_chartink
-            + [steps_p0[2]]                                               # 02_ingest_bhavcopy
-            + [("03a_compute_ind",     step_compute_indicators,False)]    # compute before sheets
-            + [steps_p0[3]]                                               # 03_ingest_sheets
-            + [steps_p0[4]]                                               # 04_signals
-            + [steps_p0[5]]                                               # 05_history
-            + steps_p1[:2]                                                # 06_fii_dii, 07_nse_events
-            + [("08a_asm_gsm",         step_asm_gsm,           False)]   # safety lists
-            + steps_p1[2:5]                                               # 08_post_trade, 09_ai_enrich, 10_shortlist
-            + [("11a_market_intel",    step_market_intel,      False)]   # market intelligence
-            + [steps_p1[5]]                                               # 11_alerts
-            + [("99_quality_check",   step_quality_check,     False)]   # always last
-        )
+        all_steps = [
+            ("01_market_news",        step_market_news,        False),  # scrape news first
+            ("02_macro_indicators",   step_macro_indicators,   False),  # structured macro data (CPI/WPI/GDP)
+            ("03_global_cues",        step_global_cues_evening,False),  # fixes change % calculation
+            ("04_fetch_chartink",     step_fetch_chartink,     True),
+            ("05_ingest_bhavcopy",    step_ingest_bhavcopy,    False),
+            ("06_ingest_sheets",      step_ingest,             True),   # writes sheet values first
+            ("07_compute_indicators", step_compute_indicators, False),  # reads sheet → computes → reconciles
+            ("08_signals",            step_signals,            True),
+            ("09_history",            step_history,            False),
+            ("10_fii_dii",            step_fii_dii,            False),
+            ("11_nse_events",         step_nse_events,         False),
+            ("12_asm_gsm",            step_asm_gsm,            False),  # safety lists, needs fresh events
+            ("13_post_trade",         step_post_trade,         False),
+            ("14_generate_shortlist", step_generate_shortlist, False),
+            ("15_market_intel",       step_market_intel,       False),
+            ("16_ai_enrich",          step_ai_enrich,          False), 
+            ("17_alerts",             step_alerts,             False),
+            ("18_quality_check",      step_quality_check,      False),  # always last, never fatal
+        ]
     else:
         all_steps = steps_p0 + (steps_p1 if phase >= 1 else [])
 
     if args.step:
-        # Single step mode
+        # Single step mode — match by name after the number prefix
         step_map = {s[0].split("_", 1)[1]: s for s in all_steps}
         if args.step not in step_map:
             logger.error(f"Unknown step: {args.step}. Available: {list(step_map.keys())}")

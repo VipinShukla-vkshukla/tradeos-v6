@@ -19,6 +19,7 @@ import sys
 import time
 from pathlib import Path
 from datetime import timedelta
+import json
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import get_supabase, cfg_int, today_ist, is_kill_switch_active, logger
@@ -26,6 +27,33 @@ from ai.ai_router import analyze
 
 
 # ── Context fetchers ──────────────────────────────────────────────────────────
+
+def get_market_intel_context(sb, trade_date: str) -> dict:
+    """Read synthesized market intelligence from market_intel engine."""
+    try:
+        rows = (sb.table("ai_context")
+                  .select("conviction, conviction_reason, catalyst, suggested_action, ai_note")
+                  .eq("date", trade_date)
+                  .eq("symbol", "__MARKET_INTEL__")
+                  .limit(1).execute().data)
+        if rows:
+            r = rows[0]
+            # conviction_reason contains full JSON
+            full = json.loads(r.get("conviction_reason") or "{}")
+            return {
+                "position_sizing":    r.get("suggested_action"),   # MINIMAL/HALF etc
+                "market_summary":     r.get("ai_note"),
+                "setup_types_favour": full.get("market_tone", {}).get("setup_types_favoured", []),
+                "setup_types_avoid":  full.get("market_tone", {}).get("setup_types_to_avoid", []),
+                "fii_5session_bias":  full.get("fii_outlook", {}).get("5session_bias"),
+                "fii_favoured_sectors": full.get("fii_outlook", {}).get("favoured_sectors", []),
+                "fii_exit_sectors":   full.get("fii_outlook", {}).get("exit_sectors", []),
+                "macro_impacts":      full.get("macro_sector_impacts", []),
+                "regulatory_alerts":  full.get("regulatory_alerts", []),
+            }
+    except Exception as e:
+        logger.warning(f"__MARKET_INTEL__ read failed: {e}")
+    return {"note": "market_intel not available — pipeline order issue"}
 
 def get_relevant_lessons(symbol: str, sector: str, strategy: str, lifecycle: str, sb) -> list:
     """
@@ -309,6 +337,7 @@ def main():
     regime_ctx    = get_regime_context(sb, trade_date)
     fii_ctx       = get_fii_context(sb, trade_date)
     global_cues   = get_global_cues_context(sb)
+    market_intel  = get_market_intel_context(sb, trade_date)
 
     # nifty_upcoming_events (kept as-is for backward compat — used for quick sym lookup)
     upcoming_events = (sb.table("nifty_upcoming_events")
@@ -401,6 +430,9 @@ def main():
 
                 # Global cues (G17)
                 "global_cues": global_cues,
+
+                # market intel
+                "market_intel":    market_intel,
 
                 # Events (G6: event_calendar 14-day + nifty_upcoming)
                 "upcoming_events":    event_cal_ctx,

@@ -36,7 +36,7 @@ import requests
 from loguru import logger
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import get_supabase, today_ist, is_kill_switch_active, cfg
+from config import get_supabase, today_ist, is_kill_switch_active, cfg, AI_KEYS
 
 DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
 
@@ -47,19 +47,41 @@ HEADERS = {
     )
 }
 
-ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+# Claude web_search endpoint — only used when ai_provider=claude (tool is Anthropic-specific)
+_CLAUDE_API_URL  = "https://api.anthropic.com/v1/messages"
+_CLAUDE_MODEL    = "claude-sonnet-4-20250514"
+
+def get_last_trading_day(sb) -> str:
+    """Returns most recent trading day — skips weekends and NSE holidays."""
+    from datetime import date, timedelta
+    try:
+        holiday_rows = sb.table("nse_holidays").select("date").execute().data
+        holidays = {r["date"][:10] for r in holiday_rows}
+    except Exception as e:
+        logger.warning(f"nse_holidays fetch failed, using weekday check only: {e}")
+        holidays = set()
+
+    candidate = today_ist()
+    for _ in range(10):
+        candidate -= timedelta(days=1)
+        if candidate.weekday() >= 5:   # 5=Sat, 6=Sun
+            continue
+        if str(candidate) in holidays:
+            continue
+        return str(candidate)
+
+    logger.warning("Could not determine last trading day — using yesterday")
+    return str(today_ist() - timedelta(days=1))
 
 
-
-def get_shortlist_candidates(sb, today_str):
+def get_shortlist_candidates(sb, last_trading_day):
     import json
 
     try:
         # STEP 1: Fetch AI shortlist
         row = sb.table("ai_context") \
             .select("ai_note") \
-            .eq("date", today_str) \
+            .eq("date", last_trading_day) \
             .eq("symbol", "__SHORTLIST__") \
             .limit(1) \
             .execute().data
@@ -73,7 +95,7 @@ def get_shortlist_candidates(sb, today_str):
             # STEP 2: Fetch MSL rows
             msl_rows = sb.table("master_shortlist") \
                 .select("*") \
-                .eq("date", today_str) \
+                .eq("date", last_trading_day) \
                 .in_("symbol", symbols) \
                 .execute().data
 
@@ -104,7 +126,7 @@ def get_shortlist_candidates(sb, today_str):
 
     fallback = sb.table("master_shortlist") \
         .select("*") \
-        .eq("date", today_str) \
+        .eq("date", last_trading_day) \
         .order("final_score", desc=True) \
         .limit(12) \
         .execute().data
@@ -212,7 +234,7 @@ def fetch_stock_intel(symbol: str, company_name: str, nse_session: requests.Sess
 
 # ── Context assembly (Pass 1) ──────────────────────────────────────────────
 
-def build_market_context(sb, today_str: str) -> dict:
+def build_market_context(sb, today_str: str, last_trading_day: str) -> dict:
     """
     Assemble full market context from all Supabase tables.
     Returns a structured dict used in the AI prompt.
@@ -237,7 +259,7 @@ def build_market_context(sb, today_str: str) -> dict:
     # Sector strength — top 5 by rank
     sector_rows = sb.table("sector_strength").select(
         "sector,rank,sector_state,avg_rsi_daily"
-    ).eq("date", today_str).order("rank").limit(5).execute().data
+    ).eq("date", last_trading_day).order("rank").limit(5).execute().data
     if not sector_rows:
         sector_rows = sb.table("sector_strength").select(
             "sector,rank,sector_state,avg_rsi_daily"
@@ -246,15 +268,15 @@ def build_market_context(sb, today_str: str) -> dict:
     # Industry strength — top 5
     ind_rows = sb.table("industry_strength").select(
         "industry,rank,industry_state,avg_rsi_daily"
-    ).eq("date", today_str).order("rank").limit(5).execute().data
+    ).eq("date", last_trading_day).order("rank").limit(5).execute().data
 
-    # Market news (scraped today by step 00a)
+    # Market news (scraped today by step 01_market_news)
     news_rows = sb.table("market_news").select(
         "headline,source,category,impact_type,parsed_symbols"
     ).eq("news_date", today_str).order("id", desc=True).limit(30).execute().data
 
     # MSL top 12 candidates by score
-    msl_rows = get_shortlist_candidates(sb, today_str)
+    msl_rows = get_shortlist_candidates(sb, last_trading_day)
 
     # Open positions (for Q3 regulatory check)
     pos_rows = sb.table("open_positions").select(
@@ -409,64 +431,102 @@ Answer these 5 questions. Output ONLY valid JSON — no preamble, no markdown:
 
 # ── AI call ────────────────────────────────────────────────────────────────
 
-def call_ai(prompt: str) -> dict | None:
+_SYSTEM_PROMPT = (
+    "You are a senior Indian equity portfolio manager specialising in NSE 500 swing trading. "
+    "Analyse the daily market intelligence packet and produce precise, actionable output. "
+    "Be specific about sectors and timeframes. Output ONLY valid JSON — no preamble, no markdown."
+)
+
+
+def _call_claude_with_websearch(prompt: str) -> str | None:
     """
-    Single AI call with web_search tool enabled.
-    Falls back to non-search call if web_search not available.
-    Returns parsed JSON dict or None on failure.
+    Claude-specific path: uses web_search_20250305 tool for real-time market data.
+    Called only when ai_provider=claude in system_config.
     """
-    if not ANTHROPIC_API_KEY:
-        logger.warning("ANTHROPIC_API_KEY not set — market_intelligence_engine skipped")
+    api_key = AI_KEYS.get("claude", "")
+    if not api_key:
+        logger.warning("ANTHROPIC_API_KEY not set — cannot use Claude web_search path")
         return None
 
     payload = {
-        "model":      "claude-sonnet-4-20250514",
+        "model":      _CLAUDE_MODEL,
         "max_tokens": 2000,
-        "tools": [{"type": "web_search_20250305", "name": "web_search"}],
-        "messages": [
-            {
-                "role":    "user",
-                "content": (
-                    "You are a senior Indian equity portfolio manager specialising in NSE 500 "
-                    "swing trading. Analyse the daily market intelligence packet below and produce "
-                    "precise, actionable output. Be specific about sectors and timeframes. "
-                    "Search the web for any breaking news that may not be captured in the data.\n\n"
-                    + prompt
-                )
-            }
-        ],
+        "system":     _SYSTEM_PROMPT,
+        "tools":      [{"type": "web_search_20250305", "name": "web_search"}],
+        "messages":   [{"role": "user", "content": prompt}],
     }
-
     try:
         resp = requests.post(
-            ANTHROPIC_API_URL,
-            headers={"Content-Type": "application/json"},
+            _CLAUDE_API_URL,
+            headers={
+                "Content-Type":    "application/json",
+                "x-api-key":       api_key,
+                "anthropic-version": "2023-06-01",
+            },
             json=payload,
             timeout=90,
         )
         if resp.status_code != 200:
-            logger.warning(f"AI call failed: HTTP {resp.status_code} — {resp.text[:200]}")
+            logger.warning(f"Claude web_search call failed: HTTP {resp.status_code} — {resp.text[:200]}")
+            return None
+        content = resp.json().get("content", [])
+        parts   = [b["text"] for b in content if b.get("type") == "text"]
+        return "\n".join(parts) or None
+    except Exception as e:
+        logger.warning(f"Claude web_search call exception: {e}")
+        return None
+
+
+def call_ai(prompt: str) -> dict | None:
+    """
+    Single AI call routed via system_config.ai_provider — consistent with ai_router.py.
+    - Claude:  uses web_search tool (real-time breaking news augmentation)
+    - All other providers (deepseek/openai/gemini/grok/copilot):
+      use ai_router.raw_completion() — static reasoning, still fully valid for market analysis.
+    Returns parsed JSON dict or None on failure.
+    """
+    from ai.ai_router import is_ai_available, raw_completion
+
+    if not is_ai_available():
+        logger.warning("No AI provider configured/available — market_intelligence_engine skipped")
+        return None
+
+    provider = cfg("ai_provider", "disabled").lower()
+    full_prompt = f"{_SYSTEM_PROMPT}\n\n{prompt}"
+
+    logger.info(f"Calling market_intelligence AI via provider: {provider}")
+
+    if provider == "claude":
+        # Claude gets live web_search augmentation
+        full_text = _call_claude_with_websearch(prompt)
+        if not full_text:
+            # Soft fallback: retry without web_search via raw_completion
+            logger.warning("Claude web_search path failed — retrying via raw_completion")
+            try:
+                full_text = raw_completion(full_prompt, max_tokens=2000)
+            except Exception as e:
+                logger.warning(f"raw_completion fallback also failed: {e}")
+                return None
+    else:
+        # deepseek / openai / gemini / grok / copilot
+        try:
+            full_text = raw_completion(full_prompt, max_tokens=2000)
+        except Exception as e:
+            logger.warning(f"raw_completion failed for provider={provider}: {e}")
             return None
 
-        data    = resp.json()
-        content = data.get("content", [])
-        # Collect all text blocks (tool results + final text)
-        text_parts = [b["text"] for b in content if b.get("type") == "text"]
-        full_text  = "\n".join(text_parts)
+    if not full_text:
+        logger.warning("AI returned empty response")
+        return None
 
-        # Extract JSON from response
+    try:
         json_match = re.search(r"\{[\s\S]+\}", full_text)
         if not json_match:
             logger.warning("AI response contained no JSON block")
             return None
-
         return json.loads(json_match.group())
-
     except json.JSONDecodeError as e:
-        logger.warning(f"AI response JSON parse failed: {e}")
-        return None
-    except Exception as e:
-        logger.warning(f"AI call exception: {e}")
+        logger.warning(f"AI JSON parse failed: {e}")
         return None
 
 
@@ -507,7 +567,7 @@ def write_lessons(sb, result: dict, today_str: str) -> int:
     return written
 
 
-def write_top_candidates(sb, result: dict, today_str: str) -> int:
+def write_top_candidates(sb, result: dict, today_str: str, last_trading_day: str) -> int:
     """Write top 3 candidates as MARKET_TOP_PICK signals to signal_log."""
     candidates = result.get("top_3_candidates") or []
     if not candidates:
@@ -519,7 +579,7 @@ def write_top_candidates(sb, result: dict, today_str: str) -> int:
             continue
         try:
             sb.table("signal_log").upsert({
-                "date":           today_str,
+                "date":           last_trading_day,
                 "symbol":         symbol,
                 "signal_type":    "MARKET_TOP_PICK",
                 "signal_subtype": "MARKET_INTEL",
@@ -534,9 +594,10 @@ def write_top_candidates(sb, result: dict, today_str: str) -> int:
                 "ai_note": (
                     f"Entry trigger: {c.get('entry_trigger','')} | "
                     f"Window: {c.get('session_window','')} | "
-                    f"Invalidation: {c.get('invalidation','')}"
+                    f"Invalidation: {c.get('invalidation','')} |"
+                    f"Risk: {c.get('risk_flag','')}"
                 ),
-                "ai_provider":    "market_intelligence_engine",
+                "ai_provider": cfg("ai_provider", "unknown"),
                 "regime":         result.get("market_tone", {}).get("summary", "")[:50],
                 "sheet_conflict": False,
             }, on_conflict="date,symbol").execute()
@@ -550,6 +611,7 @@ def write_ai_context(sb, result: dict, today_str: str):
     """Write full market intel JSON to ai_context as __MARKET_INTEL__ row."""
     try:
         tone = result.get("market_tone") or {}
+        _provider = cfg("ai_provider", "disabled").lower()
         sb.table("ai_context").upsert({
             "date":              today_str,
             "symbol":            "__MARKET_INTEL__",
@@ -558,7 +620,8 @@ def write_ai_context(sb, result: dict, today_str: str):
             "risks":             [i.get("driver", "") for i in (result.get("macro_sector_impacts") or [])[:3]],
             "catalyst":          "; ".join(tone.get("setup_types_favoured") or []),
             "suggested_action":  tone.get("position_sizing_guidance", "REDUCED_25PCT"),
-            "provider":          "market_intelligence_engine",
+            "provider":          cfg("ai_provider", "unknown"),
+            "ai_note": tone.get("summary", "")[:500],
             "fallback_used":     False,
             "confidence":        0.85,
         }, on_conflict="date,symbol").execute()
@@ -574,10 +637,21 @@ def write_ai_context(sb, result: dict, today_str: str):
     try:
         candidates = result.get("top_3_candidates") or []
         accuracy_proxy = 1.0 if len(candidates) >= 3 else (0.5 if candidates else 0.0)
+        # Resolve actual provider + model for accurate audit trail
+        _provider = cfg("ai_provider", "disabled").lower()
+        _model_map = {
+            "claude":   "claude-sonnet-4-20250514",
+            "openai":   "gpt-4o-mini",
+            "deepseek": "deepseek-chat",
+            "gemini":   "gemini-2.0-flash",
+            "grok":     "grok-2-latest",
+            "copilot":  "gpt-4o",
+        }
+        _model = _model_map.get(_provider, _provider)
         sb.table("ai_model_performance").insert({
             "date":           today_str,
-            "provider":       "market_intelligence_engine",
-            "model":          "claude-sonnet-4-20250514",
+            "provider":       f"market_intel:{_provider}",   # distinguishable from ai_enrich rows
+            "model":          _model,
             "calls_today":    1,
             "cost_today":     0.0,      # web_search billing varies — placeholder for now
             "accuracy":       accuracy_proxy,
@@ -598,10 +672,12 @@ def main():
     logger.info(f"Market Intelligence Engine starting {'[DRY RUN]' if DRY_RUN else ''}")
     sb        = get_supabase()
     today_str = str(today_ist())
+    last_trading_day = get_last_trading_day(sb)
+    logger.info(f"Today: {today_str} | Last trading day: {last_trading_day}")
 
     # ── Pass 1: Assemble Supabase context ────────────────────────────────
     logger.info("Pass 1: assembling market context from Supabase...")
-    ctx = build_market_context(sb, today_str)
+    ctx = build_market_context(sb, today_str, last_trading_day)
     logger.info(
         f"  Context: {len(ctx['msl'])} MSL candidates | "
         f"{len(ctx['news'])} news items | {len(ctx['sectors'])} sectors"
@@ -651,9 +727,9 @@ def main():
         return {"status": "ai_failed", "lessons": 0, "signals": 0}
 
     # ── Write outputs ─────────────────────────────────────────────────────
-    lessons_written  = write_lessons(sb, result, today_str)
-    signals_written  = write_top_candidates(sb, result, today_str)
-    write_ai_context(sb, result, today_str)
+    lessons_written  = write_lessons(sb, result, last_trading_day)
+    signals_written  = write_top_candidates(sb, result, last_trading_day, last_trading_day)
+    write_ai_context(sb, result, last_trading_day)
 
     # Log top 3 for visibility
     tone       = result.get("market_tone") or {}

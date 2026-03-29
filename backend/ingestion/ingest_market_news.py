@@ -1,27 +1,42 @@
 """
 TradeOS v6 — Phase 2: Market News Ingestion
 Runs as step 00a — first step of evening pipeline, before fetch_chartink.
-Scrapes 6 free sources to populate market_news table so
+Scrapes 8 sources to populate market_news table so
 market_intelligence_engine.py has structured news context.
 
-Sources (all free, no API key):
-    1. NSE latest circulars    — ASM/GSM/FO changes, index changes, margin hikes
-    2. RBI press release RSS   — rate decisions, NBFC directives, liquidity ops
-    3. NSE bulk + block deals  — institutional buys/sells with entity name + qty
-    4. Economic Times RSS      — PLI, capex, promoter commentary, analyst upgrades
-    5. Google News RSS         — sector-level queries covering all NSE 500 sectors
-    6. SEBI circulars          — F&O changes, surveillance, investor protection
+Sources (all free, no API key, all URLs verified 2026-03-29):
+    1. NSE circulars (Google News) — ASM/GSM/FO/index changes via targeted query
+    2. RBI press release RSS       — rate decisions, NBFC directives, liquidity ops
+    3. NSE bulk + block deals      — institutional buys/sells (session-gated, best-effort)
+    4. Economic Times RSS          — PLI, capex, promoter commentary, analyst upgrades
+    5. Google News RSS             — sector-level queries covering all NSE 500 sectors
+    6. SEBI RSS                    — F&O changes, surveillance, investor protection
+    7. Investing.com Commodities   — crude oil, metals, agri — directly impacts NSE sectors
+    8. Investing.com Economy/Forex — Fed/FOMC, DXY, global macro affecting FII flows
+
+International coverage rationale:
+    - Crude oil (news_11): OMCs, paint, tyre, aviation stocks move 2-5% on big crude moves
+    - Fed/FOMC (news_14): FII outflows trigger Nifty gap-opens; IT sector mirrors Nasdaq
+    - Forex/DXY (news_1):  Rupee depreciation affects importers vs exporters asymmetrically
+    - China macro:         Metals sector (steel, aluminium, copper) strongly correlated
+
+Dedup strategy: upsert on (source, headline) — date is NOT part of the key.
+Same article never re-inserts regardless of when the script runs.
+Required one-time migration:
+    ALTER TABLE market_news DROP CONSTRAINT IF EXISTS market_news_news_date_source_headline_key;
+    ALTER TABLE market_news ADD CONSTRAINT market_news_source_headline_key UNIQUE (source, headline);
 
 Non-fatal — pipeline continues if any or all sources fail.
-Uses requests + BeautifulSoup (both already in requirements.txt).
+No BeautifulSoup dependency — uses stdlib xml.etree only.
 """
 import os
 import re
 import sys
 import time
 import xml.etree.ElementTree as ET
-from datetime import date
+from datetime import datetime
 from pathlib import Path
+from datetime import date
 
 import requests
 from loguru import logger
@@ -41,49 +56,136 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-# Sector-level Google News queries — covers all major NSE 500 sectors
+# ── Sector Google News queries (Source 5) ─────────────────────────────────
 SECTOR_QUERIES = [
     "India banking NBFC financial sector NSE",
     "India industrials manufacturing capital goods NSE",
     "India metals mining steel aluminium NSE",
     "India IT technology software exports NSE",
     "India energy oil gas refining power NSE",
-    # SG10: Dedicated pharma regulatory query — FDA/USFDA actions affect pharma stocks 3-8%
-    # typically published in ET/Mint within 6-8h of FDA action, well within 6 PM pipeline window
     "USFDA warning letter India pharma NSE import alert",
 ]
 
+# ── NSE circular Google News queries (Source 1) ───────────────────────────
+# NSE's own API (/api/latest-circular, /api/corporateAnnouncementsEquity)
+# requires a live Akamai-validated browser session and returns 404 without it.
+# Google News aggregates ET/Mint/MoneyControl coverage within ~1h of NSE release.
+NSE_CIRCULAR_QUERIES = [
+    "NSE India ASM GSM surveillance list 2026",
+    "NSE India F&O ban futures options ban 2026",
+    "NSE circular margin hike index constituent change 2026",
+]
 
-# ── Source 1: NSE Circulars ────────────────────────────────────────────────
+
+# ── Helpers ────────────────────────────────────────────────────────────────
+
+def _parse_rss_date(raw: str) -> str | None:
+    """
+    Parse RSS pubDate → ISO date string (YYYY-MM-DD).
+    Returns None if unparseable so callers fall back to today_ist().
+    """
+    for fmt in (
+        "%a, %d %b %Y %H:%M:%S %z",
+        "%a, %d %b %Y %H:%M:%S GMT",
+        "%a, %d %b %Y %H:%M:%S +0000",
+        "%Y-%m-%d %H:%M:%S",      # investing.com format: "2026-03-29 13:00:32"
+    ):
+        try:
+            return datetime.strptime(raw.strip(), fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+def _is_recent(date_str: str | None, days: int = 3) -> bool:
+    """Return True if date_str is within the last N days or is None (unknown date, keep it)."""
+    if date_str is None:
+        return True
+    try:
+        item_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        return (today_ist() - item_date).days <= days
+    except ValueError:
+        return True
+
+def _strip_cdata(xml_text: str | bytes) -> str:
+    if isinstance(xml_text, bytes):
+        xml_text = xml_text.lstrip(b"\xef\xbb\xbf").decode("utf-8", errors="replace")
+    text = xml_text.lstrip("\ufeff")
+    # Replace CDATA blocks with escaped plain text so inner HTML doesn't break XML
+    def _escape_cdata(m: re.Match) -> str:
+        inner = m.group(1)
+        inner = inner.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        return inner
+    text = re.sub(r"<!\[CDATA\[(.*?)\]\]>", _escape_cdata, text, flags=re.DOTALL)
+    return text
+
+
+def _parse_rss(raw_text: str) -> ET.Element | None:
+    """Parse RSS XML safely, returns root element or None on failure."""
+    try:
+        cleaned = _strip_cdata(raw_text)
+        return ET.fromstring(cleaned)
+    except ET.ParseError as e:
+        logger.warning(f"RSS XML parse failed: {e}")
+        return None
+
+
+def _nse_session() -> requests.Session:
+    """
+    Shared NSE session factory — warms Akamai cookies via homepage hit.
+    sleep(3) is intentional: Akamai needs time to validate the session.
+    NSE returns empty/500 (not 401) without valid cookies.
+    """
+    session = requests.Session()
+    try:
+        resp = session.get("https://www.nseindia.com", headers=HEADERS, timeout=15)
+        session.cookies.update(resp.cookies)
+        time.sleep(3)
+    except Exception as e:
+        logger.warning(f"NSE session warmup failed (continuing): {e}")
+    return session
+
+
+# ── Source 1: NSE Circulars via Google News ───────────────────────────────
 
 def fetch_nse_circulars() -> list[dict]:
-    """NSE regulatory circulars — surveillance, margin, index, FO changes."""
+    """
+    NSE regulatory circulars via targeted Google News RSS queries.
+    Replaces direct NSE API call which requires live browser session.
+    """
     results = []
-    try:
-        session = requests.Session()
-        # Warm NSE session to get cookies
-        session.get("https://www.nseindia.com", headers=HEADERS, timeout=8)
-        time.sleep(1)
-        resp = session.get(
-            "https://www.nseindia.com/api/latest-circular",
-            headers=HEADERS, timeout=8
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            for item in (data.get("data") or [])[:10]:
-                headline = str(item.get("subject") or item.get("desc") or "")
-                if not headline:
+    for query in NSE_CIRCULAR_QUERIES:
+        try:
+            encoded = query.replace(" ", "+")
+            url = f"https://news.google.com/rss/search?q={encoded}&hl=en-IN&gl=IN&ceid=IN:en"
+            resp = requests.get(url, headers=HEADERS, timeout=10)
+            if resp.status_code != 200:
+                logger.warning(f"NSE circular query HTTP {resp.status_code}: {query}")
+                continue
+            root = _parse_rss(resp.content)
+            if root is None:
+                continue
+            count = 0
+            for item in root.iter("item"):
+                title = (item.findtext("title") or "").strip()
+                title = re.sub(r"\s*-\s*[^-]+$", "", title).strip()
+                if not title or len(title) < 15:
                     continue
+                impact = _classify_nse_circular(title)
                 results.append({
-                    "headline":    headline[:500],
+                    "headline":    title[:500],
                     "source":      "NSE_CIRCULAR",
                     "category":    "DOMESTIC_REGULATORY",
-                    "impact_type": _classify_nse_circular(headline),
-                    "magnitude":   _classify_nse_circular_magnitude(_classify_nse_circular(headline)),
-                    "raw_url":     item.get("url", ""),
+                    "impact_type": impact,
+                    "magnitude":   _classify_nse_circular_magnitude(impact),
+                    "news_date":   _parse_rss_date(item.findtext("pubDate") or ""),
+                    "raw_url":     item.findtext("link") or "",
                 })
-    except Exception as e:
-        logger.debug(f"NSE circulars fetch failed (non-fatal): {e}")
+                count += 1
+                if count >= 3:
+                    break
+            time.sleep(0.3)
+        except Exception as e:
+            logger.warning(f"NSE circular query failed '{query}': {e}")
     return results
 
 
@@ -97,7 +199,6 @@ def _classify_nse_circular(headline: str) -> str:
         return "FO_CHANGE"
     if any(k in h for k in ("INDEX", "NIFTY", "CONSTITUENT")):
         return "INDEX_CHANGE"
-    # SG9: Trading halt and delisting detection
     if any(k in h for k in ("TRADING HALT", "SUSPENSION", "SUSPENDED", "HALT IN TRADING")):
         return "TRADING_HALT"
     if any(k in h for k in ("DELISTING", "DELIST", "VOLUNTARY DELISTING", "COMPULSORY DELISTING")):
@@ -106,7 +207,6 @@ def _classify_nse_circular(headline: str) -> str:
 
 
 def _classify_nse_circular_magnitude(impact_type: str) -> str:
-    """SG9: TRADING_HALT and DELISTING are always HIGH magnitude — directly affect held positions."""
     if impact_type in ("TRADING_HALT", "DELISTING"):
         return "HIGH"
     if impact_type in ("ASM_CHANGE", "FO_CHANGE"):
@@ -117,111 +217,125 @@ def _classify_nse_circular_magnitude(impact_type: str) -> str:
 # ── Source 2: RBI RSS ──────────────────────────────────────────────────────
 
 def fetch_rbi_rss() -> list[dict]:
-    """RBI press releases — rate decisions, policy, NBFC directives."""
+    """
+    RBI press releases RSS.
+    URL verified 2026-03-29: https://www.rbi.org.in/pressreleases_rss.xml
+    Quirks handled by _strip_cdata(): UTF-8 BOM prefix + CDATA wrappers.
+    """
     results = []
     try:
         resp = requests.get(
-            "https://rbi.org.in/rss",
-            headers=HEADERS, timeout=10
+            "https://www.rbi.org.in/pressreleases_rss.xml",
+            headers=HEADERS, timeout=15,
         )
-        if resp.status_code == 200:
-            root = ET.fromstring(resp.text)
-            for item in root.iter("item"):
-                title = item.findtext("title") or ""
-                if not title:
-                    continue
-                results.append({
-                    "headline":    title[:500],
-                    "source":      "RBI",
-                    "category":    "CENTRAL_BANK",
-                    "impact_type": "RATE_DECISION" if any(
-                        k in title.upper() for k in
-                        ("REPO", "RATE", "POLICY", "MPC", "CRR", "SLR")
-                    ) else "POLICY",
-                    "raw_url":     item.findtext("link") or "",
-                })
-                if len(results) >= 8:
-                    break
+        if resp.status_code != 200:
+            logger.warning(f"RBI RSS returned HTTP {resp.status_code}")
+            return results
+        root = _parse_rss(resp.content.decode("utf-8-sig", errors="replace"))
+        if root is None:
+            return results
+        for item in root.iter("item"):
+            title = (item.findtext("title") or "").strip()
+            if not title:
+                continue
+            results.append({
+                "headline":    title[:500],
+                "source":      "RBI",
+                "category":    "CENTRAL_BANK",
+                "impact_type": "RATE_DECISION" if any(
+                    k in title.upper() for k in ("REPO", "RATE", "POLICY", "MPC", "CRR", "SLR")
+                ) else "POLICY",
+                "news_date":   _parse_rss_date(item.findtext("pubDate") or ""),
+                "raw_url":     item.findtext("link") or "",
+            })
+            if len(results) >= 8:
+                break
     except Exception as e:
-        logger.debug(f"RBI RSS fetch failed (non-fatal): {e}")
+        logger.warning(f"RBI RSS fetch failed (non-fatal): {e}")
     return results
 
 
 # ── Source 3: NSE Bulk + Block Deals ──────────────────────────────────────
 
 def fetch_nse_bulk_deals() -> list[dict]:
-    """NSE bulk deals — institutional buys/sells with entity name + qty."""
+    """
+    NSE bulk/block deals — institutional activity.
+    Endpoint: snapshot-capital-market-largedeal (as of 2026-03-29)
+    Keys: BULK_DEALS_DATA, BLOCK_DEALS_DATA
+    """
     results = []
     try:
-        today_str = str(today_ist())
-        session = requests.Session()
-        session.get("https://www.nseindia.com", headers=HEADERS, timeout=8)
-        time.sleep(0.5)
-
-        for deal_type in ("bulk-deals", "block-deals"):
-            try:
-                resp = session.get(
-                    f"https://www.nseindia.com/api/{deal_type}",
-                    headers=HEADERS, timeout=8
-                )
-                if resp.status_code != 200:
-                    continue
+        session = _nse_session()
+        try:
+            resp = session.get(
+                "https://www.nseindia.com/api/snapshot-capital-market-largedeal",
+                headers={
+                    **HEADERS,
+                    "Referer": "https://www.nseindia.com/report-detail/display-bulk-and-block-deals",
+                },
+                timeout=15,
+            )
+            if resp.status_code != 200 or not resp.content:
+                logger.warning(f"NSE bulk/block deals HTTP {resp.status_code} — endpoint may have changed")
+            else:
                 data = resp.json()
-                deals = data.get("data") or (data if isinstance(data, list) else [])
-                for d in deals[:15]:
-                    symbol  = str(d.get("symbol") or d.get("scrip_cd") or "")
-                    entity  = str(d.get("clientName") or d.get("client") or "")
-                    side    = str(d.get("buySell") or d.get("buy_sell") or "")
-                    qty     = d.get("qty") or d.get("quantity") or 0
-                    price   = d.get("price") or 0
-                    if not symbol or not entity:
-                        continue
-                    headline = (
-                        f"{entity} {side.upper()} {symbol}: "
-                        f"{int(qty):,} shares @ ₹{float(price):.0f}"
-                    )
-                    results.append({
-                        "headline":    headline[:500],
-                        "source":      "NSE_BULK_DEAL",
-                        "category":    "CORPORATE",
-                        "impact_type": "BULK_DEAL",
-                        "parsed_symbols": [symbol],
-                        "raw_url":     "",
-                    })
-            except Exception as e:
-                logger.debug(f"NSE {deal_type} fetch failed: {e}")
+                for deal_type, key in (("bulk", "BULK_DEALS_DATA"), ("block", "BLOCK_DEALS_DATA")):
+                    for d in (data.get(key) or [])[:15]:
+                        symbol = str(d.get("symbol") or "")
+                        entity = str(d.get("clientName") or "")
+                        side   = str(d.get("buySell") or "")
+                        qty    = d.get("qty") or 0
+                        price  = d.get("watp") or 0
+                        if not symbol or not entity:
+                            continue
+                        results.append({
+                            "headline":       f"{entity} {side.upper()} {symbol}: {int(qty):,} shares @ ₹{float(price):.0f}"[:500],
+                            "source":         "NSE_BULK_DEAL",
+                            "category":       "CORPORATE",
+                            "impact_type":    "BULK_DEAL",
+                            "news_date":      None,
+                            "parsed_symbols": [symbol],
+                            "raw_url":        "",
+                        })
+        except Exception as e:
+            logger.warning(f"NSE bulk/block deals fetch failed: {e}")
     except Exception as e:
-        logger.debug(f"NSE bulk/block deals fetch failed (non-fatal): {e}")
+        logger.warning(f"NSE bulk/block deals session failed (non-fatal): {e}")
     return results
 
 
 # ── Source 4: Economic Times Markets RSS ──────────────────────────────────
 
 def fetch_et_rss() -> list[dict]:
-    """ET Markets RSS — policy, PLI, promoter commentary, analyst calls."""
+    """ET Markets RSS. URL verified working in production logs."""
     results = []
     try:
         resp = requests.get(
             "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
-            headers=HEADERS, timeout=10
+            headers=HEADERS, timeout=10,
         )
-        if resp.status_code == 200:
-            root = ET.fromstring(resp.text)
-            for item in root.iter("item"):
-                title = item.findtext("title") or ""
-                if not title:
-                    continue
-                results.append({
-                    "headline":    title[:500],
-                    "source":      "ET_MARKETS",
-                    "category":    _classify_et_category(title),
-                    "impact_type": _classify_et_impact(title),
-                    "raw_url":     item.findtext("link") or "",
-                })
-                if len(results) >= 12:
-                    break
+        if resp.status_code != 200:
+            logger.warning(f"ET RSS returned HTTP {resp.status_code}")
+            return results
+        root = _parse_rss(resp.text)
+        if root is None:
+            return results
+        for item in root.iter("item"):
+            title = (item.findtext("title") or "").strip()
+            if not title:
+                continue
+            results.append({
+                "headline":    title[:500],
+                "source":      "ET_MARKETS",
+                "category":    _classify_et_category(title),
+                "impact_type": _classify_et_impact(title),
+                "news_date":   _parse_rss_date(item.findtext("pubDate") or ""),
+                "raw_url":     item.findtext("link") or "",
+            })
+            if len(results) >= 12:
+                break
     except Exception as e:
-        logger.debug(f"ET RSS fetch failed (non-fatal): {e}")
+        logger.warning(f"ET RSS fetch failed (non-fatal): {e}")
     return results
 
 
@@ -248,24 +362,21 @@ def _classify_et_impact(title: str) -> str:
 # ── Source 5: Google News RSS (sector-level) ───────────────────────────────
 
 def fetch_google_news_sectors() -> list[dict]:
-    """Google News RSS for each major sector — aggregates 200+ Indian financial sources."""
+    """Google News RSS — aggregates ET, Mint, MoneyControl, BS across NSE sectors."""
     results = []
     for query in SECTOR_QUERIES:
         try:
             encoded = query.replace(" ", "+")
-            url = (
-                f"https://news.google.com/rss/search"
-                f"?q={encoded}&hl=en-IN&gl=IN&ceid=IN:en"
-            )
+            url = f"https://news.google.com/rss/search?q={encoded}&hl=en-IN&gl=IN&ceid=IN:en"
             resp = requests.get(url, headers=HEADERS, timeout=10)
             if resp.status_code != 200:
                 continue
-            root = ET.fromstring(resp.text)
+            root = _parse_rss(resp.text)
+            if root is None:
+                continue
             count = 0
             for item in root.iter("item"):
-                title = item.findtext("title") or ""
-                # Clean Google News title format: "Headline - Source"
-                title = re.sub(r"\s*-\s*[^-]+$", "", title).strip()
+                title = re.sub(r"\s*-\s*[^-]+$", "", (item.findtext("title") or "").strip()).strip()
                 if not title or len(title) < 15:
                     continue
                 results.append({
@@ -273,88 +384,223 @@ def fetch_google_news_sectors() -> list[dict]:
                     "source":      "GOOGLE_NEWS",
                     "category":    "DOMESTIC_POLICY",
                     "impact_type": "MACRO",
+                    "news_date":   _parse_rss_date(item.findtext("pubDate") or ""),
                     "raw_url":     item.findtext("link") or "",
                 })
                 count += 1
                 if count >= 3:
                     break
-            time.sleep(0.3)   # gentle rate limiting
+            time.sleep(0.3)
         except Exception as e:
-            logger.debug(f"Google News RSS fetch failed for '{query}' (non-fatal): {e}")
+            logger.warning(f"Google News sector RSS failed '{query}': {e}")
     return results
 
 
-# ── Source 6: SEBI Circulars ───────────────────────────────────────────────
+# ── Source 6: SEBI RSS ─────────────────────────────────────────────────────
 
 def fetch_sebi_circulars() -> list[dict]:
-    """SEBI circulars — F&O, lot sizes, insider trading, investor protection."""
+    """
+    SEBI official RSS.
+    URL verified 2026-03-29: https://www.sebi.gov.in/sebirss.xml
+    Covers circulars, orders, press releases. No BeautifulSoup needed.
+    """
     results = []
     try:
         resp = requests.get(
-            "https://www.sebi.gov.in/sebiweb/other/OtherAction.do?doRecent=yes&type=1",
-            headers=HEADERS, timeout=10
+            "https://www.sebi.gov.in/sebirss.xml",
+            headers=HEADERS, timeout=15,
         )
-        if resp.status_code == 200:
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(resp.text, "lxml")
-            for row in soup.select("table tr")[:15]:
-                cells = row.find_all("td")
-                if len(cells) >= 2:
-                    title = cells[-1].get_text(strip=True)
-                    if title and len(title) > 10:
-                        results.append({
-                            "headline":    title[:500],
-                            "source":      "SEBI",
-                            "category":    "DOMESTIC_REGULATORY",
-                            "impact_type": "REGULATORY",
-                            "raw_url":     "",
-                        })
-                        if len(results) >= 6:
-                            break
+        if resp.status_code != 200:
+            logger.warning(f"SEBI RSS returned HTTP {resp.status_code}")
+            return results
+        root = _parse_rss(resp.text)
+        if root is None:
+            return results
+        for item in root.iter("item"):
+            title = (item.findtext("title") or "").strip()
+            if not title or len(title) < 10:
+                continue
+            results.append({
+                "headline":    title[:500],
+                "source":      "SEBI",
+                "category":    "DOMESTIC_REGULATORY",
+                "impact_type": "REGULATORY",
+                "news_date":   _parse_rss_date(item.findtext("pubDate") or ""),
+                "raw_url":     item.findtext("link") or "",
+            })
+            if len(results) >= 8:
+                break
     except Exception as e:
-        logger.debug(f"SEBI circulars fetch failed (non-fatal): {e}")
+        logger.warning(f"SEBI RSS fetch failed (non-fatal): {e}")
     return results
+
+
+# ── Source 7: Investing.com Commodities RSS ────────────────────────────────
+
+def fetch_investing_commodities() -> list[dict]:
+    """
+    Investing.com commodities news RSS.
+    URL verified 2026-03-29: https://investing.com/rss/news_11.rss
+    Covers crude, Brent, gold, base metals, agri.
+    NSE sector impact: OMCs, paint, tyre, aviation (crude); mining, jewellery (metals).
+    Note: Reuters stopped RSS in 2020 — investing.com carries Reuters wire via licensing.
+    """
+    results = []
+    try:
+        resp = requests.get(
+            "https://investing.com/rss/news_11.rss",
+            headers=HEADERS, timeout=15,
+        )
+        if resp.status_code != 200:
+            logger.warning(f"Investing.com commodities RSS HTTP {resp.status_code}")
+            return results
+        root = _parse_rss(resp.text)
+        if root is None:
+            return results
+        for item in root.iter("item"):
+            title = (item.findtext("title") or "").strip()
+            if not title:
+                continue
+            results.append({
+                "headline":    title[:500],
+                "source":      "INVESTING_COMMODITIES",
+                "category":    "INTERNATIONAL",
+                "impact_type": _classify_commodity_impact(title),
+                "news_date":   _parse_rss_date(item.findtext("pubDate") or ""),
+                "raw_url":     item.findtext("link") or "",
+            })
+            if len(results) >= 10:
+                break
+    except Exception as e:
+        logger.warning(f"Investing.com commodities RSS failed (non-fatal): {e}")
+    return results
+
+
+def _classify_commodity_impact(title: str) -> str:
+    t = title.upper()
+    if any(k in t for k in ("CRUDE", "OIL", "BRENT", "WTI", "OPEC")):
+        return "CRUDE_MOVE"
+    if any(k in t for k in ("GOLD", "SILVER", "PRECIOUS")):
+        return "PRECIOUS_METALS"
+    if any(k in t for k in ("STEEL", "ALUMINIUM", "COPPER", "IRON", "ZINC", "NICKEL")):
+        return "BASE_METALS"
+    return "COMMODITY"
+
+
+# ── Source 8: Investing.com Economy + Forex RSS ────────────────────────────
+
+def fetch_investing_macro() -> list[dict]:
+    """
+    Investing.com economy (news_14) + forex (news_1) RSS.
+    Both URLs verified 2026-03-29.
+    Economy: Fed/FOMC, US CPI, GDP, tariffs — drive FII flow into/out of India.
+    Forex:   DXY, USD/INR — importers vs exporters diverge on rupee moves.
+    Filtered via _is_macro_relevant() to only keep India-impacting headlines.
+    """
+    results = []
+    feeds = [
+        ("https://investing.com/rss/news_14.rss", "MACRO"),   # economy
+        ("https://investing.com/rss/news_1.rss",  "FOREX"),   # forex / DXY
+    ]
+    for url, default_impact in feeds:
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=15)
+            if resp.status_code != 200:
+                logger.warning(f"Investing.com macro RSS HTTP {resp.status_code}: {url}")
+                continue
+            root = _parse_rss(resp.text)
+            if root is None:
+                continue
+            count = 0
+            for item in root.iter("item"):
+                title = (item.findtext("title") or "").strip()
+                if not title or not _is_macro_relevant(title):
+                    continue
+                results.append({
+                    "headline":    title[:500],
+                    "source":      "INVESTING_MACRO",
+                    "category":    "INTERNATIONAL",
+                    "impact_type": _classify_macro_impact(title, default_impact),
+                    "news_date":   _parse_rss_date(item.findtext("pubDate") or ""),
+                    "raw_url":     item.findtext("link") or "",
+                })
+                count += 1
+                if count >= 6:
+                    break
+        except Exception as e:
+            logger.warning(f"Investing.com macro RSS failed {url} (non-fatal): {e}")
+    return results
+
+
+def _is_macro_relevant(title: str) -> bool:
+    """Only keep headlines that materially move Indian markets."""
+    t = title.upper()
+    return any(k in t for k in (
+        "FED", "FOMC", "RATE", "INFLATION", "CPI", "GDP", "TARIFF",
+        "CHINA", "DOLLAR", "DXY", "USD", "RUPEE", "INR", "INTEREST",
+        "RECESSION", "IMF", "WORLD BANK", "TREASURY", "YIELD",
+        "OPEC", "CRUDE", "OIL", "EMERGING MARKET",
+    ))
+
+
+def _classify_macro_impact(title: str, default: str) -> str:
+    t = title.upper()
+    if any(k in t for k in ("FED", "FOMC", "INTEREST RATE", "RATE DECISION")):
+        return "FED_DECISION"
+    if any(k in t for k in ("CPI", "INFLATION", "PCE")):
+        return "INFLATION_DATA"
+    if any(k in t for k in ("GDP", "RECESSION", "GROWTH")):
+        return "GROWTH_DATA"
+    if any(k in t for k in ("TARIFF", "TRADE WAR", "SANCTION")):
+        return "TRADE_POLICY"
+    if any(k in t for k in ("DXY", "DOLLAR", "USD", "RUPEE", "INR")):
+        return "FOREX"
+    return default
 
 
 # ── Write to market_news ───────────────────────────────────────────────────
 
 def write_market_news(sb, items: list[dict], today_str: str) -> int:
-    """Upsert scraped items to market_news. Returns count written."""
+    """
+    Upsert to market_news on conflict key (source, headline).
+    news_date uses actual RSS pubDate where available, today_ist() as fallback.
+    """
     if not items:
         return 0
 
     rows = []
-    seen = set()  # dedup by headline within this run
+    seen: set[str] = set()
     for item in items:
         h = item.get("headline", "").strip()
         if not h or h in seen:
             continue
+        if not _is_recent(item.get("news_date")):
+            continue
         seen.add(h)
         rows.append({
-            "news_date":      today_str,
+            "news_date":      item.get("news_date") or today_str,
             "headline":       h,
             "source":         item.get("source", "UNKNOWN"),
             "category":       item.get("category", "DOMESTIC_POLICY"),
             "impact_type":    item.get("impact_type", "MACRO"),
-            "parsed_sectors": None,       # AI derives in market_intelligence_engine
+            "magnitude":      item.get("magnitude") or None,
+            "parsed_sectors": None,
             "parsed_symbols": item.get("parsed_symbols"),
-            "magnitude":      None,       # AI derives
             "raw_url":        item.get("raw_url") or None,
         })
 
     if DRY_RUN:
         logger.info(f"[DRY RUN] Would write {len(rows)} market_news rows")
         for r in rows[:5]:
-            logger.info(f"  [{r['source']}] {r['headline'][:80]}")
+            logger.info(f"  [{r['source']}] {r['news_date']} | {r['headline'][:80]}")
         return len(rows)
 
     written = 0
     for i in range(0, len(rows), 100):
-        batch = rows[i:i+100]
+        batch = rows[i:i + 100]
         try:
-            # upsert with conflict on (news_date, source, headline)
             sb.table("market_news").upsert(
-                batch, on_conflict="news_date,source,headline"
+                batch, on_conflict="source,headline"
             ).execute()
             written += len(batch)
         except Exception as e:
@@ -377,12 +623,14 @@ def main():
     source_counts: dict[str, int] = {}
 
     sources = [
-        ("NSE_CIRCULAR",   fetch_nse_circulars),
-        ("RBI",            fetch_rbi_rss),
-        ("NSE_BULK_DEAL",  fetch_nse_bulk_deals),
-        ("ET_MARKETS",     fetch_et_rss),
-        ("GOOGLE_NEWS",    fetch_google_news_sectors),
-        ("SEBI",           fetch_sebi_circulars),
+        ("NSE_CIRCULAR",          fetch_nse_circulars),
+        ("RBI",                   fetch_rbi_rss),
+        ("NSE_BULK_DEAL",         fetch_nse_bulk_deals),
+        ("ET_MARKETS",            fetch_et_rss),
+        ("GOOGLE_NEWS",           fetch_google_news_sectors),
+        ("SEBI",                  fetch_sebi_circulars),
+        ("INVESTING_COMMODITIES", fetch_investing_commodities),
+        ("INVESTING_MACRO",       fetch_investing_macro),
     ]
 
     for name, fn in sources:

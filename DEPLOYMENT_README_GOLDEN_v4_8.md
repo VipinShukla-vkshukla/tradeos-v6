@@ -1666,7 +1666,7 @@ df = df.rename(columns=RENAME_MAP)
 
 ---
 
-### Step 2.2 — Build compute_indicators.py ✅ ALREADY BUILT
+### Step 2.2 — Build compute_indicators.py ✅ ALREADY BUILT - completed on 03.29.2026
 
 > **Script exists in `backend/compute/compute_indicators.py`** — built ahead of Phase 2 gate. Activate once gate criteria are met by wiring into `run_pipeline.py` and setting `autonomy_phase=2`.
 
@@ -1700,7 +1700,7 @@ Level 3 (market-relative, needs nifty_total_market):
 def step_compute_indicators():
     from ingestion.compute_indicators import main as fn; return fn()
 
-# Add BEFORE ingest_sheets in the steps list (Phase 2+):
+# Add AFTER ingest_sheets in the steps list (Phase 2+):
 ("03_compute_indicators", step_compute_indicators, False),  # non-fatal
 ```
 
@@ -1714,7 +1714,7 @@ python ingestion/compute_indicators.py
 
 ---
 
-### Step 2.3 — Build ingest_asm_gsm.py ✅ ALREADY BUILT
+### Step 2.3 — Build ingest_asm_gsm.py ✅ ALREADY BUILT - completed on 03.29.2026
 
 > **Script exists in `backend/ingestion/ingest_asm_gsm.py`** — built and classified Phase 1 in its docstring. `safety_lists` table must be created (Step 2.0 SQL) and the step wired into `run_pipeline.py` for Phase 2+.
 
@@ -1738,7 +1738,7 @@ python ingestion/ingest_asm_gsm.py --dry-run
 
 ---
 
-### Step 2.4 — Build ml_regime_classifier.py 🔲 STILL TO BUILD
+### Step 2.4 — Build ml_regime_classifier.py 🔲 STILL TO BUILD 
 
 **Path:** `backend/ai/providers/ml_regime_classifier.py` *(not yet in codebase — only script in Phase 2 not yet built)*
 
@@ -1809,7 +1809,7 @@ python ai/providers/ml_regime_classifier.py --predict
 
 ---
 
-### Step 2.6 — Update run_pipeline.py for Phase 2
+### Step 2.6 — Update run_pipeline.py for Phase 2 - Completed on 03.30.2026
 
 > **Note:** `step_global_cues_evening` (step `00_global_cues`) is **already wired as a non-fatal P0 step** in the current `run_pipeline.py`. The Phase 2 upgrade adds `compute_indicators`, `asm_gsm`, `regime_predict`, and `quality_check` around the existing step sequence.
 
@@ -1869,7 +1869,7 @@ KITE_API_SECRET  → your Kite app secret
 
 ---
 
-### Step 2.7 — Redesign generate_signals.py 🔲 TO BUILD
+### Step 2.7 — Redesign generate_signals.py 🔲 TO BUILD - Completed on 03.30.2026
 
 **Goal:** Replace single `BUY_CANDIDATE` signal with 4 precise types that give advance notice and filter Sheet immaturity.
 
@@ -1915,7 +1915,7 @@ if technical_signal_type in ("PRIME_SETUP", "STAGED_ENTRY"):
 
 ---
 
-### Step 2.8 — Build ingest_market_news.py 🔲 TO BUILD
+### Step 2.8 — Build ingest_market_news.py - completed on 03.29.2026
 
 **Path:** `backend/ingestion/ingest_market_news.py`
 
@@ -1953,7 +1953,7 @@ CREATE INDEX IF NOT EXISTS idx_market_news_category ON market_news (category);
 
 ---
 
-### Step 2.9 — Build market_intelligence_engine.py 🔲 TO BUILD
+### Step 2.9 — Build market_intelligence_engine.py - Completed on 03.29.2026
 
 **Path:** `backend/ai/market_intelligence_engine.py`
 
@@ -2024,8 +2024,8 @@ CREATE INDEX IF NOT EXISTS idx_market_news_category ON market_news (category);
 
 ### Phase 2 Completion Checklist
 ```
-[ ] SQL: Phase 2 tables created (safety_lists, data_anomalies, market_news — see §2.0 + §2.8)
-[ ] SQL: RENAME_MAP columns verified in stock_data_daily
+[x] SQL: Phase 2 tables created (safety_lists, data_anomalies, market_news — see §2.0 + §2.8)
+[x] SQL: RENAME_MAP columns verified in stock_data_daily
 [ ] SQL: asm_flag BOOLEAN, fo_ban_flag BOOLEAN added to stock_data_daily
 [ ] SQL: Phase 0 Course Corrections 1–3 applied (signal_log columns + system_config thresholds)
 [ ] SQL: AG2 — ALTER TABLE signal_log ADD COLUMN sector_rank_at_entry INT (§5D)
@@ -2044,7 +2044,7 @@ CREATE INDEX IF NOT EXISTS idx_market_news_category ON market_news (category);
 [ ] AG3: send_alerts.py reads data_anomalies ERROR rows → morning brief Section 0 warning (§5D)
 [ ] Kite token refresh routine established
 [ ] SG5 SQL: CREATE TABLE macro_indicators (§5E)
-[ ] SG5: Deploy ingest_macro_indicators.py + wire as step 00b_macro_indicators (§5E)
+[x] SG5: Deploy ingest_macro_indicators.py + wire as step 00b_macro_indicators (§5E) - completed on 03.29.2026
 [ ] SG6 SQL: ALTER TABLE open_positions — target_price, target_pct, target_hit, trailing_sl_pct, high_water_mark (§5E)
 [ ] SG6: Deploy position_target_monitor.py + wire into pipeline_intraday.yml (§5E)
 [ ] SG7+SG8: Update sl_monitor.py with trailing SL + circuit breaker detection (§5E)
@@ -2596,7 +2596,7 @@ python ingestion/ingest_market_news.py
 python ingestion/ingest_market_news.py --dry-run
 ```
 
-**`ingest_macro_indicators.py`** — Phase 2 (§5E SG5) 🔲 TO BUILD
+**`ingest_macro_indicators.py`** — Phase 2 (§5E SG5) 🔲 Completed on 03.29.2026
 Weekly ingestion of structured domestic macro data: CPI YoY, WPI YoY, GDP QoQ, IIP YoY from RBI DBIE API + MOSPI RSS → `macro_indicators`. US 10-yr yield + silver as backup sources. Runs as step `00b_macro_indicators`. Non-fatal.
 ```bash
 python ingestion/ingest_macro_indicators.py
