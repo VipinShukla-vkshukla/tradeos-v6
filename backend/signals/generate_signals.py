@@ -42,6 +42,12 @@ def load_today_data():
         if latest_msl:
             last_msl_date = latest_msl[0]["date"]
             msl = sb.table("master_shortlist").select("*").eq("date", last_msl_date).execute().data
+            if not msl:
+                latest_msl = sb.table("master_shortlist").select("date").order("date", desc=True).limit(1).execute().data
+                if latest_msl:
+                    last_msl_date = latest_msl[0]["date"]
+                    msl = sb.table("master_shortlist").select("*").eq("date", last_msl_date).execute().data
+                    logger.warning(f"No MSL for {today} — using last available date {last_msl_date}")
             logger.warning(f"No MSL for {today} — using last available date {last_msl_date} ({len(msl)} rows)")
     open_p = sb.table("open_positions").select("*").execute().data
     regime = sb.table("market_regime").select("*").eq("date", today).execute().data

@@ -369,6 +369,17 @@ def main():
                 "eap_action":    sig.get("eap_action") or "NO_CHANGE",
             }
 
+            # ── G3 FIX: Zero-data prompt guard ────────────────────────────────
+            # delivery_pct excluded — it's raw bhavcopy, always available.
+            # current_price, lifecycle, eap_action excluded — not computed indicators.
+            _computed_cols = [
+                stock_data["rsi_daily"], stock_data["rsi_weekly"],
+                stock_data["adx"],       stock_data["vol_ratio"],
+                stock_data["atr_pct"],   stock_data["ret_6m"],
+            ]
+            computed_missing = all(v == 0.0 for v in _computed_cols)
+            # ──────────────────────────────────────────────────────────────────
+
             # ── AI context dict (everything the AI reasons over) ───────────────
             ai_context = {
                 # Core regime (G17: full object, not just string)
@@ -408,6 +419,16 @@ def main():
                     f"| {l.get('corrective_rule', '')}"
                     for l in lessons
                 ],
+                # ── G3 FIX: injected only when compute pipeline hasn't run ────
+                **({"computed_indicators_note": (
+                    "WARNING: All computed technical indicators (rsi_daily, rsi_weekly, "
+                    "adx, vol_ratio, atr_pct, ret_6m) are zero — compute_indicators.py "
+                    "has likely not run yet for today. "
+                    "Base your conviction on sector context, FII data, regime, and event "
+                    "calendar only. Do not return empty JSON or UNKNOWN conviction — "
+                    "use the context fields that are available."
+                )} if computed_missing else {}),
+                # ─────────────────────────────────────────────────────────────
             }
 
             result = analyze(stock_data, ai_context)

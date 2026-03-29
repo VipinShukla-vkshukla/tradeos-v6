@@ -164,7 +164,7 @@ def fetch_bulk_history(sb, today: str, days_back: int = 370) -> dict:
       This self-heals as data accumulates over 6-12 months.
       No code change needed.
     """
-    cutoff = str(today_ist() - timedelta(days=days_back))
+    cutoff = str((today_ist() - timedelta(days=days_back)).date())
     rows = (sb.table("chartink_raw_data")
               .select("symbol,date,daily_close,daily_low,daily_high")
               .lte("date", today)
@@ -191,7 +191,7 @@ def fetch_upcoming_events(sb, today: str, window_days: int = 14) -> dict:
     Maps upcoming_events and upcoming_event_type from nifty_upcoming_events table.
     Takes the nearest event per symbol. Previously SHEET_ONLY — now from Supabase.
     """
-    cutoff = str(today_ist() + timedelta(days=window_days))
+    cutoff = str((today_ist() + timedelta(days=window_days)).date())
     rows = (sb.table("nifty_upcoming_events")
               .select("symbol,purpose,details,event_date")
               .gte("event_date", today)
@@ -402,16 +402,6 @@ def compute_from_raw(raw: dict, sym_history: list, events: dict,
             if val is not None:
                 out[field] = val
 
-    # ── Cast bigint fields — chartink may return decimals (e.g. 459220.9)
-    #    but stock_data_daily stores these as bigint. Truncate safely.
-    BIGINT_FIELDS = {"volume", "market_cap", "avg_vol_20d", "avg_vol_50d"}
-    for field in BIGINT_FIELDS:
-        if out.get(field) is not None:
-            try:
-                out[field] = int(float(out[field]))
-            except (TypeError, ValueError):
-                pass
-
     return out
 
 
@@ -557,53 +547,6 @@ def reconcile_row(computed: dict, sheet_row: dict,
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-def resolve_last_trading_day(sb, reference_date: str, max_lookback: int = 10) -> str:
-    """
-    Given a reference date string (YYYY-MM-DD), walk backwards until we find
-    a date that is:
-      - Not a Saturday (weekday 5) or Sunday (weekday 6)
-      - Not present in nse_holidays table in Supabase
-      - Has actual data in chartink_raw_data
-
-    Returns the resolved trading date string (YYYY-MM-DD).
-    Raises RuntimeError if no valid trading day is found within max_lookback days.
-    """
-    # Fetch NSE holidays once (as a set of date strings for fast lookup)
-    holiday_rows = sb.table("nse_holidays").select("date").execute().data
-    holidays = {row["date"] for row in holiday_rows}
-
-    candidate = datetime.strptime(reference_date, "%Y-%m-%d").date()
-
-    for _ in range(max_lookback):
-        date_str = str(candidate)
-
-        # Skip weekends
-        if candidate.weekday() in (5, 6):  # 5=Saturday, 6=Sunday
-            logger.debug(f"  {date_str} is a weekend — stepping back")
-            candidate -= timedelta(days=1)
-            continue
-
-        # Skip NSE holidays
-        if date_str in holidays:
-            logger.debug(f"  {date_str} is an NSE holiday — stepping back")
-            candidate -= timedelta(days=1)
-            continue
-
-        # Check if data actually exists for this date
-        probe = sb.table("chartink_raw_data").select("date").eq("date", date_str).limit(1).execute().data
-        if probe:
-            if date_str != reference_date:
-                logger.info(f"  Resolved trading date: {reference_date} → {date_str}")
-            return date_str
-
-        logger.debug(f"  No data for {date_str} — stepping back")
-        candidate -= timedelta(days=1)
-
-    raise RuntimeError(
-        f"No trading day with data found within {max_lookback} days before {reference_date}"
-    )
-
-
 def main():
     if is_kill_switch_active():
         logger.warning("Kill switch active — compute_indicators skipped")
@@ -618,13 +561,6 @@ def main():
         f"compute_indicators v2.1 — {today} — {mode_label}"
         + (" [DRY RUN]" if DRY_RUN else "")
     )
-
-    # ── Resolve last valid trading day (handles weekends, holidays, missing data)
-    try:
-        today = resolve_last_trading_day(sb, today)
-    except RuntimeError as e:
-        logger.error(str(e))
-        return {"status": "no_data"}
 
     # ── 6 bulk queries — no per-symbol calls ──────────────────────────────────
     logger.info("Pass 1: bulk data fetch...")

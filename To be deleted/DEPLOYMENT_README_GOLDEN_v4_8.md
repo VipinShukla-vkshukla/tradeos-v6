@@ -478,10 +478,10 @@ python run_pipeline.py --dry-run
 - ✅ RISK OFF warning banner visible
 - ✅ GitHub Actions running at 6 PM IST weekdays
 - ✅ **AG1** — MSL weekend fallback added to `generate_signals.py` (§5D) [VS] - Fixed on 03.26.2026
-- ✅ **AG4** — scanner_signals cross-reference wired + `scanner_patterns` SQL column added (§5D) - Fixed on 03.28.2026
-- ✅ **SG1+SG2** — SQL: `us_10yr_yield`, `silver_price` columns added to `global_cues` (§5E) - Fixed on 03.28.2026
-- ✅ **SG1+SG2** — `ingest_global_cues.py` updated to fetch US 10-yr + silver (§5E) - Fixed on 03.28.2026
-- ✅ **SG3+SG4** — `send_alerts.py` updated: India VIX in morning + Telegram retry (§5E) - Fixed on 03.28.2026
+- ⬜ **AG4** — scanner_signals cross-reference wired + `scanner_patterns` SQL column added (§5D)
+- ⬜ **SG1+SG2** — SQL: `us_10yr_yield`, `silver_price` columns added to `global_cues` (§5E)
+- ⬜ **SG1+SG2** — `ingest_global_cues.py` updated to fetch US 10-yr + silver (§5E)
+- ⬜ **SG3+SG4** — `send_alerts.py` updated: India VIX in morning + Telegram retry (§5E)
 
 ---
 
@@ -539,7 +539,7 @@ ON CONFLICT (key) DO UPDATE SET value = 'true';
 UPDATE system_config SET value = '1' WHERE key = 'autonomy_phase';
 ```
 
-### ⚠️ Phase 1 Course Corrections — Apply Now - Fixed on 03.28.2026
+### ⚠️ Phase 1 Course Corrections — Apply Now
 
 **Course Correction 4 — G1 patch expansion: add missing signal_log columns to `generate_signals.py` write**
 
@@ -604,12 +604,12 @@ The model won't use these immediately — it retrains Sunday after 30 closed tra
 - ✅ `generate_shortlist.py` producing `ai_shortlist_rank` on `master_shortlist`
 - ✅ `ingest_asm_gsm.py` populating `safety_lists`
 - ✅ `position_event_monitor.py` built — event risk embedded in morning brief
-- ✅ **Course Correction 1** — `signal_log` Phase 2 columns added (SQL above) - Fixed on 03.28.2026
-- ✅ **Course Correction 2** — `rsi_weekly`/`rsi_monthly` coverage verified ≥ 95% - Fixed on 03.28.2026
-- ✅ **Course Correction 3** — Phase 2 signal thresholds seeded in `system_config` - Fixed on 03.28.2026
-- ✅ **Course Correction 4** — G1 expansion: 12 additional fields written in `generate_signals.py` - Fixed on 03.28.2026
-- ✅ **Course Correction 5** — ML provider feature list expanded to 19 features - Fixed on 03.28.2026
-- ✅ **AG6** — `get_relevant_lessons()` AI:market_intel bypass added to `ai_enrich.py` (§5D) - Fixed on 03.28.2026
+- ⬜ **Course Correction 1** — `signal_log` Phase 2 columns added (SQL above)
+- ⬜ **Course Correction 2** — `rsi_weekly`/`rsi_monthly` coverage verified ≥ 95%
+- ⬜ **Course Correction 3** — Phase 2 signal thresholds seeded in `system_config`
+- ⬜ **Course Correction 4** — G1 expansion: 12 additional fields written in `generate_signals.py`
+- ⬜ **Course Correction 5** — ML provider feature list expanded to 19 features
+- ⬜ **AG6** — `get_relevant_lessons()` AI:market_intel bypass added to `ai_enrich.py` (§5D)
 
 ---
 
@@ -639,7 +639,7 @@ This adds columns to 6 tables:
 
 ---
 
-#### FIX #1 — FII/DII Column Name Mismatch (CRITICAL) - Fixed on 03.28.2026
+#### FIX #1 — FII/DII Column Name Mismatch (CRITICAL)
 **File:** `backend/ingestion/ingest_fii_dii.py`
 **Deploy:** Replace with `strategic_patches/patches/patch_ingest_fii_dii.py`
 
@@ -658,7 +658,7 @@ python ingestion/ingest_fii_dii.py --dry-run
 
 ---
 
-#### FIX #2 — Post-Trade Analysis Circular Import / Max Recursion (CRITICAL) - Fixed on 03.28.2026
+#### FIX #2 — Post-Trade Analysis Circular Import / Max Recursion (CRITICAL)
 **File:** `backend/ai/post_trade_analysis.py`
 **Deploy:** Replace with `strategic_patches/patches/patch_post_trade_analysis.py`
 
@@ -677,7 +677,7 @@ python ai/post_trade_analysis.py --all-recent
 
 ---
 
-#### FIX #3 — AI Enrich Silently Drops EXIT Signals (CRITICAL) - Fixed on 03.28.2026
+#### FIX #3 — AI Enrich Silently Drops EXIT Signals (CRITICAL)
 **File:** `backend/ai/ai_enrich.py`
 **Deploy:** Replace with `strategic_patches/patches/patch_ai_enrich.py`
 
@@ -694,7 +694,7 @@ python ai\ai_enrich.py
 
 ---
 
-#### FIX #4 — CAUTION Regime Completely Ignored in Signal Generation (STRATEGIC) - Fixed on 03.28.2026
+#### FIX #4 — CAUTION Regime Completely Ignored in Signal Generation (STRATEGIC)
 **File:** `backend/signals/generate_signals.py`
 **Deploy:** 4 surgical edits — instructions in `strategic_patches/patches/patch_generate_signals_regime_eap.py`
 
@@ -717,7 +717,7 @@ python signals/generate_signals.py --dry-run
 
 ---
 
-#### FIX #5 — Lessons Are Never Retired (STRATEGIC) - Fixed on 03.28.2026
+#### FIX #5 — Lessons Are Never Retired (STRATEGIC)
 **File:** `backend/history/evolution_tracker.py`
 **Deploy:** Replace with `strategic_patches/patches/patch_evolution_tracker.py`
 
@@ -732,7 +732,7 @@ cp strategic_patches/patches/patch_evolution_tracker.py backend/history/evolutio
 
 ---
 
-#### FIX #6 — EAP Treats All Events Identically (STRATEGIC) - Fixed on 03.28.2026
+#### FIX #6 — EAP Treats All Events Identically (STRATEGIC)
 **File:** `backend/signals/generate_signals.py`
 **Deploy:** Included in Edit A of Fix #4 patch — same file, same deploy step.
 
@@ -746,7 +746,7 @@ cp strategic_patches/patches/patch_evolution_tracker.py backend/history/evolutio
 
 ---
 
-#### FIX NEW-A — No Intraday Stop-Loss Monitor (CRITICAL) - Fixed on 03.28.2026
+#### FIX NEW-A — No Intraday Stop-Loss Monitor (CRITICAL)
 **New Script:** `backend/control/sl_monitor.py`
 **Deploy:** Copy `strategic_patches/new_scripts/sl_monitor.py` to `backend/control/sl_monitor.py`
 
@@ -776,7 +776,7 @@ python control/sl_monitor.py --dry-run
 
 ---
 
-#### FIX NEW-B — No Kite↔Supabase Reconciliation (CRITICAL) - Fixed on 03.28.2026
+#### FIX NEW-B — No Kite↔Supabase Reconciliation (CRITICAL)
 **New Script:** `backend/kite/kite_reconcile.py`
 **Deploy:** Copy `strategic_patches/new_scripts/kite_reconcile.py` to `backend/kite/kite_reconcile.py`
 
@@ -823,7 +823,7 @@ cp strategic_patches/new_workflows/pipeline_morning_updated.yml .github/workflow
 
 ---
 
-### 5B: Gap Register G1–G18 — Intelligence Completeness Patches - Fixed on 03.28.2026
+### 5B: Gap Register G1–G18 — Intelligence Completeness Patches
 
 > These patches complete the AI context assembly. After applying, the AI has the full picture it needs to make quality decisions. Apply in the order shown.
 
@@ -852,7 +852,7 @@ cp strategic_patches/new_workflows/pipeline_morning_updated.yml .github/workflow
 
 ---
 
-#### PATCH G1 — Add 9 ML Feature Columns to signal_log - Fixed on 03.28.2026
+#### PATCH G1 — Add 9 ML Feature Columns to signal_log
 
 **SQL first:**
 ```sql
@@ -885,7 +885,7 @@ NOTIFY pgrst, 'reload schema';
 
 ---
 
-#### PATCH G2 — Write outcome_pnl_pct Back to signal_log - Fixed on 03.28.2026
+#### PATCH G2 — Write outcome_pnl_pct Back to signal_log
 
 **File:** `backend/ai/post_trade_analysis.py` — in the signal_log update block:
 ```python
@@ -895,7 +895,7 @@ NOTIFY pgrst, 'reload schema';
 
 ---
 
-#### PATCH G3 — Zero-Data Prompt Guard - Fixed on 03.28.2026
+#### PATCH G3 — Zero-Data Prompt Guard
 
 **File:** `backend/ai/ai_enrich.py` — before building the prompt string:
 ```python
@@ -913,7 +913,7 @@ computed_note = (
 
 ---
 
-#### PATCH G5 — JSON Fence Strip (4 Files) - Fixed on 03.28.2026
+#### PATCH G5 — JSON Fence Strip (4 Files)
 
 **Files:** `claude_provider.py`, `openai_provider.py`, `gemini_provider.py`, `grok_provider.py`
 
@@ -928,7 +928,7 @@ data = json.loads(json_match.group())
 
 ---
 
-#### PATCH G6 — event_calendar in AI Context - Fixed on 03.28.2026
+#### PATCH G6 — event_calendar in AI Context
 
 **File:** `backend/ai/ai_enrich.py` — in context-building function:
 ```python
@@ -950,7 +950,7 @@ ai_context["upcoming_events"] = [
 
 ---
 
-#### PATCH G7 — lessons Quality Columns (SQL Only) - Fixed on 03.28.2026
+#### PATCH G7 — lessons Quality Columns (SQL Only)
 
 ```sql
 ALTER TABLE public.lessons
@@ -967,7 +967,7 @@ NOTIFY pgrst, 'reload schema';
 
 ---
 
-#### PATCH G13 — sector_strength + industry_strength in AI Context - Fixed on 03.28.2026
+#### PATCH G13 — sector_strength + industry_strength in AI Context
 
 **File:** `backend/ai/ai_enrich.py` — after G6 block:
 ```python
@@ -984,7 +984,7 @@ ai_context["industry_context"] = industry_row[0] if industry_row else {"note": f
 
 ---
 
-#### PATCH G17 — market_regime + global_cues in AI Context - Fixed on 03.28.2026
+#### PATCH G17 — market_regime + global_cues in AI Context
 
 **File:** `backend/ai/ai_enrich.py` — after G13 block:
 ```python
@@ -1003,7 +1003,7 @@ ai_context["global_cues"] = cues[0] if cues else {"note": "No global cues today"
 
 ---
 
-#### PATCH G18 — open_positions Portfolio in AI Context - Fixed on 03.28.2026
+#### PATCH G18 — open_positions Portfolio in AI Context
 
 **File:** `backend/ai/ai_enrich.py` — after G17 block:
 ```python
@@ -1037,7 +1037,7 @@ ai_context["portfolio"] = {
 
 ---
 
-#### PATCH G4 — Persist ai_strategy_validation - Fixed on 03.28.2026
+#### PATCH G4 — Persist ai_strategy_validation
 
 **SQL:**
 ```sql
@@ -1051,7 +1051,7 @@ NOTIFY pgrst, 'reload schema';
 
 ---
 
-#### PATCH G14 — Wire regime_history Snapshot - Fixed on 03.28.2026
+#### PATCH G14 — Wire regime_history Snapshot
 
 **File:** `backend/history/append_history.py` — add function + call at end of `main()`:
 ```python
@@ -1072,7 +1072,7 @@ snapshot_regime(sb, str(today_ist()))
 
 ---
 
-#### PATCH G15 — Feed ai_model_performance to evolution_tracker - Fixed on 03.28.2026
+#### PATCH G15 — Feed ai_model_performance to evolution_tracker
 
 **File:** `backend/history/evolution_tracker.py` — in `generate_proposals()` before building the AI prompt:
 ```python
@@ -1096,7 +1096,7 @@ if perf_rows:
 
 ---
 
-#### PATCH G16 — S&P500 + Change % in global_cues - Fixed on 03.28.2026
+#### PATCH G16 — S&P500 + Change % in global_cues
 
 **SQL:**
 ```sql
@@ -1126,7 +1126,7 @@ nq_chg_pct  = round((us_nasdaq_close - nasdaq_prev) / nasdaq_prev * 100, 4) if n
 
 ---
 
-#### PATCH G10 — Verify FII/DII Column Names - Fixed on 03.28.2026
+#### PATCH G10 — Verify FII/DII Column Names
 
 > **Already fixed by Fix #1 (Strategic Patch)**. G10 is resolved — ingest_fii_dii.py now writes to canonical column names.
 
@@ -1165,7 +1165,6 @@ Resolved:
 [x] G9:  Lesson dedup/filtering — fixed by Fix #5 ✅ Done 03.14.2026
 
 03.15.2026 - Fixed all the data gaps in AI enrich, generate signals lessons and other scripts
-03.28.2026 - Fixed all above issues.
 ```
 
 ---
@@ -1220,7 +1219,7 @@ No `pipeline_morning.yml` step needed for this script.
 | AG6 | 🟡 Medium | Phase 2 | `get_relevant_lessons()` filters by sector — AI:market_intel cross-sector lessons blocked | ~5 lines |
 | AG7 | ⚪ Low | Phase 2 | `market_intelligence_engine` AI call cost not tracked in `ai_model_performance` | 5 lines |
 
-#### AG1 — Master Shortlist Weekend Fallback - Fixed on 03.28.2026
+#### AG1 — Master Shortlist Weekend Fallback
 
 **Affected script:** `backend/signals/generate_signals.py`
 **Evidence:** `msl = sb.table("master_shortlist").select("*").eq("date", today)` — no fallback. `stock_data_daily` has one; MSL does not.
@@ -1237,7 +1236,7 @@ if not msl:
         logger.warning(f"No MSL for {today} — using last available date {last_msl_date}")
 ```
 
-#### AG2 — Sector Rank Temporal Leakage in ML Training - Fixed on 03.28.2026
+#### AG2 — Sector Rank Temporal Leakage in ML Training
 
 **Affected scripts:** `backend/signals/generate_signals.py` + `backend/ai/providers/ml_provider.py`
 **Evidence:** `train_model()` has `"sector_rank": 5.0` (hardcoded neutral — never reads historical data). Inference uses `context.get("sector_rank")` which is today's rank applied retroactively to signals that fired weeks ago.
@@ -1259,7 +1258,7 @@ if len(closed) < 60:   # was 30
     return False
 ```
 
-#### AG3 — data_anomalies Never Reaches Alerts - Fixed on 03.28.2026
+#### AG3 — data_anomalies Never Reaches Alerts
 
 **Affected script:** `backend/alerts/send_alerts.py`
 **Evidence:** MATRIX confirms data_quality, sl_monitor, kite_reconcile, ml_regime_predict, position_event_monitor all write to `data_anomalies`. Zero readers. ERROR-severity rows are silently ignored.
@@ -1275,7 +1274,7 @@ anomalies = (sb.table("data_anomalies")
 # 🔴 DATA ALERT: vol_ratio NULL for 87% of stocks (stale bhavcopy) | regime_check: WARN
 ```
 
-#### AG4 — scanner_signals Cross-Reference Never Wired -- 03.28.2026 Fixed
+#### AG4 — scanner_signals Cross-Reference Never Wired
 
 **Affected script:** `backend/signals/generate_signals.py`
 **Evidence:** `independent_scanner` writes VOLUME_SURGE, RS_BREAKOUT, POST_CONSOL, MEAN_REVERSION, DELIVERY_SURGE to `scanner_signals` daily. `generate_signals` never reads it. `send_alerts` never reads it. The `in_scanner=True` field in `signal_log` is never set to `True`.
@@ -1302,7 +1301,7 @@ for sig in signals:
 ALTER TABLE signal_log ADD COLUMN IF NOT EXISTS scanner_patterns TEXT;
 ```
 
-#### AG5 — No Signal→Position Bridge (Phase 3 Design) - 03.28.2026 Fixed
+#### AG5 — No Signal→Position Bridge (Phase 3 Design)
 
 **No code changes yet — schema to design before Phase 3 build starts.**
 **Gap:** `open_positions` has no `signal_id` FK to `signal_log`. `execution_engine.py` (Phase 3) must record which signal triggered each position. Without this, post_trade attribution is reconstructed by date-matching (fragile for same-symbol multiple signals).
@@ -1336,7 +1335,7 @@ CREATE INDEX IF NOT EXISTS idx_order_history_date   ON order_history (order_date
 CREATE INDEX IF NOT EXISTS idx_order_history_symbol ON order_history (symbol);
 ```
 
-#### AG6 — AI:market_intel Lessons Blocked by Sector Filter - 03.28.2026 Fixed
+#### AG6 — AI:market_intel Lessons Blocked by Sector Filter
 
 **Affected script:** `backend/ai/ai_enrich.py`
 **Evidence:** `get_relevant_lessons()` uses `.ilike("impacted_sector", f"%{sector}%")`. A lesson with `applies_to_sectors = ["Jewellery", "Metals"]` from `market_intelligence_engine` never reaches an Industrials stock even if its `corrective_rule` says "Rule: Avoid entries 3 sessions before RBI meeting — affects all sectors."
@@ -1354,7 +1353,7 @@ rows = rows + [r for r in market_intel_rows if r not in rows]
 return rows[:4]   # was [:3] — allow 1 extra for market_intel
 ```
 
-#### AG7 — market_intelligence_engine Cost Not Tracked - 03.28.2026 Fixed
+#### AG7 — market_intelligence_engine Cost Not Tracked
 
 **Affected script:** `backend/ai/market_intelligence_engine.py`
 **Evidence:** `ai_model_performance` is only written by `ai_router.py` (via `ai_enrich`). The Anthropic web_search API call in `market_intelligence_engine` — potentially the largest daily AI cost — is invisible to `evolution_tracker`'s provider performance analysis.
@@ -1382,26 +1381,26 @@ except Exception as e:
 ```
 Phase 0 / Now:
 [x] AG1: MSL weekend fallback added to generate_signals.py load_today_data()
-[x] AG4: scanner_signals cross-reference wired in generate_signals.py + SQL scanner_patterns column
+[ ] AG4: scanner_signals cross-reference wired in generate_signals.py + SQL scanner_patterns column
 
 Phase 1 / Before Phase 2:
-[x] AG6: AI:market_intel lesson bypass added to ai_enrich.get_relevant_lessons()
+[ ] AG6: AI:market_intel lesson bypass added to ai_enrich.get_relevant_lessons()
 
 Phase 2 activation:
-[x] AG2 SQL: ALTER TABLE signal_log ADD COLUMN sector_rank_at_entry INT
-[x] AG2 code: sector_rank_at_entry written in generate_signals.py sig dict
-[x] AG2 ML: ml_provider.py train_model() uses sector_rank_at_entry, threshold raised to 60
-[x] AG3: data_anomalies ERROR rows → send_alerts morning brief Section 0
-[x] AG7: market_intelligence_engine writes to ai_model_performance in write_ai_context()
+[ ] AG2 SQL: ALTER TABLE signal_log ADD COLUMN sector_rank_at_entry INT
+[ ] AG2 code: sector_rank_at_entry written in generate_signals.py sig dict
+[ ] AG2 ML: ml_provider.py train_model() uses sector_rank_at_entry, threshold raised to 60
+[ ] AG3: data_anomalies ERROR rows → send_alerts morning brief Section 0
+[ ] AG7: market_intelligence_engine writes to ai_model_performance in write_ai_context()
 
 Phase 3 design (before build):
-[x] AG5 SQL: open_positions signal_id + signal_date + signal_subtype columns
-[x] AG5 SQL: order_history table created
+[ ] AG5 SQL: open_positions signal_id + signal_date + signal_subtype columns
+[ ] AG5 SQL: order_history table created
 ```
 
 ---
 
-### 5E: Scenario Coverage Gaps — v4.8 Fixes (11 Gaps Closed) - Fixed on 03.28.2026
+### 5E: Scenario Coverage Gaps — v4.8 Fixes (11 Gaps Closed)
 
 > Identified from full professional swing trading scenario audit (March 2026). Covers all 87 scenarios across 11 categories. All 11 genuine gaps closed or design-resolved below.
 
@@ -1542,20 +1541,20 @@ ALTER TABLE open_positions
 
 ```
 Phase 0/1 — apply now (ask for scripts):
-[x] SG1+SG2: Add us_10yr_yield + silver fields to global_cues SQL migration
-[x] SG1+SG2: Update ingest_global_cues.py (ask for script)
-[x] SG3+SG4: Update send_alerts.py VIX + retry (ask for script)
+[ ] SG1+SG2: Add us_10yr_yield + silver fields to global_cues SQL migration
+[ ] SG1+SG2: Update ingest_global_cues.py (ask for script)
+[ ] SG3+SG4: Update send_alerts.py VIX + retry (ask for script)
 
 Phase 2 activation:
-[x] SG5 SQL: CREATE TABLE macro_indicators (§5E above)
-[x] SG5: Deploy ingest_macro_indicators.py + wire as step 00b
-[x] SG6 SQL: ALTER TABLE open_positions (target_price, trailing_sl_pct, high_water_mark cols)
-[x] SG6: Deploy position_target_monitor.py + wire into pipeline_intraday.yml
-[x] SG7+SG8: Update sl_monitor.py trailing SL + circuit detection (ask for script)
-[x] SG9+SG10: Update ingest_market_news.py (TRADING_HALT/DELISTING classifier + Pharma FDA query)
+[ ] SG5 SQL: CREATE TABLE macro_indicators (§5E above)
+[ ] SG5: Deploy ingest_macro_indicators.py + wire as step 00b
+[ ] SG6 SQL: ALTER TABLE open_positions (target_price, trailing_sl_pct, high_water_mark cols)
+[ ] SG6: Deploy position_target_monitor.py + wire into pipeline_intraday.yml
+[ ] SG7+SG8: Update sl_monitor.py trailing SL + circuit detection (ask for script)
+[ ] SG9+SG10: Update ingest_market_news.py (TRADING_HALT/DELISTING classifier + Pharma FDA query)
 
 Phase 3 design:
-[x] SG11: Add partial_bookings column to open_positions + book_partial() to execution_engine.py
+[ ] SG11: Add partial_bookings column to open_positions + book_partial() to execution_engine.py
 ```
 
 ---
@@ -1565,11 +1564,11 @@ Phase 3 design:
 > **Goal:** Eliminate Google Sheet from the data computation path. All technical indicators computed in Python from raw data. ASM/GSM auto-fetched. Data quality monitored. ML regime classifier replaces Sheet formula.
 
 ### Gate Criteria (ALL required before starting)
-- [x] All strategic patches (§5A) deployed and verified
-- [x] All critical gap patches G1, G2, G6, G17, G18 applied
-- [x] Phase 1 pipeline has run cleanly for 30+ consecutive trading days
-- [x] `chartink_raw_data` table has 30+ days of data
-- [x] Google Sheet formula audit completed (screenshot each computed column, classify as Type A: will eliminate, or Type B: will keep)
+- [ ] All strategic patches (§5A) deployed and verified
+- [ ] All critical gap patches G1, G2, G6, G17, G18 applied
+- [ ] Phase 1 pipeline has run cleanly for 30+ consecutive trading days
+- [ ] `chartink_raw_data` table has 30+ days of data
+- [ ] Google Sheet formula audit completed (screenshot each computed column, classify as Type A: will eliminate, or Type B: will keep)
 
 ### Activate Phase 2
 ```sql

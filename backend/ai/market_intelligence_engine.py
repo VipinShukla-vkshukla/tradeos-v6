@@ -51,6 +51,73 @@ ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 
+
+def get_shortlist_candidates(sb, today_str):
+    import json
+
+    try:
+        # STEP 1: Fetch AI shortlist
+        row = sb.table("ai_context") \
+            .select("ai_note") \
+            .eq("date", today_str) \
+            .eq("symbol", "__SHORTLIST__") \
+            .limit(1) \
+            .execute().data
+
+        if row and row[0].get("ai_note"):
+            shortlist = json.loads(row[0]["ai_note"])
+
+            symbols = [x["symbol"] for x in shortlist]
+            rank_map = {x["symbol"]: x for x in shortlist}
+
+            # STEP 2: Fetch MSL rows
+            msl_rows = sb.table("master_shortlist") \
+                .select("*") \
+                .eq("date", today_str) \
+                .in_("symbol", symbols) \
+                .execute().data
+
+            # STEP 3: Merge AI + MSL
+            enriched = []
+            for r in msl_rows:
+                sym = r.get("symbol")
+                ai = rank_map.get(sym, {})
+
+                r["ai_rank"] = ai.get("rank")
+                r["ai_action"] = ai.get("action")
+                r["ai_reason"] = ai.get("reason")
+                r["ai_risk"] = ai.get("risk")
+
+                enriched.append(r)
+
+            # STEP 4: Sort by AI rank
+            enriched.sort(key=lambda x: x.get("ai_rank", 999))
+
+            print("✅ Using AI shortlist")
+            return enriched[:12]
+
+    except Exception as e:
+        print(f"⚠️ AI shortlist failed: {e}")
+
+    # FALLBACK (your existing logic)
+    print("⚠️ Falling back to master_shortlist")
+
+    fallback = sb.table("master_shortlist") \
+        .select("*") \
+        .eq("date", today_str) \
+        .order("final_score", desc=True) \
+        .limit(12) \
+        .execute().data
+
+    for r in fallback:
+        r["ai_rank"] = None
+        r["ai_action"] = None
+        r["ai_reason"] = None
+        r["ai_risk"] = None
+
+    return fallback
+
+
 # ── Pass 2: Stock-specific news ────────────────────────────────────────────
 
 def _fetch_nse_announcements(symbol: str, session: requests.Session) -> list[str]:
@@ -187,27 +254,7 @@ def build_market_context(sb, today_str: str) -> dict:
     ).eq("news_date", today_str).order("id", desc=True).limit(30).execute().data
 
     # MSL top 12 candidates by score
-    msl_rows = sb.table("master_shortlist").select(
-        "symbol,company_name,sector,final_score,lifecycle,"
-        "validity_score,expected_r,trend_maturity,velocity_state,"
-        "entry_zone_low,entry_zone_high,current_price"
-    ).eq("date", today_str).order("final_score", desc=True).limit(12).execute().data
-    if not msl_rows:
-        # Fallback: no MSL for today (weekend/holiday). Get the most recent
-        # date's rows only — not a raw limit(12) which mixes multiple dates
-        # and causes duplicate symbols in the candidate list.
-        latest = (sb.table("master_shortlist")
-                    .select("date")
-                    .order("date", desc=True)
-                    .limit(1)
-                    .execute().data)
-        if latest:
-            last_date = latest[0]["date"]
-            msl_rows = sb.table("master_shortlist").select(
-                "symbol,company_name,sector,final_score,lifecycle,"
-                "validity_score,expected_r,trend_maturity,velocity_state,"
-                "entry_zone_low,entry_zone_high,current_price"
-            ).eq("date", last_date).order("final_score", desc=True).limit(12).execute().data
+    msl_rows = get_shortlist_candidates(sb, today_str)
 
     # Open positions (for Q3 regulatory check)
     pos_rows = sb.table("open_positions").select(
