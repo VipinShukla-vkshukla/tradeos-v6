@@ -9,6 +9,8 @@ jobs:
   pipeline:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:                                          # ← ADD THIS
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # ← ADD THIS
 
     steps:
       - name: Checkout
