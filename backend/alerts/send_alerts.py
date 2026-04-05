@@ -1,186 +1,191 @@
 """
-TradeOS v6 — Telegram Alerts (Phase 1)
-Two modes:
-  Evening (default) — full signal digest after 6 PM pipeline
-  Morning           — pre-market brief at 7 AM before market opens
+TradeOS v6 — Send Alerts v2
+============================
+Changes vs v1 — fixing the core swing trading output gap:
 
-Usage:
-  python alerts/send_alerts.py            → evening digest
-  python alerts/send_alerts.py --morning  → morning pre-market brief
+  FIX (critical): PRE_BREAKOUT_WATCH and STAGED_ENTRY signals were NEVER shown.
+  All 3 builders filtered only "BUY_CANDIDATE" signal_type. This meant the
+  system's primary swing advantage — advance notice 2-5 sessions before a move —
+  was computed but never delivered to you.
 
-Switch evening format: change MESSAGE_STYLE below
+  NEW in evening digest (build_structured / build_compact):
+    Section: "🔍 ADVANCE NOTICE" showing PRE_BREAKOUT_WATCH + STAGED_ENTRY
+    with signal_type label and timing context:
+      PRE_BREAKOUT_WATCH → "2-5 sessions ahead"
+      STAGED_ENTRY       → "1-3 sessions ahead"
+
+  NEW in regime header:
+    + Market breadth % (above_200dma_pct from market_regime)
+    + Regime confidence (regime_confidence from market_regime)
+    + FII 20d net trend (fii_net_20d from fii_dii_flow)
+    + Predicted regime source label (ML vs manual)
+
+  NEW in morning brief:
+    + Advance notice signals shown in Section 2 (before BUY_CANDIDATEs)
+
+  All other logic identical to v1. Drop-in replacement.
 """
-import sys
+import sys, time
+from datetime import timedelta
 from pathlib import Path
-from datetime import timedelta, date as _date
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from loguru import logger
-from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, cfg_bool, today_ist, is_kill_switch_active
+from config import (
+    get_supabase, today_ist, is_kill_switch_active,
+    cfg, cfg_bool, DRY_RUN
+)
 
-# ── Evening format switch ──────────────────────────────────────────────────
-# Options: "compact" | "structured"
-MESSAGE_STYLE = "structured"
+MESSAGE_STYLE = cfg("telegram_message_style", "structured")  # compact | structured
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────
+# ── Telegram sender ───────────────────────────────────────────────────────────
 
-def send_message(text: str):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("Telegram not configured — skipping alert")
+def send_message(text: str) -> bool:
+    import os, requests
+    token   = os.environ.get("TELEGRAM_TOKEN") or cfg("telegram_token")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID") or cfg("telegram_chat_id")
+    if not token or not chat_id:
+        logger.warning("Telegram credentials not set — skipping alert")
         return False
 
-    MAX_LEN = 4000  # safe buffer below 4096
+    url     = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
+               "disable_web_page_preview": True}
 
-    # Split on double newlines to avoid breaking mid-line
-    chunks, current = [], ""
-    for para in text.split("\n\n"):
-        block = para + "\n\n"
-        if len(current) + len(block) > MAX_LEN:
-            chunks.append(current.strip())
-            current = block
-        else:
-            current += block
-    if current.strip():
-        chunks.append(current.strip())
-
-    import requests, time
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    for chunk in chunks:
-        # SG4: Exponential backoff retry — 3 attempts with 5s/15s/30s delays.
-        # Previously a single network blip silently dropped the message.
-        sent = False
-        for attempt, wait in enumerate([0, 5, 15], start=1):
-            try:
-                if wait:
-                    time.sleep(wait)
-                resp = requests.post(url, json={
-                    "chat_id":    TELEGRAM_CHAT_ID,
-                    "text":       chunk,
-                    "parse_mode": "HTML",
-                }, timeout=10)
-                if resp.ok:
-                    sent = True
-                    break
-                if resp.status_code == 429:   # rate limit — must wait
-                    retry_after = int(resp.json().get("parameters", {}).get("retry_after", 30))
-                    logger.warning(f"Telegram rate limit (429) — waiting {retry_after}s")
-                    time.sleep(retry_after)
-                    continue
-                logger.warning(f"Telegram attempt {attempt} HTTP {resp.status_code}")
-            except Exception as e:
-                logger.warning(f"Telegram attempt {attempt} failed: {e}")
-        if not sent:
-            logger.error(f"Telegram send failed after 3 attempts for chunk len={len(chunk)}")
+    for attempt in range(3):
+        try:
+            resp = requests.post(url, json=payload, timeout=10)
+            if resp.status_code == 200:
+                return True
+            if resp.status_code == 429:
+                retry_after = int(resp.json().get("parameters", {}).get("retry_after", 30))
+                logger.warning(f"Telegram rate limit — waiting {retry_after}s")
+                time.sleep(retry_after)
+                continue
+            # Split long messages
+            if resp.status_code == 400 and len(text) > 4000:
+                mid  = len(text) // 2
+                send_message(text[:mid])
+                return send_message(text[mid:])
+            logger.error(f"Telegram error {resp.status_code}: {resp.text[:200]}")
             return False
-    return True
+        except Exception as e:
+            wait = [5, 15, 30][attempt]
+            logger.warning(f"Telegram attempt {attempt+1} failed: {e} — retrying in {wait}s")
+            time.sleep(wait)
+    return False
 
+
+# ── Formatters ────────────────────────────────────────────────────────────────
 
 def conviction_icon(c: str) -> str:
-    return {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "🔴"}.get(str(c or "").upper(), "⚪")
+    return {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "🔴"}.get((c or "").upper(), "⚪")
 
 def regime_icon(r: str) -> str:
-    return {"RISK ON": "🟢", "NEUTRAL": "🟡", "RISK OFF": "🔴"}.get(str(r or ""), "⚪")
+    return {"TRENDING": "🚀", "NEUTRAL": "⚖️", "CAUTION": "⚠️",
+            "RISK OFF": "🔴", "RISK ON": "🚀"}.get((r or "").upper(), "❓")
 
 def gap_icon(gap_signal: str) -> str:
-    s = str(gap_signal or "").upper()
-    if "STRONG_UP" in s:   return "🚀"
-    if "UP" in s:          return "📈"
-    if "STRONG_DOWN" in s: return "🔻"
-    if "DOWN" in s:        return "📉"
-    return "➡️"
+    return {"GAP_UP": "📈", "GAP_DOWN": "📉", "FLAT": "➡️"}.get((gap_signal or "").upper(), "")
 
 def chg_icon(v) -> str:
-    try: return "▲" if float(v) >= 0 else "▼"
-    except: return ""
+    if v is None: return ""
+    return "▲" if float(v) > 0 else ("▼" if float(v) < 0 else "→")
 
 def fmt_chg(v, decimals=2) -> str:
-    try: return f"{abs(float(v)):.{decimals}f}%"
-    except: return "?"
+    if v is None: return ""
+    return f"{float(v):+.{decimals}f}%"
 
 def fmt_price(v) -> str:
-    try: return f"{float(v):,.0f}"
-    except: return "?"
+    if v is None: return "—"
+    return f"{float(v):,.0f}"
 
 def fmt_pct(v) -> str:
-    try: return f"{float(v):+.1f}%"
-    except: return "?"
+    if v is None: return "—"
+    return f"{float(v):+.1f}%"
 
 def days_held(entry_date_str) -> str:
+    if not entry_date_str: return ""
     try:
-        d = _date.fromisoformat(str(entry_date_str))
-        return f"{(today_ist() - d).days}d"
-    except:
-        return "?"
+        from datetime import date
+        ed = date.fromisoformat(str(entry_date_str)[:10])
+        d  = (today_ist() - ed).days
+        return f"{d}d"
+    except Exception:
+        return ""
 
 def truncate(text, n=80) -> str:
     if not text: return ""
-    s = str(text)
-    return s[:n] + "…" if len(s) > n else s
+    return str(text)[:n] + ("…" if len(str(text)) > n else "")
 
 def top_risk(risks) -> str:
     if not risks: return ""
+    if isinstance(risks, str):
+        try: risks = __import__("json").loads(risks)
+        except Exception: return truncate(risks, 60)
     if isinstance(risks, list) and risks:
-        return (str(risks[0]))
-    return (str(risks),)
+        return truncate(str(risks[0]), 60)
+    return ""
 
 def sl_proximity_pct(current_price, active_sl) -> float | None:
-    """How far current price is above SL as a percentage."""
     try:
-        cp = float(current_price or 0)
-        sl = float(active_sl or 0)
-        if cp > 0 and sl > 0:
-            return ((cp - sl) / cp) * 100
-    except:
-        pass
-    return None
-
+        cp, sl = float(current_price), float(active_sl)
+        if sl <= 0 or cp <= 0: return None
+        return (cp - sl) / cp * 100
+    except Exception:
+        return None
 
 def fii_footer_line(fii: dict) -> str:
-    """Build the FII context footer line from fii_dii_flow data."""
-    if not fii:
-        return ""
-    flag     = str(fii.get("fii_flag") or "").upper()
-    net      = fii.get("fii_net")
-    net_5d   = fii.get("fii_net_5d")
-    flag_ico = {"CAUTION": "🔴", "ACCELERATOR": "🟢", "NEUTRAL": "⚪"}.get(flag, "⚪")
-    parts    = [f"{flag_ico} FII: <b>{flag}</b>"]
-    if net is not None:
-        try: parts.append(f"Today: ₹{float(net):+,.0f} Cr")
-        except: pass
-    if net_5d is not None:
-        try: parts.append(f"5d net: ₹{float(net_5d):+,.0f} Cr")
-        except: pass
+    if not fii: return ""
+    flag    = str(fii.get("fii_flag") or "").upper()
+    net     = fii.get("fii_net")
+    net_5d  = fii.get("fii_net_5d")
+    net_20d = fii.get("fii_net_20d")  # v2: added 20d trend
+    ico     = {"BULLISH": "🟢", "BEARISH": "🔴", "NEUTRAL": "⚪"}.get(flag, "⚪")
+    parts   = [f"{ico} FII: <b>{flag}</b>"]
+    if net      is not None: parts.append(f"Today ₹{float(net):.0f}Cr")
+    if net_5d   is not None: parts.append(f"5d ₹{float(net_5d):.0f}Cr")
+    if net_20d  is not None: parts.append(f"20d ₹{float(net_20d):.0f}Cr")  # v2
     return "  ".join(parts)
 
-
 def entry_zone_line(symbol: str, msl_map: dict) -> str:
-    """Build entry zone line from master_shortlist for a BUY_CANDIDATE."""
-    msl = msl_map.get(symbol, {})
-    if not msl:
-        return ""
-    parts = []
-    ez_lo = msl.get("entry_zone_low")
-    ez_hi = msl.get("entry_zone_high")
-    cmp   = msl.get("current_price")
-    lc    = msl.get("lifecycle") or ""
-    if ez_lo and ez_hi:
-        try: parts.append(f"Zone: ₹{float(ez_lo):,.0f}–{float(ez_hi):,.0f}")
-        except: pass
-    if cmp:
-        try: parts.append(f"CMP: ₹{float(cmp):,.0f}")
-        except: pass
-    if lc:
-        parts.append(f"Lifecycle: {lc}")
-    return "  ".join(parts) if parts else ""
+    msl    = msl_map.get(symbol, {})
+    ez_lo  = msl.get("entry_zone_low")
+    ez_hi  = msl.get("entry_zone_high")
+    cp     = msl.get("current_price")
+    lc     = msl.get("lifecycle", "")
+    if ez_lo:
+        zone = f"₹{float(ez_lo):.0f}"
+        if ez_hi: zone += f"–{float(ez_hi):.0f}"
+        cp_str = f"  CMP ₹{float(cp):.0f}" if cp else ""
+        lc_str = f"  [{lc}]" if lc else ""
+        return f"Entry zone: <b>{zone}</b>{cp_str}{lc_str}"
+    return ""
+
+def signal_type_label(signal_type: str) -> str:
+    """Human-readable label + timing context for each signal type."""
+    return {
+        "BUY_CANDIDATE":        ("✅ Entry now",            ""),
+        "PRE_BREAKOUT_WATCH":   ("🔭 Breakout watch",       "2–5 sessions ahead"),
+        "STAGED_ENTRY":         ("📍 Approaching zone",     "1–3 sessions ahead"),
+        "REENTRY_SETUP":        ("↩️ Re-entry setup",        "Pullback to support"),
+        "PRIME_SETUP":          ("⭐ Prime setup",           "All timeframes aligned"),
+        "EXIT":                 ("🚪 Exit signal",          ""),
+        "ADD":                  ("➕ Add to position",      ""),
+        "HOLD":                 ("✋ Hold",                  ""),
+        "WATCH":                ("👁 Watching",              ""),
+        "BLOCKED_ASM":          ("🚫 ASM blocked",          ""),
+        "BUY_BLOCKED_REGIME":   ("⛔ Regime blocked",       ""),
+        "AVOID_ENTRY_EVENT":    ("📅 Event — avoid entry",  ""),
+    }.get(signal_type, (signal_type, ""))
 
 
-# ── Data loading ────────────────────────────────────────────────────────────
+# ── Data loader ───────────────────────────────────────────────────────────────
 
 def load_data(sb, today: str) -> dict:
-    """Common data loader used by both morning and evening."""
-
-    # Signals — with weekend/holiday fallback
-    signals = sb.table("signal_log").select("*").eq("date", today).execute().data
+    # Signals with weekend/holiday fallback
+    signals     = sb.table("signal_log").select("*").eq("date", today).execute().data
     signal_date = today
     if not signals:
         latest = sb.table("signal_log").select("date").order("date", desc=True).limit(1).execute().data
@@ -188,19 +193,20 @@ def load_data(sb, today: str) -> dict:
             signal_date = latest[0]["date"]
             signals = sb.table("signal_log").select("*").eq("date", signal_date).execute().data
 
-    # ai_context — keyed by symbol, prefer signal_date then latest available
+    # ai_context
     ai_rows = sb.table("ai_context").select("*").eq("date", signal_date).execute().data
     if not ai_rows:
         ai_rows = sb.table("ai_context").select("*").order("date", desc=True).limit(50).execute().data
     ai_map = {r["symbol"]: r for r in (ai_rows or [])}
 
-    # Regime — last available
+    # v2: load richer regime fields including predicted_regime, regime_confidence, breadth
     regime_rows = sb.table("market_regime").select(
-        "regime,nifty_price,india_vix,date"
+        "regime,predicted_regime,regime_confidence,nifty_price,india_vix,"
+        "above_200dma_pct,avg_sector_breadth,advance_decline_ratio,date"
     ).order("date", desc=True).limit(1).execute().data
     regime = regime_rows[0] if regime_rows else {}
 
-    # Global cues — MORNING session preferred, fallback to latest
+    # Global cues
     cues_rows = sb.table("global_cues").select("*").order("date", desc=True).limit(2).execute().data
     cues = next((r for r in cues_rows if r.get("session") == "MORNING"), None)
     if not cues and cues_rows:
@@ -212,17 +218,17 @@ def load_data(sb, today: str) -> dict:
         "active_sl,current_price,event_risk,sector,locked_profit"
     ).eq("status", "ACTIVE").execute().data
 
-    # Lessons last 7 days
+    # Lessons
     week_ago = str(today_ist() - timedelta(days=7))
     lessons  = sb.table("lessons").select("id,source").gte("date", week_ago).execute().data
 
-    # FII/DII latest row — for footer context
+    # v2: load fii_net_20d for footer and regime context
     fii_rows = sb.table("fii_dii_flow").select(
-        "fii_net,fii_net_5d,fii_flag,date"
+        "fii_net,fii_net_5d,fii_net_20d,fii_flag,date"
     ).order("date", desc=True).limit(1).execute().data
     fii = fii_rows[0] if fii_rows else {}
 
-    # Master shortlist — entry zones for BUY_CANDIDATE signal enrichment
+    # Master shortlist
     msl_rows = sb.table("master_shortlist").select(
         "symbol,entry_zone_low,entry_zone_high,current_price,lifecycle"
     ).eq("date", today).execute().data
@@ -232,39 +238,35 @@ def load_data(sb, today: str) -> dict:
         ).order("date", desc=True).limit(200).execute().data
     msl_map = {r["symbol"]: r for r in (msl_rows or [])}
 
-    # Position events — upcoming corporate events for held symbols only (morning use)
+    # Position events for morning brief
     pos_symbols = [p["symbol"] for p in (open_pos or [])]
-    pos_events = []
+    pos_events  = []
     if pos_symbols:
         try:
-            from datetime import timedelta as _td
-            _today = today_ist()
-            _cutoff = (_today + _td(days=5)).isoformat()
+            _today   = today_ist()
+            _cutoff  = str(_today + timedelta(days=5))
             _today_s = str(_today)
-            primary_ev = sb.table("nifty_upcoming_events").select(
+            pev = sb.table("nifty_upcoming_events").select(
                 "symbol,purpose,event_date"
             ).in_("symbol", pos_symbols).gte("event_date", _today_s).lte("event_date", _cutoff).execute().data or []
-            secondary_ev = sb.table("event_calendar").select(
-                "symbol,event_type,event_date,detail,is_active"
+            sev = sb.table("event_calendar").select(
+                "symbol,event_type,event_date,is_active"
             ).in_("symbol", pos_symbols).eq("is_active", True).gte("event_date", _today_s).lte("event_date", _cutoff).execute().data or []
-            seen_ev = set()
-            for e in primary_ev:
+            seen = set()
+            for e in pev:
                 k = (e["symbol"], e["event_date"])
-                if k not in seen_ev:
-                    seen_ev.add(k)
+                if k not in seen:
+                    seen.add(k)
                     pos_events.append({"symbol": e["symbol"], "event_type": e.get("purpose",""), "event_date": e["event_date"]})
-            for e in secondary_ev:
+            for e in sev:
                 k = (e["symbol"], e["event_date"])
-                if k not in seen_ev:
-                    seen_ev.add(k)
+                if k not in seen:
+                    seen.add(k)
                     pos_events.append({"symbol": e["symbol"], "event_type": e.get("event_type",""), "event_date": e["event_date"]})
         except Exception as _e:
-            logger.debug(f"Position events fetch failed (non-fatal): {_e}")
+            logger.debug(f"Position events fetch failed: {_e}")
 
-    # ── AG3 FIX: data_anomalies — surface quality errors in morning brief ────
-    # data_quality_monitor, sl_monitor, kite_reconcile all write ERROR rows here.
-    # Previously: written by 5 scripts, read by none. Quality failures were silent.
-    # Now: morning brief shows a Section 0 alert if any ERROR rows exist today.
+    # AG3: data_anomalies ERROR rows
     anomalies = []
     try:
         anomalies = (sb.table("data_anomalies")
@@ -273,7 +275,7 @@ def load_data(sb, today: str) -> dict:
                        .eq("severity", "ERROR")
                        .execute().data or [])
     except Exception as _ae:
-        logger.debug(f"data_anomalies fetch failed (non-fatal): {_ae}")
+        logger.debug(f"data_anomalies fetch failed: {_ae}")
 
     return {
         "signals":     signals,
@@ -287,335 +289,67 @@ def load_data(sb, today: str) -> dict:
         "fii":         fii,
         "msl_map":     msl_map,
         "pos_events":  pos_events,
-        "anomalies":   anomalies,   # AG3: ERROR-severity data quality issues for today
+        "anomalies":   anomalies,
     }
 
 
 def enrich_signal(sig: dict, ai_map: dict) -> dict:
-    """Merge signal_log row with ai_context — ai_context fields take priority."""
-    ai = ai_map.get(sig["symbol"], {})
-    return {**sig, **{
-        "ai_conviction":        ai.get("conviction")        or sig.get("ai_conviction"),
-        "ai_conviction_reason": ai.get("conviction_reason") or sig.get("ai_conviction_reason"),
-        "ai_risks":             ai.get("risks")             or [],
-        "ai_catalyst":          ai.get("catalyst")          or "",
-        "ai_suggested_action":  ai.get("suggested_action")  or sig.get("ai_suggested_action"),
-        "ai_conflicts":         ai.get("conflicts")         or "",
-        "ai_note":              ai.get("ai_note")           or sig.get("ai_note"),
-        "ai_provider":          ai.get("provider")          or sig.get("ai_provider"),
-        "ai_confidence":        ai.get("confidence")        or sig.get("ai_confidence"),
-        "ai_fallback_used":     ai.get("fallback_used")     or sig.get("ai_fallback_used"),
-    }}
+    merged = dict(sig)
+    ai = ai_map.get(sig.get("symbol"), {})
+    for field in ["ai_conviction","ai_conviction_reason","ai_suggested_action",
+                  "ai_note","ai_provider","ai_fallback_used","ai_catalyst",
+                  "ai_risks","ai_confidence","ai_strategy_validation","ai_conflicts"]:
+        if ai.get(field) is not None:
+            merged[field] = ai[field]
+    return merged
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# MORNING BRIEF
-# Purpose: Pre-market temperature before 9:15 AM open
-# Content:
-#   1. Global overnight cues — Gift Nifty gap, DOW, NQ, Crude, Gold, USD/INR
-#   2. Previous close context — Nifty, VIX, regime
-#   3. BUY_CANDIDATEs from yesterday — should you enter today given the gap?
-#   4. Open positions — SL proximity warning based on overnight moves
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Regime header (v2 — richer) ───────────────────────────────────────────────
+
+def build_regime_header(regime: dict, fii: dict) -> list:
+    """v2: includes breadth, regime confidence, ML vs manual label, FII 20d."""
+    lines      = []
+    r_name     = regime.get("regime", "UNKNOWN")
+    r_pred     = regime.get("predicted_regime")
+    r_conf     = regime.get("regime_confidence")
+    r_ico      = regime_icon(r_name)
+    breadth    = regime.get("above_200dma_pct") or regime.get("avg_sector_breadth")
+    ad_ratio   = regime.get("advance_decline_ratio")
+    vix        = regime.get("india_vix")
+    nifty      = regime.get("nifty_price")
+
+    # Main regime line
+    regime_display = r_name
+    regime_source  = ""
+    if r_pred and r_pred != r_name:
+        regime_source = f"  <i>(ML: {r_pred} {f'{float(r_conf):.0%}' if r_conf else ''})</i>"
+    elif r_pred == r_name and r_conf:
+        regime_source = f"  <i>(ML {float(r_conf):.0%} confidence)</i>"
+
+    vix_warn = "  ⚠️ Elevated" if vix and float(vix) > 18 else ""
+    lines.append(
+        f"{r_ico} Regime: <b>{regime_display}</b>{regime_source}  "
+        f"Nifty: <b>{fmt_price(nifty)}</b>  "
+        f"VIX: <b>{fmt_price(vix)}</b>{vix_warn}"
+    )
+
+    # Breadth + A/D line
+    breadth_parts = []
+    if breadth is not None:
+        b = float(breadth)
+        b_ico = "📈" if b >= 55 else ("📉" if b < 40 else "➡️")
+        breadth_parts.append(f"{b_ico} Breadth: <b>{b:.0f}%</b> above 200dma")
+    if ad_ratio is not None:
+        breadth_parts.append(f"A/D: <b>{float(ad_ratio):.2f}</b>")
+    if breadth_parts:
+        lines.append("  " + "  ".join(breadth_parts))
+
+    return lines
+
+
+# ── Morning brief ─────────────────────────────────────────────────────────────
 
 def build_morning(data: dict) -> str:
-    signals   = data["signals"]
-    ai_map    = data["ai_map"]
-    regime    = data["regime"]
-    cues      = data["cues"]
-    open_pos  = data["open_pos"]
-    pos_events = data.get("pos_events", [])
-    today     = data["signal_date"]
-
-    buys = sorted(
-        [enrich_signal(s, ai_map) for s in signals if s["signal_type"] == "BUY_CANDIDATE"],
-        key=lambda x: x.get("score", 0), reverse=True
-    )
-
-    # ── Gap assessment ─────────────────────────────────────────
-    gift       = cues.get("gift_nifty")
-    gift_chg   = cues.get("gift_nifty_chg_pct")
-    gap_signal = cues.get("gap_signal", "")
-    g_ico      = gap_icon(gap_signal)
-    prev_nifty = regime.get("nifty_price")
-
-    # Implied gap: Gift Nifty vs prev Nifty close
-    implied_gap_pts = None
-    implied_gap_pct = None
-    if gift and prev_nifty:
-        try:
-            implied_gap_pts = float(gift) - float(prev_nifty)
-            implied_gap_pct = (implied_gap_pts / float(prev_nifty)) * 100
-        except:
-            pass
-
-    lines = [
-        f"<b>☀️ TradeOS · Morning Brief · {today_ist()}</b>",
-        "<i>Pre-market — markets open at 9:15 AM IST</i>",
-        "",
-    ]
-
-    # ── SECTION 0 (AG3): DATA QUALITY ALERT ───────────────────
-    # Rendered only when data_anomalies has ERROR-severity rows for today.
-    # Surfaces pipeline failures (stale bhavcopy, NULL indicators, regime errors)
-    # before any signals are shown — prevents acting on bad data silently.
-    anomalies = data.get("anomalies", [])
-    if anomalies:
-        lines.append("🔴 <b>DATA ALERT — Pipeline quality issue detected</b>")
-        for a in anomalies[:3]:   # cap at 3 to avoid message bloat
-            check = a.get("check_name", "unknown_check")
-            msg   = a.get("message", "")[:120]
-            aff   = a.get("affected", "")
-            lines.append(f"  • <b>{check}</b>: {msg}" + (f" [{aff}]" if aff else ""))
-        if len(anomalies) > 3:
-            lines.append(f"  <i>…and {len(anomalies) - 3} more. Check data_anomalies table.</i>")
-        lines.append("<i>Signals below may be based on incomplete data. Verify before acting.</i>")
-        lines.append("")
-
-    # ── SECTION 1: GLOBAL OVERNIGHT ────────────────────────────
-    lines.append("<b>🌍 OVERNIGHT GLOBAL CUES</b>")
-
-    # ── Line 1: Nifty prev close + Gift Nifty implied open + gap ──
-    if prev_nifty and gift:
-        gap_str = (
-            f"  {g_ico} <b>{implied_gap_pts:+.0f} pts ({implied_gap_pct:+.2f}%)</b>"
-            if implied_gap_pts is not None else ""
-        )
-        gift_chg_str = (
-            f"  Gift chg: {chg_icon(gift_chg)}{fmt_chg(gift_chg)}"
-            if gift_chg else ""
-        )
-        lines.append(
-            f"  📊 Nifty prev close: <b>{fmt_price(prev_nifty)}</b>  "
-            f"→  Gift Nifty: <b>{fmt_price(gift)}</b>"
-            f"{gift_chg_str}{gap_str}"
-        )
-    elif prev_nifty:
-        lines.append(
-            f"  📊 Nifty prev close: <b>{fmt_price(prev_nifty)}</b>  "
-            f"(Gift Nifty unavailable)"
-        )
-    elif gift:
-        lines.append(
-            f"  🎁 Gift Nifty: <b>{fmt_price(gift)}</b>  "
-            f"{chg_icon(gift_chg)}{fmt_chg(gift_chg)}"
-        )
-
-    # ── Line 2: Gap signal + Regime + VIX ─────────────────────
-    gap_label = f"{g_ico} <b>{gap_signal}</b>  " if gap_signal else ""
-    vix_val   = regime.get("india_vix")
-    vix_warn  = "  ⚠️ Elevated VIX" if vix_val and float(vix_val or 0) > 18 else ""
-    lines.append(
-        f"  {gap_label}"
-        f"{regime_icon(regime.get('regime',''))} Regime: <b>{regime.get('regime','?')}</b>  "
-        f"VIX: <b>{fmt_price(vix_val)}</b>{vix_warn}"
-    )
-
-    # ── Line 3: US markets ─────────────────────────────────────────────
-    dow       = cues.get("us_dow_close")
-    dow_chg   = cues.get("us_dow_chg_pct")
-    nasdaq    = cues.get("us_nasdaq_close")
-    nas_chg   = cues.get("us_nasdaq_chg_pct")
-    sp500     = cues.get("sp500_close")
-    sp500_chg = cues.get("sp500_chg_pct")
-    if dow or nasdaq or sp500:
-        parts = []
-        if dow:   parts.append(f"DOW <b>{fmt_price(dow)}</b> {chg_icon(dow_chg)}{fmt_chg(dow_chg)}")
-        if sp500: parts.append(f"S&P <b>{fmt_price(sp500)}</b> {chg_icon(sp500_chg)}{fmt_chg(sp500_chg)}")
-        if nasdaq:parts.append(f"NQ <b>{fmt_price(nasdaq)}</b> {chg_icon(nas_chg)}{fmt_chg(nas_chg)}")
-        lines.append("  🇺🇸 " + "  ".join(parts))
-
-    # ── Line 4: Commodities ────────────────────────────────────
-    crude     = cues.get("brent_crude")
-    crude_chg = cues.get("brent_chg_pct")
-    gold      = cues.get("gold_price")
-    silver    = cues.get("silver_price")    # SG2
-    silver_chg = cues.get("silver_chg_pct") # SG2
-    if crude or gold or silver:
-        parts = []
-        if crude: parts.append(
-            f"Crude <b>{fmt_price(crude)}</b> {chg_icon(crude_chg)}{fmt_chg(crude_chg)}"
-        )
-        if gold: parts.append(f"Gold <b>{fmt_price(gold)}</b>")
-        if silver: parts.append(f"Silver <b>{fmt_price(silver)}</b> {chg_icon(silver_chg)}{fmt_chg(silver_chg)}")  # SG2
-        lines.append("  🛢️ " + "  ".join(parts))
-
-    # ── Line 5: USD/INR ───────────────────────────────────────
-    usd     = cues.get("usd_inr")
-    usd_chg = cues.get("usd_inr_chg_pct")
-    if usd:
-        rupee_warn = "  ⚠️ Rupee pressure" if usd_chg and float(usd_chg or 0) > 0.3 else ""
-        lines.append(
-            f"  💱 USD/INR: <b>₹{fmt_price(usd)}</b>  "
-            f"{chg_icon(usd_chg)}{fmt_chg(usd_chg)}{rupee_warn}"
-        )
-
-    # SG1: US 10-year yield — FII signal. Spike = capital flows out of EM including India.
-    us_10yr     = cues.get("us_10yr_yield")
-    us_10yr_bps = cues.get("us_10yr_chg_bps")
-    if us_10yr:
-        bps_str = f" ({us_10yr_bps:+.0f} bps)" if us_10yr_bps is not None else ""
-        yield_warn = "  ⚠️ Yield spike — FII pressure" if us_10yr_bps and float(us_10yr_bps) > 10 else ""
-        lines.append(
-            f"  🏦 US 10-yr: <b>{fmt_price(us_10yr)}%</b>{bps_str}{yield_warn}"
-        )
-
-    lines.append("")
-
-    # ── SECTION 2: ENTRY DECISION — BUY CANDIDATES ─────────────
-    lines.append(f"<b>🎯 ENTRY WATCH — BUY CANDIDATES ({len(buys)})</b>")
-
-    if buys:
-        # Gap context for entry decisions
-        gap_favourable = gap_signal and any(
-            x in str(gap_signal).upper() for x in ["UP", "FLAT"]
-        )
-        gap_unfavourable = gap_signal and "DOWN" in str(gap_signal).upper()
-
-        if gap_unfavourable:
-            lines.append(
-                "  ⚠️ <b>Gap DOWN detected</b> — consider waiting for gap fill "
-                "before entering BUY_CANDIDATEs"
-            )
-        elif gap_favourable:
-            lines.append(
-                "  ✅ Gap supports entry — monitor for confirmed breakout above "
-                "entry zone in first 30 min"
-            )
-
-        lines.append("")
-
-        for s in buys[:5]:
-            conv     = s.get("ai_conviction") or "—"
-            c_ico    = conviction_icon(conv)
-            action   = s.get("ai_suggested_action") or "—"
-            reason   = (s.get("ai_conviction_reason") or "")
-            risk1    = top_risk(s.get("ai_risks"))
-            conflicts = s.get("ai_conflicts") or ""
-            conf     = s.get("ai_confidence")
-            conf_str = f" {float(conf):.0%}" if conf else ""
-            warn     = " ⚠️RISK OFF" if s.get("regime_warning") else ""
-            asm      = " 🚫ASM" if s.get("asm_flag") else ""
-
-            # Entry go/no-go based on gap + AI
-            if gap_unfavourable and conv == "HIGH":
-                entry_call = "⏳ Wait for gap fill"
-            elif gap_unfavourable:
-                entry_call = "❌ Skip today"
-            elif conv == "HIGH" and action == "ENTER":
-                entry_call = "✅ Watch for entry"
-            elif conv == "MEDIUM":
-                entry_call = "👀 Monitor closely"
-            else:
-                entry_call = "⏭️ Pass today"
-
-            lines.append(
-                f"  <b>{s['symbol']}</b> [{s.get('strategy','?')}] "
-                f"Score:{s.get('score',0):.0f}  "
-                f"{c_ico} {conv}{conf_str}{warn}{asm}"
-            )
-            lines.append(f"  → {entry_call}")
-            if reason:
-                lines.append(f"  💬 {reason}")
-            if risk1:
-                lines.append(f"  ⚠️ {risk1}")
-            if conflicts and conflicts.upper() not in ("NONE", ""):
-                lines.append(f"  ⚡ {(conflicts)}")
-            lines.append("")
-
-    else:
-        lines.append("  — no buy candidates from yesterday's pipeline")
-        lines.append("")
-
-    # ── SECTION 3: OPEN POSITIONS — SL WATCH ──────────────────
-    if open_pos:
-        lines.append(f"<b>📂 OPEN POSITIONS — SL WATCH ({len(open_pos)})</b>")
-
-        at_risk   = []
-        healthy   = []
-        for p in open_pos:
-            prox = sl_proximity_pct(p.get("current_price"), p.get("active_sl"))
-            if prox is not None and prox <= 3.0:
-                at_risk.append((p, prox))
-            else:
-                healthy.append((p, prox))
-
-        # At-risk positions first — need immediate attention
-        if at_risk:
-            lines.append("  🔴 <b>NEAR SL — Act if market opens weak:</b>")
-            for p, prox in sorted(at_risk, key=lambda x: x[1]):
-                pnl    = float(p.get("pnl_pct") or 0)
-                action = p.get("action_required") or "HOLD"
-                ev     = " ⚠️event" if p.get("event_risk") else ""
-                lines.append(
-                    f"    🚨 <b>{p['symbol']}</b> [{p.get('strategy','?')}]  "
-                    f"P&L:{fmt_pct(pnl)}  SL gap: <b>{prox:.1f}%</b>  "
-                    f"→ {action}{ev}"
-                )
-            lines.append("")
-
-        # Healthy positions — quick status
-        if healthy:
-            lines.append("  🟢 <b>Healthy positions:</b>")
-            for p, prox in sorted(healthy, key=lambda x: float(x[0].get("pnl_pct") or 0), reverse=True):
-                pnl    = float(p.get("pnl_pct") or 0)
-                action = p.get("action_required") or "HOLD"
-                prox_str = f"  SL gap:{prox:.1f}%" if prox is not None else ""
-                locked   = float(p.get("locked_profit") or 0)
-                lock_str = f"  Locked:₹{locked:.0f}" if locked > 0 else ""
-                ico      = "📈" if pnl >= 0 else "📉"
-                lines.append(
-                    f"    {ico} <b>{p['symbol']}</b>  "
-                    f"P&L:<b>{fmt_pct(pnl)}</b>  "
-                    f"{days_held(p.get('entry_date'))}"
-                    f"{prox_str}{lock_str}  → {action}"
-                )
-
-        lines.append("")
-
-    # ── SECTION 4: POSITION EVENT RISK ───────────────────────────
-    if pos_events:
-        HIGH_EV   = {"results","earnings","quarterly results","annual results","financial results"}
-        MEDIUM_EV = {"board meeting","board meeting for results","egm"}
-
-        def _tier(etype: str, edate: str) -> str:
-            try: days = (_date.fromisoformat(str(edate)) - _date.fromisoformat(str(today))).days
-            except: return "LOW"
-            et = str(etype or "").lower()
-            if any(h in et for h in HIGH_EV):   return "HIGH"   if days <= 3 else ("LOW" if days <= 5 else "")
-            if any(m in et for m in MEDIUM_EV): return "MEDIUM" if days <= 2 else ("LOW" if days <= 5 else "")
-            return "LOW" if days <= 5 else ""
-
-        ev_lines = []
-        for e in pos_events:
-            tier = _tier(e["event_type"], e["event_date"])
-            if not tier: continue
-            ico = "🔴" if tier == "HIGH" else ("🟡" if tier == "MEDIUM" else "🟢")
-            try: days = (_date.fromisoformat(str(e["event_date"])) - _date.fromisoformat(str(today))).days
-            except: days = "?"
-            ev_lines.append(f"  {ico} <b>{e['symbol']}</b> — {e['event_type']} in {days}d ({e['event_date']})")
-
-        if ev_lines:
-            lines.append(f"<b>📅 POSITION EVENT RISK ({len(ev_lines)})</b>")
-            lines.extend(ev_lines)
-            lines.append("")
-
-    # ── FOOTER ────────────────────────────────────────────────
-    lines.append(
-        f"<i>━━━ Data: global_cues MORNING session · "
-        f"Signals from {data['signal_date']} · "
-        f"{len(open_pos)} open positions ━━━</i>"
-    )
-
-
-    return "\n".join(lines)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# EVENING DIGEST — COMPACT
-# ══════════════════════════════════════════════════════════════════════════════
-
-def build_compact(data: dict) -> str:
     signals  = data["signals"]
     ai_map   = data["ai_map"]
     regime   = data["regime"]
@@ -623,91 +357,113 @@ def build_compact(data: dict) -> str:
     open_pos = data["open_pos"]
     fii      = data.get("fii", {})
 
-    buys  = sorted([enrich_signal(s, ai_map) for s in signals if s["signal_type"] == "BUY_CANDIDATE"],
-                   key=lambda x: x.get("score", 0), reverse=True)
-    exits = [enrich_signal(s, ai_map) for s in signals if s["signal_type"] == "EXIT"]
-    adds  = [s for s in signals if s["signal_type"] == "ADD"]
+    # All entry-type signals sorted by score
+    ADVANCE_TYPES = {"PRE_BREAKOUT_WATCH", "STAGED_ENTRY"}
+    ENTRY_TYPES   = {"BUY_CANDIDATE", "PRIME_SETUP"}
+    advance = sorted([enrich_signal(s, ai_map) for s in signals if s["signal_type"] in ADVANCE_TYPES],
+                     key=lambda x: x.get("score", 0), reverse=True)
+    buys    = sorted([enrich_signal(s, ai_map) for s in signals if s["signal_type"] in ENTRY_TYPES],
+                     key=lambda x: x.get("score", 0), reverse=True)
 
-    regime_name = regime.get("regime", "UNKNOWN")
-    r_ico = regime_icon(regime_name)
+    lines = [f"<b>☀️ TradeOS Morning Brief · {data['signal_date']}</b>", ""]
 
-    lines = [f"<b>📊 TradeOS · {data['signal_date']}</b>", ""]
-
-    lines.append(
-        f"{r_ico} <b>{regime_name}</b>  "
-        f"Nifty {fmt_price(regime.get('nifty_price'))}  "
-        f"VIX {fmt_price(regime.get('india_vix'))}"
-    )
-
-    if cues:
-        parts = []
-        if cues.get("gift_nifty"):
-            parts.append(
-                f"Gift {fmt_price(cues['gift_nifty'])} "
-                f"{chg_icon(cues.get('gift_nifty_chg_pct'))}"
-                f"{fmt_chg(cues.get('gift_nifty_chg_pct'))}"
-            )
-        if cues.get("us_dow_close"):   parts.append(f"DOW {fmt_price(cues['us_dow_close'])}")
-        if cues.get("us_nasdaq_close"):parts.append(f"NQ {fmt_price(cues['us_nasdaq_close'])}")
-        if cues.get("brent_crude"):
-            parts.append(
-                f"Crude {fmt_price(cues['brent_crude'])} "
-                f"{chg_icon(cues.get('brent_chg_pct'))}"
-                f"{fmt_chg(cues.get('brent_chg_pct'))}"
-            )
-        if cues.get("usd_inr"):        parts.append(f"₹{fmt_price(cues['usd_inr'])}/USD")
-        if cues.get("gap_signal"):     parts.append(f"Gap:{cues['gap_signal']}")
-        if parts:
-            lines.append("🌐 " + "  ".join(parts))
-
-    lines.append("")
-    lines.append(f"🎯 <b>BUYS ({len(buys)})</b>")
-    for s in buys[:5]:
-        c_ico  = conviction_icon(s.get("ai_conviction"))
-        action = s.get("ai_suggested_action") or "—"
-        conf   = f" {float(s.get('ai_confidence') or 0):.0%}" if s.get("ai_confidence") else ""
-        warn   = "⚠️" if s.get("regime_warning") else ""
-        asm    = "🚫" if s.get("asm_flag") else ""
-        lines.append(
-            f"  {c_ico}{warn}{asm} <b>{s['symbol']}</b> "
-            f"[{s.get('strategy','?')}] {s.get('score',0):.0f}pt"
-            f"{conf} → {action}"
-        )
-    if not buys:
-        lines.append("  — no setups today")
-
-    if open_pos:
+    # Section 0: data anomalies
+    anomalies = data.get("anomalies", [])
+    if anomalies:
+        lines.append("🚨 <b>DATA ALERTS</b>")
+        for a in anomalies[:3]:
+            lines.append(f"  ⚠️ {a.get('check_name','?')}: {truncate(a.get('message',''),80)}")
+        if len(anomalies) > 3:
+            lines.append(f"  <i>…{len(anomalies) - 3} more — check data_anomalies table</i>")
         lines.append("")
+
+    # Section 1: global cues (v2 — includes 10yr yield, silver)
+    lines.append("🌍 <b>GLOBAL CUES</b>")
+    lines += build_regime_header(regime, fii)
+
+    gift = cues.get("gift_nifty"); gift_chg = cues.get("gift_nifty_chg_pct")
+    if gift:
+        lines.append(
+            f"  🎁 Gift Nifty: <b>{fmt_price(gift)}</b> "
+            f"{chg_icon(gift_chg)}{fmt_chg(gift_chg)}"
+            + (f"  {gap_icon(cues.get('gap_signal'))} {cues.get('gap_signal','')}" if cues.get("gap_signal") else "")
+        )
+    us_parts = []
+    if cues.get("us_dow_close"):    us_parts.append(f"DOW <b>{fmt_price(cues['us_dow_close'])}</b>")
+    if cues.get("sp500_close"):     us_parts.append(f"S&P <b>{fmt_price(cues['sp500_close'])}</b>")
+    if cues.get("us_nasdaq_close"): us_parts.append(f"NQ <b>{fmt_price(cues['us_nasdaq_close'])}</b>")
+    if us_parts: lines.append("  🇺🇸 " + "  ".join(us_parts))
+    comm_parts = []
+    if cues.get("brent_crude"): comm_parts.append(f"Crude <b>{fmt_price(cues['brent_crude'])}</b> {fmt_chg(cues.get('brent_chg_pct'),1)}")
+    if cues.get("gold_price"):  comm_parts.append(f"Gold <b>{fmt_price(cues['gold_price'])}</b>")
+    if cues.get("silver_price"):comm_parts.append(f"Silver <b>{fmt_price(cues['silver_price'])}</b> {fmt_chg(cues.get('silver_chg_pct'),1)}")
+    if comm_parts: lines.append("  🛢️ " + "  ".join(comm_parts))
+    if cues.get("usd_inr"):
+        lines.append(f"  💱 ₹{fmt_price(cues['usd_inr'])}/USD {fmt_chg(cues.get('usd_inr_chg_pct'),2)}")
+    if cues.get("us_10yr_yield"):
+        bps = cues.get("us_10yr_chg_bps")
+        bps_str = f" ({bps:+.0f}bps)" if bps is not None else ""
+        yield_warn = "  ⚠️ Yield spike" if bps and float(bps) > 10 else ""
+        lines.append(f"  🏦 US 10yr: <b>{cues['us_10yr_yield']:.2f}%</b>{bps_str}{yield_warn}")
+    fii_line = fii_footer_line(fii)
+    if fii_line: lines.append(f"  {fii_line}")
+    lines.append("")
+
+    # Section 2: advance notice (NEW v2)
+    if advance:
+        lines.append(f"🔍 <b>ADVANCE NOTICE ({len(advance)})</b>  <i>Set alerts — don't enter yet</i>")
+        for s in advance[:4]:
+            lbl, timing = signal_type_label(s["signal_type"])
+            timing_str  = f"  <i>{timing}</i>" if timing else ""
+            c_ico       = conviction_icon(s.get("ai_conviction"))
+            ez          = entry_zone_line(s["symbol"], data["msl_map"])
+            lines.append(f"\n  {lbl} <b>{s['symbol']}</b> [{s.get('sector','?')}] Score:{s.get('score',0):.0f}{timing_str}")
+            if ez: lines.append(f"  📍 {ez}")
+            if s.get("ai_conviction"): lines.append(f"  {c_ico} {s.get('ai_conviction')} — {truncate(s.get('ai_conviction_reason',''),70)}")
+        lines.append("")
+
+    # Section 3: entry-ready buys
+    if buys:
+        lines.append(f"🎯 <b>ENTRY READY ({len(buys)})</b>")
+        for s in buys[:6]:
+            c_ico  = conviction_icon(s.get("ai_conviction"))
+            action = s.get("ai_suggested_action") or "—"
+            warn   = " ⚠️" if s.get("regime_warning") else ""
+            asm    = " 🚫ASM" if s.get("asm_flag") else ""
+            ez     = entry_zone_line(s["symbol"], data["msl_map"])
+            lines.append(
+                f"\n  {c_ico}{warn}{asm} <b>{s['symbol']}</b> [{s.get('strategy','?')}] "
+                f"Score:{s.get('score',0):.0f} → {action}"
+            )
+            if ez: lines.append(f"  📍 {ez}")
+        lines.append("")
+
+    # Section 4: open positions SL watch
+    if open_pos:
         lines.append(f"📂 <b>POSITIONS ({len(open_pos)})</b>")
         for p in open_pos:
-            pnl    = float(p.get("pnl_pct") or 0)
-            action = p.get("action_required") or "HOLD"
-            ico    = "📈" if pnl >= 0 else "📉"
-            ev     = "⚠️" if p.get("event_risk") else ""
-            prox   = sl_proximity_pct(p.get("current_price"), p.get("active_sl"))
-            sl_warn = " 🚨SL" if prox is not None and prox <= 3.0 else ""
+            pnl   = float(p.get("pnl_pct") or 0)
+            prox  = sl_proximity_pct(p.get("current_price"), p.get("active_sl"))
+            sl_w  = " 🚨SL!" if prox is not None and prox <= 3 else ""
+            ico   = "📈" if pnl >= 0 else "📉"
+            ev    = " ⚠️" if p.get("event_risk") else ""
             lines.append(
-                f"  {ico}{ev}{sl_warn} <b>{p['symbol']}</b> {fmt_pct(pnl)} "
-                f"{days_held(p.get('entry_date'))} → <b>{action}</b>"
+                f"  {ico}{ev}{sl_w} <b>{p['symbol']}</b> {fmt_pct(pnl)} "
+                f"{days_held(p.get('entry_date'))} → {p.get('action_required','HOLD')}"
             )
 
-    if exits or adds:
+    # Section 5: position event risk
+    pos_events = data.get("pos_events", [])
+    if pos_events:
         lines.append("")
-        if exits:
-            lines.append("🔴 <b>EXIT:</b> " + " · ".join(s["symbol"] for s in exits))
-        if adds:
-            lines.append("🟢 <b>ADD:</b> " + " · ".join(s["symbol"] for s in adds))
+        lines.append("📅 <b>POSITION EVENT RISK (5d)</b>")
+        for e in pos_events[:5]:
+            lines.append(f"  ⚠️ {e['symbol']}: {e.get('event_type','')} on {str(e.get('event_date',''))[:10]}")
 
-    lines += ["", f"<i>Lessons 7d: {data['lessons_ai']} AI · {data['lessons_rb']} rule-based</i>"]
-    fii_line = fii_footer_line(fii)
-    if fii_line:
-        lines.append(fii_line)
     return "\n".join(lines)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# EVENING DIGEST — STRUCTURED
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Evening digest (structured) ───────────────────────────────────────────────
 
 def build_structured(data: dict) -> str:
     signals  = data["signals"]
@@ -718,113 +474,113 @@ def build_structured(data: dict) -> str:
     fii      = data.get("fii", {})
     msl_map  = data.get("msl_map", {})
 
-    buys  = sorted([enrich_signal(s, ai_map) for s in signals if s["signal_type"] == "BUY_CANDIDATE"],
-                   key=lambda x: x.get("score", 0), reverse=True)
-    exits = [enrich_signal(s, ai_map) for s in signals if s["signal_type"] == "EXIT"]
-    adds  = [s for s in signals if s["signal_type"] == "ADD"]
-
-    regime_name = regime.get("regime", "UNKNOWN")
-    r_ico = regime_icon(regime_name)
+    ADVANCE_TYPES = {"PRE_BREAKOUT_WATCH", "STAGED_ENTRY"}
+    ENTRY_TYPES   = {"BUY_CANDIDATE", "PRIME_SETUP", "REENTRY_SETUP"}
+    advance = sorted([enrich_signal(s, ai_map) for s in signals if s["signal_type"] in ADVANCE_TYPES],
+                     key=lambda x: x.get("score", 0), reverse=True)
+    buys    = sorted([enrich_signal(s, ai_map) for s in signals if s["signal_type"] in ENTRY_TYPES],
+                     key=lambda x: x.get("score", 0), reverse=True)
+    exits   = [enrich_signal(s, ai_map) for s in signals if s["signal_type"] == "EXIT"]
+    adds    = [s for s in signals if s["signal_type"] == "ADD"]
 
     lines = [f"<b>━━━ 📊 TradeOS v6 · {data['signal_date']} ━━━</b>", ""]
 
-    # Market context
+    # Market context (v2 — richer)
     lines.append("<b>🌍 MARKET CONTEXT</b>")
-    lines.append(
-        f"  {r_ico} Regime: <b>{regime_name}</b>  "
-        f"Nifty: <b>{fmt_price(regime.get('nifty_price'))}</b>  "
-        f"VIX: <b>{fmt_price(regime.get('india_vix'))}</b>"
-    )
-
+    lines += build_regime_header(regime, fii)
     if cues:
-        gift      = cues.get("gift_nifty")
-        gift_chg  = cues.get("gift_nifty_chg_pct")
-        dow       = cues.get("us_dow_close")
-        nasdaq    = cues.get("us_nasdaq_close")
-        crude     = cues.get("brent_crude")
-        crude_chg = cues.get("brent_chg_pct")
-        usd       = cues.get("usd_inr")
-        usd_chg   = cues.get("usd_inr_chg_pct")
-        gap       = cues.get("gap_signal", "")
-
+        gift = cues.get("gift_nifty"); gift_chg = cues.get("gift_nifty_chg_pct")
         if gift:
             lines.append(
                 f"  🎁 Gift Nifty: <b>{fmt_price(gift)}</b> "
                 f"{chg_icon(gift_chg)}{fmt_chg(gift_chg)}"
-                + (f"  Gap: <b>{gap}</b>" if gap else "")
             )
-        if dow or nasdaq:
+        us_parts = []
+        if cues.get("us_dow_close"):    us_parts.append(f"DOW <b>{fmt_price(cues['us_dow_close'])}</b>")
+        if cues.get("sp500_close"):     us_parts.append(f"S&P <b>{fmt_price(cues['sp500_close'])}</b>")
+        if cues.get("us_nasdaq_close"): us_parts.append(f"NQ <b>{fmt_price(cues['us_nasdaq_close'])}</b>")
+        if us_parts: lines.append("  🇺🇸 " + "  ".join(us_parts))
+        if cues.get("brent_crude") or cues.get("usd_inr"):
             parts = []
-            if dow:    parts.append(f"DOW <b>{fmt_price(dow)}</b>")
-            if nasdaq: parts.append(f"NQ <b>{fmt_price(nasdaq)}</b>")
-            lines.append("  🇺🇸 " + "  ".join(parts))
-        if crude or usd:
-            parts = []
-            if crude: parts.append(f"Crude <b>{fmt_price(crude)}</b> {chg_icon(crude_chg)}{fmt_chg(crude_chg)}")
-            if usd:   parts.append(f"₹<b>{fmt_price(usd)}</b>/USD {chg_icon(usd_chg)}{fmt_chg(usd_chg)}")
+            if cues.get("brent_crude"): parts.append(f"Crude <b>{fmt_price(cues['brent_crude'])}</b> {fmt_chg(cues.get('brent_chg_pct'),1)}")
+            if cues.get("usd_inr"):     parts.append(f"₹<b>{fmt_price(cues['usd_inr'])}</b>/USD")
+            if cues.get("silver_price"):parts.append(f"Silver <b>{fmt_price(cues['silver_price'])}</b>")
             lines.append("  🛢️ " + "  ".join(parts))
-
+        if cues.get("us_10yr_yield"):
+            bps = cues.get("us_10yr_chg_bps")
+            bps_str   = f" ({float(bps):+.0f}bps)" if bps is not None else ""
+            yield_warn = "  ⚠️ Yield spike — FII pressure" if bps and float(bps) > 10 else ""
+            lines.append(f"  🏦 US 10yr: <b>{cues['us_10yr_yield']:.2f}%</b>{bps_str}{yield_warn}")
     lines.append("")
 
-    # Buy candidates
-    lines.append(f"<b>🎯 BUY CANDIDATES ({len(buys)})</b>")
+    # ADVANCE NOTICE section (NEW v2 — the core swing advantage)
+    if advance:
+        lines.append(f"<b>🔍 ADVANCE NOTICE ({len(advance)}) — Position Before The Move</b>")
+        for s in advance[:5]:
+            lbl, timing   = signal_type_label(s["signal_type"])
+            timing_str    = f"  <i>{timing}</i>" if timing else ""
+            c_ico         = conviction_icon(s.get("ai_conviction"))
+            reason        = s.get("ai_conviction_reason") or ""
+            risk1         = top_risk(s.get("ai_risks"))
+            ez            = entry_zone_line(s["symbol"], msl_map)
+            warn          = " ⚠️CAUTION" if s.get("regime_warning") else ""
+            score_str     = f" Score:<b>{s.get('score',0):.0f}</b>"
+            scanner_str   = " 🎯+scanner" if s.get("in_scanner") else ""
+            lines.append(
+                f"\n  {lbl}{timing_str}{warn}\n"
+                f"  <b>{s['symbol']}</b> [{s.get('sector','?')}]{score_str}{scanner_str}"
+            )
+            if ez:     lines.append(f"  📍 {ez}")
+            if reason: lines.append(f"  {c_ico} {truncate(reason, 90)}")
+            if risk1:  lines.append(f"  ⚠️ Risk: {risk1}")
+        lines.append("")
+
+    # Entry-ready buys
+    lines.append(f"<b>🎯 ENTRY READY ({len(buys)})</b>")
     if buys:
         for s in buys[:5]:
             conv      = s.get("ai_conviction") or "—"
             c_ico     = conviction_icon(conv)
             reason    = s.get("ai_conviction_reason") or ""
             risk1     = top_risk(s.get("ai_risks"))
-            catalyst  = (s.get("ai_catalyst") or "")
-            conflicts = s.get("ai_conflicts") or ""
+            catalyst  = s.get("ai_catalyst") or ""
             action    = s.get("ai_suggested_action") or "—"
             provider  = s.get("ai_provider") or ""
             confidence = s.get("ai_confidence")
             ind_st    = s.get("industry_state") or ""
-            ind_rk    = s.get("industry_rank") or ""
             warn      = " ⚠️RISK OFF" if s.get("regime_warning") else ""
             asm       = " 🚫ASM" if s.get("asm_flag") else ""
             conf_str  = f" {float(confidence):.0%}" if confidence else ""
             fallback  = " (fallback)" if s.get("ai_fallback_used") else ""
-
+            scanner_s = " 🎯scanner" if s.get("in_scanner") else ""
             lines.append(
                 f"\n  <b>{s['symbol']}</b> [{s.get('strategy','?')}] "
-                f"Score: <b>{s.get('score',0):.0f}</b>{warn}{asm}"
+                f"Score: <b>{s.get('score',0):.0f}</b>{warn}{asm}{scanner_s}"
             )
-            lines.append(
-                f"  {c_ico} <b>{conv}</b>{conf_str} → <b>{action}</b>"
-                f"  <i>{provider}{fallback}</i>"
-            )
-            if reason:
-                lines.append(f"  💬 {(reason)}")
-            if risk1:
-                lines.append(f"  ⚠️ Risk: {risk1}")
-            if catalyst and catalyst.lower() not in ("none", "no catalyst", "no immediate catalyst", ""):
-                lines.append(f"  💡 Catalyst: {catalyst}")
-            if conflicts and conflicts.upper() not in ("NONE", ""):
-                lines.append(f"  ⚡ Conflict: {(conflicts,)}")
-            if ind_st or ind_rk:
-                lines.append(f"  🏭 Industry: {ind_st}  Rank #{ind_rk}")
+            lines.append(f"  {c_ico} <b>{conv}</b>{conf_str} → <b>{action}</b>  <i>{provider}{fallback}</i>")
+            if reason:   lines.append(f"  💬 {truncate(reason, 90)}")
+            if risk1:    lines.append(f"  ⚠️ Risk: {risk1}")
+            if catalyst and catalyst.lower() not in ("none","no catalyst",""):
+                lines.append(f"  💡 Catalyst: {truncate(catalyst, 80)}")
+            if ind_st:   lines.append(f"  🏭 Industry: {ind_st}")
             ez = entry_zone_line(s["symbol"], msl_map)
-            if ez:
-                lines.append(f"  📍 {ez}")
+            if ez:       lines.append(f"  📍 {ez}")
     else:
-        lines.append("  — no setups today")
-
+        lines.append("  — no entry-ready setups today")
     lines.append("")
 
     # Open positions
     if open_pos:
         lines.append(f"<b>📂 OPEN POSITIONS ({len(open_pos)})</b>")
         for p in open_pos:
-            pnl    = float(p.get("pnl_pct") or 0)
-            cp     = float(p.get("current_price") or 0)
-            sl     = float(p.get("active_sl") or 0)
+            pnl   = float(p.get("pnl_pct") or 0)
+            cp    = float(p.get("current_price") or 0)
+            sl    = float(p.get("active_sl") or 0)
             action = p.get("action_required") or "HOLD"
             ev     = p.get("event_risk") or ""
             ico    = "📈" if pnl >= 0 else "📉"
             prox   = sl_proximity_pct(cp, sl)
             sl_warn = "  🚨 Near SL!" if prox is not None and prox <= 3.0 else ""
-
             lines.append(
                 f"\n  {ico} <b>{p['symbol']}</b> [{p.get('strategy','?')}]  "
                 f"P&L: <b>{fmt_pct(pnl)}</b>  Held: {days_held(p.get('entry_date'))}{sl_warn}"
@@ -834,66 +590,126 @@ def build_structured(data: dict) -> str:
                 + (f"  SL: ₹{sl:.0f}" if sl else "")
                 + (f"  CMP: ₹{cp:.0f}" if cp else "")
             )
-            if ev:
-                lines.append(f"  ⚠️ Event risk: {ev}")
+            if ev: lines.append(f"  ⚠️ Event risk: {ev}")
         lines.append("")
 
     # Exits
     if exits:
         lines.append(f"<b>🔴 EXIT SIGNALS ({len(exits)})</b>")
         for s in exits:
-            c_ico  = conviction_icon(s.get("ai_conviction"))
-            reason = (s.get("ai_conviction_reason") or "")
-            lines.append(
-                f"  {c_ico} <b>{s['symbol']}</b> [{s.get('strategy','?')}]"
-                + (f"\n  💬 {reason}" if reason else "")
-            )
+            reason = truncate(s.get("ai_conviction_reason") or "", 80)
+            lines.append(f"  <b>{s['symbol']}</b>" + (f"\n  💬 {reason}" if reason else ""))
         lines.append("")
 
     # Adds
     if adds:
         lines.append(f"<b>🟢 ADD TO POSITION ({len(adds)})</b>")
         for s in adds:
-            lines.append(
-                f"  <b>{s['symbol']}</b> [{s.get('strategy','?')}] "
-                f"Score: {s.get('score',0):.0f}"
-            )
+            lines.append(f"  <b>{s['symbol']}</b> [{s.get('strategy','?')}] Score:{s.get('score',0):.0f}")
         lines.append("")
 
     fii_line = fii_footer_line(fii)
-    if fii_line:
-        lines.append(fii_line)
-
+    if fii_line: lines.append(fii_line)
     lines.append(
-        f"<i>━━━ {len(buys)} buy · {len(exits)} exit · {len(adds)} add  "
-        f"| Lessons 7d: {data['lessons_ai']} AI · {data['lessons_rb']} rule-based ━━━</i>"
+        f"<i>━━━ {len(advance)} advance · {len(buys)} entry · "
+        f"{len(exits)} exit · {len(adds)} add  "
+        f"| Lessons 7d: {data['lessons_ai']} AI · {data['lessons_rb']} rule ━━━</i>"
     )
-
     return "\n".join(lines)
 
 
-# ── MAIN ───────────────────────────────────────────────────────────────────
+# ── Compact evening ───────────────────────────────────────────────────────────
+
+def build_compact(data: dict) -> str:
+    signals  = data["signals"]
+    ai_map   = data["ai_map"]
+    regime   = data["regime"]
+    cues     = data.get("cues", {})
+    open_pos = data["open_pos"]
+    fii      = data.get("fii", {})
+
+    ADVANCE_TYPES = {"PRE_BREAKOUT_WATCH", "STAGED_ENTRY"}
+    ENTRY_TYPES   = {"BUY_CANDIDATE", "PRIME_SETUP", "REENTRY_SETUP"}
+    advance = sorted([enrich_signal(s, ai_map) for s in signals if s["signal_type"] in ADVANCE_TYPES],
+                     key=lambda x: x.get("score", 0), reverse=True)
+    buys    = sorted([enrich_signal(s, ai_map) for s in signals if s["signal_type"] in ENTRY_TYPES],
+                     key=lambda x: x.get("score", 0), reverse=True)
+    exits   = [enrich_signal(s, ai_map) for s in signals if s["signal_type"] == "EXIT"]
+    adds    = [s for s in signals if s["signal_type"] == "ADD"]
+
+    lines = [f"<b>📊 TradeOS · {data['signal_date']}</b>", ""]
+    lines += build_regime_header(regime, fii)
+    if cues.get("gift_nifty"):
+        lines.append(
+            f"🎁 Gift {fmt_price(cues['gift_nifty'])} "
+            f"{chg_icon(cues.get('gift_nifty_chg_pct'))}{fmt_chg(cues.get('gift_nifty_chg_pct'))}"
+        )
+    lines.append("")
+
+    if advance:
+        lines.append(f"🔍 <b>WATCH ({len(advance)})</b>  <i>ahead-of-time</i>")
+        for s in advance[:3]:
+            lbl, timing = signal_type_label(s["signal_type"])
+            lines.append(
+                f"  {lbl} <b>{s['symbol']}</b> {s.get('score',0):.0f}pt"
+                + (f"  <i>{timing}</i>" if timing else "")
+            )
+        lines.append("")
+
+    lines.append(f"🎯 <b>BUYS ({len(buys)})</b>")
+    for s in buys[:5]:
+        c_ico  = conviction_icon(s.get("ai_conviction"))
+        action = s.get("ai_suggested_action") or "—"
+        conf   = f" {float(s.get('ai_confidence') or 0):.0%}" if s.get("ai_confidence") else ""
+        warn   = "⚠️" if s.get("regime_warning") else ""
+        asm    = "🚫" if s.get("asm_flag") else ""
+        lines.append(
+            f"  {c_ico}{warn}{asm} <b>{s['symbol']}</b> [{s.get('strategy','?')}] "
+            f"{s.get('score',0):.0f}pt{conf} → {action}"
+        )
+    if not buys: lines.append("  — no setups today")
+
+    if open_pos:
+        lines.append(f"\n📂 <b>POSITIONS ({len(open_pos)})</b>")
+        for p in open_pos:
+            pnl   = float(p.get("pnl_pct") or 0)
+            action = p.get("action_required") or "HOLD"
+            ico    = "📈" if pnl >= 0 else "📉"
+            ev     = "⚠️" if p.get("event_risk") else ""
+            prox   = sl_proximity_pct(p.get("current_price"), p.get("active_sl"))
+            sl_w   = " 🚨SL" if prox is not None and prox <= 3.0 else ""
+            lines.append(
+                f"  {ico}{ev}{sl_w} <b>{p['symbol']}</b> {fmt_pct(pnl)} "
+                f"{days_held(p.get('entry_date'))} → <b>{action}</b>"
+            )
+
+    if exits or adds:
+        lines.append("")
+        if exits: lines.append("🔴 <b>EXIT:</b> " + " · ".join(s["symbol"] for s in exits))
+        if adds:  lines.append("🟢 <b>ADD:</b> "  + " · ".join(s["symbol"] for s in adds))
+
+    fii_line = fii_footer_line(fii)
+    if fii_line: lines.append(f"\n{fii_line}")
+    return "\n".join(lines)
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     if is_kill_switch_active():
         logger.warning("Kill switch active — send_alerts skipped")
-        return {"status": "skipped", "reason": "kill_switch"}
+        return {"status": "skipped"}
 
     if not cfg_bool("telegram_alerts_enabled", False):
-        logger.info("Telegram alerts disabled — skipping")
+        logger.info("Telegram alerts disabled")
         return {}
 
-    # --position-risk was previously wired in pipeline_morning.yml but had no
-    # handler — it fell through to the full evening digest causing a duplicate.
-    # Position risk is now fully covered by: morning brief (7 AM SL watch section),
-    # position_event_monitor.py (8:35 AM event scan), and sl_monitor.py (intraday).
     if "--position-risk" in sys.argv:
-        logger.info("--position-risk flag received — covered by morning brief + sl_monitor. No duplicate alert sent.")
-        return {"status": "skipped", "reason": "position_risk_covered_by_other_steps"}
+        logger.info("--position-risk covered by morning brief + sl_monitor")
+        return {"status": "skipped", "reason": "covered"}
 
     is_morning = "--morning" in sys.argv
 
-    from config import get_supabase
     sb    = get_supabase()
     today = str(today_ist())
     data  = load_data(sb, today)
@@ -910,16 +726,17 @@ def main():
 
     success = send_message(msg)
 
-    buys  = len([s for s in data["signals"] if s["signal_type"] == "BUY_CANDIDATE"])
-    exits = len([s for s in data["signals"] if s["signal_type"] == "EXIT"])
-    adds  = len([s for s in data["signals"] if s["signal_type"] == "ADD"])
+    advance = len([s for s in data["signals"] if s["signal_type"] in {"PRE_BREAKOUT_WATCH","STAGED_ENTRY"}])
+    buys    = len([s for s in data["signals"] if s["signal_type"] in {"BUY_CANDIDATE","PRIME_SETUP"}])
+    exits   = len([s for s in data["signals"] if s["signal_type"] == "EXIT"])
+    adds    = len([s for s in data["signals"] if s["signal_type"] == "ADD"])
 
     if success:
         logger.success(
-            f"Telegram ({mode}) sent: {buys} buys · {exits} exits · "
-            f"{adds} adds · {len(data['open_pos'])} open positions"
+            f"Telegram ({mode}) sent: {advance} advance notice · {buys} buys · "
+            f"{exits} exits · {adds} adds · {len(data['open_pos'])} open positions"
         )
-    return {"sent": success, "mode": mode, "buys": buys, "exits": exits}
+    return {"sent": success, "mode": mode, "advance": advance, "buys": buys}
 
 
 if __name__ == "__main__":

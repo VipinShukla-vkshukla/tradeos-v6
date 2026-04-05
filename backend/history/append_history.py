@@ -1,6 +1,15 @@
 """
 TradeOS v6 — Append MSL Snapshot to History
-Runs daily to preserve ranking trajectory over time
+Runs daily as step 06_history in run_pipeline.py (Phase 0/1) or 09_history (Phase 2+).
+
+BUG FIXED (01-Apr-2026 audit):
+  regime_history table uses 'date' as primary key column.
+  G14 _snapshot_regime() was incorrectly setting row["snapshot_date"] = today
+  and upsert on_conflict="snapshot_date" — neither column exists in regime_history.
+  Result: every daily snapshot silently failed with a Supabase 400 error,
+  leaving regime_history permanently empty despite the G14 patch appearing to run.
+  Fix: strip all columns not in regime_history schema, set row["date"] = today,
+  upsert on_conflict="date".
 """
 import sys
 from pathlib import Path
@@ -8,11 +17,20 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
 from config import get_supabase, today_ist, DRY_RUN, is_kill_switch_active
 
+# Exact columns in regime_history (from schema dump Mar 23 + live Supabase):
+REGIME_HISTORY_COLS = {
+    "date", "regime", "nifty_price", "nifty_50dma", "nifty_200dma",
+    "nifty_weekly_rsi", "india_vix", "avg_sector_breadth",
+    "ctl_enabled", "sbs_enabled", "tpo_enabled", "eap_enabled",
+    "regime_score", "nifty_1d_chg_pct", "nifty_5d_chg_pct",
+    "nifty_20d_chg_pct", "advance_decline_ratio", "above_200dma_pct",
+}
+
 
 def main():
     if is_kill_switch_active():
         return {}
-    logger.info("STEP 3: Append MSL History Snapshot")
+    logger.info("STEP: Append MSL + Regime History Snapshot")
     sb    = get_supabase()
     today = str(today_ist())
 
@@ -67,9 +85,7 @@ def main():
 
     logger.info(f"✓ MSL History: {len(hist_rows)} rows snapshotted for {today}")
 
-    # ── G14: Snapshot today's market_regime into regime_history ───────────────
-    # Required by evolution_tracker (Phase 4) for drift analysis.
-    # Non-fatal — MSL snapshot already written above.
+    # G14: Snapshot today's market_regime into regime_history
     _snapshot_regime(sb, today)
 
     return {"snapshotted": len(hist_rows), "date": today}
@@ -77,27 +93,59 @@ def main():
 
 def _snapshot_regime(sb, today: str) -> None:
     """
-    G14: Write today's market_regime row into regime_history.
-    Gives evolution_tracker a time-series of regime changes to analyse.
-    Non-fatal — called after MSL snapshot, failure does not affect pipeline.
+    G14 (FIXED): Write today's market_regime row into regime_history.
+    
+    BUG FIXED: was setting row["snapshot_date"] and on_conflict="snapshot_date".
+    regime_history has no snapshot_date column — its PK is 'date'.
+    Fix: filter to only REGIME_HISTORY_COLS, set row["date"] = today,
+         upsert on_conflict="date".
+    
+    This populates the training source for ml_regime_classifier weekly training (W2).
+    Without this fix, regime_history stays empty and classifier falls back to
+    market_regime only (still works, but loses the richer daily snapshot data).
     """
     try:
-        regime_rows = (sb.table("market_regime")
-                         .select("*")
-                         .order("date", desc=True).limit(1).execute().data)
+        regime_rows = (
+            sb.table("market_regime")
+            .select("*")
+            .eq("date", today)
+            .limit(1)
+            .execute()
+            .data
+        )
+        if not regime_rows:
+            # Fallback: most recent row
+            regime_rows = (
+                sb.table("market_regime")
+                .select("*")
+                .order("date", desc=True)
+                .limit(1)
+                .execute()
+                .data
+            )
         if not regime_rows:
             logger.debug("G14: No market_regime rows found — regime_history skipped")
             return
 
-        row = {k: v for k, v in regime_rows[0].items() if k != "id"}
-        row["snapshot_date"] = today
+        raw = regime_rows[0]
+
+        # FIX: only include columns that exist in regime_history schema
+        row = {k: v for k, v in raw.items() if k in REGIME_HISTORY_COLS}
+
+        # FIX: use 'date' column (regime_history PK), not 'snapshot_date'
+        row["date"] = today
 
         if not DRY_RUN:
             sb.table("regime_history").upsert(
-                row, on_conflict="snapshot_date"
+                row, on_conflict="date"          # FIX: was on_conflict="snapshot_date"
             ).execute()
 
-        logger.info(f"✓ regime_history snapshot: {regime_rows[0].get('regime', '?')} for {today}")
+        logger.info(
+            f"✓ regime_history snapshot: regime={raw.get('regime','?')} "
+            f"nifty_5d={raw.get('nifty_5d_chg_pct','N/A')} "
+            f"ad_ratio={raw.get('advance_decline_ratio','N/A')} "
+            f"for {today}"
+        )
     except Exception as e:
         logger.warning(f"regime_history snapshot failed (non-fatal): {e}")
 
