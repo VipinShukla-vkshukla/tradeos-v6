@@ -33,7 +33,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
 from config import (
     get_supabase, today_ist, is_kill_switch_active,
-    cfg, cfg_bool, DRY_RUN
+    cfg, cfg_bool, DRY_RUN,
+    TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,  # resolved from TELEGRAM_BOT_TOKEN env var by config.py
 )
 
 MESSAGE_STYLE = cfg("telegram_message_style", "structured")  # compact | structured
@@ -42,11 +43,19 @@ MESSAGE_STYLE = cfg("telegram_message_style", "structured")  # compact | structu
 # ── Telegram sender ───────────────────────────────────────────────────────────
 
 def send_message(text: str) -> bool:
-    import os, requests
-    token   = os.environ.get("TELEGRAM_TOKEN") or cfg("telegram_token")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID") or cfg("telegram_chat_id")
+    import requests
+    # Use constants already resolved by config.py from TELEGRAM_BOT_TOKEN env var.
+    # Do NOT re-read os.environ here — config.py reads TELEGRAM_BOT_TOKEN (not TELEGRAM_TOKEN)
+    # and exposes it as TELEGRAM_TOKEN. Re-reading with the wrong env var name was
+    # the cause of "Telegram credentials not set" even when secrets were configured.
+    token   = TELEGRAM_TOKEN
+    chat_id = TELEGRAM_CHAT_ID
     if not token or not chat_id:
-        logger.warning("Telegram credentials not set — skipping alert")
+        missing = []
+        if not token:   missing.append("TELEGRAM_BOT_TOKEN (env var)")
+        if not chat_id: missing.append("TELEGRAM_CHAT_ID (env var)")
+        logger.warning(f"Telegram credentials not set — missing: {', '.join(missing)}")
+        logger.warning("Set these as GitHub Actions secrets: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
         return False
 
     url     = f"https://api.telegram.org/bot{token}/sendMessage"
