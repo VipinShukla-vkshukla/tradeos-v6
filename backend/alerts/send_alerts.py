@@ -705,6 +705,8 @@ def build_compact(data: dict) -> str:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    import os, datetime
+    logger.info(f"send_alerts.py invoked | argv={sys.argv} | pid={os.getpid()}")
     if is_kill_switch_active():
         logger.warning("Kill switch active — send_alerts skipped")
         return {"status": "skipped"}
