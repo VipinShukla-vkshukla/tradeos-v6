@@ -124,17 +124,18 @@ def days_held(entry_date_str) -> str:
     except Exception:
         return ""
 
-def truncate(text, n=80) -> str:
+def truncate(text, n=None) -> str:
+    """Truncation removed — returns full text."""
     if not text: return ""
-    return str(text)[:n] + ("…" if len(str(text)) > n else "")
+    return str(text)
 
 def top_risk(risks) -> str:
     if not risks: return ""
     if isinstance(risks, str):
         try: risks = __import__("json").loads(risks)
-        except Exception: return truncate(risks, 60)
+        except Exception: return str(risks)
     if isinstance(risks, list) and risks:
-        return truncate(str(risks[0]), 60)
+        return str(risks[0])
     return ""
 
 def sl_proximity_pct(current_price, active_sl) -> float | None:

@@ -211,7 +211,7 @@ def is_buy_candidate(msl_row: dict, open_map: dict, threshold: float = None) -> 
     if threshold is None:
         threshold = buy_candidate_threshold()
     chase_soft     = 0.03
-    chase_hard     = 0.06
+    chase_hard     = 0.08
     dist_from_high = (cp - eh) / eh
     if lifecycle == "EXIT":
         return False, "exit_lifecycle_no_entry"
@@ -243,6 +243,9 @@ def is_buy_candidate(msl_row: dict, open_map: dict, threshold: float = None) -> 
     if dist_from_high <= chase_hard:
         if is_strong_momentum and struct_edge == "YES" and not is_chasing_type:
             return True, "moderate_above_strong_confirmation"
+        # Optional: add a softer fallback for HOT but momentum_phase=EXPANSION
+        if momentum_state == "HOT" and struct_edge == "YES" and dist_from_high <= 0.06:
+            return True, "moderate_above_hot_relaxed"
         return False, "moderate_above_insufficient_momentum"
     return False, "far_above_extended"
 
@@ -318,6 +321,7 @@ def generate(run_date: date | None = None) -> list:
         elif sym in sbs_set:      strat_tag = "SBS"
         else:                     strat_tag = msl_row.get("strategy_source", "")
 
+        filter_reason = None  # set by is_buy_candidate path below
         if in_pos:
             position_state = "OPEN_POSITION"
             action = pos.get("action_required", "").upper()
@@ -327,7 +331,11 @@ def generate(run_date: date | None = None) -> list:
         elif is_buy_candidate(msl_row, open_map)[0]:
             position_state = "BUY_CANDIDATE"
             signal_type    = "BUY_CANDIDATE"
+            filter_reason  = "in_zone"
         else:
+            # Capture WHY this stock is a WATCH — essential for diagnosing
+            # why stocks with high scores aren't appearing in Telegram.
+            _, filter_reason = is_buy_candidate(msl_row, open_map)
             position_state = "WATCHING"
             signal_type    = "WATCH"
             if not show_watch:
@@ -416,6 +424,7 @@ def generate(run_date: date | None = None) -> list:
             "sheet_conflict":       False,
             "sheet_conflict_type":  None,
             "days_to_trigger_est":  None,
+            "filter_reason":        filter_reason if position_state == "WATCHING" else None,
             # ── v2 NEW: market-context at signal time (for ml_provider_v2 training) ──
             # These 4 fields require sql_signal_log_market_context.sql migration first.
             # They capture MARKET CONDITIONS when this signal fired — critical for
@@ -496,9 +505,25 @@ def main():
     buy_candidates = [s for s in signals if s["signal_type"] == "BUY_CANDIDATE"]
     exits          = [s for s in signals if s["signal_type"] == "EXIT"]
     risk_off_warns = [s for s in signals if s["regime_warning"]]
+    watch_signals  = [s for s in signals if s["signal_type"] == "WATCH"]
+
     logger.info(f"  BUY CANDIDATES: {len(buy_candidates)}")
     logger.info(f"  EXIT signals:   {len(exits)}")
     logger.info(f"  REGIME WARNS:   {len(risk_off_warns)}")
+
+    # ── WATCH breakdown — shows exactly why each stock is not a BUY_CANDIDATE ──
+    # This is your primary diagnostic: if a high-score stock appears here as
+    # 'missing_price_data' → entry_zone_low not set in Sheet/master_shortlist
+    # 'below_zone_wait'    → price hasn't reached entry zone yet
+    # 'far_above_extended' → price ran past zone before signal fired
+    # 'exit_lifecycle_no_entry' → lifecycle=EXIT in Sheet
+    if watch_signals:
+        from collections import Counter
+        reasons = Counter(s.get("filter_reason", "unknown") for s in watch_signals)
+        logger.info(f"  WATCH signals ({len(watch_signals)}) by filter reason:")
+        for reason, count in reasons.most_common():
+            examples = [s["symbol"] for s in watch_signals if s.get("filter_reason") == reason][:4]
+            logger.info(f"    {reason}: {count} stocks — e.g. {', '.join(examples)}")
 
     # Log the v2 market context captured today
     if signals:
