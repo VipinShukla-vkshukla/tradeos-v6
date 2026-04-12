@@ -783,7 +783,7 @@ def compute_momentum_phase(s: dict, hist: list, regime_ctx: dict) -> str:
         return "EXTENDED"
 
     # EXPANSION: the sweet spot — confirmed, active, mid-cycle
-    if adx >= 22 and di_plus > di_minus and rsi_d >= 54 and above_50:
+    if adx >= 18 and di_plus > di_minus and rsi_d >= 54 and above_50:
         return "EXPANSION"
 
     # EARLY: just beginning — ADX rising from low, RSI crossing 50
@@ -834,57 +834,114 @@ def compute_velocity_state(s: dict, hist: list) -> str:
 
 def compute_trend_maturity(s: dict, regime_ctx: dict) -> str:
     """
-    Regime-aware trend maturity.
-    In TRENDING markets, a stock can be "DEVELOPING" much longer before
-    reaching LATE status. In RISK OFF, DEVELOPING is already risky.
+    Regime-aware trend maturity — 5 states: FRESH, DEVELOPING, LATE, EXHAUSTED, FLAT.
+    
+    FLAT:      No clear trend direction. ADX low, price near/below SMA50.
+    FRESH:     Trend just initiated. ADX recently crossed up, price recently
+               cleared SMA50, RSI in 48-60 range — has the MOST runway left.
+    DEVELOPING: Trend confirmed and active. Mid-cycle. Most swing trades live here.
+    LATE:      Trend mature, extension beginning. Still valid but R:R compressing.
+               Reduce size on new entries, hold existing.
+    EXHAUSTED: Multiple overextension signals. Avoid new entries. Manage exits.
     """
     rsi_d      = float(s.get("rsi_daily") or 0)
+    rsi_w      = float(s.get("rsi_weekly") or 0)
     rsi_m      = float(s.get("rsi_monthly") or 0)
     adx        = float(s.get("adx") or 0)
+    di_plus    = float(s.get("di_plus") or 0)
+    di_minus   = float(s.get("di_minus") or 0)
     dist_sma50 = float(s.get("dist_sma50") or 0)
     ret_6m     = float(s.get("ret_6m") or 0)
-    ret_12m    = float(s.get("ret_12m") or 0)
+    ret_1m     = float(s.get("ret_1m") or 0)
     above_50   = bool(s.get("above_sma50"))
+    sma50_200  = bool(s.get("sma50_gt_200"))
     wk_hh      = bool(s.get("wk_hi_high"))
+    wk_hl      = bool(s.get("wk_hi_low"))
 
-    extended_thresh = get_rsi_extended_threshold(regime_ctx, adx)
+    extended_thresh  = get_rsi_extended_threshold(regime_ctx, adx)
     exhausted_thresh = extended_thresh + 7
 
-    # EXHAUSTED: multiple dimensions overextended
-    exhausted = sum([
-        rsi_d > exhausted_thresh,
+    # ── EXHAUSTED: multiple overextension dimensions ──────────────────────────
+    # ADX removed from exhaustion — high ADX = strong trend, not exhausted
+    # ret_12m only counts if RSI also elevated (avoids penalising compounders)
+    rsi_truly_exhausted = rsi_d > exhausted_thresh
+    exhausted_signals = sum([
+        rsi_truly_exhausted,
         rsi_m > 0 and rsi_m > 78,
         dist_sma50 > 22,
-        ret_12m > 120,   # +120% in a year = crowded
-        ret_6m > 60,     # +60% in 6 months = extended
+        ret_6m > 60,                    # +60% in 6m = genuinely overextended
+        ret_1m > 20 and rsi_d > extended_thresh,  # parabolic month + high RSI
     ])
-    if exhausted >= 2: return "EXHAUSTED"
+    if exhausted_signals >= 2:
+        return "EXHAUSTED"
 
-    # LATE: elevated but not exhausted
+    # ── FLAT: no directional conviction ──────────────────────────────────────
+    # Check early — don't waste time on trendless stocks
+    if not above_50 or adx < 14 or di_plus <= di_minus:
+        return "FLAT"
+
+    # ── LATE: trend mature, extension building ────────────────────────────────
+    # ADX deliberately EXCLUDED — high ADX means trend strength, not lateness
+    # late_thresh = extended_thresh - 6 (approaching extended but not there yet)
     late_thresh = extended_thresh - 6
-    late = sum([
-        rsi_d > late_thresh,
-        dist_sma50 > 13,
-        adx > 35,
-        ret_6m > 35,
+    late_signals = sum([
+        rsi_d > late_thresh,                   # RSI approaching extended zone
+        dist_sma50 > 13,                        # price stretched from SMA50
+        ret_6m > 30,                            # 6m move getting large
+        ret_1m > 12,                            # 1m move accelerating late
+        rsi_m > 0 and rsi_m > 68,              # monthly RSI elevated
+        not wk_hl and wk_hh,                   # new highs but pullbacks deepening
     ])
-    if late >= 2: return "LATE"
+    if late_signals >= 2:
+        return "LATE"
 
-    # DEVELOPING: active trend forming
-    if above_50 and adx > 16 and rsi_d > 50:
+    # ── FRESH: trend just initiated — maximum runway ─────────────────────────
+    # Conditions: ADX rising through 14-26 range (not yet fully established),
+    # price recently cleared SMA50 (dist small), RSI not yet hot,
+    # golden cross present (structural quality) OR weekly HL just formed.
+    #
+    # Upper ADX bound is 26 not 22 — a stock can have ADX=24 and still be FRESH
+    # if RSI is only 52 and dist_sma50 is only 3%. The key is RSI not yet heated.
+    rsi_fresh_max = min(extended_thresh - 12, 62)  # regime-aware RSI ceiling for FRESH
+    fresh_signals = sum([
+        14 <= adx <= 26,                        # ADX building but not established
+        dist_sma50 < 6,                         # price close to SMA50 (recently crossed)
+        rsi_d < rsi_fresh_max,                  # RSI not yet hot
+        sma50_200,                              # golden cross = structural quality
+        wk_hl and not wk_hh,                    # higher lows forming, highs not yet broken
+    ])
+    if fresh_signals >= 3:
+        return "FRESH"
+
+    # ── DEVELOPING: confirmed active mid-cycle trend ──────────────────────────
+    # Requires directional conviction (DI spread) + above SMA50 + RSI in trend zone
+    di_spread = di_plus - di_minus
+    if above_50 and adx > 16 and di_spread >= 4 and rsi_d > 50:
         return "DEVELOPING"
 
-    return "FRESH"
+    # ── FLAT fallthrough: above SMA50 but no clear trend ─────────────────────
+    # (e.g., adx > 14 but di_plus <= di_minus was caught above, 
+    #  but could also be adx 14-16 range without enough di spread)
+    return "FLAT"
 
 
-def compute_lifecycle(s: dict, hist: list) -> str:
+def compute_lifecycle(s: dict, hist: list, regime_ctx: dict,
+                       struct_edge: str = "NO",
+                       momentum_phase: str = "",
+                       velocity_state: str = "",
+                       trend_maturity: str = "",
+                       entry_timing_type: str = "",
+                       in_position: bool = False) -> str:
     """
-    HOLD: trend intact, position justified.
-    EXIT: trend breaking down — multiple confirmation signals.
-    DEVELOPING: forming, not yet in a confirmed trend.
+    Trend lifecycle action signal — 5 states:
 
-    For swing trading, we want to HOLD as long as the trend is intact
-    and not flip to EXIT prematurely. Require 3+ exit signals to trigger.
+    EXIT:       Structural breakdown confirmed. Close or stop-manage position.
+                Requires strong convergence — avoids hair-trigger exits.
+    REDUCE:     Trend intact but maturing/decelerating. Trim position size.
+                For held positions approaching LATE/EXHAUSTED.
+    HOLD:       Trend intact, momentum healthy. No action needed.
+    ADD:        Trend in confirmed EXPANSION with acceleration. Add to position.
+    DEVELOPING: Trend forming, not yet confirmed. Watch only — small initial size.
     """
     rsi_d       = float(s.get("rsi_daily") or 0)
     adx         = float(s.get("adx") or 0)
@@ -896,27 +953,57 @@ def compute_lifecycle(s: dict, hist: list) -> str:
     psar        = float(s.get("psar") or 0)
     close       = float(s.get("close") or s.get("current_price") or 0)
     macd_h      = float(s.get("macd_hist") or 0)
-    wk_hh       = bool(s.get("wk_hi_high"))
     wk_hl       = bool(s.get("wk_hi_low"))
+    wk_hh       = bool(s.get("wk_hi_high"))
     sma_50      = float(s.get("sma_50") or 0)
 
-    # EXIT: require strong convergence of bearish signals
+    extended_thresh = get_rsi_extended_threshold(regime_ctx, adx)
+
+    # ── EXIT: structural breakdown — require 3+ signals ──────────────────────
+    # In RISK OFF regime, lower the bar to 2 signals (market amplifies breakdowns)
+    exit_threshold = 2 if regime_ctx.get("is_bear") else 3
+
     exit_signals = sum([
         rsi_d < 42,
-        di_minus > di_plus and adx > 20,
+        di_minus > di_plus and adx > 18,           # directional flip
         not above_50,
         macd_h < -0.5,
         not above_st,
-        psar > 0 and close < psar,               # PSAR flipped above price
-        not wk_hl,                                # pullbacks deepening
-        sma_50 > 0 and close < sma_50 * 0.97,    # decisively below SMA50
+        psar > 0 and close > 0 and close < psar,   # PSAR flipped
+        not wk_hl,                                  # pullbacks deepening
+        sma_50 > 0 and close < sma_50 * 0.97,      # decisively below SMA50
+        struct_edge == "NO" and in_position,        # structural quality lost while held
     ])
-
-    # Require 3+ for EXIT (avoid hair-trigger exits in volatile swings)
-    if exit_signals >= 3:
+    if exit_signals >= exit_threshold:
         return "EXIT"
 
-    # HOLD: trend intact — fewer requirements
+    # ── REDUCE: held position, trend maturing or decelerating ────────────────
+    # Only applies to held positions — no point telling a watcher to reduce
+    if in_position:
+        reduce_signals = sum([
+            trend_maturity in ("LATE", "EXHAUSTED"),
+            velocity_state == "DECELERATING",
+            rsi_d > extended_thresh,               # RSI extended in current regime
+            entry_timing_type == "EXTENDED",        # price far from entry zone
+            not wk_hl and above_50,                 # losing HL structure but not yet exit
+        ])
+        if reduce_signals >= 2:
+            return "REDUCE"
+
+    # ── ADD: expansion phase with acceleration — highest conviction ───────────
+    # Deliberately strict — ADD means put real money to work
+    add_conditions = (
+        momentum_phase == "EXPANSION"
+        and velocity_state == "ACCELERATING"
+        and trend_maturity not in ("LATE", "EXHAUSTED")
+        and entry_timing_type not in ("EXTENDED", "WAIT")
+        and struct_edge == "YES"
+        and rsi_d < extended_thresh          # not already overextended
+    )
+    if add_conditions:
+        return "ADD"
+
+    # ── HOLD: trend intact, no action required ───────────────────────────────
     hold_signals = sum([
         above_50,
         sma50_gt200,
@@ -929,43 +1016,66 @@ def compute_lifecycle(s: dict, hist: list) -> str:
     if hold_signals >= 4:
         return "HOLD"
 
+    # ── DEVELOPING: trend forming, insufficient confirmation ─────────────────
     return "DEVELOPING"
 
 
 def compute_struct_edge(s: dict, ma_ctx: dict, bb_ctx: dict) -> str:
     """
-    Structural convergence: multiple independent factors confirming quality.
-    Now uses MA alignment and BB squeeze as additional evidence.
+    Structural convergence — tiered: mandatory floor + quality scoring.
+
+    MANDATORY TIER (all required — structural non-negotiables):
+      above_sma50 + sma50_gt_200 + above_st
+      These three form the minimum trend structure for a swing trade.
+      wk_hl is NOT mandatory (a stock can be building HL without confirming yet)
+      but it IS a strong quality signal.
+
+    QUALITY TIER (5+ of 9 = YES):
+      Additional confirmation signals. If mandatory tier passes but quality
+      is weak (< 5), return "WEAK_YES" — but for simplicity we still use YES/NO.
+      The nuance lives in the score, not this binary.
     """
+    above_50    = bool(s.get("above_sma50"))
+    sma50_200   = bool(s.get("sma50_gt_200"))
+    above_st    = bool(s.get("above_st"))
+
+    # Mandatory floor — any one missing = NO, no exceptions
+    # Rationale: below SMA50 or below supertrend = trend broken for swing purposes
+    if not above_50:   return "NO"
+    if not sma50_200:  return "NO"
+    if not above_st:   return "NO"
+
+    # Quality signals — now evaluated on a structurally sound stock
     consol     = float(s.get("consol_range") or 999)
     delivery   = float(s.get("delivery_pct") or 0)
     rs         = float(s.get("rs_vs_nifty") or 0)
     vol_r      = float(s.get("vol_ratio") or 0)
-    above_50   = bool(s.get("above_sma50"))
     adx        = float(s.get("adx") or 0)
-    bk_setup   = bool(s.get("breakout_setup"))
+    di_plus    = float(s.get("di_plus") or 0)
+    di_minus   = float(s.get("di_minus") or 0)
     wk_hh      = bool(s.get("wk_hi_high"))
     wk_hl      = bool(s.get("wk_hi_low"))
     ma_score   = ma_ctx.get("ma_alignment_score", 0)
     squeeze    = bb_ctx.get("bb_squeeze", False)
-    psar_above = s.get("psar") and float(s.get("close") or 0) > float(s.get("psar") or 999)
+    close      = float(s.get("close") or 0)
+    psar       = float(s.get("psar") or 0)
+    psar_above = close > psar if (close > 0 and psar > 0) else False
 
-    edge_signals = sum([
-        consol < 12,
-        delivery >= 48,
-        rs > 1.5,
-        vol_r >= 1.25,
-        above_50,
-        adx >= 18,
-        bk_setup,
-        wk_hh and wk_hl,        # structural uptrend
-        ma_score >= 4,           # strong MA alignment
-        squeeze,                  # coiling
-        psar_above,               # PSAR confirming
+    quality_signals = sum([
+        consol < 12,                        # price in tight range
+        delivery >= 45,                     # institutional participation
+        rs > 2.0,                           # outperforming Nifty
+        vol_r >= 1.2,                       # above-average volume
+        adx >= 18 and di_plus > di_minus,  # directional trend active
+        wk_hl,                              # higher lows = healthy uptrend
+        wk_hh and wk_hl,                   # full HH+HL structure (counts as 2nd signal if both)
+        ma_score >= 4,                      # strong MA stack
+        squeeze,                            # BB coiling = pre-breakout
+        psar_above,                         # PSAR below price = trend confirmed
     ])
 
-    # More demanding: require 5 signals (was 4) because we now have 11 signals
-    return "YES" if edge_signals >= 5 else "NO"
+    # 5 of 10 quality signals required (mandatory tier already passed)
+    return "YES" if quality_signals >= 5 else "NO"
 
 
 def compute_reentry_mode(s: dict) -> str:
@@ -1052,25 +1162,59 @@ def compute_entry_zones(s: dict, strategy: str, regime_ctx: dict) -> tuple:
     return ez_low, ez_high
 
 
-def compute_entry_timing_type(s: dict, ez_low: float, ez_high: float) -> str:
+def compute_entry_timing_type(s: dict, ez_low: float, ez_high: float,
+                               reentry_mode: str = "NO",
+                               momentum_phase: str = "") -> str:
+    """
+    Entry timing classification — 5 states:
+    
+    OPTIMAL:    Price inside entry zone. Best R:R. Enter or add.
+    REENTRY:    Price pulled back from extension (2-8% off 30d high),
+                trend intact. Valid second entry after missing OPTIMAL.
+    APPROACHING: Price below entry zone but within 1 ATR. Wait for zone touch.
+                 (Renamed from WAIT — it's not waiting, it's anticipating)
+    CHASING:    Price 3-8% above zone. Elevated risk. Reduced size only.
+    EXTENDED:   Price >8% above zone. Avoid new entries. Hold only.
+    """
     close = float(s.get("close") or s.get("current_price") or 0)
     if not close or not ez_low or not ez_high:
-        return "WAIT"
+        return "CHASING"   # no zone data = can't assess = treat as extended
 
-    dist_from_high = (close - ez_high) / ez_high
-    adx = float(s.get("adx") or 0)
+    adx      = float(s.get("adx") or 0)
     above_50 = bool(s.get("above_sma50"))
+    above_st = bool(s.get("above_st"))
+    high_30d = float(s.get("high_30d") or 0)
+    rsi_d    = float(s.get("rsi_daily") or 0)
 
-    if close < ez_low * 0.974:
-        return "WAIT"
-    elif ez_low <= close <= ez_high:
+    # REENTRY: pulled back from 30d high 2-8%, trend structure intact
+    # Better trigger than adx<26: look at actual pullback from recent high
+    if reentry_mode == "ELIGIBLE" and momentum_phase not in ("EARLY", "FLAT", ""):
+        return "REENTRY"
+    
+    # Also detect REENTRY from price action alone (even if reentry_mode not set)
+    if high_30d > 0 and above_50 and above_st:
+        pullback_pct = (high_30d - close) / high_30d * 100
+        if 2.0 <= pullback_pct <= 8.0 and rsi_d >= 44:
+            return "REENTRY"
+
+    # OPTIMAL: inside the computed entry zone
+    if ez_low <= close <= ez_high:
         return "OPTIMAL"
-    elif dist_from_high <= 0.025:
-        return "REENTRY" if adx < 26 and above_50 else "CHASING"
-    elif dist_from_high <= 0.06:
-        return "CHASING"
-    else:
-        return "EXTENDED"
+
+    # APPROACHING: below zone but close — anticipatory state
+    atr_14 = float(s.get("atr_14") or (ez_high - ez_low) or 1)
+    if close < ez_low and close >= ez_low - atr_14:
+        return "APPROACHING"
+
+    # Far below zone — trend may be breaking, not approaching
+    if close < ez_low - atr_14:
+        return "WAIT"   # keep WAIT for genuinely distant below-zone price
+
+    # Above zone — how far?
+    dist_from_high = (close - ez_high) / ez_high
+    if dist_from_high <= 0.03:    return "CHASING"    # just above zone
+    elif dist_from_high <= 0.08:  return "CHASING"    # meaningfully above
+    else:                          return "EXTENDED"   # >8% above zone
 
 
 def compute_price_location(s: dict, ez_low: float, ez_high: float) -> tuple:
@@ -1496,8 +1640,10 @@ def compute_holding_score(s: dict, regime_ctx: dict, lifecycle: str,
     score -= risk_penalty
 
     # Regime multiplier
-    score *= regime_ctx.get("momentum_decay", 0.70)
-    score += regime_ctx.get("regime_boost", 0) * 0.5
+    regime_adj = regime_ctx.get("regime_boost", 0) * 0.3   # max ±2.4 pts
+    score = score * (0.7 + regime_ctx.get("momentum_decay", 0.70) * 0.3) + regime_adj
+    # RISK OFF (decay=0.40): score × 0.82 — compresses range without collapsing it
+    # TRENDING (decay=0.85): score × 0.955 — nearly unchanged
 
     return round(min(max(score, 0.0), 100.0), 1)
 
@@ -1630,7 +1776,7 @@ def compute_all(data: dict, today: str) -> list:
         in_pos   = sym in open_syms
 
         try:
-            # ── Composite signal contexts ──────────────────────────────────
+            # ── STEP 1: Independent signal contexts (no dependencies) ──────
             ma_ctx     = compute_ma_alignment(s)
             ha_ctx     = compute_ha_signal(s)
             bb_ctx     = compute_bb_context(s)
@@ -1642,21 +1788,41 @@ def compute_all(data: dict, today: str) -> list:
             fund_ctx   = compute_fundamental_quality(s)
             stoch_ctx  = compute_stoch_context(s, regime_ctx, adx)
 
-            # ── Core labels ───────────────────────────────────────────────
+            # ── STEP 2: Core labels that depend only on s + regime_ctx ─────
+            # These have no dependency on each other
             velocity_state = compute_velocity_state(s, hist)
             momentum_state = compute_momentum_state(s, regime_ctx)
             momentum_phase = compute_momentum_phase(s, hist, regime_ctx)
             trend_maturity = compute_trend_maturity(s, regime_ctx)
-            lifecycle      = compute_lifecycle(s, hist)
-            struct_edge    = compute_struct_edge(s, ma_ctx, bb_ctx)
-            reentry_mode   = compute_reentry_mode(s)
 
-            # ── Entry zone + timing ───────────────────────────────────────
+            # ── STEP 3: Structural edge — depends on ma_ctx + bb_ctx ───────
+            # Must come before entry_timing and lifecycle
+            struct_edge  = compute_struct_edge(s, ma_ctx, bb_ctx)
+            reentry_mode = compute_reentry_mode(s)
+
+            # ── STEP 4: Entry zone + timing ────────────────────────────────
+            # entry_timing depends on reentry_mode + momentum_phase
             ez_low, ez_high = compute_entry_zones(s, strategy, regime_ctx)
-            entry_timing    = compute_entry_timing_type(s, ez_low, ez_high)
+            entry_timing    = compute_entry_timing_type(
+                s, ez_low, ez_high,
+                reentry_mode=reentry_mode,
+                momentum_phase=momentum_phase,
+            )
             price_loc, dist_fv, dist_entry = compute_price_location(s, ez_low, ez_high)
 
-            # ── Scores ────────────────────────────────────────────────────
+            # ── STEP 5: Lifecycle — depends on all labels above ────────────
+            # Must be last among core labels
+            lifecycle = compute_lifecycle(
+                s, hist, regime_ctx,
+                struct_edge=struct_edge,
+                momentum_phase=momentum_phase,
+                velocity_state=velocity_state,
+                trend_maturity=trend_maturity,
+                entry_timing_type=entry_timing,
+                in_position=in_pos,
+            )
+
+            # ── STEP 6: Scores — depend on labels + contexts ───────────────
             momentum_score      = compute_momentum_score(s, regime_ctx, macd_ctx, stoch_ctx, ha_ctx, weekly_ctx)
             validity_score      = compute_validity_score(s, sector, sector_rank, ez_low, ez_high, ma_ctx, psar_ctx, vwap_ctx, regime_ctx)
             institutional_score = compute_institutional_score(s, vwap_ctx, vol_trend)
@@ -1664,8 +1830,14 @@ def compute_all(data: dict, today: str) -> list:
             risk_score          = compute_risk_score(s, regime_ctx, fund_ctx)
             expected_r          = compute_expected_r(s, ez_low, ez_high)
             days_trigger        = compute_days_to_trigger(s, ez_low)
-            holding_score       = compute_holding_score(s, regime_ctx, lifecycle, momentum_state, risk_score, velocity_state, ma_ctx, psar_ctx)
 
+            # holding_score depends on lifecycle + momentum_state + risk_score
+            holding_score = compute_holding_score(
+                s, regime_ctx, lifecycle, momentum_state,
+                risk_score, velocity_state, ma_ctx, psar_ctx
+            )
+
+            # ── STEP 7: Final score + history context ──────────────────────
             base_score  = float(msl_row.get("base_score") or msl_row.get("final_score") or 50)
             final_score = compute_final_score(
                 momentum_score, validity_score, institutional_score,
@@ -1673,16 +1845,12 @@ def compute_all(data: dict, today: str) -> list:
                 base_score, regime_ctx, ma_ctx["ma_alignment_score"],
                 weekly_ctx["weekly_structure_score"], fund_ctx["fundamental_penalty"]
             )
-
-            # ── History context ───────────────────────────────────────────
             hist_ctx = compute_msl_history_context(sym, hist)
-
-            validity_score_int = round(float(s.get("validity_score") or validity_score))
 
             results.append({
                 "date":   today,
                 "symbol": sym,
-                # ── Core labels (recomputed) ──
+                # ── Core labels ──
                 "momentum_state":       momentum_state,
                 "momentum_phase":       momentum_phase,
                 "velocity_state":       velocity_state,
@@ -1698,12 +1866,7 @@ def compute_all(data: dict, today: str) -> list:
                 "dist_fv_pct":          dist_fv,
                 "dist_entry_pct":       dist_entry,
                 # ── Scores ──
-                # NOTE: final_score here is the INTELLIGENCE score from compute_msl.
-                # composite_score from screen_stocks (screener aggregate) is a SEPARATE
-                # column in msl_computed — they are different concepts and MUST NOT conflict.
-                # In msl_computed: composite_score = screener output, final_score = intelligence output.
-                # In master_shortlist: final_score = the intelligence score (replaces Sheet formula).
-                "final_score":          final_score,          # intelligence-weighted composite
+                "final_score":          final_score,
                 "base_score":           base_score,
                 "validity_score":       validity_score,
                 "expected_r":           expected_r,
@@ -1712,14 +1875,14 @@ def compute_all(data: dict, today: str) -> list:
                 "days_in_list":         hist_ctx["days_in_list"],
                 "rank_vel_3d":          hist_ctx["rank_vel_3d"],
                 "score_vel_5d":         hist_ctx["score_vel_5d"],
-                # ── New scores (unique to compute_msl) ──
+                # ── Composite scores ──
                 "momentum_score":       momentum_score,
                 "institutional_score":  institutional_score,
                 "breakout_readiness":   breakout_readiness,
                 "risk_score":           risk_score,
                 "holding_score":        holding_score,
                 "days_to_trigger_est":  days_trigger,
-                # ── New signal contexts ──
+                # ── Signal contexts ──
                 "ma_alignment_score":   ma_ctx["ma_alignment_score"],
                 "ha_signal":            ha_ctx["ha_signal"],
                 "bb_squeeze":           bb_ctx["bb_squeeze"],
@@ -1914,8 +2077,8 @@ def main():
 
         if diffs:
             diffs.sort(key=lambda x: x[0])
-            logger.info(f"  Sheet vs computed divergences ({len(diffs)} symbols), top 10 by rank:")
-            for _, d in diffs[:10]:
+            logger.info(f"  Sheet vs computed divergences ({len(diffs)} symbols), top 40 by rank:")
+            for _, d in diffs[:40]:
                 logger.info(d)
         else:
             logger.info("  ✅ Computed values closely match Sheet")
@@ -1948,7 +2111,8 @@ def main():
         logger.warning(f"  ⚠ Held positions with weakening score: {[r['symbol'] for r in held_weakening]}")
 
     return {
-        "status": "ok", "computed": n, "mode": mode,
+        "status": "ok", "computed": n,
+        "mode": mode,
         "avg_score": avg("final_score"),
         "hot_in_zone": len(hot_in_zone),
         "held_weakening": len(held_weakening),

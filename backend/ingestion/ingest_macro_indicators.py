@@ -183,6 +183,13 @@ def fetch_yahoo_finance(symbol: str, indicator_name: str) -> dict | None:
         logger.debug(f"Yahoo Finance {symbol} failed (non-fatal): {e}")
     return None
 
+def fetch_india_vix() -> dict | None:
+    """
+    Fetch India VIX from Yahoo Finance (^INDIAVIX).
+    NSE publishes VIX in real-time; Yahoo reflects it with ~15min delay.
+    This replaces the Sheet as the VIX source.
+    """
+    return fetch_yahoo_finance("%5EINDIAVIX", "INDIA_VIX")
 
 # ── Source 4: ET RSS — CPI/WPI from headlines ────────────────────────────
 
@@ -299,6 +306,14 @@ def main():
                 logger.info(f"  Yahoo {name}: {row['indicator_value']}")
         except Exception as e:
             logger.warning(f"  Yahoo {name}: FAILED (non-fatal) — {e}")
+
+    try:
+        vix_row = fetch_india_vix()
+        if vix_row:
+            all_rows.append(vix_row)
+            logger.info(f"  India VIX: {vix_row['indicator_value']}")
+    except Exception as e:
+        logger.warning(f"  India VIX: FAILED (non-fatal) — {e}")
 
     # Source 4: ET RSS CPI/WPI
     try:

@@ -990,7 +990,7 @@ def ingest_msl_history(service, sb):
             "strategy_source": safe_str(r.get("strategy_source")),
             "close_price": parse_num(r.get("close_price")),
             "price_location": safe_str(r.get("price_location")),
-            "dist_fv_pct": parse_num(r.get("distance_from_fair_v")),
+            "dist_fv_pct": parse_num(r.get("distance_from_fair_value_")),
             "entry_timing_type": safe_str(r.get("entry_timing_type")),
             "momentum_phase": safe_str(r.get("momentum_phase")),
             "velocity_state": safe_str(r.get("velocity_state")),

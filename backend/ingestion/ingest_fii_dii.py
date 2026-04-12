@@ -85,38 +85,44 @@ def fetch_fii_dii_from_nse(session: requests.Session, trade_date: date) -> dict 
 
 
 def compute_rolling_flows(sb, today: date) -> dict:
-    """Compute 5D, 10D, 20D rolling FII net flows and signal.
-    FIXED: reads 'fii_net' (schema column) not 'fii_net_cr' (was causing DB error).
-    """
     try:
-        rows = sb.table("fii_dii_flow").select("date,fii_net") \
-            .order("date", desc=True).limit(20).execute().data   # ← was fii_net_cr
-        nets = [float(r["fii_net"] or 0) for r in rows]         # ← was fii_net_cr
-        n5  = sum(nets[:5])  if len(nets) >= 5  else None
-        n10 = sum(nets[:10]) if len(nets) >= 10 else None
-        n20 = sum(nets[:20]) if len(nets) >= 20 else None
+        rows = sb.table("fii_dii_flow").select("date,fii_net,dii_net") \
+            .order("date", desc=True).limit(20).execute().data
+
+        fii_nets = [float(r["fii_net"] or 0) for r in rows]
+        dii_nets = [float(r["dii_net"] or 0) for r in rows]
+
+        n5  = sum(fii_nets[:5])  if len(fii_nets) >= 5  else None
+        n10 = sum(fii_nets[:10]) if len(fii_nets) >= 10 else None
+        n20 = sum(fii_nets[:20]) if len(fii_nets) >= 20 else None
+        d5  = sum(dii_nets[:5])  if len(dii_nets) >= 5  else None
+        d20 = sum(dii_nets[:20]) if len(dii_nets) >= 20 else None
 
         caution_thresh     = cfg_float("fii_caution_threshold",     -2000)
         accelerator_thresh = cfg_float("fii_accelerator_threshold",  1000)
 
         signal = "NEUTRAL"
         if n5 is not None:
-            consecutive_sell = sum(1 for n in nets[:5] if n < caution_thresh / 5)
+            consecutive_sell = sum(1 for n in fii_nets[:5] if n < caution_thresh / 5)
             if consecutive_sell >= 4:
                 signal = "CAUTION"
             elif n5 > accelerator_thresh * 3:
                 signal = "ACCELERATOR"
 
         return {
-            # ── Canonical column names ──────────────────────────────────
-            "fii_net_5d":   round(n5,  2) if n5  is not None else None,   # ← was fii_net_5d_cumulative
-            "fii_net_10d":  round(n10, 2) if n10 is not None else None,   # ← was fii_net_10d_cumulative
-            "fii_net_20d":  round(n20, 2) if n20 is not None else None,   # ← was fii_net_20d_cumulative
-            "fii_flag":     signal,                                         # ← was fii_signal
+            "fii_net_5d":  round(n5,  2) if n5  is not None else None,
+            "fii_net_10d": round(n10, 2) if n10 is not None else None,
+            "fii_net_20d": round(n20, 2) if n20 is not None else None,
+            "dii_net_5d":  round(d5,  2) if d5  is not None else None,
+            "dii_net_20d": round(d20, 2) if d20 is not None else None,
+            "fii_flag":    signal,
         }
     except Exception as e:
         logger.warning(f"Rolling flow compute failed: {e}")
-        return {"fii_net_5d": None, "fii_net_10d": None, "fii_net_20d": None, "fii_flag": "NEUTRAL"}
+        return {
+            "fii_net_5d": None, "fii_net_10d": None, "fii_net_20d": None,
+            "dii_net_5d": None, "dii_net_20d": None, "fii_flag": "NEUTRAL"
+        }
 
 
 def main():

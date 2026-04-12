@@ -140,6 +140,15 @@ def main():
 
     def step_quality_check():
         from compute.data_quality_monitor import main as fn; return fn()
+    
+    def step_compute_regime():
+        from compute.compute_regime import main as fn; return fn()
+    
+    def step_screen_stocks():
+        from signals.screen_stocks import main as fn; return fn()
+    
+    def step_compute_msl():
+        from compute.compute_msl import main as fn; return fn()
 
     # ── Phase 0 steps ─────────────────────────────────────────────────────────
     steps_p0 = [
@@ -187,19 +196,22 @@ def main():
             ("08_nse_events",          step_nse_events,          False),  # event_calendar
             ("09_asm_gsm",             step_asm_gsm,             False),  # safety_lists ASM/FO_BAN
             # ── Computation (after all raw data is fresh) ──
-            ("10_compute_indicators",  step_compute_indicators,  False),  # vol_ratio, breadth, rs
-            ("11_regime_predict",      step_regime_predict,      False),  # ML predicted_regime (P2-D)
+            ("10_compute_indicators",  step_compute_indicators,  False),  # chartink_raw_data (current + 370d history), stock_data_daily (sheet baseline for reconcile), nifty_total_market (index flags), nifty_upcoming_events (next 14d), master_shortlist (in_master_shortlist flag), market_regime (nifty price for rs_vs_nifty), system_config (field trust levels)
+            ("11_compute_regime",      step_compute_regime,      False),  # auto calculation of market regime a substitute of sheet regime input, runs after compute_indicators to use breadth data, regime_predict is non-fatal ML enhancement on top of this
+            ("12_regime_predict",      step_regime_predict,      False),  # ML predicted_regime (P2-D)
+            ("13_screen_stocks",       step_screen_stocks,       False),  # 9 engines scan 500 stocks → all or top 30 based on condition → msl_computed (shadow) or master_shortlist (hybrid/full)
+            ("14_compute_msl",          step_compute_msl,          False),  # 15 intelligence functions enrich screener symbols → holding_score, bb_context, vwap_alignment, final_score
             # ── Signal generation (all inputs now fresh) ──
-            ("12_signals",             step_signals,             True),   # PRIME/STAGED/BREAKOUT/REENTRY
-            ("13_history",             step_history,             False),  # msl_history + regime_history
+            ("15_signals",             step_signals,             True),   # PRIME/STAGED/BREAKOUT/REENTRY
+            ("16_history",             step_history,             False),  # msl_history + regime_history
             # ── Analysis and AI ──
-            ("14_post_trade",          step_post_trade,          False),  # outcomes → lessons
-            ("15_generate_shortlist",  step_generate_shortlist,  False),  # AI top-12 pre-rank
-            ("16_market_intel",        step_market_intel,        False),  # news synthesis
-            ("17_ai_enrich",           step_ai_enrich,           False),  # conviction per signal
+            ("17_post_trade",          step_post_trade,          False),  # outcomes → lessons
+            ("18_generate_shortlist",  step_generate_shortlist,  False),  # AI top-12 pre-rank
+            ("19_market_intel",        step_market_intel,        False),  # news synthesis
+            ("20_ai_enrich",           step_ai_enrich,           False),  # conviction per signal
             # ── Output ──
-            ("18_alerts",              step_alerts,              False),  # Telegram digest
-            ("19_quality_check",       step_quality_check,       False),  # always last
+            ("21_alerts",              step_alerts,              False),  # Telegram digest
+            ("22_quality_check",       step_quality_check,       False),  # always last
         ]
     else:
         all_steps = steps_p0 + (steps_p1 if phase >= 1 else [])

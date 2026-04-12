@@ -50,10 +50,11 @@ from loguru import logger
 from config import get_supabase, today_ist, IST, cfg, cfg_bool, is_kill_switch_active, DRY_RUN
 
 # ── Config defaults (overridable via system_config) ────────────────────────────
-MAX_SYMBOLS          = 30     # top N to write to MSL
+MAX_SYMBOLS          = 30     # top N to write to master_shortlist
 MAX_PER_SECTOR       = 5      # sector diversification cap
 MIN_MARKET_CAP       = 300    # Cr — minimum for any strategy
 CONVERGENCE_BONUS    = 8      # pts per additional engine confirming a symbol
+WRITE_ALL_QUALIFIED  = True   # True = write all to msl_computed | False = write only top MAX_SYMBOLS
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -170,71 +171,84 @@ def get_event_action(symbol: str, sector: str, events: list, buffer_days: int = 
 # STRATEGY ENGINES
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_ctl(stock_map: dict, sector_rank: dict, cfg_ctl: dict) -> dict:
-    """
-    Core Trend Leaders — EVOLVED from Sheet.
-    Original: monthly RSI, weekly RSI, 6M return, ATR, market cap, sector rank.
-    Added: ADX directional confirmation, SMA50>SMA200 golden cross mandatory,
-           MACD histogram positive, VWAP alignment check.
-
-    Philosophy: CTL wants multi-timeframe trend leaders in top sectors.
-    These are the stocks you hold for 2-4 weeks riding the primary trend.
-    """
+def run_ctl(stock_map, sector_rank, cfg_ctl):
     results = {}
     max_sector_rank = cfg_ctl.get("max_sector_rank", 4)
-    min_monthly_rsi  = cfg_ctl.get("min_monthly_rsi", 58)
-    min_weekly_rsi   = cfg_ctl.get("min_weekly_rsi", 58)
-    min_6m_return    = cfg_ctl.get("min_6m_return", 0)
-    max_atr_pct      = cfg_ctl.get("max_atr_pct", 4.5)   # relaxed from 4 (more stocks)
-    min_market_cap   = cfg_ctl.get("min_market_cap", 500)
+    min_monthly_rsi = cfg_ctl.get("min_monthly_rsi", 58)
+    min_weekly_rsi  = cfg_ctl.get("min_weekly_rsi", 58)
+    min_6m_return   = cfg_ctl.get("min_6m_return", 0)
+    max_atr_pct     = cfg_ctl.get("max_atr_pct", 4.5)
+    min_market_cap  = cfg_ctl.get("min_market_cap", 300)   # was 500
 
     for sym, s in stock_map.items():
         sector = s.get("sector", "")
 
-        # ── Original CTL gates ──
-        if sector and sector_rank.get(sector, 99) > max_sector_rank:        continue
-        if (s.get("rsi_monthly") or 0) < min_monthly_rsi:                   continue
-        if (s.get("rsi_weekly") or 0) < min_weekly_rsi:                     continue
-        if (s.get("ret_6m") or -999) < min_6m_return:                       continue
-        if (s.get("atr_pct") or 999) > max_atr_pct:                         continue
-        if (s.get("market_cap") or 0) < min_market_cap:                     continue
-        if not s.get("above_sma50"):                                         continue
+        # ── Hard gates — these cannot be compensated by score ──────────────
+        if sector and sector_rank.get(sector, 99) > max_sector_rank:   continue
+        if (s.get("rsi_monthly") or 0) < min_monthly_rsi:              continue
+        if (s.get("rsi_weekly")  or 0) < min_weekly_rsi:               continue
+        if (s.get("ret_6m") or -999) < min_6m_return:                  continue
+        if (s.get("atr_pct") or 999) > max_atr_pct:                    continue
+        if (s.get("market_cap") or 0) < min_market_cap:                continue
+        if not s.get("above_sma50"):                                    continue  # KEEP hard
 
-        # ── Evolved additions ──
-        if not s.get("sma50_gt_200"):              continue  # golden cross mandatory
+        # ADX directional — keep hard: no direction = no CTL
         adx     = float(s.get("adx") or 0)
         di_plus = float(s.get("di_plus") or 0)
         di_min  = float(s.get("di_minus") or 0)
-        if adx < 15 or di_plus <= di_min:          continue  # directional trend required
-        if (s.get("macd_hist") or -1) < 0:         continue  # MACD positive momentum
+        if adx < 12 or di_plus <= di_min:                               continue  # relaxed 15→12
 
-        # Score: weighted combination
-        score = 0.0
+        # ── Score ───────────────────────────────────────────────────────────
+        score  = 0.0
         rsi_m  = float(s.get("rsi_monthly") or 0)
-        rsi_w  = float(s.get("rsi_weekly") or 0)
+        rsi_w  = float(s.get("rsi_weekly")  or 0)
         ret_6m = float(s.get("ret_6m") or 0)
         vol_r  = float(s.get("vol_ratio") or 0)
         s_rank = sector_rank.get(sector, 10)
+        macd_h = float(s.get("macd_hist") or 0)
+        sma_cross = bool(s.get("sma50_gt_200"))
 
-        # Sector rank bonus
-        score += max(0, (5 - s_rank)) * 6   # rank 1=24, 2=18, 3=12, 4=6, 5=0
+        # Sector rank
+        score += max(0, (5 - s_rank)) * 6
+
         # Monthly RSI quality
         if 60 <= rsi_m <= 72:   score += 20
-        elif rsi_m > 72:         score += 10   # extended penalty
+        elif rsi_m > 72:         score += 10
         elif rsi_m >= 58:        score += 12
+
         # Weekly RSI
         if rsi_w >= 62:          score += 15
         elif rsi_w >= 58:        score += 10
-        # 6M return momentum (not excessive)
+
+        # 6M return
         if 15 <= ret_6m <= 50:   score += 15
         elif ret_6m > 0:         score += 8
-        elif ret_6m > 50:        score += 5   # very extended
+        elif ret_6m > 50:        score += 5
+
         # ADX strength
         if adx >= 28:            score += 10
         elif adx >= 20:          score += 6
+        elif adx >= 12:          score += 2
+
         # Volume
         if vol_r >= 1.5:         score += 8
         elif vol_r >= 1.1:       score += 4
+
+        # ── CHANGED: sma50_gt_200 → score bonus (was hard gate) ──────────
+        # A stock above SMA50 with strong RSI is a CTL candidate even during
+        # golden-cross recovery. SMA200 lags weeks behind price. Hard gate
+        # was blocking VEDL-type stocks that pass every other CTL criterion.
+        if sma_cross:            score += 15   # strong bonus — rewards clean structure
+        # No penalty for missing it — being above SMA50 with good RSI is sufficient
+
+        # ── CHANGED: macd_hist → score factor (was hard gate) ────────────
+        # MACD can be briefly negative during a healthy RSI-50s consolidation.
+        # A CTL stock pausing for 3-5 days can have slightly negative MACD hist
+        # while its weekly/monthly trend is fully intact. Hard gate excluded these.
+        if macd_h > 0.5:         score += 12
+        elif macd_h > 0:         score += 8
+        elif macd_h > -0.3:      score += 4   # near-zero = acceptable pause
+        elif macd_h < -1.0:      score -= 6   # clearly negative = penalise meaningfully
 
         results[sym] = round(score, 1)
 
@@ -287,8 +301,12 @@ def run_sbs(stock_map: dict, sector_rank: dict, cfg_sbs: dict) -> dict:
         # HH-HL structure check (evolved: use wk_hi_high + wk_hi_low)
         wk_hh = bool(s.get("wk_hi_high"))
         wk_hl = bool(s.get("wk_hi_low"))
-        # At least one structural signal required
-        if not (wk_hh or wk_hl or bool(s.get("above_sma50"))):         continue
+        above_50_sbs = bool(s.get("above_sma50"))
+        # Require above_sma50 always, PLUS at least one weekly structure signal
+        # A breakout without being above SMA50 is a low-quality setup
+        # A breakout without any weekly structure is likely to fail
+        if not above_50_sbs:                                        continue
+        if not (wk_hh or wk_hl):                                   continue
 
         # Score
         score = 0.0
@@ -529,6 +547,7 @@ def run_iad(stock_map: dict, sector_rank: dict) -> dict:
         market_cap = float(s.get("market_cap") or 0)
         s_rank   = sector_rank.get(sector, 99)
 
+        
         # Volume trend: 20d average vs 50d average (expanding = sustained accumulation)
         vol_20d = float(s.get("avg_vol_20d") or 0)
         vol_50d = float(s.get("avg_vol_50d") or 0)
@@ -543,30 +562,42 @@ def run_iad(stock_map: dict, sector_rank: dict) -> dict:
         if s_rank > 12:                           continue   # some sector quality
 
         score = 0.0
-        # Delivery (primary signal)
+
+        # Delivery (primary signal — but scored not gated now at lower bound)
         if delivery >= 70:                        score += 35
         elif delivery >= 62:                      score += 27
         elif delivery >= 55:                      score += 18
         elif delivery >= 50:                      score += 10
+        elif delivery >= 42:                      score += 5    # only reachable if rs > 8
+        elif delivery >= 38:                      score += 2    # only reachable if rs > 8
+
         # RS vs Nifty
-        if rs > 15:                              score += 22
-        elif rs > 8:                             score += 16
-        elif rs > 3:                             score += 10
-        elif rs > 0:                             score += 5
+        if rs > 20:                              score += 22
+        elif rs > 12:                            score += 17
+        elif rs > 8:                             score += 13
+        elif rs > 3:                             score += 8
+        elif rs > 0:                             score += 4
+
         # Volume expansion trend
         if vol_expanding:                        score += 15
         if vol_r >= 2.0:                         score += 10
         elif vol_r >= 1.5:                       score += 6
-        # Tight consolidation = price not yet broken out (ideal entry)
+
+        # Tight consolidation
         if consol < 7:                           score += 15
         elif consol < 12:                        score += 8
-        # RSI in healthy zone (not yet extended)
+
+        # RSI in healthy zone
         if 50 <= rsi_d <= 65:                    score += 10
         elif rsi_d > 65:                         score += 4
+
         # Sector
         score += max(0, (6 - s_rank)) * 2
 
-        if score >= 60:
+        # Raise score threshold for low-delivery passes to ensure quality
+        min_score = 55 if delivery >= 50 else 68  # low delivery needs much stronger RS+vol
+
+        if score >= min_score:
             results[sym] = round(score, 1)
 
     logger.info(f"  IAD: {len(results)} candidates")
@@ -668,7 +699,7 @@ def run_mom_continuation(stock_map: dict, sector_rank: dict) -> dict:
 
         # Hard gates for EXPANSION phase detection
         if not (above_50 and sma200 and above_st):    continue   # full structural alignment
-        if adx < 20 or di_plus <= di_min:             continue   # trend must be active
+        if adx < 18 or di_plus <= di_min:             continue   # trend must be active
         if rsi_d < 52 or rsi_d > 74:                 continue   # mid-cycle momentum
         if rsi_w < 54:                               continue   # weekly must confirm
         if macd_h <= 0:                              continue   # MACD positive
@@ -676,44 +707,59 @@ def run_mom_continuation(stock_map: dict, sector_rank: dict) -> dict:
         if market_cap < MIN_MARKET_CAP:               continue
         if s_rank > 10:                               continue
 
-        # Velocity check: 1m outpacing 3m pace
+        # Velocity check: 1m outpacing 3m pace = accelerating momentum
+        score = 0.0
         monthly_pace = ret_3m / 3 if ret_3m > 0 else 0
         accelerating = ret_1m > monthly_pace * 1.2 if monthly_pace > 0 else ret_1m > 3
 
-        score = 0.0
         # ADX strength
-        if adx >= 30:                            score += 20
-        elif adx >= 22:                          score += 14
-        elif adx >= 17:                          score += 8
-        # RSI in ideal momentum range
-        if 57 <= rsi_d <= 68:                   score += 18
-        elif 52 <= rsi_d < 57:                  score += 12
-        elif rsi_d > 68:                         score += 7
+        if adx >= 30:            score += 20
+        elif adx >= 22:          score += 14
+        elif adx >= 18:          score += 8
+
+        # RSI in ideal range
+        if 57 <= rsi_d <= 68:   score += 18
+        elif 52 <= rsi_d < 57:  score += 12
+        elif rsi_d > 68:         score += 7
+
         # Weekly alignment
-        if rsi_w >= 62:                          score += 12
-        elif rsi_w >= 56:                        score += 7
+        if rsi_w >= 62:          score += 12
+        elif rsi_w >= 56:        score += 7
+
         # Velocity
-        if accelerating:                         score += 12
-        # Structural perfection
-        if wk_hh and wk_hl:                     score += 10
-        elif wk_hl:                              score += 5
-        # Delivery = institutional holding
-        if delivery >= 55:                       score += 10
-        elif delivery >= 42:                     score += 5
-        # How far from SMA50 (close to it = better entry)
-        if dist_50 < 5:                          score += 8
-        elif dist_50 < 10:                       score += 4
+        if accelerating:         score += 12
+
+        # Structural
+        if wk_hh and wk_hl:     score += 10
+        elif wk_hl:              score += 5
+
+        # Delivery
+        if delivery >= 55:       score += 10
+        elif delivery >= 42:     score += 5
+
+        # Distance from SMA50
+        if dist_50 < 5:          score += 8
+        elif dist_50 < 10:       score += 4
+
         # Sector
         score += max(0, (6 - s_rank)) * 3
 
-        if score >= 55:
+        # ── Bonus for structural quality (replaces hard gates) ────────────
+        if sma200:               score += 12   # golden cross = strong bonus
+        if above_st:             score += 8    # supertrend confirming = bonus
+
+        # Require a higher score threshold when structural signals are absent
+        # This prevents weak setups from passing just because RSI and ADX are fine
+        min_score = 45 if (sma200 and above_st) else (52 if (sma200 or above_st) else 60)
+
+        if score >= min_score:
             results[sym] = round(score, 1)
 
     logger.info(f"  MOM: {len(results)} candidates")
     return results
 
 
-def run_reversal_setup(stock_map: dict, sector_rank: dict, regime_name: str) -> dict:
+def run_reversal_setup(stock_map, sector_rank, regime_name):
     """
     Reversal Setup — NEW.
     Finds stocks bouncing back to SMA50 from below or re-crossing it.
@@ -723,8 +769,13 @@ def run_reversal_setup(stock_map: dict, sector_rank: dict, regime_name: str) -> 
     In RISK OFF, oversold bounces fail frequently. Hard filter applied.
     """
     if regime_name in ("RISK OFF",):
-        logger.info("  RVS: skipped (RISK OFF regime)")
-        return {}
+        # CHANGED: don't skip entirely — RVS is MOST valuable in RISK OFF
+        # Quality stocks pull back in bear markets and offer best bounce setups.
+        # Previous code skipped entirely. Now run with tighter gates.
+        logger.info("  RVS: running with RISK OFF strict mode")
+        risk_off_mode = True
+    else:
+        risk_off_mode = False
 
     results = {}
     for sym, s in stock_map.items():
@@ -742,46 +793,64 @@ def run_reversal_setup(stock_map: dict, sector_rank: dict, regime_name: str) -> 
         market_cap = float(s.get("market_cap") or 0)
         s_rank  = sector_rank.get(sector, 99)
 
-        # Hard gates: quality stock in temporary dip
-        if rsi_d > 54:                           continue   # not a dip if RSI is high
-        if rsi_d < 36:                           continue   # too deep = falling knife
-        if rsi_m < 48:                           continue   # monthly trend must be OK
-        if not sma200:                           continue   # needs golden cross (quality base)
-        if ret_6m < 0:                           continue   # must have positive 6m trend
-        if dist_50 < -10:                        continue   # too far below SMA50 = breakdown
+        # ── Hard gates ──────────────────────────────────────────────────────
+        if rsi_d > 54:                           continue
+        if rsi_d < 36:                           continue
+        if rsi_m < 48:                           continue
+        if not sma200:                           continue   # KEEP — quality filter
+        if ret_6m < 0:                           continue   # KEEP — must have base trend
+        if dist_50 < -10:                        continue
         if market_cap < MIN_MARKET_CAP:          continue
-        if s_rank > 8:                           continue   # only quality sectors
+
+        # ── CHANGED: sector gate relaxed from 8 → 9 ──────────────────────
+        # In RISK OFF, quality sectors ranked 7-9 (pharma, FMCG, IT) have
+        # exactly the bounces RVS looks for. Rank 8 exclusion was too tight.
+        # In RISK OFF mode, extend to 10 (even broader quality check needed).
+        max_sector = 10 if risk_off_mode else 9   # was 8
+        if s_rank > max_sector:                  continue
+
+        # In RISK OFF strict mode: require vol + delivery (bounce must have conviction)
+        if risk_off_mode and vol_r < 1.15 and delivery < 40:  continue
 
         score = 0.0
-        # RSI in sweet bounce zone
-        if 44 <= rsi_d <= 52:                    score += 25   # ideal
+
+        # RSI bounce zone
+        if 44 <= rsi_d <= 52:                    score += 25
         elif rsi_d < 44:                         score += 15
-        # MACD turning (even if still negative)
-        if macd_h > 0:                           score += 18   # recovered
-        elif macd_h > -0.3:                      score += 12   # near zero = turning
+
+        # MACD turning
+        if macd_h > 0:                           score += 18
+        elif macd_h > -0.3:                      score += 12
         elif macd_h > -1:                        score += 6
-        # Proximity to SMA50 (closer = lower risk entry)
+
+        # Proximity to SMA50
         abs_dist = abs(dist_50)
         if abs_dist < 2:                         score += 18
         elif abs_dist < 5:                       score += 12
         elif abs_dist < 8:                       score += 6
+
         # Monthly RSI still positive
         if rsi_m >= 58:                          score += 12
         elif rsi_m >= 50:                        score += 7
-        # Volume + delivery on bounce = buyers are institutional
+
+        # Volume + delivery on bounce
         if vol_r >= 1.5 and delivery >= 45:      score += 15
         elif vol_r >= 1.2 or delivery >= 40:     score += 7
-        # Weekly RSI still respectable
+
+        # Weekly RSI
         if rsi_w >= 48:                          score += 8
+
         # Sector
         score += max(0, (5 - s_rank)) * 4
 
-        if score >= 60:
+        # ── CHANGED: score threshold 60→55 (was too restrictive) ──────────
+        # In RISK OFF mode keep at 60 — bounces fail more often, need quality
+        min_score = 60 if risk_off_mode else 55
+        if score >= min_score:
             results[sym] = round(score, 1)
 
     logger.info(f"  RVS: {len(results)} candidates")
     return results
-
 
 def run_sector_rotation(stock_map: dict, sector_rank: dict) -> dict:
     """
@@ -866,7 +935,7 @@ def aggregate_and_rank(
     max_symbols: int = 30,
     max_per_sector: int = 5,
     allow_risk_off: bool = False,
-) -> list:
+) -> tuple:
     
     """
     Aggregate all engine scores, apply convergence bonus, EAP overlay,
@@ -899,11 +968,16 @@ def aggregate_and_rank(
             continue
 
         # Base score = average across engines
-        base_score = sum(data["scores"]) / len(data["scores"]) if data["scores"] else 0
+        base_score = (
+            max(data["scores"]) * 0.6 + (sum(data["scores"]) / len(data["scores"])) * 0.4
+            if data["scores"] else 0
+        )
 
         # Convergence bonus: each additional engine confirming = +CONVERGENCE_BONUS pts
         n_engines = len(data["engines"])
-        convergence = (n_engines - 1) * CONVERGENCE_BONUS
+        avg_score = sum(data["scores"]) / len(data["scores"]) if data["scores"] else 0
+        quality_multiplier = min(avg_score / 60, 1.5)
+        convergence = (n_engines - 1) * CONVERGENCE_BONUS * quality_multiplier
 
         # EAP adjustment
         eap_adj = eap_adjustments.get(sym, 0)
@@ -935,6 +1009,10 @@ def aggregate_and_rank(
             "sector_rank":     s_rank,
             "in_position":     in_pos,
             "force_include":   forced,
+            "engine_scores_json": json.dumps({        # ← ADD THIS
+                e: round(s, 1)
+                for e, s in zip(data["engines"], data["scores"])
+            }),
             "date":            today,
         })
 
@@ -962,7 +1040,14 @@ def aggregate_and_rank(
         selected.extend(overflow[:remaining])
         selected.sort(key=lambda x: x["composite_score"], reverse=True)
 
-    final = selected[:max_symbols]
+    def find_natural_cutoff(candidates, hard_max=30, min_gap=10):
+        for i in range(min(hard_max, len(candidates) - 1)):
+            gap = candidates[i]["composite_score"] - candidates[i+1]["composite_score"]
+            if gap >= min_gap and i >= 20:   # at least 20 selected
+                return i + 1
+        return hard_max
+    cutoff = find_natural_cutoff(selected, hard_max=max_symbols)
+    final = selected[:cutoff]
 
     if blocked_by_regime:
         logger.warning(f"  {len(blocked_by_regime)} symbols blocked by RISK OFF regime")
@@ -971,21 +1056,29 @@ def aggregate_and_rank(
         f"  Aggregated: {len(all_syms)} total unique | "
         f"{len(candidates)} after hard filters | {len(final)} final"
     )
-    return final
+    return final, candidates
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # WRITE STRATEGY
 # ─────────────────────────────────────────────────────────────────────────────
 
-def write_screener_results(sb, candidates: list, mode: str, today: str):
+def write_screener_results(sb, candidates: list, all_qualified: list, mode: str, today: str, write_all: bool = True):
     """
     shadow  → msl_computed only (master_shortlist untouched)
     hybrid  → msl_computed + update master_shortlist (merge with Sheet)
     full    → master_shortlist only (screener is the source of truth)
+
+    write_all=True  → writes all qualified stocks to msl_computed
+    write_all=False → writes only top N (candidates) to msl_computed
     """
+    to_write = all_qualified if write_all else candidates   # ← resolved once, used consistently
+
     if DRY_RUN:
-        logger.info(f"[DRY RUN] Would write {len(candidates)} symbols | mode={mode}")
+        logger.info(
+            f"[DRY RUN] Would write {len(to_write)} to msl_computed | "
+            f"{len(candidates)} to master_shortlist | mode={mode}"
+        )
         for c in candidates[:5]:
             logger.info(
                 f"  #{candidates.index(c)+1} {c['symbol']:<12} "
@@ -995,33 +1088,34 @@ def write_screener_results(sb, candidates: list, mode: str, today: str):
         return
 
     if mode in ("shadow", "hybrid"):
-        # Write to msl_computed (always in shadow/hybrid)
+        # msl_computed — uses to_write (all_qualified or candidates based on write_all flag)
         rows = []
-        for rank, c in enumerate(candidates, 1):
+        for rank, c in enumerate(to_write, 1):          # ← was hardcoded all_qualified, now fixed
             rows.append({
-                "date":            today,
-                "symbol":          c["symbol"],
-                "company_name":    c.get("company_name"),
-                "sector":          c.get("sector"),
-                "strategy_source": c.get("strategy_source"),
-                "current_price":   c.get("current_price"),
-                "composite_score": c.get("composite_score"),
-                "base_score":      c.get("base_score"),
-                "priority_rank":   rank,
-                "engines_list":    c.get("engines_list"),
-                "convergence_pts": c.get("convergence_pts"),
-                "eap_adjustment":  c.get("eap_adjustment"),
-                "sector_rank":     c.get("sector_rank"),
-                "in_position":     c.get("in_position"),
-                "screener_source": "screen_stocks_v1",
-                "computed_at":     datetime.now(IST).isoformat(),
+                "date":               today,
+                "symbol":             c["symbol"],
+                "company_name":       c.get("company_name"),
+                "sector":             c.get("sector"),
+                "strategy_source":    c.get("strategy_source"),
+                "current_price":      c.get("current_price"),
+                "composite_score":    c.get("composite_score"),
+                "base_score":         c.get("base_score"),
+                "priority_rank":      rank,
+                "engines_list":       c.get("engines_list"),
+                "convergence_pts":    c.get("convergence_pts"),
+                "eap_adjustment":     c.get("eap_adjustment"),
+                "sector_rank":        c.get("sector_rank"),
+                "in_position":        c.get("in_position"),
+                "engine_scores_json": c.get("engine_scores_json"),
+                "screener_source":    "screen_stocks_v1",
+                "computed_at":        datetime.now(IST).isoformat(),
             })
         for i in range(0, len(rows), 50):
             sb.table("msl_computed").upsert(rows[i:i+50], on_conflict="date,symbol").execute()
         logger.success(f"✓ {len(rows)} symbols → msl_computed")
 
     if mode in ("hybrid", "full"):
-        # Write to master_shortlist
+        # master_shortlist — ALWAYS candidates (top N), write_all has no effect here
         msl_rows = []
         for rank, c in enumerate(candidates, 1):
             msl_rows.append({
@@ -1039,7 +1133,7 @@ def write_screener_results(sb, candidates: list, mode: str, today: str):
             })
         for i in range(0, len(msl_rows), 50):
             sb.table("master_shortlist").upsert(msl_rows[i:i+50], on_conflict="date,symbol").execute()
-        # Remove stale symbols no longer selected (in full mode only)
+        # Remove stale symbols (full mode only)
         if mode == "full":
             selected_syms = {c["symbol"] for c in candidates}
             existing = sb.table("master_shortlist").select("symbol").eq("date", today).execute().data
@@ -1049,6 +1143,186 @@ def write_screener_results(sb, candidates: list, mode: str, today: str):
                 logger.info(f"  Removed {len(stale)} stale symbols from master_shortlist")
         logger.success(f"✓ {len(msl_rows)} symbols → master_shortlist")
 
+def check_eap_revival(sb, stock_map: dict, today: str):
+    """
+    After daily write, finds stocks that were EAP-penalized yesterday
+    but are showing strong post-event price action today.
+    Tags them eap_revival=True in today's msl_computed so they
+    surface in any downstream query/alert without re-running screener.
+    To be used in pphase 4 only — in earlier phases, EAP adjustments are smaller and less meaningful.
+    """
+    from datetime import date, timedelta
+    yesterday = str(date.fromisoformat(today) - timedelta(days=1))
+
+    try:
+        penalized = (
+            sb.table("msl_computed")
+            .select("symbol,eap_adjustment,composite_score,priority_rank")
+            .eq("date", yesterday)
+            .lt("eap_adjustment", -10)         # only meaningfully penalized
+            .execute()
+            .data
+        )
+    except Exception as e:
+        logger.warning(f"  EAP revival check failed (yesterday fetch): {e}")
+        return
+
+    if not penalized:
+        logger.info("  EAP revival: no penalized stocks found yesterday — skipping")
+        return
+
+    revivals = []
+    for row in penalized:
+        sym      = row["symbol"]
+        s        = stock_map.get(sym, {})
+        pct_chg  = float(s.get("pct_change")   or 0)
+        delivery = float(s.get("delivery_pct") or 0)
+        vol_r    = float(s.get("vol_ratio")    or 0)
+
+        # Post-event continuation: price up 3%+ with institutional backing
+        if pct_chg >= 3.0 and delivery >= 45 and vol_r >= 1.3:
+            revivals.append(sym)
+            logger.info(
+                f"  EAP REVIVAL: {sym:<12} "
+                f"pct_chg={pct_chg:+.1f}%  "
+                f"delivery={delivery:.0f}%  "
+                f"vol_r={vol_r:.1f}x  "
+                f"(was penalized {row['eap_adjustment']:.0f}pts yesterday)"
+            )
+
+    if not revivals:
+        logger.info(f"  EAP revival: checked {len(penalized)} penalized stocks — none qualify today")
+        return
+
+    if DRY_RUN:
+        logger.info(f"[DRY RUN] Would tag {len(revivals)} EAP revival stocks in msl_computed")
+        return
+
+    # Tag in today's msl_computed — only updates if stock is already in today's list
+    tagged = 0
+    for sym in revivals:
+        try:
+            result = (
+                sb.table("msl_computed")
+                .update({"eap_revival": True})
+                .eq("date", today)
+                .eq("symbol", sym)
+                .execute()
+            )
+            tagged += 1
+        except Exception as e:
+            logger.warning(f"  EAP revival tag failed for {sym}: {e}")
+
+    logger.success(f"  EAP revival: tagged {tagged}/{len(revivals)} stocks in msl_computed")
+
+def log_screener_outcomes(sb, today: str, hold_days_list: list = None):
+    """
+    Runs daily at end of pipeline.
+    For each hold period, fetches msl_computed from N days ago,
+    compares entry price to today's close, writes to screener_performance.
+
+    After 30+ days of data, query:
+      SELECT engines_list, AVG(pct_return), COUNT(*)
+      FROM screener_performance
+      GROUP BY engines_list ORDER BY AVG(pct_return) DESC;
+    to find which engine combinations produce the best returns.
+    """
+    from datetime import date, timedelta
+
+    if hold_days_list is None:
+        hold_days_list = [5, 10, 15]    # 1-week, 2-week, 3-week hold periods
+
+    # Load today's closing prices once
+    try:
+        price_rows = (
+            sb.table("stock_data_daily")
+            .select("symbol,close")
+            .eq("date", today)
+            .execute()
+            .data
+        )
+        today_prices = {r["symbol"]: float(r["close"] or 0) for r in price_rows}
+    except Exception as e:
+        logger.warning(f"  Outcomes: could not load today prices: {e}")
+        return
+
+    if not today_prices:
+        logger.info("  Outcomes: no price data for today — skipping")
+        return
+
+    all_outcomes = []
+
+    for hold_days in hold_days_list:
+        past_date = str(date.fromisoformat(today) - timedelta(days=hold_days))
+
+        try:
+            past_rows = (
+                sb.table("msl_computed")
+                .select("symbol,composite_score,engines_list,current_price,priority_rank")
+                .eq("date", past_date)
+                .execute()
+                .data
+            )
+        except Exception as e:
+            logger.warning(f"  Outcomes: could not fetch {past_date}: {e}")
+            continue
+
+        if not past_rows:
+            logger.info(f"  Outcomes: no msl_computed data for {past_date} — skipping {hold_days}d")
+            continue
+
+        period_count = 0
+        for row in past_rows:
+            sym     = row["symbol"]
+            entry   = float(row.get("current_price") or 0)
+            current = today_prices.get(sym, 0)
+
+            if entry <= 0 or current <= 0:
+                continue
+
+            all_outcomes.append({
+                "symbol":           sym,
+                "entry_date":       past_date,
+                "exit_date":        today,
+                "hold_days":        hold_days,
+                "entry_price":      round(entry, 2),
+                "exit_price":       round(current, 2),
+                "pct_return":       round((current - entry) / entry * 100, 2),
+                "composite_score":  row.get("composite_score"),
+                "priority_rank":    row.get("priority_rank"),
+                "engines_list":     row.get("engines_list"),
+            })
+            period_count += 1
+
+        logger.info(f"  Outcomes: {hold_days}d period — {period_count} stocks from {past_date}")
+
+    if not all_outcomes:
+        logger.info("  Outcomes: nothing to log (no past data aligns with today)")
+        return
+
+    winners = [o for o in all_outcomes if o["pct_return"] > 0]
+
+    if DRY_RUN:
+        logger.info(
+            f"[DRY RUN] Would log {len(all_outcomes)} outcomes | "
+            f"{len(winners)} positive ({len(winners)/len(all_outcomes)*100:.0f}% hit rate)"
+        )
+        return
+
+    # Write in batches
+    for i in range(0, len(all_outcomes), 50):
+        try:
+            sb.table("screener_performance")\
+                .upsert(all_outcomes[i:i+50], on_conflict="symbol,entry_date,hold_days")\
+                .execute()
+        except Exception as e:
+            logger.warning(f"  Outcomes: batch write failed: {e}")
+
+    logger.success(
+        f"  Outcomes logged: {len(all_outcomes)} records | "
+        f"{len(winners)}/{len(all_outcomes)} positive "
+        f"({len(winners)/len(all_outcomes)*100:.0f}% hit rate)"
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN
@@ -1068,6 +1342,7 @@ def main():
     max_symbols        = int(cfg("screener_max_symbols", str(MAX_SYMBOLS)))
     max_sector         = int(cfg("screener_max_per_sector", str(MAX_PER_SECTOR)))
     allow_risk_off     = cfg_bool("screener_allow_risk_off", False)
+    write_all_qualified = cfg_bool("screener_write_all_qualified", WRITE_ALL_QUALIFIED)  # ← ADD
 
     logger.info("=" * 65)
     logger.info(f"STEP: Screen Stocks v1.0 | {today} | mode={mode.upper()}"
@@ -1146,7 +1421,7 @@ def main():
 
     # ── Aggregate ─────────────────────────────────────────────────────────────
     logger.info("Pass 3: aggregating and ranking...")
-    final = aggregate_and_rank(
+    final, all_qualified  = aggregate_and_rank(
         engine_results, stock_map, sector_rank,
         asm_set, fo_ban_set, eap_adjustments,
         regime_name, open_syms, force_include, today,
@@ -1184,11 +1459,14 @@ def main():
 
     # ── Write ─────────────────────────────────────────────────────────────────
     logger.info(f"Pass 4: writing ({mode} mode)...")
-    write_screener_results(sb, final, mode, today)
+    write_screener_results(sb, final, all_qualified, mode, today, write_all_qualified)
+    check_eap_revival(sb, stock_map, today)
+    log_screener_outcomes(sb, today)
 
     return {
         "status":        "ok",
-        "selected":      len(final),
+        "selected":      len(final),              # top N after dynamic cutoff
+        "total_written": len(all_qualified) if write_all_qualified else len(final),
         "mode":          mode,
         "regime":        regime_name,
         "multi_engine":  len(multi_engine),
