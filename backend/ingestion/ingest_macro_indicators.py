@@ -191,6 +191,91 @@ def fetch_india_vix() -> dict | None:
     """
     return fetch_yahoo_finance("%5EINDIAVIX", "INDIA_VIX")
 
+def fetch_nifty_pcr(sb) -> dict | None:
+    """
+    Fetch Nifty Put/Call ratio from NSE option chain API.
+    Falls back to last stored value if market is closed or OI is zero.
+    """
+    try:
+        session = requests.Session()
+        session.get("https://www.nseindia.com", headers=HEADERS, timeout=10)
+        time.sleep(1)
+        resp = session.get(
+            "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY",
+            headers=HEADERS,
+            timeout=15
+        )
+        if resp.status_code != 200:
+            logger.debug(f"NSE PCR API returned HTTP {resp.status_code}")
+            return _load_last_pcr(sb)
+
+        data     = resp.json()
+        filtered = data.get("filtered", {})
+        put_oi   = filtered.get("PE", {}).get("totOI", 0)
+        call_oi  = filtered.get("CE", {}).get("totOI", 0)
+        print(f"DEBUG raw OI → put={put_oi} call={call_oi}")  # add this
+
+        # Zero OI = market closed or no data — don't store, use last value
+        if call_oi == 0 or put_oi == 0:
+            logger.info("  Nifty PCR: zero OI detected (market closed) — using last stored value")
+            return _load_last_pcr(sb)
+
+        # Sanity check — PCR outside 0.3–3.0 is almost certainly bad data
+        pcr = round(put_oi / call_oi, 3)
+        if not (0.3 <= pcr <= 3.0):
+            logger.warning(f"  Nifty PCR: value {pcr} outside valid range — using last stored value")
+            return _load_last_pcr(sb)
+
+        logger.debug(f"  NSE PCR: put_oi={put_oi} call_oi={call_oi} pcr={pcr}")
+        return {
+            "indicator_name":  "NIFTY_PCR",
+            "indicator_value": pcr,
+            "indicator_date":  str(today_ist()),
+            "source":          "NSE_OPTION_CHAIN",
+            "release_date":    str(today_ist()),
+        }
+
+    except Exception as e:
+        logger.debug(f"NSE PCR fetch failed (non-fatal): {e}")
+        return _load_last_pcr(sb)
+
+
+def _load_last_pcr(sb) -> dict | None:
+    try:
+        rows = (sb.table("macro_indicators")
+                  .select("indicator_value,indicator_date")
+                  .eq("indicator_name", "NIFTY_PCR")
+                  .gt("indicator_value", 0)
+                  .order("indicator_date", desc=True)
+                  .limit(1)
+                  .execute().data)
+        if rows:
+            val  = float(rows[0]["indicator_value"])
+            date = rows[0]["indicator_date"]
+            logger.info(f"  Nifty PCR: using last stored value {val} from {date}")
+            return {
+                "indicator_name":  "NIFTY_PCR",
+                "indicator_value": val,
+                "indicator_date":  str(today_ist()),
+                "source":          "NSE_OPTION_CHAIN_CACHED",
+                "release_date":    date,
+                "is_cached":       True,
+            }
+    except Exception as e:
+        logger.warning(f"  Nifty PCR DB fallback failed: {e}")
+
+    # ── NEW: neutral default when DB is also empty ──────────────────────────
+    default_pcr = cfg_float("pcr_neutral_default", 1.0)   # add to system_config
+    logger.warning(f"  Nifty PCR: no cached value found — using neutral default {default_pcr}")
+    return {
+        "indicator_name":  "NIFTY_PCR",
+        "indicator_value": default_pcr,
+        "indicator_date":  str(today_ist()),
+        "source":          "DEFAULT_NEUTRAL",
+        "release_date":    str(today_ist()),
+        "is_cached":       True,
+    }
+
 # ── Source 4: ET RSS — CPI/WPI from headlines ────────────────────────────
 
 # REPLACE entire fetch_cpi_wpi_from_et function
@@ -251,7 +336,7 @@ def write_macro_indicators(sb, rows: list[dict]) -> int:
 
     written = 0
     # Deduplicate by indicator_name (keep highest-confidence source)
-    source_priority = {"RBI_DBIE": 4, "MOSPI": 3, "ET_RSS": 2, "YAHOO_FINANCE": 1}
+    source_priority = {"RBI_DBIE": 4, "MOSPI": 3, "NSE_OPTION_CHAIN": 3, "ET_RSS": 2, "YAHOO_FINANCE": 1}
     seen: dict[str, dict] = {}
     for row in rows:
         name = row["indicator_name"]
@@ -314,6 +399,17 @@ def main():
             logger.info(f"  India VIX: {vix_row['indicator_value']}")
     except Exception as e:
         logger.warning(f"  India VIX: FAILED (non-fatal) — {e}")
+
+    # ADD THIS BLOCK right after ↑
+    try:
+        pcr_row = fetch_nifty_pcr(sb)    # ← pass sb
+        if pcr_row:
+            all_rows.append(pcr_row)
+            logger.info(f"  Nifty PCR: {pcr_row['indicator_value']} (source={pcr_row['source']})")
+        else:
+            logger.warning("  Nifty PCR: no data and no cached value available")
+    except Exception as e:
+        logger.warning(f"  Nifty PCR: FAILED (non-fatal) — {e}")
 
     # Source 4: ET RSS CPI/WPI
     try:

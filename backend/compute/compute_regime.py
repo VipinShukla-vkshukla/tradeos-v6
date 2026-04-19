@@ -52,13 +52,7 @@ SCORING MODEL (0–100):
   Pillar 3: Momentum         20 pts — weekly RSI, 20d/5d return, GIFT Nifty
   Pillar 4: Volatility       15 pts — India VIX level + VIX direction delta
   Pillar 5: FII Flows        15 pts — fii_net_20d, fii_net_5d, DII counter-flow
-  Global modifier:           ±5 pts — S&P500 direction, USD/INR direction
-
-REQUIRED COLUMNS (run migration if not present):
-  ALTER TABLE market_regime ADD COLUMN IF NOT EXISTS computed_regime text;
-  ALTER TABLE market_regime ADD COLUMN IF NOT EXISTS regime_score_computed numeric;
-  ALTER TABLE market_regime ADD COLUMN IF NOT EXISTS regime_score_breakdown jsonb;
-  ALTER TABLE market_regime ADD COLUMN IF NOT EXISTS regime_computed_at timestamptz;
+  Pillar 6:Global modifier:  ±5 pts — S&P500 direction, USD/INR direction
 """
 
 import sys, os, json
@@ -95,29 +89,61 @@ SCORE_RECOVERING = 25
 
 def resolve_effective_date(sb, today: str) -> tuple[str, bool]:
     """
-    Resolve the last actual trading day before running any data fetches.
-
-    Returns (effective_date, is_today_trading).
-
-    FIX: v1 ran yfinance and table queries with calendar date (could be Sunday/holiday),
-    causing empty results and P1=0. Now resolved FIRST so all downstream
-    functions receive the correct date.
+    Resolve the last actual trading day and ensure a row exists for it.
+    
+    Flow:
+    1. Ask yfinance for the last trading close date (ground truth)
+    2. Check if that date exists in market_regime
+    3. If not → upsert a minimal row so downstream can update it
+    4. Return (effective_date, is_today_trading)
     """
-    latest = (sb.table("market_regime")
-                .select("date,nifty_price")
-                .not_.is_("nifty_price", "null")
-                .order("date", desc=True)
-                .limit(1)
-                .execute().data)
+    # ── Step 1: Get last trading date from yfinance ───────────────────────────
+    last_trading = None
+    if YFINANCE_AVAILABLE:
+        try:
+            df = yf.Ticker("^NSEI").history(period="5d", interval="1d")
+            if not df.empty:
+                last_trading = str(df.index[-1].date())
+                logger.info(f"  yfinance last trading date: {last_trading}")
+        except Exception as e:
+            logger.warning(f"  yfinance date resolution failed: {e}")
 
-    if not latest:
-        # No data at all — use today and hope for the best
-        return today, True
+    # ── Step 2: Fallback to DB if yfinance failed ─────────────────────────────
+    if not last_trading:
+        latest = (sb.table("market_regime")
+                    .select("date")
+                    .order("date", desc=True)
+                    .limit(1)
+                    .execute().data)
+        if latest:
+            last_trading = latest[0]["date"]
+            logger.info(f"  yfinance unavailable — DB fallback date: {last_trading}")
+        else:
+            last_trading = today
+            logger.warning(f"  No DB rows found — using today: {today}")
 
-    last_trading = latest[0]["date"]
     is_trading = (last_trading == today)
     if not is_trading:
         logger.info(f"  {today} is non-trading — effective date is {last_trading}")
+
+    # ── Step 3: Ensure row exists for last_trading ────────────────────────────
+    existing = (sb.table("market_regime")
+                  .select("date")
+                  .eq("date", last_trading)
+                  .limit(1)
+                  .execute().data)
+
+    if not existing:
+        logger.info(f"  No row found for {last_trading} — creating placeholder")
+        try:
+            sb.table("market_regime").upsert(
+                {"date": last_trading},
+                on_conflict="date"
+            ).execute()
+            logger.info(f"  ✓ Placeholder row created for {last_trading}")
+        except Exception as e:
+            logger.warning(f"  Failed to create placeholder row: {e}")
+
     return last_trading, is_trading
 
 
@@ -163,6 +189,9 @@ def fetch_index_data(ticker: str) -> dict | None:
         # 20d and 5d returns for momentum
         ret_20d = None
         ret_5d  = None
+        ret_1d = None
+        if len(closes) >= 2:
+            ret_1d = round((float(closes.iloc[-1]) / float(closes.iloc[-2]) - 1) * 100, 2)
         if len(closes) >= 21:
             ret_20d = round((float(closes.iloc[-1]) / float(closes.iloc[-21]) - 1) * 100, 2)
         if len(closes) >= 6:
@@ -173,6 +202,7 @@ def fetch_index_data(ticker: str) -> dict | None:
             "dma50":      dma(50),
             "dma200":     dma(200),
             "weekly_rsi": weekly_rsi(),
+            "ret_1d":     ret_1d,
             "ret_20d":    ret_20d,
             "ret_5d":     ret_5d,
         }
@@ -241,6 +271,7 @@ def build_market_snapshot(sb, effective_date: str) -> dict:
         "nifty_5d_chg_pct":    nifty["ret_5d"]      if nifty else None,
         "banknifty_price":     bank["price"]         if bank else None,
         "banknifty_weekly_rsi":bank["weekly_rsi"]    if bank else None,
+        "nifty_1d_chg_pct":    nifty["ret_1d"]  if nifty else None,
     })
 
     logger.info(
@@ -287,7 +318,7 @@ def build_market_snapshot(sb, effective_date: str) -> dict:
         snap["advance_decline_ratio"] = round(adv / dec, 2) if dec > 0 else (99.0 if adv > 0 else None)
 
         # Midcap breadth (above SMA50)
-        mid = [r for r in stock_rows if r.get("market_cap_category") == "Mid Cap"]
+        mid   = [r for r in stock_rows if r.get("market_cap_category") == "midcap"]
         if mid:
             ab = sum(1 for r in mid if r.get("close") and r.get("sma_50")
                      and float(r["close"]) > float(r["sma_50"]))
@@ -297,7 +328,7 @@ def build_market_snapshot(sb, effective_date: str) -> dict:
 
         # NEW v2: Smallcap breadth (above SMA50)
         # Nifty can be up while smallcaps in freefall — this catches that divergence
-        small = [r for r in stock_rows if r.get("market_cap_category") == "Small Cap"]
+        small = [r for r in stock_rows if r.get("market_cap_category") == "smallcap"]
         if small:
             ab = sum(1 for r in small if r.get("close") and r.get("sma_50")
                      and float(r["close"]) > float(r["sma_50"]))
@@ -330,6 +361,12 @@ def build_market_snapshot(sb, effective_date: str) -> dict:
         else:
             snap["india_vix"]    = None
             snap["vix_5d_delta"] = None
+        logger.info(
+            f"  VIX: current={snap.get('india_vix')} | "
+            f"rows_fetched={len(vix_rows)} | "
+            f"vix_5d_delta={snap.get('vix_5d_delta')} | "
+            f"{'⚠ need 5 rows for delta' if len(vix_rows) < 5 else '✓ delta computed'}"
+        )
     except Exception as e:
         logger.warning(f"  VIX fetch failed: {e}")
         snap["india_vix"]    = None
@@ -371,6 +408,18 @@ def build_market_snapshot(sb, effective_date: str) -> dict:
         logger.warning(f"  GIFT Nifty fetch failed: {e}")
         snap["gift_nifty"]       = None
         snap["gift_premium_pct"] = None
+
+    try:
+        pcr_rows = (sb.table("macro_indicators")
+                    .select("indicator_value,indicator_date")
+                    .eq("indicator_name", "NIFTY_PCR")
+                    .order("indicator_date", desc=True)
+                    .limit(1)
+                    .execute().data)
+        snap["nifty_pcr"] = float(pcr_rows[0]["indicator_value"]) if pcr_rows else None
+    except Exception as e:
+        logger.warning(f"  PCR fetch failed: {e}")
+        snap["nifty_pcr"] = None
 
     # ── Global cues (S&P500, USD/INR) — NEW v2 ───────────────────────────────
     snap["sp500_5d_ret"]   = fetch_sp500_direction()
@@ -491,6 +540,7 @@ def score_price_structure(row: dict) -> tuple[float, dict]:
         if dist50 > 3:      p = 8
         elif dist50 > 0:    p = 5
         elif dist50 > -2:   p = 2
+        elif dist50 > -5:   p = 1
         else:               p = 0
         pts += p
         breakdown["vs_50dma"] = {"dist_pct": round(dist50, 2), "pts": p}
@@ -563,6 +613,7 @@ def score_breadth(row: dict) -> tuple[float, dict]:
         elif above_200 >= 55: p = 9
         elif above_200 >= 45: p = 6
         elif above_200 >= 35: p = 3
+        elif above_200 >= 25: p = 1
         else:                 p = 0
         pts += p
         breakdown["above_200dma_pct"] = {"value": above_200, "pts": p}
@@ -623,6 +674,7 @@ def score_momentum(row: dict) -> tuple[float, dict]:
       20d return   (6 pts): primary momentum
       5d return    (4 pts): near-term pulse
       GIFT Nifty   (±2 pts, NEW v2): pre-open global signal
+      Nifty PCR    (±2 pts): options market sentiment — NEW
 
     GIFT Nifty was loaded in v1 but never scored. It's a real-time
     signal for next-session direction — especially useful for regime
@@ -643,6 +695,7 @@ def score_momentum(row: dict) -> tuple[float, dict]:
         elif weekly_rsi >= 58: p = 7
         elif weekly_rsi >= 52: p = 5
         elif weekly_rsi >= 45: p = 2
+        elif weekly_rsi >= 35: p = 1
         else:                  p = 0
         pts += p
         breakdown["weekly_rsi"] = {"value": round(weekly_rsi, 1), "pts": p}
@@ -676,6 +729,16 @@ def score_momentum(row: dict) -> tuple[float, dict]:
         else:                     delta = 0
         pts += delta
         breakdown["gift_nifty_premium"] = {"value": round(gift_premium, 2), "pts": delta}
+    
+    pcr = row.get("nifty_pcr")
+    if pcr is not None:
+        pcr = float(pcr)
+        if pcr > 1.3:    delta = -2
+        elif pcr > 1.0:  delta = -1
+        elif pcr > 0.8:  delta = 1
+        else:            delta = 2   # pcr <= 0.8
+        pts += delta
+        breakdown["nifty_pcr"] = {"value": round(pcr, 2), "pts": delta}
 
     pts = min(pts, 20.0)
     return round(max(pts, 0.0), 1), breakdown
@@ -880,11 +943,11 @@ def compute_global_modifier(sp500_ret: float | None, usdinr_chg: float | None) -
     # USD/INR direction (positive = rupee weakening = bad)
     if usdinr_chg is not None:
         fx = float(usdinr_chg)
-        if fx > 1.5:      p = -2   # sharp rupee weakness
-        elif fx > 0.5:    p = -1
-        elif fx < -0.5:   p = 1    # rupee strengthening = FII inflows
-        elif fx < -1.0:   p = 2
-        else:             p = 0
+        if fx > 1.5:       p = -2
+        elif fx > 0.5:     p = -1
+        elif fx < -1.0:    p = 2    # strong rupee — check this BEFORE -0.5
+        elif fx < -0.5:    p = 1
+        else:              p = 0
         pts += p
         breakdown["usdinr_direction"] = {"5d_chg_pct": round(fx, 3), "pts": p}
 
@@ -1034,23 +1097,38 @@ def apply_hysteresis(raw_score: float, today_row: dict,
 # WRITE — single write point, no writes from snapshot
 # ─────────────────────────────────────────────────────────────────────────────
 
-def write_regime(sb, effective_date, mode, regime, score, breakdown, today_row):
+def write_regime(sb, effective_date, mode, regime, score, breakdown, today_row, raw_data=None):
     """
-    Single write function. All Supabase persistence happens here.
-
-    FIX v1: snapshot was being used as if it wrote to Supabase separately.
-    Now the flow is: snapshot → today_row (in-memory) → write_regime (one DB write).
-
-    shadow → writes computed_regime + score + breakdown only
-    full   → also writes regime field + strategy controls
+    Single write point. In full mode also creates the row if it doesn't exist.
     """
     computed_fields = {
+        # Core regime output
         "computed_regime":        regime,
         "regime_score_computed":  round(score, 1),
         "regime_score_breakdown": breakdown,
         "regime_computed_at":     datetime.now(IST).isoformat(),
+        # Market data — all sourced from today_row (snapshot priority, DB fallback)
+        "nifty_price":            today_row.get("nifty_price"),
+        "nifty_50dma":            today_row.get("nifty_50dma"),
+        "nifty_200dma":           today_row.get("nifty_200dma"),
+        "nifty_weekly_rsi":       today_row.get("nifty_weekly_rsi"),
+        "nifty_1d_chg_pct":       today_row.get("nifty_1d_chg_pct"),
+        "nifty_5d_chg_pct":       today_row.get("nifty_5d_chg_pct"),
+        "nifty_20d_chg_pct":      today_row.get("nifty_20d_chg_pct"),
+        "india_vix":              today_row.get("india_vix"),
+        "gift_nifty":             today_row.get("gift_nifty"),
+        "avg_sector_breadth":     today_row.get("avg_sector_breadth"),
+        "above_200dma_pct":       today_row.get("above_200dma_pct"),
+        "advance_decline_ratio":  today_row.get("advance_decline_ratio"),
         "banknifty_price":        today_row.get("banknifty_price"),
         "banknifty_weekly_rsi":   today_row.get("banknifty_weekly_rsi"),
+        "vix_5d_delta":    today_row.get("vix_5d_delta"),
+        "gift_premium_pct": today_row.get("gift_premium_pct"),
+        "sp500_5d_ret":    today_row.get("sp500_5d_ret"),
+        "usdinr_5d_chg":   today_row.get("usdinr_5d_chg"),
+        "midcap_breadth":  today_row.get("midcap_breadth"),
+        "smallcap_breadth": today_row.get("smallcap_breadth"),
+        "raw_data": json.dumps(raw_data) if raw_data else None,
     }
 
     full_fields = {
@@ -1061,19 +1139,84 @@ def write_regime(sb, effective_date, mode, regime, score, breakdown, today_row):
 
     if DRY_RUN:
         logger.info(f"[DRY RUN] regime={regime} score={score:.1f} mode={mode}")
+        logger.info(f"  Would write: nifty={today_row.get('nifty_price')} "
+                    f"vix={today_row.get('india_vix')} "
+                    f"above200={today_row.get('above_200dma_pct')}")
         return
 
     fields = full_fields if mode == "full" else computed_fields
 
-    if today_row:
-        sb.table("market_regime").update(fields).eq("date", effective_date).execute()
-    else:
-        fields["date"] = effective_date
-        sb.table("market_regime").upsert(fields, on_conflict="date").execute()
+    fields["date"] = effective_date
+    sb.table("market_regime").upsert(fields, on_conflict="date").execute()
+    logger.success(f"✓ market_regime UPSERT | computed_regime={regime} | score={score:.1f} | date={effective_date}")
 
-    logger.success(f"✓ market_regime | computed_regime={regime} | score={score:.1f} | date={effective_date}")
     if mode == "full":
-        logger.info(f"  FULL MODE: regime field updated → Sheet formula ignored")
+        logger.info(f"  FULL MODE: regime field updated → Sheet decommissioned")
+
+def build_raw_data(today_row: dict, data: dict, effective_date: str) -> dict:
+    """
+    Structured audit trail of all values used in this regime computation
+    and their sources. Replaces the Sheet's raw_data JSON blob.
+    """
+    return {
+        "computed_at":    datetime.now(IST).isoformat(),
+        "effective_date": effective_date,
+        "sources": {
+            "nifty": {
+                "source":       "yfinance:^NSEI",
+                "price":        today_row.get("nifty_price"),
+                "50dma":        today_row.get("nifty_50dma"),
+                "200dma":       today_row.get("nifty_200dma"),
+                "weekly_rsi":   today_row.get("nifty_weekly_rsi"),
+                "1d_chg_pct":   today_row.get("nifty_1d_chg_pct"),
+                "5d_chg_pct":   today_row.get("nifty_5d_chg_pct"),
+                "20d_chg_pct":  today_row.get("nifty_20d_chg_pct"),
+            },
+            "banknifty": {
+                "source":       "yfinance:^NSEBANK",
+                "price":        today_row.get("banknifty_price"),
+                "weekly_rsi":   today_row.get("banknifty_weekly_rsi"),
+            },
+            "vix": {
+                "source":       data.get("vix_source"),
+                "india_vix":    today_row.get("india_vix"),
+                "vix_5d_delta": today_row.get("vix_5d_delta"),
+            },
+            "gift_nifty": {
+                "source":         "supabase:global_cues",
+                "gift_nifty":     today_row.get("gift_nifty"),
+                "premium_pct":    today_row.get("gift_premium_pct"),
+                "prev_close_src": "supabase:market_regime",
+            },
+            "breadth": {
+                "source":               "supabase:stock_data_daily",
+                "above_200dma_pct":     today_row.get("above_200dma_pct"),
+                "advance_decline_ratio":today_row.get("advance_decline_ratio"),
+                "midcap_breadth":       today_row.get("midcap_breadth"),
+                "smallcap_breadth":     today_row.get("smallcap_breadth"),
+            },
+            "sector_breadth": {
+                "source":             "supabase:sector_strength",
+                "avg_sector_breadth": today_row.get("avg_sector_breadth"),
+            },
+            "fii_dii": {
+                "source":       "supabase:fii_dii_flow",
+                "fii_net_20d":  data["fii"].get("fii_net_20d"),
+                "fii_net_5d":   data["fii"].get("fii_net_5d"),
+                "fii_flag":     data["fii"].get("fii_flag"),
+                "dii_net_20d":  data["fii"].get("dii_net_20d"),
+                "dii_net_5d":   data["fii"].get("dii_net_5d"),
+            },
+            "global": {
+                "sp500_source":   "yfinance:^GSPC",
+                "sp500_5d_ret":   today_row.get("sp500_5d_ret"),
+                "usdinr_source":  "supabase:macro_indicators:USD_INR",
+                "usdinr_5d_chg":  today_row.get("usdinr_5d_chg"),
+                "nifty_pcr_src":  "supabase:macro_indicators:NIFTY_PCR",
+                "nifty_pcr":      today_row.get("nifty_pcr"),
+            },
+        }
+    }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN
@@ -1096,13 +1239,13 @@ def main():
                 + (" [DRY RUN]" if DRY_RUN else ""))
     logger.info("=" * 65)
 
-    # ── STEP 1: Resolve effective trading date FIRST ─────────────────────────
-    # FIX: v1 ran all data fetches with calendar date. On Sunday/holiday,
-    # table queries returned empty → P1=0, P2 partial. Now resolved before
-    # any data fetch so yfinance and all table queries use correct date.
+    # ── STEP 1: Resolve effective trading date FIRST ──────────────────────────
+    # yfinance is ground truth for last trading date.
+    # resolve_effective_date() also creates a placeholder row if one doesn't
+    # exist — so write_regime() can always use .update() safely.
     effective_date, is_trading = resolve_effective_date(sb, today)
     if not is_trading:
-        logger.info(f"  Non-trading day — will compute for {effective_date} but not create new row")
+        logger.info(f"  Non-trading day — computing for last trading date: {effective_date}")
 
     # ── STEP 2: Load all data ─────────────────────────────────────────────────
     logger.info("Pass 1: loading data...")
@@ -1127,20 +1270,20 @@ def main():
     p5_score, p5_bd = score_fii(fii, fii_history)
     gm_score, gm_bd = compute_global_modifier(sp500_ret, usdinr_chg)
 
-    raw_score = p1_score + p2_score + p3_score + p4_score + p5_score + gm_score
-    total_score = min(max(raw_score, 0.0), 100.0)   # hard bound 0-100
+    raw_score   = p1_score + p2_score + p3_score + p4_score + p5_score + gm_score
+    total_score = min(max(raw_score, 0.0), 100.0)
 
     breakdown = {
-        "price_structure": {"score": p1_score, "max": 25,   "detail": p1_bd},
-        "breadth":         {"score": p2_score, "max": 25,   "detail": p2_bd},
-        "momentum":        {"score": p3_score, "max": 20,   "detail": p3_bd},
-        "volatility":      {"score": p4_score, "max": 15,   "detail": p4_bd},
-        "fii_flows":       {"score": p5_score, "max": 15,   "detail": p5_bd},
-        "global_modifier": {"score": gm_score, "max": 5,    "detail": gm_bd},
+        "price_structure": {"score": p1_score, "max": 25, "detail": p1_bd},
+        "breadth":         {"score": p2_score, "max": 25, "detail": p2_bd},
+        "momentum":        {"score": p3_score, "max": 20, "detail": p3_bd},
+        "volatility":      {"score": p4_score, "max": 15, "detail": p4_bd},
+        "fii_flows":       {"score": p5_score, "max": 15, "detail": p5_bd},
+        "global_modifier": {"score": gm_score, "max": 5,  "detail": gm_bd},
         "total":           round(total_score, 1),
         "vix_source":      data["vix_source"],
     }
-
+    
     logger.info(f"  Pillar scores:")
     logger.info(f"    Price structure:  {p1_score:>5.1f}/25")
     logger.info(f"    Breadth:          {p2_score:>5.1f}/25")
@@ -1149,11 +1292,14 @@ def main():
                 + (f", Δ5d={vix_5d_delta:+.2f}" if vix_5d_delta is not None else "") + ")")
     logger.info(f"    FII flows:        {p5_score:>5.1f}/15")
     logger.info(f"    Global modifier:  {gm_score:>+5.1f}/±5"
-                + (f"  (S&P500 5d={sp500_ret:+.1f}%" if sp500_ret else "") + ")")
+                + (f"  (S&P500 5d={sp500_ret:+.1f}%)" if sp500_ret else ")")  )
     logger.info(f"    ─────────────────────────────────────")
     logger.info(f"    TOTAL:            {total_score:>5.1f}/100")
 
-    # ── STEP 4: Recovering check + hysteresis ─────────────────────────────────
+    # ── STEP 3B: Build raw_data audit trail ──────────────────────────────────
+    raw_data = build_raw_data(today_row, data, effective_date)
+
+    # ── STEP 4: Recovering check + hysteresis ────────────────────────────────
     is_recovering = detect_recovering(today_row, history, total_score)
     if is_recovering:
         logger.info("  RECOVERING conditions met — breadth improving, VIX declining, Nifty bouncing")
@@ -1161,7 +1307,7 @@ def main():
     logger.info("Pass 3: applying hysteresis...")
     final_regime = apply_hysteresis(total_score, today_row, history, is_recovering)
 
-    # ── STEP 5: Comparison with Sheet and ML ──────────────────────────────────
+    # ── STEP 5: Comparison with Sheet and ML ─────────────────────────────────
     sheet_regime = today_row.get("regime", "?")
     ml_regime    = today_row.get("predicted_regime")
 
@@ -1179,27 +1325,21 @@ def main():
         logger.info(f"  vs ML predicted_regime: {ml_match} ML={ml_regime} | Computed={final_regime}")
 
     # ── STEP 6: Write (single write point) ───────────────────────────────────
-    # Only write if this is a trading day (don't create phantom rows for holidays)
+    # Row is guaranteed to exist — resolve_effective_date() created it if missing.
     logger.info(f"Pass 4: writing ({mode} mode)...")
-    if is_trading:
-        write_regime(sb, effective_date, mode, final_regime,
-                     total_score, breakdown, today_row)
-    else:
-        # Non-trading day: update existing row for effective_date (don't insert today)
-        logger.info(f"  Non-trading day — updating {effective_date} row (not creating {today})")
-        write_regime(sb, effective_date, mode, final_regime,
-                     total_score, breakdown, today_row)
+    write_regime(sb, effective_date, mode, final_regime,
+                 total_score, breakdown, today_row, raw_data=raw_data)
 
     return {
-        "status":            "ok",
-        "effective_date":    effective_date,
-        "is_trading_day":    is_trading,
-        "computed_regime":   final_regime,
-        "sheet_regime":      sheet_regime,
-        "score":             round(total_score, 1),
-        "mode":              mode,
-        "agree_with_sheet":  final_regime == sheet_regime,
-        "is_recovering":     is_recovering,
+        "status":           "ok",
+        "effective_date":   effective_date,
+        "is_trading_day":   is_trading,
+        "computed_regime":  final_regime,
+        "sheet_regime":     sheet_regime,
+        "score":            round(total_score, 1),
+        "mode":             mode,
+        "agree_with_sheet": final_regime == sheet_regime,
+        "is_recovering":    is_recovering,
         "pillars": {
             "price":    p1_score,
             "breadth":  p2_score,
