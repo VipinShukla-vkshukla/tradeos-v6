@@ -23,6 +23,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 # ── Sheet tab definitions: name → (header_row, data_start_row) ─
 # Row numbers are 1-indexed as in Google Sheets
 SHEET_TABS = {
+    "STOCK_DATA":               (1, 2),
     "MASTER_SHORTLIST":         (11, 12),
     "OPEN_POSITIONS":           (4, 5),
     "CLOSED_POSITIONS":         (5, 6),
@@ -32,6 +33,7 @@ SHEET_TABS = {
     "LESSONS_LEARNED":          (1, 2),
     "MASTER_SHORTLIST_HISTORY": (1, 2),
     "NSE_HOLIDAYS":             (1, 2),
+    "Nifty Upcoming Events":    (2, 3),
     "NIFTY_TOTAL_MARKET":       (2, 3),
 }
 
@@ -155,6 +157,113 @@ def rows_to_df(raw: list[list], header_row: int, data_start: int) -> pd.DataFram
 
 
 # ── Tab-specific ingestors ────────────────────────────────────
+
+def ingest_stock_data(service, sb):
+    logger.info("Ingesting STOCK_DATA...")
+    raw = read_tab(service, "STOCK_DATA", 600)
+    df  = rows_to_df(raw, 1, 2)
+    if df.empty:
+        logger.warning("STOCK_DATA empty")
+        return 0  
+    today = today_ist()
+    rows  = []
+    for _, r in df.iterrows():
+        sym = safe_str(r.get("symbol"))
+        if not sym:
+            continue
+        sheet_date = parse_date(r.get("date"))  # ← use whatever your column is named
+        rows.append({
+            "date": str(sheet_date) if sheet_date else str(today),
+            "symbol": sym,
+            "company_name": safe_str(r.get("company_name")),
+            "index_membership": safe_str(r.get("index_membership")),
+            "sector": safe_str(r.get("sector")),
+            "industry": safe_str(r.get("industry")),
+            "market_cap": parse_num(r.get("market_cap")),
+            "market_cap_category": safe_str(r.get("market_cap_category")),
+            "current_price": parse_num(r.get("current_price")),
+            "open": parse_num(r.get("open")),
+            "high": parse_num(r.get("high")),
+            "low": parse_num(r.get("low")),
+            "close": parse_num(r.get("close")),
+            "high_52w": parse_num(r.get("52_weeks_high")),
+            "low_52w": parse_num(r.get("52_weeks_low")),
+            "high_30d": parse_num(r.get("30_days_highest_high")),
+            "low_30d": parse_num(r.get("30_days_lowest_low")),
+            "close_30d": parse_num(r.get("30_days_highest_close")),
+            "price_6m_ago": parse_num(r.get("price_6m_ago")),
+            "price_12m_ago": parse_num(r.get("price_12m_ago")),
+            "ret_1w": parse_num(r.get("1_week_return")),
+            "ret_1m": parse_num(r.get("1_month_return")),
+            "ret_3m": parse_num(r.get("3_months_return")),
+            "ret_6m": parse_num(r.get("6_months_return")),
+            "ret_12m": parse_num(r.get("12_months_return")),
+            "sma_10": parse_num(r.get("10_sma")),
+            "sma_20": parse_num(r.get("20_sma")),
+            "sma_50": parse_num(r.get("50_sma")),
+            "sma_200": parse_num(r.get("200_sma")),
+            "ema_10": parse_num(r.get("10_ema")),
+            "ema_20": parse_num(r.get("20_ema")),
+            "ema_50": parse_num(r.get("50_ema")),
+            "rsi_daily": parse_num(r.get("rsi_latest")),
+            "rsi_weekly": parse_num(r.get("rsi_weekly")),
+            "rsi_monthly": parse_num(r.get("rsi_monthly")),
+            "adx": parse_num(r.get("adx_14")),
+            "di_plus": parse_num(r.get("adx_di")),
+            "di_minus": parse_num(r.get("adx_di_2")),
+            "volume": int(parse_num(r.get("volume")) or 0) or None,
+            "avg_vol_20d": int(parse_num(r.get("20_avg_volume")) or 0) or None,
+            "avg_vol_50d": int(parse_num(r.get("50_avg_volume")) or 0) or None,
+            "vwap": parse_num(r.get("daily_vwap")),
+            "vwap_20d": parse_num(r.get("20_day_vwap")),
+            "vwap_50d": parse_num(r.get("50_day_vwap")),
+            "pct_change": parse_num(r.get("change_prev_day")),
+            "atr_14": parse_num(r.get("atr_14")),
+            "atr_pct": parse_num(r.get("atr")),
+            "ha_high": parse_num(r.get("heikinashi_high")),
+            "ha_low": parse_num(r.get("heikinashi_low")),
+            "ha_close": parse_num(r.get("heikinashi_close")),
+            "supertrend": parse_num(r.get("supertrend")),
+            "macd_line": parse_num(r.get("macd_line")),
+            "macd_signal": parse_num(r.get("macd_signal")),
+            "macd_hist": parse_num(r.get("macd_histogram")),
+            "psar": parse_num(r.get("parabolic_sar")),
+            "bb_upper": parse_num(r.get("upper_bollinger")),
+            "bb_lower": parse_num(r.get("lower_bollinger")),
+            "stoch": parse_num(r.get("stochastic")),
+            "ttm_net_profit": parse_num(r.get("ttm_net_profit")),
+            "net_profit_yearly": parse_num(r.get("net_profit_yearly")),
+            "eps": parse_num(r.get("eps")),
+            "quarterly_net_profit": parse_num(r.get("quarterly_net_profit")),
+            "quarterly_variance": parse_num(r.get("quarterly_variance_net_profit")),
+            "above_sma50":  1 if parse_bool(r.get("price__sma50_yn")) else 0,
+            "sma50_gt_200": 1 if parse_bool(r.get("sma50__sma200_yn")) else 0,
+            "above_st":     1 if parse_bool(r.get("close__supertrend_yn")) else 0,
+            "wk_hi_high":   1 if parse_bool(r.get("weekly_higher_high_yn")) else 0,
+            "wk_hi_low":    1 if parse_bool(r.get("weekly_higher_low_yn")) else 0,
+            "dist_sma50": parse_num(r.get("price_distance_from_sma50_")),
+            "vol_ratio": parse_num(r.get("volume_ratio_today__20_avg_volume")),
+            "value_cr": parse_num(r.get("value_traded__cr")),
+            "delivery_pct": parse_num(r.get("delivery_")),
+            "consol_range": parse_num(r.get("consolidation_range_")),
+            "breakout_setup": 1 if parse_bool(r.get("breakout_set_up_flag_yn")) else 0,
+            "bk_trigger":   1 if parse_bool(r.get("breakout_trigger_flag_yn")) else 0,
+            "upcoming_events": safe_str(r.get("upcoming_events")),
+            "upcoming_event_type": safe_str(r.get("upcoming_event_type")),
+            "in_master_shortlist": 1 if parse_bool(r.get("part_of_master_shortlist")) else 0,
+        })
+
+    if DRY_RUN:
+        logger.info(f"[DRY RUN] Would upsert {len(rows)} stock_data rows")
+        return len(rows)
+
+    # Upsert in batches of 200
+    for i in range(0, len(rows), 200):
+        sb.table("stock_data_daily").upsert(
+            rows[i:i+200], on_conflict="date,symbol"
+        ).execute()
+    logger.info(f"✓ STOCK_DATA: {len(rows)} rows upserted")
+    return len(rows)
     
 def ingest_master_shortlist(service, sb):
     logger.info("Ingesting MASTER_SHORTLIST...")
@@ -729,6 +838,39 @@ def ingest_nse_holidays(service, sb):
     return len(rows)
 
 
+def ingest_nifty_upcoming_events(service, sb):
+    logger.info("Ingesting Nifty Upcoming Events...")
+    raw = read_tab(service, "Nifty Upcoming Events", 500)
+    df  = rows_to_df(raw, 2, 3)
+    if df.empty:
+        return 0
+
+    today = today_ist()
+    rows  = []
+    for _, r in df.iterrows():
+        sym = safe_str(r.get("symbol"))
+        if not sym:
+            continue
+        ev_date = parse_date(r.get("date"))
+        days_to = (ev_date - today).days if ev_date else None
+        rows.append({
+            "symbol": sym.strip('"'),
+            "company_name": safe_str(r.get("company")),
+            "purpose": safe_str(r.get("purpose")),
+            "details": safe_str(r.get("details")),
+            "event_date": str(ev_date) if ev_date else None,
+            "days_to_event": days_to,
+            "source": "SHEET",
+        })
+
+    if not DRY_RUN and rows:
+        sb.table("nifty_upcoming_events").upsert(
+            rows, on_conflict="symbol,purpose,event_date"
+        ).execute()
+    logger.info(f"✓ NIFTY UPCOMING EVENTS: {len(rows)} events")
+    return len(rows)
+
+
 def ingest_nifty_total_market(service, sb):
     logger.info("Ingesting NIFTY_TOTAL_MARKET...")
     raw = read_tab(service, "NIFTY_TOTAL_MARKET", 600)
@@ -834,6 +976,7 @@ def main():
     results = {}
     steps = [
         ("strategy_config",     ingest_strategy_config),
+        ("stock_data",          ingest_stock_data),
         ("master_shortlist",    ingest_master_shortlist),
         ("open_positions",      ingest_open_positions),
         ("closed_positions",    ingest_closed_positions),
@@ -843,6 +986,7 @@ def main():
         ("lessons",             ingest_lessons),
         ("msl_history",         ingest_msl_history),
         ("nse_holidays",        ingest_nse_holidays),
+        ("nifty_upcoming",      ingest_nifty_upcoming_events),
         ("nifty_market",        ingest_nifty_total_market),
     ]
 

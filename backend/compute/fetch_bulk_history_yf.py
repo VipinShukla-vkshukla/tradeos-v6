@@ -27,7 +27,7 @@ try:
 except ImportError:
     YF_AVAILABLE = False
 
-MIN_SESSIONS_REQUIRED = 20   # minimum sessions to use cache
+MIN_SESSIONS_REQUIRED = 260   # minimum sessions to use cache
                               # ret_12m needs 240 but will be None for newer symbols — correct
 
 

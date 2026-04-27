@@ -876,6 +876,7 @@ def main():
 
     # ── Batch upsert — 50 rows per call ──────────────────────────────────────
     logger.info(f"Pass 3: writing {n} rows to stock_data_daily...")
+    
     written = 0
     for i in range(0, len(upsert_rows), 50):
         sb.table("stock_data_daily").upsert(

@@ -239,6 +239,8 @@ def main():
     print_summary(results, time.time() - t_start)
     sys.exit(0 if all(r["ok"] for r in results.values()) else 1)
 
-#Get-ChildItem -Recurse -Filter "*.py" | Select-String "ctl_enabled|sbs_enabled|tpo_enabled|eap_enabled"#
+
 if __name__ == "__main__":
     main()
+
+#Get-ChildItem -Recurse -Filter "*.py" | Select-String "ctl_enabled|sbs_enabled|tpo_enabled|eap_enabled"#
