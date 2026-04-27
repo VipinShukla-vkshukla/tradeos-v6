@@ -68,6 +68,7 @@ import json
 from pathlib import Path
 from datetime import datetime, timedelta
 from collections import defaultdict
+from fetch_bulk_history_yf import fetch_bulk_history_yf
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import get_supabase, today_ist, IST, is_kill_switch_active, cfg_bool, cfg, logger
@@ -89,8 +90,6 @@ RENAME_MAP = {
     "daily_high":     "high",
     "daily_low":      "low",
     "daily_close":    "close",
-    "week52_high":    "high_52w",
-    "week52_low":     "low_52w",
     "adx_14":         "adx",
     "adx_plus_di":    "di_plus",
     "adx_minus_di":   "di_minus",
@@ -107,6 +106,7 @@ RENAME_MAP = {
     "qtr_net_profit": "quarterly_net_profit",
     "qtr_var_profit": "quarterly_variance",
     "pct_change":     "pct_change",   # v1 BUG FIX: was 'pct_change_daily'
+    
 }
 
 PASSTHROUGH_FIELDS = [
@@ -185,13 +185,13 @@ def fetch_bulk_history(sb, today: str, days_back: int = 370) -> dict:
     return dict(history)
 
 
-def fetch_upcoming_events(sb, today: str, window_days: int = 14) -> dict:
+def fetch_upcoming_events(sb, today: str, window_days: int = 30) -> dict:
     """
     {symbol: {events_str, event_type_str}} for next window_days.
     Maps upcoming_events and upcoming_event_type from nifty_upcoming_events table.
     Takes the nearest event per symbol. Previously SHEET_ONLY — now from Supabase.
     """
-    cutoff = str(today_ist() + timedelta(days=window_days))
+    cutoff = str((datetime.strptime(today, "%Y-%m-%d").date()) + timedelta(days=window_days))
     rows = (sb.table("nifty_upcoming_events")
               .select("symbol,purpose,details,event_date")
               .gte("event_date", today)
@@ -239,13 +239,17 @@ def fetch_msl_symbols(sb, today: str) -> set:
     return syms
 
 
-def fetch_index_membership(sb) -> dict:
+def fetch_index_membership(sb) -> tuple[dict, dict]:
     """
-    {symbol: index_string} from nifty_total_market.
-    Previously SHEET_ONLY — now from Supabase (static table, never changes mid-day).
+    Returns (index_map, company_map).
+    index_map   : {symbol: index_string}
+    company_map : {symbol: company_name}
     """
-    rows = sb.table("nifty_total_market").select("symbol,nifty_200,nifty_500").execute().data
-    result: dict = {}
+    rows = sb.table("nifty_total_market").select(
+        "symbol,nifty_200,nifty_500,company_name"
+    ).execute().data
+    index_map:   dict = {}
+    company_map: dict = {}
     for r in rows:
         sym = r.get("symbol")
         if not sym:
@@ -253,13 +257,14 @@ def fetch_index_membership(sb) -> dict:
         in_200 = bool(r.get("nifty_200"))
         in_500 = bool(r.get("nifty_500"))
         if in_200:
-            result[sym] = "Nifty200,Nifty500"   # Nifty200 ⊂ Nifty500
+            index_map[sym] = "Nifty200,Nifty500"
         elif in_500:
-            result[sym] = "Nifty500"
+            index_map[sym] = "Nifty500"
         else:
-            result[sym] = ""
-    logger.info(f"  Index membership: {len(result)} symbols mapped")
-    return result
+            index_map[sym] = ""
+        company_map[sym] = r.get("company_name") or ""
+    logger.info(f"  Index membership: {len(index_map)} symbols mapped")
+    return index_map, company_map
 
 
 def fetch_nifty_return(sb, today: str, sessions: int = 20) -> float | None:
@@ -279,6 +284,26 @@ def fetch_nifty_return(sb, today: str, sessions: int = 20) -> float | None:
         logger.debug(f"Nifty return failed: {e}")
     return None
 
+def fetch_raw_prices(sb, today: str) -> dict:
+    """
+    {symbol: {value_cr, delivery_pct, delivery_qty}} from raw_prices for today.
+    Used for bk_trigger delivery quality filter.
+    """
+    rows = (sb.table("raw_prices")
+              .select("symbol,value_cr,delivery_pct,delivery_qty")
+              .eq("date", today)
+              .execute().data)
+    result = {}
+    for r in rows:
+        sym = r.get("symbol")
+        if sym:
+            result[sym] = {
+                "value_cr":      float(r.get("value_cr")      or 0),
+                "delivery_pct":  float(r.get("delivery_pct")  or 0),
+                "delivery_qty":  float(r.get("delivery_qty")  or 0),
+            }
+    logger.info(f"  raw_prices: {len(result)} symbols with delivery/value data")
+    return result
 
 def fetch_field_trust(sb) -> dict:
     """
@@ -303,7 +328,9 @@ def fetch_field_trust(sb) -> dict:
 # ── Computation ────────────────────────────────────────────────────────────────
 
 def compute_from_raw(raw: dict, sym_history: list, events: dict,
-                     msl_set: set, index_map: dict) -> dict:
+                     msl_set: set, index_map: dict, company_map: dict = None,
+                     sheet_row: dict = None,
+                     price_row: dict = None) -> dict:
     """
     Compute all derivable fields for one symbol.
     sym_history: [{close, low, high}] newest first from bulk fetch.
@@ -317,10 +344,31 @@ def compute_from_raw(raw: dict, sym_history: list, events: dict,
     avg_vol_20 = float(raw.get("avg_vol_20")   or 0)
     atr_14     = float(raw.get("atr_14")       or 0)
     sma_50     = float(raw.get("sma_50")       or 0)
-    sma_200    = float(raw.get("sma_200")      or 0)
-    week52_hi  = float(raw.get("week52_high")  or 0)
-    week52_lo  = float(raw.get("week52_low")   or 0)
+    _sma200_raw = raw.get("sma_200")
+    sma_200    = float(_sma200_raw) if _sma200_raw not in (None, "", 0) else 0.0
+    if _sma200_raw not in (None, "", 0):
+        out["sma_200"] = round(float(_sma200_raw), 4)   # explicit write — don't rely on passthrough
     supertrend = float(raw.get("supertrend")   or 0)
+
+    # ── 52-week high/low from rolling history (252 sessions) ──────────────
+    # Chartink's week52_high/low field is unreliable — compute from price_history_yf
+    window_52w  = sym_history[:252]
+    highs_52w   = [h["high"] for h in window_52w if h.get("high")]
+    lows_52w    = [h["low"]  for h in window_52w if h.get("low")]
+
+    if highs_52w:
+        out["high_52w"] = round(max(highs_52w), 4)
+    elif raw.get("week52_high"):                        # fallback to chartink if no history
+        out["high_52w"] = round(float(raw["week52_high"]), 4)
+
+    if lows_52w:
+        out["low_52w"] = round(min(lows_52w), 4)
+    elif raw.get("week52_low"):                         # fallback to chartink if no history
+        out["low_52w"] = round(float(raw["week52_low"]), 4)
+
+    # local vars for downstream use (price_location etc.)
+    week52_hi = out.get("high_52w") or 0
+    week52_lo = out.get("low_52w")  or 0
 
     # ── Level 1 ───────────────────────────────────────────────────────────
     out["vol_ratio"]     = round(volume / avg_vol_20, 4) if avg_vol_20 > 0 else None
@@ -330,22 +378,23 @@ def compute_from_raw(raw: dict, sym_history: list, events: dict,
     # ── Level 2 — SMA / price flags ───────────────────────────────────────
     out["dist_sma50"]   = round((close - sma_50)  / sma_50  * 100, 4) if sma_50  > 0 else None
     out["above_sma50"]  = bool(close > sma_50)  if sma_50  > 0 else None
-    out["sma50_gt_200"] = bool(sma_50 > sma_200) if sma_50  > 0 and sma_200 > 0 else None
+    out["sma50_gt_200"] = bool(sma_50 > sma_200) if sma_50 > 0 and sma_200 > 0 else None
+    # explicit passthrough guard — if sma_200 not yet in out, write it now
+    if "sma_200" not in out and sma_200 > 0:
+        out["sma_200"] = round(sma_200, 4)
     out["above_st"]     = bool(close > supertrend) if supertrend > 0 else None
-    out["bk_trigger"]   = bool(close > week52_hi * 0.98) if week52_hi > 0 else None
     if week52_hi > week52_lo > 0:
         out["price_location"] = round((close - week52_lo) / (week52_hi - week52_lo) * 100, 2)
 
     # ── Level 2 — historical series ───────────────────────────────────────
-    closes = [h["close"] for h in sym_history if h.get("close")]
+    closes = [h["close"] for h in sym_history] # close history is essential for returns, so we keep all sessions even if some have missing  lows/highs. We filter
     lows   = [h["low"]   for h in sym_history if h.get("low")]
     highs  = [h["high"]  for h in sym_history if h.get("high")]
 
     def _ret(n: int) -> float | None:
-        # Returns None gracefully when history < n sessions
-        # Reconciliation will use sheet value automatically for that field
-        return (round((close - closes[n]) / closes[n] * 100, 4)
-                if len(closes) > n and closes[n] else None)
+        if len(closes) > n and closes[n] not in (None, 0):
+            return round((close - closes[n]) / closes[n] * 100, 4)
+        return None
 
     out["ret_1w"]        = _ret(5)
     out["ret_1m"]        = _ret(20)
@@ -356,25 +405,109 @@ def compute_from_raw(raw: dict, sym_history: list, events: dict,
     out["price_12m_ago"] = round(closes[240], 2) if len(closes) > 240 else None  # v1 BUG FIX
     out["close_30d"]     = round(closes[30],  2) if len(closes) > 30  else None  # v1 BUG FIX
 
-    # low_30d — v1 BUG FIX: was computed but never written
-    if lows:
-        out["low_30d"] = round(min(lows[:30] if len(lows) >= 30 else lows), 2)
+    # Step 1: Take exact last 30 trading sessions (data is newest → oldest)
+    window = sym_history[:30] if len(sym_history) >= 30 else sym_history
 
-    high_30d = float(raw.get("high_30d") or 0)
+    # Step 2: Extract lows/highs ONLY from this window
+    lows_30  = [h["low"]  for h in window if h.get("low") is not None]
+    highs_30 = [h["high"] for h in window if h.get("high") is not None]
+
+    # Step 3: Compute values
+    if lows_30:
+        out["low_30d"] = round(min(lows_30), 2)
+
+    if highs_30:
+        out["high_30d"] = round(max(highs_30), 2)
+
+    # Step 4: Consolidation range
     low_30d  = out.get("low_30d")
-    if high_30d > 0 and low_30d and low_30d > 0:
+    high_30d = out.get("high_30d")
+
+    if high_30d and low_30d and low_30d > 0:
         out["consol_range"] = round((high_30d - low_30d) / low_30d * 100, 4)
 
-    vol_r  = out.get("vol_ratio") or 0
-    consol = out.get("consol_range")
-    out["breakout_setup"] = bool(
-        close > sma_50 and vol_r > 1.5 and consol is not None and consol < 8
-    ) if sma_50 > 0 else None
-
     # wk_hi_high / wk_hi_low — v1 BUG FIX: was missing
-    if len(highs) >= 10 and len(lows) >= 10:
-        out["wk_hi_high"] = bool(max(highs[:5]) > max(highs[5:10]))
-        out["wk_hi_low"]  = bool(min(lows[:5])  > min(lows[5:10]))
+    # wk_hi_high / wk_hi_low
+    # Mirrors sheet: last 5 sessions vs prior 5 sessions
+    # history is newest-first so [:5] = most recent week, [5:10] = prior week
+    # Need clean 10 sessions with no None gaps — filter conservatively
+    window_10  = sym_history[:15]   # take 15 to absorb any None gaps
+
+    highs_10 = [h["high"] for h in window_10 if h.get("high") is not None][:10]
+    lows_10  = [h["low"]  for h in window_10 if h.get("low")  is not None][:10]
+
+    if len(highs_10) >= 10:
+        out["wk_hi_high"] = bool(max(highs_10[:5]) > max(highs_10[5:10]))
+    else:
+        out["wk_hi_high"] = None   # insufficient history
+
+    if len(lows_10) >= 10:
+        out["wk_hi_low"] = bool(min(lows_10[:5]) > min(lows_10[5:10]))
+    else:
+        out["wk_hi_low"] = None    # insufficient history
+
+    # ── bk_trigger — requires high_30d, close_30d, wk_hi_* (computed above) ──
+    _pr          = price_row or {}
+    _high_30d    = out.get("high_30d")
+    _close_30d   = out.get("close_30d")
+    _vol_ratio   = out.get("vol_ratio")
+    _above_st    = out.get("above_st")
+    _open        = float(raw.get("daily_open")  or 0)
+    _rsi_daily   = float(raw.get("rsi_daily")   or 0)
+    _rsi_weekly  = float(raw.get("rsi_weekly")  or 0)
+    _dist_sma50  = out.get("dist_sma50")
+    _atr_pct     = out.get("atr_pct")
+    _delivery    = _pr.get("delivery_pct", 0)
+    _value_cr    = _pr.get("value_cr",     0)
+
+    if all(v is not None for v in [_high_30d, _close_30d, _vol_ratio, _above_st, _dist_sma50, _atr_pct]):
+        _sma50_threshold = max(8.0, 1.5 * _atr_pct)
+        _delivery_ok     = (_delivery >= 35 or _value_cr >= 50)
+        out["bk_trigger"] = bool(
+            close        >  _high_30d              and   # breaks true 30d resistance
+            close        >  _close_30d             and   # confirms above 30d highest close
+            _vol_ratio   >= 1.5                    and   # strong volume expansion
+            _above_st                              and   # trend filter
+            (_open == 0 or close > _open)          and   # intraday control
+            55 <= _rsi_daily  <= 75                and   # daily momentum sweet spot
+            _rsi_weekly  >  55                     and   # weekly HTF confirmation
+            _dist_sma50  <= _sma50_threshold       and   # ATR-adjusted SMA50 proximity
+            _delivery_ok                                 # institutional participation
+        )
+    else:
+        out["bk_trigger"] = None
+
+    # ── breakout_setup — requires close_30d, wk_hi_high, wk_hi_low, consol_range ──
+    _close_30d_bs  = out.get("close_30d")
+    _above_sma50   = out.get("above_sma50")
+    _sma50_gt_200  = out.get("sma50_gt_200")
+    _wk_hi_high    = out.get("wk_hi_high")
+    _wk_hi_low     = out.get("wk_hi_low")
+    _vol_ratio_bs  = out.get("vol_ratio") or 0
+    _rsi_daily_bs  = float(raw.get("rsi_daily")  or 0)
+    _rsi_weekly_bs = float(raw.get("rsi_weekly") or 0)
+    _consol_bs     = out.get("consol_range")
+    _atr_pct_bs    = out.get("atr_pct") or 1.0
+
+    if all(v is not None for v in [
+        _close_30d_bs, _above_sma50, _sma50_gt_200,
+        _wk_hi_high, _wk_hi_low, _consol_bs
+    ]):
+        _proximity_threshold = _close_30d_bs * (1 - min(0.03, _atr_pct_bs / 100))
+        out["breakout_setup"] = bool(
+            close          >= _proximity_threshold  and   # near 30d resistance, ATR-adjusted
+            _above_sma50                            and   # above SMA50
+            _sma50_gt_200                           and   # SMA50 > SMA200 trend structure
+            _wk_hi_high    and _wk_hi_low           and   # both HH and HL
+            _vol_ratio_bs  >= 1.2                   and   # early accumulation volume
+            55 <= _rsi_daily_bs  <= 75              and   # daily momentum building
+            _rsi_weekly_bs >  50                    and   # weekly not in downtrend
+            _consol_bs     <  10                          # coiling in tight range
+        )
+    else:
+        out["breakout_setup"] = None
+
+    # ── Level 3 — market-relative (computed later after nifty_ret is known) ──
 
     # ── Level 3 — market-relative (computed later after nifty_ret is known) ──
     # rs_vs_nifty assigned in main() after this function returns
@@ -385,10 +518,11 @@ def compute_from_raw(raw: dict, sym_history: list, events: dict,
     out["upcoming_event_type"] = ev.get("upcoming_event_type")  # nifty_upcoming_events.purpose
     out["in_master_shortlist"] = bool(sym in msl_set)           # master_shortlist presence
     out["index_membership"]    = index_map.get(sym, "")         # nifty_total_market booleans
+    out["company_name"]        = (company_map or {}).get(sym)   # nifty_total_market name
 
     # ── NOT_COMPUTABLE — explicit NULL, not sourced from Sheet ────────────
     out["fii_sector_flow"] = None   # requires paid sector-level FII data
-
+    
     # ── RENAME_MAP pass-throughs ──────────────────────────────────────────
     for chartink_col, canonical_col in RENAME_MAP.items():
         val = raw.get(chartink_col)
@@ -634,11 +768,13 @@ def main():
         return {"status": "no_data"}
 
     sheet_map    = fetch_sheet_values(sb, today) if reconcile_enabled else {}
-    bulk_history = fetch_bulk_history(sb, today)
+    symbols      = [r["symbol"] for r in raw_rows if r.get("symbol")]
+    bulk_history = fetch_bulk_history_yf(sb, today, symbols, dry_run=DRY_RUN)
     events_map   = fetch_upcoming_events(sb, today)
     msl_set      = fetch_msl_symbols(sb, today)
-    index_map    = fetch_index_membership(sb)
+    index_map, company_map = fetch_index_membership(sb)
     nifty_ret    = fetch_nifty_return(sb, today)
+    prices_map   = fetch_raw_prices(sb, today)
     field_trust  = fetch_field_trust(sb) if reconcile_enabled else {}
 
     logger.info(f"  Nifty 1M return: {nifty_ret}%")
@@ -662,7 +798,9 @@ def main():
         try:
             computed = compute_from_raw(
                 raw, bulk_history.get(sym, []),
-                events_map, msl_set, index_map
+                events_map, msl_set, index_map, company_map,
+                sheet_row=sheet_map.get(sym, {}),
+                price_row=prices_map.get(sym, {})
             )
             # Level 3 — needs nifty_ret from separate query
             if nifty_ret is not None and computed.get("ret_1m") is not None:

@@ -34,7 +34,6 @@ SHEET_TABS = {
     "MASTER_SHORTLIST_HISTORY": (1, 2),
     "NSE_HOLIDAYS":             (1, 2),
     "Nifty Upcoming Events":    (2, 3),
-    "Nifty Bhavcopy (Delivery%)":(2, 3),
     "NIFTY_TOTAL_MARKET":       (2, 3),
 }
 
@@ -872,50 +871,6 @@ def ingest_nifty_upcoming_events(service, sb):
     return len(rows)
 
 
-def ingest_bhavcopy_delivery(service, sb):
-    logger.info("Ingesting Nifty Bhavcopy Delivery%...")
-    raw = read_tab(service, "Nifty Bhavcopy (Delivery%)", 3000)
-    df  = rows_to_df(raw, 2, 3)
-    if df.empty:
-        return 0
-
-    rows = []
-    for _, r in df.iterrows():
-        sym = safe_str(r.get("symbol"))
-        if not sym:
-            continue
-        d = parse_date(r.get("date1"))
-        rows.append({
-            "date": str(d) if d else str(today_ist()),
-            "symbol": sym.strip(),
-            "open": parse_num(r.get("open_price")),
-            "high": parse_num(r.get("high_price")),
-            "low": parse_num(r.get("low_price")),
-            "close": parse_num(r.get("close_price")),
-            "prev_close": parse_num(r.get("prev_close")),
-            "volume": int(parse_num(r.get("ttl_trd_qnty")) or 0) or None,
-            "delivery_pct": parse_num(r.get("deliv_per")),
-            "delivery_qty": int(parse_num(r.get("deliv_qty")) or 0) or None,
-        })
-    # Deduplicate — sheet may have repeated (date, symbol) pairs
-    seen = set()
-    deduped = []
-    for row in rows:
-        key = (row["date"], row["symbol"])
-        if key not in seen:
-            seen.add(key)
-            deduped.append(row)
-    rows = deduped
-    
-    if not DRY_RUN and rows:
-        for i in range(0, len(rows), 500):
-            sb.table("raw_prices").upsert(
-                rows[i:i+500], on_conflict="date,symbol"
-            ).execute()
-    logger.info(f"✓ BHAVCOPY: {len(rows)} rows")
-    return len(rows)
-
-
 def ingest_nifty_total_market(service, sb):
     logger.info("Ingesting NIFTY_TOTAL_MARKET...")
     raw = read_tab(service, "NIFTY_TOTAL_MARKET", 600)
@@ -1032,7 +987,6 @@ def main():
         ("msl_history",         ingest_msl_history),
         ("nse_holidays",        ingest_nse_holidays),
         ("nifty_upcoming",      ingest_nifty_upcoming_events),
-        ("bhavcopy_delivery",   ingest_bhavcopy_delivery),
         ("nifty_market",        ingest_nifty_total_market),
     ]
 

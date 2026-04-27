@@ -190,6 +190,9 @@ def try_nse(trade_date: date, session: requests.Session) -> pd.DataFrame:
         f"[NSE] ✓ {len(df)} EQ records | "
         f"delivery coverage: {df['delivery_pct'].notna().sum()} stocks"
     )
+    
+    logger.info(f"[NSE] value_cr sample: {df['value_cr'].head(5).tolist()}")
+    logger.info(f"[NSE] value_cr nulls: {df['value_cr'].isna().sum()} / {len(df)}")
     return df
 
 
