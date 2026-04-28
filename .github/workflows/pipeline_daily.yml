@@ -36,6 +36,11 @@ jobs:
           mkdir -p backend/credentials
           echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > backend/credentials/service_account.json
 
+      - name: Debug import error
+        run: |
+          cd $GITHUB_WORKSPACE
+          python -c "import importlib.util; from pathlib import Path; _dir = Path('backend/compute'); print('File exists:', (_dir / 'fetch_bulk_history_yf.py').exists()); spec = importlib.util.spec_from_file_location('m', _dir / 'fetch_bulk_history_yf.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); print('SUCCESS - module loaded')"
+
       - name: Run pipeline
         env:
           SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
