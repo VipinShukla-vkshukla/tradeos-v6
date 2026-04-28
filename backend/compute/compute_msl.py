@@ -75,7 +75,6 @@ import sys, os
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from collections import Counter, defaultdict
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
 from config import get_supabase, today_ist, IST, cfg, cfg_bool, is_kill_switch_active, DRY_RUN
