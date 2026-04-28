@@ -62,45 +62,24 @@ PERFORMANCE
     + 1 scalar: market_regime for nifty return
 """
 
-import importlib
 import sys
 import os
 import json
 from pathlib import Path
 from datetime import datetime, timedelta
 from collections import defaultdict
-# This covers both 'config' (parent) and 'fetch_bulk_history_yf' (current)
-current_dir = Path(__file__).resolve().parent
-repo_root = current_dir.parent.parent
+# Add BOTH the repo root and the compute/ folder to path
+current_dir = Path(__file__).resolve().parent        # backend/compute/
+backend_dir = current_dir.parent                     # backend/
+repo_root   = backend_dir.parent                     # tradeos-v6/
 
-# allow config import
-if str(repo_root) not in sys.path:
-    sys.path.insert(0, str(repo_root))
+for p in [str(repo_root), str(backend_dir), str(current_dir)]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
-# config import
-from backend.config import (
-    get_supabase,
-    today_ist,
-    IST,
-    is_kill_switch_active,
-    cfg_bool,
-    cfg,
-    logger,
-)
-
-# load fetch_bulk_history_yf.py directly by path
-helper_file = current_dir / "fetch_bulk_history_yf.py"
-
-spec = importlib.util.spec_from_file_location(
-    "fetch_bulk_history_yf_module",
-    helper_file
-)
-
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-
-fetch_bulk_history_yf = module.fetch_bulk_history_yf
+# Now this will work everywhere
 from config import get_supabase, today_ist, IST, is_kill_switch_active, cfg_bool, cfg, logger
+from fetch_bulk_history_yf import fetch_bulk_history_yf
 
 
 DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
