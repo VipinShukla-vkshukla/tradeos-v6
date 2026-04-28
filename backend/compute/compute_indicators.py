@@ -70,12 +70,34 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 # This covers both 'config' (parent) and 'fetch_bulk_history_yf' (current)
 current_dir = Path(__file__).resolve().parent
-if str(current_dir) not in sys.path:
-    sys.path.insert(0, str(current_dir))
-if str(current_dir.parent) not in sys.path:
-    sys.path.insert(0, str(current_dir.parent))
-from fetch_bulk_history_yf import fetch_bulk_history_yf
-from config import get_supabase, today_ist, IST, is_kill_switch_active, cfg_bool, cfg, logger
+repo_root = current_dir.parent.parent
+
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+# Robust imports: GitHub pipeline + local direct run
+try:
+    from backend.compute.fetch_bulk_history_yf import fetch_bulk_history_yf
+    from backend.config import (
+        get_supabase,
+        today_ist,
+        IST,
+        is_kill_switch_active,
+        cfg_bool,
+        cfg,
+        logger,
+    )
+except ImportError:
+    from fetch_bulk_history_yf import fetch_bulk_history_yf
+    from config import (
+        get_supabase,
+        today_ist,
+        IST,
+        is_kill_switch_active,
+        cfg_bool,
+        cfg,
+        logger,
+    )
 
 
 DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
