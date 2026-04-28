@@ -62,25 +62,39 @@ PERFORMANCE
     + 1 scalar: market_regime for nifty return
 """
 
+
 import sys
 import os
 import json
+import importlib.util
 from pathlib import Path
 from datetime import datetime, timedelta
 from collections import defaultdict
-# Add BOTH the repo root and the compute/ folder to path
-current_dir = Path(__file__).resolve().parent        # backend/compute/
-backend_dir = current_dir.parent                     # backend/
-repo_root   = backend_dir.parent                     # tradeos-v6/
+
+# Path setup
+current_dir = Path(__file__).resolve().parent
+backend_dir = current_dir.parent
+repo_root   = backend_dir.parent
 
 for p in [str(repo_root), str(backend_dir), str(current_dir)]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
-# Now this will work everywhere
+# Config import
 from config import get_supabase, today_ist, IST, is_kill_switch_active, cfg_bool, cfg, logger
-from fetch_bulk_history_yf import fetch_bulk_history_yf
 
+# Load fetch_bulk_history_yf by file path
+_dir = Path(__file__).resolve().parent
+print("Loading from:", _dir / "fetch_bulk_history_yf.py")
+print("File exists:", (_dir / "fetch_bulk_history_yf.py").exists())
+
+_spec = importlib.util.spec_from_file_location(
+    "fetch_bulk_history_yf_module",
+    _dir / "fetch_bulk_history_yf.py"
+)
+_module = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_module)
+fetch_bulk_history_yf = _module.fetch_bulk_history_yf
 
 DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
 

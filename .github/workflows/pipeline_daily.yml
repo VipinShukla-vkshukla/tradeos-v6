@@ -31,10 +31,6 @@ jobs:
       - name: Install Xvfb
         run: sudo apt-get install -y xvfb
       
-      - name: Set PYTHONPATH
-        run: |
-          echo "PYTHONPATH=$GITHUB_WORKSPACE:$GITHUB_WORKSPACE/backend:$(find $GITHUB_WORKSPACE/backend -type d | tr '\n' ':')" >> $GITHUB_ENV
-
       - name: Create credentials file
         run: |
           mkdir -p backend/credentials
