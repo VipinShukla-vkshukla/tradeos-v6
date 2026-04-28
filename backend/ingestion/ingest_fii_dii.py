@@ -109,13 +109,29 @@ def compute_rolling_flows(sb, today: date) -> dict:
             elif n5 > accelerator_thresh * 3:
                 signal = "ACCELERATOR"
 
+        # ── DII Flag Logic ───────────────────────────
+        dii_signal = "NEUTRAL"
+
+        if d5 is not None:
+            if d5 > 3000:
+                dii_signal = "STRONG_BUYING"
+            elif d5 > 1000:
+                dii_signal = "BUYING"
+            elif d5 < -3000:
+                dii_signal = "STRONG_SELLING"
+            elif d5 < -1000:
+                dii_signal = "SELLING"
+
         return {
-            "fii_net_5d":  round(n5,  2) if n5  is not None else None,
-            "fii_net_10d": round(n10, 2) if n10 is not None else None,
-            "fii_net_20d": round(n20, 2) if n20 is not None else None,
-            "dii_net_5d":  round(d5,  2) if d5  is not None else None,
-            "dii_net_20d": round(d20, 2) if d20 is not None else None,
-            "fii_flag":    signal,
+            "fii_net_5d":  round(n5, 2) if n5 is not None else None,
+            "fii_net_10d": round(n10,2) if n10 is not None else None,
+            "fii_net_20d": round(n20,2) if n20 is not None else None,
+
+            "dii_net_5d":  round(d5, 2) if d5 is not None else None,
+            "dii_net_20d": round(d20,2) if d20 is not None else None,
+
+            "fii_flag": signal,
+            "dii_flag": dii_signal,
         }
     except Exception as e:
         logger.warning(f"Rolling flow compute failed: {e}")

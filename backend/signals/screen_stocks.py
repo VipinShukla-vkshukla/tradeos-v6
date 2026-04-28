@@ -3,6 +3,38 @@ TradeOS v6 — Dynamic Stock Screener v1.0
 ==========================================
 Pipeline position: [10.6] — after compute_indicators, before compute_msl
 
+REGIME ALIGNMENT UPDATE (v1.0 → v1.1)
+======================================
+screen_stocks now fully reflects the 5-state regime model from compute_regime v2.0.
+
+States: TRENDING | RISK ON | NEUTRAL | RECOVERING | RISK OFF
+
+CHANGES FROM v1.0:
+  1. run_tpo()              — RECOVERING gets its own RSI window (40–53).
+                              Was falling through to NEUTRAL default, which is wrong.
+  2. run_reversal_setup()   — RECOVERING is now a primary mode (recovering_mode=True).
+                              RVS is the most valuable engine in RECOVERING — stocks
+                              bouncing from lows is exactly what RECOVERING means.
+                              Threshold and gates tuned separately from risk_off_mode.
+  3. run_mom_continuation() — RISK OFF: skip entirely (momentum in bear = dangerous).
+                              RECOVERING: run with stricter gates (higher ADX floor,
+                              delivery required, rsi_w floor raised).
+  4. run_sector_rotation()  — RISK OFF: skip entirely.
+                              RECOVERING: restrict to top 3 sectors only (not top 5).
+  5. aggregate_and_rank()   — RECOVERING: no hard block (unlike RISK OFF), but engine
+                              scores are multiplied by REGIME_ENGINE_WEIGHTS before
+                              composite scoring. IAD/RSB/RVS boosted; CTL/MOM/VBD
+                              reduced. RISK OFF: same hard block as before, but also
+                              applies engine weights so quality signals still surface
+                              for open_syms / force_include.
+  6. REGIME_ENGINE_WEIGHTS  — New constant. Per-regime multipliers applied to each
+                              engine's score during aggregation. Encodes the logic:
+                                TRENDING   → CTL + MOM lead
+                                RISK ON    → CTL + SBS + RSB lead
+                                NEUTRAL    → balanced (all 1.0x)
+                                RECOVERING → IAD + RSB + RVS lead; CTL + MOM reduced
+                                RISK OFF   → RVS + IAD lead; CTL + MOM + VBD penalised
+
 PURPOSE
   This script REPLACES the role of ingest_sheets.py for MASTER_SHORTLIST
   population (over time, via transition modes). It screens all 500 stocks
@@ -30,6 +62,7 @@ PROPRIETARY SCANNERS (new, data-driven):
 
 SELECTION LOGIC:
   Each engine produces a {symbol: engine_score} dict.
+  Scores are multiplied by REGIME_ENGINE_WEIGHTS[regime][engine] before aggregation.
   Symbols are aggregated with a CONVERGENCE BONUS when multiple engines agree.
   Top 30 by composite_score after sector diversification are selected.
   Hard blocks: ASM/GSM/FO_BAN excluded. Regime filter applied.
@@ -44,6 +77,7 @@ import sys, os, json
 from pathlib import Path
 from datetime import datetime, timedelta
 from collections import defaultdict
+import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
@@ -55,6 +89,39 @@ MAX_PER_SECTOR       = 5      # sector diversification cap
 MIN_MARKET_CAP       = 300    # Cr — minimum for any strategy
 CONVERGENCE_BONUS    = 8      # pts per additional engine confirming a symbol
 WRITE_ALL_QUALIFIED  = True   # True = write all to msl_computed | False = write only top MAX_SYMBOLS
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REGIME ENGINE WEIGHTS — NEW v1.1
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Per-regime multipliers applied to each engine's raw score during aggregation.
+# Encodes which engines are most reliable/relevant in each market state.
+#
+# Design rationale:
+#   TRENDING:   Trend-following engines (CTL, MOM) at their most reliable.
+#               Reversal setups (RVS) less relevant — few dips to buy.
+#   RISK ON:    Broad participation. SBS/RSB also strong. Balance preferred.
+#   NEUTRAL:    No edge in any direction. All engines equally weighted (1.0x).
+#   RECOVERING: Coming out of bear. Accumulation (IAD), RS leaders (RSB), and
+#               reversal setups (RVS) are the highest-value signals.
+#               CTL/MOM/VBD penalised — trend not yet confirmed.
+#   RISK OFF:   Bear market. Only highest-conviction quality signals surface.
+#               RVS/IAD still valid for open_syms and force_include.
+#               MOM/CTL/VBD heavily penalised — chasing in bear = capital destruction.
+#
+REGIME_ENGINE_WEIGHTS = {
+    "TRENDING":   {"CTL": 1.2, "MOM": 1.2, "SBS": 1.1, "VBD": 1.0,
+                   "IAD": 1.0, "RSB": 1.0, "TPO": 1.0, "RVS": 0.7, "SEC": 1.0},
+    "RISK ON":    {"CTL": 1.1, "MOM": 1.1, "SBS": 1.1, "VBD": 1.0,
+                   "IAD": 1.0, "RSB": 1.1, "TPO": 1.0, "RVS": 0.9, "SEC": 1.1},
+    "NEUTRAL":    {"CTL": 1.0, "MOM": 1.0, "SBS": 1.0, "VBD": 1.0,
+                   "IAD": 1.0, "RSB": 1.0, "TPO": 1.0, "RVS": 1.0, "SEC": 1.0},
+    "RECOVERING": {"CTL": 0.8, "MOM": 0.7, "SBS": 0.9, "VBD": 0.8,
+                   "IAD": 1.3, "RSB": 1.3, "TPO": 0.9, "RVS": 1.5, "SEC": 1.2},
+    "RISK OFF":   {"CTL": 0.6, "MOM": 0.5, "SBS": 0.7, "VBD": 0.6,
+                   "IAD": 1.2, "RSB": 1.2, "TPO": 0.7, "RVS": 1.4, "SEC": 1.0},
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -178,27 +245,24 @@ def run_ctl(stock_map, sector_rank, cfg_ctl):
     min_weekly_rsi  = cfg_ctl.get("min_weekly_rsi", 58)
     min_6m_return   = cfg_ctl.get("min_6m_return", 0)
     max_atr_pct     = cfg_ctl.get("max_atr_pct", 4.5)
-    min_market_cap  = cfg_ctl.get("min_market_cap", 300)   # was 500
+    min_market_cap  = cfg_ctl.get("min_market_cap", 300)
 
     for sym, s in stock_map.items():
         sector = s.get("sector", "")
 
-        # ── Hard gates — these cannot be compensated by score ──────────────
         if sector and sector_rank.get(sector, 99) > max_sector_rank:   continue
         if (s.get("rsi_monthly") or 0) < min_monthly_rsi:              continue
         if (s.get("rsi_weekly")  or 0) < min_weekly_rsi:               continue
         if (s.get("ret_6m") or -999) < min_6m_return:                  continue
         if (s.get("atr_pct") or 999) > max_atr_pct:                    continue
         if (s.get("market_cap") or 0) < min_market_cap:                continue
-        if not s.get("above_sma50"):                                    continue  # KEEP hard
+        if not s.get("above_sma50"):                                    continue
 
-        # ADX directional — keep hard: no direction = no CTL
         adx     = float(s.get("adx") or 0)
         di_plus = float(s.get("di_plus") or 0)
         di_min  = float(s.get("di_minus") or 0)
-        if adx < 12 or di_plus <= di_min:                               continue  # relaxed 15→12
+        if adx < 12 or di_plus <= di_min:                               continue
 
-        # ── Score ───────────────────────────────────────────────────────────
         score  = 0.0
         rsi_m  = float(s.get("rsi_monthly") or 0)
         rsi_w  = float(s.get("rsi_weekly")  or 0)
@@ -208,47 +272,32 @@ def run_ctl(stock_map, sector_rank, cfg_ctl):
         macd_h = float(s.get("macd_hist") or 0)
         sma_cross = bool(s.get("sma50_gt_200"))
 
-        # Sector rank
         score += max(0, (5 - s_rank)) * 6
 
-        # Monthly RSI quality
         if 60 <= rsi_m <= 72:   score += 20
         elif rsi_m > 72:         score += 10
         elif rsi_m >= 58:        score += 12
 
-        # Weekly RSI
         if rsi_w >= 62:          score += 15
         elif rsi_w >= 58:        score += 10
 
-        # 6M return
         if 15 <= ret_6m <= 50:   score += 15
         elif ret_6m > 0:         score += 8
         elif ret_6m > 50:        score += 5
 
-        # ADX strength
         if adx >= 28:            score += 10
         elif adx >= 20:          score += 6
         elif adx >= 12:          score += 2
 
-        # Volume
         if vol_r >= 1.5:         score += 8
         elif vol_r >= 1.1:       score += 4
 
-        # ── CHANGED: sma50_gt_200 → score bonus (was hard gate) ──────────
-        # A stock above SMA50 with strong RSI is a CTL candidate even during
-        # golden-cross recovery. SMA200 lags weeks behind price. Hard gate
-        # was blocking VEDL-type stocks that pass every other CTL criterion.
-        if sma_cross:            score += 15   # strong bonus — rewards clean structure
-        # No penalty for missing it — being above SMA50 with good RSI is sufficient
+        if sma_cross:            score += 15
 
-        # ── CHANGED: macd_hist → score factor (was hard gate) ────────────
-        # MACD can be briefly negative during a healthy RSI-50s consolidation.
-        # A CTL stock pausing for 3-5 days can have slightly negative MACD hist
-        # while its weekly/monthly trend is fully intact. Hard gate excluded these.
         if macd_h > 0.5:         score += 12
         elif macd_h > 0:         score += 8
-        elif macd_h > -0.3:      score += 4   # near-zero = acceptable pause
-        elif macd_h < -1.0:      score -= 6   # clearly negative = penalise meaningfully
+        elif macd_h > -0.3:      score += 4
+        elif macd_h < -1.0:      score -= 6
 
         results[sym] = round(score, 1)
 
@@ -262,24 +311,19 @@ def run_sbs(stock_map: dict, sector_rank: dict, cfg_sbs: dict) -> dict:
     Original: sector rank, daily/weekly RSI, ATR, vol ratio, consolidation, market cap.
     Added: BB squeeze detection, delivery trend (institutional in tight range),
            PSAR confirmation, proximity to 30d high (approach to resistance).
-
-    Philosophy: SBS catches stocks coiling in a tight range with institutional
-    interest building — the breakout has not happened yet but conditions are ripe.
-    Vol ratio > threshold + tight consolidation + approaching resistance = setup.
     """
     results = {}
     max_sector_rank = cfg_sbs.get("max_sector_rank", 7)
-    min_daily_rsi   = cfg_sbs.get("min_daily_rsi", 52)   # relaxed slightly
+    min_daily_rsi   = cfg_sbs.get("min_daily_rsi", 52)
     min_weekly_rsi  = cfg_sbs.get("min_weekly_rsi", 54)
     max_atr_pct     = cfg_sbs.get("max_atr_pct", 5.5)
-    min_vol_ratio   = cfg_sbs.get("min_vol_ratio", 1.1)   # relaxed — BB squeeze compensates
-    max_consol      = cfg_sbs.get("max_consol_pct", 15)   # relaxed — BB squeeze used instead
+    min_vol_ratio   = cfg_sbs.get("min_vol_ratio", 1.1)
+    max_consol      = cfg_sbs.get("max_consol_pct", 15)
     min_market_cap  = cfg_sbs.get("min_market_cap", 300)
 
     for sym, s in stock_map.items():
         sector = s.get("sector", "")
 
-        # ── Original SBS gates ──
         if sector and sector_rank.get(sector, 99) > max_sector_rank:    continue
         if (s.get("rsi_daily") or 0) < min_daily_rsi:                   continue
         if (s.get("rsi_weekly") or 0) < min_weekly_rsi:                 continue
@@ -287,7 +331,6 @@ def run_sbs(stock_map: dict, sector_rank: dict, cfg_sbs: dict) -> dict:
         if (s.get("vol_ratio") or 0) < min_vol_ratio:                   continue
         if (s.get("market_cap") or 0) < min_market_cap:                 continue
 
-        # ── Evolved: either tight consolidation OR BB squeeze required ──
         consol  = float(s.get("consol_range") or 999)
         bb_up   = float(s.get("bb_upper") or 0)
         bb_lo   = float(s.get("bb_lower") or 0)
@@ -298,17 +341,12 @@ def run_sbs(stock_map: dict, sector_rank: dict, cfg_sbs: dict) -> dict:
         bb_squeeze   = bb_width_pct < 7.0
         if not (tight_consol or bb_squeeze):                             continue
 
-        # HH-HL structure check (evolved: use wk_hi_high + wk_hi_low)
         wk_hh = bool(s.get("wk_hi_high"))
         wk_hl = bool(s.get("wk_hi_low"))
         above_50_sbs = bool(s.get("above_sma50"))
-        # Require above_sma50 always, PLUS at least one weekly structure signal
-        # A breakout without being above SMA50 is a low-quality setup
-        # A breakout without any weekly structure is likely to fail
         if not above_50_sbs:                                        continue
         if not (wk_hh or wk_hl):                                   continue
 
-        # Score
         score = 0.0
         rsi_d    = float(s.get("rsi_daily") or 0)
         rsi_w    = float(s.get("rsi_weekly") or 0)
@@ -318,36 +356,27 @@ def run_sbs(stock_map: dict, sector_rank: dict, cfg_sbs: dict) -> dict:
         s_rank   = sector_rank.get(sector, 10)
         adx      = float(s.get("adx") or 0)
 
-        # Sector
         score += max(0, (8 - s_rank)) * 4
-        # RSI sweet spot (not too hot, has room to run)
         if 55 <= rsi_d <= 68:    score += 18
         elif 52 <= rsi_d < 55:   score += 12
         elif rsi_d > 68:         score += 6
-        # Weekly alignment
         if rsi_w >= 58:          score += 12
         elif rsi_w >= 54:        score += 7
-        # BB squeeze = strong signal
         if bb_squeeze:           score += 15
-        if bb_width_pct < 4.5:  score += 8   # very tight
-        # Consolidation tightness
+        if bb_width_pct < 4.5:  score += 8
         if consol < 6:           score += 10
         elif consol < 10:        score += 6
-        # Volume + delivery = institutional
         if vol_r >= 2.0:         score += 10
         elif vol_r >= 1.4:       score += 6
         if delivery >= 55:       score += 10
         elif delivery >= 42:     score += 5
-        # Approaching 30d high (resistance proximity)
         if high_30d > 0 and close > 0:
             pct_away = (high_30d - close) / high_30d * 100
             if pct_away < 2:     score += 10
             elif pct_away < 5:   score += 6
             elif pct_away < 8:   score += 3
-        # Structural
         if wk_hh and wk_hl:     score += 8
         elif wk_hl:              score += 4
-        # Breakout scanner flag
         if bool(s.get("breakout_setup")): score += 5
         if bool(s.get("bk_trigger")):     score += 5
 
@@ -361,22 +390,34 @@ def run_tpo(ctl_results: dict, stock_map: dict, cfg_tpo: dict, regime_name: str)
     """
     Trend Pullback Opportunities — EVOLVED from Sheet.
     Original: works only on CTL stocks, daily RSI 42-55, dist from SMA50 <= 3%, ATR <= 4%.
-    Added: regime-aware RSI window (in bull markets, pullbacks to 48 are fine),
-           MACD histogram turning point detection (histogram < 0 but turning up = early entry).
+    Added: regime-aware RSI window (in bull markets, pullbacks to 44 are fine),
+           MACD histogram turning point detection.
 
-    Philosophy: Buy the dip in a quality trend at a better price.
-    Entry earlier than CTL with better R:R but more patience required.
+    REGIME ALIGNMENT v1.1:
+      TRENDING/RISK ON → RSI 44–58  (shallow pullbacks acceptable in strong market)
+      NEUTRAL          → RSI 42–55  (config default, balanced)
+      RECOVERING       → RSI 40–53  (NEW) deeper pullbacks before trust is rebuilt;
+                                    entry earlier gives more room before resistance.
+      RISK OFF         → RSI 38–50  (need deep pullback to justify any new entry)
     """
     results = {}
-    # Regime-aware RSI window
+
+    # ── Regime-aware RSI window — all 5 states now handled explicitly ─────────
     if regime_name in ("TRENDING", "RISK ON"):
-        rsi_min, rsi_max = 44, 58   # bull market: pullbacks to 44 acceptable
+        rsi_min, rsi_max = 44, 58
+    elif regime_name == "RECOVERING":
+        # NEW v1.1: RECOVERING sits between NEUTRAL and RISK OFF.
+        # Market bouncing from lows means quality pullbacks go deeper before
+        # recovering — buying too early risks catching a dead-cat bounce.
+        # The 40–53 window reflects that trust has not yet been fully restored.
+        rsi_min, rsi_max = 40, 53
     elif regime_name == "RISK OFF":
-        rsi_min, rsi_max = 38, 50   # bear: need deeper pullback to justify entry
+        rsi_min, rsi_max = 38, 50
     else:
+        # NEUTRAL — config default
         rsi_min, rsi_max = cfg_tpo.get("min_rsi", 42), cfg_tpo.get("max_rsi", 55)
 
-    max_dist_sma50 = cfg_tpo.get("max_dist_sma50", 4)   # relaxed from 3
+    max_dist_sma50 = cfg_tpo.get("max_dist_sma50", 4)
     max_atr_pct    = cfg_tpo.get("max_atr_pct", 4)
     max_ctl_rank   = cfg_tpo.get("max_ctl_rank", 15)
 
@@ -387,11 +428,10 @@ def run_tpo(ctl_results: dict, stock_map: dict, cfg_tpo: dict, regime_name: str)
         if not (rsi_min <= rsi_d <= rsi_max):                 continue
         if abs(float(s.get("dist_sma50") or 999)) > max_dist_sma50: continue
         if (s.get("atr_pct") or 999) > max_atr_pct:          continue
-        if not s.get("above_sma50"):                          continue  # must still be above SMA50
+        if not s.get("above_sma50"):                          continue
 
-        # Evolved: weekly RSI should still be supportive
         rsi_w = float(s.get("rsi_weekly") or 0)
-        if rsi_w < 50:                                        continue  # weekly trend must be intact
+        if rsi_w < 50:                                        continue
 
         score = 0.0
         dist_50  = abs(float(s.get("dist_sma50") or 0))
@@ -399,32 +439,26 @@ def run_tpo(ctl_results: dict, stock_map: dict, cfg_tpo: dict, regime_name: str)
         vol_r    = float(s.get("vol_ratio") or 0)
         delivery = float(s.get("delivery_pct") or 0)
 
-        # RSI sweet spot for pullback entry
-        if 46 <= rsi_d <= 53:    score += 20   # ideal cool-off zone
+        if 46 <= rsi_d <= 53:    score += 20
         elif 44 <= rsi_d < 46:   score += 14
         elif rsi_d <= 58:        score += 10
 
-        # Proximity to SMA50 (closer = better entry)
         if dist_50 < 1.5:        score += 15
         elif dist_50 < 3:        score += 10
         elif dist_50 < 4:        score += 5
 
-        # MACD turning up (even if still negative) = early reversal signal
-        if macd_h > 0:           score += 10  # already recovered
-        elif macd_h > -0.5:      score += 8   # near zero = turning point
+        if macd_h > 0:           score += 10
+        elif macd_h > -0.5:      score += 8
         elif macd_h > -1:        score += 4
 
-        # Weekly RSI still strong = trend intact
         if rsi_w >= 58:          score += 10
         elif rsi_w >= 52:        score += 6
 
-        # Volume + delivery during pullback = institutional holding, not selling
         if vol_r >= 1.3 and delivery >= 50:   score += 12
         elif vol_r >= 1.1 or delivery >= 45:  score += 6
 
-        # CTL rank bonus (higher ranked = better quality base)
         ctl_score = ctl_results.get(sym, 0)
-        score += ctl_score * 0.3   # inherit 30% of CTL score
+        score += ctl_score * 0.3
 
         results[sym] = round(score, 1)
 
@@ -435,11 +469,7 @@ def run_tpo(ctl_results: dict, stock_map: dict, cfg_tpo: dict, regime_name: str)
 def run_eap_overlay(candidates: dict, stock_map: dict, event_rows: list, cfg_eap: dict) -> dict:
     """
     Event-Accelerated Plays — EVOLVED overlay.
-    Original: adjust score based on earnings proximity.
-    Evolved: adds SECTOR_ROTATION, INDEX_REBALANCE event types with separate logic.
-
     Returns adjusted {symbol: score_delta} — applied on top of base scores.
-    Positive = prioritise. Negative = deprioritise. Zero = no change.
     """
     buffer_days  = int(cfg_eap.get("pre_event_days", 2))
     post_boost   = float(cfg_eap.get("post_event_aggression", 2))
@@ -451,9 +481,9 @@ def run_eap_overlay(candidates: dict, stock_map: dict, event_rows: list, cfg_eap
         sector = s.get("sector", "")
         action = get_event_action(sym, sector, event_rows, buffer_days)
         if action == "AVOID_ENTRY":
-            adjustments[sym] = -pre_penalty * 15   # penalise near-event stocks
+            adjustments[sym] = -pre_penalty * 15
         elif action == "PRIORITISE":
-            adjustments[sym] = post_boost * 10     # post-event continuation boost
+            adjustments[sym] = post_boost * 10
         else:
             adjustments[sym] = 0
 
@@ -466,15 +496,9 @@ def run_eap_overlay(candidates: dict, stock_map: dict, event_rows: list, cfg_eap
 
 def run_vbd(stock_map: dict, sector_rank: dict) -> dict:
     """
-    Velocity Burst Detector — NEW.
-    Finds stocks with a single-session 3-6% move backed by:
-    - Institutional delivery (not just retail speculation)
-    - Volume 2x+ above average (not a thin-market spike)
-    - Tight consolidation before the move (breakout from a base)
-    - Still in a valid sector (not a random outlier)
-
-    Target: catch early in a breakout move before the crowd piles in.
-    pct_change is today's single-session % move.
+    Velocity Burst Detector — single-session 3-6% move + institutional confirm.
+    No regime gating here — regime weight in REGIME_ENGINE_WEIGHTS reduces impact
+    in RECOVERING/RISK OFF rather than eliminating it entirely.
     """
     results = {}
     for sym, s in stock_map.items():
@@ -488,35 +512,28 @@ def run_vbd(stock_map: dict, sector_rank: dict) -> dict:
         market_cap = float(s.get("market_cap") or 0)
         s_rank  = sector_rank.get(sector, 99)
 
-        # Hard gates
-        if pct_chg < 3.0:             continue   # needs meaningful single-day move
-        if pct_chg > 12.0:            continue   # skip circuit/news-driven spikes
-        if vol_r < 1.8:               continue   # must have volume behind it
-        if delivery < 35:             continue   # must have institutional delivery
+        if pct_chg < 3.0:             continue
+        if pct_chg > 12.0:            continue
+        if vol_r < 1.8:               continue
+        if delivery < 35:             continue
         if market_cap < MIN_MARKET_CAP: continue
-        if not above_50:              continue   # trend direction must be up
-        if s_rank > 10:               continue   # not in a terrible sector
+        if not above_50:              continue
+        if s_rank > 10:               continue
 
         score = 0.0
-        # Day move size (sweet spot 3-7%)
         if 4 <= pct_chg <= 7:         score += 25
         elif pct_chg > 7:             score += 15
         elif pct_chg >= 3:            score += 18
-        # Volume confirmation
         if vol_r >= 5:                score += 25
         elif vol_r >= 3:              score += 20
         elif vol_r >= 2:              score += 12
-        # Delivery quality
         if delivery >= 65:            score += 20
         elif delivery >= 50:          score += 14
         elif delivery >= 38:          score += 7
-        # Breakout from consolidation
         if consol < 6:               score += 15
         elif consol < 10:            score += 8
-        # ADX trending
         if adx >= 25:                 score += 10
         elif adx >= 18:               score += 5
-        # Sector
         score += max(0, (6 - s_rank)) * 2
 
         if score >= 55:
@@ -528,12 +545,9 @@ def run_vbd(stock_map: dict, sector_rank: dict) -> dict:
 
 def run_iad(stock_map: dict, sector_rank: dict) -> dict:
     """
-    Institutional Accumulation Detector — NEW.
-    Finds stocks where smart money is quietly accumulating BEFORE price discovery.
-    Signal: high delivery % + sustained above-average volume + outperforming market
-    + still in tight consolidation (price hasn't moved much yet).
-
-    This is the most valuable scanner — it finds stocks 2-5 sessions BEFORE VBD fires.
+    Institutional Accumulation Detector — quiet delivery + RS + volume expansion.
+    Most valuable scanner in RECOVERING — institutions accumulate before price moves.
+    Engine weight boosted to 1.3x in RECOVERING and 1.2x in RISK OFF via REGIME_ENGINE_WEIGHTS.
     """
     results = {}
     for sym, s in stock_map.items():
@@ -547,55 +561,45 @@ def run_iad(stock_map: dict, sector_rank: dict) -> dict:
         market_cap = float(s.get("market_cap") or 0)
         s_rank   = sector_rank.get(sector, 99)
 
-        
-        # Volume trend: 20d average vs 50d average (expanding = sustained accumulation)
         vol_20d = float(s.get("avg_vol_20d") or 0)
         vol_50d = float(s.get("avg_vol_50d") or 0)
         vol_expanding = vol_20d > vol_50d * 1.10 if (vol_20d > 0 and vol_50d > 0) else False
 
-        # Hard gates
-        if delivery < 50:                         continue   # institutional signal floor
-        if vol_r < 1.2:                           continue   # above-average volume required
+        if delivery < 50:                         continue
+        if vol_r < 1.2:                           continue
         if market_cap < MIN_MARKET_CAP:           continue
         if not above_50:                          continue
-        if consol > 20:                           continue   # price must be in a range
-        if s_rank > 12:                           continue   # some sector quality
+        if consol > 20:                           continue
+        if s_rank > 12:                           continue
 
         score = 0.0
 
-        # Delivery (primary signal — but scored not gated now at lower bound)
         if delivery >= 70:                        score += 35
         elif delivery >= 62:                      score += 27
         elif delivery >= 55:                      score += 18
         elif delivery >= 50:                      score += 10
-        elif delivery >= 42:                      score += 5    # only reachable if rs > 8
-        elif delivery >= 38:                      score += 2    # only reachable if rs > 8
+        elif delivery >= 42:                      score += 5
+        elif delivery >= 38:                      score += 2
 
-        # RS vs Nifty
         if rs > 20:                              score += 22
         elif rs > 12:                            score += 17
         elif rs > 8:                             score += 13
         elif rs > 3:                             score += 8
         elif rs > 0:                             score += 4
 
-        # Volume expansion trend
         if vol_expanding:                        score += 15
         if vol_r >= 2.0:                         score += 10
         elif vol_r >= 1.5:                       score += 6
 
-        # Tight consolidation
         if consol < 7:                           score += 15
         elif consol < 12:                        score += 8
 
-        # RSI in healthy zone
         if 50 <= rsi_d <= 65:                    score += 10
         elif rsi_d > 65:                         score += 4
 
-        # Sector
         score += max(0, (6 - s_rank)) * 2
 
-        # Raise score threshold for low-delivery passes to ensure quality
-        min_score = 55 if delivery >= 50 else 68  # low delivery needs much stronger RS+vol
+        min_score = 55 if delivery >= 50 else 68
 
         if score >= min_score:
             results[sym] = round(score, 1)
@@ -606,12 +610,10 @@ def run_iad(stock_map: dict, sector_rank: dict) -> dict:
 
 def run_rsb(stock_map: dict, sector_rank: dict) -> dict:
     """
-    Relative Strength Breakout — NEW.
-    Finds stocks consistently outperforming Nifty on both 1m and 3m,
-    now consolidating in a tight range near resistance.
-    These are the "first movers" when market recovers from any dip.
-
-    RS leader + tight consol + approaching 30d high = high-probability setup.
+    Relative Strength Breakout — RS leader coiling near resistance.
+    Engine weight boosted in RECOVERING (1.3x) — RS leaders are first movers
+    when market confirms recovery. Engine weight boosted in RISK OFF (1.2x)
+    as RS leaders hold up best and recover fastest.
     """
     results = {}
     for sym, s in stock_map.items():
@@ -627,37 +629,30 @@ def run_rsb(stock_map: dict, sector_rank: dict) -> dict:
         market_cap = float(s.get("market_cap") or 0)
         s_rank  = sector_rank.get(sector, 99)
 
-        # Hard gates
-        if rs < 4:                                continue   # must be outperforming
-        if consol > 12:                           continue   # must be consolidating
+        if rs < 4:                                continue
+        if consol > 12:                           continue
         if not above_50:                          continue
         if market_cap < MIN_MARKET_CAP:           continue
-        if rsi_d < 48:                            continue   # trend must be positive
+        if rsi_d < 48:                            continue
         if s_rank > 10:                           continue
 
         score = 0.0
-        # RS quality
         if rs > 20:                              score += 28
         elif rs > 12:                            score += 22
         elif rs > 6:                             score += 15
         elif rs > 4:                             score += 8
-        # Both timeframes positive = consistent RS
         if ret_1m > 0 and ret_3m > 0:           score += 18
         elif ret_1m > 0:                         score += 9
-        # Tight consolidation
         if consol < 5:                           score += 18
         elif consol < 8:                         score += 12
         elif consol < 12:                        score += 6
-        # Approaching 30d high (coiling near resistance)
         if high_30d > 0 and close > 0:
             pct_away = (high_30d - close) / high_30d * 100
             if pct_away < 1.5:                   score += 18
             elif pct_away < 3.5:                 score += 12
             elif pct_away < 6:                   score += 6
-        # RSI in good entry range
         if 52 <= rsi_d <= 68:                   score += 12
         elif rsi_d > 68:                         score += 5
-        # Sector
         score += max(0, (6 - s_rank)) * 2
 
         if score >= 55:
@@ -667,15 +662,32 @@ def run_rsb(stock_map: dict, sector_rank: dict) -> dict:
     return results
 
 
-def run_mom_continuation(stock_map: dict, sector_rank: dict) -> dict:
+def run_mom_continuation(stock_map: dict, sector_rank: dict, regime_name: str) -> dict:
     """
-    Momentum Continuation — NEW.
-    Finds stocks in confirmed EXPANSION phase with accelerating velocity,
-    currently near entry zone (or having pulled back to it).
+    Momentum Continuation — EXPANSION phase + accelerating velocity.
 
-    This is the most reliable 1-4 week swing setup when market is trending:
-    strong stock, confirmed trend, minor pullback, entry near support.
+    REGIME ALIGNMENT v1.1:
+      RISK OFF   → Skip entirely. Chasing momentum in a bear market is the
+                   fastest path to large drawdowns. Engine weight (0.5x) isn't
+                   enough — better to produce zero candidates in RISK OFF.
+      RECOVERING → Run with stricter gates: higher ADX floor (22 vs 18),
+                   delivery required (≥42), rsi_w floor raised (57 vs 54).
+                   We want only the clearest momentum signals — stocks where
+                   institutions are clearly buying the recovery, not just
+                   bouncing randomly.
+      All others → Standard gates unchanged.
     """
+    # ── RISK OFF: skip entirely — NEW v1.1 ────────────────────────────────────
+    if regime_name == "RISK OFF":
+        logger.info("  MOM: skipped — RISK OFF regime (momentum chasing in bear = high risk)")
+        return {}
+
+    # ── RECOVERING: stricter gate thresholds — NEW v1.1 ──────────────────────
+    recovering_mode = (regime_name == "RECOVERING")
+    adx_floor    = 22 if recovering_mode else 18    # stronger trend required in recovery
+    rsi_w_floor  = 57 if recovering_mode else 54    # weekly must be clearly supportive
+    delivery_min = 42 if recovering_mode else 0     # institutions must be behind the move
+
     results = {}
     for sym, s in stock_map.items():
         sector  = s.get("sector", "")
@@ -697,85 +709,88 @@ def run_mom_continuation(stock_map: dict, sector_rank: dict) -> dict:
         market_cap = float(s.get("market_cap") or 0)
         s_rank  = sector_rank.get(sector, 99)
 
-        # Hard gates for EXPANSION phase detection
-        if not (above_50 and sma200 and above_st):    continue   # full structural alignment
-        if adx < 18 or di_plus <= di_min:             continue   # trend must be active
-        if rsi_d < 52 or rsi_d > 74:                 continue   # mid-cycle momentum
-        if rsi_w < 54:                               continue   # weekly must confirm
-        if macd_h <= 0:                              continue   # MACD positive
-        if not (wk_hh or wk_hl):                     continue   # structural uptrend
+        # Hard gates for EXPANSION phase detection (regime-aware where noted)
+        if not (above_50 and sma200 and above_st):    continue
+        if adx < adx_floor or di_plus <= di_min:      continue   # regime-aware floor
+        if rsi_d < 52 or rsi_d > 74:                 continue
+        if rsi_w < rsi_w_floor:                       continue   # regime-aware floor
+        if macd_h <= 0:                              continue
+        if not (wk_hh or wk_hl):                     continue
         if market_cap < MIN_MARKET_CAP:               continue
         if s_rank > 10:                               continue
+        # RECOVERING: require delivery — random bounce without institutional conviction
+        if recovering_mode and delivery < delivery_min: continue   # NEW v1.1
 
-        # Velocity check: 1m outpacing 3m pace = accelerating momentum
         score = 0.0
         monthly_pace = ret_3m / 3 if ret_3m > 0 else 0
         accelerating = ret_1m > monthly_pace * 1.2 if monthly_pace > 0 else ret_1m > 3
 
-        # ADX strength
         if adx >= 30:            score += 20
         elif adx >= 22:          score += 14
         elif adx >= 18:          score += 8
 
-        # RSI in ideal range
         if 57 <= rsi_d <= 68:   score += 18
         elif 52 <= rsi_d < 57:  score += 12
         elif rsi_d > 68:         score += 7
 
-        # Weekly alignment
         if rsi_w >= 62:          score += 12
         elif rsi_w >= 56:        score += 7
 
-        # Velocity
         if accelerating:         score += 12
 
-        # Structural
         if wk_hh and wk_hl:     score += 10
         elif wk_hl:              score += 5
 
-        # Delivery
         if delivery >= 55:       score += 10
         elif delivery >= 42:     score += 5
 
-        # Distance from SMA50
         if dist_50 < 5:          score += 8
         elif dist_50 < 10:       score += 4
 
-        # Sector
         score += max(0, (6 - s_rank)) * 3
 
-        # ── Bonus for structural quality (replaces hard gates) ────────────
-        if sma200:               score += 12   # golden cross = strong bonus
-        if above_st:             score += 8    # supertrend confirming = bonus
+        if sma200:               score += 12
+        if above_st:             score += 8
 
-        # Require a higher score threshold when structural signals are absent
-        # This prevents weak setups from passing just because RSI and ADX are fine
         min_score = 45 if (sma200 and above_st) else (52 if (sma200 or above_st) else 60)
+
+        # RECOVERING: raise bar — only the clearest momentum signals should qualify
+        if recovering_mode:
+            min_score = max(min_score, 55)   # NEW v1.1
 
         if score >= min_score:
             results[sym] = round(score, 1)
 
-    logger.info(f"  MOM: {len(results)} candidates")
+    logger.info(f"  MOM: {len(results)} candidates"
+                + (" [RECOVERING strict mode]" if recovering_mode else ""))
     return results
 
 
 def run_reversal_setup(stock_map, sector_rank, regime_name):
     """
-    Reversal Setup — NEW.
-    Finds stocks bouncing back to SMA50 from below or re-crossing it.
-    RSI turning up from oversold territory in an otherwise quality stock.
+    Reversal Setup — SMA50 bounce + RSI turning up from oversold.
 
-    This is a contrarian setup — only works in NEUTRAL/TRENDING regimes.
-    In RISK OFF, oversold bounces fail frequently. Hard filter applied.
+    REGIME ALIGNMENT v1.1:
+      RECOVERING  → Primary mode (NEW). This is the BEST regime for RVS.
+                    Market-wide recovery means individual stock reversals have
+                    a macro tailwind. Lower score threshold (50 vs 55 base),
+                    sector rank relaxed to 10, and gate checks slightly looser.
+      RISK OFF    → Strict mode (unchanged from v1.0). Bounces fail frequently
+                    in confirmed bear markets. Tighter gates, higher threshold.
+      All others  → Standard mode. Score threshold 55.
+
+    Key insight: RISK OFF and RECOVERING are NOT the same. RECOVERING has
+    confirmed breadth improvement + VIX declining + Nifty bounced 3%+ from lows
+    (those are the hysteresis conditions in compute_regime). RVS in RECOVERING
+    is backed by macro confirmation; RVS in RISK OFF is a bet against the trend.
     """
-    if regime_name in ("RISK OFF",):
-        # CHANGED: don't skip entirely — RVS is MOST valuable in RISK OFF
-        # Quality stocks pull back in bear markets and offer best bounce setups.
-        # Previous code skipped entirely. Now run with tighter gates.
-        logger.info("  RVS: running with RISK OFF strict mode")
-        risk_off_mode = True
-    else:
-        risk_off_mode = False
+    recovering_mode = (regime_name == "RECOVERING")   # NEW v1.1
+    risk_off_mode   = (regime_name == "RISK OFF")
+
+    if recovering_mode:
+        logger.info("  RVS: RECOVERING mode — primary engine, relaxed gates")
+    elif risk_off_mode:
+        logger.info("  RVS: RISK OFF strict mode")
 
     results = {}
     for sym, s in stock_map.items():
@@ -797,74 +812,105 @@ def run_reversal_setup(stock_map, sector_rank, regime_name):
         if rsi_d > 54:                           continue
         if rsi_d < 36:                           continue
         if rsi_m < 48:                           continue
-        if not sma200:                           continue   # KEEP — quality filter
-        if ret_6m < 0:                           continue   # KEEP — must have base trend
+        if not sma200:                           continue
+        if ret_6m < 0:                           continue
         if dist_50 < -10:                        continue
         if market_cap < MIN_MARKET_CAP:          continue
 
-        # ── CHANGED: sector gate relaxed from 8 → 9 ──────────────────────
-        # In RISK OFF, quality sectors ranked 7-9 (pharma, FMCG, IT) have
-        # exactly the bounces RVS looks for. Rank 8 exclusion was too tight.
-        # In RISK OFF mode, extend to 10 (even broader quality check needed).
-        max_sector = 10 if risk_off_mode else 9   # was 8
+        # ── Regime-aware sector gate — NEW v1.1 ──────────────────────────
+        # RECOVERING: relax to 10 — pharma, FMCG, IT (ranked 6-9) are exactly
+        #             where RVS bounces are most reliable during recovery.
+        # RISK OFF:   relax to 10 — same logic, slightly more selective.
+        # Standard:   9 — balanced quality filter.
+        if recovering_mode:
+            max_sector = 10
+        elif risk_off_mode:
+            max_sector = 10
+        else:
+            max_sector = 9
+
         if s_rank > max_sector:                  continue
 
-        # In RISK OFF strict mode: require vol + delivery (bounce must have conviction)
+        # RISK OFF strict mode: require conviction
         if risk_off_mode and vol_r < 1.15 and delivery < 40:  continue
+
+        # RECOVERING: require some volume confirmation (not as strict as RISK OFF)
+        # Random bounces in RECOVERING are less likely, but still need some signal
+        if recovering_mode and vol_r < 1.0 and delivery < 30:  continue   # NEW v1.1
 
         score = 0.0
 
-        # RSI bounce zone
         if 44 <= rsi_d <= 52:                    score += 25
         elif rsi_d < 44:                         score += 15
 
-        # MACD turning
         if macd_h > 0:                           score += 18
         elif macd_h > -0.3:                      score += 12
         elif macd_h > -1:                        score += 6
 
-        # Proximity to SMA50
         abs_dist = abs(dist_50)
         if abs_dist < 2:                         score += 18
         elif abs_dist < 5:                       score += 12
         elif abs_dist < 8:                       score += 6
 
-        # Monthly RSI still positive
         if rsi_m >= 58:                          score += 12
         elif rsi_m >= 50:                        score += 7
 
-        # Volume + delivery on bounce
         if vol_r >= 1.5 and delivery >= 45:      score += 15
         elif vol_r >= 1.2 or delivery >= 40:     score += 7
 
-        # Weekly RSI
         if rsi_w >= 48:                          score += 8
 
-        # Sector
         score += max(0, (5 - s_rank)) * 4
 
-        # ── CHANGED: score threshold 60→55 (was too restrictive) ──────────
-        # In RISK OFF mode keep at 60 — bounces fail more often, need quality
-        min_score = 60 if risk_off_mode else 55
+        # ── Score threshold by regime — NEW v1.1 ─────────────────────────
+        # RECOVERING: lower threshold — macro tailwind makes reversals more reliable.
+        # RISK OFF:   higher threshold — bounces fail frequently, need strong signal.
+        # Standard:   55 (unchanged from v1.0).
+        if recovering_mode:
+            min_score = 50   # NEW: macro-confirmed recovery = higher base probability
+        elif risk_off_mode:
+            min_score = 60
+        else:
+            min_score = 55
+
         if score >= min_score:
             results[sym] = round(score, 1)
 
     logger.info(f"  RVS: {len(results)} candidates")
     return results
 
-def run_sector_rotation(stock_map: dict, sector_rank: dict) -> dict:
-    """
-    Sector Rotation — NEW.
-    Finds EARLY MOVERS in sectors that recently improved in rank (now rank 1-5),
-    but the individual stocks haven't fully priced in the sector rotation yet.
 
-    Logic: fresh sector strength + stock not yet extended (RSI 52-64) +
-    delivery building (institutions buying the sector rotation).
+def run_sector_rotation(stock_map: dict, sector_rank: dict, regime_name: str) -> dict:
     """
+    Sector Rotation — early movers in freshly leading sectors.
+
+    REGIME ALIGNMENT v1.1:
+      RISK OFF    → Skip entirely (NEW). Sector rotation plays require market
+                    participation. In RISK OFF, sector rotation is mostly
+                    defensive repositioning, not a return-generating opportunity.
+                    These setups fail in bear markets as even top-ranked sectors
+                    come under pressure.
+      RECOVERING  → Focus on top 3 sectors only (was top 5). Early recovery
+                    sector leadership is narrow — only the clearest 2-3 sectors
+                    drive the initial bounce. Casting wider nets in RECOVERING
+                    picks up false-start sectors.
+      All others  → Top 5 sectors as before (standard mode).
+    """
+    # ── RISK OFF: skip entirely — NEW v1.1 ────────────────────────────────────
+    if regime_name == "RISK OFF":
+        logger.info("  SEC: skipped — RISK OFF regime (sector rotation requires market participation)")
+        return {}
+
+    # ── RECOVERING: tighter sector filter — NEW v1.1 ─────────────────────────
+    if regime_name == "RECOVERING":
+        top_n = 3   # only the clearest sector leaders in recovery
+        logger.info("  SEC: RECOVERING mode — restricting to top 3 sectors")
+    else:
+        top_n = 5   # standard
+
+    top_sectors = {s for s, r in sector_rank.items() if r <= top_n}
+
     results = {}
-    # Focus on top 5 sectors — these are the freshly leading sectors
-    top_sectors = {s for s, r in sector_rank.items() if r <= 5}
-
     for sym, s in stock_map.items():
         sector  = s.get("sector", "")
         if sector not in top_sectors:            continue
@@ -881,39 +927,33 @@ def run_sector_rotation(stock_map: dict, sector_rank: dict) -> dict:
         ret_1m  = float(s.get("ret_1m") or 0)
         market_cap = float(s.get("market_cap") or 0)
 
-        # Hard gates: not yet extended, trend forming
         if rsi_d < 48 or rsi_d > 72:            continue
         if not above_50:                         continue
         if market_cap < MIN_MARKET_CAP:          continue
-        if di_plus <= di_min:                   continue   # must be directionally bullish
+        if di_plus <= di_min:                   continue
 
         score = 0.0
-        # Sector rank (tighter = better for rotation)
         if s_rank == 1:                          score += 20
         elif s_rank == 2:                        score += 16
         elif s_rank <= 4:                        score += 10
         elif s_rank <= 6:                        score += 5
-        # RSI not yet extended = room to run
         if 52 <= rsi_d <= 64:                   score += 20
         elif 48 <= rsi_d < 52:                  score += 12
         elif rsi_d > 64:                         score += 8
-        # Building momentum
         if adx >= 22:                            score += 12
         elif adx >= 17:                          score += 7
-        # Volume + delivery = institutional rotation buying
         if vol_r >= 1.5 and delivery >= 48:      score += 18
         elif vol_r >= 1.3 or delivery >= 42:     score += 10
-        # Recent 1m return positive (trend established)
         if ret_1m > 5:                           score += 10
         elif ret_1m > 0:                         score += 5
-        # Weekly alignment
         if rsi_w >= 55:                          score += 10
         elif rsi_w >= 50:                        score += 5
 
         if score >= 55:
             results[sym] = round(score, 1)
 
-    logger.info(f"  SEC: {len(results)} candidates")
+    logger.info(f"  SEC: {len(results)} candidates"
+                + (" [top 3 sectors only]" if regime_name == "RECOVERING" else ""))
     return results
 
 
@@ -936,19 +976,45 @@ def aggregate_and_rank(
     max_per_sector: int = 5,
     allow_risk_off: bool = False,
 ) -> tuple:
-    
+
     """
-    Aggregate all engine scores, apply convergence bonus, EAP overlay,
-    sector diversification, and return top max_symbols candidates ranked.
+    Aggregate all engine scores, apply REGIME_ENGINE_WEIGHTS, convergence bonus,
+    EAP overlay, sector diversification, and return top max_symbols candidates.
+
+    REGIME ALIGNMENT v1.1:
+      Engine scores are multiplied by REGIME_ENGINE_WEIGHTS[regime][engine]
+      BEFORE base_score calculation. This means:
+        - In RECOVERING, an IAD score of 70 becomes 70 * 1.3 = 91 before averaging.
+        - In RECOVERING, a MOM score of 70 becomes 70 * 0.7 = 49 before averaging.
+      This naturally surfaces the right engine mix per regime without hard blocking.
+
+      RECOVERING treatment: No hard block (unlike RISK OFF). All candidates
+      pass through but regime-weighted scores reshuffle the ranking significantly.
+      Practical effect: IAD/RSB/RVS candidates rank higher; CTL/MOM/VBD lower.
+
+      RISK OFF treatment: Hard block for new entries (unchanged from v1.0).
+      open_syms and force_include bypass the block but still get regime-weighted
+      scoring (IAD/RVS boosted so quality bounce setups surface for review).
     """
-    # 1. Collect all symbols and their engine memberships
+
+    # ── Get regime engine weights (default to NEUTRAL if unknown) ─────────────
+    weights = REGIME_ENGINE_WEIGHTS.get(regime_name, REGIME_ENGINE_WEIGHTS["NEUTRAL"])
+    logger.info(
+        f"  Regime weights ({regime_name}): "
+        + " | ".join(f"{e}={w}x" for e, w in sorted(weights.items()) if w != 1.0)
+        + (" (all 1.0x)" if all(w == 1.0 for w in weights.values()) else "")
+    )
+
+    # ── Collect all symbols with regime-weighted scores ───────────────────────
     all_syms: dict = defaultdict(lambda: {"engines": [], "scores": [], "raw": 0})
     for engine, results in engine_results.items():
+        engine_weight = weights.get(engine, 1.0)
         for sym, score in results.items():
+            weighted_score = round(score * engine_weight, 1)
             all_syms[sym]["engines"].append(engine)
-            all_syms[sym]["scores"].append(score)
+            all_syms[sym]["scores"].append(weighted_score)
 
-    # 2. Hard exclusions
+    # ── Hard exclusions ───────────────────────────────────────────────────────
     blocked_by_regime = set()
     regime_strict = (regime_name == "RISK OFF") and not allow_risk_off
     if regime_name == "RISK OFF" and allow_risk_off:
@@ -958,34 +1024,28 @@ def aggregate_and_rank(
     for sym, data in all_syms.items():
         s = stock_map.get(sym, {})
 
-        # Hard blocks
         if sym in asm_set or sym in fo_ban_set:          continue
         if (s.get("market_cap") or 0) < MIN_MARKET_CAP:  continue
 
-        # Regime filter for new entries (not open positions or forced)
         if regime_strict and sym not in open_syms and sym not in force_include:
             blocked_by_regime.add(sym)
             continue
 
-        # Base score = average across engines
+        # Base score = weighted max × 0.6 + weighted avg × 0.4
         base_score = (
             max(data["scores"]) * 0.6 + (sum(data["scores"]) / len(data["scores"])) * 0.4
             if data["scores"] else 0
         )
 
-        # Convergence bonus: each additional engine confirming = +CONVERGENCE_BONUS pts
         n_engines = len(data["engines"])
         avg_score = sum(data["scores"]) / len(data["scores"]) if data["scores"] else 0
         quality_multiplier = min(avg_score / 60, 1.5)
         convergence = (n_engines - 1) * CONVERGENCE_BONUS * quality_multiplier
 
-        # EAP adjustment
         eap_adj = eap_adjustments.get(sym, 0)
 
-        # Final composite score
         composite = base_score + convergence + eap_adj
 
-        # Avoid AVOID_ENTRY stocks if score would be negative after adjustment
         if composite < 0:                                 continue
 
         sector    = (s.get("sector") or "").lower()
@@ -1009,17 +1069,15 @@ def aggregate_and_rank(
             "sector_rank":     s_rank,
             "in_position":     in_pos,
             "force_include":   forced,
-            "engine_scores_json": json.dumps({        # ← ADD THIS
-                e: round(s, 1)
-                for e, s in zip(data["engines"], data["scores"])
+            "engine_scores_json": json.dumps({
+                e: round(sc, 1)
+                for e, sc in zip(data["engines"], data["scores"])
             }),
             "date":            today,
         })
 
-    # 3. Sort by composite score
     candidates.sort(key=lambda x: (x["force_include"], x["composite_score"]), reverse=True)
 
-    # 4. Sector diversification — max MAX_PER_SECTOR per sector
     sector_counts: dict = defaultdict(int)
     selected = []
     overflow = []
@@ -1027,14 +1085,13 @@ def aggregate_and_rank(
     for c in candidates:
         sector = c["sector"].lower()
         if c["force_include"]:
-            selected.append(c)  # forced always included
+            selected.append(c)
         elif sector_counts[sector] < max_per_sector:
             selected.append(c)
             sector_counts[sector] += 1
         else:
-            overflow.append(c)  # consider if we haven't hit max_symbols yet
+            overflow.append(c)
 
-    # Fill remaining slots from overflow (best scores regardless of sector cap)
     remaining = max_symbols - len(selected)
     if remaining > 0:
         selected.extend(overflow[:remaining])
@@ -1043,9 +1100,10 @@ def aggregate_and_rank(
     def find_natural_cutoff(candidates, hard_max=30, min_gap=10):
         for i in range(min(hard_max, len(candidates) - 1)):
             gap = candidates[i]["composite_score"] - candidates[i+1]["composite_score"]
-            if gap >= min_gap and i >= 20:   # at least 20 selected
+            if gap >= min_gap and i >= 20:
                 return i + 1
         return hard_max
+
     cutoff = find_natural_cutoff(selected, hard_max=max_symbols)
     final = selected[:cutoff]
 
@@ -1068,11 +1126,8 @@ def write_screener_results(sb, candidates: list, all_qualified: list, mode: str,
     shadow  → msl_computed only (master_shortlist untouched)
     hybrid  → msl_computed + update master_shortlist (merge with Sheet)
     full    → master_shortlist only (screener is the source of truth)
-
-    write_all=True  → writes all qualified stocks to msl_computed
-    write_all=False → writes only top N (candidates) to msl_computed
     """
-    to_write = all_qualified if write_all else candidates   # ← resolved once, used consistently
+    to_write = all_qualified if write_all else candidates
 
     if DRY_RUN:
         logger.info(
@@ -1088,9 +1143,8 @@ def write_screener_results(sb, candidates: list, all_qualified: list, mode: str,
         return
 
     if mode in ("shadow", "hybrid"):
-        # msl_computed — uses to_write (all_qualified or candidates based on write_all flag)
         rows = []
-        for rank, c in enumerate(to_write, 1):          # ← was hardcoded all_qualified, now fixed
+        for rank, c in enumerate(to_write, 1):
             rows.append({
                 "date":               today,
                 "symbol":             c["symbol"],
@@ -1115,7 +1169,6 @@ def write_screener_results(sb, candidates: list, all_qualified: list, mode: str,
         logger.success(f"✓ {len(rows)} symbols → msl_computed")
 
     if mode in ("hybrid", "full"):
-        # master_shortlist — ALWAYS candidates (top N), write_all has no effect here
         msl_rows = []
         for rank, c in enumerate(candidates, 1):
             msl_rows.append({
@@ -1133,7 +1186,6 @@ def write_screener_results(sb, candidates: list, all_qualified: list, mode: str,
             })
         for i in range(0, len(msl_rows), 50):
             sb.table("master_shortlist").upsert(msl_rows[i:i+50], on_conflict="date,symbol").execute()
-        # Remove stale symbols (full mode only)
         if mode == "full":
             selected_syms = {c["symbol"] for c in candidates}
             existing = sb.table("master_shortlist").select("symbol").eq("date", today).execute().data
@@ -1143,13 +1195,11 @@ def write_screener_results(sb, candidates: list, all_qualified: list, mode: str,
                 logger.info(f"  Removed {len(stale)} stale symbols from master_shortlist")
         logger.success(f"✓ {len(msl_rows)} symbols → master_shortlist")
 
+
 def check_eap_revival(sb, stock_map: dict, today: str):
     """
     After daily write, finds stocks that were EAP-penalized yesterday
     but are showing strong post-event price action today.
-    Tags them eap_revival=True in today's msl_computed so they
-    surface in any downstream query/alert without re-running screener.
-    To be used in pphase 4 only — in earlier phases, EAP adjustments are smaller and less meaningful.
     """
     from datetime import date, timedelta
     yesterday = str(date.fromisoformat(today) - timedelta(days=1))
@@ -1159,7 +1209,7 @@ def check_eap_revival(sb, stock_map: dict, today: str):
             sb.table("msl_computed")
             .select("symbol,eap_adjustment,composite_score,priority_rank")
             .eq("date", yesterday)
-            .lt("eap_adjustment", -10)         # only meaningfully penalized
+            .lt("eap_adjustment", -10)
             .execute()
             .data
         )
@@ -1179,7 +1229,6 @@ def check_eap_revival(sb, stock_map: dict, today: str):
         delivery = float(s.get("delivery_pct") or 0)
         vol_r    = float(s.get("vol_ratio")    or 0)
 
-        # Post-event continuation: price up 3%+ with institutional backing
         if pct_chg >= 3.0 and delivery >= 45 and vol_r >= 1.3:
             revivals.append(sym)
             logger.info(
@@ -1198,41 +1247,31 @@ def check_eap_revival(sb, stock_map: dict, today: str):
         logger.info(f"[DRY RUN] Would tag {len(revivals)} EAP revival stocks in msl_computed")
         return
 
-    # Tag in today's msl_computed — only updates if stock is already in today's list
     tagged = 0
     for sym in revivals:
         try:
-            result = (
-                sb.table("msl_computed")
-                .update({"eap_revival": True})
-                .eq("date", today)
-                .eq("symbol", sym)
-                .execute()
-            )
+            sb.table("msl_computed")\
+              .update({"eap_revival": True})\
+              .eq("date", today)\
+              .eq("symbol", sym)\
+              .execute()
             tagged += 1
         except Exception as e:
             logger.warning(f"  EAP revival tag failed for {sym}: {e}")
 
     logger.success(f"  EAP revival: tagged {tagged}/{len(revivals)} stocks in msl_computed")
 
+
 def log_screener_outcomes(sb, today: str, hold_days_list: list = None):
     """
-    Runs daily at end of pipeline.
-    For each hold period, fetches msl_computed from N days ago,
-    compares entry price to today's close, writes to screener_performance.
-
-    After 30+ days of data, query:
-      SELECT engines_list, AVG(pct_return), COUNT(*)
-      FROM screener_performance
-      GROUP BY engines_list ORDER BY AVG(pct_return) DESC;
-    to find which engine combinations produce the best returns.
+    Runs daily at end of pipeline. Computes returns for hold periods
+    and writes to screener_performance for engine attribution analysis.
     """
     from datetime import date, timedelta
 
     if hold_days_list is None:
-        hold_days_list = [5, 10, 15]    # 1-week, 2-week, 3-week hold periods
+        hold_days_list = [5, 10, 15]
 
-    # Load today's closing prices once
     try:
         price_rows = (
             sb.table("stock_data_daily")
@@ -1309,7 +1348,6 @@ def log_screener_outcomes(sb, today: str, hold_days_list: list = None):
         )
         return
 
-    # Write in batches
     for i in range(0, len(all_outcomes), 50):
         try:
             sb.table("screener_performance")\
@@ -1323,6 +1361,40 @@ def log_screener_outcomes(sb, today: str, hold_days_list: list = None):
         f"{len(winners)}/{len(all_outcomes)} positive "
         f"({len(winners)/len(all_outcomes)*100:.0f}% hit rate)"
     )
+
+
+# ─────────────────────────────────────────────────────────────
+# ADD THIS FUNCTION ABOVE main()
+# ─────────────────────────────────────────────────────────────
+def export_screener_excel(final, all_qualified, today):
+    """
+    Export screener output to Excel
+    """
+
+    export_dir = Path("exports")
+    export_dir.mkdir(exist_ok=True)
+
+    file_path = export_dir / f"screener_output_{today}.xlsx"
+
+    with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
+
+        # Top Selected Stocks
+        if final:
+            df1 = pd.DataFrame(final)
+            df1.to_excel(writer, sheet_name="Final_Selected", index=False)
+
+        # All Qualified Stocks
+        if all_qualified:
+            df2 = pd.DataFrame(all_qualified)
+            df2.to_excel(writer, sheet_name="All_Qualified", index=False)
+
+        # Auto column width
+        for sheet in writer.sheets.values():
+            for column_cells in sheet.columns:
+                max_len = max(len(str(cell.value)) if cell.value else 0 for cell in column_cells)
+                sheet.column_dimensions[column_cells[0].column_letter].width = min(max_len + 2, 35)
+
+    logger.success(f"✓ Excel exported: {file_path}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN
@@ -1339,17 +1411,16 @@ def main():
     if os.getenv("SCREENER_MODE_OVERRIDE"):
         mode = os.getenv("SCREENER_MODE_OVERRIDE")
 
-    max_symbols        = int(cfg("screener_max_symbols", str(MAX_SYMBOLS)))
-    max_sector         = int(cfg("screener_max_per_sector", str(MAX_PER_SECTOR)))
-    allow_risk_off     = cfg_bool("screener_allow_risk_off", False)
-    write_all_qualified = cfg_bool("screener_write_all_qualified", WRITE_ALL_QUALIFIED)  # ← ADD
+    max_symbols         = int(cfg("screener_max_symbols", str(MAX_SYMBOLS)))
+    max_sector          = int(cfg("screener_max_per_sector", str(MAX_PER_SECTOR)))
+    allow_risk_off      = cfg_bool("screener_allow_risk_off", False)
+    write_all_qualified = cfg_bool("screener_write_all_qualified", WRITE_ALL_QUALIFIED)
 
     logger.info("=" * 65)
-    logger.info(f"STEP: Screen Stocks v1.0 | {today} | mode={mode.upper()}"
+    logger.info(f"STEP: Screen Stocks v1.1 | {today} | mode={mode.upper()}"
                 + (" [DRY RUN]" if DRY_RUN else ""))
     logger.info("=" * 65)
 
-    # ── Load ──────────────────────────────────────────────────────────────────
     logger.info("Pass 1: loading data...")
     data = load_data(sb, today)
     if not data or not data.get("stock_map"):
@@ -1365,7 +1436,6 @@ def main():
     force_include = data["force_include"]
     open_syms   = data["open_syms"]
 
-    # Load strategy configs from system_config
     strat_cfg = {}
     try:
         from config import get_strategy_config
@@ -1391,9 +1461,10 @@ def main():
     vbd_results = run_vbd(stock_map, sector_rank)
     iad_results = run_iad(stock_map, sector_rank)
     rsb_results = run_rsb(stock_map, sector_rank)
-    mom_results = run_mom_continuation(stock_map, sector_rank)
+    # ── Regime-aware engines (pass regime_name directly) ─────────────────────
+    mom_results = run_mom_continuation(stock_map, sector_rank, regime_name)
     rvs_results = run_reversal_setup(stock_map, sector_rank, regime_name)
-    sec_results = run_sector_rotation(stock_map, sector_rank)
+    sec_results = run_sector_rotation(stock_map, sector_rank, regime_name)
 
     all_candidates = (
         set(ctl_results) | set(sbs_results) | set(tpo_results) |
@@ -1401,7 +1472,6 @@ def main():
         set(mom_results) | set(rvs_results) | set(sec_results)
     )
 
-    # EAP overlay
     eap_adjustments = run_eap_overlay(
         {sym: 1 for sym in all_candidates}, stock_map, event_rows, cfg_eap
     )
@@ -1421,7 +1491,7 @@ def main():
 
     # ── Aggregate ─────────────────────────────────────────────────────────────
     logger.info("Pass 3: aggregating and ranking...")
-    final, all_qualified  = aggregate_and_rank(
+    final, all_qualified = aggregate_and_rank(
         engine_results, stock_map, sector_rank,
         asm_set, fo_ban_set, eap_adjustments,
         regime_name, open_syms, force_include, today,
@@ -1434,7 +1504,7 @@ def main():
         return {"status": "no_candidates"}
 
     # ── Summary ───────────────────────────────────────────────────────────────
-    logger.info(f"\n  ═══ TOP {len(final)} SCREENED SYMBOLS ═══")
+    logger.info(f"\n  ═══ TOP {len(final)} SCREENED SYMBOLS ({regime_name}) ═══")
     for i, c in enumerate(final, 1):
         tag = "📂" if c.get("in_position") else "  "
         logger.info(
@@ -1460,12 +1530,13 @@ def main():
     # ── Write ─────────────────────────────────────────────────────────────────
     logger.info(f"Pass 4: writing ({mode} mode)...")
     write_screener_results(sb, final, all_qualified, mode, today, write_all_qualified)
+    #export_screener_excel(final, all_qualified, today)---To enable Excel export, uncomment this line and ensure openpyxl is installed.
     check_eap_revival(sb, stock_map, today)
     log_screener_outcomes(sb, today)
 
     return {
         "status":        "ok",
-        "selected":      len(final),              # top N after dynamic cutoff
+        "selected":      len(final),
         "total_written": len(all_qualified) if write_all_qualified else len(final),
         "mode":          mode,
         "regime":        regime_name,
@@ -1476,7 +1547,7 @@ def main():
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="TradeOS v6 — Screen Stocks v1.0")
+    parser = argparse.ArgumentParser(description="TradeOS v6 — Screen Stocks v1.1")
     parser.add_argument("--dry-run",  action="store_true")
     parser.add_argument("--mode",     choices=["shadow","hybrid","full"])
     parser.add_argument("--max",      type=int, default=30, help="Max symbols to select")

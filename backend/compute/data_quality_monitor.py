@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Phase 2: Data Quality Monitor (EVOLVED v2)
+TradeOS v6 — Phase 2: Data Quality Monitor (EVOLVED v3)
 ========================================================
 Validates every pipeline output at the end of each evening run.
 Wire: Step 18 in run_pipeline.py — always last, always non-fatal.
@@ -7,6 +7,13 @@ Wire: Step 18 in run_pipeline.py — always last, always non-fatal.
 This script does NOT block the pipeline. It observes, auto-corrects where safe,
 logs anomalies to data_anomalies, and fires a Telegram condensed alert when
 something needs human attention before the next session opens.
+
+REGIME MODEL (5-STATE — aligned with compute_regime v2.0):
+  TRENDING   → All cylinders firing. Strong bull market.   Tier 0
+  RISK ON    → Positive with some mixed signals.           Tier 1
+  NEUTRAL    → Neither bull nor bear. Selective.           Tier 2
+  RECOVERING → Bouncing from bear — not yet neutral.       Tier 3
+  RISK OFF   → Bear conditions. Capital preservation.      Tier 4
 
 PIPELINE ORDER VALIDATED (Phase 2):
   01 market_news → 02 macro_indicators → 03 global_cues → 04 fetch_chartink
@@ -103,21 +110,30 @@ AI_CONTEXT_FIELDS = [
 ]
 
 REGIME_MAX_POSITIONS = {
-    "TRENDING": 8,
-    "NEUTRAL":  6,
-    "CAUTION":  4,
-    "RISK OFF": 3,
+    "TRENDING":   8,   # full risk — all cylinders firing
+    "RISK ON":    7,   # positive trend, slightly reduced
+    "NEUTRAL":    6,   # selective positioning
+    "RECOVERING": 4,   # confirmed bounce but not yet neutral — still cautious
+    "RISK OFF":   3,   # capital preservation
 }
 
-REGIME_TIER = {"TRENDING": 0, "NEUTRAL": 1, "CAUTION": 2, "RISK OFF": 3}
-REGIME_ML_TIER_ERROR = 2
+# Tier ordering: lower = more bullish. Used for ML divergence + sizing checks.
+REGIME_TIER = {
+    "TRENDING":   0,
+    "RISK ON":    1,
+    "NEUTRAL":    2,
+    "RECOVERING": 3,
+    "RISK OFF":   4,
+}
+REGIME_ML_TIER_ERROR = 2   # tier gap ≥ 2 = ERROR (e.g. TRENDING vs NEUTRAL)
 
-# Sizing → implied minimum regime tier (anything more bullish = contradiction)
+# Sizing → minimum regime tier where that sizing is appropriate.
+# Contradiction = regime_tier > (sizing_min_tier + 1), i.e. taking more risk than regime allows.
 SIZING_MIN_REGIME_TIER = {
-    "FULL":         0,   # only valid in TRENDING
-    "REDUCED_25PCT": 0,  # TRENDING or NEUTRAL
-    "HALF":         1,   # NEUTRAL or worse
-    "MINIMAL":      2,   # CAUTION or worse
+    "FULL":          0,   # only appropriate in TRENDING
+    "REDUCED_25PCT": 1,   # TRENDING or RISK ON
+    "HALF":          2,   # NEUTRAL or better
+    "MINIMAL":       3,   # RECOVERING or worse
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -363,8 +379,13 @@ def c09_regime_ml_vs_manual(sb, today):
     mt = REGIME_TIER.get(manual, -1)
     pt = REGIME_TIER.get(predicted, -1)
     if mt < 0 or pt < 0:
-        return _result("C09_regime_ml_vs_manual", True, "WARN",
-            f"Unknown regime label: manual='{manual}' predicted='{predicted}'")
+        # Flag unknown labels — could be a stale 3-state label (CAUTION) still in DB
+        unknown = []
+        if mt < 0: unknown.append(f"manual='{manual}'")
+        if pt < 0: unknown.append(f"predicted='{predicted}'")
+        return _result("C09_regime_ml_vs_manual", False, "WARN",
+            f"Unknown regime label(s): {', '.join(unknown)} — "
+            f"expected one of: TRENDING/RISK ON/NEUTRAL/RECOVERING/RISK OFF")
 
     diff     = abs(mt - pt)
     ok       = diff <= 1
@@ -638,9 +659,15 @@ def c15_fii_regime_consistency(sb, today, last_trading_day):
         if severity != "ERROR":
             severity = "WARN"
 
-    # Check 3: FII buying + overly defensive sizing
-    if fii_flag == "BUY" and sizing == "MINIMAL" and regime == "TRENDING":
-        issues.append(f"FII flag=BUY + regime=TRENDING but sizing=MINIMAL — overly defensive")
+    # Check 3: FII buying + overly defensive sizing in a bullish regime
+    if fii_flag == "BUY" and sizing == "MINIMAL" and regime in ("TRENDING", "RISK ON"):
+        issues.append(f"FII flag=BUY + regime={regime} but sizing=MINIMAL — overly defensive")
+        if severity != "ERROR":
+            severity = "WARN"
+
+    # Check 4: RECOVERING regime — warn if sizing is FULL (too aggressive for a bounce)
+    if regime == "RECOVERING" and sizing == "FULL":
+        issues.append(f"regime=RECOVERING but sizing=FULL — bounce not yet confirmed as trend")
         if severity != "ERROR":
             severity = "WARN"
 
@@ -778,7 +805,7 @@ def main():
     today            = str(today_ist())
     last_trading_day = get_last_trading_day(sb)
 
-    logger.info(f"data_quality_monitor v2: 17 checks | today={today} | LTD={last_trading_day}")
+    logger.info(f"data_quality_monitor v3: 17 checks | 5-state regime | today={today} | LTD={last_trading_day}")
 
     all_checks = [
         # ── Data Integrity ──────────────────────────────────────────────────
@@ -843,7 +870,7 @@ def main():
 
     auto_cap = next((r for r in results if r["check"] == "C03_vol_ratio_cap"), {})
     logger.success(
-        f"Quality v2: ✅{ok_n} OK | ⚠️{warn_n} WARN | 🔴{err_n} ERROR | "
+        f"Quality v3: ✅{ok_n} OK | ⚠️{warn_n} WARN | 🔴{err_n} ERROR | "
         f"17 checks | LTD={last_trading_day}"
         + (f" | 🔧{auto_cap.get('value','0')} vol_ratio capped"
            if auto_cap.get("value", "0") != "0" else "")
@@ -863,7 +890,7 @@ if __name__ == "__main__":
     result = main()
     icons  = {"OK": "✅", "WARN": "⚠️", "ERROR": "🔴"}
     print(f"\n{'='*60}")
-    print(f"TradeOS Quality Monitor v2 — {result.get('date')}")
+    print(f"TradeOS Quality Monitor v3 — {result.get('date')}")
     print(f"Last Trading Day: {result.get('last_trading_day')}")
     print(f"{'='*60}")
     for r in result.get("results", []):

@@ -68,10 +68,10 @@ import json
 from pathlib import Path
 from datetime import datetime, timedelta
 from collections import defaultdict
-from fetch_bulk_history_yf import fetch_bulk_history_yf
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import get_supabase, today_ist, IST, is_kill_switch_active, cfg_bool, cfg, logger
+from fetch_bulk_history_yf import fetch_bulk_history_yf
+
 
 DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
 
