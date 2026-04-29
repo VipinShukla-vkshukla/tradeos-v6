@@ -1,7 +1,13 @@
 """
 TradeOS v6 — Ingest Bhavcopy (NSE primary + BSE fallback)
 
-Writes to: raw_prices table (PRIMARY KEY: date, symbol)
+Writes to:
+  - raw_prices table          (PRIMARY KEY: date, symbol)
+  - stock_data_daily table    (PRIMARY KEY: date, symbol)
+        columns written: value_cr, delivery_pct, delivery_qty
+        Run this SQL migration once before deploying:
+            ALTER TABLE public.stock_data_daily
+                ADD COLUMN IF NOT EXISTS delivery_qty bigint NULL;
 
 NSE source:  BhavCopy_NSE_CM_0_0_0_{yyyymmdd}_F_0000.csv.zip (ZIP containing CSV)
              Columns: SYMBOL, SERIES, DATE1, PREV_CLOSE, OPEN_PRICE, HIGH_PRICE,
@@ -190,7 +196,7 @@ def try_nse(trade_date: date, session: requests.Session) -> pd.DataFrame:
         f"[NSE] ✓ {len(df)} EQ records | "
         f"delivery coverage: {df['delivery_pct'].notna().sum()} stocks"
     )
-    
+
     logger.info(f"[NSE] value_cr sample: {df['value_cr'].head(5).tolist()}")
     logger.info(f"[NSE] value_cr nulls: {df['value_cr'].isna().sum()} / {len(df)}")
     return df
@@ -388,6 +394,74 @@ def upsert_to_raw_prices(df: pd.DataFrame) -> int:
     return total
 
 
+# ── NEW: Upsert to stock_data_daily ──────────────────────────────────────
+def upsert_to_stock_data_daily(df: pd.DataFrame) -> int:
+    """
+    Upsert value_cr, delivery_pct, and delivery_qty into stock_data_daily.
+
+    Prerequisite — run this migration once in Supabase SQL editor before deploying:
+        ALTER TABLE public.stock_data_daily
+            ADD COLUMN IF NOT EXISTS delivery_qty bigint NULL;
+
+    PRIMARY KEY (date, symbol) — safe to re-run on the same date.
+    Only writes the three enrichment columns; existing OHLCV columns are untouched
+    because on_conflict uses a targeted column list.
+
+    Rows that don't yet exist in stock_data_daily are inserted with only these
+    three columns populated (plus date + symbol). Rows that already exist are
+    updated in-place via upsert merge.
+    """
+    # Columns written to stock_data_daily
+    sdd_cols = ["date", "symbol", "value_cr", "delivery_pct", "delivery_qty"]
+    available = [c for c in sdd_cols if c in df.columns]
+    missing   = set(sdd_cols) - set(available)
+    if missing:
+        logger.warning(
+            f"[SDD] Missing columns for stock_data_daily upsert: {missing} — "
+            "they will be skipped"
+        )
+
+    sdd_df = df[available].copy()
+
+    # Cast delivery_qty to Python int where possible (Supabase bigint rejects floats)
+    if "delivery_qty" in sdd_df.columns:
+        sdd_df["delivery_qty"] = (
+            pd.to_numeric(sdd_df["delivery_qty"], errors="coerce")
+            .where(sdd_df["delivery_qty"].notna())   # keep NaT/NaN as None
+        )
+
+    if DRY_RUN:
+        logger.info(
+            f"[DRY RUN] Would upsert {len(sdd_df)} rows to stock_data_daily "
+            f"(columns: {available})"
+        )
+        return len(sdd_df)
+
+    sb   = get_supabase()
+    rows = sdd_df.to_dict(orient="records")
+
+    # Replace NaN / float('nan') with None — Supabase rejects Python float NaN
+    for row in rows:
+        for k, v in list(row.items()):
+            if isinstance(v, float) and pd.isna(v):
+                row[k] = None
+            # Also cast delivery_qty to int if it came through as a float whole number
+            if k == "delivery_qty" and isinstance(v, float) and not pd.isna(v):
+                row[k] = int(v)
+
+    total      = 0
+    batch_size = 500
+    for i in range(0, len(rows), batch_size):
+        batch = rows[i : i + batch_size]
+        sb.table("stock_data_daily").upsert(
+            batch, on_conflict="date,symbol"
+        ).execute()
+        total += len(batch)
+
+    logger.info(f"[SDD] ✓ {total} rows upserted to stock_data_daily")
+    return total
+
+
 # ── Main ──────────────────────────────────────────────────────────────────
 def main():
     if is_kill_switch_active():
@@ -474,8 +548,19 @@ def main():
     ]
     final = bhav_df[[c for c in target_cols if c in bhav_df.columns]].copy()
 
-    # ── Upsert ────────────────────────────────────────────────────────────
+    # ── Upsert to raw_prices ──────────────────────────────────────────────
     rows_done = upsert_to_raw_prices(final)
+
+    # ── NEW: Upsert value_cr + delivery columns to stock_data_daily ───────
+    # Runs after raw_prices so a raw_prices failure will prevent a partial SDD write.
+    # Non-fatal: a SDD failure does not roll back raw_prices.
+    sdd_rows = 0
+    try:
+        sdd_rows = upsert_to_stock_data_daily(final)
+    except Exception as e:
+        logger.error(
+            f"[SDD] stock_data_daily upsert failed (non-fatal, raw_prices already written): {e}"
+        )
 
     duration = time.time() - start
     delivery_coverage = (
@@ -483,16 +568,19 @@ def main():
         if "delivery_pct" in final.columns else 0
     )
     logger.success(
-        f"✓ Bhavcopy ({source}): {rows_done} rows → raw_prices "
+        f"✓ Bhavcopy ({source}): {rows_done} rows → raw_prices | "
+        f"{sdd_rows} rows → stock_data_daily "
         f"in {duration:.1f}s | date={trade_date} | "
         f"delivery coverage: {delivery_coverage} stocks"
     )
     return {
-        "status":   "success",
-        "source":   source,
-        "rows":     rows_done,
-        "date":     trade_date.isoformat(),
-        "duration": round(duration, 1),
+        "status":            "success",
+        "source":            source,
+        "rows":              rows_done,
+        "sdd_rows":          sdd_rows,
+        "date":              trade_date.isoformat(),
+        "duration":          round(duration, 1),
+        "delivery_coverage": int(delivery_coverage),
     }
 
 

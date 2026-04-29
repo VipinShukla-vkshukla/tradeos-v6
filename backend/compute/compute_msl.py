@@ -309,6 +309,23 @@ def load_data(sb, today: str, mode: str) -> dict:
     # In shadow mode, merge screener metadata (strategy_source, composite_score) into msl_map
     # without overwriting Sheet fields (company_name, sector, notes, etc.)
     if mode == "shadow" and screener_rows:
+        # ── INGEST_SHEETS MERGE (remove this block when ingest_sheets is retired) ──
+        _sheet_rows = (
+            sb.table("master_shortlist")
+            .select("*")
+            .eq("date", today)
+            .eq("compute_source", "ingest_sheets")
+            .execute().data
+        )
+        _added = 0
+        for r in (_sheet_rows or []):
+            sym = r.get("symbol")
+            if sym and sym not in msl_map:
+                msl_map[sym] = r
+                _added += 1
+        if _added:
+            logger.info(f"  ingest_sheets: {_added} symbols merged into msl_map")
+        # ── END INGEST_SHEETS MERGE ─────────────────────────────────────────────────
         screener_map = {r["symbol"]: r for r in screener_rows}
         added = 0
         for sym, sr in screener_map.items():
@@ -349,6 +366,114 @@ def load_data(sb, today: str, mode: str) -> dict:
             )
             logger.warning(f"  stock_data_daily: falling back to {fb_s}")
     stock_map = {r["symbol"]: r for r in (stock_rows or [])}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FIELD OWNERSHIP MAP — which script is responsible for writing each field
+# compute_msl depends on these but does NOT write them.
+# If they're missing, upstream script hasn't run — warn loudly.
+# ─────────────────────────────────────────────────────────────────────────────
+
+    UPSTREAM_FIELD_OWNERS = {
+        # field_name: (owner_script, table, severity)
+        "value_cr":      ("ingest_bhavcopy",  "stock_data_daily", "CRITICAL"),
+        "delivery_pct":  ("ingest_bhavcopy",  "stock_data_daily", "CRITICAL"),
+        "delivery_qty":  ("ingest_bhavcopy",  "stock_data_daily", "WARNING"),
+        "adx":           ("compute_indicators", "stock_data_daily", "CRITICAL"),
+        "rsi_daily":     ("compute_indicators", "stock_data_daily", "CRITICAL"),
+        "ema_20":        ("compute_indicators", "stock_data_daily", "WARNING"),
+        "supertrend":    ("compute_indicators", "stock_data_daily", "WARNING"),
+        "ha_close":      ("compute_indicators", "stock_data_daily", "WARNING"),
+        "vwap_20d":      ("compute_indicators", "stock_data_daily", "WARNING"),
+        "macd_hist":     ("compute_indicators", "stock_data_daily", "WARNING"),
+        "bb_upper":      ("compute_indicators", "stock_data_daily", "WARNING"),
+        "psar":          ("compute_indicators", "stock_data_daily", "WARNING"),
+        "rs_vs_nifty":   ("compute_indicators", "stock_data_daily", "WARNING"),
+        "above_sma50":   ("compute_indicators", "stock_data_daily", "CRITICAL"),
+        "above_st":      ("compute_indicators", "stock_data_daily", "CRITICAL"),
+        "sma50_gt_200":  ("compute_indicators", "stock_data_daily", "CRITICAL"),
+        "atr_pct":       ("compute_indicators", "stock_data_daily", "WARNING"),
+        "high_52w":      ("compute_indicators", "stock_data_daily", "WARNING"),
+        "high_30d":      ("compute_indicators", "stock_data_daily", "WARNING"),
+        "consol_range":  ("compute_indicators", "stock_data_daily", "WARNING"),
+        "wk_hi_high":    ("compute_indicators", "stock_data_daily", "WARNING"),
+        "wk_hi_low":     ("compute_indicators", "stock_data_daily", "WARNING"),
+    }
+
+
+    def validate_upstream_fields(stock_map: dict, symbols: list) -> dict:
+        """
+        Check that fields owned by upstream scripts are actually populated.
+        Called at the end of load_data — before any computation begins.
+
+        Returns a dict of field → coverage_pct so main() can log a health report.
+        Logs CRITICAL warnings for fields that are >50% missing.
+        Logs WARNING for fields that are >20% missing.
+
+        A field counts as "missing" if its value is None, 0 (for numeric fields
+        where 0 is not a valid value), or absent from the row.
+
+        WHY: value_cr=0 means ingest_bhavcopy hasn't run today. Without this check,
+        compute_msl silently produces VERY_LOW liquidity for every stock and
+        generate_signals blocks all entries as "blocked_low_liquidity".
+        """
+        if not stock_map or not symbols:
+            return {}
+
+        n = len([s for s in symbols if s in stock_map])
+        if n == 0:
+            return {}
+
+        # Fields where 0 is a valid value (boolean-like or signed)
+        ZERO_OK_FIELDS = {"above_sma50", "above_st", "sma50_gt_200", "wk_hi_high",
+                        "wk_hi_low", "breakout_setup", "bk_trigger"}
+
+        coverage = {}
+        critical_missing = []
+        warning_missing  = []
+
+        for field, (owner, table, severity) in UPSTREAM_FIELD_OWNERS.items():
+            populated = 0
+            for sym in symbols:
+                row = stock_map.get(sym)
+                if not row:
+                    continue
+                val = row.get(field)
+                if val is None:
+                    continue
+                if field not in ZERO_OK_FIELDS and val == 0:
+                    continue   # treat 0 as missing for non-boolean fields
+                populated += 1
+
+            pct = round(populated / n * 100, 1) if n > 0 else 0.0
+            coverage[field] = pct
+            missing_pct = 100 - pct
+
+            if severity == "CRITICAL" and missing_pct > 50:
+                critical_missing.append((field, owner, table, pct))
+            elif missing_pct > 20:
+                warning_missing.append((field, owner, table, pct))
+
+        # Log critical first — these will cause silent wrong results
+        if critical_missing:
+            logger.error("=" * 60)
+            logger.error("UPSTREAM DATA MISSING — COMPUTE RESULTS WILL BE WRONG")
+            logger.error("=" * 60)
+            for field, owner, table, pct in critical_missing:
+                logger.error(
+                    f"  CRITICAL: '{field}' only {pct}% populated in {table}"
+                    f" — run {owner}.py first"
+                )
+            logger.error("=" * 60)
+
+        if warning_missing:
+            logger.warning("Upstream field coverage warnings:")
+            for field, owner, table, pct in warning_missing:
+                logger.warning(
+                    f"  WARNING:  '{field}' only {pct}% populated in {table}"
+                    f" — run {owner}.py to improve signal quality"
+                )
+
+        return coverage
 
     # ── 3. MSL history — last 60 days ────────────────────────────────────────
     cutoff = str(today_ist() - timedelta(days=60))
@@ -532,6 +657,10 @@ def load_data(sb, today: str, mode: str) -> dict:
         f"news B:{bearish_news}/b:{bullish_news}"
     )
 
+    # ── Field coverage validation — must be last in load_data ────────────────
+    field_coverage = validate_upstream_fields(stock_map, symbols)
+    # Attach to return dict so compute_all and main() can inspect it
+    
     return {
         "msl_map":      msl_map,
         "stock_map":    stock_map,
@@ -546,6 +675,7 @@ def load_data(sb, today: str, mode: str) -> dict:
         "macro_data":   macro_data,
         "bearish_news": bearish_news,
         "bullish_news": bullish_news,
+        "field_coverage": field_coverage,
     }
 
 
@@ -696,10 +826,6 @@ def get_rsi_extended_threshold(regime_ctx: dict, adx: float) -> float:
 
 
 def compute_ma_alignment(s: dict) -> dict:
-    """
-    Perfect bullish order: price > EMA10 > EMA20 > EMA50 ≈ SMA50 > SMA200.
-    Score: 0-6. 5-6 = all timeframes aligned. 0-1 = structural breakdown.
-    """
     close   = float(s.get("close") or s.get("current_price") or 0)
     ema_10  = float(s.get("ema_10") or 0)
     ema_20  = float(s.get("ema_20") or 0)
@@ -708,16 +834,37 @@ def compute_ma_alignment(s: dict) -> dict:
     sma_50  = float(s.get("sma_50") or 0)
     sma_200 = float(s.get("sma_200") or 0)
 
-    score  = 0
+    score = 0
     levels = []
-    if close > 0 and ema_10 > 0 and close > ema_10:                   score += 1; levels.append("P>E10")
-    if ema_10 > 0 and ema_20 > 0 and ema_10 > ema_20:                 score += 1; levels.append("E10>E20")
-    if ema_20 > 0 and ema_50 > 0 and ema_20 > ema_50:                 score += 1; levels.append("E20>E50")
-    if ema_50 > 0 and sma_50 > 0 and ema_50 > sma_50 * 0.99:          score += 1; levels.append("E50≈S50")
-    if sma_50 > 0 and sma_200 > 0 and sma_50 > sma_200:               score += 1; levels.append("S50>S200")
-    if close > 0 and sma_20 > 0 and sma_20 > sma_50 > 0:             score += 1; levels.append("S20>S50")
 
-    return {"ma_alignment_score": score, "ma_levels": ",".join(levels)}
+    if close > ema_10 > 0:
+        score += 1
+        levels.append("P>E10")
+
+    if ema_10 > ema_20 > 0:
+        score += 1
+        levels.append("E10>E20")
+
+    if ema_20 > ema_50 > 0:
+        score += 1
+        levels.append("E20>E50")
+
+    if ema_50 > sma_50 > 0:
+        score += 1
+        levels.append("E50>S50")
+
+    if sma_50 > sma_200 > 0:
+        score += 1
+        levels.append("S50>S200")
+
+    if sma_20 > sma_50 > 0:
+        score += 1
+        levels.append("S20>S50")
+
+    return {
+        "ma_alignment_score": score,
+        "ma_levels": ",".join(levels)
+    }
 
 
 def compute_ha_signal(s: dict) -> dict:
@@ -880,10 +1027,6 @@ def compute_vwap_context(s: dict) -> dict:
 
 
 def compute_volume_trend(s: dict) -> dict:
-    """
-    avg_vol_20d vs avg_vol_50d — sustained high volume = institutional accumulation.
-    Single-day volume spike = noise; trend in average volume = signal.
-    """
     vol_20d  = float(s.get("avg_vol_20d") or 0)
     vol_50d  = float(s.get("avg_vol_50d") or 0)
     vol_r    = float(s.get("vol_ratio") or 0)
@@ -897,10 +1040,12 @@ def compute_volume_trend(s: dict) -> dict:
     elif vol_trend_ratio >= 0.75:   trend = "CONTRACTING"
     else:                           trend = "DECLINING"
 
-    if value_cr >= 500:   liquidity = "HIGH"
-    elif value_cr >= 100: liquidity = "MEDIUM"
-    elif value_cr >= 30:  liquidity = "LOW"
-    else:                 liquidity = "VERY_LOW"
+    # FIX: value_cr=0 means field not populated — tag as UNKNOWN, not VERY_LOW
+    if value_cr <= 0:         liquidity = "UNKNOWN"
+    elif value_cr >= 500:     liquidity = "HIGH"
+    elif value_cr >= 100:     liquidity = "MEDIUM"
+    elif value_cr >= 30:      liquidity = "LOW"
+    else:                     liquidity = "VERY_LOW"
 
     return {
         "volume_trend":      trend,
@@ -1972,7 +2117,7 @@ def compute_final_score(momentum_score: float, validity_score: float,
 # MAIN COMPUTATION LOOP
 # ─────────────────────────────────────────────────────────────────────────────
 
-def compute_all(data: dict, today: str) -> list:
+def compute_all(sb, data: dict, today: str) -> list:
     msl_map      = data["msl_map"]
     stock_map    = data["stock_map"]
     history_map  = data["history_map"]
@@ -1992,6 +2137,14 @@ def compute_all(data: dict, today: str) -> list:
     regime_ctx = build_regime_context(
         regime, global_cues, macro_data, fii_data, bearish_news, bullish_news
     )
+    regime_date = regime.get("date", today)
+    try:
+        sb.table("market_regime").update({
+            "macro_boost": regime_ctx["macro_boost"]
+        }).eq("date", regime_date).execute()
+    except Exception as e:
+        logger.warning(f"Could not update macro_boost: {e}")
+
     logger.info(
         f"  Regime context: {regime_ctx['regime']} | "
         f"RSI extended @{regime_ctx['rsi_extended']} | "
@@ -2164,7 +2317,6 @@ def compute_all(data: dict, today: str) -> list:
                 "active_regime":        regime_ctx["regime"],
                 "rsi_extended_thresh":  get_rsi_extended_threshold(regime_ctx, adx),
                 "fii_flag":             regime_ctx["fii_flag"],
-                "macro_boost":          regime_ctx["macro_boost"],
                 # ── Metadata ──
                 "compute_source":       "compute_msl_v3",
                 "computed_at":          datetime.now(IST).isoformat(),
@@ -2249,7 +2401,7 @@ def write_results(sb, results: list, mode: str, today: str):
             sym  = r["symbol"]
             base = dict(current_map.get(sym, {}))
             for field, val in r.items():
-                if field not in PRESERVE_FIELDS:
+                if field not in PRESERVE_FIELDS and field != "ma_levels":
                     base[field] = val
             base["date"]   = today
             base["symbol"] = sym
@@ -2290,8 +2442,24 @@ def main():
         logger.error("No data loaded — aborting")
         return {"status": "no_data"}
 
+    # ── Coverage gate — abort if critical upstream fields are missing ─────────
+    coverage = data.get("field_coverage", {})
+    critical_fields = ["value_cr", "delivery_pct", "adx", "rsi_daily",
+                       "above_sma50", "above_st", "sma50_gt_200"]
+    abort = False
+    for f in critical_fields:
+        pct = coverage.get(f, 0)
+        if pct < 30:
+            logger.error(
+                f"  ABORT: '{f}' is only {pct}% populated — "
+                f"upstream script has not run. Fix pipeline order and retry."
+            )
+            abort = True
+    if abort:
+        return {"status": "missing_upstream_data", "field_coverage": coverage}
+
     logger.info("Pass 2: computing all fields...")
-    results = compute_all(data, today)
+    results = compute_all(sb, data, today)
     if not results:
         logger.error("No results computed")
         return {"status": "no_results"}

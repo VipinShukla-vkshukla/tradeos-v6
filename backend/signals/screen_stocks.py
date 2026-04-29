@@ -39,7 +39,7 @@ PURPOSE
   This script REPLACES the role of ingest_sheets.py for MASTER_SHORTLIST
   population (over time, via transition modes). It screens all 500 stocks
   in stock_data_daily through multiple strategy engines and proprietary
-  scanners, then writes the top 30 qualified symbols to msl_computed
+  scanners, then writes the top 30 or all qualified symbols to msl_computed
   (shadow mode) or master_shortlist (hybrid/full mode).
 
   The Google Sheet MSL tab becomes a manual override layer only —
@@ -163,9 +163,23 @@ def load_data(sb, today: str) -> dict:
     fii_rows = sb.table("fii_dii_flow").select("fii_flag,fii_net_20d,fii_net_5d").order("date", desc=True).limit(1).execute().data
     fii = fii_rows[0] if fii_rows else {}
 
-    # existing master_shortlist for manual override detection
-    msl_rows = sb.table("master_shortlist").select("symbol,force_include,notes").eq("date", today).execute().data
+    # existing master_shortlist for manual override detection (Disabled for time being until ingest sheet dependency is fully removed)
+    #msl_rows = sb.table("master_shortlist").select("symbol,force_include,notes").eq("date", today).execute().data
+    #force_include = {r["symbol"] for r in (msl_rows or []) if r.get("force_include")}
+
+    #(Temp for time being until ingest sheet dependency is fully removed)
+    msl_rows = sb.table("master_shortlist")\
+        .select("symbol,force_include,compute_source")\
+        .eq("date", today).execute().data
     force_include = {r["symbol"] for r in (msl_rows or []) if r.get("force_include")}
+
+    # ── INGEST_SHEETS MERGE (remove this block when ingest_sheets is retired) ──
+    _sheet_syms = {r["symbol"] for r in (msl_rows or []) if r.get("compute_source") == "ingest_sheets"}
+    if _sheet_syms:
+        force_include |= _sheet_syms
+        logger.info(f"  ingest_sheets symbols merged into force_include: {len(_sheet_syms)}")
+    # ── END INGEST_SHEETS MERGE ─────────────────────────────────────────────────
+    #(Temp for time being until ingest sheet dependency is fully removed)
 
     # open_positions (don't re-add already-held stocks as new entries)
     open_rows = sb.table("open_positions").select("symbol").eq("status", "ACTIVE").execute().data
@@ -1008,6 +1022,11 @@ def aggregate_and_rank(
     # ── Collect all symbols with regime-weighted scores ───────────────────────
     all_syms: dict = defaultdict(lambda: {"engines": [], "scores": [], "raw": 0})
     for engine, results in engine_results.items():
+        # ── INGEST_SHEETS MERGE (remove this block when ingest_sheets is retired) ──
+        for sym in force_include:
+            if sym not in all_syms and sym in stock_map:
+                all_syms[sym]  # defaultdict seeds empty engines/scores; composite=0, force_include sorts first
+        # ── END INGEST_SHEETS MERGE ─────────────────────────────────────────────────
         engine_weight = weights.get(engine, 1.0)
         for sym, score in results.items():
             weighted_score = round(score * engine_weight, 1)
@@ -1170,29 +1189,51 @@ def write_screener_results(sb, candidates: list, all_qualified: list, mode: str,
 
     if mode in ("hybrid", "full"):
         msl_rows = []
+
         for rank, c in enumerate(candidates, 1):
-            msl_rows.append({
-                "date":            today,
-                "symbol":          c["symbol"],
-                "company_name":    c.get("company_name"),
-                "sector":          c.get("sector"),
-                "strategy_source": c.get("strategy_source"),
-                "current_price":   c.get("current_price"),
-                "final_score":     c.get("composite_score"),
-                "base_score":      c.get("base_score"),
-                "base_rank":       rank,
-                "position_state":  "WATCHING",
-                "in_position":     c.get("in_position", False),
-            })
+
+            row = dict(c)   # copies ALL computed fields from candidate
+
+            # ---- Add / rename fields needed by master_shortlist ----
+            row["date"] = today
+            row["final_score"] = c.get("composite_score")
+            row["base_rank"] = rank
+            row["priority_rank"] = rank
+            row["position_state"] = "WATCHING"
+            row["in_position"] = c.get("in_position", False)
+
+            # metadata
+            row["compute_source"] = "screen_stocks"
+            row["screener_source"] = "screen_stocks_v1"
+            row["computed_at"] = datetime.now(IST).isoformat()
+
+            msl_rows.append(row)
+
         for i in range(0, len(msl_rows), 50):
-            sb.table("master_shortlist").upsert(msl_rows[i:i+50], on_conflict="date,symbol").execute()
+            sb.table("master_shortlist") \
+            .upsert(msl_rows[i:i+50], on_conflict="date,symbol") \
+            .execute()
+
         if mode == "full":
             selected_syms = {c["symbol"] for c in candidates}
-            existing = sb.table("master_shortlist").select("symbol").eq("date", today).execute().data
+            existing = sb.table("master_shortlist") \
+                        .select("symbol") \
+                        .eq("date", today) \
+                        .eq("compute_source", "screen_stocks")\
+                        .execute().data
+
             stale = {r["symbol"] for r in existing} - selected_syms
+
             if stale:
-                sb.table("master_shortlist").delete().eq("date", today).in_("symbol", list(stale)).execute()
+                sb.table("master_shortlist") \
+                .delete() \
+                .eq("date", today) \
+                .eq("compute_source", "screen_stocks")\
+                .in_("symbol", list(stale)) \
+                .execute()
+
                 logger.info(f"  Removed {len(stale)} stale symbols from master_shortlist")
+
         logger.success(f"✓ {len(msl_rows)} symbols → master_shortlist")
 
 
@@ -1248,16 +1289,22 @@ def check_eap_revival(sb, stock_map: dict, today: str):
         return
 
     tagged = 0
+
+    target_tables = ["msl_computed", "master_shortlist"]
+
     for sym in revivals:
-        try:
-            sb.table("msl_computed")\
-              .update({"eap_revival": True})\
-              .eq("date", today)\
-              .eq("symbol", sym)\
-              .execute()
-            tagged += 1
-        except Exception as e:
-            logger.warning(f"  EAP revival tag failed for {sym}: {e}")
+        for tbl in target_tables:
+            try:
+                sb.table(tbl) \
+                .update({"eap_revival": True}) \
+                .eq("date", today) \
+                .eq("symbol", sym) \
+                .execute()
+
+            except Exception as e:
+                logger.warning(f"  EAP revival tag failed for {sym} in {tbl}: {e}")
+
+        tagged += 1
 
     logger.success(f"  EAP revival: tagged {tagged}/{len(revivals)} stocks in msl_computed")
 
@@ -1396,6 +1443,58 @@ def export_screener_excel(final, all_qualified, today):
 
     logger.success(f"✓ Excel exported: {file_path}")
 
+def validate_master_shortlist_completeness(sb, today):
+    """
+    Checks if rows written to master_shortlist have NULL gaps
+    """
+    logger.info("Checking master_shortlist completeness...")
+
+    rows = (
+        sb.table("master_shortlist")
+        .select("*")
+        .eq("date", today)
+        .execute()
+        .data
+    )
+
+    if not rows:
+        logger.warning("No rows found in master_shortlist")
+        return
+
+    total_rows = len(rows)
+
+    # Collect all columns
+    all_cols = set()
+    for r in rows:
+        all_cols.update(r.keys())
+
+    gap_report = {}
+
+    for col in sorted(all_cols):
+        null_count = sum(1 for r in rows if r.get(col) is None)
+
+        if null_count > 0:
+            gap_report[col] = null_count
+
+    logger.info("=" * 70)
+    logger.info("MASTER_SHORTLIST COMPLETENESS REPORT")
+    logger.info("=" * 70)
+
+    for col, cnt in gap_report.items():
+        pct = round(cnt / total_rows * 100, 1)
+        logger.warning(f"{col:<25} NULL in {cnt}/{total_rows} rows ({pct}%)")
+
+    logger.info("=" * 70)
+
+    fully_blank = [c for c, v in gap_report.items() if v == total_rows]
+
+    if fully_blank:
+        logger.error("Columns never populated by script:")
+        for c in fully_blank:
+            logger.error(f"   -> {c}")
+
+    logger.success("Completeness check finished.")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1531,6 +1630,8 @@ def main():
     logger.info(f"Pass 4: writing ({mode} mode)...")
     write_screener_results(sb, final, all_qualified, mode, today, write_all_qualified)
     #export_screener_excel(final, all_qualified, today)---To enable Excel export, uncomment this line and ensure openpyxl is installed.
+    if mode in ("hybrid", "full"):
+        validate_master_shortlist_completeness(sb, today)
     check_eap_revival(sb, stock_map, today)
     log_screener_outcomes(sb, today)
 

@@ -24,15 +24,10 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 # Row numbers are 1-indexed as in Google Sheets
 SHEET_TABS = {
     "MASTER_SHORTLIST":         (11, 12),
-    "OPEN_POSITIONS":           (4, 5),
-    "CLOSED_POSITIONS":         (5, 6),
     "SECTOR_STRENGTH":          (3, 4),
-    "MARKET_REGIME":            None,   # special key-value parsing
     "EVENT_CALENDAR":           (4, 5),
     "LESSONS_LEARNED":          (1, 2),
-    "MASTER_SHORTLIST_HISTORY": (1, 2),
     "NSE_HOLIDAYS":             (1, 2),
-    "NIFTY_TOTAL_MARKET":       (2, 3),
 }
 
 # ── Google Sheets client ─────────────────────────────────────
@@ -228,6 +223,7 @@ def ingest_master_shortlist(service, sb):
             "trade_allowed": parse_bool(r.get("trade_allowed")),
             "suggested": safe_str(r.get("suggested_action")),
             "pos_type": safe_str(r.get("position_type")),
+            "compute_source": "ingest_sheets",
             "notes": safe_str(r.get("notes")),
             "position_state": state,
         })
@@ -243,13 +239,14 @@ def ingest_master_shortlist(service, sb):
     logger.info(f"✓ MASTER_SHORTLIST: {len(rows)} rows upserted")
     # Reconcile — remove symbols no longer in today's sheet
     sheet_symbols = {r["symbol"] for r in rows}
-    existing = sb.table("master_shortlist").select("symbol").eq("date", str(today)).execute()
+    existing = sb.table("master_shortlist").select("symbol").eq("date", str(today)).eq("compute_source", "ingest_sheets").execute()
     db_symbols = {r["symbol"] for r in (existing.data or [])}
     removed = db_symbols - sheet_symbols
     if removed:
         logger.info(f"Removing {len(removed)} symbols no longer in MSL: {removed}")
         sb.table("master_shortlist").delete()\
             .eq("date", str(today))\
+            .eq("compute_source", "ingest_sheets")\
             .in_("symbol", list(removed))\
             .execute()
     else:
@@ -651,64 +648,6 @@ def ingest_lessons(service, sb):
     return len(new_rows)
 
 
-def ingest_msl_history(service, sb):
-    logger.info("Ingesting MASTER_SHORTLIST_HISTORY (708 rows)...")
-    raw = read_tab(service, "MASTER_SHORTLIST_HISTORY", 1000)
-    df  = rows_to_df(raw, 1, 2)
-    if df.empty:
-        return 0
-
-    rows = []
-    for _, r in df.iterrows():
-        sym = safe_str(r.get("symbol"))
-        sd  = parse_date(r.get("snapshot_date"))
-        if not sym or sd is None:   # ✅   
-            continue
-        rows.append({
-            "snapshot_date": str(sd),
-            "symbol": sym,
-            "company_name": safe_str(r.get("company_name")),
-            "priority_rank": int(parse_num(r.get("priority_rank")) or 0) or None,
-            "sector": safe_str(r.get("sector")),
-            "strategy_source": safe_str(r.get("strategy_source")),
-            "close_price": parse_num(r.get("close_price")),
-            "price_location": safe_str(r.get("price_location")),
-            "dist_fv_pct": parse_num(r.get("distance_from_fair_value_")),
-            "entry_timing_type": safe_str(r.get("entry_timing_type")),
-            "momentum_phase": safe_str(r.get("momentum_phase")),
-            "velocity_state": safe_str(r.get("velocity_state")),
-            "trend_maturity": safe_str(r.get("trend_maturity")),
-            "struct_edge": safe_str(r.get("structural_edge")),
-            "in_position": parse_bool(r.get("in_position")),
-            "reentry_mode": safe_str(r.get("reentry_mode")),
-            "lifecycle": safe_str(r.get("trend_lifecycle_stat")),
-            "expected_r": parse_num(r.get("expected_r_multiple")),
-            "validity_score": parse_num(r.get("entry_validity_score")),
-            "final_score": parse_num(r.get("strategy_final_score")),
-        })
-
-    if DRY_RUN:
-        logger.info(f"[DRY RUN] Would upsert {len(rows)} MSL history rows")
-        return len(rows)
-
-    # Deduplicate by (snapshot_date, symbol)
-    seen = set()
-    deduped = []
-    for row in rows:
-        key = (row["snapshot_date"], row["symbol"])
-        if key not in seen:
-            seen.add(key)
-            deduped.append(row)
-    rows = deduped
-
-    for i in range(0, len(rows), 200):
-        sb.table("msl_history").upsert(
-            rows[i:i+200], on_conflict="snapshot_date,symbol"
-        ).execute()
-    logger.info(f"✓ MSL_HISTORY: {len(rows)} rows upserted")
-    return len(rows)
-
-
 def ingest_nse_holidays(service, sb):
     logger.info("Ingesting NSE_HOLIDAYS...")
     raw = read_tab(service, "NSE_HOLIDAYS", 50)
@@ -726,36 +665,6 @@ def ingest_nse_holidays(service, sb):
     if not DRY_RUN and rows:
         sb.table("nse_holidays").upsert(rows, on_conflict="date").execute()
     logger.info(f"✓ NSE_HOLIDAYS: {len(rows)} holidays")
-    return len(rows)
-
-
-def ingest_nifty_total_market(service, sb):
-    logger.info("Ingesting NIFTY_TOTAL_MARKET...")
-    raw = read_tab(service, "NIFTY_TOTAL_MARKET", 600)
-    df  = rows_to_df(raw, 2, 3)
-    if df.empty:
-        return 0
-
-    rows = []
-    for _, r in df.iterrows():
-        sym = safe_str(r.get("symbol"))
-        if not sym:
-            continue
-        rows.append({
-            "symbol": sym,
-            "company_name": safe_str(r.get("company_name")),
-            "industry": safe_str(r.get("industry")),
-            "isin": safe_str(r.get("isin_code")),
-            "nifty_200": str(_scalar(r.get("nifty_200", ""))).upper() == "Y",
-            "nifty_500": str(_scalar(r.get("nifty_500", ""))).upper() == "Y",
-        })
-
-    if not DRY_RUN and rows:
-        for i in range(0, len(rows), 200):
-            sb.table("nifty_total_market").upsert(
-                rows[i:i+200], on_conflict="symbol"
-            ).execute()
-    logger.info(f"✓ NIFTY_TOTAL_MARKET: {len(rows)} stocks")
     return len(rows)
 
 
@@ -841,9 +750,7 @@ def main():
         ("industry_strength",   ingest_industry_strength),
         ("event_calendar",      ingest_event_calendar),
         ("lessons",             ingest_lessons),
-        ("msl_history",         ingest_msl_history),
         ("nse_holidays",        ingest_nse_holidays),
-        ("nifty_market",        ingest_nifty_total_market),
     ]
 
     for name, fn in steps:
