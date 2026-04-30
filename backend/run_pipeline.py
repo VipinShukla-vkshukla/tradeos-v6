@@ -206,9 +206,9 @@ def main():
             ("16_history",             step_history,             False),  # msl_history + regime_history
             # ── Analysis and AI ──
             ("17_post_trade",          step_post_trade,          False),  # outcomes → lessons
-            ("18_generate_shortlist",  step_generate_shortlist,  False),  # AI top-12 pre-rank
-            ("19_market_intel",        step_market_intel,        False),  # news synthesis
-            ("20_ai_enrich",           step_ai_enrich,           False),  # conviction per signal
+            ("18_market_intel",        step_market_intel,        False),  # news synthesis
+            ("19_ai_enrich",           step_ai_enrich,           False),  # conviction per signal
+            ("20_generate_shortlist",  step_generate_shortlist,  False),  # AI top-12 pre-rank
             # ── Output ──
             ("21_alerts",              step_alerts,              False),  # Telegram digest
             ("22_quality_check",       step_quality_check,       False),  # always last

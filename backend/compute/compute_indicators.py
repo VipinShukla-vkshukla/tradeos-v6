@@ -492,12 +492,13 @@ def fetch_nifty_return(sb, today: str, sessions: int = 20) -> float | None:
     return None
 
 
-def fetch_raw_prices(sb, today: str) -> dict:
-    """{symbol: {value_cr, delivery_pct, delivery_qty}} from raw_prices for today."""
-    rows = (sb.table("raw_prices")
-              .select("symbol,value_cr,delivery_pct,delivery_qty")
-              .eq("date", today)
-              .execute().data)
+def fetch_raw_prices(sb, today: str, symbols: list | None = None) -> dict:
+    query = (sb.table("raw_prices")
+               .select("symbol,value_cr,delivery_pct,delivery_qty")
+               .eq("date", today))
+    if symbols:
+        query = query.in_("symbol", symbols)   # ← scope to chartink universe only
+    rows = query.execute().data
     result: dict = {}
     for r in rows:
         sym = r.get("symbol")
@@ -948,7 +949,7 @@ def main():
     msl_set                = fetch_msl_symbols(sb, today)
     index_map, company_map = fetch_index_membership(sb)
     nifty_ret              = fetch_nifty_return(sb, today)
-    prices_map             = fetch_raw_prices(sb, today)
+    prices_map             = fetch_raw_prices(sb, today, symbols=symbols)
     field_trust            = fetch_field_trust(sb) if reconcile_enabled else {}
 
     logger.info(f"  Nifty 1M return: {nifty_ret}%")
