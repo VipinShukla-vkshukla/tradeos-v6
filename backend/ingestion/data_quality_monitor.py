@@ -161,10 +161,10 @@ def c05_signal_score_range(sb, today):
 
 def c06_msl_score_jumps(sb, today):
     yesterday = str(today_ist() - timedelta(days=1))
-    now_map   = {r["symbol"]: float(r.get("score") or 0)
-                 for r in sb.table("master_shortlist").select("symbol, score").execute().data}
-    yest_map  = {r["symbol"]: float(r.get("score") or 0)
-                 for r in sb.table("msl_history").select("symbol, score").eq("date", yesterday).execute().data}
+    now_map   = {r["symbol"]: float(r.get("final_score") or 0)
+                 for r in sb.table("master_shortlist").select("symbol, final_score").execute().data}
+    yest_map  = {r["symbol"]: float(r.get("final_score") or 0)
+                 for r in sb.table("msl_history").select("symbol, final_score").eq("date", yesterday).execute().data}
     jumps = sorted(
         [{"symbol": s, "delta": round(now_map[s] - yest_map[s], 1)}
          for s in now_map if s in yest_map and abs(now_map[s] - yest_map[s]) > MSL_JUMP_WARN],
@@ -317,13 +317,16 @@ def _already_logged_today(sb, today):
 
 def _send_error_alert(errors):
     try:
-        from alerts.send_alerts import send_telegram_message
+        try:
+            from alerts.send_alerts import send_telegram_message
+        except ImportError:
+            from alerts.send_alerts import send_alert as send_telegram_message
         lines = ["🔴 <b>Pipeline Quality ERRORs — Review Before Open</b>"]
         for e in errors:
             lines.append(f"❌ <b>{e['check']}</b>: {e['message']}")
         send_telegram_message("\n".join(lines))
     except Exception as ex:
-        logger.warning(f"Quality ERROR Telegram alert failed: {ex}")
+        logger.warning(f"Quality Telegram alert failed: {ex}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

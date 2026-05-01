@@ -90,16 +90,29 @@ SCORE_RECOVERING = 25
 def resolve_effective_date(sb, today: str) -> tuple[str, bool]:
     """
     Resolve the last actual trading day and ensure a row exists for it.
-    
-    Flow:
-    1. Ask yfinance for the last trading close date (ground truth)
-    2. Check if that date exists in market_regime
-    3. If not → upsert a minimal row so downstream can update it
-    4. Return (effective_date, is_today_trading)
+
+    Priority:
+    1. stock_data_daily MAX(date) — bhavcopy is ground truth (runs before this step)
+    2. yfinance ^NSEI — fallback if bhavcopy hasn't run yet
+    3. market_regime DB — last resort
     """
-    # ── Step 1: Get last trading date from yfinance ───────────────────────────
+    # ── Step 1: stock_data_daily — bhavcopy ground truth ─────────────────────
     last_trading = None
-    if YFINANCE_AVAILABLE:
+    try:
+        rows = (sb.table("stock_data_daily")
+                  .select("date")
+                  .lte("date", today)
+                  .order("date", desc=True)
+                  .limit(1)
+                  .execute().data)
+        if rows:
+            last_trading = rows[0]["date"]
+            logger.info(f"  stock_data_daily last trading date: {last_trading}")
+    except Exception as e:
+        logger.warning(f"  stock_data_daily date resolution failed: {e}")
+
+    # ── Step 2: yfinance fallback ─────────────────────────────────────────────
+    if not last_trading and YFINANCE_AVAILABLE:
         try:
             df = yf.Ticker("^NSEI").history(period="5d", interval="1d")
             if not df.empty:
@@ -108,7 +121,7 @@ def resolve_effective_date(sb, today: str) -> tuple[str, bool]:
         except Exception as e:
             logger.warning(f"  yfinance date resolution failed: {e}")
 
-    # ── Step 2: Fallback to DB if yfinance failed ─────────────────────────────
+    # ── Step 3: market_regime DB fallback ────────────────────────────────────
     if not last_trading:
         latest = (sb.table("market_regime")
                     .select("date")
@@ -117,7 +130,7 @@ def resolve_effective_date(sb, today: str) -> tuple[str, bool]:
                     .execute().data)
         if latest:
             last_trading = latest[0]["date"]
-            logger.info(f"  yfinance unavailable — DB fallback date: {last_trading}")
+            logger.info(f"  DB fallback date: {last_trading}")
         else:
             last_trading = today
             logger.warning(f"  No DB rows found — using today: {today}")
@@ -126,7 +139,7 @@ def resolve_effective_date(sb, today: str) -> tuple[str, bool]:
     if not is_trading:
         logger.info(f"  {today} is non-trading — effective date is {last_trading}")
 
-    # ── Step 3: Ensure row exists for last_trading ────────────────────────────
+    # ── Step 4: Ensure row exists for last_trading (unchanged) ───────────────
     existing = (sb.table("market_regime")
                   .select("date")
                   .eq("date", last_trading)

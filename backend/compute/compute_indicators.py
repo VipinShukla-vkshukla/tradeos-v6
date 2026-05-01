@@ -227,12 +227,15 @@ def fetch_bulk_history_yf(sb, today: str, symbols: list,
     need_yf_tail:    list = []   # has base history → tail 7-day refresh only
 
     for sym in symbols:
-        count = sym_counts.get(sym, 0)
+        count  = sym_counts.get(sym, 0)
+        latest = sym_latest.get(sym, "")
         if count < MIN_SESSIONS_REQUIRED:
             need_yf_full.append(sym)
         else:
             sufficient_syms.append(sym)
-            need_yf_tail.append(sym)   # always refresh tail regardless of staleness
+            if latest < today:          # cache is stale → tail refresh needed
+                need_yf_tail.append(sym)
+            # else: sym already has today's data → skip entirely
 
     logger.info(
         f"  price_history_yf: {len(sufficient_syms)} have base | "
@@ -269,8 +272,18 @@ def fetch_bulk_history_yf(sb, today: str, symbols: list,
         logger.info(
             f"  yfinance: {len(need_yf_full)} full + {len(need_yf_tail)} tail fetches..."
         )
-        end_date    = str((datetime.strptime(today, "%Y-%m-%d") + timedelta(days=1)).date())
-        tail_cutoff = str((datetime.strptime(today, "%Y-%m-%d") - timedelta(days=7)).date())
+        end_date = str((datetime.strptime(today, "%Y-%m-%d") + timedelta(days=1)).date())
+        # Dynamic tail cutoff — covers multi-day gaps from failures/holidays/weekends.
+        # Uses the oldest sym_latest among tail symbols as the anchor, plus 3-day buffer.
+        # Capped at 60 days to prevent runaway fetches on a cold restart.
+        if need_yf_tail:
+            oldest_cached = min(sym_latest.get(s, today) for s in need_yf_tail)
+            gap_days = (datetime.strptime(today, "%Y-%m-%d").date() -
+                        datetime.strptime(oldest_cached, "%Y-%m-%d").date()).days
+            tail_days = min(max(gap_days + 3, 7), 60)
+        else:
+            tail_days = 7
+        tail_cutoff = str((datetime.strptime(today, "%Y-%m-%d") - timedelta(days=tail_days)).date())
 
         def _download_batch(syms: list, start: str):
             if not syms:

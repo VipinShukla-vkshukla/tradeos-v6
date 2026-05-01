@@ -111,15 +111,26 @@ def main():
         sb.table("nifty_upcoming_events") \
           .delete().lt("event_date", today.isoformat()).execute()
 
+        # Deduplicate within the fetched batch — NSE API can return the same
+        # event multiple times, causing ON CONFLICT to affect the same row twice
+        seen_keys: set = set()
+        deduped: list  = []
+        for r in rows:
+            key = (r["symbol"], r["purpose"], r["event_date"])
+            if key not in seen_keys:
+                seen_keys.add(key)
+                deduped.append(r)
+        logger.info(f"  Deduped: {len(rows)} → {len(deduped)} events")
+
         # Upsert new events
-        for i in range(0, len(rows), 100):
-            batch = rows[i:i+100]
+        for i in range(0, len(deduped), 100):
+            batch = deduped[i:i+100]
             sb.table("nifty_upcoming_events").upsert(
                 batch, on_conflict="symbol,purpose,event_date"
             ).execute()
 
-        logger.success(f"NSE events saved: {len(rows)} events (next 90 days)")
-        return {"status": "ok", "events": len(rows)}
+        logger.success(f"NSE events saved: {len(deduped)} events (next 90 days, {len(rows)-len(deduped)} dupes dropped)")
+        return {"status": "ok", "events": len(deduped)}
     except Exception as e:
         logger.error(f"Failed to save events: {e}")
         return {"status": "error", "error": str(e)}

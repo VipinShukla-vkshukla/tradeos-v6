@@ -265,7 +265,7 @@ def _load_last_pcr(sb) -> dict | None:
         logger.warning(f"  Nifty PCR DB fallback failed: {e}")
 
     # ── NEW: neutral default when DB is also empty ──────────────────────────
-    default_pcr = cfg_float("pcr_neutral_default", 1.0)   # add to system_config
+    default_pcr = 1.0   # neutral default — cfg_float not imported in this module
     logger.warning(f"  Nifty PCR: no cached value found — using neutral default {default_pcr}")
     return {
         "indicator_name":  "NIFTY_PCR",

@@ -1,28 +1,47 @@
 """
-TradeOS v6 — Phase 2: Market Intelligence Engine
-Runs as step 11a — after generate_shortlist (step 10), before send_alerts (step 12).
+TradeOS v6 — Step 18: AI Market Intelligence Engine
+=====================================================
+Pipeline position: after step 17 (post_trade), before step 19 (ai_decision_engine).
 
-TWO-PASS EXECUTION:
-  Pass 1 (~45s):  Assembles full market context from Supabase + market_news scraped today.
-  Pass 2 (~90s):  Fetches stock-specific news for top 12 MSL candidates using 4 sources:
-                  NSE corporate announcements, NSE bulk/block deals per symbol,
-                  ET RSS filtered by company name, Google News RSS per company.
+PURPOSE:
+  Build a full market intelligence context from all enriched data sources,
+  call AI once, and produce:
+    1. Per-candidate sentiment_modifier written back to signal_log.score_adjusted
+       (step 19 reads the adjusted scores — this is the news-to-score feedback loop)
+    2. Market overlay JSON stored in ai_context.__MARKET_INTEL__
+       (consumed by step 19 as its market context)
+    3. 1-3 forward-looking lessons written to lessons table
 
-SINGLE AI CALL (web_search enabled via tools parameter):
-  Answers 5 structured questions and returns a single JSON response:
-    Q1: Market tone + position sizing guidance
-    Q2: Commodity/macro sector headwind/tailwind (per sector, with duration estimate)
-    Q3: Regulatory/policy news impact on specific held stocks or candidates
-    Q4: FII flow intelligence + 5-session outlook
-    Q5: Top 3 actionable candidates with thesis, entry trigger, invalidation
+WHAT CHANGED FROM market_intelligence_engine.py:
+  - Candidates sourced from signal_log (post-step-15 gate-filtered) NOT raw MSL
+    signal_log decides WHO qualifies; master_shortlist JOIN provides full picture
+  - master_shortlist JOIN added: entry zones, current_price, convergence_pts,
+    fundamental_quality, market_cap, st_cushion_pct, bb_width_pct
+  - fv_low/fv_high/dist_fv_pct removed (duplicates of entry_zone fields)
+  - macro_indicators added as source (CPI, WPI, IIP, rate decisions)
+  - Historical echoes: last 5 days of __MARKET_INTEL__ from ai_context
+    lets AI compare its prior calls to today — "VIX flagged 3d ago, now down 12%"
+  - All sector_strength ranks included (was top 5 only)
+  - global_cues.sector_impacts JSONB properly unpacked (was raw string before)
+  - Lesson confidence scores (times_worked/times_applied) included in prompt
+    so AI knows which rules are battle-tested vs hypothetical
+  - AI now outputs sentiment_modifier per candidate — written to signal_log
+  - __SHORTLIST__ from ai_context entirely removed (circular dependency)
+  - No signal_log writes for top-3 picks — that is step 19's job
+
+SELF-IMPROVEMENT MECHANISM:
+  - Reads lessons ordered by confidence (times_worked/times_applied)
+  - Writes new lessons with source=AI:market_intel
+  - Step 17 (post_trade) increments times_worked/times_applied on lesson usage
+  - Over time, lessons with low accuracy are auto-retired via is_active=False
+  - Historical echoes allow AI to validate its own prior market calls
 
 WRITES:
-  lessons     — 1-3 rows, source="AI:market_intel", forward-looking daily context
-  signal_log  — top 3 candidates, signal_type="MARKET_TOP_PICK"
-  ai_context  — 1 row, symbol="__MARKET_INTEL__", full JSON in conviction_reason
-
-Non-fatal throughout — any failure returns gracefully without stopping pipeline.
+  signal_log     — score_adjusted updated with sentiment_modifier per candidate
+  ai_context     — symbol=__MARKET_INTEL__, full analysis JSON
+  lessons        — 1-3 forward-looking rules (source=AI:market_intel)
 """
+
 import os
 import re
 import sys
@@ -47,321 +66,442 @@ HEADERS = {
     )
 }
 
-# Claude web_search endpoint — only used when ai_provider=claude (tool is Anthropic-specific)
-_CLAUDE_API_URL  = "https://api.anthropic.com/v1/messages"
-_CLAUDE_MODEL    = "claude-sonnet-4-20250514"
+_CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
+_CLAUDE_MODEL   = "claude-sonnet-4-20250514"
 
-def get_last_trading_day(sb) -> str:
-    """Returns most recent trading day — skips weekends and NSE holidays."""
-    from datetime import date, timedelta
+_SYSTEM_PROMPT = (
+    "You are a senior Indian equity portfolio manager specialising in NSE 500 swing trading. "
+    "You have 20 years of experience reading macro flows, sector rotations, and FII patterns. "
+    "Analyse the daily market intelligence packet and produce precise, actionable output. "
+    "Be specific about sectors, timeframes, and price levels. "
+    "When you see historical echoes of your prior calls, explicitly compare them to today's data. "
+    "Output ONLY valid JSON — no preamble, no markdown, no explanation outside the JSON."
+)
+
+# ── Helpers ────────────────────────────────────────────────────────────────
+
+def _last_trading_day(sb) -> str:
     try:
-        holiday_rows = sb.table("nse_holidays").select("date").execute().data
-        holidays = {r["date"][:10] for r in holiday_rows}
-    except Exception as e:
-        logger.warning(f"nse_holidays fetch failed, using weekday check only: {e}")
+        holidays = {r["date"][:10] for r in sb.table("nse_holidays").select("date").execute().data}
+    except Exception:
         holidays = set()
-
-    candidate = today_ist()
+    d = today_ist()
     for _ in range(10):
-        candidate -= timedelta(days=1)
-        if candidate.weekday() >= 5:   # 5=Sat, 6=Sun
-            continue
-        if str(candidate) in holidays:
-            continue
-        return str(candidate)
-
-    logger.warning("Could not determine last trading day — using yesterday")
+        d -= timedelta(days=1)
+        if d.weekday() < 5 and str(d) not in holidays:
+            return str(d)
     return str(today_ist() - timedelta(days=1))
 
 
-def get_shortlist_candidates(sb, last_trading_day):
-    import json
+def _lesson_confidence(lesson: dict) -> float:
+    applied = lesson.get("times_applied") or 0
+    worked  = lesson.get("times_worked")  or 0
+    if applied < 3:
+        return round(lesson.get("confidence") or 0.5, 2)  # not enough data, use stored
+    return round(worked / applied, 2)
 
-    try:
-        # STEP 1: Fetch AI shortlist
-        row = sb.table("ai_context") \
-            .select("ai_note") \
-            .eq("date", last_trading_day) \
-            .eq("symbol", "__SHORTLIST__") \
-            .limit(1) \
-            .execute().data
 
-        if row and row[0].get("ai_note"):
-            shortlist = json.loads(row[0]["ai_note"])
+# ── Pass 1: Context assembly ───────────────────────────────────────────────
 
-            symbols = [x["symbol"] for x in shortlist]
-            rank_map = {x["symbol"]: x for x in shortlist}
+def build_market_context(sb, today_str: str, last_td: str) -> dict:
+    """
+    Full market context. Candidates from signal_log (gate-filtered by step 15)
+    joined with master_shortlist for complete picture.
+    """
 
-            # STEP 2: Fetch MSL rows
-            msl_rows = sb.table("master_shortlist") \
-                .select("*") \
-                .eq("date", last_trading_day) \
-                .in_("symbol", symbols) \
-                .execute().data
+    # ── Market regime ──
+    regime = (sb.table("market_regime")
+                .select("date,regime,predicted_regime,regime_confidence,regime_score,"
+                        "nifty_price,nifty_50dma,nifty_200dma,nifty_weekly_rsi,"
+                        "india_vix,vix_5d_delta,avg_sector_breadth,"
+                        "nifty_1d_chg_pct,nifty_5d_chg_pct,nifty_20d_chg_pct,"
+                        "advance_decline_ratio,above_200dma_pct,nifty_pcr,"
+                        "banknifty_price,banknifty_weekly_rsi,macro_boost")
+                .order("date", desc=True).limit(1).execute().data)
+    regime = regime[0] if regime else {}
 
-            # STEP 3: Merge AI + MSL
-            enriched = []
-            for r in msl_rows:
-                sym = r.get("symbol")
-                ai = rank_map.get(sym, {})
+    # ── FII/DII ──
+    fii = (sb.table("fii_dii_flow")
+             .select("date,fii_net,dii_net,fii_net_5d,fii_net_10d,fii_net_20d,"
+                     "fii_flag,dii_net_5d,dii_net_20d,dii_flag")
+             .order("date", desc=True).limit(1).execute().data)
+    fii = fii[0] if fii else {}
 
-                r["ai_rank"] = ai.get("rank")
-                r["ai_action"] = ai.get("action")
-                r["ai_reason"] = ai.get("reason")
-                r["ai_risk"] = ai.get("risk")
+    # ── Global cues — sector_impacts JSONB unpacked ──
+    cues = (sb.table("global_cues").select("*")
+              .eq("session", "EVENING").order("date", desc=True).limit(1).execute().data)
+    if not cues:
+        cues = (sb.table("global_cues").select("*").order("date", desc=True).limit(1).execute().data)
+    cues = cues[0] if cues else {}
+    sector_impacts = cues.pop("sector_impacts", {}) or {}
 
-                enriched.append(r)
+    # ── Macro indicators — last 10 across all indicators ──
+    macro_rows = (sb.table("macro_indicators")
+                    .select("indicator_date,indicator_name,indicator_value,"
+                            "previous_value,change_bps,source")
+                    .order("indicator_date", desc=True).limit(10).execute().data)
 
-            # STEP 4: Sort by AI rank
-            enriched.sort(key=lambda x: x.get("ai_rank", 999))
+    # ── Sector strength — ALL sectors ranked ──
+    sectors = (sb.table("sector_strength")
+                 .select("sector,rank,top4_flag,sector_state,avg_rsi_daily,"
+                         "avg_rsi_weekly,avg_rsi_monthly,avg_ret_6m,"
+                         "breadth_sma50,fii_flow_sector")
+                 .eq("date", last_td).order("rank").execute().data)
+    if not sectors:
+        sectors = (sb.table("sector_strength")
+                     .select("sector,rank,top4_flag,sector_state,avg_rsi_daily,"
+                             "avg_rsi_weekly,avg_rsi_monthly,avg_ret_6m,"
+                             "breadth_sma50,fii_flow_sector")
+                     .order("date", desc=True).limit(25).execute().data)
 
-            print("✅ Using AI shortlist")
-            return enriched[:12]
+    # ── Industry strength ──
+    industries = (sb.table("industry_strength")
+                    .select("industry,rank,top5_flag,industry_state,"
+                            "avg_rsi_daily,avg_rsi_weekly,avg_ret_6m")
+                    .eq("date", last_td).order("rank").limit(15).execute().data)
 
-    except Exception as e:
-        print(f"⚠️ AI shortlist failed: {e}")
+    # ── Market news ──
+    news = (sb.table("market_news")
+              .select("headline,source,category,impact_type,parsed_symbols")
+              .eq("news_date", today_str).order("id", desc=True).limit(40).execute().data)
 
-    # FALLBACK (your existing logic)
-    print("⚠️ Falling back to master_shortlist")
+    # ── Gate-filtered candidates from signal_log ──
+    sig_rows = (sb.table("signal_log")
+                  .select("symbol,company_name,sector,industry,signal_type,signal_subtype,"
+                          "score,score_adjusted,momentum_state,momentum_phase,velocity_state,"
+                          "trend_maturity,lifecycle,struct_edge,entry_timing_type,"
+                          "holding_score,momentum_score,institutional_score,"
+                          "breakout_readiness,risk_score,"
+                          "bb_squeeze,bb_context,vwap_alignment,macd_direction,"
+                          "weekly_structure,psar_dual_confirmed,ha_signal,"
+                          "rsi_daily,rsi_weekly,vol_ratio,atr_pct,ret_6m,rs_vs_nifty,"
+                          "validity_score,expected_r_msl,days_to_trigger_est,"
+                          "fii_flag,sector_rank_at_entry,industry_rank,industry_top5,"
+                          "eap_action,in_rule_engine,in_scanner")
+                  .eq("date", last_td)
+                  .in_("signal_type", ["PRIME_SETUP","BREAKOUT_SETUP","REENTRY_SETUP",
+                                       "BUY_CANDIDATE","STAGED_ENTRY"])
+                  .order("score_adjusted", desc=True)
+                  .limit(30).execute().data)
 
-    fallback = sb.table("master_shortlist") \
-        .select("*") \
-        .eq("date", last_trading_day) \
-        .order("final_score", desc=True) \
-        .limit(12) \
-        .execute().data
+    # ── JOIN with master_shortlist for fields not in signal_log ──
+    if sig_rows:
+        symbols = [r["symbol"] for r in sig_rows]
+        msl_rows = (sb.table("master_shortlist")
+                      .select("symbol,current_price,entry_zone_low,entry_zone_high,"
+                              "dist_entry_pct,convergence_pts,engines_count,"
+                              "fundamental_quality,market_cap,st_cushion_pct,"
+                              "bb_width_pct,bb_position_pct,dist_vwap_20d_pct,"
+                              "ma_alignment_score,stoch_context,persistent_phase,"
+                              "reentry_mode,position_state,suggested")
+                      .eq("date", last_td)
+                      .in_("symbol", symbols)
+                      .execute().data)
+        msl_map = {r["symbol"]: r for r in msl_rows}
 
-    for r in fallback:
-        r["ai_rank"] = None
-        r["ai_action"] = None
-        r["ai_reason"] = None
-        r["ai_risk"] = None
+        candidates = []
+        for sig in sig_rows:
+            sym = sig["symbol"]
+            msl = msl_map.get(sym, {})
+            merged = {**sig}
+            # Add MSL fields not in signal_log
+            merged["current_price"]    = msl.get("current_price")
+            merged["entry_zone_low"]   = msl.get("entry_zone_low")
+            merged["entry_zone_high"]  = msl.get("entry_zone_high")
+            merged["dist_entry_pct"]   = msl.get("dist_entry_pct")
+            merged["convergence_pts"]  = msl.get("convergence_pts")
+            merged["engines_count"]    = msl.get("engines_count")
+            merged["fundamental_quality"] = msl.get("fundamental_quality")
+            merged["market_cap"]       = msl.get("market_cap")
+            merged["st_cushion_pct"]   = msl.get("st_cushion_pct")
+            merged["bb_width_pct"]     = msl.get("bb_width_pct")
+            merged["bb_position_pct"]  = msl.get("bb_position_pct")
+            merged["ma_alignment_score"] = msl.get("ma_alignment_score")
+            merged["stoch_context"]    = msl.get("stoch_context")
+            candidates.append(merged)
+    else:
+        candidates = []
 
-    return fallback
+    # ── Open positions ──
+    positions = (sb.table("open_positions")
+                   .select("symbol,sector,strategy,invested_value,pnl_pct,active_sl")
+                   .eq("status", "ACTIVE").execute().data)
+
+    # ── Lessons ordered by confidence (battle-tested rules first) ──
+    lesson_rows = (sb.table("lessons")
+                     .select("id,corrective_rule,scenario_type,impacted_sector,"
+                             "times_applied,times_worked,confidence,source,observation")
+                     .eq("is_active", True)
+                     .order("times_applied", desc=True).limit(10).execute().data)
+    # Compute live confidence and sort
+    for l in lesson_rows:
+        l["live_confidence"] = _lesson_confidence(l)
+    lesson_rows.sort(key=lambda x: x["live_confidence"], reverse=True)
+
+    # ── Events ──
+    cutoff = str(today_ist() + timedelta(days=14))
+    events = (sb.table("event_calendar")
+                .select("event_name,event_type,affected_sectors,event_bias,"
+                        "event_intensity,start_date")
+                .eq("is_active", True)
+                .lte("start_date", cutoff)
+                .order("start_date").execute().data)
+
+    # ── Historical echoes: last 5 days of __MARKET_INTEL__ ──
+    # Lets AI compare prior calls to today — self-improving context
+    echo_rows = (sb.table("ai_context")
+                   .select("date,ai_note,conviction,suggested_action,conviction_reason")
+                   .eq("symbol", "__MARKET_INTEL__")
+                   .order("date", desc=True).limit(5).execute().data)
+    echoes = []
+    for row in echo_rows:
+        try:
+            full = json.loads(row.get("conviction_reason") or "{}")
+            echoes.append({
+                "date":          row["date"],
+                "sizing":        row.get("suggested_action"),
+                "summary":       row.get("ai_note", "")[:200],
+                "fii_bias":      (full.get("fii_outlook") or {}).get("5session_bias"),
+                "top_sectors":   (full.get("fii_outlook") or {}).get("favoured_sectors", []),
+                "macro_drivers": [(m.get("driver") or "") for m in
+                                  (full.get("macro_sector_impacts") or [])[:2]],
+            })
+        except Exception:
+            echoes.append({"date": row["date"], "summary": row.get("ai_note", "")[:200]})
+
+    return {
+        "regime":         regime,
+        "fii":            fii,
+        "cues":           cues,
+        "sector_impacts": sector_impacts,
+        "macro":          macro_rows,
+        "sectors":        sectors,
+        "industries":     industries,
+        "news":           news,
+        "candidates":     candidates,
+        "positions":      positions,
+        "lessons":        lesson_rows,
+        "events":         events,
+        "echoes":         echoes,
+    }
 
 
 # ── Pass 2: Stock-specific news ────────────────────────────────────────────
 
-def _fetch_nse_announcements(symbol: str, session: requests.Session) -> list[str]:
-    """NSE corporate announcements for a specific symbol."""
-    headlines = []
+def _nse_announcements(symbol: str, session: requests.Session) -> list[str]:
+    out = []
     try:
         time.sleep(0.3)
-        resp = session.get(
+        r = session.get(
             f"https://www.nseindia.com/api/corp-info?symbol={symbol}&type=announcements",
             headers=HEADERS, timeout=6
         )
-        if resp.status_code == 200:
-            data = resp.json()
-            for item in (data.get("data") or [])[:4]:
+        if r.status_code == 200:
+            for item in (r.json().get("data") or [])[:3]:
                 desc = item.get("desc") or item.get("subject") or ""
                 if desc:
-                    headlines.append(f"[NSE] {desc[:200]}")
+                    out.append(f"[NSE] {desc[:180]}")
     except Exception:
         pass
-    return headlines
+    return out
 
 
-def _fetch_nse_bulk_deals_symbol(symbol: str, session: requests.Session) -> list[str]:
-    """NSE bulk deals for a specific symbol (institutional activity)."""
-    headlines = []
+def _nse_bulk_deals(symbol: str, session: requests.Session) -> list[str]:
+    out = []
     try:
-        resp = session.get(
+        r = session.get(
             f"https://www.nseindia.com/api/bulk-deals?symbol={symbol}",
             headers=HEADERS, timeout=6
         )
-        if resp.status_code == 200:
-            deals = resp.json().get("data") or []
-            for d in deals[:3]:
+        if r.status_code == 200:
+            for d in (r.json().get("data") or [])[:3]:
                 entity = d.get("clientName") or d.get("client") or ""
-                side   = d.get("buySell") or ""
-                qty    = d.get("qty") or 0
-                price  = d.get("price") or 0
                 if entity:
-                    headlines.append(
-                        f"[Bulk] {entity} {side}: {int(qty):,} @ ₹{float(price):.0f}"
+                    out.append(
+                        f"[Bulk] {entity} {d.get('buySell','')}: "
+                        f"{int(d.get('qty', 0)):,} @ ₹{float(d.get('price', 0)):.0f}"
                     )
     except Exception:
         pass
-    return headlines
+    return out
 
 
-def _fetch_google_news_symbol(company_name: str) -> list[str]:
-    """Google News RSS for a specific company (aggregates 200+ sources)."""
-    headlines = []
+def _google_news(company_name: str) -> list[str]:
+    out = []
     try:
-        query   = company_name.replace(" ", "+") + "+NSE+India"
-        url     = f"https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
-        resp    = requests.get(url, headers=HEADERS, timeout=8)
-        if resp.status_code == 200:
-            root = ET.fromstring(resp.text)
-            for item in root.iter("item"):
-                title = item.findtext("title") or ""
-                # Remove source suffix
-                title = re.sub(r"\s*-\s*[^-]+$", "", title).strip()
+        q = company_name.replace(" ", "+") + "+NSE+India"
+        r = requests.get(
+            f"https://news.google.com/rss/search?q={q}&hl=en-IN&gl=IN&ceid=IN:en",
+            headers=HEADERS, timeout=8
+        )
+        if r.status_code == 200:
+            for item in ET.fromstring(r.text).iter("item"):
+                title = re.sub(r"\s*-\s*[^-]+$", "", item.findtext("title") or "").strip()
                 if title and len(title) > 10:
-                    headlines.append(f"[News] {title[:200]}")
-                if len(headlines) >= 3:
+                    out.append(f"[News] {title[:180]}")
+                if len(out) >= 3:
                     break
     except Exception:
         pass
-    return headlines
+    return out
 
 
-def fetch_stock_intel(symbol: str, company_name: str, nse_session: requests.Session) -> dict:
-    """
-    Aggregate stock-specific intelligence from 3 sources.
-    Returns a dict with headlines list and institutional_buying flag.
-    """
-    headlines: list[str] = []
-    headlines.extend(_fetch_nse_announcements(symbol, nse_session))
-    headlines.extend(_fetch_nse_bulk_deals_symbol(symbol, nse_session))
-    headlines.extend(_fetch_google_news_symbol(company_name or symbol))
-
+def fetch_stock_intel(symbol: str, company_name: str, session: requests.Session) -> dict:
+    headlines = (
+        _nse_announcements(symbol, session)
+        + _nse_bulk_deals(symbol, session)
+        + _google_news(company_name or symbol)
+    )
     institutional_buying = any(
-        "[bulk]" in h.lower() and any(
-            k in h.lower() for k in ("buy", "b", "purchase")
-        )
+        "[bulk]" in h.lower() and any(k in h.lower() for k in ("buy", "b", "purchase"))
         for h in headlines
     )
     return {
-        "symbol":              symbol,
-        "company_name":        company_name,
-        "headlines":           headlines[:10],
+        "symbol": symbol,
+        "company_name": company_name,
+        "headlines": headlines[:8],
         "institutional_buying": institutional_buying,
-    }
-
-
-# ── Context assembly (Pass 1) ──────────────────────────────────────────────
-
-def build_market_context(sb, today_str: str, last_trading_day: str) -> dict:
-    """
-    Assemble full market context from all Supabase tables.
-    Returns a structured dict used in the AI prompt.
-    """
-
-    # Market regime
-    regime_rows = sb.table("market_regime").select(
-        "regime,india_vix,nifty_price,avg_sector_breadth,date"
-    ).order("date", desc=True).limit(1).execute().data
-    regime = regime_rows[0] if regime_rows else {}
-
-    # FII/DII flows
-    fii_rows = sb.table("fii_dii_flow").select(
-        "fii_net,fii_net_5d,fii_net_20d,fii_flag,dii_net,date"
-    ).order("date", desc=True).limit(1).execute().data
-    fii = fii_rows[0] if fii_rows else {}
-
-    # Global cues
-    cues_rows = sb.table("global_cues").select("*").order("date", desc=True).limit(1).execute().data
-    cues = cues_rows[0] if cues_rows else {}
-
-    # Sector strength — top 5 by rank
-    sector_rows = sb.table("sector_strength").select(
-        "sector,rank,sector_state,avg_rsi_daily"
-    ).eq("date", last_trading_day).order("rank").limit(5).execute().data
-    if not sector_rows:
-        sector_rows = sb.table("sector_strength").select(
-            "sector,rank,sector_state,avg_rsi_daily"
-        ).order("date", desc=True).limit(5).execute().data
-
-    # Industry strength — top 5
-    ind_rows = sb.table("industry_strength").select(
-        "industry,rank,industry_state,avg_rsi_daily"
-    ).eq("date", last_trading_day).order("rank").limit(5).execute().data
-
-    # Market news (scraped today by step 01_market_news)
-    news_rows = sb.table("market_news").select(
-        "headline,source,category,impact_type,parsed_symbols"
-    ).eq("news_date", today_str).order("id", desc=True).limit(30).execute().data
-
-    # MSL top 12 candidates by score
-    msl_rows = get_shortlist_candidates(sb, last_trading_day)
-
-    # Open positions (for Q3 regulatory check)
-    pos_rows = sb.table("open_positions").select(
-        "symbol,sector,pnl_pct,active_sl"
-    ).eq("status", "ACTIVE").execute().data
-
-    # Active lessons (top 5 by times_applied)
-    lesson_rows = sb.table("lessons").select(
-        "corrective_rule,scenario_type,times_applied"
-    ).eq("is_active", True).order("times_applied", desc=True).limit(5).execute().data
-
-    # Upcoming events (next 14 days)
-    cutoff = str(today_ist() + timedelta(days=14))
-    event_rows = sb.table("event_calendar").select(
-        "event_name,event_type,affected_sectors,event_bias,event_intensity"
-    ).eq("is_active", True).lte("start_date", cutoff).execute().data
-
-    return {
-        "regime":     regime,
-        "fii":        fii,
-        "cues":       cues,
-        "sectors":    sector_rows,
-        "industries": ind_rows,
-        "news":       news_rows,
-        "msl":        msl_rows,
-        "positions":  pos_rows,
-        "lessons":    lesson_rows,
-        "events":     event_rows,
     }
 
 
 # ── Prompt builder ─────────────────────────────────────────────────────────
 
 def build_prompt(ctx: dict, stock_intel: list[dict]) -> str:
-    """Build the full 5-question prompt with all context."""
     r   = ctx["regime"]
     fii = ctx["fii"]
     c   = ctx["cues"]
 
+    regime_label = r.get("predicted_regime") or r.get("regime", "UNKNOWN")
+    regime_conf  = float(r.get("regime_confidence") or 0)
+
     lines = [
-        f"TODAY: {today_ist()}",
-        f"MARKET REGIME: {r.get('regime','?')} | Nifty: {r.get('nifty_price','?')} | VIX: {r.get('india_vix','?')} | Breadth: {r.get('avg_sector_breadth','?')}%",
+        f"DATE: {today_ist()}",
         "",
-        "FII/DII FLOWS:",
-        f"  Today: FII ₹{fii.get('fii_net',0):+,.0f} Cr | DII ₹{fii.get('dii_net',0):+,.0f} Cr",
-        f"  5-day FII net: ₹{float(fii.get('fii_net_5d') or 0):+,.0f} Cr | 20-day: ₹{float(fii.get('fii_net_20d') or 0):+,.0f} Cr | Flag: {fii.get('fii_flag','?')}",
+        "═══ MARKET REGIME ═══",
+        f"  Regime: {regime_label} (confidence: {regime_conf:.0%}) | Score: {r.get('regime_score','?')}",
+        f"  Nifty: ₹{r.get('nifty_price','?')} | 1d: {float(r.get('nifty_1d_chg_pct',0) or 0):+.2f}% | "
+        f"5d: {float(r.get('nifty_5d_chg_pct',0) or 0):+.2f}% | 20d: {float(r.get('nifty_20d_chg_pct',0) or 0):+.2f}%",
+        f"  50DMA: {r.get('nifty_50dma','?')} | 200DMA: {r.get('nifty_200dma','?')} | "
+        f"Weekly RSI: {r.get('nifty_weekly_rsi','?')}",
+        f"  VIX: {r.get('india_vix','?')} (5d Δ: {r.get('vix_5d_delta','?')}) | "
+        f"A/D: {r.get('advance_decline_ratio','?')} | Above 200DMA: {r.get('above_200dma_pct','?')}%",
+        f"  Breadth: {r.get('avg_sector_breadth','?')}% | PCR: {r.get('nifty_pcr','?')} | "
+        f"Macro boost: {r.get('macro_boost','?')}",
+        f"  BankNifty: {r.get('banknifty_price','?')} | BankNifty RSI-W: {r.get('banknifty_weekly_rsi','?')}",
         "",
-        "GLOBAL MACRO:",
-        f"  Gift Nifty: {c.get('gift_nifty','?')} ({c.get('gift_nifty_chg_pct',0):+.2f}%) | Gap: {c.get('gap_signal','?')}",
-        f"  DOW: {c.get('us_dow_chg_pct',0):+.2f}% | S&P: {c.get('sp500_chg_pct',0):+.2f}% | NQ: {c.get('us_nasdaq_chg_pct',0):+.2f}%",
-        f"  Brent Crude: ${c.get('brent_crude','?')} ({c.get('brent_chg_pct',0):+.2f}%)",
-        f"  Gold: ${c.get('gold_price','?')} | USD/INR: ₹{c.get('usd_inr','?')} ({c.get('usd_inr_chg_pct',0):+.3f}%)",
+        "═══ FII / DII FLOWS ═══",
+        f"  Today  → FII: ₹{float(fii.get('fii_net',0) or 0):+,.0f}Cr | DII: ₹{float(fii.get('dii_net',0) or 0):+,.0f}Cr",
+        f"  5-day  → FII: ₹{float(fii.get('fii_net_5d',0) or 0):+,.0f}Cr | DII: ₹{float(fii.get('dii_net_5d',0) or 0):+,.0f}Cr",
+        f"  20-day → FII: ₹{float(fii.get('fii_net_20d',0) or 0):+,.0f}Cr | DII: ₹{float(fii.get('dii_net_20d',0) or 0):+,.0f}Cr",
+        f"  Flags  → FII: {fii.get('fii_flag','?')} | DII: {fii.get('dii_flag','?')}",
         "",
-        "TOP SECTORS (by rank):",
+        "═══ GLOBAL MACRO ═══",
+        f"  Gift Nifty: {c.get('gift_nifty','?')} ({float(c.get('gift_nifty_chg_pct',0) or 0):+.2f}%) | Gap: {c.get('gap_signal','?')}",
+        f"  DOW: {float(c.get('us_dow_chg_pct',0) or 0):+.2f}% | S&P: {float(c.get('sp500_chg_pct',0) or 0):+.2f}% | NQ: {float(c.get('us_nasdaq_chg_pct',0) or 0):+.2f}%",
+        f"  Brent: ${c.get('brent_crude','?')} ({float(c.get('brent_chg_pct',0) or 0):+.2f}%) | "
+        f"Gold: ${c.get('gold_price','?')} | USD/INR: ₹{c.get('usd_inr','?')} ({float(c.get('usd_inr_chg_pct',0) or 0):+.3f}%)",
     ]
+
+    if ctx["sector_impacts"]:
+        lines.append(f"  Sector impacts (from global): {json.dumps(ctx['sector_impacts'])[:400]}")
+
+    if ctx["macro"]:
+        lines += ["", "═══ MACRO INDICATORS (recent) ═══"]
+        for m in ctx["macro"]:
+            delta = f"Δ{float(m.get('change_bps',0) or 0):+.0f}bps" if m.get("change_bps") else ""
+            lines.append(
+                f"  {m.get('indicator_date','?')} | {m.get('indicator_name','?')}: "
+                f"{m.get('indicator_value','?')} (prev: {m.get('previous_value','?')}) {delta}"
+            )
+
+    lines += ["", "═══ SECTOR RANKINGS (full) ═══"]
     for s in ctx["sectors"]:
-        lines.append(f"  #{s.get('rank','?')} {s.get('sector','?')} — {s.get('sector_state','?')} | RSI: {s.get('avg_rsi_daily','?')}")
-
-    lines.append("\nREGULATORY & POLICY NEWS (last 24h):")
-    for n in ctx["news"][:15]:
-        lines.append(f"  [{n.get('source','?')}] {n.get('headline','')[:120]}")
-
-    lines.append("\nUPCOMING EVENTS (next 14 days):")
-    for e in ctx["events"][:8]:
-        lines.append(f"  {e.get('event_name','?')} | {e.get('event_type','?')} | Sectors: {e.get('affected_sectors','?')} | Bias: {e.get('event_bias','?')}")
-
-    lines.append("\nOPEN POSITIONS (check for regulatory alerts):")
-    for p in ctx["positions"]:
-        lines.append(f"  {p.get('symbol','?')} | {p.get('sector','?')} | P&L: {float(p.get('pnl_pct') or 0):+.1f}%")
-
-    lines.append("\nACTIVE LESSONS (top 5 by use):")
-    for l in ctx["lessons"]:
-        lines.append(f"  [{l.get('scenario_type','?')}] {l.get('corrective_rule','')[:150]}")
-
-    lines.append("\nTOP 12 MSL CANDIDATES (by score):")
-    for m in ctx["msl"]:
+        top      = "★" if s.get("top4_flag") else " "
+        fii_flow = f"| FII:₹{float(s.get('fii_flow_sector',0) or 0):+,.0f}Cr" if s.get("fii_flow_sector") else ""
         lines.append(
-            f"  {m.get('symbol','?')} | {m.get('sector','?')} | Score:{m.get('final_score',0):.0f} | "
-            f"Lifecycle:{m.get('lifecycle','?')} | Validity:{m.get('validity_score','?')} | "
-            f"ExpR:{m.get('expected_r','?')} | Trend:{m.get('trend_maturity','?')} | "
-            f"Zone:₹{m.get('entry_zone_low','?')}-{m.get('entry_zone_high','?')} CMP:₹{m.get('current_price','?')}"
+            f"  {top} #{str(s.get('rank','?')):>2} {s.get('sector','?'):<32} "
+            f"{s.get('sector_state','?'):<12} RSI-D:{s.get('avg_rsi_daily','?')} "
+            f"RSI-W:{s.get('avg_rsi_weekly','?')} Ret6m:{s.get('avg_ret_6m','?')}% "
+            f"Brdth:{s.get('breadth_sma50','?')}% {fii_flow}"
+        )
+
+    lines += ["", "═══ TOP INDUSTRIES ═══"]
+    for ind in ctx["industries"][:12]:
+        top = "★" if ind.get("top5_flag") else " "
+        lines.append(
+            f"  {top} #{str(ind.get('rank','?')):>2} {ind.get('industry','?'):<35} "
+            f"{ind.get('industry_state','?'):<10} RSI-D:{ind.get('avg_rsi_daily','?')} "
+            f"Ret6m:{ind.get('avg_ret_6m','?')}%"
+        )
+
+    lines += ["", "═══ MARKET NEWS (last 24h) ═══"]
+    for n in ctx["news"][:25]:
+        lines.append(f"  [{n.get('source','?')}] {n.get('headline','')[:130]}")
+
+    lines += ["", "═══ UPCOMING EVENTS (next 14 days) ═══"]
+    for e in ctx["events"][:12]:
+        lines.append(
+            f"  {e.get('start_date','?')} | {e.get('event_type','?')} — "
+            f"{e.get('event_name','?')} | Sectors: {e.get('affected_sectors','?')} | "
+            f"Bias: {e.get('event_bias','?')} | Intensity: {e.get('event_intensity','?')}"
+        )
+
+    lines += ["", "═══ OPEN POSITIONS ═══"]
+    for p in ctx["positions"]:
+        lines.append(
+            f"  {p.get('symbol','?')} | {p.get('sector','?')} | "
+            f"P&L: {float(p.get('pnl_pct') or 0):+.1f}% | SL: {p.get('active_sl','?')}"
+        )
+    if not ctx["positions"]:
+        lines.append("  None")
+
+    lines += ["", "═══ ACTIVE LESSONS (by confidence: battle-tested first) ═══"]
+    for l in ctx["lessons"]:
+        conf = l.get("live_confidence", 0)
+        applied = l.get("times_applied") or 0
+        source  = l.get("source", "MANUAL")
+        lines.append(
+            f"  [{l.get('scenario_type','?')}] conf:{conf:.0%} ({applied} uses, src:{source}) "
+            f"| {l.get('corrective_rule','')[:160]}"
+        )
+
+    if ctx["echoes"]:
+        lines += ["", "═══ HISTORICAL ECHOES (your prior market calls — compare to today) ═══"]
+        for e in ctx["echoes"]:
+            lines.append(
+                f"  {e.get('date','?')} | Sizing:{e.get('sizing','?')} | "
+                f"FII bias:{e.get('fii_bias','?')} | {e.get('summary','')[:150]}"
+            )
+        lines.append(
+            "  → Compare above to today. If conditions have improved, upgrade sizing. "
+            "If deteriorated, downgrade. Reference specific metrics."
+        )
+
+    lines += [
+        "",
+        "═══ VALIDATED SIGNAL CANDIDATES (post step-15 gate filtering) ═══",
+        "  These stocks passed 11 technical gates: ATR-normalised zone, R:R viability,",
+        "  structural breakdown check, risk_score, liquidity, lifecycle, momentum gates.",
+        "  Signal quality: PRIME_SETUP > BREAKOUT_SETUP > REENTRY_SETUP > BUY_CANDIDATE",
+        "  Your task: assess each against TODAY's macro/FII/news context. Output sentiment_modifier.",
+    ]
+    for m in ctx["candidates"]:
+        lines.append(
+            f"  {m.get('symbol','?')} | {m.get('sector','?')} | {m.get('signal_type','?')} | "
+            f"Score:{float(m.get('score_adjusted',0) or 0):.1f} | "
+            f"CMP:₹{m.get('current_price','?')} Zone:₹{m.get('entry_zone_low','?')}-{m.get('entry_zone_high','?')} "
+            f"Dist:{m.get('dist_entry_pct','?')}% | "
+            f"Lifecycle:{m.get('lifecycle','?')} ExpR:{m.get('expected_r_msl','?')}x | "
+            f"Validity:{m.get('validity_score','?')} | "
+            f"Engines:{m.get('engines_count','?')} Conv:{m.get('convergence_pts','?')} | "
+            f"SectorRk:{m.get('sector_rank_at_entry','?')} IndTop5:{m.get('industry_top5','?')} | "
+            f"FIIFlag:{m.get('fii_flag','?')} | ST:{m.get('st_cushion_pct','?')}% | "
+            f"Trigger:{m.get('days_to_trigger_est','?')}d | "
+            f"Quality:{m.get('fundamental_quality','?')} MCap:₹{m.get('market_cap','?')}Cr"
         )
 
     if stock_intel:
-        lines.append("\nSTOCK-SPECIFIC NEWS (top 12 candidates):")
+        lines += ["", "═══ STOCK-SPECIFIC NEWS ═══"]
         for si in stock_intel:
             if si["headlines"]:
                 lines.append(f"  {si['symbol']} ({si.get('company_name','')}):")
@@ -370,56 +510,57 @@ def build_prompt(ctx: dict, stock_intel: list[dict]) -> str:
                 if si["institutional_buying"]:
                     lines.append(f"    ★ INSTITUTIONAL BUYING confirmed via bulk deals")
 
-    lines.append("""
-Answer these 5 questions. Output ONLY valid JSON — no preamble, no markdown:
+    lines.append(r"""
+OUTPUT INSTRUCTIONS:
+Return ONLY this exact JSON structure. All fields are required.
+sentiment_modifier: -0.2 to +0.2 (positive = good news boost, negative = bad news drag, 0.0 = neutral)
+Return a sentiment_modifier for EVERY symbol in the candidates list above.
+
 {
   "market_tone": {
-    "summary": "2 sentences max — dominant market dynamic and what it means for new entries",
-    "setup_types_favoured": ["e.g. REENTRY_SETUP in defensive sectors"],
-    "setup_types_to_avoid": ["e.g. PRE_BREAKOUT in commodity if crude falling"],
+    "summary": "2 sentences — dominant market dynamic and what it means for new entries today",
+    "echo_comparison": "Compare to your last call above — what changed and what it implies for sizing",
+    "setup_types_favoured": ["specific signal subtypes that suit today's conditions"],
+    "setup_types_to_avoid": ["signal subtypes that are wrong for today's conditions"],
     "position_sizing_guidance": "FULL | REDUCED_25PCT | HALF | MINIMAL"
   },
   "macro_sector_impacts": [
     {
-      "driver": "e.g. Brent crude +2.3%",
-      "tailwind_sectors": ["exact sector names from NSE 500"],
-      "headwind_sectors": ["exact sector names from NSE 500"],
+      "driver": "specific macro driver e.g. Brent crude +2.3%",
+      "tailwind_sectors": ["exact NSE sector names"],
+      "headwind_sectors": ["exact NSE sector names"],
       "magnitude": "HIGH | MEDIUM | LOW",
       "sessions": 3
     }
   ],
   "regulatory_alerts": [
     {
-      "news_item": "headline",
+      "news_item": "headline summary",
       "affected_symbols": ["NSE_SYMBOL"],
-      "affected_sectors": ["sector"],
+      "affected_sectors": ["sector name"],
       "action": "WATCH | EXIT | AVOID_NEW_ENTRY | NO_ACTION",
       "urgency": "IMMEDIATE | THIS_WEEK | LOW"
     }
   ],
   "fii_outlook": {
     "5session_bias": "BUYING | SELLING | NEUTRAL",
-    "favoured_sectors": ["sector names"],
-    "exit_sectors": ["sector names"],
+    "favoured_sectors": ["sector names FII money is rotating into"],
+    "exit_sectors": ["sector names FII is actively selling"],
     "confidence": "HIGH | MEDIUM | LOW",
     "key_signal_to_watch": "one specific data point that will confirm or deny this view"
   },
-  "top_3_candidates": [
+  "candidate_sentiment": [
     {
-      "rank": 1,
       "symbol": "NSE_SYMBOL",
-      "thesis": "why this stock in these exact conditions — 2 sentences",
-      "entry_trigger": "specific price level or volume event",
-      "session_window": "enter within N sessions if trigger fires",
-      "invalidation": "one condition that kills the setup",
-      "macro_tailwind": "which macro driver from today supports this",
-      "risk_flag": "main risk"
+      "sentiment_modifier": 0.05,
+      "sentiment_reason": "one line — what drove this adjustment",
+      "news_flag": "POSITIVE | NEGATIVE | NEUTRAL | INSTITUTIONAL_BUY | RESULTS_RISK"
     }
   ],
   "lessons_generated": [
     {
-      "scenario_type": "e.g. Market/FII-Caution or Commodity/Gold-Up",
-      "observation": "pattern visible in today's data",
+      "scenario_type": "e.g. Market/FII-Caution or Commodity/Crude-Up",
+      "observation": "specific pattern visible in today's data",
       "corrective_rule": "Rule: actionable instruction starting with Rule:",
       "applies_to_sectors": ["sector1", "sector2"]
     }
@@ -431,135 +572,137 @@ Answer these 5 questions. Output ONLY valid JSON — no preamble, no markdown:
 
 # ── AI call ────────────────────────────────────────────────────────────────
 
-_SYSTEM_PROMPT = (
-    "You are a senior Indian equity portfolio manager specialising in NSE 500 swing trading. "
-    "Analyse the daily market intelligence packet and produce precise, actionable output. "
-    "Be specific about sectors and timeframes. Output ONLY valid JSON — no preamble, no markdown."
-)
-
-
-def _call_claude_with_websearch(prompt: str) -> str | None:
-    """
-    Claude-specific path: uses web_search_20250305 tool for real-time market data.
-    Called only when ai_provider=claude in system_config.
-    """
+def _call_claude_websearch(prompt: str) -> str | None:
     api_key = AI_KEYS.get("claude", "")
     if not api_key:
-        logger.warning("ANTHROPIC_API_KEY not set — cannot use Claude web_search path")
         return None
-
-    payload = {
-        "model":      _CLAUDE_MODEL,
-        "max_tokens": 2000,
-        "system":     _SYSTEM_PROMPT,
-        "tools":      [{"type": "web_search_20250305", "name": "web_search"}],
-        "messages":   [{"role": "user", "content": prompt}],
-    }
     try:
         resp = requests.post(
             _CLAUDE_API_URL,
-            headers={
-                "Content-Type":    "application/json",
-                "x-api-key":       api_key,
-                "anthropic-version": "2023-06-01",
+            headers={"Content-Type": "application/json", "x-api-key": api_key,
+                     "anthropic-version": "2023-06-01"},
+            json={
+                "model": _CLAUDE_MODEL, "max_tokens": 3000,
+                "system": _SYSTEM_PROMPT,
+                "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+                "messages": [{"role": "user", "content": prompt}],
             },
-            json=payload,
             timeout=90,
         )
         if resp.status_code != 200:
-            logger.warning(f"Claude web_search call failed: HTTP {resp.status_code} — {resp.text[:200]}")
+            logger.warning(f"Claude web_search HTTP {resp.status_code}: {resp.text[:200]}")
             return None
-        content = resp.json().get("content", [])
-        parts   = [b["text"] for b in content if b.get("type") == "text"]
+        parts = [b["text"] for b in resp.json().get("content", []) if b.get("type") == "text"]
         return "\n".join(parts) or None
     except Exception as e:
-        logger.warning(f"Claude web_search call exception: {e}")
+        logger.warning(f"Claude web_search exception: {e}")
         return None
 
 
 def call_ai(prompt: str) -> dict | None:
-    """
-    Single AI call routed via system_config.ai_provider — consistent with ai_router.py.
-    - Claude:  uses web_search tool (real-time breaking news augmentation)
-    - All other providers (deepseek/openai/gemini/grok/copilot):
-      use ai_router.raw_completion() — static reasoning, still fully valid for market analysis.
-    Returns parsed JSON dict or None on failure.
-    """
-    from ai.ai_router import is_ai_available, raw_completion
+    try:
+        from ai.ai_router import is_ai_available, raw_completion
+    except ImportError:
+        from ai_router import is_ai_available, raw_completion
 
     if not is_ai_available():
-        logger.warning("No AI provider configured/available — market_intelligence_engine skipped")
+        logger.warning("No AI provider configured — market_intel skipped")
         return None
 
     provider = cfg("ai_provider", "disabled").lower()
-    full_prompt = f"{_SYSTEM_PROMPT}\n\n{prompt}"
-
-    logger.info(f"Calling market_intelligence AI via provider: {provider}")
+    full_text = None
 
     if provider == "claude":
-        # Claude gets live web_search augmentation
-        full_text = _call_claude_with_websearch(prompt)
+        full_text = _call_claude_websearch(prompt)
         if not full_text:
-            # Soft fallback: retry without web_search via raw_completion
-            logger.warning("Claude web_search path failed — retrying via raw_completion")
             try:
-                full_text = raw_completion(full_prompt, max_tokens=2000)
+                full_text = raw_completion(f"{_SYSTEM_PROMPT}\n\n{prompt}", max_tokens=3000)
             except Exception as e:
-                logger.warning(f"raw_completion fallback also failed: {e}")
+                logger.warning(f"Claude fallback also failed: {e}")
                 return None
     else:
-        # deepseek / openai / gemini / grok / copilot
         try:
-            full_text = raw_completion(full_prompt, max_tokens=2000)
+            full_text = raw_completion(f"{_SYSTEM_PROMPT}\n\n{prompt}", max_tokens=3000)
         except Exception as e:
-            logger.warning(f"raw_completion failed for provider={provider}: {e}")
+            logger.warning(f"AI call failed for provider={provider}: {e}")
             return None
 
     if not full_text:
-        logger.warning("AI returned empty response")
         return None
 
     try:
-        json_match = re.search(r"\{[\s\S]+\}", full_text)
-        if not json_match:
-            logger.warning("AI response contained no JSON block")
-            return None
-        return json.loads(json_match.group())
-    except json.JSONDecodeError as e:
-        logger.warning(f"AI JSON parse failed: {e}")
+        m = re.search(r"\{[\s\S]+\}", full_text)
+        return json.loads(m.group()) if m else None
+    except Exception as e:
+        logger.warning(f"JSON parse failed: {e}")
         return None
 
 
-# ── Write results ──────────────────────────────────────────────────────────
+# ── Writes ─────────────────────────────────────────────────────────────────
 
-def write_lessons(sb, result: dict, today_str: str) -> int:
-    """Write 1-3 forward-looking market context lessons."""
-    lessons_raw = result.get("lessons_generated") or []
-    if not lessons_raw:
+def apply_sentiment_modifiers(sb, result: dict, candidates: list[dict], date_str: str) -> int:
+    """
+    Write sentiment_modifier back to signal_log.score_adjusted.
+    This is the news-to-score feedback loop: step 19 reads the adjusted scores.
+    Clamp final score_adjusted to 0-100.
+    """
+    sentiment_list = result.get("candidate_sentiment") or []
+    if not sentiment_list:
         return 0
+
+    sentiment_map = {s["symbol"]: s for s in sentiment_list}
     written = 0
-    for l in lessons_raw[:3]:
+
+    for cand in candidates:
+        sym = cand["symbol"]
+        s   = sentiment_map.get(sym)
+        if not s:
+            continue
+        modifier = float(s.get("sentiment_modifier") or 0)
+        if modifier == 0.0:
+            continue  # no change needed
+
+        current_score = float(cand.get("score_adjusted") or cand.get("score") or 0)
+        # modifier is -0.2 to +0.2 — apply as percentage adjustment
+        new_score = round(min(max(current_score * (1 + modifier), 0), 100), 2)
+
+        try:
+            sb.table("signal_log").update({
+                "score_adjusted": new_score,
+                "ai_note": f"[sentiment:{modifier:+.2f}] {s.get('sentiment_reason','')[:200]}",
+            }).eq("date", date_str).eq("symbol", sym).execute()
+            written += 1
+        except Exception as e:
+            logger.warning(f"sentiment_modifier write failed for {sym}: {e}")
+
+    logger.info(f"sentiment_modifier: {written} signal_log scores updated")
+    return written
+
+
+def write_lessons(sb, result: dict, date_str: str) -> int:
+    written = 0
+    for l in (result.get("lessons_generated") or [])[:3]:
         rule = l.get("corrective_rule") or ""
-        if not rule:
+        if not rule or not rule.strip():
             continue
         try:
             sb.table("lessons").insert({
-                "date":             today_str,
-                "scenario_type":    l.get("scenario_type", "Market/Context"),
-                "trigger_event":    "daily_market_intel",
+                "date":              date_str,
+                "scenario_type":     l.get("scenario_type", "Market/Context"),
+                "trigger_event":     "daily_market_intel",
                 "linked_event_type": "MARKET_INTEL",
-                "impacted_sector":  ", ".join(l.get("applies_to_sectors") or [])[:200],
-                "scenario_context": l.get("observation", ""),
-                "what_expected":    "Market intelligence forward-looking signal",
-                "what_happened":    l.get("observation", ""),
-                "what_failed":      "N/A — proactive lesson",
-                "root_cause":       l.get("observation", ""),
-                "corrective_rule":  rule,
-                "source":           "AI:market_intel",
-                "is_active":        True,
-                "times_applied":    0,
-                "times_worked":     0,
-                "confidence":       0.8,
+                "impacted_sector":   ", ".join(l.get("applies_to_sectors") or [])[:200],
+                "scenario_context":  l.get("observation", ""),
+                "what_expected":     "Forward-looking market pattern",
+                "what_happened":     l.get("observation", ""),
+                "what_failed":       "N/A — proactive lesson",
+                "root_cause":        l.get("observation", ""),
+                "corrective_rule":   rule,
+                "source":            "AI:market_intel",
+                "is_active":         True,
+                "times_applied":     0,
+                "times_worked":      0,
+                "confidence":        0.5,  # starts neutral, earns confidence via post_trade
             }).execute()
             written += 1
         except Exception as e:
@@ -567,208 +710,126 @@ def write_lessons(sb, result: dict, today_str: str) -> int:
     return written
 
 
-def write_top_candidates(sb, result: dict, today_str: str, last_trading_day: str) -> int:
-    """Write top 3 candidates as MARKET_TOP_PICK signals to signal_log."""
-    candidates = result.get("top_3_candidates") or []
-    if not candidates:
-        return 0
-    written = 0
-    for c in candidates[:3]:
-        symbol = c.get("symbol") or ""
-        if not symbol:
-            continue
-        try:
-            sb.table("signal_log").upsert({
-                "date":           last_trading_day,
-                "symbol":         symbol,
-                "signal_type":    "MARKET_TOP_PICK",
-                "signal_subtype": "MARKET_INTEL",
-                "position_state": "BUY_CANDIDATE",
-                "score":          90 - ((c.get("rank", 1) - 1) * 5),   # 90/85/80
-                "score_adjusted": 90 - ((c.get("rank", 1) - 1) * 5),
-                "ai_conviction":  "HIGH",
-                "ai_conviction_reason": c.get("thesis", ""),
-                "ai_risks":       [c.get("risk_flag", "")],
-                "ai_catalyst":    c.get("macro_tailwind", ""),
-                "ai_suggested_action": "ENTER",
-                "ai_note": (
-                    f"Entry trigger: {c.get('entry_trigger','')} | "
-                    f"Window: {c.get('session_window','')} | "
-                    f"Invalidation: {c.get('invalidation','')} |"
-                    f"Risk: {c.get('risk_flag','')}"
-                ),
-                "ai_provider": cfg("ai_provider", "unknown"),
-                "regime":         result.get("market_tone", {}).get("summary", "")[:50],
-                "sheet_conflict": False,
-            }, on_conflict="date,symbol").execute()
-            written += 1
-        except Exception as e:
-            logger.warning(f"signal_log MARKET_TOP_PICK write failed for {symbol}: {e}")
-    return written
-
-
-def write_ai_context(sb, result: dict, today_str: str):
-    """Write full market intel JSON to ai_context as __MARKET_INTEL__ row."""
+def write_market_intel(sb, result: dict, date_str: str, provider: str):
+    tone = result.get("market_tone") or {}
     try:
-        tone = result.get("market_tone") or {}
-        _provider = cfg("ai_provider", "disabled").lower()
         sb.table("ai_context").upsert({
-            "date":              today_str,
+            "date":              date_str,
             "symbol":            "__MARKET_INTEL__",
             "conviction":        tone.get("position_sizing_guidance", "REDUCED_25PCT"),
             "conviction_reason": json.dumps(result, ensure_ascii=False)[:8000],
-            "risks":             [i.get("driver", "") for i in (result.get("macro_sector_impacts") or [])[:3]],
+            "risks":             [i.get("driver", "") for i in
+                                  (result.get("macro_sector_impacts") or [])[:3]],
             "catalyst":          "; ".join(tone.get("setup_types_favoured") or []),
             "suggested_action":  tone.get("position_sizing_guidance", "REDUCED_25PCT"),
-            "provider":          cfg("ai_provider", "unknown"),
-            "ai_note": tone.get("summary", "")[:500],
+            "provider":          provider,
+            "ai_note":           (tone.get("summary", "") + " | " +
+                                  tone.get("echo_comparison", ""))[:500],
             "fallback_used":     False,
             "confidence":        0.85,
         }, on_conflict="date,symbol").execute()
+        logger.info("ai_context __MARKET_INTEL__ written")
     except Exception as e:
-        logger.warning(f"ai_context __MARKET_INTEL__ write failed: {e}")
-
-    # ── AG7 FIX: track market_intelligence_engine cost in ai_model_performance ──
-    # Previously: this daily Anthropic API call (with web_search) was invisible to
-    # evolution_tracker's provider performance analysis — could be spending ₹50/day
-    # without knowing. Now writes a proxy row so evolution can track quality over time.
-    # accuracy proxy: 1.0 if we got 3 top candidates (AI delivered useful output),
-    #                 0.5 if fewer (partial result), 0.0 if empty (AI call failed).
-    try:
-        candidates = result.get("top_3_candidates") or []
-        accuracy_proxy = 1.0 if len(candidates) >= 3 else (0.5 if candidates else 0.0)
-        # Resolve actual provider + model for accurate audit trail
-        _provider = cfg("ai_provider", "disabled").lower()
-        _model_map = {
-            "claude":   "claude-sonnet-4-20250514",
-            "openai":   "gpt-4o-mini",
-            "deepseek": "deepseek-chat",
-            "gemini":   "gemini-2.0-flash",
-            "grok":     "grok-2-latest",
-            "copilot":  "gpt-4o",
-        }
-        _model = _model_map.get(_provider, _provider)
-        sb.table("ai_model_performance").insert({
-            "date":           today_str,
-            "provider":       f"market_intel:{_provider}",   # distinguishable from ai_enrich rows
-            "model":          _model,
-            "calls_today":    1,
-            "cost_today":     0.0,      # web_search billing varies — placeholder for now
-            "accuracy":       accuracy_proxy,
-            "avg_confidence": 0.85,
-            "fallback_used":  False,
-        }).execute()
-    except Exception as e:
-        logger.debug(f"ai_model_performance write skipped (non-fatal): {e}")
+        logger.warning(f"ai_context write failed: {e}")
 
 
 # ── Main ───────────────────────────────────────────────────────────────────
 
 def main():
     if is_kill_switch_active():
-        logger.warning("Kill switch active — market_intelligence_engine skipped")
+        logger.warning("Kill switch — step 18 skipped")
         return {"status": "skipped", "reason": "kill_switch"}
 
-    logger.info(f"Market Intelligence Engine starting {'[DRY RUN]' if DRY_RUN else ''}")
+    logger.info("=" * 60)
+    logger.info(f"STEP 18: AI Market Intelligence {'[DRY RUN]' if DRY_RUN else ''}")
+    logger.info("=" * 60)
+
     sb        = get_supabase()
     today_str = str(today_ist())
-    last_trading_day = get_last_trading_day(sb)
-    logger.info(f"Today: {today_str} | Last trading day: {last_trading_day}")
+    last_td   = _last_trading_day(sb)
+    logger.info(f"Today: {today_str} | Last trading day: {last_td}")
 
-    # ── Pass 1: Assemble Supabase context ────────────────────────────────
-    logger.info("Pass 1: assembling market context from Supabase...")
-    ctx = build_market_context(sb, today_str, last_trading_day)
+    # Pass 1
+    logger.info("Pass 1: building market context...")
+    ctx = build_market_context(sb, today_str, last_td)
     logger.info(
-        f"  Context: {len(ctx['msl'])} MSL candidates | "
-        f"{len(ctx['news'])} news items | {len(ctx['sectors'])} sectors"
+        f"  {len(ctx['candidates'])} signal candidates | {len(ctx['news'])} news | "
+        f"{len(ctx['sectors'])} sectors | {len(ctx['macro'])} macro indicators | "
+        f"{len(ctx['echoes'])} historical echoes"
     )
 
-    # ── Pass 2: Stock-specific news for top 12 candidates ────────────────
+    # Pass 2
     stock_intel: list[dict] = []
-    if ctx["msl"] and not DRY_RUN:
-        logger.info(f"Pass 2: fetching stock-specific news for {len(ctx['msl'])} candidates...")
-        nse_session = requests.Session()
+    if ctx["candidates"] and not DRY_RUN:
+        logger.info(f"Pass 2: fetching news for {len(ctx['candidates'])} candidates...")
+        sess = requests.Session()
         try:
-            # Warm NSE session
-            nse_session.get("https://www.nseindia.com", headers=HEADERS, timeout=8)
+            sess.get("https://www.nseindia.com", headers=HEADERS, timeout=8)
             time.sleep(1)
         except Exception:
-            pass  # proceed without NSE session — Google News still works
-
-        for msl_row in ctx["msl"]:
-            sym   = msl_row.get("symbol") or ""
-            cname = msl_row.get("company_name") or sym
+            pass
+        for row in ctx["candidates"]:
+            sym = row.get("symbol") or ""
             if not sym:
                 continue
             try:
-                si = fetch_stock_intel(sym, cname, nse_session)
+                si = fetch_stock_intel(sym, row.get("company_name") or sym, sess)
                 stock_intel.append(si)
-                logger.debug(f"  {sym}: {len(si['headlines'])} headlines")
             except Exception as e:
-                logger.debug(f"  {sym}: news fetch failed (non-fatal): {e}")
+                logger.debug(f"News fetch failed for {sym}: {e}")
             time.sleep(0.2)
+        total_headlines = sum(len(s["headlines"]) for s in stock_intel)
+        logger.info(f"Pass 2 done: {total_headlines} headlines across {len(stock_intel)} stocks")
 
-        logger.info(f"Pass 2 done: {sum(len(s['headlines']) for s in stock_intel)} headlines across {len(stock_intel)} stocks")
-
-    # ── Build prompt and call AI ─────────────────────────────────────────
-    logger.info("Building AI prompt...")
     prompt = build_prompt(ctx, stock_intel)
 
     if DRY_RUN:
-        logger.info(f"[DRY RUN] Prompt length: {len(prompt)} chars. Skipping AI call.")
-        logger.info(f"[DRY RUN] MSL candidates: {[m.get('symbol') for m in ctx['msl']]}")
-        return {"status": "dry_run", "prompt_chars": len(prompt)}
+        logger.info(f"[DRY RUN] Prompt: {len(prompt)} chars")
+        logger.info(f"[DRY RUN] Candidates: {[c.get('symbol') for c in ctx['candidates']]}")
+        return {"status": "dry_run", "prompt_chars": len(prompt),
+                "candidates": len(ctx["candidates"])}
 
-    logger.info("Calling AI (web_search enabled)...")
+    logger.info("Calling AI...")
     result = call_ai(prompt)
 
     if not result:
-        logger.warning("AI call returned no result — market_intelligence_engine non-fatal exit")
-        return {"status": "ai_failed", "lessons": 0, "signals": 0}
+        logger.warning("AI call returned nothing — step 18 non-fatal exit")
+        return {"status": "ai_failed"}
 
-    # ── Write outputs ─────────────────────────────────────────────────────
-    lessons_written  = write_lessons(sb, result, last_trading_day)
-    signals_written  = write_top_candidates(sb, result, last_trading_day, last_trading_day)
-    write_ai_context(sb, result, last_trading_day)
+    provider = cfg("ai_provider", "unknown")
 
-    # Log top 3 for visibility
-    tone       = result.get("market_tone") or {}
-    candidates = result.get("top_3_candidates") or []
+    # Write 1: sentiment modifiers to signal_log (step 19 reads adjusted scores)
+    sentiment_written = apply_sentiment_modifiers(sb, result, ctx["candidates"], last_td)
+
+    # Write 2: lessons
+    lessons_written = write_lessons(sb, result, last_td)
+
+    # Write 3: full market intel to ai_context
+    write_market_intel(sb, result, last_td, provider)
+
+    tone = result.get("market_tone") or {}
+    fii_outlook = result.get("fii_outlook") or {}
+
     logger.success(
-        f"Market Intelligence done: "
-        f"{lessons_written} lessons | {signals_written} MARKET_TOP_PICK signals | "
+        f"Step 18 done: {sentiment_written} scores updated | {lessons_written} lessons | "
         f"Sizing: {tone.get('position_sizing_guidance','?')} | "
-        f"Top picks: {[c.get('symbol') for c in candidates]}"
+        f"FII 5-session: {fii_outlook.get('5session_bias','?')} | "
+        f"Echo: {tone.get('echo_comparison','N/A')[:80]}"
     )
     return {
-        "status":   "ok",
-        "lessons":  lessons_written,
-        "signals":  signals_written,
-        "sizing":   tone.get("position_sizing_guidance"),
-        "top_3":    [c.get("symbol") for c in candidates],
+        "status":             "ok",
+        "sentiment_written":  sentiment_written,
+        "lessons":            lessons_written,
+        "sizing":             tone.get("position_sizing_guidance"),
+        "fii_5session":       fii_outlook.get("5session_bias"),
     }
 
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="TradeOS v6 — Market Intelligence Engine")
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--symbol", help="Debug single stock news fetch")
-    args = parser.parse_args()
+    p = argparse.ArgumentParser(description="TradeOS v6 — Step 18: Market Intelligence")
+    p.add_argument("--dry-run", action="store_true")
+    args = p.parse_args()
     if args.dry_run:
         os.environ["DRY_RUN"] = "True"
-    if args.symbol:
-        # Debug mode: just fetch and print news for one symbol
-        import requests as _req
-        session = _req.Session()
-        try:
-            session.get("https://www.nseindia.com", headers=HEADERS, timeout=8)
-        except Exception:
-            pass
-        intel = fetch_stock_intel(args.symbol, args.symbol, session)
-        print(f"\nNews for {args.symbol}:")
-        for h in intel["headlines"]:
-            print(f"  {h}")
-        print(f"Institutional buying: {intel['institutional_buying']}")
-    else:
-        print(main())
+    print(main())

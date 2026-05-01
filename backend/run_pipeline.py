@@ -96,11 +96,8 @@ def main():
     def step_post_trade():
         from ai.post_trade_analysis import main as fn; return fn()
 
-    def step_ai_enrich():
-        from ai.ai_enrich import main as fn; return fn()
-
-    def step_generate_shortlist():
-        from ai.generate_shortlist import main as fn; return fn()
+    def step_ai_decision_engine():
+        from ai.ai_decision_engine import main as fn; return fn()
 
     def step_alerts():
         from alerts.send_alerts import main as fn; return fn()
@@ -135,7 +132,7 @@ def main():
         if result.returncode != 0:
             logger.warning(f"regime_predict non-fatal error: {result.stderr[-300:]}")
 
-    def step_market_intel():
+    def step_ai_market_intel():
         from ai.market_intelligence_engine import main as fn; return fn()
 
     def step_quality_check():
@@ -165,9 +162,8 @@ def main():
         ("07_fii_dii",            step_fii_dii,            False),
         ("08_nse_events",         step_nse_events,         False),
         ("09_post_trade",         step_post_trade,         False),
-        ("10_ai_enrich",          step_ai_enrich,          False),
-        ("11_generate_shortlist", step_generate_shortlist, False),
-        ("12_alerts",             step_alerts,             False),
+        ("10_ai_decision_engine", step_ai_decision_engine, False),
+        ("11_alerts",             step_alerts,             False),
     ]
 
     # ── Phase 2 — corrected full sequence ─────────────────────────────────────
@@ -206,12 +202,11 @@ def main():
             ("16_history",             step_history,             False),  # msl_history + regime_history
             # ── Analysis and AI ──
             ("17_post_trade",          step_post_trade,          False),  # outcomes → lessons
-            ("18_market_intel",        step_market_intel,        False),  # news synthesis
-            ("19_ai_enrich",           step_ai_enrich,           False),  # conviction per signal
-            ("20_generate_shortlist",  step_generate_shortlist,  False),  # AI top-12 pre-rank
+            ("18_ai_market_intel",     step_ai_market_intel,     False),  # news synthesis
+            ("19_ai_decision_engine",  step_ai_decision_engine,  False),  # conviction per signal
             # ── Output ──
-            ("21_alerts",              step_alerts,              False),  # Telegram digest
-            ("22_quality_check",       step_quality_check,       False),  # always last
+            ("20_alerts",              step_alerts,              False),  # Telegram digest
+            ("21_quality_check",       step_quality_check,       False),  # always last
         ]
     else:
         all_steps = steps_p0 + (steps_p1 if phase >= 1 else [])
