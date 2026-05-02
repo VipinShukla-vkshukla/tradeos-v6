@@ -78,6 +78,15 @@ LESSON_RETIRE_WIN_RATE       = 0.30 # retire if win rate below this after 10+ us
 
 # Absolute bounds — calibration cannot move parameters outside these
 PARAM_BOUNDS = {
+    "min_rr_to_enter_TRENDING":         (0.9, 1.8),
+    "min_rr_to_enter_RISK_ON":          (0.9, 1.8),   # was CAUTION — wrong
+    "min_rr_to_enter_NEUTRAL":          (1.0, 2.0),
+    "min_rr_to_enter_RECOVERING":       (1.1, 2.0),   # new
+    "min_rr_to_enter_RISK_OFF":         (1.3, 2.0),
+    "min_rr_prime":                     0.9,
+    "min_rr_breakout":                  1.4,
+    "min_rr_reentry":                   1.1,
+    "min_rr_staged":                    1.0,
     "risk_block_threshold":          (50, 95),
     "risk_penalty_threshold":        (40, 80),
     "holding_score_exit_threshold":  (15, 50),
@@ -91,6 +100,11 @@ PARAM_BOUNDS = {
 
 # Default values — fallback if calibration has insufficient data
 PARAM_DEFAULTS = {
+    "min_rr_to_enter_TRENDING":         1.0,
+    "min_rr_to_enter_RISK_ON":          1.1,
+    "min_rr_to_enter_NEUTRAL":          1.2,
+    "min_rr_to_enter_RECOVERING":       1.3,   # new
+    "min_rr_to_enter_RISK_OFF":         1.5,
     "risk_block_threshold":          80,
     "risk_penalty_threshold":        65,
     "holding_score_exit_threshold":  30,
@@ -321,18 +335,58 @@ def analyse_outcomes(trades: list[dict]) -> dict:
         # Scale bonus: each 1% edge = ~1 point bonus
         industry_bonus_optimal = max(3, min(20, round(edge * 50, 0)))
 
+    # ── Regime-specific min_rr ──
+    regime_rr = {}
+    # ── Regime-specific min_rr — aligned to compute_regime's 5-state model ──
+    regime_rr = {}
+    for regime_name in ("TRENDING", "RISK ON", "NEUTRAL", "RECOVERING", "RISK OFF"):
+        bucket = [t for t in trades if (t.get("sig_regime") or "").upper() == regime_name]
+        if len(bucket) >= 5:
+            losses_b = [t for t in bucket if float(t.get("pnl_pct") or 0) <= 0]
+            if losses_b:
+                rr_key = f"min_rr_to_enter_{regime_name.replace(' ', '_')}"
+                fallback = PARAM_DEFAULTS.get(rr_key, 1.2)
+                rrs = sorted([
+                    float(t.get("implied_rr") or fallback)
+                    for t in losses_b
+                ])
+                candidate = rrs[len(rrs) // 2]
+                regime_rr[rr_key] = round(max(0.6, min(2.0, candidate)), 2)
+
+    # ── Signal-type-specific min_rr ──
+    signal_rr = {}
+    for sig_type, rr_key in [
+        ("PRIME_SETUP",    "min_rr_prime"),
+        ("BREAKOUT_SETUP", "min_rr_breakout"),
+        ("REENTRY_SETUP",  "min_rr_reentry"),
+        ("STAGED_ENTRY",   "min_rr_staged"),
+    ]:
+        bucket = [t for t in trades if (t.get("sig_signal_type") or "").upper() == sig_type]
+        if len(bucket) >= 5:
+            losses_b = [t for t in bucket if float(t.get("pnl_pct") or 0) <= 0]
+            if losses_b:
+                fallback = PARAM_DEFAULTS.get(rr_key, 1.2)
+                rrs = sorted([
+                    float(t.get("implied_rr") or fallback)
+                    for t in losses_b
+                ])
+                candidate = rrs[len(rrs) // 2]
+                signal_rr[rr_key] = round(max(0.6, min(2.0, candidate)), 2)
+
     return {
-        "total_trades":          total,
-        "win_rate":              round(wr, 3),
-        "wins":                  len(wins),
-        "losses":                len(losses),
-        "risk_block_optimal":    int(risk_block_optimal),
-        "hs_threshold_optimal":  int(hs_threshold_optimal),
-        "min_score_optimal":     float(min_score_optimal),
+        "total_trades":           total,
+        "win_rate":               round(wr, 3),
+        "wins":                   len(wins),
+        "losses":                 len(losses),
+        "risk_block_optimal":     int(risk_block_optimal),
+        "hs_threshold_optimal":   int(hs_threshold_optimal),
+        "min_score_optimal":      float(min_score_optimal),
         "industry_bonus_optimal": int(industry_bonus_optimal),
-        "atr_matrix_updated":    atr_matrix,
-        "momentum_win_rates":    {k: round(v["wins"]/v["total"], 3) for k, v in momentum_wr.items() if v["total"] >= 3},
-        "risk_win_rates":        {str(k): round(v["wins"]/v["total"], 3) for k, v in risk_buckets.items() if v["total"] >= 3},
+        "atr_matrix_updated":     atr_matrix,
+        "momentum_win_rates":     {k: round(v["wins"]/v["total"], 3) for k, v in momentum_wr.items() if v["total"] >= 3},
+        "risk_win_rates":         {str(k): round(v["wins"]/v["total"], 3) for k, v in risk_buckets.items() if v["total"] >= 3},
+        "regime_rr":              regime_rr,    # ← was computed but never returned
+        "signal_rr":              signal_rr,    # ← same
     }
 
 
@@ -711,6 +765,8 @@ def main(force: bool = False):
         "holding_score_exit_threshold": analysis.get("hs_threshold_optimal"),
         "min_score_adjusted":           analysis.get("min_score_optimal"),
         "industry_bonus_top5":          analysis.get("industry_bonus_optimal"),
+        **analysis.get("regime_rr", {}),   # e.g. min_rr_to_enter_RISK_ON: 1.3
+        **analysis.get("signal_rr", {}),   # e.g. min_rr_prime: 0.95
     }
     # Merge AI suggestions (AI can override statistical proposals)
     if ai_result:

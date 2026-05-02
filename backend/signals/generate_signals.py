@@ -91,7 +91,8 @@ def load_signal_thresholds() -> dict:
         "min_rr":                  cfg_float("min_rr_to_enter",                1.0),
         "min_rr_TRENDING":         cfg_float("min_rr_to_enter_TRENDING",       0.9),
         "min_rr_NEUTRAL":          cfg_float("min_rr_to_enter_NEUTRAL",        1.0),
-        "min_rr_CAUTION":          cfg_float("min_rr_to_enter_CAUTION",        1.3),
+        "min_rr_RISK ON":          cfg_float("min_rr_to_enter_RISK_ON",        1.1),
+        "min_rr_RECOVERING":       cfg_float("min_rr_to_enter_RECOVERING",     1.3),
         "min_rr_RISK OFF":         cfg_float("min_rr_to_enter_RISK_OFF",       1.5),
         "min_rr_PRIME_SETUP":      cfg_float("min_rr_prime",                   0.9),
         "min_rr_BREAKOUT_SETUP":   cfg_float("min_rr_breakout",               1.4),
@@ -699,8 +700,12 @@ def compute_adjusted_score(msl_row: dict, base_score: float,
     elif signal_type == "BREAKOUT_SETUP": score += T["bonus_breakout"]
     elif signal_type == "REENTRY_SETUP":  score += T["bonus_reentry"]
 
-    if regime_name == "CAUTION":
-        score = round(score * 0.85, 1)
+    if regime_name == "RISK OFF":
+        score = round(score * 0.80, 1)   # steeper penalty — capital preservation mode
+    elif regime_name == "RECOVERING":
+        score = round(score * 0.90, 1)   # moderate penalty — bounce not yet confirmed
+    elif regime_name == "NEUTRAL":
+        score = round(score * 0.95, 1)   # mild penalty — selective positioning
 
     return round(min(max(score, 0.0), 100.0), 1)
 
@@ -902,8 +907,10 @@ def generate(run_date: date | None = None) -> list:
                 regime_warning = True
                 if block_buys:
                     signal_type = "BUY_BLOCKED_REGIME"
-            elif regime_name == "CAUTION":
-                regime_warning = True
+            elif regime_name == "RECOVERING":
+                regime_warning = True    # bounce not confirmed — flag but don't block
+            elif regime_name == "NEUTRAL":
+                regime_warning = False   # selective positioning is fine, no warning needed
 
         if eap_action == "AVOID_ENTRY" and position_state == "BUY_CANDIDATE":
             signal_type = "AVOID_ENTRY_EVENT"
