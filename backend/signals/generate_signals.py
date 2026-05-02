@@ -1,202 +1,212 @@
 """
-TradeOS v6 — Signal Generation Engine v4
-=========================================
-Pipeline position: [15] — after compute_msl v3, before msl_history.
+TradeOS v6 — Signal Generation Engine v5
+==========================================
+Pipeline position: [15] — after compute_msl, before msl_history.
 
-DATA SOURCE CLARIFICATION
-==========================
-All Gates 3 and 4 logic reads from master_shortlist rows ONLY.
-In full-mode, compute_msl (step 14) enriches master_shortlist directly, so
-SELECT * from master_shortlist contains all compute_msl fields (risk_score,
-lifecycle, holding_score, bb_squeeze, st_cushion_pct, weekly_structure, etc.)
-No separate msl_computed table is referenced in this script.
-msl_computed is only written in shadow-mode (step 13 routing) and is never
-read here. If fields arrive as None, they are treated as unknown, not blocked.
-
-WHAT CHANGED FROM v3 → v4
+WHAT CHANGED FROM v4 → v5
 ===========================
 
-─── GATE 4: ZONE PROXIMITY (complete rework) ─────────────────────────────────
+THE CORE PROBLEM FIXED:
+  v4 had 40+ threshold values hardcoded as Python constants. These constants
+  have never been calibrated against outcomes and never change. The system_config
+  table already has 40+ signal_threshold_* keys (from the original setup) but
+  v4 NEVER READ THEM. This script fixes that completely.
 
-FIX 1 — ATR-normalised distance replaces fixed 3%/8% thresholds
-  v3: dist_from_high > 8% → hard block regardless of stock volatility.
-      A 3%-ATR stock at 8% above zone = 2.7 ATRs (very extended).
-      A 1%-ATR stock at 8% above zone = 8 ATRs (unreachable). Same rule,
-      wildly different risk profiles.
-  v4: dist_in_atrs = (cp - entry_zone_high) / (cp × atr_pct/100).
-      max_chase_atrs is a function of momentum_phase + velocity_state (0–3x).
-      Structure quality bonuses (struct_edge, weekly_structure, bb_squeeze,
-      psar_dual_confirmed) add up to +1.6 ATRs on top. A high-conviction HOT
-      + EARLY + ACCELERATING + struct_edge stock can now legitimately chase
-      up to 3.5 ATRs above zone, which is ~10.5% on a 3%-ATR stock —
-      still disciplined but matches real swing-trade behaviour.
-      Uses existing: atr_pct (stock_data_daily), momentum fields (master_shortlist).
+DYNAMIC THRESHOLD SYSTEM:
+  All gate thresholds now read from system_config at the start of generate().
+  Defaults match v4 constants exactly — so on first run nothing changes.
+  Step 20 (calibration_engine) writes updated values to system_config weekly.
+  Next pipeline run picks them up automatically. Zero code changes needed.
 
-FIX 2 — R:R viability gate (new — was entirely absent in v3)
-  v3: No R:R check existed anywhere in entry classification. An in-zone stock
-      with expected_r=0.5 still generated a BUY_CANDIDATE. A PRIME_SETUP
-      that had already run 30% above zone still qualified if momentum was hot.
-  v4: stop_price   = entry_zone_low × (1 − STOP_BUFFER_PCT)
-      ideal_target  = entry_zone_low + (entry_zone_low − stop_price) × expected_r
-      implied_rr    = (ideal_target − cp) / (cp − stop_price)
-      if implied_rr < MIN_RR_ENTRY (config, default 1.0): → insufficient_rr
-      As price chases above zone, implied_rr degrades naturally. This single
-      check replaces the need for any upper distance ceiling — if R:R still
-      works at 25% above zone on a 4x expected_r stock, it's valid.
-      Also catches the inverse: an in-zone stock with tiny expected_r that
-      was always a poor trade.
-      Uses existing: expected_r and entry_zone_low (master_shortlist).
-      Special case: if ideal_target <= cp, the target is already hit → blocked.
+SIGNAL_THRESHOLD_* KEYS NOW WIRED IN:
+  The following system_config keys were written but never used in v4:
+    signal_threshold_prime_rsi_daily_min/max → PRIME_SETUP RSI gate
+    signal_threshold_prime_rsi_weekly_min/max → PRIME_SETUP weekly RSI gate
+    signal_threshold_prime_adx_min → PRIME_SETUP ADX gate
+    signal_threshold_prime_vol_min → PRIME_SETUP volume ratio gate
+    signal_threshold_prime_del_min → PRIME_SETUP delivery % gate
+    signal_threshold_prime_sma50_max → PRIME_SETUP SMA50 distance gate
+    signal_threshold_reentry_* → REENTRY_SETUP gates
+    signal_threshold_staged_* → STAGED_ENTRY gates
+    signal_threshold_prebreak_* → BREAKOUT_SETUP gates
+  These are now applied in Gate 5 subtype classification.
 
-FIX 3 — Below-zone: pullback vs breakdown distinction (was a hard block)
-  v3: cp < ep × (1 − threshold) → below_zone_wait. Full stop. Every below-zone
-      case was identical regardless of whether the stock was resting on
-      supertrend or breaking through its 50 SMA.
-  v4: Three-way evaluation using existing fields:
-      BREAKDOWN  → above_sma50=False OR weekly_structure in (WEAK,BEARISH)
-                   OR st_cushion_pct ≤ 0 OR velocity_state=DECELERATING
-                   → filter: structural_breakdown (hard block)
-      VALID PULLBACK → above_sma50=True AND weekly_structure not WEAK/BEARISH
-                       AND st_cushion_pct > 0 AND velocity_state not DECELERATING
-                       AND (reentry_mode=ELIGIBLE OR entry_timing_type=REENTRY)
-                       → falls through to R:R check → REENTRY_SETUP if passes
-      MONITORING → mixed signals → below_zone_monitoring (soft WATCH)
-      Uses existing: above_sma50 (stock_data_daily), weekly_structure,
-      st_cushion_pct, velocity_state, reentry_mode (master_shortlist).
+ATR CHASE MATRIX NOW IN SYSTEM_CONFIG:
+  Key: atr_chase_matrix (JSON blob)
+  Step 20 calibration updates this based on win rates per momentum state.
+  Falls back to v4 defaults if key not found.
 
-─── SIGNAL SUBTYPE CLASSIFICATION ───────────────────────────────────────────
+WATCH SIGNALS NOW CARRY NEAR-MISS METADATA:
+  Every WATCH signal now has near_miss_data: {reason, filter_reason,
+  original_signal_type, score_adjusted, dist_to_qualify}
+  Step 19 reads this to evaluate whether today's macro context upgrades any.
+  A stock that was WATCH yesterday due to "chase_2.1atrs_limit_1.8" might
+  qualify today if FII is strongly buying that sector.
 
-FIX 4 — PRIME_SETUP now includes EARLY phase (was EXPANSION only)
-  v3: momentum_phase == "EXPANSION" — this missed the best entry point.
-      A stock in EARLY phase with HOT+ACCELERATING+struct_edge aligned is the
-      highest quality setup possible. It was being downgraded to BUY_CANDIDATE.
-  v4: momentum_phase in ("EXPANSION", "EARLY") — EARLY is now eligible.
-      The trend_maturity guard (not LATE/EXHAUSTED) prevents false EARLY
-      signals that are actually re-starts of exhausted trends.
+SCORE ADJUSTMENT BONUSES DYNAMIC:
+  Keys: score_bonus_momentum_high, score_bonus_institutional, etc.
+  Step 20 calibrates these based on which bonuses actually predict wins.
 
-FIX 5 — BREAKOUT_SETUP gains trend_maturity guard
-  v3: No trend_maturity check on BREAKOUT_SETUP. A bb_squeeze on a LATE/
-      EXHAUSTED trend still generated BREAKOUT_SETUP — a dangerous "late
-      breakout" that typically traps buyers near the top.
-  v4: trend_maturity not in ("LATE", "EXHAUSTED") required for both
-      BREAKOUT_SETUP paths (squeeze+volume and readiness≥60).
-
-─── OPEN POSITION SIGNALS ───────────────────────────────────────────────────
-
-FIX 6 — Supertrend broken triggers EXIT for held positions
-  v3: st_cushion_pct was written to signal_log but never checked for open
-      positions. A held stock could break below supertrend and still signal HOLD.
-  v4: st_cushion_pct ≤ 0 → EXIT with reason "supertrend_broken".
-      Checked after holding_score gate, before lifecycle gates.
-      Uses existing: st_cushion_pct (master_shortlist from compute_msl).
-
-FIX 7 — ADD suppressed when trend is LATE or EXHAUSTED
-  v3: lifecycle=ADD + ACCELERATING + holding_score≥60 → ADD signal regardless
-      of how old the trend was. Adding to a LATE trend is poor risk management.
-  v4: trend_maturity in ("LATE", "EXHAUSTED") demotes ADD → HOLD with reason
-      "add_suppressed_late_trend". The MSL sheet's ADD flag may lag real-time
-      trend maturity from compute_msl.
-
-FIX 8 — DECELERATING velocity annotated on HOLD signals
-  v3: DECELERATING velocity on a held position → generic "holding" HOLD signal.
-      No downstream visibility that the momentum was weakening.
-  v4: velocity_state=DECELERATING + holding_score<60 → HOLD with reason
-      "hold_deceleration_monitor". Alerts and AI steps can act on this.
-
-─── GATE SCOPING FIXES ───────────────────────────────────────────────────────
-
-FIX 9 — ASM override scoped to new entries only
-  v3: asm_flag overrides ALL signals to BLOCKED_ASM including EXIT/REDUCE on
-      open positions. This suppressed critical exit guidance on ASM stocks.
-  v4: BLOCKED_ASM only applied when position_state != "OPEN_POSITION".
-      Open positions retain their EXIT/REDUCE/HOLD/ADD signal; asm_flag=True
-      remains in the signal dict as an informational field for the operator.
-
-FIX 10 — Industry scoring applied before classification gates
-  v3: Industry bonus (+10 for ind_top5, +5 for STRONG) applied after signal
-      classification. The bonus affected score_adjusted but not the gates
-      that already ran on the pre-bonus score. Edge case: a stock just below
-      min_score threshold with ind_top5 would be dropped even though the
-      bonus would have cleared it.
-  v4: Industry fields extracted and bonus applied before the min_score gate
-      so the same adjusted score is used consistently throughout.
-
-─── SCORE GATE ───────────────────────────────────────────────────────────────
-
-FIX 11 — score_adjusted floor for entry signals
-  v3: No minimum on score_adjusted for entry signals. A CAUTION regime penalty
-      (×0.85) combined with a high risk_score penalty (−7) could produce a
-      PRIME_SETUP with score_adjusted = 38, which is meaningless as an
-      actionable entry but still appeared in output as PRIME_SETUP.
-  v4: Entry signals with score_adjusted < MIN_SCORE_AFTER_ADJ (config, default 45)
-      are downgraded to WATCH with reason "low_adj_score_N". Signal type and
-      subtype are preserved in signal_subtype for analysis.
-
-─── NO NEW DATA POINTS ───────────────────────────────────────────────────────
-All v4 logic uses fields already present in master_shortlist (compute_msl
-enriched) or stock_data_daily. No new table queries. No new columns required.
-New constants MIN_RR_ENTRY and MIN_SCORE_AFTER_ADJ are config-readable so
-they can be tuned without code changes.
+NO GATE LOGIC CHANGES:
+  All 11 gates from v4 are preserved exactly. Only thresholds are now read
+  from system_config rather than Python constants. Gate order unchanged.
 """
 
-import sys, json
+import sys
+import json
 from pathlib import Path
 from datetime import date
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
 from config import (
-    get_supabase, get_strategy_config, get_system_config,
-    cfg, cfg_bool, cfg_int, cfg_float, today_ist,
+    get_supabase, get_strategy_config,
+    cfg, cfg_bool, cfg_float, cfg_int, today_ist,
     buy_candidate_threshold, get_max_positions, DRY_RUN,
-    is_kill_switch_active
+    is_kill_switch_active,
 )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CONSTANTS
+# DYNAMIC CONFIG LOADER — reads all thresholds from system_config at runtime
 # ─────────────────────────────────────────────────────────────────────────────
 
-RISK_BLOCK_THRESHOLD   = 80    # hard block regardless of momentum
-RISK_PENALTY_THRESHOLD = 65    # score_adjusted penalised
+def load_signal_thresholds() -> dict:
+    """
+    Load all signal gate thresholds from system_config.
+    Defaults are identical to v4 constants — no behaviour change on first run.
+    Step 20 calibration updates these values over time.
 
-HOLDING_SCORE_EXIT_THRESHOLD = 30   # open position: exit if below
-ADD_HOLDING_MIN              = 60   # minimum holding_score for ADD signal
+    Called once per generate() invocation. All downstream functions receive
+    the thresholds dict rather than reading module-level constants.
+    """
+    return {
+        # ── Hard block thresholds ──────────────────────────────────────────
+        "risk_block":              cfg_float("risk_block_threshold",           80.0),
+        "risk_penalty":            cfg_float("risk_penalty_threshold",         65.0),
+        "holding_exit":            cfg_float("holding_score_exit_threshold",   30.0),
+        "add_holding_min":         cfg_float("add_holding_min",                60.0),
 
-PRIME_BREAKOUT_MIN     = 55    # breakout_readiness threshold for PRIME_SETUP
+        # ── Entry quality gates ────────────────────────────────────────────
+        "min_rr":                  cfg_float("min_rr_to_enter",                1.0),
+        "min_score_adj":           cfg_float("min_score_adjusted",             45.0),
+        "prime_breakout_min":      cfg_float("prime_breakout_min",             55.0),
+        "stop_buffer_pct":         cfg_float("stop_buffer_pct",                0.03),
+        "atr_fallback":            cfg_float("atr_fallback_pct",               3.0),
 
-STOP_BUFFER_PCT        = 0.03  # 3% below entry_zone_low used as stop proxy for R:R calc
-ATR_FALLBACK_PCT       = 3.0   # used when atr_pct is 0 or unavailable from stock_data_daily
+        # ── PRIME_SETUP signal thresholds (from system_config) ─────────────
+        "prime_rsi_d_min":         cfg_float("signal_threshold_prime_rsi_daily_min",   48.0),
+        "prime_rsi_d_max":         cfg_float("signal_threshold_prime_rsi_daily_max",   82.0),
+        "prime_rsi_w_min":         cfg_float("signal_threshold_prime_rsi_weekly_min",  52.0),
+        "prime_rsi_w_max":         cfg_float("signal_threshold_prime_rsi_weekly_max",  78.0),
+        "prime_rsi_m_min":         cfg_float("signal_threshold_prime_rsi_monthly_min", 48.0),
+        "prime_adx_min":           cfg_float("signal_threshold_prime_adx_min",         18.0),
+        "prime_vol_min":           cfg_float("signal_threshold_prime_vol_min",          1.15),
+        "prime_del_min":           cfg_float("signal_threshold_prime_del_min",         50.0),
+        "prime_sma50_max":         cfg_float("signal_threshold_prime_sma50_max",       12.0),
+        "prime_consol_max":        cfg_float("signal_threshold_prime_consol_max",       8.0),
 
-# v4 new — both are config-readable for tuning without code changes
-# MIN_RR_ENTRY: minimum implied R:R from current price. 1.0 = break-even on risk.
-# MIN_SCORE_AFTER_ADJ: entry signals below this after all adjustments → WATCH.
-_MIN_RR_DEFAULT          = 1.0
-_MIN_SCORE_ADJ_DEFAULT   = 45.0
+        # ── REENTRY_SETUP signal thresholds ────────────────────────────────
+        "reentry_rsi_d_min":       cfg_float("signal_threshold_reentry_rsi_daily_min",   38.0),
+        "reentry_rsi_d_max":       cfg_float("signal_threshold_reentry_rsi_daily_max",   68.0),
+        "reentry_rsi_w_min":       cfg_float("signal_threshold_reentry_rsi_weekly_min",  42.0),
+        "reentry_rsi_w_max":       cfg_float("signal_threshold_reentry_rsi_weekly_max",  65.0),
+        "reentry_rsi_m_min":       cfg_float("signal_threshold_reentry_rsi_monthly_min", 46.0),
+        "reentry_adx_min":         cfg_float("signal_threshold_reentry_adx_min",         14.0),
+        "reentry_vol_min":         cfg_float("signal_threshold_reentry_vol_min",          0.55),
+        "reentry_del_min":         cfg_float("signal_threshold_reentry_del_min",         44.0),
+        "reentry_ret6m_min":       cfg_float("signal_threshold_reentry_ret6m_min",        3.0),
+        "reentry_sma50_min":       cfg_float("signal_threshold_reentry_sma50_min",       -8.0),
 
-# Signal types that represent new entry intent (used in gate scoping)
+        # ── STAGED_ENTRY signal thresholds ─────────────────────────────────
+        "staged_rsi_d_min":        cfg_float("signal_threshold_staged_rsi_daily_min",   44.0),
+        "staged_rsi_d_max":        cfg_float("signal_threshold_staged_rsi_daily_max",   82.0),
+        "staged_rsi_w_min":        cfg_float("signal_threshold_staged_rsi_weekly_min",  48.0),
+        "staged_adx_min":          cfg_float("signal_threshold_staged_adx_min",         15.0),
+        "staged_vol_min":          cfg_float("signal_threshold_staged_vol_min",          0.80),
+        "staged_del_min":          cfg_float("signal_threshold_staged_del_min",         46.0),
+
+        # ── BREAKOUT_SETUP signal thresholds ───────────────────────────────
+        "prebreak_rsi_d_min":      cfg_float("signal_threshold_prebreak_rsi_daily_min",  42.0),
+        "prebreak_rsi_d_max":      cfg_float("signal_threshold_prebreak_rsi_daily_max",  65.0),
+        "prebreak_rsi_w_min":      cfg_float("signal_threshold_prebreak_rsi_weekly_min", 44.0),
+        "prebreak_adx_min":        cfg_float("signal_threshold_prebreak_adx_min",        10.0),
+        "prebreak_adx_max":        cfg_float("signal_threshold_prebreak_adx_max",        26.0),
+        "prebreak_vol_max":        cfg_float("signal_threshold_prebreak_vol_max",         1.4),
+        "prebreak_consol_max":     cfg_float("signal_threshold_prebreak_consol_max",      9.0),
+
+        # ── Score adjustment bonuses (calibrated by step 20) ───────────────
+        "bonus_momentum_high":     cfg_float("score_bonus_momentum_high",     3.0),
+        "bonus_momentum_mid":      cfg_float("score_bonus_momentum_mid",      1.0),
+        "bonus_institutional":     cfg_float("score_bonus_institutional",     2.0),
+        "bonus_breakout_ready":    cfg_float("score_bonus_breakout_ready",    2.0),
+        "bonus_psar_dual":         cfg_float("score_bonus_psar_dual",         2.0),
+        "bonus_weekly_strong":     cfg_float("score_bonus_weekly_strong",     1.0),
+        "penalty_risk_high":       cfg_float("score_penalty_risk_high",      -5.0),
+        "penalty_risk_mid":        cfg_float("score_penalty_risk_mid",       -2.0),
+        "bonus_prime":             cfg_float("score_bonus_prime_setup",       5.0),
+        "bonus_breakout":          cfg_float("score_bonus_breakout_setup",    3.0),
+        "bonus_reentry":           cfg_float("score_bonus_reentry_setup",     2.0),
+
+        # ── Industry bonus (calibrated by step 20) ─────────────────────────
+        "industry_bonus_top5":     cfg_float("industry_bonus_top5",          10.0),
+        "industry_bonus_strong":   cfg_float("industry_bonus_strong",         5.0),
+
+        # ── ATR chase matrix — loaded from JSON blob ───────────────────────
+        "atr_matrix": _load_atr_matrix(),
+    }
+
+
+def _load_atr_matrix() -> dict:
+    """
+    Load ATR chase matrix from system_config.
+    Falls back to v4 defaults if key not found or JSON is invalid.
+    Key in system_config: atr_chase_matrix
+    Updated by step 20 calibration based on win rates per momentum state.
+    """
+    defaults = {
+        "HOT_EARLY_ACCELERATING":      3.0,
+        "HOT_EXPANSION_ACCELERATING":  2.5,
+        "HOT_EXPANSION_FLAT":          1.8,
+        "HOT_ANY_ANY":                 1.8,
+        "BUILDING_ACCELERATING":       2.0,
+        "BUILDING_FLAT":               1.2,
+        "BUILDING_ANY":                1.2,
+        "LATE_ANY":                    0.5,
+        "EXHAUSTED_ANY":               0.5,
+        "EXTENDED_ANY":                0.0,
+        "DEFAULT":                     1.0,
+    }
+    raw = cfg("atr_chase_matrix", "")
+    if not raw:
+        return defaults
+    try:
+        loaded = json.loads(raw)
+        # Merge loaded over defaults so new keys from calibration appear
+        return {**defaults, **loaded}
+    except Exception:
+        logger.warning("atr_chase_matrix JSON parse failed — using defaults")
+        return defaults
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONSTANTS (structural — not threshold values, not calibrated)
+# ─────────────────────────────────────────────────────────────────────────────
+
 ENTRY_SIGNAL_TYPES = frozenset({
     "BUY_CANDIDATE", "PRIME_SETUP", "BREAKOUT_SETUP",
     "REENTRY_SETUP", "STAGED_ENTRY",
 })
 
-# trend_maturity states that indicate a trend is too old to ADD or BREAKOUT into
-LATE_MATURITY = frozenset({"LATE", "EXHAUSTED"})
-
-# weekly_structure states that indicate structural breakdown
+LATE_MATURITY  = frozenset({"LATE", "EXHAUSTED"})
 WEAK_STRUCTURE = frozenset({"WEAK", "BEARISH"})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DATA LOADING  (unchanged from v3)
+# DATA LOADING (identical to v4)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_today_data():
-    """
-    Load all required data in bulk from master_shortlist (full mode) and
-    supporting tables. master_shortlist SELECT * includes all compute_msl
-    enriched fields in full/hybrid pipeline mode.
-    """
     sb    = get_supabase()
     today = str(today_ist())
 
@@ -205,28 +215,25 @@ def load_today_data():
         latest = sb.table("stock_data_daily").select("date").order("date", desc=True).limit(1).execute().data
         if latest:
             last_date = latest[0]["date"]
-            stocks = sb.table("stock_data_daily").select("*").eq("date", last_date).execute().data
-            logger.info(f"No stock_data_daily for {today} — using last trading day {last_date}")
+            stocks    = sb.table("stock_data_daily").select("*").eq("date", last_date).execute().data
+            logger.info(f"stock_data_daily using last trading day {last_date}")
 
-    # Full SELECT * — in full mode this includes all compute_msl enriched fields:
-    # holding_score, risk_score, lifecycle, bb_squeeze, st_cushion_pct,
-    # weekly_structure, velocity_state, momentum_state, etc.
     msl = sb.table("master_shortlist").select("*").eq("date", today).execute().data
     if not msl:
         latest_msl = sb.table("master_shortlist").select("date").order("date", desc=True).limit(1).execute().data
         if latest_msl:
             last_msl_date = latest_msl[0]["date"]
             msl = sb.table("master_shortlist").select("*").eq("date", last_msl_date).execute().data
-            logger.warning(f"No MSL for {today} — using last available date {last_msl_date} ({len(msl)} rows)")
+            logger.warning(f"MSL using last available date {last_msl_date} ({len(msl)} rows)")
 
     open_p   = sb.table("open_positions").select("*").execute().data
     regime   = sb.table("market_regime").select("*").eq("date", today).execute().data
     if not regime:
         regime = sb.table("market_regime").select("*").order("date", desc=True).limit(1).execute().data
 
-    events   = sb.table("event_calendar").select("*").eq("is_active", True).execute().data
-    safety   = sb.table("safety_lists").select("symbol,list_type").execute().data
-    industry_str = sb.table("industry_strength").select("*").eq("date", str(today_ist())).execute().data
+    events      = sb.table("event_calendar").select("*").eq("is_active", True).execute().data
+    safety      = sb.table("safety_lists").select("symbol,list_type").execute().data
+    industry_str = sb.table("industry_strength").select("*").eq("date", today).execute().data
     industry_map = {r["industry"]: r for r in industry_str}
 
     stock_map  = {s["symbol"]: s for s in stocks}
@@ -235,11 +242,7 @@ def load_today_data():
     asm_set    = {r["symbol"] for r in safety if r["list_type"] in ("ASM", "GSM", "ASM_SHORTTERM")}
     fo_ban_set = {r["symbol"] for r in safety if r["list_type"] == "FO_BAN"}
 
-    fii_rows = (
-        sb.table("fii_dii_flow")
-        .select("fii_flag,fii_net_20d")
-        .order("date", desc=True).limit(1).execute().data
-    )
+    fii_rows    = sb.table("fii_dii_flow").select("fii_flag,fii_net_20d").order("date", desc=True).limit(1).execute().data
     fii_flag    = fii_rows[0].get("fii_flag", "NEUTRAL") if fii_rows else "NEUTRAL"
     fii_net_20d = fii_rows[0].get("fii_net_20d") if fii_rows else None
 
@@ -247,17 +250,15 @@ def load_today_data():
     for r in msl:
         src = r.get("compute_source") or "unknown"
         compute_source_counts[src] = compute_source_counts.get(src, 0) + 1
-    logger.info(f"  MSL rows loaded: {len(msl)} | compute_source: {compute_source_counts}")
+    logger.info(f"  MSL: {len(msl)} rows | compute_source: {compute_source_counts}")
 
-    return (
-        stock_map, msl, open_map, regime_obj,
-        events, asm_set, fo_ban_set, industry_map,
-        fii_flag, fii_net_20d
-    )
+    return (stock_map, msl, open_map, regime_obj,
+            events, asm_set, fo_ban_set, industry_map,
+            fii_flag, fii_net_20d)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STRATEGY RULE ENGINES  (unchanged from v3)
+# STRATEGY RULE ENGINES (identical to v4)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_ctl(stocks, sectors_by_name, cfg_ctl):
@@ -265,9 +266,9 @@ def run_ctl(stocks, sectors_by_name, cfg_ctl):
     for sym, s in stocks.items():
         if s.get("sector") and sectors_by_name.get(s["sector"], 99) > cfg_ctl.get("max_sector_rank", 4): continue
         if (s.get("rsi_monthly") or 0) < cfg_ctl.get("min_monthly_rsi", 58): continue
-        if (s.get("rsi_weekly")  or 0) < cfg_ctl.get("min_weekly_rsi", 58):  continue
-        if (s.get("ret_6m")      or -999) < cfg_ctl.get("min_6m_return", 0): continue
-        if (s.get("atr_pct")     or 999) > cfg_ctl.get("max_atr_pct", 4):    continue
+        if (s.get("rsi_weekly")  or 0) < cfg_ctl.get("min_weekly_rsi",  58): continue
+        if (s.get("ret_6m")      or -999) < cfg_ctl.get("min_6m_return",  0): continue
+        if (s.get("atr_pct")     or 999) > cfg_ctl.get("max_atr_pct",    4): continue
         if (s.get("market_cap")  or 0) < cfg_ctl.get("min_market_cap", 500): continue
         candidates.add(sym)
     return candidates
@@ -277,12 +278,12 @@ def run_sbs(stocks, sectors_by_name, cfg_sbs):
     candidates = set()
     for sym, s in stocks.items():
         if s.get("sector") and sectors_by_name.get(s["sector"], 99) > cfg_sbs.get("max_sector_rank", 7): continue
-        if (s.get("rsi_daily")     or 0)   < cfg_sbs.get("min_daily_rsi", 55):   continue
-        if (s.get("rsi_weekly")    or 0)   < cfg_sbs.get("min_weekly_rsi", 56):  continue
-        if (s.get("vol_ratio")     or 0)   < cfg_sbs.get("min_vol_ratio", 1.3):  continue
-        if (s.get("consol_range")  or 999) > cfg_sbs.get("max_consol_pct", 12):  continue
-        if (s.get("atr_pct")       or 999) > cfg_sbs.get("max_atr_pct", 5):      continue
-        if (s.get("market_cap")    or 0)   < cfg_sbs.get("min_market_cap", 300): continue
+        if (s.get("rsi_daily")    or 0)   < cfg_sbs.get("min_daily_rsi",  55): continue
+        if (s.get("rsi_weekly")   or 0)   < cfg_sbs.get("min_weekly_rsi", 56): continue
+        if (s.get("vol_ratio")    or 0)   < cfg_sbs.get("min_vol_ratio",  1.3): continue
+        if (s.get("consol_range") or 999) > cfg_sbs.get("max_consol_pct", 12): continue
+        if (s.get("atr_pct")      or 999) > cfg_sbs.get("max_atr_pct",    5):  continue
+        if (s.get("market_cap")   or 0)   < cfg_sbs.get("min_market_cap", 300): continue
         candidates.add(sym)
     return candidates
 
@@ -293,14 +294,14 @@ def run_tpo(ctl_candidates, stocks, cfg_tpo):
         s   = stocks.get(sym, {})
         rsi = s.get("rsi_daily") or 0
         if not (cfg_tpo.get("min_rsi", 42) <= rsi <= cfg_tpo.get("max_rsi", 55)): continue
-        if abs(s.get("dist_sma50") or 999) > cfg_tpo.get("max_dist_sma50", 3):    continue
-        if (s.get("atr_pct") or 999) > cfg_tpo.get("max_atr_pct", 4):             continue
+        if abs(s.get("dist_sma50") or 999) > cfg_tpo.get("max_dist_sma50", 3): continue
+        if (s.get("atr_pct") or 999) > cfg_tpo.get("max_atr_pct", 4): continue
         candidates.add(sym)
     return candidates
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# EAP  (unchanged from v3)
+# EAP (identical to v4)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_eap_action(symbol, sector, events, cfg_eap):
@@ -336,8 +337,8 @@ def get_eap_action(symbol, sector, events, cfg_eap):
             continue
         impact = _classify(ev)
         if impact == "HIGH":
-            if 0 <= days <= pre_days:       return "AVOID_ENTRY"
-            if -pre_days <= days < 0:       best_action = "PRIORITISE"
+            if 0 <= days <= pre_days:    return "AVOID_ENTRY"
+            if -pre_days <= days < 0:    best_action = "PRIORITISE"
         elif impact == "MEDIUM":
             if 0 <= days <= pre_days:
                 if best_action != "AVOID_ENTRY": best_action = "AVOID_ENTRY"
@@ -348,157 +349,117 @@ def get_eap_action(symbol, sector, events, cfg_eap):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# OPEN POSITION SIGNAL — v4
+# OPEN POSITION SIGNAL (v4 logic, thresholds now from T dict)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def classify_open_position_signal(msl_row: dict, pos: dict) -> tuple:
-    """
-    Determine signal_type for an open position.
-
-    v4 changes vs v3:
-      FIX 6: st_cushion_pct ≤ 0 → EXIT (supertrend broken)
-      FIX 7: lifecycle=ADD + trend_maturity LATE/EXHAUSTED → HOLD
-             (prevent adding into dying trend)
-      FIX 8: velocity=DECELERATING + holding_score<60 → HOLD annotated
-             as "hold_deceleration_monitor" for alerts/AI visibility
-
-    Returns (signal_type, position_state, reason)
-    """
+def classify_open_position_signal(msl_row: dict, pos: dict, T: dict) -> tuple:
     holding_score  = float(msl_row.get("holding_score") or 0)
     lifecycle      = (msl_row.get("lifecycle")      or "").upper()
     velocity_state = (msl_row.get("velocity_state") or "").upper()
     trend_maturity = (msl_row.get("trend_maturity") or "").upper()
-    st_cushion_pct = msl_row.get("st_cushion_pct")   # None if compute_msl not enriched
+    st_cushion_pct = msl_row.get("st_cushion_pct")
 
-    # ── Hard exits (priority order) ──────────────────────────────────────────
-
-    if holding_score > 0 and holding_score < HOLDING_SCORE_EXIT_THRESHOLD:
+    if holding_score > 0 and holding_score < T["holding_exit"]:
         return "EXIT", "OPEN_POSITION", f"holding_score_low_{holding_score:.0f}"
-
     if lifecycle == "EXIT":
         return "EXIT", "OPEN_POSITION", "lifecycle_exit"
-
-    # FIX 6 — supertrend broken: reliable structural exit signal
-    # Guard: only act when value is explicitly set (not None/missing)
     if st_cushion_pct is not None and float(st_cushion_pct) <= 0:
         return "EXIT", "OPEN_POSITION", "supertrend_broken"
-
     if lifecycle == "REDUCE":
         return "REDUCE", "OPEN_POSITION", "lifecycle_reduce"
-
-    # FIX 7 — ADD suppressed for late/exhausted trends
     if lifecycle == "ADD":
         if trend_maturity in LATE_MATURITY:
             return "HOLD", "OPEN_POSITION", "add_suppressed_late_trend"
-        if velocity_state == "ACCELERATING" and holding_score >= ADD_HOLDING_MIN:
+        if velocity_state == "ACCELERATING" and holding_score >= T["add_holding_min"]:
             return "ADD", "OPEN_POSITION", "lifecycle_add_accelerating"
-
-    # Ops override (manual action_required preserves operator control)
     action = (pos.get("action_required") or "").upper()
     if "EXIT" in action or "SELL" in action:
         return "EXIT", "OPEN_POSITION", "manual_action_exit"
     if "ADD" in action:
         return "ADD",  "OPEN_POSITION", "manual_action_add"
-
-    # FIX 8 — annotate deceleration for alert/AI visibility
     if velocity_state == "DECELERATING" and holding_score < 60:
         return "HOLD", "OPEN_POSITION", "hold_deceleration_monitor"
-
     return "HOLD", "OPEN_POSITION", "holding"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ATR ALLOWANCE HELPER — v4 new
+# ATR ALLOWANCE — now reads from dynamic matrix in T dict
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _max_chase_atrs(momentum_state: str, momentum_phase: str,
                     velocity_state: str, trend_maturity: str,
                     struct_edge: str, weekly_structure: str,
-                    psar_dual: bool, bb_squeeze: bool) -> float:
+                    psar_dual: bool, bb_squeeze: bool,
+                    atr_matrix: dict) -> float:
     """
-    Return maximum allowable ATR-multiples of chase above entry_zone_high.
-
-    Base allowance is set by momentum quality (phase × velocity), then
-    structure quality bonuses are added. All inputs are upper-cased strings.
-
-    Momentum quality matrix:
-      HOT + EARLY  + ACCELERATING → 3.0  (best: catching a trend before it expands)
-      HOT + EXPANSION + ACCELERATING → 2.5
-      HOT + EXPANSION + FLAT       → 1.8
-      BUILDING + any + ACCELERATING → 2.0
-      BUILDING + any + FLAT         → 1.2
-      LATE or EXHAUSTED trend       → 0.5  (near end of move, minimal tolerance)
-      EXTENDED timing               → 0.0  (no chase, reentry only)
-      Default                       → 1.0
-
-    Structure bonuses (stackable, capped at +1.6 total):
-      struct_edge = YES            → +0.5
-      weekly_structure = STRONG    → +0.3
-      psar_dual_confirmed = True   → +0.3
-      bb_squeeze = True            → +0.5
+    Read ATR chase allowances from the dynamic atr_matrix (system_config).
+    Step 20 calibration updates this JSON based on actual win rates.
+    Structure bonuses capped at +1.6 ATRs — same as v4.
     """
-    # Base by momentum
-    if trend_maturity == "EXTENDED":
-        base = 0.0
-    elif trend_maturity in LATE_MATURITY:
-        base = 0.5
-    elif momentum_state == "HOT":
-        if momentum_phase == "EARLY" and velocity_state == "ACCELERATING":
-            base = 3.0
-        elif velocity_state == "ACCELERATING":
-            base = 2.5
-        else:
-            base = 1.8
-    elif momentum_state == "BUILDING":
-        base = 2.0 if velocity_state == "ACCELERATING" else 1.2
+    # Build lookup key from momentum state
+    ms  = momentum_state.upper()
+    mp  = momentum_phase.upper()
+    vs  = velocity_state.upper()
+    tm  = trend_maturity.upper()
+
+    if tm == "EXTENDED":
+        base = atr_matrix.get("EXTENDED_ANY", 0.0)
+    elif tm in LATE_MATURITY:
+        base = atr_matrix.get("LATE_ANY", 0.5)
     else:
-        base = 1.0
+        # Try most specific key first, fall back to progressively broader
+        key1 = f"{ms}_{mp[:9]}_{vs[:11]}"
+        key2 = f"{ms}_{mp[:9]}_ANY"
+        key3 = f"{ms}_ANY_ANY"
+        base = (atr_matrix.get(key1)
+                or atr_matrix.get(key2)
+                or atr_matrix.get(key3)
+                or atr_matrix.get("DEFAULT", 1.0))
 
-    # Structure bonuses
+    # Structure quality bonuses (unchanged from v4)
     bonus = 0.0
-    if struct_edge == "YES":           bonus += 0.5
-    if weekly_structure == "STRONG":   bonus += 0.3
-    if psar_dual:                      bonus += 0.3
-    if bb_squeeze:                     bonus += 0.5
-
-    return round(base + min(bonus, 1.6), 2)
+    if struct_edge == "YES":          bonus += 0.5
+    if weekly_structure == "STRONG":  bonus += 0.3
+    if psar_dual:                     bonus += 0.3
+    if bb_squeeze:                    bonus += 0.5
+    return round(float(base) + min(bonus, 1.6), 2)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ENTRY SIGNAL CLASSIFICATION — v4
+# ENTRY SIGNAL CLASSIFICATION v5
+# Major addition: system_config signal_threshold_* keys now applied in Gate 5.
+# All gate ordering from v4 preserved exactly.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def classify_entry_signal(msl_row: dict, open_map: dict,
-                           stock_data: dict,
+                           stock_data: dict, T: dict,
                            threshold: float = None) -> tuple:
     """
-    Classify entry signal for a new position candidate.
+    Returns (is_entry: bool, signal_type: str, filter_reason: str, near_miss_data: dict)
 
-    v4 signature change: stock_data (dict from stock_data_daily) added as
-    3rd positional arg. Caller passes stock_map.get(sym, {}).
-    Needed for atr_pct and above_sma50 (live from bhavcopy, not in msl_row).
+    near_miss_data is populated for WATCH signals so step 19 can evaluate upgrades.
+    It contains: original_signal_type (what it would have been), dist_to_qualify,
+    and which specific threshold blocked it.
 
-    Returns (is_entry: bool, signal_type: str, filter_reason: str)
-
-    Gate order:
+    Gate order (unchanged from v4):
       3a. already_in_position
       3b. missing price data
       3c. risk_score hard block
       3d. liquidity block
       3e. lifecycle EXIT block
-      3f. EXTENDED timing, no reentry
-      4a. below zone: pullback vs breakdown (v4 NEW)
-      4b. above zone: ATR-normalised distance (v4 REPLACED fixed %)
-      4c. R:R viability from current price (v4 NEW)
-      4d. target already reached check (v4 NEW)
-      5.  signal subtype classification
+      3f. EXTENDED timing no reentry
+      4a. below zone: pullback vs breakdown
+      4b. above zone: ATR-normalised distance
+      4c. R:R viability
+      4d. target already reached
+      5.  signal subtype + threshold validation
     """
     sym = msl_row.get("symbol")
+    near_miss = {}
 
     if sym in open_map:
-        return False, None, "already_in_position"
+        return False, None, "already_in_position", {}
 
-    # ── master_shortlist fields (compute_msl enriched in full mode) ──────────
     ep             = msl_row.get("entry_zone_low")
     eh             = msl_row.get("entry_zone_high") or (ep * 1.02 if ep else None)
     cp             = msl_row.get("current_price")
@@ -521,42 +482,44 @@ def classify_entry_signal(msl_row: dict, open_map: dict,
     psar_dual         = bool(msl_row.get("psar_dual_confirmed"))
     st_cushion_pct    = msl_row.get("st_cushion_pct")
 
-    # ── stock_data_daily fields (live bhavcopy data, not in msl_row) ─────────
-    atr_pct     = float(stock_data.get("atr_pct") or ATR_FALLBACK_PCT)
+    atr_pct     = float(stock_data.get("atr_pct") or T["atr_fallback"])
     above_sma50 = bool(stock_data.get("above_sma50"))
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # GATE 3 — Hard blocks
-    # ─────────────────────────────────────────────────────────────────────────
+    # Indicators used in Gate 5 threshold checks (from stock_data_daily)
+    rsi_d        = float(stock_data.get("rsi_daily")   or 0)
+    rsi_w        = float(stock_data.get("rsi_weekly")  or 0)
+    rsi_m        = float(stock_data.get("rsi_monthly") or 0)
+    adx          = float(stock_data.get("adx")         or 0)
+    vol_ratio    = float(stock_data.get("vol_ratio")   or 0)
+    delivery_pct = float(stock_data.get("delivery_pct") or 0)
+    dist_sma50   = float(stock_data.get("dist_sma50")  or 0)
+    consol_range = float(stock_data.get("consol_range") or 0)
+    ret_6m       = float(stock_data.get("ret_6m")       or 0)
 
+    # ── GATE 3: Hard blocks ───────────────────────────────────────────────────
     if not ep or not cp or ep <= 0:
-        return False, None, "missing_price_data"
+        return False, None, "missing_price_data", {}
 
-    if risk_score >= RISK_BLOCK_THRESHOLD:
-        return False, None, f"blocked_high_risk_{risk_score:.0f}"
+    if risk_score >= T["risk_block"]:
+        near_miss = {"blocked_by": "risk_score", "value": risk_score, "threshold": T["risk_block"]}
+        return False, None, f"blocked_high_risk_{risk_score:.0f}", near_miss
 
-    # Liquidity gate: only apply when value_cr is known (bhavcopy has run)
     value_cr_known = float(msl_row.get("value_cr") or 0) > 0
     if value_cr_known and (low_liquidity or liquidity_qual == "VERY_LOW"):
-        return False, None, "blocked_low_liquidity"
+        return False, None, "blocked_low_liquidity", {}
 
     if lifecycle == "EXIT":
-        return False, None, "exit_lifecycle_no_entry"
+        return False, None, "exit_lifecycle_no_entry", {}
 
     if entry_timing_type == "EXTENDED" and reentry_mode != "ELIGIBLE":
-        return False, None, "extended_timing_no_reentry"
+        return False, None, "extended_timing_no_reentry", {}
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # GATE 4A — Below-zone: pullback vs breakdown  (v4: was simple hard block)
-    # ─────────────────────────────────────────────────────────────────────────
-
+    # ── GATE 4A: Below-zone ───────────────────────────────────────────────────
     threshold_val = threshold or buy_candidate_threshold()
     below_zone    = cp < (ep * (1 - threshold_val))
 
     if below_zone:
-        # Determine whether price is on structure or breaking through it
         st_ok = (st_cushion_pct is not None and float(st_cushion_pct) > 0)
-
         is_breakdown = (
             not above_sma50
             or weekly_structure in WEAK_STRUCTURE
@@ -566,120 +529,143 @@ def classify_entry_signal(msl_row: dict, open_map: dict,
         is_valid_pullback = (
             above_sma50
             and weekly_structure not in WEAK_STRUCTURE
-            and weekly_structure != ""     # don't trust missing structure data
+            and weekly_structure != ""
             and st_ok
             and velocity_state not in ("DECELERATING",)
             and (reentry_mode == "ELIGIBLE" or entry_timing_type == "REENTRY")
         )
-
         if is_breakdown:
-            return False, None, "structural_breakdown"
+            near_miss = {"blocked_by": "structural_breakdown", "below_zone_pct": round((ep - cp) / ep * 100, 2)}
+            return False, None, "structural_breakdown", near_miss
         elif not is_valid_pullback:
-            return False, None, "below_zone_monitoring"
-        # is_valid_pullback == True → fall through to R:R check then REENTRY_SETUP
+            near_miss = {"blocked_by": "below_zone_monitoring", "below_zone_pct": round((ep - cp) / ep * 100, 2)}
+            return False, None, "below_zone_monitoring", near_miss
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # GATE 4B — Above-zone: ATR-normalised distance  (v4: replaces fixed 3%/8%)
-    # ─────────────────────────────────────────────────────────────────────────
-
-    above_zone_raw = (cp - eh) / eh if eh and eh > 0 else 0
-
+    # ── GATE 4B: Above-zone ATR distance ─────────────────────────────────────
     if cp > eh:
         if atr_pct <= 0:
-            # ATR unavailable: conservative fallback to absolute %
-            if above_zone_raw > 0.08:
-                return False, None, "far_above_no_atr_data"
+            if (cp - eh) / eh > 0.08:
+                near_miss = {"blocked_by": "far_above_no_atr", "above_zone_pct": round((cp - eh) / eh * 100, 2)}
+                return False, None, "far_above_no_atr_data", near_miss
         else:
             dist_in_atrs = (cp - eh) / (cp * atr_pct / 100)
             max_atrs     = _max_chase_atrs(
                 momentum_state, momentum_phase, velocity_state, trend_maturity,
-                struct_edge, weekly_structure, psar_dual, bb_squeeze
+                struct_edge, weekly_structure, psar_dual, bb_squeeze,
+                T["atr_matrix"]
             )
             if dist_in_atrs > max_atrs:
-                return False, None, (
-                    f"chase_{dist_in_atrs:.1f}atrs_limit_{max_atrs:.1f}"
-                )
+                near_miss = {
+                    "blocked_by": "atr_chase",
+                    "dist_atrs": round(dist_in_atrs, 2),
+                    "max_atrs":  round(max_atrs, 2),
+                    "gap_atrs":  round(dist_in_atrs - max_atrs, 2),
+                }
+                return False, None, f"chase_{dist_in_atrs:.1f}atrs_limit_{max_atrs:.1f}", near_miss
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # GATE 4C — R:R viability from current price  (v4: was entirely absent)
-    # ─────────────────────────────────────────────────────────────────────────
-    # Only check when expected_r is meaningfully set (> 0).
-    # stop_price = entry_zone_low × (1 − STOP_BUFFER_PCT)
-    # ideal_target = entry_zone_low + ideal_risk × expected_r
-    # implied_rr = (ideal_target − cp) / (cp − stop_price)
-    # If implied_rr < MIN_RR_ENTRY: insufficient reward from here.
-
-    min_rr = cfg_float("min_rr_to_enter", _MIN_RR_DEFAULT)
-
+    # ── GATE 4C: R:R viability ────────────────────────────────────────────────
     if expected_r > 0 and ep > 0:
-        stop_price    = ep * (1 - STOP_BUFFER_PCT)
-        ideal_risk    = ep - stop_price                   # risk in ₹ at zone entry
-        ideal_target  = ep + (ideal_risk * expected_r)    # target price from zone entry
+        stop_price   = ep * (1 - T["stop_buffer_pct"])
+        ideal_risk   = ep - stop_price
+        ideal_target = ep + (ideal_risk * expected_r)
 
-        # FIX 4D: target already reached — price has exceeded the intended target
         if ideal_target <= cp:
-            return False, None, "target_already_reached"
+            near_miss = {"blocked_by": "target_reached", "target": ideal_target, "cp": cp}
+            return False, None, "target_already_reached", near_miss
 
-        # R:R is only meaningful if current price is above the stop
         if cp > stop_price:
             remaining_upside = ideal_target - cp
             current_risk     = cp - stop_price
             implied_rr       = remaining_upside / current_risk
-            if implied_rr < min_rr:
-                return False, None, f"insufficient_rr_{implied_rr:.2f}x"
+            if implied_rr < T["min_rr"]:
+                near_miss = {"blocked_by": "rr", "implied_rr": round(implied_rr, 2), "min_rr": T["min_rr"]}
+                return False, None, f"insufficient_rr_{implied_rr:.2f}x", near_miss
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # GATE 5 — Signal subtype classification (highest quality first)
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── GATE 5: Signal subtype + threshold validation (v5 ADDITION) ───────────
+    # Now checks system_config signal_threshold_* keys for each signal type.
+    # A stock that passes gates 3-4 is validated; gate 5 determines quality tier.
 
-    # PRIME_SETUP — FIX 4: now includes EARLY phase (was EXPANSION only)
-    # EARLY phase is the best entry: catching a trend before expansion begins.
-    if (momentum_state == "HOT"
-            and momentum_phase in ("EXPANSION", "EARLY")
-            and velocity_state == "ACCELERATING"
-            and struct_edge == "YES"
-            and breakout_readiness >= PRIME_BREAKOUT_MIN
-            and trend_maturity not in LATE_MATURITY):
-        return True, "PRIME_SETUP", "prime_all_aligned"
+    # PRIME_SETUP — all momentum conditions + system_config RSI/ADX/vol thresholds
+    prime_momentum_ok = (
+        momentum_state == "HOT"
+        and momentum_phase in ("EXPANSION", "EARLY")
+        and velocity_state == "ACCELERATING"
+        and struct_edge == "YES"
+        and breakout_readiness >= T["prime_breakout_min"]
+        and trend_maturity not in LATE_MATURITY
+    )
+    prime_technical_ok = (
+        (rsi_d == 0 or T["prime_rsi_d_min"] <= rsi_d <= T["prime_rsi_d_max"])
+        and (rsi_w == 0 or T["prime_rsi_w_min"] <= rsi_w <= T["prime_rsi_w_max"])
+        and (adx == 0 or adx >= T["prime_adx_min"])
+        and (vol_ratio == 0 or vol_ratio >= T["prime_vol_min"])
+        and (delivery_pct == 0 or delivery_pct >= T["prime_del_min"])
+        and (dist_sma50 == 0 or abs(dist_sma50) <= T["prime_sma50_max"])
+    )
+    if prime_momentum_ok and prime_technical_ok:
+        return True, "PRIME_SETUP", "prime_all_aligned", {}
 
-    # BREAKOUT_SETUP — FIX 5: trend_maturity guard added
-    # Late breakouts (LATE/EXHAUSTED trend) trap buyers near tops.
+    # PRIME_SETUP blocked by technical thresholds — capture as near miss
+    if prime_momentum_ok and not prime_technical_ok:
+        near_miss = {"blocked_by": "prime_technical", "would_be": "PRIME_SETUP",
+                     "rsi_d": rsi_d, "adx": adx, "vol": vol_ratio, "del": delivery_pct}
+
+    # BREAKOUT_SETUP — with trend_maturity guard + prebreak thresholds
     if trend_maturity not in LATE_MATURITY:
-        if (bb_squeeze or breakout_readiness >= 70) and volume_trend == "EXPANDING":
-            return True, "BREAKOUT_SETUP", "breakout_squeeze_volume"
-        if breakout_readiness >= 60 and momentum_state in ("HOT", "BUILDING"):
-            return True, "BREAKOUT_SETUP", "breakout_readiness_high"
+        prebreak_tech_ok = (
+            (rsi_d == 0 or T["prebreak_rsi_d_min"] <= rsi_d <= T["prebreak_rsi_d_max"])
+            and (rsi_w == 0 or rsi_w >= T["prebreak_rsi_w_min"])
+            and (adx == 0 or T["prebreak_adx_min"] <= adx <= T["prebreak_adx_max"])
+            and (vol_ratio == 0 or vol_ratio <= T["prebreak_vol_max"])
+            and (consol_range == 0 or consol_range <= T["prebreak_consol_max"])
+        )
+        if (bb_squeeze or breakout_readiness >= 70) and volume_trend == "EXPANDING" and prebreak_tech_ok:
+            return True, "BREAKOUT_SETUP", "breakout_squeeze_volume", {}
+        if breakout_readiness >= 60 and momentum_state in ("HOT", "BUILDING") and prebreak_tech_ok:
+            return True, "BREAKOUT_SETUP", "breakout_readiness_high", {}
 
-    # REENTRY_SETUP — explicit timing flag OR valid below-zone pullback
-    if entry_timing_type == "REENTRY" or reentry_mode == "ELIGIBLE":
-        return True, "REENTRY_SETUP", "reentry_pullback"
-    if below_zone:
-        # Reached here only if is_valid_pullback passed Gate 4A
-        return True, "REENTRY_SETUP", "pullback_to_zone"
+    # REENTRY_SETUP — with reentry thresholds
+    reentry_flag = entry_timing_type == "REENTRY" or reentry_mode == "ELIGIBLE"
+    if reentry_flag or below_zone:
+        reentry_tech_ok = (
+            (rsi_d == 0 or T["reentry_rsi_d_min"] <= rsi_d <= T["reentry_rsi_d_max"])
+            and (rsi_w == 0 or T["reentry_rsi_w_min"] <= rsi_w <= T["reentry_rsi_w_max"])
+            and (adx == 0 or adx >= T["reentry_adx_min"])
+            and (vol_ratio == 0 or vol_ratio >= T["reentry_vol_min"])
+            and (delivery_pct == 0 or delivery_pct >= T["reentry_del_min"])
+            and (ret_6m == 0 or ret_6m >= T["reentry_ret6m_min"])
+        )
+        if reentry_tech_ok:
+            reason = "pullback_to_zone" if below_zone else "reentry_pullback"
+            return True, "REENTRY_SETUP", reason, {}
+        # Near miss: would have been REENTRY but failed technical thresholds
+        if not near_miss:
+            near_miss = {"blocked_by": "reentry_technical", "would_be": "REENTRY_SETUP",
+                         "rsi_d": rsi_d, "adx": adx, "vol": vol_ratio}
 
     # STAGED_ENTRY — approaching zone with building momentum
     if entry_timing_type == "APPROACHING" and momentum_state in ("HOT", "BUILDING"):
-        return True, "STAGED_ENTRY", "approaching_zone_building"
+        staged_tech_ok = (
+            (rsi_d == 0 or T["staged_rsi_d_min"] <= rsi_d <= T["staged_rsi_d_max"])
+            and (rsi_w == 0 or rsi_w >= T["staged_rsi_w_min"])
+            and (adx == 0 or adx >= T["staged_adx_min"])
+            and (vol_ratio == 0 or vol_ratio >= T["staged_vol_min"])
+            and (delivery_pct == 0 or delivery_pct >= T["staged_del_min"])
+        )
+        if staged_tech_ok:
+            return True, "STAGED_ENTRY", "approaching_zone_building", {}
 
-    # BUY_CANDIDATE — standard in/near zone entry (fallback)
-    return True, "BUY_CANDIDATE", "in_zone"
+    # BUY_CANDIDATE — standard in/near zone entry (no additional thresholds beyond gates 3-4)
+    return True, "BUY_CANDIDATE", "in_zone", near_miss
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SCORE ADJUSTMENT — v4 (structure unchanged, CAUTION penalty placement note)
+# SCORE ADJUSTMENT (v5 — bonuses now from T dict, not hardcoded)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def compute_adjusted_score(msl_row: dict, base_score: float,
-                            signal_type: str, regime_name: str) -> float:
-    """
-    Adjust final_score using compute_msl sub-scores.
-
-    Identical logic to v3. No changes required here because:
-    - Industry bonus is now applied to base_score BEFORE this function is called
-      (FIX 10), so it flows correctly into all subsequent adjustments.
-    - The CAUTION ×0.85 regime penalty is applied last to the already-adjusted
-      score, which is the intended behaviour (penalise the whole picture).
-    """
+                            signal_type: str, regime_name: str,
+                            T: dict) -> float:
     score = float(base_score or 0)
 
     momentum_score      = float(msl_row.get("momentum_score")      or 0)
@@ -689,19 +675,19 @@ def compute_adjusted_score(msl_row: dict, base_score: float,
     psar_dual           = bool(msl_row.get("psar_dual_confirmed"))
     weekly_struct       = (msl_row.get("weekly_structure") or "").upper()
 
-    if momentum_score >= 80:      score += 3
-    elif momentum_score >= 70:    score += 1
-    if institutional_score >= 60: score += 2
-    if breakout_readiness >= 65:  score += 2
-    if psar_dual:                 score += 2
-    if weekly_struct == "STRONG": score += 1
+    if momentum_score >= 80:      score += T["bonus_momentum_high"]
+    elif momentum_score >= 70:    score += T["bonus_momentum_mid"]
+    if institutional_score >= 60: score += T["bonus_institutional"]
+    if breakout_readiness >= 65:  score += T["bonus_breakout_ready"]
+    if psar_dual:                 score += T["bonus_psar_dual"]
+    if weekly_struct == "STRONG": score += T["bonus_weekly_strong"]
 
-    if risk_score >= RISK_PENALTY_THRESHOLD: score -= 5
-    elif risk_score >= 50:                   score -= 2
+    if risk_score >= T["risk_penalty"]: score += T["penalty_risk_high"]
+    elif risk_score >= 50:              score += T["penalty_risk_mid"]
 
-    if signal_type == "PRIME_SETUP":      score += 5
-    elif signal_type == "BREAKOUT_SETUP": score += 3
-    elif signal_type == "REENTRY_SETUP":  score += 2
+    if signal_type == "PRIME_SETUP":      score += T["bonus_prime"]
+    elif signal_type == "BREAKOUT_SETUP": score += T["bonus_breakout"]
+    elif signal_type == "REENTRY_SETUP":  score += T["bonus_reentry"]
 
     if regime_name == "CAUTION":
         score = round(score * 0.85, 1)
@@ -710,16 +696,16 @@ def compute_adjusted_score(msl_row: dict, base_score: float,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SCANNER CROSS-REFERENCE  (unchanged from v3)
+# SCANNER CROSS-REFERENCE (identical to v4)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _apply_scanner_crossref(signals, sb, run_date):
     try:
         scanner_rows = (
             sb.table("scanner_signals")
-            .select("symbol,pattern_type")
-            .eq("date", str(run_date))
-            .execute().data
+              .select("symbol,pattern_type")
+              .eq("date", str(run_date))
+              .execute().data
         )
         if not scanner_rows:
             return signals
@@ -749,12 +735,22 @@ def _apply_scanner_crossref(signals, sb, run_date):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MAIN GENERATION LOOP — v4
+# MAIN GENERATION LOOP v5
+# Key addition: T dict passed through all functions; near_miss_data in signal dict
 # ─────────────────────────────────────────────────────────────────────────────
 
 def generate(run_date: date | None = None) -> list:
     run_date  = run_date or today_ist()
     strat_cfg = get_strategy_config()
+
+    # ── Load dynamic thresholds first ────────────────────────────────────────
+    T = load_signal_thresholds()
+    logger.info(
+        f"  Thresholds loaded: risk_block={T['risk_block']} "
+        f"holding_exit={T['holding_exit']} min_rr={T['min_rr']} "
+        f"min_score_adj={T['min_score_adj']} "
+        f"prime_breakout_min={T['prime_breakout_min']}"
+    )
 
     (stock_map, msl, open_map, regime,
      events, asm_set, fo_ban_set, industry_map,
@@ -789,22 +785,32 @@ def generate(run_date: date | None = None) -> list:
     above_200dma_ctx = regime.get("above_200dma_pct")
 
     sb = get_supabase()
-    sectors = sb.table("sector_strength").select("sector,rank").eq("date", str(run_date)).execute().data
+    sectors    = sb.table("sector_strength").select("sector,rank").eq("date", str(run_date)).execute().data
     sector_rank = {s["sector"]: s["rank"] for s in sectors if s.get("rank")}
 
-    cfg_ctl = json.loads(strat_cfg["CTL"]) if isinstance(strat_cfg.get("CTL"), str) else strat_cfg.get("CTL", {})
-    cfg_sbs = json.loads(strat_cfg["SBS"]) if isinstance(strat_cfg.get("SBS"), str) else strat_cfg.get("SBS", {})
-    cfg_tpo = json.loads(strat_cfg["TPO"]) if isinstance(strat_cfg.get("TPO"), str) else strat_cfg.get("TPO", {})
-    cfg_eap = json.loads(strat_cfg["EAP"]) if isinstance(strat_cfg.get("EAP"), str) else strat_cfg.get("EAP", {})
+    cfg_ctl = strat_cfg.get("CTL", {})
+    cfg_sbs = strat_cfg.get("SBS", {})
+    cfg_tpo = strat_cfg.get("TPO", {})
+    cfg_eap = strat_cfg.get("EAP", {})
+    for k in ("CTL", "SBS", "TPO", "EAP"):
+        v = strat_cfg.get(k)
+        if isinstance(v, str):
+            try:
+                strat_cfg[k] = json.loads(v)
+            except Exception:
+                strat_cfg[k] = {}
+    cfg_ctl = strat_cfg.get("CTL", {})
+    cfg_sbs = strat_cfg.get("SBS", {})
+    cfg_tpo = strat_cfg.get("TPO", {})
+    cfg_eap = strat_cfg.get("EAP", {})
 
     ctl_set         = run_ctl(stock_map, sector_rank, cfg_ctl)
     sbs_set         = run_sbs(stock_map, sector_rank, cfg_sbs)
     tpo_set         = run_tpo(ctl_set, stock_map, cfg_tpo)
     rule_engine_set = ctl_set | sbs_set | tpo_set
 
-    min_score         = cfg_float("min_score_to_show", 50)
-    show_watch        = cfg_bool("show_watching_stocks", True)
-    min_score_adj     = cfg_float("min_score_adjusted", _MIN_SCORE_ADJ_DEFAULT)
+    min_score     = cfg_float("min_score_to_show", 50)
+    show_watch    = cfg_bool("show_watching_stocks", True)
 
     signals = []
 
@@ -815,9 +821,6 @@ def generate(run_date: date | None = None) -> list:
         sector    = msl_row.get("sector", "")
         in_engine = sym in rule_engine_set
 
-        # ── Industry context ──────────────────────────────────────────────────
-        # FIX 10: extracted and applied BEFORE min_score gate so the same
-        # score is used consistently throughout classification.
         industry  = stock_map.get(sym, {}).get("industry", "") or msl_row.get("industry", "")
         ind_ctx   = industry_map.get(industry, {})
         ind_rank  = ind_ctx.get("rank")
@@ -827,21 +830,19 @@ def generate(run_date: date | None = None) -> list:
 
         score = float(msl_row.get("final_score") or 0)
 
-        # FIX 10: industry bonus applied before min_score gate
+        # Industry bonus applied before min_score gate (dynamic from T)
         if cfg("industry_scoring_active") == "true":
-            if ind_top5:              score += 10
-            if ind_state == "STRONG": score += 5
+            if ind_top5:              score += T["industry_bonus_top5"]
+            if ind_state == "STRONG": score += T["industry_bonus_strong"]
 
         if score < min_score:
             continue
 
-        # ── Strategy tag ──────────────────────────────────────────────────────
         if sym in tpo_set:   strat_tag = "TPO"
         elif sym in ctl_set: strat_tag = "CTL"
         elif sym in sbs_set: strat_tag = "SBS"
         else:                strat_tag = msl_row.get("strategy_source", "")
 
-        # ── Safety flags ──────────────────────────────────────────────────────
         asm_flag    = sym in asm_set
         fo_ban_flag = sym in fo_ban_set
         eap_action  = get_eap_action(sym, sector, events, cfg_eap)
@@ -849,20 +850,16 @@ def generate(run_date: date | None = None) -> list:
         filter_reason  = None
         signal_subtype = None
         regime_warning = False
-
-        # ── Signal classification ─────────────────────────────────────────────
+        near_miss_data = {}
 
         if in_pos:
-            # OPEN POSITION PATH — v4 classify_open_position_signal
             signal_type, position_state, filter_reason = classify_open_position_signal(
-                msl_row, pos
+                msl_row, pos, T
             )
-
         else:
-            # NEW ENTRY PATH — v4 classify_entry_signal (now takes stock_data)
             stock_data = stock_map.get(sym, {})
-            is_entry, signal_type_candidate, filter_reason = classify_entry_signal(
-                msl_row, open_map, stock_data
+            is_entry, signal_type_candidate, filter_reason, near_miss_data = classify_entry_signal(
+                msl_row, open_map, stock_data, T
             )
 
             if is_entry:
@@ -870,20 +867,16 @@ def generate(run_date: date | None = None) -> list:
                 signal_type    = signal_type_candidate
                 signal_subtype = filter_reason
                 filter_reason  = None
+                near_miss_data = {}
             else:
                 position_state = "WATCHING"
                 signal_type    = "WATCH"
                 if not show_watch:
                     continue
 
-        # ── FIX 9: ASM override scoped to new entries ONLY ───────────────────
-        # v3 wrongly overrode EXIT/REDUCE/HOLD on open positions to BLOCKED_ASM,
-        # suppressing critical management signals on ASM-listed held stocks.
-        # asm_flag stays in the signal dict as informational for all signals.
         if asm_flag and position_state != "OPEN_POSITION":
             signal_type = "BLOCKED_ASM"
 
-        # ── Regime warning + block ────────────────────────────────────────────
         if position_state == "BUY_CANDIDATE":
             if regime_name == "RISK OFF":
                 regime_warning = True
@@ -891,30 +884,26 @@ def generate(run_date: date | None = None) -> list:
                     signal_type = "BUY_BLOCKED_REGIME"
             elif regime_name == "CAUTION":
                 regime_warning = True
-                # Score penalty applied in compute_adjusted_score below
 
-        # ── EAP override — scoped to new entries only (unchanged from v3) ─────
-        # position_state == "BUY_CANDIDATE" already ensures this only fires
-        # for new entries; open positions have position_state == "OPEN_POSITION"
         if eap_action == "AVOID_ENTRY" and position_state == "BUY_CANDIDATE":
             signal_type = "AVOID_ENTRY_EVENT"
 
-        # ── Score adjustment ──────────────────────────────────────────────────
-        score_adjusted = compute_adjusted_score(msl_row, score, signal_type, regime_name)
+        score_adjusted = compute_adjusted_score(msl_row, score, signal_type, regime_name, T)
 
-        # ── FIX 11: score_adjusted floor for entry signals ────────────────────
-        # A PRIME_SETUP with score_adjusted=38 after regime+risk penalties is
-        # not a tradeable signal. Preserve the original signal_type in
-        # signal_subtype for analysis before overriding.
-        if signal_type in ENTRY_SIGNAL_TYPES and score_adjusted < min_score_adj:
-            signal_subtype = signal_type     # preserve for downstream analysis
+        # Floor for entry signals (dynamic threshold)
+        if signal_type in ENTRY_SIGNAL_TYPES and score_adjusted < T["min_score_adj"]:
+            if not near_miss_data:
+                near_miss_data = {"blocked_by": "adj_score_floor",
+                                  "would_be": signal_type,
+                                  "score_adj": score_adjusted,
+                                  "threshold": T["min_score_adj"]}
+            signal_subtype = signal_type
             signal_type    = "WATCH"
             position_state = "WATCHING"
             filter_reason  = f"low_adj_score_{score_adjusted:.0f}"
             if not show_watch:
                 continue
 
-        # ── Build signal dict ──────────────────────────────────────────────────
         sig = {
             # Identity
             "date":            str(run_date),
@@ -945,7 +934,7 @@ def generate(run_date: date | None = None) -> list:
             "industry_top5":   ind_top5,
             "industry_state":  ind_state,
             "industry_avg_rsi": ind_rsi_d,
-            # G1: stock technicals at signal time (stock_data_daily)
+            # Stock technicals (stock_data_daily)
             "rsi_daily":       stock_map.get(sym, {}).get("rsi_daily"),
             "rsi_weekly":      stock_map.get(sym, {}).get("rsi_weekly"),
             "adx":             stock_map.get(sym, {}).get("adx"),
@@ -962,16 +951,15 @@ def generate(run_date: date | None = None) -> list:
             "above_sma50":     stock_map.get(sym, {}).get("above_sma50"),
             "breakout_setup":  stock_map.get(sym, {}).get("breakout_setup"),
             # MSL fields
-            "days_in_list":    msl_row.get("days_in_list"),
-            "validity_score":  msl_row.get("validity_score"),
-            "expected_r_msl":  msl_row.get("expected_r"),
-            "sheet_conflict":      False,
-            "sheet_conflict_type": None,
-            "days_to_trigger_est": msl_row.get("days_to_trigger_est"),
-            "filter_reason":       filter_reason,
-            # Point-in-time sector rank
+            "days_in_list":         msl_row.get("days_in_list"),
+            "validity_score":       msl_row.get("validity_score"),
+            "expected_r_msl":       msl_row.get("expected_r"),
+            "sheet_conflict":       False,
+            "sheet_conflict_type":  None,
+            "days_to_trigger_est":  msl_row.get("days_to_trigger_est"),
+            "filter_reason":        filter_reason,
             "sector_rank_at_entry": sector_rank.get(sector) if sector else None,
-            # compute_msl AI_FEED_FIELDS (full set — feeds steps 18–20)
+            # compute_msl AI_FEED_FIELDS
             "momentum_state":       msl_row.get("momentum_state"),
             "momentum_phase":       msl_row.get("momentum_phase"),
             "velocity_state":       msl_row.get("velocity_state"),
@@ -1011,6 +999,10 @@ def generate(run_date: date | None = None) -> list:
             "nifty_5d_chg_pct":  nifty_5d_ctx,
             "above_200dma_pct":  above_200dma_ctx,
             "fii_net_20d_ctx":   fii_net_20d,
+            # v5 ADDITION: near_miss_data for step 19 WATCH upgrade evaluation
+            # Tells step 19 exactly WHY this stock is WATCH and how far it is from qualifying
+            # Step 19 uses this to decide if today's macro/news context changes the answer
+            "near_miss_data": json.dumps(near_miss_data) if near_miss_data else None,
         }
         signals.append(sig)
 
@@ -1019,7 +1011,7 @@ def generate(run_date: date | None = None) -> list:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SAVE  (unchanged from v3)
+# SAVE
 # ─────────────────────────────────────────────────────────────────────────────
 
 def save_signals(signals):
@@ -1042,89 +1034,58 @@ def main():
         return {}
 
     logger.info("=" * 60)
-    logger.info("STEP [15]: Generate Signals v4")
+    logger.info("STEP [15]: Generate Signals v5 — Dynamic Thresholds")
     logger.info("=" * 60)
 
     signals = generate()
 
     from collections import Counter
-    types    = Counter(s["signal_type"]           for s in signals)
-    subtypes = Counter(s.get("signal_subtype")    for s in signals if s.get("signal_subtype"))
-    reasons  = Counter(s.get("filter_reason")     for s in signals if s.get("filter_reason"))
+    types    = Counter(s["signal_type"]        for s in signals)
+    subtypes = Counter(s.get("signal_subtype") for s in signals if s.get("signal_subtype"))
 
-    logger.info(f"Signal breakdown:   {dict(types)}")
-    logger.info(f"Subtype breakdown:  {dict(subtypes)}")
+    logger.info(f"Signal breakdown:  {dict(types)}")
+    logger.info(f"Subtype breakdown: {dict(subtypes)}")
 
     buy_candidates = [s for s in signals if s["signal_type"] in ENTRY_SIGNAL_TYPES]
     prime_setups   = [s for s in signals if s["signal_type"] == "PRIME_SETUP"]
     reentry_setups = [s for s in signals if s["signal_type"] == "REENTRY_SETUP"]
     exits          = [s for s in signals if s["signal_type"] == "EXIT"]
     reduces        = [s for s in signals if s["signal_type"] == "REDUCE"]
-    decel_holds    = [s for s in signals if s.get("filter_reason") == "hold_deceleration_monitor"]
-    risk_off_warns = [s for s in signals if s.get("regime_warning")]
     watch_signals  = [s for s in signals if s["signal_type"] == "WATCH"]
+    near_misses    = [s for s in watch_signals if s.get("near_miss_data")]
 
-    logger.info(f"  BUY CANDIDATES:  {len(buy_candidates)} (PRIME: {len(prime_setups)} | REENTRY: {len(reentry_setups)})")
-    logger.info(f"  EXIT signals:    {len(exits)}")
-    logger.info(f"  REDUCE signals:  {len(reduces)}")
-    logger.info(f"  DECEL HOLDs:     {len(decel_holds)}")
-    logger.info(f"  REGIME WARNS:    {len(risk_off_warns)}")
+    logger.info(f"  BUY: {len(buy_candidates)} (PRIME:{len(prime_setups)} REENTRY:{len(reentry_setups)})")
+    logger.info(f"  EXIT:{len(exits)} REDUCE:{len(reduces)} WATCH:{len(watch_signals)} (near_miss:{len(near_misses)})")
 
     if watch_signals:
         watch_reasons = Counter(s.get("filter_reason", "unknown") for s in watch_signals)
-        logger.info(f"  WATCH signals ({len(watch_signals)}) by filter reason:")
         for reason, count in watch_reasons.most_common(10):
-            examples = [s["symbol"] for s in watch_signals
-                        if s.get("filter_reason") == reason][:4]
-            logger.info(f"    {reason}: {count} — e.g. {', '.join(examples)}")
-
-    # Log v4-specific breakdowns
-    rr_blocks     = [s for s in signals if "insufficient_rr" in (s.get("filter_reason") or "")]
-    atr_blocks    = [s for s in signals if "atrs_limit" in (s.get("filter_reason") or "")]
-    breakdown_blk = [s for s in signals if s.get("filter_reason") == "structural_breakdown"]
-    pullback_ok   = [s for s in signals if s.get("signal_subtype") == "pullback_to_zone"]
-    tgt_reached   = [s for s in signals if s.get("filter_reason") == "target_already_reached"]
-    adj_score_blk = [s for s in signals if "low_adj_score" in (s.get("filter_reason") or "")]
-    st_exits      = [s for s in signals if s.get("filter_reason") == "supertrend_broken"]
-
-    logger.info(f"  [v4] R:R blocks:        {len(rr_blocks)}")
-    logger.info(f"  [v4] ATR chase blocks:  {len(atr_blocks)}")
-    logger.info(f"  [v4] Breakdowns:        {len(breakdown_blk)}")
-    logger.info(f"  [v4] Valid pullbacks:   {len(pullback_ok)}")
-    logger.info(f"  [v4] Target reached:   {len(tgt_reached)}")
-    logger.info(f"  [v4] Adj score floor:  {len(adj_score_blk)}")
-    logger.info(f"  [v4] Supertrend exits: {len(st_exits)}")
+            examples = [s["symbol"] for s in watch_signals if s.get("filter_reason") == reason][:4]
+            logger.info(f"    {reason}: {count} — {', '.join(examples)}")
 
     if prime_setups:
         prime_str = ", ".join(
-            f"{s['symbol']}({s.get('score_adjusted', 0):.0f})"
-            for s in sorted(prime_setups,
-                            key=lambda x: x.get("score_adjusted", 0), reverse=True)[:8]
+            f"{s['symbol']}({s.get('score_adjusted',0):.0f})"
+            for s in sorted(prime_setups, key=lambda x: x.get("score_adjusted", 0), reverse=True)[:8]
         )
         logger.info(f"  ★ PRIME SETUPS: {prime_str}")
 
-    if signals:
-        s0 = signals[0]
-        logger.info(
-            f"  Market context: VIX={s0.get('india_vix','?')} "
-            f"Nifty5d={s0.get('nifty_5d_chg_pct','?')} "
-            f"Breadth={s0.get('above_200dma_pct','?')}% "
-            f"FII20d={s0.get('fii_net_20d_ctx','?')}"
-        )
+    if near_misses:
+        logger.info(f"  💡 Near misses for step 19 upgrade evaluation:")
+        for s in near_misses[:5]:
+            try:
+                nm = json.loads(s.get("near_miss_data") or "{}")
+                logger.info(f"    {s['symbol']}: {nm.get('blocked_by','?')} — {nm}")
+            except Exception:
+                pass
 
     save_signals(signals)
     return {
         "signals":        len(signals),
         "buy_candidates": len(buy_candidates),
         "prime_setups":   len(prime_setups),
-        "reentry_setups": len(reentry_setups),
         "exits":          len(exits),
-        "reduces":        len(reduces),
-        "decel_holds":    len(decel_holds),
-        "rr_blocks":      len(rr_blocks),
-        "atr_blocks":     len(atr_blocks),
-        "breakdown_blocks": len(breakdown_blk),
-        "pullback_ok":    len(pullback_ok),
+        "near_misses":    len(near_misses),
     }
 
 

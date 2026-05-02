@@ -146,6 +146,9 @@ def main():
     
     def step_compute_msl():
         from compute.compute_msl import main as fn; return fn()
+    
+    def step_calibration():
+        from calibration.calibration_engine import main as fn; return fn()
 
     # ── Phase 0 steps ─────────────────────────────────────────────────────────
     steps_p0 = [

@@ -98,6 +98,26 @@ def last_trading_day() -> date:
         d -= timedelta(days=1)
     return d
 
+def resolve_trade_date(sb) -> date:
+    """
+    Walk backwards from last_trading_day() skipping NSE holidays.
+    Checks nse_holidays table — same table used by compute_indicators.
+    """
+    candidate = last_trading_day()
+    try:
+        rows     = sb.table("nse_holidays").select("date").execute().data
+        holidays = {str(r["date"]) for r in rows}
+    except Exception as e:
+        logger.warning(f"nse_holidays fetch failed — skipping holiday check: {e}")
+        return candidate
+
+    while str(candidate) in holidays:
+        logger.info(f"  {candidate} is an NSE holiday — stepping back")
+        candidate -= timedelta(days=1)
+        while candidate.weekday() >= 5:   # skip any weekends landed on
+            candidate -= timedelta(days=1)
+
+    return candidate
 
 def nse_session() -> requests.Session:
     """Warm up an NSE session — NSE blocks requests without a prior Referer visit."""
@@ -364,6 +384,37 @@ def try_bse_delivery(trade_date: date, session: requests.Session) -> pd.DataFram
     logger.warning("[DELIVERY] Both delivery sources failed — delivery will be NULL")
     return empty
 
+# ── Universe filter ───────────────────────────────────────────────────────
+def fetch_chartink_universe(sb, trade_date: date) -> set:
+    """
+    Returns the set of symbols present in chartink_raw_data for trade_date.
+    Falls back to the most recent available date if today's data isn't fetched yet.
+    """
+    try:
+        rows = (sb.table("chartink_raw_data")
+                  .select("symbol")
+                  .eq("date", trade_date.isoformat())
+                  .execute().data)
+
+        if not rows:
+            latest = (sb.table("chartink_raw_data")
+                        .select("date")
+                        .order("date", desc=True)
+                        .limit(1)
+                        .execute().data)
+            if latest:
+                rows = (sb.table("chartink_raw_data")
+                          .select("symbol")
+                          .eq("date", latest[0]["date"])
+                          .execute().data)
+
+        syms = {r["symbol"] for r in rows if r.get("symbol")}
+        logger.info(f"[UNIVERSE] Chartink symbols: {len(syms)}")
+        return syms
+
+    except Exception as e:
+        logger.warning(f"[UNIVERSE] chartink_raw_data fetch failed: {e}")
+        return set()
 
 # ── Upsert to raw_prices ──────────────────────────────────────────────────
 def upsert_to_raw_prices(df: pd.DataFrame) -> int:
@@ -473,29 +524,49 @@ def main():
     logger.info("  STEP: Ingest Bhavcopy (NSE primary + BSE fallback)")
     logger.info("═" * 60)
 
-    trade_date = last_trading_day()
+    # ── Resolve trade date FIRST (needed by idempotency check) ────────────
+    sb         = get_supabase()
+    trade_date = resolve_trade_date(sb)
     logger.info(f"Trade date: {trade_date}")
 
-    # ── Idempotency: skip if already ingested today ───────────────────────
+    # ── Idempotency: skip only if BOTH tables are already populated ───────
     if not DRY_RUN:
         try:
-            sb = get_supabase()
-            existing = (
+            rp_count = (
                 sb.table("raw_prices")
-                .select("symbol", count="exact")
-                .eq("date", trade_date.isoformat())
-                .limit(1)
-                .execute()
-            )
-            if existing.count and existing.count > 100:
-                logger.info(
-                    f"raw_prices already has {existing.count} rows for {trade_date} — skipping"
-                )
-                return {
-                    "status": "already_done",
-                    "rows":   existing.count,
-                    "date":   trade_date.isoformat(),
-                }
+                  .select("symbol", count="exact")
+                  .eq("date", trade_date.isoformat())
+                  .limit(1)
+                  .execute()
+            ).count or 0
+
+            if rp_count > 100:
+                sdd_count = (
+                    sb.table("stock_data_daily")
+                      .select("symbol", count="exact")
+                      .eq("date", trade_date.isoformat())
+                      .limit(1)
+                      .execute()
+                ).count or 0
+
+                if sdd_count > 100:
+                    logger.info(
+                        f"Already complete for {trade_date} — "
+                        f"raw_prices: {rp_count} rows | "
+                        f"stock_data_daily: {sdd_count} rows — skipping"
+                    )
+                    return {
+                        "status":   "already_done",
+                        "rows":     rp_count,
+                        "sdd_rows": sdd_count,
+                        "date":     trade_date.isoformat(),
+                    }
+                else:
+                    logger.warning(
+                        f"raw_prices has {rp_count} rows for {trade_date} "
+                        f"but stock_data_daily has only {sdd_count} rows — "
+                        f"re-running to fix stock_data_daily"
+                    )
         except Exception as e:
             logger.warning(f"Idempotency check failed (non-fatal): {e}")
 
@@ -548,15 +619,31 @@ def main():
     ]
     final = bhav_df[[c for c in target_cols if c in bhav_df.columns]].copy()
 
-    # ── Upsert to raw_prices ──────────────────────────────────────────────
+     # ── Upsert to raw_prices — full universe, no filter ───────────────────
     rows_done = upsert_to_raw_prices(final)
 
-    # ── NEW: Upsert value_cr + delivery columns to stock_data_daily ───────
-    # Runs after raw_prices so a raw_prices failure will prevent a partial SDD write.
-    # Non-fatal: a SDD failure does not roll back raw_prices.
+     # ── Filter for stock_data_daily — chartink universe only ─────────────
+    sdd_final = final.copy()
+    try:
+        chartink_syms = fetch_chartink_universe(get_supabase(), trade_date)
+        if chartink_syms:
+            before    = len(sdd_final)
+            sdd_final = sdd_final[sdd_final["symbol"].isin(chartink_syms)].copy()
+            logger.info(
+                f"[UNIVERSE] stock_data_daily filtered: {before} → {len(sdd_final)} rows "
+                f"({len(chartink_syms)} chartink symbols)"
+            )
+        else:
+            logger.warning("[UNIVERSE] Chartink universe empty — skipping stock_data_daily upsert")
+            sdd_final = sdd_final.iloc[0:0]  # empty df, skip upsert below
+    except Exception as e:
+        logger.warning(f"[UNIVERSE] Filter failed — skipping stock_data_daily upsert: {e}")
+        sdd_final = sdd_final.iloc[0:0]
+
+    # ── Upsert filtered set to stock_data_daily ───────────────────────────
     sdd_rows = 0
     try:
-        sdd_rows = upsert_to_stock_data_daily(final)
+        sdd_rows = upsert_to_stock_data_daily(sdd_final)
     except Exception as e:
         logger.error(
             f"[SDD] stock_data_daily upsert failed (non-fatal, raw_prices already written): {e}"

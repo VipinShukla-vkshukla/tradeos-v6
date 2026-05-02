@@ -1,0 +1,64 @@
+name: TradeOS v6 — Weekly Calibration
+
+# Runs every Sunday evening after markets close.
+# Triggers calibration_engine.py via run_pipeline.py --calibrate.
+#
+# What calibration does:
+#   • Recalibrates system_config thresholds (score, risk, timing) based on
+#     recent lesson win rates and trade grade distributions
+#   • Retires lessons with times_worked/times_applied < 0.25 after 10+ uses
+#   • Emits a Telegram summary of what was adjusted and why
+#
+# Does NOT run as part of the daily pipeline (all_steps[]).
+# Completely standalone — safe to re-run manually at any time.
+#
+# To trigger manually: GitHub → Actions → Weekly Calibration → Run workflow
+
+on:
+  schedule:
+    - cron: '0 16 * * 0'    # 9:30 PM IST (16:00 UTC), every Sunday
+  workflow_dispatch:          # Manual trigger from GitHub UI
+
+jobs:
+  calibrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Create credentials file
+        env:
+          GOOGLE_CREDS: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          mkdir -p backend/credentials
+          echo "$GOOGLE_CREDS" > backend/credentials/service_account.json
+
+      - name: Run weekly calibration
+        working-directory: backend
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
+          DEEPSEEK_API_KEY:     ${{ secrets.DEEPSEEK_API_KEY }}
+          TZ: Asia/Kolkata
+        run: python run_pipeline.py --calibrate
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: calibration-logs-${{ github.run_id }}
+          path: backend/logs/
+          retention-days: 7

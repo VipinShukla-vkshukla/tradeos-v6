@@ -147,6 +147,17 @@ def load_context(sb, trade_date: str) -> dict:
         logger.warning(f"No gate-passed signals found for {trade_date}")
         return {}
 
+
+    watch_upgrades = (
+    sb.table("signal_log")
+      .select("symbol,sector,score_adjusted,near_miss_data,ai_note,filter_reason,"
+              "momentum_state,lifecycle,fii_flag,sector_rank_at_entry")
+      .eq("date", trade_date)
+      .eq("signal_type", "WATCH")
+      .like("ai_note", "%NEAR_MISS_UPGRADE%")
+      .execute().data
+)
+
     # ── JOIN with master_shortlist for fields not in signal_log ──
     symbols = [r["symbol"] for r in sig_rows]
     msl_rows = (
@@ -304,6 +315,17 @@ def load_context(sb, trade_date: str) -> dict:
         except Exception:
             echoes.append({"date": row["date"], "note": row.get("ai_note", "")[:150]})
 
+    # WATCH signals that step 18 flagged as near-miss upgrades
+    watch_upgrades = (
+        sb.table("signal_log")
+          .select("symbol,sector,score_adjusted,near_miss_data,ai_note,filter_reason,"
+                  "momentum_state,lifecycle,fii_flag,sector_rank_at_entry")
+          .eq("date", trade_date)
+          .eq("signal_type", "WATCH")
+          .like("ai_note", "%NEAR_MISS_UPGRADE%")
+          .execute().data
+    )
+    
     return {
         "candidates":      candidates,
         "market_intel":    market_intel,
@@ -314,6 +336,7 @@ def load_context(sb, trade_date: str) -> dict:
         "lessons":         lesson_rows,
         "macro":           macro_rows,
         "echoes":          echoes,
+        "watch_upgrades":  watch_upgrades,
     }
 
 
@@ -456,6 +479,27 @@ def build_prompt(ctx: dict, trade_date: str) -> str:
         )
 
     lines.append(r"""
+
+if ctx.get("watch_upgrades"):
+        lines += [
+            "",
+            "═══ NEAR-MISS UPGRADES (step 18 flagged — decide whether to include in ranking) ═══",
+            "  If you include any of these, add them to ranked_candidates with appropriate tier.",
+            "  Set upgraded_from_watch: true on those entries.",
+        ]
+        for w in ctx["watch_upgrades"]:
+            nm = {}
+            try: nm = json.loads(w.get("near_miss_data") or "{}")
+            except Exception: pass
+            note = (w.get("ai_note") or "").replace("[NEAR_MISS_UPGRADE:", "").split("]")
+            lines.append(
+                f"  {w.get('symbol','?')} | {w.get('sector','?')} | "
+                f"Score:{float(w.get('score_adjusted',0) or 0):.1f} | "
+                f"Original block: {nm.get('blocked_by','?')} | "
+                f"Step18 flag: {note[0] if note else '?'} | "
+                f"Reason: {note[1].strip()[:120] if len(note)>1 else '?'}"
+            )
+
 ═══ OUTPUT FORMAT ═══
 Return ONLY this exact JSON. Rank ALL candidates above — none should be missing.
 
@@ -472,6 +516,7 @@ suggested_allocation_pct: % of available capital (0 if SKIP, e.g. 5.0 for 5%)
       "rank": 1,
       "symbol": "NSE_SYMBOL",
       "tier": "TIER_1",
+      "upgraded_from_watch": false,
       "conviction": "HIGH",
       "confidence": 0.85,
       "action": "ENTER_NOW",

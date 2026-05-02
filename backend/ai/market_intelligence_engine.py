@@ -184,6 +184,16 @@ def build_market_context(sb, today_str: str, last_td: str) -> dict:
                   .order("score_adjusted", desc=True)
                   .limit(30).execute().data)
 
+    watch_rows = (sb.table("signal_log")
+                .select("symbol,company_name,sector,industry,signal_type,signal_subtype,"
+                        "score,score_adjusted,momentum_state,lifecycle,risk_score,"
+                        "sector_rank_at_entry,fii_flag,near_miss_data,filter_reason")
+                .eq("date", last_td)
+                .eq("signal_type", "WATCH")
+                .not_.is_("near_miss_data", "null")
+                .order("score_adjusted", desc=True)
+                .limit(15).execute().data)
+    
     # ── JOIN with master_shortlist for fields not in signal_log ──
     if sig_rows:
         symbols = [r["symbol"] for r in sig_rows]
@@ -238,6 +248,31 @@ def build_market_context(sb, today_str: str, last_td: str) -> dict:
         l["live_confidence"] = _lesson_confidence(l)
     lesson_rows.sort(key=lambda x: x["live_confidence"], reverse=True)
 
+    # ── WATCH signals with near_miss_data ──
+    watch_rows = (sb.table("signal_log")
+                    .select("symbol,company_name,sector,score,score_adjusted,"
+                            "momentum_state,lifecycle,risk_score,fii_flag,"
+                            "sector_rank_at_entry,filter_reason,near_miss_data")
+                    .eq("date", last_td)
+                    .eq("signal_type", "WATCH")
+                    .not_.is_("near_miss_data", "null")
+                    .order("score_adjusted", desc=True)
+                    .limit(15).execute().data)
+    watch_candidates = []
+    if watch_rows:
+        watch_msl = (sb.table("master_shortlist")
+                       .select("symbol,current_price,entry_zone_low,entry_zone_high,dist_entry_pct")
+                       .eq("date", last_td)
+                       .in_("symbol", [r["symbol"] for r in watch_rows])
+                       .execute().data)
+        wm = {r["symbol"]: r for r in watch_msl}
+        for w in watch_rows:
+            w["current_price"]   = wm.get(w["symbol"], {}).get("current_price")
+            w["entry_zone_low"]  = wm.get(w["symbol"], {}).get("entry_zone_low")
+            w["entry_zone_high"] = wm.get(w["symbol"], {}).get("entry_zone_high")
+            w["dist_entry_pct"]  = wm.get(w["symbol"], {}).get("dist_entry_pct")
+            watch_candidates.append(w)
+
     # ── Events ──
     cutoff = str(today_ist() + timedelta(days=14))
     events = (sb.table("event_calendar")
@@ -283,6 +318,7 @@ def build_market_context(sb, today_str: str, last_td: str) -> dict:
         "lessons":        lesson_rows,
         "events":         events,
         "echoes":         echoes,
+        "watch_candidates": watch_candidates,
     }
 
 
@@ -511,6 +547,23 @@ def build_prompt(ctx: dict, stock_intel: list[dict]) -> str:
                     lines.append(f"    ★ INSTITUTIONAL BUYING confirmed via bulk deals")
 
     lines.append(r"""
+
+
+if ctx.get("watch_candidates"):
+        lines += ["", "═══ NEAR-MISS WATCH SIGNALS (evaluate if today's context upgrades these) ═══"]
+        for w in ctx["watch_candidates"]:
+            nm = {}
+            try: nm = json.loads(w.get("near_miss_data") or "{}")
+            except Exception: pass
+            lines.append(
+                f"  {w.get('symbol','?')} | {w.get('sector','?')} | "
+                f"Score:{float(w.get('score_adjusted',0) or 0):.1f} | "
+                f"Block:{nm.get('blocked_by','?')} | "
+                f"CMP:₹{w.get('current_price','?')} Zone:₹{w.get('entry_zone_low','?')}-{w.get('entry_zone_high','?')} | "
+                f"FII:{w.get('fii_flag','?')} SRk:{w.get('sector_rank_at_entry','?')} | "
+                f"Detail:{str({k:v for k,v in nm.items() if k!='blocked_by'})[:100]}"
+            )
+                 
 OUTPUT INSTRUCTIONS:
 Return ONLY this exact JSON structure. All fields are required.
 sentiment_modifier: -0.2 to +0.2 (positive = good news boost, negative = bad news drag, 0.0 = neutral)
@@ -557,6 +610,14 @@ Return a sentiment_modifier for EVERY symbol in the candidates list above.
       "news_flag": "POSITIVE | NEGATIVE | NEUTRAL | INSTITUTIONAL_BUY | RESULTS_RISK"
     }
   ],
+  "near_miss_upgrades": [
+    {
+      "symbol": "NSE_SYMBOL",
+      "upgrade_reason": "why today macro/news changes the blocked condition",
+      "original_block": "e.g. insufficient_rr_0.87x",
+      "flag_for": "TIER_1 | TIER_2 | WATCH_CLOSELY"
+    }
+  ],               
   "lessons_generated": [
     {
       "scenario_type": "e.g. Market/FII-Caution or Commodity/Crude-Up",
@@ -729,6 +790,17 @@ def write_market_intel(sb, result: dict, date_str: str, provider: str):
             "confidence":        0.85,
         }, on_conflict="date,symbol").execute()
         logger.info("ai_context __MARKET_INTEL__ written")
+        # Write near_miss upgrade flags to signal_log.ai_note
+        for upgrade in (result.get("near_miss_upgrades") or []):
+            sym = upgrade.get("symbol")
+            if not sym: continue
+            try:
+                sb.table("signal_log").update({
+                    "ai_note": f"[NEAR_MISS_UPGRADE:{upgrade.get('flag_for','?')}] "
+                            f"{upgrade.get('upgrade_reason','')[:200]}",
+                }).eq("date", date_str).eq("symbol", sym).execute()
+            except Exception as e:
+                logger.warning(f"near_miss upgrade write failed for {sym}: {e}")
     except Exception as e:
         logger.warning(f"ai_context write failed: {e}")
 

@@ -1,6 +1,6 @@
 """
-TradeOS v6 — Post-Trade Analysis v2
-=====================================
+TradeOS v6 — Post-Trade Analysis v3 (Consolidated)
+====================================================
 Pipeline position: [17] — after step_history, before generate_shortlist.
 
 WHAT CHANGED FROM v1 → v2
@@ -83,6 +83,27 @@ WHAT CHANGED FROM v1 → v2
    - Rule-based vs AI → AI gets 0.1 confidence boost if grade ≥ B
    - Trajectory warning ignored → confidence 0.95
 
+WHAT CHANGED v2 → v3 (LESSON CONFIDENCE LOOP)
+===============================================
+
+THE GAP BEING CLOSED:
+   v2 writes new lessons after each trade but NEVER updates existing lessons'
+   times_applied or times_worked. This means lesson.confidence never changes
+   from its initial value. The self-improvement loop is written but not closed.
+
+   Steps 18 and 19 sort lessons by confidence and weight high-confidence rules
+   more heavily in their AI prompts. But if confidence never changes, all lessons
+   look equally reliable. A rule that's been tested 50 times and works 80% of the
+   time looks identical to a rule that's never been tested.
+
+10. LESSON CONFIDENCE LOOP (_find_applicable_lessons + _update_lesson_outcomes)
+    For each completed trade, finds existing active lessons that are relevant
+    based on sector, signal_type, or scenario_type and increments:
+    - times_applied: always (lesson was applicable to this trade's context)
+    - times_worked:  if the lesson's intent matches the outcome
+    Confidence is then recomputed as times_worked / times_applied.
+    Lessons below 25% win-rate after 10+ applications are auto-retired.
+
 DATA SOURCES ADDED vs v1
 =========================
   signal_log          — full 80-field signal context at entry
@@ -97,7 +118,7 @@ TABLES READ
 
 TABLES WRITTEN
 ==============
-  lessons             — insert (new) or times_applied++ (dedup)
+  lessons             — insert (new) or times_applied++ (dedup); confidence loop updates
   signal_log          — update outcome, outcome_pnl_pct, ai_note, execution_status
 """
 
@@ -145,6 +166,13 @@ BREAKOUT_SUBTYPES  = {"BREAKOUT_SETUP", "REENTRY_SETUP"}
 STANDARD_SUBTYPES  = {"BUY_CANDIDATE", "STAGED_ENTRY"}
 BLOCKED_SUBTYPES   = {"BLOCKED_ASM", "BLOCKED_HIGH_RISK", "BUY_BLOCKED_REGIME",
                       "AVOID_ENTRY_EVENT"}
+
+# v3: lesson confidence loop configuration defaults
+LESSON_LOOP_CONFIG_DEFAULTS = {
+    "lesson_retire_min_applications": ("10",   "Min uses before auto-retiring a failing lesson"),
+    "lesson_retire_win_rate":         ("0.25", "Auto-retire if win rate below this after min_applications"),
+    "lesson_loop_enabled":            ("true", "Enable lesson times_applied/times_worked tracking"),
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -633,6 +661,232 @@ def compute_lesson_confidence(trade_grade: str, is_win: bool,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# v3: LESSON CONFIDENCE LOOP — ADDITION 1
+# Find applicable existing lessons for a completed trade
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _find_applicable_lessons(sb, trade: dict, signal_ctx: dict,
+                              lesson_data: dict) -> list[dict]:
+    """
+    Find active lessons relevant to this trade outcome.
+    Used to increment times_applied (and conditionally times_worked).
+
+    Matching logic (ordered by specificity):
+      1. Exact symbol match: lesson.linked_symbols contains this symbol
+      2. Sector + signal_type match: lesson.impacted_sector matches AND
+         lesson.scenario_context contains the signal_type
+      3. Scenario type match: lesson.scenario_type matches the new lesson's
+         scenario_type (same failure pattern, different stock)
+
+    Returns list of lesson dicts with id, corrective_rule, scenario_type,
+    times_applied, times_worked, confidence.
+    """
+    sym         = trade.get("symbol", "")
+    sector      = trade.get("sector", "")
+    signal_type = signal_ctx.get("signal_type", "")
+    scenario    = lesson_data.get("scenario_type", "") if isinstance(lesson_data, dict) else ""
+
+    applicable = []
+    seen_ids   = set()
+
+    # ── Match 1: exact symbol ──
+    try:
+        rows = (
+            sb.table("lessons")
+              .select("id,corrective_rule,scenario_type,impacted_sector,"
+                      "times_applied,times_worked,confidence,scenario_context,source")
+              .eq("is_active", True)
+              .contains("linked_symbols", [sym])
+              .execute().data
+        )
+        for r in rows:
+            if r["id"] not in seen_ids:
+                seen_ids.add(r["id"])
+                applicable.append(r)
+    except Exception as e:
+        logger.debug(f"Lesson exact symbol match failed: {e}")
+
+    # ── Match 2: sector + signal_type context ──
+    if sector:
+        try:
+            rows = (
+                sb.table("lessons")
+                  .select("id,corrective_rule,scenario_type,impacted_sector,"
+                          "times_applied,times_worked,confidence,scenario_context,source")
+                  .eq("is_active", True)
+                  .ilike("impacted_sector", f"%{sector}%")
+                  .execute().data
+            )
+            for r in rows:
+                if r["id"] not in seen_ids:
+                    ctx = (r.get("scenario_context") or "").lower()
+                    if signal_type and signal_type.lower()[:8] in ctx:
+                        seen_ids.add(r["id"])
+                        applicable.append(r)
+        except Exception as e:
+            logger.debug(f"Lesson sector match failed: {e}")
+
+    # ── Match 3: same scenario_type (same failure pattern) ──
+    if scenario:
+        try:
+            rows = (
+                sb.table("lessons")
+                  .select("id,corrective_rule,scenario_type,impacted_sector,"
+                          "times_applied,times_worked,confidence,scenario_context,source")
+                  .eq("is_active", True)
+                  .eq("scenario_type", scenario)
+                  .order("date", desc=True)
+                  .limit(3)
+                  .execute().data
+            )
+            for r in rows:
+                if r["id"] not in seen_ids:
+                    seen_ids.add(r["id"])
+                    applicable.append(r)
+        except Exception as e:
+            logger.debug(f"Lesson scenario_type match failed: {e}")
+
+    return applicable[:8]  # cap to avoid over-updating
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v3: LESSON CONFIDENCE LOOP — ADDITION 2
+# Update lesson outcomes (times_applied, times_worked, confidence, retirement)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _update_lesson_outcomes(sb, applicable_lessons: list[dict],
+                             trade: dict, signal_ctx: dict,
+                             new_lesson_data: dict):
+    """
+    For each applicable lesson, increment times_applied and conditionally
+    times_worked, then recompute confidence as times_worked / times_applied.
+
+    times_worked logic:
+      Loss-prevention rules (scenario_type starts with "Loss/"):
+        - times_worked += 1 if the trade was a LOSS (rule correctly predicted
+          the failure mode)
+        - Also +1 for trajectory-based rules when the trajectory warning fired
+
+      Win-enhancement rules (scenario_type starts with "Win/"):
+        - times_worked += 1 if the trade was a WIN
+
+      Exit/trailing rules (scenario_type contains "Exit" or "Stop"):
+        - times_worked += 1 if MFE was realised at ≥ 50% (no trailing failure)
+
+      System calibration rules (source=CALIBRATION):
+        - Always increment times_applied only, never times_worked
+
+    Retirement: sets is_active=False when times_applied ≥ 10 AND
+    times_worked/times_applied < 0.25 (aligns with step 20 LESSON_RETIRE_WIN_RATE).
+    Manual lessons (source=MANUAL) are never auto-retired.
+    """
+    is_win   = float(trade.get("pnl_pct") or 0) > 0
+    mfe      = float(trade.get("max_favorable_excursion") or 0)
+    pnl      = float(trade.get("pnl_pct") or 0)
+    traj_w   = (new_lesson_data.get("trajectory_warning", "NONE")
+                if isinstance(new_lesson_data, dict) else "NONE")
+
+    updated_count = 0
+    retired_count = 0
+
+    for lesson in applicable_lessons:
+        lid = lesson.get("id")
+        if not lid:
+            continue
+
+        source        = (lesson.get("source") or "").upper()
+        scenario_type = (lesson.get("scenario_type") or "").upper()
+
+        # Skip calibration lessons
+        if "CALIBRATION" in source:
+            continue
+
+        new_applied = (lesson.get("times_applied") or 0) + 1
+
+        # Determine if this lesson "worked" for this trade
+        lesson_worked = False
+
+        if scenario_type.startswith("LOSS/"):
+            lesson_worked = not is_win  # confirmed failure mode
+            # Trajectory-based exit rule: correct if warning fired
+            if "EXIT-SIGNAL" in scenario_type and traj_w not in ("NONE", "NO_HISTORY"):
+                lesson_worked = True
+
+        elif scenario_type.startswith("WIN/"):
+            lesson_worked = is_win
+
+        elif "EXIT" in scenario_type or "STOP" in scenario_type:
+            # Exit management: worked if MFE was substantially realised
+            if mfe > 0 and pnl > 0:
+                realised_ratio = pnl / (mfe * 100)
+                lesson_worked  = realised_ratio >= 0.5
+            else:
+                lesson_worked = False
+
+        else:
+            lesson_worked = is_win
+
+        new_worked = (lesson.get("times_worked") or 0) + (1 if lesson_worked else 0)
+        new_conf   = round(new_worked / new_applied, 3) if new_applied > 0 else 0.5
+
+        # Retirement check
+        should_retire = (
+            new_applied >= 10
+            and new_conf < 0.25
+            and "MANUAL" not in source
+        )
+
+        try:
+            sb.table("lessons").update({
+                "times_applied": new_applied,
+                "times_worked":  new_worked,
+                "confidence":    new_conf,
+                "is_active":     not should_retire,
+            }).eq("id", lid).execute()
+            updated_count += 1
+
+            if should_retire:
+                retired_count += 1
+                logger.info(
+                    f"  Lesson {lid} auto-retired: "
+                    f"conf={new_conf:.1%} after {new_applied} uses | "
+                    f"type={lesson.get('scenario_type','?')}"
+                )
+        except Exception as e:
+            logger.warning(f"Lesson outcome update failed for id={lid}: {e}")
+
+    if updated_count > 0:
+        logger.debug(
+            f"  Lesson confidence loop: {updated_count} updated "
+            f"({retired_count} retired) for {trade.get('symbol','?')}"
+        )
+
+    return {"updated": updated_count, "retired": retired_count}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v3: LESSON CONFIDENCE LOOP — ADDITION 3
+# system_config migration helper (idempotent, run once during setup)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def ensure_lesson_loop_config(sb):
+    """
+    Ensure system_config has lesson loop configuration keys.
+    Idempotent — safe to call on every startup.
+    """
+    existing = {r["key"] for r in sb.table("system_config").select("key").execute().data}
+    for key, (value, desc) in LESSON_LOOP_CONFIG_DEFAULTS.items():
+        if key not in existing:
+            try:
+                sb.table("system_config").insert({
+                    "key": key, "value": value, "description": desc
+                }).execute()
+                logger.info(f"system_config: added {key}={value}")
+            except Exception as e:
+                logger.warning(f"system_config insert failed for {key}: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # AI PROMPT v2
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -800,7 +1054,8 @@ def analyze_trade(trade: dict, sb,
     3. Grade the trade entry quality (A-F)
     4. Run rule-based lesson generation (v2: 20+ rules with signal context)
     5. Optionally enrich with AI (v2: richer prompt with all context)
-    6. Return complete lesson dict ready for lessons table insert
+    6. v3: Update existing lesson confidence via the lesson loop
+    7. Return complete lesson dict ready for lessons table insert
     """
     sym         = trade.get("symbol", "")
     signal_date = str(trade.get("signal_date") or trade.get("entry_date", ""))
@@ -913,6 +1168,15 @@ def analyze_trade(trade: dict, sb,
 
     # ── Confidence calibration ────────────────────────────────────────────────
     confidence = compute_lesson_confidence(trade_grade, is_win, source, traj)
+
+    # ── v3: Update existing lesson confidence via outcomes ────────────────────
+    if cfg("lesson_loop_enabled", "true").lower() == "true":
+        try:
+            applicable = _find_applicable_lessons(sb, trade, signal_ctx, lesson_data)
+            if applicable:
+                _update_lesson_outcomes(sb, applicable, trade, signal_ctx, traj)
+        except Exception as _le:
+            logger.debug(f"Lesson loop non-fatal: {_le}")
 
     # ── Classify linked_event_type ────────────────────────────────────────────
     trigger = str(lesson_data.get("trigger_event", ""))
@@ -1112,10 +1376,10 @@ def main():
         if not lesson:
             continue
 
-        # Track grade
-        grade = lesson.pop("_trade_grade", "C")
-        lesson.pop("_signal_ctx", None)
-        lesson.pop("_traj", None)
+        # Track grade (pop ephemeral keys before any writes)
+        grade      = lesson.pop("_trade_grade", "C")
+        signal_ctx = lesson.pop("_signal_ctx", {})
+        traj       = lesson.pop("_traj", {})
         grade_dist[grade] = grade_dist.get(grade, 0) + 1
 
         # Dedup check
@@ -1127,9 +1391,16 @@ def main():
         )
         if handle_lesson_dedup(sb, lesson, existing_lsn):
             dedup_count += 1
-            # Still enrich signal_log even on dedup
             if enrich_signal_log(sb, trade, lesson):
                 signal_match_count += 1
+            # v3: still update lesson confidence even on dedup
+            if cfg("lesson_loop_enabled", "true").lower() == "true":
+                try:
+                    applicable = _find_applicable_lessons(sb, trade, signal_ctx, lesson)
+                    if applicable:
+                        _update_lesson_outcomes(sb, applicable, trade, signal_ctx, traj)
+                except Exception as _le:
+                    logger.debug(f"Lesson loop (dedup path) non-fatal: {_le}")
             continue
 
         # Insert new lesson
@@ -1148,7 +1419,7 @@ def main():
             signal_match_count += 1
 
     logger.success(
-        f"Post-trade analysis v2 done: "
+        f"Post-trade analysis v3 done: "
         f"{analyzed_count} new lessons | "
         f"{dedup_count} deduped (times_applied++) | "
         f"{signal_match_count}/{len(trades)} signal_log enriched | "
