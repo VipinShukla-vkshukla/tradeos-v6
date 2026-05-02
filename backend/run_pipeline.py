@@ -52,10 +52,14 @@ def print_summary(results: dict, total: float):
 
 def main():
     parser = argparse.ArgumentParser(description="TradeOS v6 Pipeline")
-    parser.add_argument("--step",    help="Run single step only")
-    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--step",      help="Run single step only")
+    parser.add_argument("--dry-run",   action="store_true")
+    parser.add_argument("--calibrate", action="store_true", help="Run weekly calibration only")
     args = parser.parse_args()
-
+    if args.calibrate:
+        result = step_calibration()
+        print(f"Calibration: {result}")
+        sys.exit(0)
     if is_kill_switch_active():
         logger.critical("⛔ KILL SWITCH ACTIVE — pipeline aborted")
         sys.exit(1)

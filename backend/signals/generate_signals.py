@@ -89,6 +89,14 @@ def load_signal_thresholds() -> dict:
 
         # ── Entry quality gates ────────────────────────────────────────────
         "min_rr":                  cfg_float("min_rr_to_enter",                1.0),
+        "min_rr_TRENDING":         cfg_float("min_rr_to_enter_TRENDING",       0.9),
+        "min_rr_NEUTRAL":          cfg_float("min_rr_to_enter_NEUTRAL",        1.0),
+        "min_rr_CAUTION":          cfg_float("min_rr_to_enter_CAUTION",        1.3),
+        "min_rr_RISK OFF":         cfg_float("min_rr_to_enter_RISK_OFF",       1.5),
+        "min_rr_PRIME_SETUP":      cfg_float("min_rr_prime",                   0.9),
+        "min_rr_BREAKOUT_SETUP":   cfg_float("min_rr_breakout",               1.4),
+        "min_rr_REENTRY_SETUP":    cfg_float("min_rr_reentry",                1.1),
+        "min_rr_STAGED_ENTRY":     cfg_float("min_rr_staged",                 1.0),
         "min_score_adj":           cfg_float("min_score_adjusted",             45.0),
         "prime_breakout_min":      cfg_float("prime_breakout_min",             55.0),
         "stop_buffer_pct":         cfg_float("stop_buffer_pct",                0.03),
@@ -433,7 +441,8 @@ def _max_chase_atrs(momentum_state: str, momentum_phase: str,
 
 def classify_entry_signal(msl_row: dict, open_map: dict,
                            stock_data: dict, T: dict,
-                           threshold: float = None) -> tuple:
+                           threshold: float = None,
+                           regime_name: str = "NEUTRAL") -> tuple:
     """
     Returns (is_entry: bool, signal_type: str, filter_reason: str, near_miss_data: dict)
 
@@ -577,8 +586,9 @@ def classify_entry_signal(msl_row: dict, open_map: dict,
             remaining_upside = ideal_target - cp
             current_risk     = cp - stop_price
             implied_rr       = remaining_upside / current_risk
-            if implied_rr < T["min_rr"]:
-                near_miss = {"blocked_by": "rr", "implied_rr": round(implied_rr, 2), "min_rr": T["min_rr"]}
+            effective_min_rr = T.get(f"min_rr_{regime_name}", T["min_rr"])
+            if implied_rr < effective_min_rr:
+                near_miss = {"blocked_by": "rr", "implied_rr": round(implied_rr, 2), "min_rr": effective_min_rr}
                 return False, None, f"insufficient_rr_{implied_rr:.2f}x", near_miss
 
     # ── GATE 5: Signal subtype + threshold validation (v5 ADDITION) ───────────
@@ -859,12 +869,22 @@ def generate(run_date: date | None = None) -> list:
         else:
             stock_data = stock_map.get(sym, {})
             is_entry, signal_type_candidate, filter_reason, near_miss_data = classify_entry_signal(
-                msl_row, open_map, stock_data, T
+                msl_row, open_map, stock_data, T, regime_name=regime_name
             )
 
             if is_entry:
                 position_state = "BUY_CANDIDATE"
-                signal_type    = signal_type_candidate
+                if is_entry:
+                # Signal-type specific min_rr check (can only run after type is known)
+                    if signal_type_candidate in ENTRY_SIGNAL_TYPES:
+                        sig_min_rr = T.get(f"min_rr_{signal_type_candidate}")
+                        if sig_min_rr and near_miss_data.get("implied_rr") and near_miss_data.get("implied_rr", 99) < sig_min_rr:
+                            is_entry           = False
+                            filter_reason      = f"insufficient_rr_for_{signal_type_candidate}"
+                            near_miss_data     = {"blocked_by": "signal_type_rr", "implied_rr": near_miss_data["implied_rr"], "min_rr": sig_min_rr}
+                            signal_type_candidate = "WATCH"
+                    position_state = "BUY_CANDIDATE"
+                    signal_type    = signal_type_candidate
                 signal_subtype = filter_reason
                 filter_reason  = None
                 near_miss_data = {}
