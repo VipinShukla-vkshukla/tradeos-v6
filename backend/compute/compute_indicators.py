@@ -279,6 +279,7 @@ def fetch_bulk_history_yf(sb, today: str, symbols: list,
     sufficient_syms: list = []
     ipo_syms:        list = []   # young but cache-complete
 
+    ipo_meta: dict = {}
     for sym in symbols:
         count  = sym_counts.get(sym, 0)
         latest = sym_latest.get(sym, today)
@@ -309,6 +310,13 @@ def fetch_bulk_history_yf(sb, today: str, symbols: list,
             if is_cache_complete:
                 # Young listing — cache is as full as it can be, skip yfinance
                 ipo_syms.append(sym)
+                # Store metadata for summary log below
+                ipo_meta[sym] = {
+                    "first_date":   str(first),
+                    "count":        count,
+                    "expected":     expected,
+                    "completeness": cache_completeness,
+                }
                 logger.debug(
                     f"  {sym}: young listing — {count}/{expected} expected sessions "
                     f"({cache_completeness:.0%}) | ret_6m/ret_12m will be None until matured"
@@ -328,6 +336,28 @@ def fetch_bulk_history_yf(sb, today: str, symbols: list,
             need_yf_tail.append(sym)
         # else: current and sufficient — nothing needed
 
+    # ── IPO symbols summary ───────────────────────────────────────────────
+    if ipo_syms:
+        logger.info(f"  Young listings skipping yfinance ({len(ipo_syms)} symbols):")
+        logger.info(f"  {'Symbol':<16} {'Listed Since':<14} {'Cached':>7} {'Expected':>9} {'Complete':>9}  Reason")
+        logger.info(f"  {'-'*70}")
+        for sym in sorted(ipo_syms):
+            m = ipo_meta[sym]
+            # Compute how many more sessions until graduation to sufficient
+            sessions_remaining = MIN_SESSIONS_FOR_RETURNS - m["count"]
+            # Approximate calendar days remaining (reverse of trading day formula)
+            days_remaining = int(sessions_remaining / (5 / 7) / 0.96)
+            reason = (
+                f"needs {sessions_remaining} more sessions "
+                f"(~{days_remaining}d) to reach {MIN_SESSIONS_FOR_RETURNS}"
+            )
+            logger.info(
+                f"  {sym:<16} {m['first_date']:<14} "
+                f"{m['count']:>7} {m['expected']:>9} "
+                f"{m['completeness']:>8.0%}  {reason}"
+            )
+        logger.info(f"  {'-'*70}")
+    
     need_yf_backfill = need_yf_full + need_yf_gap   # both use full cutoff as start
     need_yf          = need_yf_backfill + need_yf_tail
 
