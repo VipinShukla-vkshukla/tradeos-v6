@@ -1544,7 +1544,11 @@ def compute_reentry_mode(s: dict) -> str:
     return "NO"
 
 
-def compute_entry_zones(s: dict, strategy: str, regime_ctx: dict) -> tuple:
+def compute_entry_zones(s: dict, strategy: str, regime_ctx: dict,
+                         momentum_state: str = "STABLE",
+                         momentum_phase: str = "FLAT",
+                         velocity_state: str = "FLAT",
+                         struct_edge: str = "NO") -> tuple:
     """
     Strategy-aware + regime-aware entry zone.
     CTL/TPO: SMA50/VWAP_20d anchored.
@@ -1601,6 +1605,15 @@ def compute_entry_zones(s: dict, strategy: str, regime_ctx: dict) -> tuple:
         ez_low  = round(shift, 2)
         ez_high = round(shift + width, 2)
 
+    if (ez_high and close > ez_high * 1.03
+                and momentum_state == "HOT"
+                and momentum_phase in ("EXPANSION", "EARLY")
+                and velocity_state == "ACCELERATING"
+                and struct_edge == "YES"
+                and atr_14 > 0
+                and not regime_ctx.get("is_bear")):
+            ez_low  = round(close - atr_14 * 1.0, 2)
+            ez_high = round(close + atr_14 * 0.3, 2)
     return ez_low, ez_high
 
 
@@ -2286,7 +2299,13 @@ def compute_all(sb, data: dict, today: str) -> list:
             reentry_mode = compute_reentry_mode(s)
 
             # ── STEP 4: Entry zone + timing ────────────────────────────────
-            ez_low, ez_high = compute_entry_zones(s, strategy, regime_ctx)
+            ez_low, ez_high = compute_entry_zones(
+                s, strategy, regime_ctx,
+                momentum_state=momentum_state,
+                momentum_phase=momentum_phase,
+                velocity_state=velocity_state,
+                struct_edge=struct_edge,
+            )
             entry_timing    = compute_entry_timing_type(
                 s, ez_low, ez_high,
                 reentry_mode=reentry_mode,

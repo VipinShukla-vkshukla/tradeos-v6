@@ -630,10 +630,16 @@ def classify_entry_signal(msl_row: dict, open_map: dict,
             )
             if dist_in_atrs > max_atrs:
                 near_miss = {
-                    "blocked_by": "atr_chase",
-                    "dist_atrs": round(dist_in_atrs, 2),
-                    "max_atrs":  round(max_atrs, 2),
-                    "gap_atrs":  round(dist_in_atrs - max_atrs, 2),
+                    "blocked_by":     "atr_chase",
+                    "dist_atrs":      round(dist_in_atrs, 2),
+                    "max_atrs":       round(max_atrs, 2),
+                    "gap_atrs":       round(dist_in_atrs - max_atrs, 2),
+                    "would_be":       "BUY_CANDIDATE",      # Gate 5 would have determined final type
+                    "momentum_state": momentum_state,
+                    "momentum_phase": momentum_phase,
+                    "velocity_state": velocity_state,
+                    "struct_edge":    struct_edge,
+                    "score":          float(msl_row.get("final_score") or 0),
                 }
                 return False, None, f"chase_{dist_in_atrs:.1f}atrs_limit_{max_atrs:.1f}", near_miss
 
@@ -943,6 +949,9 @@ def generate(run_date: date | None = None) -> list:
         regime_warning = False
         near_miss_data = {}
 
+        is_entry = False                  # always initialize before the branch
+        signal_type_candidate = None
+        near_miss_data = {}
         if in_pos:
             signal_type, position_state, filter_reason = classify_open_position_signal(
                 msl_row, pos, T
@@ -1042,6 +1051,7 @@ def generate(run_date: date | None = None) -> list:
             # Rule engine + scanner
             "in_rule_engine":  in_engine,
             "in_scanner":      False,
+            "scanner_patterns": None,
             "eap_action":      eap_action,
             # Regime
             "regime":          regime_name,

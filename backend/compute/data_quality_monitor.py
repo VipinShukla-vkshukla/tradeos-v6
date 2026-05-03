@@ -228,8 +228,8 @@ def c04_delivery_pct_bounds(sb, today):
 def c05_signal_score_range(sb, today):
     sigs = sb.table("signal_log").select("symbol,score").eq("date", today).execute().data
     bad  = [r["symbol"] for r in sigs
-            if r.get("score") is not None
-            and not (SCORE_MIN <= float(r["score"]) <= SCORE_MAX)]
+            if r.get("final_score") is not None
+            and not (SCORE_MIN <= float(r["final_score"]) <= SCORE_MAX)]
     return _result("C05_signal_score_range", len(bad) == 0, "WARN",
         f"{len(bad)} signals with score outside {SCORE_MIN}–{SCORE_MAX}" + (f": {bad[:5]}" if bad else ""),
         value=str(len(bad)), affected=bad[:10])
@@ -239,9 +239,9 @@ def c05_signal_score_range(sb, today):
 
 def c06_msl_score_jumps(sb, today):
     yesterday = str(today_ist() - timedelta(days=1))
-    now_map   = {r["symbol"]: float(r.get("score") or 0)
+    now_map   = {r["symbol"]: float(r.get("final_score") or 0)
                  for r in sb.table("master_shortlist").select("symbol,score").execute().data}
-    yest_map  = {r["symbol"]: float(r.get("score") or 0)
+    yest_map  = {r["symbol"]: float(r.get("final_score") or 0)
                  for r in sb.table("msl_history").select("symbol,score").eq("date", yesterday).execute().data}
     jumps = sorted(
         [{"symbol": s, "delta": round(now_map[s] - yest_map[s], 1)}
@@ -352,7 +352,7 @@ def c08_ai_context_completeness(sb, today, last_trading_day):
 
     missing_by_symbol = {}
     for row in rows:
-        ctx = row.get("context_json") or {}
+        ctx = row.get("conviction_reason") or {}
         if isinstance(ctx, str):
             try:
                 ctx = json.loads(ctx)
@@ -480,7 +480,7 @@ def c12_market_intel_validity(sb, last_trading_day):
     """
     REQUIRED_KEYS = [
         "market_tone", "macro_sector_impacts", "regulatory_alerts",
-        "fii_outlook", "top_3_candidates",
+        "fii_outlook", "near_miss_upgrades",
     ]
 
     rows = sb.table("ai_context").select("conviction_reason,suggested_action,ai_note") \
@@ -513,7 +513,7 @@ def c12_market_intel_validity(sb, last_trading_day):
         issues.append(f"invalid sizing='{sizing}' (expected one of {VALID_SIZING})")
 
     # Check top_3_candidates populated
-    top3 = full.get("top_3_candidates") or []
+    top3 = full.get("near_miss_upgrades") or []
     if not isinstance(top3, list) or len(top3) == 0:
         issues.append("top_3_candidates is empty")
 
@@ -597,7 +597,7 @@ def c14_ai_enrich_intel_consumed(sb, last_trading_day):
     not_injected = []
 
     for row in rows:
-        ctx = row.get("context_json") or {}
+        ctx = row.get("conviction_reason") or {}
         if isinstance(ctx, str):
             try:
                 ctx = json.loads(ctx)

@@ -190,15 +190,32 @@ def build_market_context(sb, today_str: str, last_td: str) -> dict:
                   .order("score_adjusted", desc=True)
                   .limit(30).execute().data)
 
-    watch_rows = (sb.table("signal_log")
-                .select("symbol,company_name,sector,industry,signal_type,signal_subtype,"
-                        "score,score_adjusted,momentum_state,lifecycle,risk_score,"
-                        "sector_rank_at_entry,fii_flag,near_miss_data,filter_reason")
-                .eq("date", last_td)
-                .eq("signal_type", "WATCH")
-                .not_.is_("near_miss_data", "null")
-                .order("score_adjusted", desc=True)
-                .limit(15).execute().data)
+    if not sig_rows:
+        logger.warning(
+            f"Zero buy candidates for {last_td} — promoting top near-miss WATCH signals "
+            f"as provisional candidates for AI analysis"
+        )
+        sig_rows = (
+            sb.table("signal_log")
+            .select("symbol,company_name,sector,industry,signal_type,signal_subtype,"
+                    "score,score_adjusted,momentum_state,momentum_phase,velocity_state,"
+                    "trend_maturity,lifecycle,struct_edge,entry_timing_type,"
+                    "holding_score,momentum_score,institutional_score,"
+                    "breakout_readiness,risk_score,bb_squeeze,bb_context,vwap_alignment,"
+                    "macd_direction,weekly_structure,psar_dual_confirmed,ha_signal,"
+                    "rsi_daily,rsi_weekly,vol_ratio,atr_pct,ret_6m,rs_vs_nifty,"
+                    "validity_score,expected_r_msl,days_to_trigger_est,"
+                    "fii_flag,sector_rank_at_entry,industry_rank,industry_top5,"
+                    "eap_action,in_rule_engine,in_scanner,near_miss_data,filter_reason")
+            .eq("date", last_td)
+            .eq("signal_type", "WATCH")
+            .not_.is_("near_miss_data", "null")
+            .order("score_adjusted", desc=True)
+            .limit(20).execute().data
+        )
+        # Tag for prompt so AI knows these are near-miss promotions, not gate-passed signals
+        for r in sig_rows:
+            r["_promoted_from_watch"] = True
     
     # ── JOIN with master_shortlist for fields not in signal_log ──
     if sig_rows:
@@ -519,6 +536,20 @@ def build_prompt(ctx: dict, stock_intel: list[dict]) -> str:
             "If deteriorated, downgrade. Reference specific metrics."
         )
 
+    promoted = any(c.get("_promoted_from_watch") for c in ctx["candidates"])
+    candidates_header = (
+        "═══ NEAR-MISS WATCH SIGNALS PROMOTED (no gate-passed candidates today) ═══\n"
+        "  Market is in a broad uptrend — these stocks passed scoring but were ATR-blocked.\n"
+        "  Evaluate each against today's macro/FII context. If macro supports, flag in near_miss_upgrades."
+        if promoted else
+        "═══ VALIDATED SIGNAL CANDIDATES (post step-15 gate filtering) ═══\n"
+        "  These stocks passed 11 technical gates: ATR-normalised zone, R:R viability,\n"
+        "  structural breakdown check, risk_score, liquidity, lifecycle, momentum gates.\n"
+        "  Signal quality: PRIME_SETUP > BREAKOUT_SETUP > REENTRY_SETUP > BUY_CANDIDATE\n"
+        "  Your task: assess each against TODAY's macro/FII/news context. Output sentiment_modifier."
+    )
+    lines += ["", candidates_header]
+
     lines += [
         "",
         "═══ VALIDATED SIGNAL CANDIDATES (post step-15 gate filtering) ═══",
@@ -552,23 +583,27 @@ def build_prompt(ctx: dict, stock_intel: list[dict]) -> str:
                 if si["institutional_buying"]:
                     lines.append(f"    ★ INSTITUTIONAL BUYING confirmed via bulk deals")
 
-    lines.append(r"""
-
-
-if ctx.get("watch_candidates"):
-        lines += ["", "═══ NEAR-MISS WATCH SIGNALS (evaluate if today's context upgrades these) ═══"]
+    if ctx.get("watch_candidates"):
+        lines += ["", "═══ NEAR-MISS WATCH SIGNALS (evaluate if today's context upgrades these) ═══",
+                "  These stocks passed all MSL scoring but were blocked by a narrow gate.",
+                "  Assess whether today's macro/sector/news context justifies upgrading any.",
+                "  Output each in near_miss_upgrades[] if you recommend promotion."]
         for w in ctx["watch_candidates"]:
             nm = {}
-            try: nm = json.loads(w.get("near_miss_data") or "{}")
-            except Exception: pass
+            try:
+                nm = json.loads(w.get("near_miss_data") or "{}")
+            except Exception:
+                pass
             lines.append(
                 f"  {w.get('symbol','?')} | {w.get('sector','?')} | "
                 f"Score:{float(w.get('score_adjusted',0) or 0):.1f} | "
                 f"Block:{nm.get('blocked_by','?')} | "
                 f"CMP:₹{w.get('current_price','?')} Zone:₹{w.get('entry_zone_low','?')}-{w.get('entry_zone_high','?')} | "
                 f"FII:{w.get('fii_flag','?')} SRk:{w.get('sector_rank_at_entry','?')} | "
-                f"Detail:{str({k:v for k,v in nm.items() if k!='blocked_by'})[:100]}"
+                f"Detail:{str({k:v for k,v in nm.items() if k != 'blocked_by'})[:120]}"
             )
+
+    lines.append(r"""
                  
 OUTPUT INSTRUCTIONS:
 Return ONLY this exact JSON structure. All fields are required.
@@ -823,8 +858,8 @@ def main():
     logger.info("=" * 60)
 
     sb        = get_supabase()
-    today_str = str(today_ist())
     last_td   = _last_trading_day(sb)
+    today_str = last_td 
     logger.info(f"Today: {today_str} | Last trading day: {last_td}")
 
     # Pass 1
@@ -838,15 +873,16 @@ def main():
 
     # Pass 2
     stock_intel: list[dict] = []
-    if ctx["candidates"] and not DRY_RUN:
-        logger.info(f"Pass 2: fetching news for {len(ctx['candidates'])} candidates...")
+    _intel_targets = ctx["candidates"] or ctx["watch_candidates"]
+    if _intel_targets and not DRY_RUN:
+        logger.info(f"Pass 2: fetching news for {len(_intel_targets)} candidates (BUY:{len(ctx['candidates'])} WATCH:{len(ctx['watch_candidates'])})...")
         sess = requests.Session()
         try:
             sess.get("https://www.nseindia.com", headers=HEADERS, timeout=8)
             time.sleep(1)
         except Exception:
             pass
-        for row in ctx["candidates"]:
+        for row in _intel_targets:
             sym = row.get("symbol") or ""
             if not sym:
                 continue

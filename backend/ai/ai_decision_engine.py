@@ -187,10 +187,41 @@ def load_context(sb, trade_date: str) -> dict:
           .order("score_adjusted", desc=True)
           .execute().data
     )
-
+    
+    promoted_from_watch = False
     if not sig_rows:
-        logger.warning(f"No gate-passed signals found for {trade_date}")
-        return {}
+        logger.warning(
+            f"No gate-passed buy signals for {trade_date} — "
+            f"falling back to near-miss WATCH signals"
+        )
+        sig_rows = (
+            sb.table("signal_log")
+            .select(
+                "id,symbol,company_name,sector,industry,strategy,"
+                "signal_type,signal_subtype,position_state,"
+                "score,score_adjusted,"
+                "momentum_state,momentum_phase,velocity_state,trend_maturity,"
+                "lifecycle,struct_edge,entry_timing_type,reentry_mode,"
+                "holding_score,momentum_score,institutional_score,"
+                "breakout_readiness,risk_score,"
+                "rsi_daily,rsi_weekly,adx,vol_ratio,atr_pct,ret_6m,"
+                "rs_vs_nifty,above_sma50,delivery_pct,"
+                "bb_squeeze,bb_context,vwap_alignment,macd_direction,"
+                "weekly_structure,psar_dual_confirmed,ha_signal,st_cushion_pct,"
+                "validity_score,expected_r_msl,days_to_trigger_est,"
+                "fii_flag,sector_rank_at_entry,industry_rank,industry_top5,"
+                "eap_action,in_rule_engine,in_scanner,near_miss_data,filter_reason"
+            )
+            .eq("date", trade_date)
+            .eq("signal_type", "WATCH")
+            .not_.is_("near_miss_data", "null")
+            .order("score_adjusted", desc=True)
+            .limit(20).execute().data
+        )
+        promoted_from_watch = True
+        if not sig_rows:
+            logger.warning("No near-miss WATCH signals either — step 19 has nothing to rank")
+            return {}
 
     # ── JOIN with master_shortlist for fields not in signal_log ──
     symbols = [r["symbol"] for r in sig_rows]
@@ -362,6 +393,7 @@ def load_context(sb, trade_date: str) -> dict:
     
     return {
         "candidates":      candidates,
+        "promoted_from_watch": promoted_from_watch,
         "market_intel":    market_intel,
         "positions":       pos_rows,
         "sector_counts":   sector_counts,
@@ -472,25 +504,46 @@ def build_prompt(ctx: dict, trade_date: str) -> str:
                     f"    {p.get('symbol','?')} [{p.get('tier','?')}] {p.get('action','?')} {outcome_str}"
                 )
 
-    lines += [
-        "",
-        "═══ GATE-PASSED CANDIDATES — YOUR RANKING TASK ═══",
-        "  IMPORTANT: These stocks already passed 11 hard technical gates (step 15).",
-        "  Do NOT re-evaluate their technical merits — step 15 already did that.",
-        "  TARGET HORIZON: 1–3 weeks. Favour low DaysTrig (≤3), strong RSvNifty, high HoldScore.",
-        "  Your task:",
-        "    1. Apply the market overlay above (FII, macro, regulatory alerts)",
-        "    2. Detect correlation clusters (cap clustered sectors/styles)",
-        "    3. Apply concentration guards against open positions",
-        "    4. Apply lessons in confidence order",
-        "    5. Assign TIER_1/2/3 based on setup quality + macro alignment + 1-3wk readiness",
-        "    6. Suggest capital allocation % (soft guidance, human decides final amount)",
-        "    7. Rank within each tier by conviction",
-        "",
+    _COLUMNS = (
         "  Columns: Symbol | Sector | SignalType | Score(adj) | CMP | Zone | "
         "Dist% | DaysTrig | Lifecycle | HoldScore | ExpR | Validity | Engines | Conv | SectorRk | "
-        "FIIFlag | ST% | RSI-D | RSvNifty | Ret6M | Vol | InScanner | Quality | MCap",
-    ]
+        "FIIFlag | ST% | RSI-D | RSvNifty | Ret6M | Vol | InScanner | Quality | MCap"
+    )
+
+    if ctx.get("promoted_from_watch"):
+        lines += [
+            "",
+            "═══ NEAR-MISS WATCH SIGNALS — PROMOTED FOR RANKING (no gate-passed candidates today) ═══",
+            "  Market is likely in a broad uptrend — these stocks passed scoring but were blocked",
+            "  by ATR chase distance. near_miss_data shows exactly how far above zone each is.",
+            "  TARGET HORIZON: 1–3 weeks. Evaluate whether today's FII/macro justifies entry.",
+            "  Your task:",
+            "    1. For each: check if HOT+EXPANSION+FII_BUYING+SectorTop4 → flag TIER_1",
+            "    2. Apply macro overlay and concentration guards as normal",
+            "    3. Set upgraded_from_watch: true on all entries in ranked_candidates",
+            "    4. Use near_miss_data.gap_atrs to judge how far extended — smaller gap = better",
+            "    5. Assign SKIP if macro does not support chasing at this distance",
+            "",
+            _COLUMNS,
+        ]
+    else:
+        lines += [
+            "",
+            "═══ GATE-PASSED CANDIDATES — YOUR RANKING TASK ═══",
+            "  IMPORTANT: These stocks already passed 11 hard technical gates (step 15).",
+            "  Do NOT re-evaluate their technical merits — step 15 already did that.",
+            "  TARGET HORIZON: 1–3 weeks. Favour low DaysTrig (≤3), strong RSvNifty, high HoldScore.",
+            "  Your task:",
+            "    1. Apply the market overlay above (FII, macro, regulatory alerts)",
+            "    2. Detect correlation clusters (cap clustered sectors/styles)",
+            "    3. Apply concentration guards against open positions",
+            "    4. Apply lessons in confidence order",
+            "    5. Assign TIER_1/2/3 based on setup quality + macro alignment + 1-3wk readiness",
+            "    6. Suggest capital allocation % (soft guidance, human decides final amount)",
+            "    7. Rank within each tier by conviction",
+            "",
+            _COLUMNS,
+        ]
     for c in ctx["candidates"]:
         lines.append(
             f"  {c.get('symbol','?'):<12} | {c.get('sector','?')[:20]:<20} | "

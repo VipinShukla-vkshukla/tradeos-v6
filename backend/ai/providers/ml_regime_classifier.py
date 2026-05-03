@@ -602,6 +602,37 @@ def train(sb) -> bool:
     )
     return True
 
+def _last_trading_day(sb) -> str:
+    """
+    Walk backwards from today (IST) to find the most recent trading day.
+    A trading day is a weekday that is NOT in nse_holidays.
+    Looks back up to 10 calendar days (covers long holiday runs).
+    """
+    from datetime import date, timedelta
+    candidate = today_ist()
+
+    # Fetch holidays once — only need the last ~2 weeks to be safe
+    window_start = str(candidate - timedelta(days=14))
+    try:
+        holiday_rows = (
+            sb.table("nse_holidays")
+            .select("date")
+            .gte("date", window_start)
+            .execute().data
+        )
+        holidays = {r["date"] for r in holiday_rows}   # set of "YYYY-MM-DD" strings
+    except Exception as e:
+        logger.warning(f"_last_trading_day: could not fetch nse_holidays ({e}) — using today")
+        return str(candidate)
+
+    for _ in range(10):
+        s = str(candidate)
+        if candidate.weekday() < 5 and s not in holidays:   # Mon–Fri, not a holiday
+            return s
+        candidate -= timedelta(days=1)
+
+    logger.warning("_last_trading_day: no trading day found in last 10 days — falling back to today")
+    return str(today_ist())
 
 # ── Prediction ────────────────────────────────────────────────────────────────
 
@@ -659,7 +690,7 @@ def predict_today(sb):
             f"CV={meta.get('cv_accuracy', 0):.1%}, trained={str(meta.get('trained_at','?'))[:10]}"
         )
 
-    today    = str(today_ist())
+    today    = _last_trading_day(sb)
     features = _build_feature_row(sb, today)
     if features is None:
         logger.warning(
@@ -675,17 +706,21 @@ def predict_today(sb):
         logger.error("numpy required — pip install numpy")
         return None
 
-    proba      = model.predict_proba([features])[0]
-    pred_idx   = int(np.argmax(proba))
-    predicted  = LABELS[pred_idx]
-    confidence = round(float(proba[pred_idx]), 4)
-    proba_dist = {LABELS[i]: round(float(proba[i]), 4) for i in range(len(LABELS))}
+    proba          = model.predict_proba([features])[0]
+    best_cls_pos   = int(np.argmax(proba))                   # position within model.classes_
+    predicted      = LABELS[model.classes_[best_cls_pos]]    # map back to LABELS via classes_
+    confidence     = round(float(proba[best_cls_pos]), 4)
+
+    # Build full 5-state distribution; unseen classes default to 0.0
+    proba_dist = {label: 0.0 for label in LABELS}
+    for pos, cls_idx in enumerate(model.classes_):
+        proba_dist[LABELS[cls_idx]] = round(float(proba[pos]), 4)
 
     logger.info(f"Regime probability distribution: {proba_dist}")
 
     manual_row = (
         sb.table("market_regime")
-        .select("regime,id")
+        .select("regime")
         .eq("date", today)
         .limit(1)
         .execute().data
