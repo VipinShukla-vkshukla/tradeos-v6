@@ -367,24 +367,63 @@ def fetch_banknifty_from_supabase(sb, effective_date: str) -> tuple[dict | None,
 
 def fetch_usdinr_direction(sb) -> float | None:
     """
-    USD/INR direction from macro_indicators table.
+    USD/INR 5-day direction from global_cues.usd_inr (written by ingest_global_cues.py).
+    Mirrors fetch_sp500_direction() — same table, same session filter, same pattern.
     Rupee weakening = FII outflows amplified = effective risk higher.
     Returns recent % change (positive = rupee weakening = bad for market).
-    NEW in v2.
+
+    WHY global_cues not macro_indicators:
+      ingest_global_cues already fetches USDINR=X twice daily and stores it in
+      global_cues.usd_inr. macro_indicators has no USD_INR feed — the column was
+      wired by mistake in the original fetch_usdinr_direction() design.
     """
+    # Primary: global_cues (written by ingest_global_cues.py — already running)
     try:
-        rows = (sb.table("macro_indicators")
-                  .select("indicator_value,indicator_date")
-                  .eq("indicator_name", "USD_INR")
-                  .order("indicator_date", desc=True)
-                  .limit(6)
-                  .execute().data)
+        rows = (
+            sb.table("global_cues")
+              .select("date,usd_inr")
+              .eq("session", "EVENING")
+              .not_.is_("usd_inr", "null")
+              .order("date", desc=True)
+              .limit(6)
+              .execute().data
+        )
+        if len(rows) >= 2:
+            latest = float(rows[0]["usd_inr"])
+            older  = float(rows[min(5, len(rows) - 1)]["usd_inr"])
+            if older > 0:
+                ret = round((latest - older) / older * 100, 3)
+                logger.debug(
+                    f"  USD/INR global_cues hit: "
+                    f"latest={latest:.4f} older={older:.4f} chg={ret:+.3f}%"
+                )
+                return ret
+    except Exception as e:
+        logger.debug(f"  USD/INR global_cues read failed: {e}")
+
+    # Fallback: macro_indicators (if a dedicated USD_INR feed is added later)
+    try:
+        rows = (
+            sb.table("macro_indicators")
+              .select("indicator_value,indicator_date")
+              .eq("indicator_name", "USD_INR")
+              .order("indicator_date", desc=True)
+              .limit(6)
+              .execute().data
+        )
         if len(rows) >= 2:
             recent = float(rows[0]["indicator_value"])
             older  = float(rows[-1]["indicator_value"])
+            logger.debug("  USD/INR macro_indicators fallback hit")
             return round((recent - older) / older * 100, 3) if older > 0 else None
     except Exception as e:
-        logger.warning(f"  USD/INR fetch failed: {e}")
+        logger.debug(f"  USD/INR macro_indicators fallback failed: {e}")
+
+    logger.warning(
+        "  USD/INR: global_cues and macro_indicators both empty — "
+        "usdinr_5d_chg will be NULL (±2pt global modifier lost). "
+        "Ensure ingest_global_cues.py has run at least 6 EVENING sessions."
+    )
     return None
 
 

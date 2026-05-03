@@ -40,6 +40,65 @@ REGIME_HISTORY_COLS = {
 }
 
 
+def resolve_last_trading_day(sb, reference_date: str, max_lookback: int = 10) -> str:
+    """
+    Walk backwards from reference_date to find the last valid trading day:
+      - Not a Saturday or Sunday
+      - Not in nse_holidays table
+      - Has actual data in market_regime (populated earlier in the pipeline,
+        present in both Phase 0/1 and Phase 2+ runs)
+
+    Raises RuntimeError if no valid day is found within max_lookback days.
+    """
+    from datetime import datetime, timedelta as _td
+    holiday_rows = sb.table("nse_holidays").select("date").execute().data
+    holidays     = {row["date"] for row in holiday_rows}
+    candidate    = datetime.strptime(reference_date, "%Y-%m-%d").date()
+
+    logger.info(f"  Resolving trading day from {reference_date} (holidays loaded: {len(holidays)})")
+
+    for _ in range(max_lookback):
+        date_str = str(candidate)
+        dow      = candidate.weekday()   # 0=Mon … 6=Sun
+
+        if dow in (5, 6):
+            logger.debug(f"  {date_str} is {'Saturday' if dow == 5 else 'Sunday'} — stepping back")
+            candidate -= _td(days=1)
+            continue
+
+        if date_str in holidays:
+            occasion = next(
+                (r.get("occasion", "NSE holiday") for r in holiday_rows if r["date"] == date_str),
+                "NSE holiday"
+            )
+            logger.debug(f"  {date_str} is an NSE holiday ({occasion}) — stepping back")
+            candidate -= _td(days=1)
+            continue
+
+        probe = (
+            sb.table("market_regime")
+              .select("date")
+              .eq("date", date_str)
+              .limit(1)
+              .execute().data
+        )
+        if probe:
+            if date_str != reference_date:
+                logger.info(f"  Trading day resolved: {reference_date} → {date_str}")
+            else:
+                logger.info(f"  Trading day confirmed: {date_str}")
+            return date_str
+
+        logger.debug(f"  {date_str} — no market_regime rows — stepping back")
+        candidate -= _td(days=1)
+
+    raise RuntimeError(
+        f"No valid trading day with market_regime data found "
+        f"within {max_lookback} days before {reference_date}. "
+        f"Ensure compute_regime has run for a recent trading day."
+    )
+
+
 def main():
     if is_kill_switch_active():
         return {}
@@ -47,7 +106,15 @@ def main():
     sb    = get_supabase()
     today = str(today_ist())
 
-    # Check if already snapshotted today
+    # Resolve last valid trading day before any queries — today_ist() is wrong on
+    # weekends and NSE holidays, causing the duplicate-check to miss an existing
+    # snapshot and then fail to find any source rows (or snapshot with a bad date).
+    try:
+        today = resolve_last_trading_day(sb, today)
+    except RuntimeError as exc:
+        logger.error(str(exc))
+        return {"status": "no_data"}
+
     existing = sb.table("msl_history").select("symbol").eq("snapshot_date", today).limit(1).execute().data
     if existing:
         logger.info(f"History snapshot already exists for {today} — skipping")
@@ -107,6 +174,7 @@ def main():
             "holding_score":    r.get("holding_score"),
             "risk_score":       r.get("risk_score"),
             "breakout_readiness": r.get("breakout_readiness"),
+            "persistent_phase":   r.get("persistent_phase"),
         })
 
     if not DRY_RUN:

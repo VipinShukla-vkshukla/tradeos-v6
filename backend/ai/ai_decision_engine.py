@@ -67,7 +67,7 @@ import re
 import sys
 import json
 import time
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 from loguru import logger
@@ -77,13 +77,58 @@ from config import get_supabase, today_ist, is_kill_switch_active, cfg, cfg_int
 
 DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
 
+
+# ── Trading-day resolution ─────────────────────────────────────────────────
+
+def get_last_trading_date(sb, reference_date: date | None = None) -> str:
+    """
+    Return the most-recent NSE trading date on or before *reference_date*
+    (defaults to today IST).  Skips weekends (Sat/Sun) and any date found
+    in the public.nse_holidays table.
+
+    Looks back up to 10 calendar days — more than enough to cover any
+    long-weekend / festive cluster.
+    """
+    if reference_date is None:
+        reference_date = today_ist()
+
+    # Pre-load NSE holidays for the surrounding window (cheap single query)
+    window_start = reference_date - timedelta(days=10)
+    try:
+        holiday_rows = (
+            sb.table("nse_holidays")
+              .select("date")
+              .gte("date", str(window_start))
+              .lte("date", str(reference_date))
+              .execute().data
+        )
+        holiday_set = {r["date"] for r in (holiday_rows or [])}
+    except Exception as exc:
+        logger.warning(f"Could not fetch nse_holidays — treating all weekdays as trading days: {exc}")
+        holiday_set = set()
+
+    candidate = reference_date
+    for _ in range(10):
+        # weekday() → 0=Mon … 4=Fri; 5=Sat, 6=Sun
+        if candidate.weekday() < 5 and str(candidate) not in holiday_set:
+            return str(candidate)
+        candidate -= timedelta(days=1)
+
+    # Fallback — should never reach here
+    logger.error("Could not find a trading date in the last 10 days — using reference date as-is")
+    return str(reference_date)
+
 _SYSTEM_PROMPT = (
     "You are a senior Indian equity portfolio manager with 20 years of NSE 500 swing trading experience. "
+    "TARGET HORIZON: 1–3 weeks (5–15 trading sessions). Every ranking and allocation decision must be "
+    "calibrated to this window — a setup that takes 6 weeks to play out is NOT TIER_1 for us. "
     "You think in terms of capital deployment, risk-adjusted returns, and portfolio construction — "
     "not just individual stock setups. "
     "You are reading a fully enriched, gate-filtered candidate list. Every stock here already passed "
     "11 technical gates. Your job is NOT to re-screen them. Your job is to apply portfolio-level thinking: "
     "sector concentration, FII alignment, macro tailwinds, correlation clusters, and capital efficiency. "
+    "Prefer candidates with: low days_to_trigger_est (≤3 sessions), strong rs_vs_nifty, "
+    "positive ret_6m momentum, and high holding_score — these signal a stock primed to move in 1–3 weeks. "
     "When you see a group of 4 similar stocks, you cap them to the best 1-2. "
     "When FII is selling a sector, you drop those candidates regardless of their technical score. "
     "You generate new rules when you detect patterns that should be remembered. "
@@ -146,17 +191,6 @@ def load_context(sb, trade_date: str) -> dict:
     if not sig_rows:
         logger.warning(f"No gate-passed signals found for {trade_date}")
         return {}
-
-
-    watch_upgrades = (
-    sb.table("signal_log")
-      .select("symbol,sector,score_adjusted,near_miss_data,ai_note,filter_reason,"
-              "momentum_state,lifecycle,fii_flag,sector_rank_at_entry")
-      .eq("date", trade_date)
-      .eq("signal_type", "WATCH")
-      .like("ai_note", "%NEAR_MISS_UPGRADE%")
-      .execute().data
-)
 
     # ── JOIN with master_shortlist for fields not in signal_log ──
     symbols = [r["symbol"] for r in sig_rows]
@@ -438,24 +472,24 @@ def build_prompt(ctx: dict, trade_date: str) -> str:
                     f"    {p.get('symbol','?')} [{p.get('tier','?')}] {p.get('action','?')} {outcome_str}"
                 )
 
-    # ── The candidates — the core of the prompt ──
     lines += [
         "",
         "═══ GATE-PASSED CANDIDATES — YOUR RANKING TASK ═══",
         "  IMPORTANT: These stocks already passed 11 hard technical gates (step 15).",
         "  Do NOT re-evaluate their technical merits — step 15 already did that.",
+        "  TARGET HORIZON: 1–3 weeks. Favour low DaysTrig (≤3), strong RSvNifty, high HoldScore.",
         "  Your task:",
         "    1. Apply the market overlay above (FII, macro, regulatory alerts)",
         "    2. Detect correlation clusters (cap clustered sectors/styles)",
         "    3. Apply concentration guards against open positions",
         "    4. Apply lessons in confidence order",
-        "    5. Assign TIER_1/2/3 based on setup quality + macro alignment",
+        "    5. Assign TIER_1/2/3 based on setup quality + macro alignment + 1-3wk readiness",
         "    6. Suggest capital allocation % (soft guidance, human decides final amount)",
         "    7. Rank within each tier by conviction",
         "",
-        "  Columns: Symbol | Sector | SignalType | Score(adjusted) | CMP | Zone | "
-        "Dist% | Lifecycle | ExpR | Validity | Engines | Conv | SectorRk | "
-        "FIIFlag | ST% | EAP | RSI-D | Vol | InScanner",
+        "  Columns: Symbol | Sector | SignalType | Score(adj) | CMP | Zone | "
+        "Dist% | DaysTrig | Lifecycle | HoldScore | ExpR | Validity | Engines | Conv | SectorRk | "
+        "FIIFlag | ST% | RSI-D | RSvNifty | Ret6M | Vol | InScanner | Quality | MCap",
     ]
     for c in ctx["candidates"]:
         lines.append(
@@ -465,12 +499,17 @@ def build_prompt(ctx: dict, trade_date: str) -> str:
             f"CMP:₹{c.get('current_price','?')} "
             f"Zone:₹{c.get('entry_zone_low','?')}-{c.get('entry_zone_high','?')} "
             f"Dist:{c.get('dist_entry_pct','?')}% | "
+            f"DaysTrig:{c.get('days_to_trigger_est','?')} | "
             f"{c.get('lifecycle','?')}/{c.get('trend_maturity','?')} | "
+            f"HoldScore:{c.get('holding_score','?')} | "
             f"ExpR:{c.get('expected_r_msl','?')}x Valid:{c.get('validity_score','?')} | "
             f"Eng:{c.get('engines_count','?')} Conv:{c.get('convergence_pts','?')} | "
             f"SRk:{c.get('sector_rank_at_entry','?')} FII:{c.get('fii_flag','?')} | "
             f"ST:{c.get('st_cushion_pct','?')}% "
-            f"RSI:{c.get('rsi_daily','?')} Vol:{c.get('vol_ratio','?')}x | "
+            f"RSI:{c.get('rsi_daily','?')} "
+            f"RSvNifty:{c.get('rs_vs_nifty','?')} "
+            f"Ret6M:{c.get('ret_6m','?')}% "
+            f"Vol:{c.get('vol_ratio','?')}x | "
             f"EAP:{c.get('eap_action','NO_CHANGE')} "
             f"Scnr:{c.get('in_scanner',False)} "
             f"Quality:{c.get('fundamental_quality','?')} "
@@ -478,9 +517,8 @@ def build_prompt(ctx: dict, trade_date: str) -> str:
             f"DaysOL:{c.get('days_in_list','?')} RkVel:{c.get('rank_vel_3d','?')}"
         )
 
-    lines.append(r"""
-
-if ctx.get("watch_upgrades"):
+    # ── NEAR-MISS UPGRADES — must be OUTSIDE the raw string ──
+    if ctx.get("watch_upgrades"):
         lines += [
             "",
             "═══ NEAR-MISS UPGRADES (step 18 flagged — decide whether to include in ranking) ═══",
@@ -489,8 +527,10 @@ if ctx.get("watch_upgrades"):
         ]
         for w in ctx["watch_upgrades"]:
             nm = {}
-            try: nm = json.loads(w.get("near_miss_data") or "{}")
-            except Exception: pass
+            try:
+                nm = json.loads(w.get("near_miss_data") or "{}")
+            except Exception:
+                pass
             note = (w.get("ai_note") or "").replace("[NEAR_MISS_UPGRADE:", "").split("]")
             lines.append(
                 f"  {w.get('symbol','?')} | {w.get('sector','?')} | "
@@ -500,12 +540,14 @@ if ctx.get("watch_upgrades"):
                 f"Reason: {note[1].strip()[:120] if len(note)>1 else '?'}"
             )
 
+    lines.append(r"""
 ═══ OUTPUT FORMAT ═══
 Return ONLY this exact JSON. Rank ALL candidates above — none should be missing.
 
 conviction: HIGH | MEDIUM | LOW
-tier: TIER_1 (act now) | TIER_2 (watch for trigger) | TIER_3 (monitor)
+tier: TIER_1 (act now, 1–3 week setup) | TIER_2 (watch for trigger) | TIER_3 (monitor)
 action: ENTER_NOW | ENTER_ON_DIP | WAIT_FOR_TRIGGER | SKIP
+expected_holding_days: your estimate of how many trading sessions to target exit (e.g. 5, 10, 15)
 suggested_allocation_pct: % of available capital (0 if SKIP, e.g. 5.0 for 5%)
   Guidelines: TIER_1 high-conviction → 6-8% | TIER_1 medium → 4-5% | TIER_2 → 2-3% | TIER_3/SKIP → 0%
   Total allocations should not exceed 100% minus existing positions
@@ -520,8 +562,9 @@ suggested_allocation_pct: % of available capital (0 if SKIP, e.g. 5.0 for 5%)
       "conviction": "HIGH",
       "confidence": 0.85,
       "action": "ENTER_NOW",
+      "expected_holding_days": 10,
       "suggested_allocation_pct": 6.0,
-      "thesis": "2 sentences — why this stock in these exact macro conditions today",
+      "thesis": "2 sentences — why this stock in these exact macro conditions within 1-3 weeks",
       "entry_note": "specific price level or volume condition to watch for",
       "invalidation": "one precise condition that kills this setup",
       "risks": ["risk1", "risk2"],
@@ -586,7 +629,7 @@ def call_ai(prompt: str) -> dict | None:
 
     logger.info(f"Step 19 AI call via provider: {provider}")
     try:
-        full_text = raw_completion(full_prompt, max_tokens=4000)
+        full_text = raw_completion(full_prompt, max_tokens=6000)
     except Exception as e:
         logger.warning(f"AI call failed: {e}")
         return None
@@ -774,7 +817,10 @@ def main():
     logger.info("=" * 60)
 
     sb         = get_supabase()
-    trade_date = str(today_ist())
+    trade_date = get_last_trading_date(sb)
+
+    if trade_date != str(today_ist()):
+        logger.info(f"Non-trading day detected — rolling back to last trading date: {trade_date}")
 
     # Load all context
     logger.info("Loading context...")

@@ -160,10 +160,16 @@ def build_market_context(sb, today_str: str, last_td: str) -> dict:
                             "avg_rsi_daily,avg_rsi_weekly,avg_ret_6m")
                     .eq("date", last_td).order("rank").limit(15).execute().data)
 
-    # ── Market news ──
+    # ── Market news — window query: captures weekend + holiday news ──
+    from config import get_news_window
+    _news_start, _news_end = get_news_window(sb, today_str)
     news = (sb.table("market_news")
               .select("headline,source,category,impact_type,parsed_symbols")
-              .eq("news_date", today_str).order("id", desc=True).limit(40).execute().data)
+              .gte("news_date", _news_start)
+              .lte("news_date", _news_end)
+              .order("news_date", desc=True)
+              .limit(40).execute().data)
+    logger.info(f"  market_news: {len(news)} items | window {_news_start} → {_news_end}")
 
     # ── Gate-filtered candidates from signal_log ──
     sig_rows = (sb.table("signal_log")

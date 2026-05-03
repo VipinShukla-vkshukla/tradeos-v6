@@ -253,6 +253,73 @@ def _derive_global_signals(global_rows: list) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# TRADING DAY RESOLUTION
+# ─────────────────────────────────────────────────────────────────────────────
+
+def resolve_last_trading_day(sb, reference_date: str, max_lookback: int = 10) -> str:
+    """
+    Walk backwards from reference_date to find the last valid trading day:
+      - Not a Saturday (weekday=5) or Sunday (weekday=6)
+      - Not in nse_holidays table
+      - Has actual data in stock_data_daily (compute_indicators must have run)
+
+    This is the correct anchor table for compute_msl (step 14) — it confirms
+    that compute_indicators (step 10) has already populated data for that day.
+    Using today_ist() directly fails on weekends, NSE holidays, and on days
+    where the pipeline hasn't completed yet.
+
+    Raises RuntimeError if no valid day is found within max_lookback days.
+    """
+    holiday_rows = sb.table("nse_holidays").select("date").execute().data
+    holidays     = {row["date"] for row in holiday_rows}
+    candidate    = datetime.strptime(reference_date, "%Y-%m-%d").date()
+
+    logger.info(f"  Resolving trading day from {reference_date} (holidays loaded: {len(holidays)})")
+
+    for _ in range(max_lookback):
+        date_str = str(candidate)
+        dow      = candidate.weekday()   # 0=Mon … 6=Sun
+
+        if dow in (5, 6):
+            logger.debug(f"  {date_str} is {'Saturday' if dow == 5 else 'Sunday'} — stepping back")
+            candidate -= timedelta(days=1)
+            continue
+
+        if date_str in holidays:
+            occasion = next(
+                (r.get("occasion", "NSE holiday") for r in holiday_rows if r["date"] == date_str),
+                "NSE holiday"
+            )
+            logger.debug(f"  {date_str} is an NSE holiday ({occasion}) — stepping back")
+            candidate -= timedelta(days=1)
+            continue
+
+        # Confirm upstream data actually exists for this day
+        probe = (
+            sb.table("stock_data_daily")
+              .select("date")
+              .eq("date", date_str)
+              .limit(1)
+              .execute().data
+        )
+        if probe:
+            if date_str != reference_date:
+                logger.info(f"  Trading day resolved: {reference_date} → {date_str}")
+            else:
+                logger.info(f"  Trading day confirmed: {date_str}")
+            return date_str
+
+        logger.debug(f"  {date_str} — no stock_data_daily rows (compute_indicators not yet run?) — stepping back")
+        candidate -= timedelta(days=1)
+
+    raise RuntimeError(
+        f"No valid trading day with stock_data_daily data found "
+        f"within {max_lookback} days before {reference_date}. "
+        f"Ensure compute_indicators has run for a recent trading day."
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # DATA LOADING — 9 bulk queries, zero per-symbol calls
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -623,20 +690,17 @@ def load_data(sb, today: str, mode: str) -> dict:
 
     # ── Market news — rule-based sentiment from category + headline ───────────
     # market_news uses news_date (not date). Include headline for keyword classification.
+    # ── Market news — window query: captures weekend + holiday news ────────────
+    from config import get_news_window
+    _news_start, _news_end = get_news_window(sb, today)
     news_rows = (
         sb.table("market_news")
           .select("category,impact_type,headline")
-          .eq("news_date", today)
+          .gte("news_date", _news_start)
+          .lte("news_date", _news_end)
           .execute().data
     )
-    if not news_rows:
-        news_rows = (
-            sb.table("market_news")
-              .select("category,impact_type,headline")
-              .order("news_date", desc=True)
-              .limit(50)
-              .execute().data
-        )
+    logger.info(f"  market_news: {len(news_rows)} items | window {_news_start} → {_news_end}")
     bearish_news = bullish_news = 0
     for _nrow in (news_rows or []):
         _sentiment, _impact_level = _classify_news_sentiment(
@@ -2442,6 +2506,16 @@ def main():
     mode  = cfg("compute_msl_mode", "shadow")
     if os.getenv("COMPUTE_MSL_MODE_OVERRIDE"):
         mode = os.getenv("COMPUTE_MSL_MODE_OVERRIDE")
+
+    # ── Resolve last valid trading day ────────────────────────────────────
+    # Must happen BEFORE load_data so every query uses the correct date.
+    # today_ist() returns today's IST calendar date which is wrong on weekends,
+    # NSE holidays, and on days where compute_indicators hasn't run yet.
+    try:
+        today = resolve_last_trading_day(sb, today)
+    except RuntimeError as exc:
+        logger.error(str(exc))
+        return {"status": "no_data"}
 
     logger.info("=" * 70)
     logger.info(

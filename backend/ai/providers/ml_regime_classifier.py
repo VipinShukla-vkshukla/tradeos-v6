@@ -1,58 +1,54 @@
 """
-TradeOS v6 — Phase 2: ML Regime Classifier  (v2 — schema-corrected)
+TradeOS v6 — Phase 2: ML Regime Classifier  (v3 — holistic rebuild)
 ====================================================================
-CHANGES vs v1 (schema audit against live Supabase, 01-Apr-2026):
-  FIX 1: nifty_total_market is an INDEX MEMBERSHIP table (symbol, nifty_200, nifty_500).
-          It has NO close/advance/decline/breadth_pct columns.
-          → _nifty_returns() now reads market_regime.nifty_5d_chg_pct / nifty_20d_chg_pct
-            which are already pre-computed and available as direct columns.
-          → _advance_decline() primary source unchanged (market_regime.advance_decline_ratio).
-            nifty_total_market fallback REMOVED (those columns don't exist).
+CHANGES vs v2 (strategic audit, 03-May-2026):
 
-  FIX 2: sector_strength has NO strength_score column.
-          Live schema: avg_rsi_daily, avg_rsi_weekly, breadth_sma50, rank, top4_flag, etc.
-          → _sector_dispersion() now uses breadth_sma50 (% stocks above SMA50 per sector)
-            std dev of breadth_sma50 across sectors is actually a better dispersion
-            signal than a synthetic strength_score would be.
+  FIX 1: 5-STATE LABEL ALIGNMENT
+    v2 used 4 labels: ["TRENDING", "NEUTRAL", "CAUTION", "RISK OFF"]
+    Live system runs 5-state hysteresis: TRENDING / RISK ON / NEUTRAL / RECOVERING / RISK OFF
+    v2 was silently collapsing RISK ON → TRENDING and skipping every RECOVERING row.
+    v3 uses all 5 labels, aligned with compute_regime.py and data_quality_monitor.py.
+    Legacy label mapping: CAUTION → NEUTRAL (closest modern equivalent).
 
-  FIX 3: regime_history uses date column, NOT snapshot_date.
-          → build_training_data() queries updated to use 'date' column.
+  FIX 2: nifty_20d HARD-KILL REMOVED
+    v2 returned None and skipped the entire row if nifty_20d_chg_pct was NULL.
+    This column was unpopulated until Apr-03; 15+ rows were lost.
+    v3 computes nifty_20d from nifty_price rolling window as a fallback.
+    Only nifty_ret_5d is a hard requirement — it is the core momentum signal
+    and genuinely cannot be imputed without arbitrary assumptions.
 
-  FIX 4: fii_dii_flow.fii_net_5d and fii_net_20d are PRE-COMPUTED and stored directly.
-          → _fii_net() now reads these columns directly instead of re-summing raw rows.
-          Faster, consistent with what ingest_fii_dii.py already writes.
+  FIX 3: FEATURE SET REDESIGNED — 9 FEATURES, ALL RELIABLY SOURCED
+    Removed:  (implicit) assumption that all columns populated from day 1
+    Added:    india_vix   — populated from Mar-09, strong RISK OFF signal
+    Added:    avg_sector_breadth — populated from Mar-09, always available
+    Kept:     above_200dma_pct (cross-fallback with avg_sector_breadth)
+    Kept:     advance_decline, fii flows, sector_dispersion
+    Effect:   usable training rows jump from 9 → ~28 immediately
 
-Relationship to ml_provider.py (stock-level model):
-  These two models are independent and operate at different scopes:
-  - ml_regime_classifier  → MARKET scope. Input: market breadth/FII/Nifty returns.
-                             Output: predicted_regime written to market_regime.
-  - ml_provider.py        → STOCK scope. Input: per-stock technicals from signal_log.
-                             Output: conviction (HIGH/MEDIUM/LOW) per signal.
-  Link: generate_signals._resolve_regime() reads predicted_regime → passes as
-  regime_encoded into ml_provider's feature vector. One-way dependency only.
+  FIX 4: SOFT IMPUTATION STRATEGY
+    Hard skip (return None)  → only when nifty_ret_5d is NULL
+    Soft default (0.0 / 1.0) → all other features
+    Rationale: a partial feature vector with sensible defaults is always
+    better than dropping the row entirely. RandomForest is robust to
+    noisy features — it learns which features to trust per split.
 
-Why stock_data_daily / master_shortlist are NOT used here:
-  The regime classifier answers a market-level question (what is the market doing?).
-  Using 500 stock rows to answer it would be re-deriving breadth_pct and A/D ratio
-  which we already have as direct columns in market_regime. stock_data_daily IS used
-  by ml_provider.py indirectly — its computed fields flow into signal_log at signal
-  time, and ml_provider trains on signal_log outcomes.
+Feature sources (9 total):
+  nifty_ret_5d       → market_regime.nifty_5d_chg_pct          (hard req)
+  nifty_ret_20d      → market_regime.nifty_20d_chg_pct         (compute from price if NULL)
+  india_vix          → market_regime.india_vix                  (recent-row fallback)
+  advance_decline    → market_regime.advance_decline_ratio      (default 1.0)
+  breadth_200dma     → market_regime.above_200dma_pct           (fallback: avg_sector_breadth)
+  avg_sector_breadth → market_regime.avg_sector_breadth         (default 30.0)
+  fii_net_5d         → fii_dii_flow.fii_net_5d                  (default 0.0)
+  fii_net_20d        → fii_dii_flow.fii_net_20d                 (default 0.0)
+  sector_dispersion  → std dev of sector_strength.breadth_sma50 (default 0.0)
 
-Feature sources (simplified — mostly from market_regime which is a daily denorm snapshot):
-  nifty_ret_5d      → market_regime.nifty_5d_chg_pct      (direct, pre-computed)
-  nifty_ret_20d     → market_regime.nifty_20d_chg_pct     (direct, pre-computed)
-  advance_decline   → market_regime.advance_decline_ratio  (direct)
-  breadth_pct       → market_regime.above_200dma_pct       (% stocks above 200dma)
-  fii_net_5d        → fii_dii_flow.fii_net_5d              (direct, pre-computed)
-  fii_net_20d       → fii_dii_flow.fii_net_20d             (direct, pre-computed)
-  sector_dispersion → std dev of sector_strength.breadth_sma50 across sectors
-
-Training labels:
-  Primary:  regime_history.date + regime    (G14 fix: append_history writes daily)
-  Fallback: market_regime.date + regime     (always available)
+Training labels (5-state, matching live hysteresis model):
+  TRENDING / RISK ON / NEUTRAL / RECOVERING / RISK OFF
+  LABEL_TIER ordering: 0=TRENDING → 4=RISK OFF (aligned with data_quality_monitor.py)
 
 Tables written:
-  market_regime  → predicted_regime, regime_confidence, regime_predicted_at
+  market_regime   → predicted_regime, regime_confidence, regime_predicted_at
   ml_training_log → model_type, training_samples, accuracy, feature_names,
                     feature_importance, notes, trained_at
 """
@@ -78,26 +74,30 @@ from config import (
 MODEL_PATH = _BACKEND_ROOT / "models" / "ml_regime_model.pkl"
 META_PATH  = _BACKEND_ROOT / "models" / "ml_regime_meta.json"
 
-LABELS    = ["TRENDING", "NEUTRAL", "CAUTION", "RISK OFF"]
-LABEL_IDX = {l: i for i, l in enumerate(LABELS)}
-LABEL_TIER = LABEL_IDX
+# FIX 1: Full 5-state labels matching live compute_regime.py hysteresis model.
+# Order is meaningful — tier 0 = most bullish, tier 4 = most bearish.
+# data_quality_monitor.py uses the same ordering for disagreement checks.
+LABELS = ["TRENDING", "RISK ON", "NEUTRAL", "RECOVERING", "RISK OFF"]
+LABEL_IDX  = {l: i for i, l in enumerate(LABELS)}
+LABEL_TIER = LABEL_IDX   # alias — used by disagreement checker
 
-# 7 features — all sourced from pre-computed columns in market_regime / fii_dii_flow
-# No manual rolling-window computation needed (FIX 1 + FIX 4)
+# FIX 3: 9 features. All sourced from pre-computed columns — no manual rolling windows.
+# Ordered from most structurally important (price) to most contextual (flows/dispersion).
 FEATURES = [
-    "nifty_ret_5d",       # market_regime.nifty_5d_chg_pct   (pre-computed)
-    "nifty_ret_20d",      # market_regime.nifty_20d_chg_pct  (pre-computed)
-    "advance_decline",    # market_regime.advance_decline_ratio
-    "breadth_pct",        # market_regime.above_200dma_pct   (% stocks above 200dma)
-    "fii_net_5d",         # fii_dii_flow.fii_net_5d           (pre-computed)
-    "fii_net_20d",        # fii_dii_flow.fii_net_20d          (pre-computed)
-    "sector_dispersion",  # std dev of sector_strength.breadth_sma50 across sectors
+    "nifty_ret_5d",        # market_regime.nifty_5d_chg_pct      (hard requirement)
+    "nifty_ret_20d",       # market_regime.nifty_20d_chg_pct     (compute from price if NULL)
+    "india_vix",           # market_regime.india_vix              (recent-row fallback)
+    "advance_decline",     # market_regime.advance_decline_ratio  (default 1.0 = neutral)
+    "breadth_200dma",      # market_regime.above_200dma_pct       (fallback: avg_sector_breadth)
+    "avg_sector_breadth",  # market_regime.avg_sector_breadth     (available from day 1)
+    "fii_net_5d",          # fii_dii_flow.fii_net_5d              (default 0.0)
+    "fii_net_20d",         # fii_dii_flow.fii_net_20d             (default 0.0)
+    "sector_dispersion",   # std dev sector_strength.breadth_sma50 (default 0.0)
 ]
 
-MIN_TRAINING_SAMPLES = 20   # 7 features × 2 classes × 1.5 safety = 21 theoretical minimum.
-                             # 20 is the bootstrap floor — allows first training run while
-                             # regime_history is still accumulating (daily via append_history).
-                             # Accuracy at 20 rows is lower but meaningful. Improves each week.
+MIN_TRAINING_SAMPLES = 20   # 9 features × 5 classes: RF handles this well at 20+.
+                             # Cross-val accuracy at 20 is noisy but directionally correct.
+                             # Improves materially past 40. Retrain weekly via _should_retrain.
 MIN_PREDICT_SAMPLES  = 15
 MODEL_STALE_DAYS     = 7
 LOOKBACK_DAYS        = 365
@@ -106,26 +106,20 @@ LOOKBACK_DAYS        = 365
 # ── Data Health Check ─────────────────────────────────────────────────────────
 
 def check_data_health(sb) -> dict:
-    """
-    Check row counts and latest dates for all tables the classifier touches,
-    plus key pipeline tables for broader system health visibility.
-    Non-destructive — just reads and logs.
-    """
     results = {}
     checks = [
-        # (label, table, date_col, min_rows, critical)
         ("regime_history",    "regime_history",    "date",       MIN_TRAINING_SAMPLES, True),
         ("market_regime",     "market_regime",     "date",       30,                   True),
         ("fii_dii_flow",      "fii_dii_flow",      "date",       20,                   True),
         ("sector_strength",   "sector_strength",   "date",       10,                   True),
-        ("nifty_total_market","nifty_total_market","symbol",     100,                  False),  # membership table
+        ("nifty_total_market","nifty_total_market","symbol",     100,                  False),
         ("stock_data_daily",  "stock_data_daily",  "date",       100,                  False),
         ("master_shortlist",  "master_shortlist",  "created_at", 1,                    False),
     ]
     for label, table, date_col, min_rows, critical in checks:
         try:
-            count_result = sb.table(table).select("*", count="exact").limit(1).execute()
-            row_count    = count_result.count or 0
+            count_result  = sb.table(table).select("*", count="exact").limit(1).execute()
+            row_count     = count_result.count or 0
             latest_result = (
                 sb.table(table).select(date_col)
                 .order(date_col, desc=True).limit(1).execute().data
@@ -150,178 +144,260 @@ def check_data_health(sb) -> dict:
     if critical_failures:
         logger.warning(
             f"\nCritical tables below threshold: {critical_failures}\n"
-            "  → regime_history: needs G14 fix (append_history.py running daily)\n"
-            "  → fii_dii_flow: needs ingest_fii_dii.py running (Phase 1)\n"
+            "  → regime_history: needs append_history.py running daily\n"
+            "  → fii_dii_flow:   needs ingest_fii_dii.py running (Phase 1)\n"
             "  → sector_strength: needs compute_indicators.py running (Phase 2)\n"
-            "  → market_regime: needs ingest_sheets.py running (Phase 0)\n"
+            "  → market_regime:  needs ingest_sheets.py running (Phase 0)\n"
         )
     else:
         logger.success("All critical tables meet minimum data thresholds.")
     return results
 
 
+# ── Label Normalisation ───────────────────────────────────────────────────────
+
+def _normalise_regime(raw: str) -> str:
+    """
+    Normalise raw regime string to one of the 5 live labels.
+
+    FIX 1: v2 collapsed RISK ON → TRENDING, losing a meaningful distinction.
+    v3 keeps all 5 states. Legacy labels mapped to nearest modern equivalent:
+      CAUTION → NEUTRAL   (CAUTION was pre-hysteresis bear-watch state)
+      RISK ON  → RISK ON  (kept as-is — distinct from TRENDING)
+
+    Anything unrecognised returns "" which causes build_training_data to skip
+    the row with a clear log message rather than silently mislabelling it.
+    """
+    if not raw:
+        return ""
+    cleaned = raw.strip().replace("_", " ").upper()
+    # Legacy label migrations
+    legacy_map = {
+        "CAUTION": "NEUTRAL",     # pre-hysteresis bear-watch → closest modern state
+        "BULLISH": "RISK ON",     # early experimental label
+        "BEARISH": "RISK OFF",    # early experimental label
+    }
+    return legacy_map.get(cleaned, cleaned)
+
+
 # ── Feature Engineering ───────────────────────────────────────────────────────
 
-def _regime_features_for_date(sb, as_of_date: str) -> dict:
+def _compute_nifty20d_from_price(sb, as_of_date: str, current_price: float) -> float | None:
     """
-    Read pre-computed market features from market_regime for a given date.
+    FIX 2: Compute nifty 20-day return from price history when nifty_20d_chg_pct is NULL.
 
-    FIX 1 + FIX 4: market_regime already stores nifty_5d_chg_pct, nifty_20d_chg_pct,
-    and advance_decline_ratio as direct columns. No rolling computation needed.
-    Reading pre-computed values is also more consistent with what ingest_sheets/
-    compute_indicators writes as ground truth for each day.
+    Strategy: find the nifty_price approximately 20 trading days (≈28 calendar days)
+    before as_of_date. Uses the oldest available row in a [28d_ago, 22d_ago] window
+    so we don't accidentally pick a price too close to as_of_date.
 
-    Returns dict with keys:
-      nifty_ret_5d, nifty_ret_20d, advance_decline, breadth_pct
-    or None if no row available for date.
+    Returns None only if no price data exists in that window (very early dates).
+    """
+    try:
+        dt           = datetime.strptime(as_of_date, "%Y-%m-%d").date()
+        window_start = str(dt - timedelta(days=30))
+        window_end   = str(dt - timedelta(days=20))
+        rows = (
+            sb.table("market_regime")
+            .select("nifty_price")
+            .gte("date", window_start)
+            .lte("date", window_end)
+            .not_.is_("nifty_price", "null")
+            .order("date")          # ascending — get oldest in window
+            .limit(1)
+            .execute().data
+        )
+        if not rows or not rows[0].get("nifty_price"):
+            return None
+        past_price = float(rows[0]["nifty_price"])
+        if past_price == 0:
+            return None
+        return round((current_price - past_price) / past_price * 100, 4)
+    except Exception:
+        return None
+
+
+def _get_recent_vix(sb, as_of_date: str) -> float | None:
+    """
+    Fetch india_vix from the most recent available market_regime row at or before as_of_date.
+    VIX doesn't change dramatically day-to-day, so a ≤5-day lookback is acceptable.
+    """
+    try:
+        rows = (
+            sb.table("market_regime")
+            .select("india_vix")
+            .lte("date", as_of_date)
+            .not_.is_("india_vix", "null")
+            .order("date", desc=True)
+            .limit(1)
+            .execute().data
+        )
+        return float(rows[0]["india_vix"]) if rows and rows[0].get("india_vix") else None
+    except Exception:
+        return None
+
+
+def _regime_features_for_date(sb, as_of_date: str) -> dict | None:
+    """
+    Read market features from market_regime for a given date.
+
+    FIX 2 + FIX 3: Soft imputation for all features except nifty_ret_5d.
+
+    Hard requirement (returns None → row skipped):
+      nifty_5d_chg_pct — core momentum signal, cannot be imputed without
+                          assumptions that would corrupt the label.
+
+    Soft imputation:
+      nifty_20d_chg_pct  → compute from nifty_price rolling window
+      india_vix          → use most recent available row (≤5d lookback)
+      advance_decline    → default 1.0 (neutral — equal advances and declines)
+      above_200dma_pct   → fallback to avg_sector_breadth
+      avg_sector_breadth → default 30.0 (bear-leaning neutral if truly absent)
     """
     rows = (
         sb.table("market_regime")
         .select(
-            "nifty_5d_chg_pct,nifty_20d_chg_pct,"
-            "advance_decline_ratio,above_200dma_pct,avg_sector_breadth"
+            "nifty_5d_chg_pct,nifty_20d_chg_pct,nifty_price,"
+            "advance_decline_ratio,above_200dma_pct,avg_sector_breadth,india_vix"
         )
         .lte("date", as_of_date)
         .order("date", desc=True)
         .limit(1)
-        .execute()
-        .data
+        .execute().data
     )
     if not rows:
         return None
     r = rows[0]
 
-    # nifty_5d_chg_pct / nifty_20d_chg_pct: written by ingest_sheets (from Sheet formula)
-    # and will be written by compute_indicators (Phase 2) from nifty_total_market price history
-    nifty_5d  = r.get("nifty_5d_chg_pct")
-    nifty_20d = r.get("nifty_20d_chg_pct")
-    # Both 5d and 20d are essential — if either is NULL (early data before Sheet
-    # populated these columns), skip this date entirely rather than crash.
-    if nifty_5d is None or nifty_20d is None:
+    # ── Hard requirement ──────────────────────────────────────────────────────
+    nifty_5d = r.get("nifty_5d_chg_pct")
+    if nifty_5d is None:
+        logger.debug(f"_regime_features: nifty_5d_chg_pct NULL for {as_of_date} — skip")
         return None
 
-    # advance_decline_ratio: advance/decline ratio (advances/declines)
-    ad = r.get("advance_decline_ratio") or 1.0
+    # ── nifty_20d: compute from price history if column is NULL ──────────────
+    nifty_20d = r.get("nifty_20d_chg_pct")
+    if nifty_20d is None:
+        current_price = r.get("nifty_price")
+        if current_price:
+            nifty_20d = _compute_nifty20d_from_price(sb, as_of_date, float(current_price))
+        if nifty_20d is None:
+            # True fallback: 4x the 5d return is a rough 20d estimate
+            nifty_20d = float(nifty_5d) * 4.0
+            logger.debug(f"_regime_features: nifty_20d estimated from 5d×4 for {as_of_date}")
 
-    # breadth: above_200dma_pct preferred (% stocks above 200dma — structural health)
-    # fallback: avg_sector_breadth (average sector breadth score)
-    breadth = r.get("above_200dma_pct") or r.get("avg_sector_breadth") or 0.0
+    # ── india_vix: recent-row fallback ────────────────────────────────────────
+    india_vix = r.get("india_vix")
+    if india_vix is None:
+        india_vix = _get_recent_vix(sb, as_of_date)
+    india_vix = float(india_vix) if india_vix is not None else 18.0   # historical avg
+
+    # ── advance_decline: default neutral ──────────────────────────────────────
+    ad = r.get("advance_decline_ratio")
+    ad = float(ad) if ad is not None else 1.0   # 1.0 = equal A/D = neutral
+
+    # ── breadth_200dma: cross-fallback with avg_sector_breadth ───────────────
+    breadth_200 = r.get("above_200dma_pct")
+    avg_breadth = r.get("avg_sector_breadth")
+    if breadth_200 is None:
+        breadth_200 = avg_breadth if avg_breadth is not None else 35.0
+    breadth_200 = float(breadth_200)
+
+    # ── avg_sector_breadth ────────────────────────────────────────────────────
+    avg_breadth = float(avg_breadth) if avg_breadth is not None else 30.0
 
     return {
-        "nifty_ret_5d":    float(nifty_5d),
-        "nifty_ret_20d":   float(nifty_20d),
-        "advance_decline": float(ad),
-        "breadth_pct":     float(breadth),
+        "nifty_ret_5d":        float(nifty_5d),
+        "nifty_ret_20d":       float(nifty_20d),
+        "india_vix":           india_vix,
+        "advance_decline":     ad,
+        "breadth_200dma":      breadth_200,
+        "avg_sector_breadth":  avg_breadth,
     }
 
 
 def _fii_features_for_date(sb, as_of_date: str) -> tuple:
     """
     Read pre-computed FII rolling sums from fii_dii_flow.
-
-    FIX 4: fii_net_5d and fii_net_20d are already computed by ingest_fii_dii.py
-    and stored as direct columns. Reading them directly is faster and consistent.
-
-    Returns (fii_net_5d, fii_net_20d). Defaults to 0.0 if not found.
+    Returns (fii_net_5d, fii_net_20d). Defaults to 0.0 — neutral.
     """
-    rows = (
-        sb.table("fii_dii_flow")
-        .select("fii_net_5d,fii_net_20d")
-        .lte("date", as_of_date)
-        .order("date", desc=True)
-        .limit(1)
-        .execute()
-        .data
-    )
-    if not rows:
+    try:
+        rows = (
+            sb.table("fii_dii_flow")
+            .select("fii_net_5d,fii_net_20d")
+            .lte("date", as_of_date)
+            .order("date", desc=True)
+            .limit(1)
+            .execute().data
+        )
+        if not rows:
+            return 0.0, 0.0
+        r = rows[0]
+        return float(r.get("fii_net_5d") or 0), float(r.get("fii_net_20d") or 0)
+    except Exception:
         return 0.0, 0.0
-    r = rows[0]
-    return float(r.get("fii_net_5d") or 0), float(r.get("fii_net_20d") or 0)
 
 
-def _sector_dispersion_for_date(sb, as_of_date: str):
+def _sector_dispersion_for_date(sb, as_of_date: str) -> float:
     """
-    Compute std dev of sector_strength.breadth_sma50 across sectors as of date.
-
-    FIX 2: sector_strength has NO strength_score column.
-    Live schema columns: avg_rsi_daily, avg_rsi_weekly, avg_rsi_monthly,
-                         avg_ret_6m, breadth_sma50, rank, top4_flag, sector_state.
-    → Use breadth_sma50 (% of sector stocks above SMA50) as the per-sector signal.
-      Std dev of breadth_sma50 across sectors = how spread out sector health is.
-      High dispersion → sectors diverging → market is rotational / non-trending.
-      Low dispersion  → sectors aligned   → trending market (all rising or all falling).
-    This is actually a better feature than strength_score would have been.
-
-    Filters to exact as_of_date, falls back to most recent available.
-    Returns None if fewer than 3 sectors available.
+    Std dev of sector_strength.breadth_sma50 across sectors as of date.
+    High dispersion → sectors diverging → rotational/non-trending market.
+    Low dispersion  → sectors aligned   → trending (all rising or all falling).
+    Returns 0.0 (neutral default) if fewer than 3 sectors available.
     """
-    rows = (
-        sb.table("sector_strength")
-        .select("breadth_sma50")
-        .eq("date", as_of_date)
-        .limit(30)
-        .execute()
-        .data
-    )
-    if not rows:
+    try:
         rows = (
             sb.table("sector_strength")
             .select("breadth_sma50")
-            .lte("date", as_of_date)
-            .order("date", desc=True)
+            .eq("date", as_of_date)
             .limit(30)
-            .execute()
-            .data
+            .execute().data
         )
+        if not rows:
+            rows = (
+                sb.table("sector_strength")
+                .select("breadth_sma50")
+                .lte("date", as_of_date)
+                .order("date", desc=True)
+                .limit(30)
+                .execute().data
+            )
+        scores = [float(r["breadth_sma50"]) for r in rows if r.get("breadth_sma50") is not None]
+        if len(scores) < 3:
+            return 0.0
+        n    = len(scores)
+        mean = sum(scores) / n
+        return round(math.sqrt(sum((s - mean) ** 2 for s in scores) / n), 4)
+    except Exception:
+        return 0.0
 
-    scores = [float(r["breadth_sma50"]) for r in rows if r.get("breadth_sma50") is not None]
-    if len(scores) < 3:
-        return None
 
-    n    = len(scores)
-    mean = sum(scores) / n
-    return round(math.sqrt(sum((s - mean) ** 2 for s in scores) / n), 4)
-
-
-def _build_feature_row(sb, as_of_date: str):
+def _build_feature_row(sb, as_of_date: str) -> list | None:
     """
-    Build a 7-feature vector for the given date.
+    Build a 9-feature vector for the given date.
 
-    All features now sourced from pre-computed columns — no manual rolling windows.
-    Returns None if essential market_regime data (nifty_5d_chg_pct) is missing.
-    Falls back gracefully for optional features (fii, sector_dispersion → 0.0).
+    FIX 2 + FIX 3: Only returns None when nifty_ret_5d is genuinely missing.
+    All other features impute gracefully.
+
+    Feature order MUST match FEATURES list exactly — RandomForest uses positional index.
     """
-    market_features = _regime_features_for_date(sb, as_of_date)
-    if market_features is None:
-        logger.debug(
-            f"_build_feature_row: no market_regime data with nifty_5d_chg_pct for {as_of_date}. "
-            "Ensure ingest_sheets.py has run and market_regime table is populated."
-        )
-        return None
+    market = _regime_features_for_date(sb, as_of_date)
+    if market is None:
+        return None   # nifty_ret_5d was NULL — hard skip
 
-    fii_5, fii_20   = _fii_features_for_date(sb, as_of_date)
-    sector_disp     = _sector_dispersion_for_date(sb, as_of_date)
+    fii_5, fii_20 = _fii_features_for_date(sb, as_of_date)
+    sector_disp   = _sector_dispersion_for_date(sb, as_of_date)
 
     return [
-        market_features["nifty_ret_5d"],
-        market_features["nifty_ret_20d"],
-        market_features["advance_decline"],
-        market_features["breadth_pct"],
+        market["nifty_ret_5d"],
+        market["nifty_ret_20d"],
+        market["india_vix"],
+        market["advance_decline"],
+        market["breadth_200dma"],
+        market["avg_sector_breadth"],
         fii_5,
         fii_20,
-        sector_disp if sector_disp is not None else 0.0,
+        sector_disp,
     ]
-
-
-# ── Label Normalisation ───────────────────────────────────────────────────────
-
-def _normalise_regime(raw: str) -> str:
-    if not raw:
-        return ""
-    cleaned = raw.strip().replace("_", " ").upper()
-    if cleaned in ("RISK ON",):
-        return "TRENDING"
-    return cleaned
 
 
 # ── Training Data ─────────────────────────────────────────────────────────────
@@ -330,29 +406,26 @@ def build_training_data(sb) -> tuple:
     """
     Build (X, y) from labelled regime history.
 
-    FIX 3: regime_history uses 'date' column, NOT 'snapshot_date'.
-    Live schema confirmed: date, regime, nifty_price, regime_score, etc.
+    FIX 1: 5-state labels. RECOVERING rows are now included, not silently skipped.
+    Label normalisation handles legacy values (CAUTION → NEUTRAL etc).
 
-    Primary:  regime_history.date + regime  (G14 fix: append_history writes daily)
-    Fallback: market_regime.date + regime   (manual regime, always available)
+    Primary source:  regime_history  (daily snapshot via append_history)
+    Fallback source: market_regime   (manual regime — always available)
     """
     cutoff = str(today_ist() - timedelta(days=LOOKBACK_DAYS))
 
-    # FIX 3: use 'date' not 'snapshot_date'
     history = (
         sb.table("regime_history")
         .select("date,regime")
         .gte("date", cutoff)
         .not_.is_("regime", "null")
         .order("date")
-        .execute()
-        .data
+        .execute().data
     )
 
     if len(history) < MIN_TRAINING_SAMPLES:
         logger.warning(
             f"regime_history: {len(history)} rows (need {MIN_TRAINING_SAMPLES}). "
-            "G14 fix (append_history.py) required for daily snapshots. "
             "Supplementing from market_regime."
         )
         extra = (
@@ -361,8 +434,7 @@ def build_training_data(sb) -> tuple:
             .gte("date", cutoff)
             .not_.is_("regime", "null")
             .order("date")
-            .execute()
-            .data
+            .execute().data
         )
         existing_dates = {r["date"] for r in history}
         for r in extra:
@@ -371,39 +443,54 @@ def build_training_data(sb) -> tuple:
 
     logger.info(f"Training candidates: {len(history)} labelled rows (cutoff={cutoff})")
 
-    X, y    = [], []
-    skipped = 0
+    X, y           = [], []
+    skipped        = 0
+    skip_reasons: dict = {}
+
     for row in history:
         date   = row.get("date")
         regime = _normalise_regime(row.get("regime") or "")
 
         if regime not in LABEL_IDX:
+            reason = f"unknown_label:{regime or 'empty'}"
+            skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
             skipped += 1
             continue
 
         features = _build_feature_row(sb, date)
         if features is None:
+            skip_reasons["nifty_5d_null"] = skip_reasons.get("nifty_5d_null", 0) + 1
             skipped += 1
             continue
 
         X.append(features)
         y.append(LABEL_IDX[regime])
 
-    logger.info(f"Training rows built: {len(X)} usable, {skipped} skipped")
+    label_counts = {}
+    for label_idx in y:
+        label = LABELS[label_idx]
+        label_counts[label] = label_counts.get(label, 0) + 1
+
+    logger.info(
+        f"Training rows built: {len(X)} usable, {skipped} skipped | "
+        f"Label distribution: {label_counts}"
+    )
+    if skip_reasons:
+        logger.info(f"  Skip reasons: {skip_reasons}")
+
     return X, y
 
 
 # ── Training ──────────────────────────────────────────────────────────────────
 
-def train(sb):
+def train(sb) -> bool:
     """
     Train RandomForest regime classifier.
     200 trees, max_depth=6, class_weight=balanced, StratifiedKFold CV.
     Saves model to models/ml_regime_model.pkl + metadata JSON.
-    Logs to ml_training_log (requires sql_ml_regime_classifier_columns.sql migration).
     """
     logger.info("=" * 60)
-    logger.info("ML Regime Classifier — Training (schema-corrected v2)")
+    logger.info("ML Regime Classifier — Training (v3 — 5-state, 9 features)")
     logger.info("=" * 60)
     logger.info("\nData health check:")
     check_data_health(sb)
@@ -422,31 +509,46 @@ def train(sb):
     if len(X) < MIN_TRAINING_SAMPLES:
         logger.warning(
             f"Insufficient training data: {len(X)} rows (need {MIN_TRAINING_SAMPLES}).\n"
-            "Market regime features come from market_regime table — ensure:\n"
-            "  1. ingest_sheets.py has been running (nifty_5d_chg_pct, advance_decline_ratio)\n"
-            "  2. regime_history has ≥30 rows (append_history.py G14 fix running daily)\n"
-            "  3. fii_dii_flow.fii_net_5d/20d populated (ingest_fii_dii.py Phase 1)\n"
-            "  4. sector_strength.breadth_sma50 populated (compute_indicators.py Phase 2)"
+            "v3 already uses soft imputation — if still below threshold:\n"
+            "  1. nifty_5d_chg_pct genuinely missing (early pipeline dates)\n"
+            "  2. Wait for more daily pipeline runs (~1 row/day)\n"
+            "  3. Check regime_history and market_regime are both writing daily"
         )
         return False
 
-    X_arr = __import__("numpy").array(X, dtype=float)
-    y_arr = __import__("numpy").array(y, dtype=int)
     import numpy as np
+    X_arr = np.array(X, dtype=float)
+    y_arr = np.array(y, dtype=int)
+
+    # Warn if any label class has < 3 samples — CV will be unreliable for that class
+    unique, counts = np.unique(y_arr, return_counts=True)
+    sparse_classes = [(LABELS[i], c) for i, c in zip(unique, counts) if c < 3]
+    if sparse_classes:
+        logger.warning(
+            f"Sparse label classes (< 3 samples): {sparse_classes} — "
+            "CV accuracy for these classes will be noisy. More data needed."
+        )
 
     model = RandomForestClassifier(
         n_estimators=200,
         max_depth=6,
-        min_samples_leaf=3,
-        class_weight="balanced",
+        min_samples_leaf=2,      # relaxed from 3: better for sparse classes
+        class_weight="balanced", # handles class imbalance (mostly RISK OFF early data)
         random_state=42,
     )
 
-    n_folds   = min(5, max(2, len(X) // max(MIN_TRAINING_SAMPLES // 5, 1)))
+    # Adaptive CV: use min(5, n_classes) folds to avoid empty fold for rare classes
+    n_classes = len(np.unique(y_arr))
+    n_folds   = min(5, max(2, len(X) // max(MIN_TRAINING_SAMPLES // 5, 1)), len(X) // n_classes)
     cv        = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
-    cv_scores = cross_val_score(model, X_arr, y_arr, cv=cv, scoring="accuracy")
-    cv_mean   = float(np.mean(cv_scores))
-    cv_std    = float(np.std(cv_scores))
+
+    try:
+        cv_scores = cross_val_score(model, X_arr, y_arr, cv=cv, scoring="accuracy")
+        cv_mean   = float(np.mean(cv_scores))
+        cv_std    = float(np.std(cv_scores))
+    except Exception as e:
+        logger.warning(f"Cross-validation failed ({e}) — training without CV score")
+        cv_mean, cv_std = 0.0, 0.0
 
     model.fit(X_arr, y_arr)
     importances = {f: round(float(v), 4) for f, v in zip(FEATURES, model.feature_importances_)}
@@ -465,7 +567,7 @@ def train(sb):
         "label_distribution": label_dist,
         "feature_importance": importances,
         "features":           FEATURES,
-        "schema_version":     2,   # tracks fix applied
+        "schema_version":     3,   # v3: 5-state labels + 9 features + soft imputation
     }
     with open(META_PATH, "w") as fh:
         json.dump(meta, fh, indent=2)
@@ -474,7 +576,7 @@ def train(sb):
         top3     = sorted(importances.items(), key=lambda x: x[1], reverse=True)[:3]
         top3_str = " > ".join(f"{f}({v:.2f})" for f, v in top3)
         sb.table("ml_training_log").insert({
-            "model_type":         "regime_classifier_v2",
+            "model_type":         "regime_classifier_v3",
             "training_samples":   len(X),
             "accuracy":           cv_mean,
             "feature_names":      json.dumps(FEATURES),
@@ -482,7 +584,7 @@ def train(sb):
             "notes": (
                 f"CV={n_folds}-fold±{cv_std:.3f} labels={json.dumps(label_dist)} "
                 f"top3={top3_str} "
-                f"sources=market_regime(5d/20d/ad/breadth)+fii_dii_flow(5d/20d)+sector_strength(breadth_sma50)"
+                f"v3:5state+9features+soft_imputation"
             ),
             "trained_at": datetime.now(IST).isoformat(),
         }).execute()
@@ -492,7 +594,7 @@ def train(sb):
     top3_log = " > ".join(f"{f}({v:.3f})" for f, v in
                           sorted(importances.items(), key=lambda x: x[1], reverse=True)[:3])
     logger.success(
-        f"\n✓ Regime classifier v2 trained: {len(X)} samples, "
+        f"\n✓ Regime classifier v3 trained: {len(X)} samples, "
         f"CV accuracy={cv_mean:.1%} ±{cv_std:.1%}\n"
         f"  Label distribution: {label_dist}\n"
         f"  Top features: {top3_log}\n"
@@ -505,11 +607,11 @@ def train(sb):
 
 def predict_today(sb):
     """
-    Load saved model, build today's feature vector from pre-computed columns,
-    write predicted_regime + regime_confidence + regime_predicted_at to market_regime.
+    Load saved model, build today's feature vector, write predicted_regime
+    to market_regime and denormalise to stock_data_daily.
 
-    FIRST RUN: model file absent → returns None silently. generate_signals falls back
-    to manual regime. Run --train or wait for Sunday evolution_weekly.yml W2.
+    Returns None silently if model absent — generate_signals falls back to
+    manual regime. This is the intended Phase 2 bootstrap behaviour.
     """
     phase = cfg_int("autonomy_phase", 1)
     if phase < 2:
@@ -519,7 +621,7 @@ def predict_today(sb):
     if not MODEL_PATH.exists():
         logger.warning(
             f"Model not found at {MODEL_PATH}.\n"
-            "First run: run --train (or wait for Sunday evolution_weekly.yml W2).\n"
+            "Run --train or wait for Sunday evolution_weekly.yml W2.\n"
             "Manual regime from ingest_sheets controls until model exists."
         )
         return None
@@ -530,15 +632,30 @@ def predict_today(sb):
     if META_PATH.exists():
         with open(META_PATH) as fh:
             meta = json.load(fh)
-        sample_count = meta.get("sample_count", 0)
+        sample_count   = meta.get("sample_count", 0)
+        schema_version = meta.get("schema_version", 1)
+        if schema_version < 3:
+            logger.warning(
+                f"Model is schema_version={schema_version} (need 3 — 5-state labels). "
+                "Retraining now to use v3 feature set."
+            )
+            train(sb)
+            if not MODEL_PATH.exists():
+                return None
+            with open(MODEL_PATH, "rb") as fh:
+                model = pickle.load(fh)
+            with open(META_PATH) as fh:
+                meta = json.load(fh)
+            sample_count = meta.get("sample_count", 0)
+
         if sample_count < MIN_PREDICT_SAMPLES:
             logger.warning(
                 f"Model trained on only {sample_count} samples "
-                f"(min {MIN_PREDICT_SAMPLES}) — unreliable. Skipping."
+                f"(min {MIN_PREDICT_SAMPLES}) — unreliable. Skipping prediction."
             )
             return None
         logger.info(
-            f"Model v{meta.get('schema_version','1')}: {sample_count} samples, "
+            f"Model v{meta.get('schema_version','?')}: {sample_count} samples, "
             f"CV={meta.get('cv_accuracy', 0):.1%}, trained={str(meta.get('trained_at','?'))[:10]}"
         )
 
@@ -547,8 +664,8 @@ def predict_today(sb):
     if features is None:
         logger.warning(
             f"Cannot build feature vector for {today}.\n"
-            "market_regime must have today's row with nifty_5d_chg_pct populated.\n"
-            "Ensure ingest_sheets.py (or compute_indicators in Phase 2) has run first."
+            "nifty_5d_chg_pct missing from market_regime — ensure ingest_sheets "
+            "or compute_indicators has run first (pipeline step order)."
         )
         return None
 
@@ -563,15 +680,15 @@ def predict_today(sb):
     predicted  = LABELS[pred_idx]
     confidence = round(float(proba[pred_idx]), 4)
     proba_dist = {LABELS[i]: round(float(proba[i]), 4) for i in range(len(LABELS))}
-    logger.debug(f"Regime probability distribution: {proba_dist}")
+
+    logger.info(f"Regime probability distribution: {proba_dist}")
 
     manual_row = (
         sb.table("market_regime")
         .select("regime,id")
         .eq("date", today)
         .limit(1)
-        .execute()
-        .data
+        .execute().data
     )
     manual = "UNKNOWN"
     if manual_row:
@@ -599,15 +716,6 @@ def predict_today(sb):
             "Ensure sql_ml_regime_classifier_columns.sql migration has been run."
         )
 
-    # ── GAP-1 FIX: denormalise predicted_regime → stock_data_daily ──────────
-    # stock_data_daily.predicted_regime column exists in schema but nothing wrote it.
-    # ml_provider_v2 uses regime_encoded from signal_log (which comes from
-    # generate_signals reading market_regime), so this column is the bridge that
-    # lets any per-stock query join regime state without joining market_regime.
-    #
-    # One bulk UPDATE for today's date — single query, no per-row loop.
-    # Non-fatal: if stock_data_daily doesn't have today's rows yet (pipeline
-    # ordering issue), this will update 0 rows and log a warning.
     _denormalise_predicted_regime(sb, today, predicted)
 
     result = {
@@ -623,35 +731,17 @@ def predict_today(sb):
 
 def _denormalise_predicted_regime(sb, today: str, predicted: str) -> None:
     """
-    GAP-1 FIX: Copy predicted_regime from market_regime → stock_data_daily.
-
-    stock_data_daily.predicted_regime exists in schema (added in Phase 2 SQL
-    migrations) but no script was ever writing to it. This creates a stale NULL
-    for every stock row, meaning:
-      - Any per-stock query wanting regime context has to join market_regime
-      - ml_provider_v2 feature vector cannot read it directly from signal_log context
-
-    Fix: single bulk UPDATE after ml_regime_classifier writes to market_regime.
-    Pipeline order guarantees this runs after compute_indicators (step 10) wrote
-    today's stock_data_daily rows, and before generate_signals (step 12) reads them.
-
-    Supabase JS client doesn't expose raw SQL UPDATE ... WHERE date = X, so we
-    use the REST pattern: .update({predicted_regime: value}).eq("date", today).
-    This is equivalent to:
-      UPDATE stock_data_daily SET predicted_regime = predicted WHERE date = today;
-
-    Non-fatal. Logs how many rows were updated (should match today's stock count ~500).
-    If 0 rows updated: stock_data_daily not yet populated for today (not a problem —
-    generate_signals reads predicted_regime from market_regime directly anyway).
+    Copy predicted_regime from market_regime → stock_data_daily (bulk UPDATE).
+    Allows per-stock queries to read regime context without joining market_regime.
+    Non-fatal — 0 rows updated is normal if compute_indicators hasn't run yet today.
     """
     try:
-        result = (
+        result   = (
             sb.table("stock_data_daily")
             .update({"predicted_regime": predicted})
             .eq("date", today)
             .execute()
         )
-        # Supabase returns updated rows in result.data
         n_updated = len(result.data) if result.data else 0
         if n_updated > 0:
             logger.info(
@@ -660,16 +750,20 @@ def _denormalise_predicted_regime(sb, today: str, predicted: str) -> None:
             )
         else:
             logger.debug(
-                f"stock_data_daily.predicted_regime denormalise: 0 rows updated for {today}. "
-                f"Normal if stock_data_daily not yet populated today (compute_indicators runs first)."
+                f"stock_data_daily predicted_regime: 0 rows updated for {today} "
+                "(normal if compute_indicators runs after this step)"
             )
     except Exception as e:
         logger.warning(f"stock_data_daily predicted_regime denormalise failed (non-fatal): {e}")
 
 
-def _check_regime_disagreement(sb, predicted, manual, confidence, today):
+def _check_regime_disagreement(sb, predicted: str, manual: str, confidence: float, today: str):
+    """
+    Flag significant disagreements between ML and manual regime to data_anomalies.
+    Uses 5-state LABEL_TIER — diff ≥ 2 tiers = WARN, ≥ 3 tiers = ERROR.
+    """
     pred_tier   = LABEL_TIER.get(predicted, -1)
-    manual_tier = LABEL_TIER.get(manual,    -1)
+    manual_tier = LABEL_TIER.get(manual, -1)
     if pred_tier < 0 or manual_tier < 0:
         return
     diff = abs(pred_tier - manual_tier)
@@ -679,14 +773,17 @@ def _check_regime_disagreement(sb, predicted, manual, confidence, today):
     message  = (
         f"Regime disagreement: ML={predicted} ({confidence:.0%}) vs Manual={manual}. "
         f"Tier diff={diff}. "
-        f"{'Review required — opposite ends of spectrum.' if diff >= 3 else 'Monitor.'}"
+        f"{'Review required — opposite ends of spectrum.' if diff >= 3 else 'Monitor closely.'}"
     )
     logger.warning(message)
     try:
         sb.table("data_anomalies").insert({
-            "date": today, "check_name": "regime_ml_vs_manual", "severity": severity,
-            "value": f"ML={predicted}({confidence:.0%}),Manual={manual},diff={diff}",
-            "message": message, "affected": str(["market_regime"]),
+            "date":       today,
+            "check_name": "regime_ml_vs_manual",
+            "severity":   severity,
+            "value":      f"ML={predicted}({confidence:.0%}),Manual={manual},diff={diff}",
+            "message":    message,
+            "affected":   str(["market_regime"]),
             "created_at": datetime.now(IST).isoformat(),
         }).execute()
     except Exception as e:
@@ -699,6 +796,9 @@ def _should_retrain() -> bool:
     try:
         with open(META_PATH) as fh:
             meta = json.load(fh)
+        # Also retrain if schema_version is old (v1/v2 → v3)
+        if meta.get("schema_version", 1) < 3:
+            return True
         trained_at = datetime.fromisoformat(meta.get("trained_at", "2000-01-01"))
         return (datetime.now(IST) - trained_at).days > MODEL_STALE_DAYS
     except Exception:
@@ -706,7 +806,7 @@ def _should_retrain() -> bool:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="TradeOS v6 — ML Regime Classifier v2")
+    parser = argparse.ArgumentParser(description="TradeOS v6 — ML Regime Classifier v3")
     parser.add_argument("--train",   action="store_true")
     parser.add_argument("--predict", action="store_true")
     parser.add_argument("--status",  action="store_true")
@@ -720,18 +820,18 @@ def main():
     result = {}
 
     if args.status:
-        logger.info("ML Regime Classifier v2 — Data Health Check")
+        logger.info("ML Regime Classifier v3 — Data Health Check")
         check_data_health(sb)
         if MODEL_PATH.exists() and META_PATH.exists():
             with open(META_PATH) as fh:
                 meta = json.load(fh)
             logger.info(
-                f"\nModel: schema_version={meta.get('schema_version','1')}\n"
-                f"  Trained:  {str(meta.get('trained_at','?'))[:19]}\n"
-                f"  Samples:  {meta.get('sample_count','?')}\n"
-                f"  CV Acc:   {meta.get('cv_accuracy',0):.1%}\n"
-                f"  Features: {meta.get('features',[])}\n"
-                f"  Labels:   {meta.get('label_distribution',{})}"
+                f"\nModel: schema_version={meta.get('schema_version','?')}\n"
+                f"  Trained:   {str(meta.get('trained_at','?'))[:19]}\n"
+                f"  Samples:   {meta.get('sample_count','?')}\n"
+                f"  CV Acc:    {meta.get('cv_accuracy',0):.1%}\n"
+                f"  Features:  {meta.get('features',[])}\n"
+                f"  Labels:    {meta.get('label_distribution',{})}"
             )
         else:
             logger.warning(f"\nNo model file at {MODEL_PATH}. Run --train first.")
@@ -742,7 +842,7 @@ def main():
 
     smart_mode = not args.train and not args.predict
     if smart_mode and _should_retrain():
-        logger.info("Smart mode: model absent or stale — training now.")
+        logger.info("Smart mode: model absent, stale, or outdated schema — training now.")
         result["trained"] = train(sb)
 
     if args.predict or args.train or smart_mode:

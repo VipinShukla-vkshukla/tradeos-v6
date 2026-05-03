@@ -264,7 +264,7 @@ def c07_pipeline_completeness(sb, today, last_trading_day):
     # (label, check_type, table_or_symbol, filter_by_today, severity)
     # check_type: "table" = row count, "ai_sentinel" = ai_context symbol lookup
     steps = [
-        ("01_market_news",      "table",       "market_news",          True,  "WARN"),
+        ("01_market_news",      "news_window", "market_news",          False, "WARN"),
         ("02_macro_indicators", "table",       "macro_indicators",     True,  "WARN"),
         ("03_global_cues",      "table",       "global_cues",          True,  "WARN"),
         ("04_fetch_chartink",   "table",       "chartink_raw_data",    True,  "ERROR"),
@@ -289,6 +289,19 @@ def c07_pipeline_completeness(sb, today, last_trading_day):
             if check_type == "table":
                 q   = sb.table(target).select("id", count="exact")
                 cnt = (q.eq("date", today) if date_filter else q).execute().count or 0
+                if cnt == 0:
+                    missing.append({"step": label, "target": target, "severity": sev})
+
+            elif check_type == "news_window":
+                # market_news uses news_date (not date) + needs a range covering
+                # weekend/holiday news since the last trading session.
+                from config import get_news_window
+                _ws, _we = get_news_window(sb, today)
+                cnt = (sb.table(target)
+                         .select("id", count="exact")
+                         .gte("news_date", _ws)
+                         .lte("news_date", _we)
+                         .execute().count or 0)
                 if cnt == 0:
                     missing.append({"step": label, "target": target, "severity": sev})
 

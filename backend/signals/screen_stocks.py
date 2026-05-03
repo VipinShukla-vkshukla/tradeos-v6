@@ -123,6 +123,46 @@ REGIME_ENGINE_WEIGHTS = {
                    "IAD": 1.2, "RSB": 1.2, "TPO": 0.7, "RVS": 1.4, "SEC": 1.0},
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TRADING DAY RESOLVER
+# ─────────────────────────────────────────────────────────────────────────────
+
+def resolve_last_trading_day(sb, reference_date: str, max_lookback: int = 10) -> str:
+    """
+    Walk backwards from reference_date to find the last day that:
+      - Is not Saturday/Sunday
+      - Is not in nse_holidays table
+      - Has actual data in stock_data_daily
+    """
+    holiday_rows = sb.table("nse_holidays").select("date").execute().data
+    holidays     = {row["date"] for row in holiday_rows}
+    candidate    = datetime.strptime(reference_date, "%Y-%m-%d").date()
+
+    for _ in range(max_lookback):
+        date_str = str(candidate)
+        if candidate.weekday() in (5, 6):
+            logger.debug(f"  {date_str} is a weekend — stepping back")
+            candidate -= timedelta(days=1)
+            continue
+        if date_str in holidays:
+            logger.debug(f"  {date_str} is an NSE holiday — stepping back")
+            candidate -= timedelta(days=1)
+            continue
+        probe = (sb.table("stock_data_daily")
+                   .select("date")
+                   .eq("date", date_str)
+                   .limit(1)
+                   .execute().data)
+        if probe:
+            if date_str != reference_date:
+                logger.info(f"  Resolved trading date: {reference_date} → {date_str}")
+            return date_str
+        logger.debug(f"  No stock_data_daily for {date_str} — stepping back")
+        candidate -= timedelta(days=1)
+
+    raise RuntimeError(
+        f"No trading day with data found within {max_lookback} days before {reference_date}"
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DATA LOADING
@@ -1506,6 +1546,11 @@ def main():
 
     sb    = get_supabase()
     today = str(today_ist())
+    try:
+        today = resolve_last_trading_day(sb, today)
+    except RuntimeError as exc:
+        logger.error(str(exc))
+        return {"status": "no_data"}
     mode  = cfg("screener_mode", "shadow")
     if os.getenv("SCREENER_MODE_OVERRIDE"):
         mode = os.getenv("SCREENER_MODE_OVERRIDE")

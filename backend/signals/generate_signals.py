@@ -210,14 +210,78 @@ ENTRY_SIGNAL_TYPES = frozenset({
 LATE_MATURITY  = frozenset({"LATE", "EXHAUSTED"})
 WEAK_STRUCTURE = frozenset({"WEAK", "BEARISH"})
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TRADING DAY RESOLUTION
+# ─────────────────────────────────────────────────────────────────────────────
+
+def resolve_last_trading_day(sb, reference_date: str, max_lookback: int = 10) -> str:
+    """
+    Walk backwards from reference_date to find the last valid trading day:
+      - Not a Saturday or Sunday
+      - Not in nse_holidays table
+      - Has actual data in master_shortlist (compute_msl step 14 must have run)
+
+    Raises RuntimeError if no valid day is found within max_lookback days.
+    """
+    from datetime import datetime, timedelta as _td
+    holiday_rows = sb.table("nse_holidays").select("date").execute().data
+    holidays     = {row["date"] for row in holiday_rows}
+    candidate    = datetime.strptime(reference_date, "%Y-%m-%d").date()
+
+    logger.info(f"  Resolving trading day from {reference_date} (holidays loaded: {len(holidays)})")
+
+    for _ in range(max_lookback):
+        date_str = str(candidate)
+        dow      = candidate.weekday()   # 0=Mon … 6=Sun
+
+        if dow in (5, 6):
+            logger.debug(f"  {date_str} is {'Saturday' if dow == 5 else 'Sunday'} — stepping back")
+            candidate -= _td(days=1)
+            continue
+
+        if date_str in holidays:
+            occasion = next(
+                (r.get("occasion", "NSE holiday") for r in holiday_rows if r["date"] == date_str),
+                "NSE holiday"
+            )
+            logger.debug(f"  {date_str} is an NSE holiday ({occasion}) — stepping back")
+            candidate -= _td(days=1)
+            continue
+
+        probe = (
+            sb.table("master_shortlist")
+              .select("date")
+              .eq("date", date_str)
+              .limit(1)
+              .execute().data
+        )
+        if probe:
+            if date_str != reference_date:
+                logger.info(f"  Trading day resolved: {reference_date} → {date_str}")
+            else:
+                logger.info(f"  Trading day confirmed: {date_str}")
+            return date_str
+
+        logger.debug(f"  {date_str} — no master_shortlist rows (compute_msl not yet run?) — stepping back")
+        candidate -= _td(days=1)
+
+    raise RuntimeError(
+        f"No valid trading day with master_shortlist data found "
+        f"within {max_lookback} days before {reference_date}. "
+        f"Ensure compute_msl has run for a recent trading day."
+    )
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DATA LOADING (identical to v4)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_today_data():
+def load_today_data(today: str | None = None):
     sb    = get_supabase()
-    today = str(today_ist())
+    if today is None:
+        today = str(today_ist())
+        logger.warning("load_today_data called without resolved today — using today_ist() fallback")
 
     stocks = sb.table("stock_data_daily").select("*").eq("date", today).execute().data
     if not stocks:
@@ -758,6 +822,18 @@ def generate(run_date: date | None = None) -> list:
     run_date  = run_date or today_ist()
     strat_cfg = get_strategy_config()
 
+    # ── Resolve last valid trading day ────────────────────────────────────────
+    # Must happen before load_today_data so all queries use the same resolved date.
+    # today_ist() is wrong on weekends, NSE holidays, and days compute_msl hasn't run.
+    _sb_resolve = get_supabase()
+    try:
+        run_date_str = resolve_last_trading_day(_sb_resolve, str(run_date))
+    except RuntimeError as exc:
+        logger.error(str(exc))
+        return []
+    from datetime import date as _date
+    run_date = _date.fromisoformat(run_date_str)
+
     # ── Load dynamic thresholds first ────────────────────────────────────────
     T = load_signal_thresholds()
     logger.info(
@@ -769,7 +845,7 @@ def generate(run_date: date | None = None) -> list:
 
     (stock_map, msl, open_map, regime,
      events, asm_set, fo_ban_set, industry_map,
-     fii_flag, fii_net_20d) = load_today_data()
+     fii_flag, fii_net_20d) = load_today_data(run_date_str)
 
     def _resolve_regime(regime_obj):
         from datetime import datetime, timezone

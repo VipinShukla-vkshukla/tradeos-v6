@@ -256,3 +256,51 @@ def yf_fetch_with_cache(
     except Exception as exc:
         logger.warning(f"  yfinance failed for {ticker}: {exc}")
         return None
+
+def get_news_window(sb, trading_day: str) -> tuple[str, str]:
+    """
+    Returns (window_start, window_end) for querying market_news.
+
+    Logic:
+      - window_end   = trading_day (the current trading session)
+      - window_start = day after the previous trading day
+                       e.g. if prev trading day was Thu Apr 30,
+                            window_start = Fri May 01
+                       This captures Fri + Sat + Sun news for a Monday run.
+
+    Supabase query pattern:
+      .gte("news_date", window_start).lte("news_date", window_end)
+    """
+    from datetime import datetime, timedelta
+
+    holiday_rows = sb.table("nse_holidays").select("date").execute().data
+    holidays     = {row["date"] for row in holiday_rows}
+
+    candidate = datetime.strptime(trading_day, "%Y-%m-%d").date() - timedelta(days=1)
+
+    # Walk back to find the previous trading day
+    for _ in range(10):
+        date_str = str(candidate)
+        if candidate.weekday() not in (5, 6) and date_str not in holidays:
+            # Verify it actually has data
+            probe = (sb.table("stock_data_daily")
+                       .select("date")
+                       .eq("date", date_str)
+                       .limit(1)
+                       .execute().data)
+            if probe:
+                prev_trading_day = date_str
+                break
+        candidate -= timedelta(days=1)
+    else:
+        # Fallback: just use 3 calendar days back
+        prev_trading_day = str(
+            datetime.strptime(trading_day, "%Y-%m-%d").date() - timedelta(days=3)
+        )
+
+    # window_start = day AFTER previous trading day
+    # This captures all weekend/holiday news between the two sessions
+    window_start = str(
+        datetime.strptime(prev_trading_day, "%Y-%m-%d").date() + timedelta(days=1)
+    )
+    return window_start, trading_day
