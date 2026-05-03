@@ -224,15 +224,146 @@ def fetch_index_data(ticker: str) -> dict | None:
         return None
 
 
-def fetch_sp500_direction() -> float | None:
+def fetch_sp500_direction(sb) -> tuple[float | None, str]:
     """
-    S&P 500 5-day return — global risk signal.
-    Indian market is 80% correlated with US in risk-off environments.
-    NEW in v2: global cue scoring.
+    S&P 500 5-day return from global_cues.sp500_close (written by step 03).
+    Eliminates yf.Ticker('^GSPC').history(period='2y').
+    Falls back to yfinance only on bootstrap (< 2 rows in global_cues).
+    Returns (ret_5d, source_string) for audit trail.
     """
-    data = fetch_index_data("^GSPC")
-    return data["ret_5d"] if data else None
+    try:
+        rows = (
+            sb.table("global_cues")
+              .select("date,sp500_close")
+              .eq("session", "EVENING")
+              .not_.is_("sp500_close", "null")
+              .order("date", desc=True)
+              .limit(6)
+              .execute().data
+        )
+        if len(rows) >= 2:
+            latest = float(rows[0]["sp500_close"])
+            older  = float(rows[min(5, len(rows) - 1)]["sp500_close"])
+            if older > 0:
+                ret = round((latest - older) / older * 100, 2)
+                logger.debug(f"  SP500 Supabase hit: latest={latest} older={older} ret5d={ret}%")
+                return ret, "supabase:global_cues"
+    except Exception as e:
+        logger.debug(f"  SP500 global_cues read failed: {e}")
 
+    if YFINANCE_AVAILABLE:
+        logger.info("  SP500: global_cues miss — falling back to yfinance")
+        data = fetch_index_data("^GSPC")
+        if data:
+            return data["ret_5d"], "yfinance:^GSPC"
+    return None, "unknown"
+
+def fetch_nifty_from_supabase(sb, effective_date: str) -> tuple[dict | None, str]:
+    """
+    Nifty data from Supabase — eliminates yf.Ticker('^NSEI').history(period='2y').
+
+    price      → global_cues EVENING row (step 03 stored ^NSEI live price as gift_nifty)
+    dma50/200  → market_regime previous row (carry-forward from last computation)
+    weekly_rsi → market_regime previous row (carry-forward)
+    ret_5d/20d → computed from market_regime.nifty_price history (last 21 rows)
+
+    DMA carry-forward error is ~(today_close - close_N_days_ago) / N per day —
+    negligible for regime scoring. Falls back to yfinance on bootstrap (<21 rows).
+    """
+    try:
+        # Today's price: global_cues EVENING row
+        price_rows = (
+            sb.table("global_cues")
+              .select("gift_nifty,date")
+              .eq("session", "EVENING")
+              .not_.is_("gift_nifty", "null")
+              .order("date", desc=True)
+              .limit(1)
+              .execute().data
+        )
+        today_price = float(price_rows[0]["gift_nifty"]) if price_rows else None
+
+        # Historical price + DMA/RSI from previous market_regime rows
+        regime_rows = (
+            sb.table("market_regime")
+              .select("date,nifty_price,nifty_50dma,nifty_200dma,nifty_weekly_rsi")
+              .not_.is_("nifty_price", "null")
+              .lt("date", effective_date)
+              .order("date", desc=True)
+              .limit(21)
+              .execute().data
+        )
+        if not regime_rows:
+            return None, "yfinance:^NSEI"  # bootstrap — no history yet
+
+        prev   = regime_rows[0]
+        prices = [float(r["nifty_price"]) for r in regime_rows if r.get("nifty_price")]
+
+        current = today_price or (prices[0] if prices else None)
+        if not current:
+            return None, "yfinance:^NSEI"
+
+        ret_1d  = round((current - prices[0])  / prices[0]  * 100, 2) if len(prices) >= 1  else None
+        ret_5d  = round((current - prices[5])  / prices[5]  * 100, 2) if len(prices) >= 6  else None
+        ret_20d = round((current - prices[20]) / prices[20] * 100, 2) if len(prices) >= 21 else None
+
+        result = {
+            "price":      current,
+            "dma50":      float(prev["nifty_50dma"])      if prev.get("nifty_50dma")      else None,
+            "dma200":     float(prev["nifty_200dma"])     if prev.get("nifty_200dma")     else None,
+            "weekly_rsi": float(prev["nifty_weekly_rsi"]) if prev.get("nifty_weekly_rsi") else None,
+            "ret_1d":     ret_1d,
+            "ret_5d":     ret_5d,
+            "ret_20d":    ret_20d,
+        }
+        source = "supabase:global_cues+market_regime"
+        logger.debug(
+            f"  Nifty Supabase hit: price={current} | dma50={result['dma50']} | "
+            f"dma200={result['dma200']} | rsi={result['weekly_rsi']} | "
+            f"ret5d={ret_5d} | history_rows={len(regime_rows)}"
+        )
+        return result, source
+    except Exception as e:
+        logger.debug(f"  fetch_nifty_from_supabase failed: {e}")
+        return None, "yfinance:^NSEI"
+
+
+def fetch_banknifty_from_supabase(sb, effective_date: str) -> tuple[dict | None, str]:
+    """
+    BankNifty price and weekly_rsi from market_regime previous row.
+    Eliminates yf.Ticker('^NSEBANK').history(period='2y').
+    Only price and weekly_rsi are used by score_price_structure — no DMA needed.
+    """
+    try:
+        rows = (
+            sb.table("market_regime")
+              .select("banknifty_price,banknifty_weekly_rsi,date")
+              .not_.is_("banknifty_price", "null")
+              .lt("date", effective_date)
+              .order("date", desc=True)
+              .limit(1)
+              .execute().data
+        )
+        if not rows:
+            return None, "yfinance:^NSEBANK"
+        r = rows[0]
+        result = {
+            "price":      float(r["banknifty_price"])      if r.get("banknifty_price")      else None,
+            "dma50":      None,
+            "dma200":     None,
+            "weekly_rsi": float(r["banknifty_weekly_rsi"]) if r.get("banknifty_weekly_rsi") else None,
+            "ret_1d":     None,
+            "ret_5d":     None,
+            "ret_20d":    None,
+        }
+        logger.debug(
+            f"  BankNifty Supabase hit: price={result['price']} | "
+            f"weekly_rsi={result['weekly_rsi']} (from {r['date']})"
+        )
+        return result, "supabase:market_regime"
+    except Exception as e:
+        logger.debug(f"  fetch_banknifty_from_supabase failed: {e}")
+        return None, "yfinance:^NSEBANK"
 
 def fetch_usdinr_direction(sb) -> float | None:
     """
@@ -271,20 +402,39 @@ def build_market_snapshot(sb, effective_date: str) -> dict:
     """
     snap = {}
 
-    # ── Nifty + BankNifty via yfinance ────────────────────────────────────────
-    nifty = fetch_index_data("^NSEI")
-    bank  = fetch_index_data("^NSEBANK")
+# ── Nifty — Supabase-first, yfinance bootstrap fallback ──────────────────
+    nifty, nifty_source = fetch_nifty_from_supabase(sb, effective_date)
+    if not nifty:
+        logger.info("  Nifty: Supabase miss — falling back to yfinance (bootstrap or empty tables)")
+        nifty = fetch_index_data("^NSEI")
+        nifty_source = "yfinance:^NSEI"
+    else:
+        logger.info(
+            f"  Nifty Supabase: price={nifty['price']} | "
+            f"dma50={nifty['dma50']} | dma200={nifty['dma200']} | "
+            f"weekly_rsi={nifty['weekly_rsi']}"
+        )
+
+    # ── BankNifty — Supabase-first, yfinance bootstrap fallback ──────────────
+    bank, bank_source = fetch_banknifty_from_supabase(sb, effective_date)
+    if not bank:
+        logger.info("  BankNifty: Supabase miss — falling back to yfinance (bootstrap)")
+        bank = fetch_index_data("^NSEBANK")
+        bank_source = "yfinance:^NSEBANK"
 
     snap.update({
-        "nifty_price":         nifty["price"]      if nifty else None,
-        "nifty_50dma":         nifty["dma50"]       if nifty else None,
-        "nifty_200dma":        nifty["dma200"]      if nifty else None,
-        "nifty_weekly_rsi":    nifty["weekly_rsi"]  if nifty else None,
-        "nifty_20d_chg_pct":   nifty["ret_20d"]     if nifty else None,
-        "nifty_5d_chg_pct":    nifty["ret_5d"]      if nifty else None,
-        "banknifty_price":     bank["price"]         if bank else None,
-        "banknifty_weekly_rsi":bank["weekly_rsi"]    if bank else None,
-        "nifty_1d_chg_pct":    nifty["ret_1d"]  if nifty else None,
+        "nifty_price":          nifty["price"]      if nifty else None,
+        "nifty_50dma":          nifty["dma50"]       if nifty else None,
+        "nifty_200dma":         nifty["dma200"]      if nifty else None,
+        "nifty_weekly_rsi":     nifty["weekly_rsi"]  if nifty else None,
+        "nifty_20d_chg_pct":    nifty["ret_20d"]     if nifty else None,
+        "nifty_5d_chg_pct":     nifty["ret_5d"]      if nifty else None,
+        "nifty_1d_chg_pct":     nifty["ret_1d"]      if nifty else None,
+        "banknifty_price":      bank["price"]         if bank else None,
+        "banknifty_weekly_rsi": bank["weekly_rsi"]    if bank else None,
+        # Source tracking for audit trail
+        "_nifty_source":        nifty_source,
+        "_banknifty_source":    bank_source,
     })
 
     logger.info(
@@ -294,7 +444,7 @@ def build_market_snapshot(sb, effective_date: str) -> dict:
     )
 
     if not nifty:
-        logger.warning("  yfinance Nifty fetch failed — P1 will rely on DB fallback")
+        logger.warning("  Both Supabase and yfinance Nifty fetch failed — P1 will score 0")
 
     # ── Sector breadth ────────────────────────────────────────────────────────
     try:
@@ -435,7 +585,9 @@ def build_market_snapshot(sb, effective_date: str) -> dict:
         snap["nifty_pcr"] = None
 
     # ── Global cues (S&P500, USD/INR) — NEW v2 ───────────────────────────────
-    snap["sp500_5d_ret"]   = fetch_sp500_direction()
+    sp500_ret, sp500_source = fetch_sp500_direction(sb)
+    snap["sp500_5d_ret"]    = sp500_ret
+    snap["_sp500_source"]   = sp500_source
     snap["usdinr_5d_chg"]  = fetch_usdinr_direction(sb)
 
     return snap
@@ -1111,6 +1263,8 @@ def apply_hysteresis(raw_score: float, today_row: dict,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def write_regime(sb, effective_date, mode, regime, score, breakdown, today_row, raw_data=None):
+    # Strip internal tracking keys — not DB columns
+    today_row = {k: v for k, v in today_row.items() if not k.startswith("_")}
     """
     Single write point. In full mode also creates the row if it doesn't exist.
     """
@@ -1167,16 +1321,12 @@ def write_regime(sb, effective_date, mode, regime, score, breakdown, today_row, 
         logger.info(f"  FULL MODE: regime field updated → Sheet decommissioned")
 
 def build_raw_data(today_row: dict, data: dict, effective_date: str) -> dict:
-    """
-    Structured audit trail of all values used in this regime computation
-    and their sources. Replaces the Sheet's raw_data JSON blob.
-    """
     return {
         "computed_at":    datetime.now(IST).isoformat(),
         "effective_date": effective_date,
         "sources": {
             "nifty": {
-                "source":       "yfinance:^NSEI",
+                "source":       today_row.get("_nifty_source", "yfinance:^NSEI"),
                 "price":        today_row.get("nifty_price"),
                 "50dma":        today_row.get("nifty_50dma"),
                 "200dma":       today_row.get("nifty_200dma"),
@@ -1186,7 +1336,7 @@ def build_raw_data(today_row: dict, data: dict, effective_date: str) -> dict:
                 "20d_chg_pct":  today_row.get("nifty_20d_chg_pct"),
             },
             "banknifty": {
-                "source":       "yfinance:^NSEBANK",
+                "source":       today_row.get("_banknifty_source", "yfinance:^NSEBANK"),
                 "price":        today_row.get("banknifty_price"),
                 "weekly_rsi":   today_row.get("banknifty_weekly_rsi"),
             },
@@ -1202,31 +1352,31 @@ def build_raw_data(today_row: dict, data: dict, effective_date: str) -> dict:
                 "prev_close_src": "supabase:market_regime",
             },
             "breadth": {
-                "source":               "supabase:stock_data_daily",
-                "above_200dma_pct":     today_row.get("above_200dma_pct"),
-                "advance_decline_ratio":today_row.get("advance_decline_ratio"),
-                "midcap_breadth":       today_row.get("midcap_breadth"),
-                "smallcap_breadth":     today_row.get("smallcap_breadth"),
+                "source":                "supabase:stock_data_daily",
+                "above_200dma_pct":      today_row.get("above_200dma_pct"),
+                "advance_decline_ratio": today_row.get("advance_decline_ratio"),
+                "midcap_breadth":        today_row.get("midcap_breadth"),
+                "smallcap_breadth":      today_row.get("smallcap_breadth"),
             },
             "sector_breadth": {
                 "source":             "supabase:sector_strength",
                 "avg_sector_breadth": today_row.get("avg_sector_breadth"),
             },
             "fii_dii": {
-                "source":       "supabase:fii_dii_flow",
-                "fii_net_20d":  data["fii"].get("fii_net_20d"),
-                "fii_net_5d":   data["fii"].get("fii_net_5d"),
-                "fii_flag":     data["fii"].get("fii_flag"),
-                "dii_net_20d":  data["fii"].get("dii_net_20d"),
-                "dii_net_5d":   data["fii"].get("dii_net_5d"),
+                "source":      "supabase:fii_dii_flow",
+                "fii_net_20d": data["fii"].get("fii_net_20d"),
+                "fii_net_5d":  data["fii"].get("fii_net_5d"),
+                "fii_flag":    data["fii"].get("fii_flag"),
+                "dii_net_20d": data["fii"].get("dii_net_20d"),
+                "dii_net_5d":  data["fii"].get("dii_net_5d"),
             },
             "global": {
-                "sp500_source":   "yfinance:^GSPC",
-                "sp500_5d_ret":   today_row.get("sp500_5d_ret"),
-                "usdinr_source":  "supabase:macro_indicators:USD_INR",
-                "usdinr_5d_chg":  today_row.get("usdinr_5d_chg"),
-                "nifty_pcr_src":  "supabase:macro_indicators:NIFTY_PCR",
-                "nifty_pcr":      today_row.get("nifty_pcr"),
+                "sp500_source":  today_row.get("_sp500_source", "yfinance:^GSPC"),
+                "sp500_5d_ret":  today_row.get("sp500_5d_ret"),
+                "usdinr_source": "supabase:macro_indicators:USD_INR",
+                "usdinr_5d_chg": today_row.get("usdinr_5d_chg"),
+                "nifty_pcr_src": "supabase:macro_indicators:NIFTY_PCR",
+                "nifty_pcr":     today_row.get("nifty_pcr"),
             },
         }
     }

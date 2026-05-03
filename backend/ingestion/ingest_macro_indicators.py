@@ -355,6 +355,22 @@ def write_macro_indicators(sb, rows: list[dict]) -> int:
     return written
 
 
+def _already_written_today(sb, name: str, today_str: str) -> bool:
+    """True if today's value already exists in macro_indicators (re-run guard)."""
+    try:
+        rows = (
+            sb.table("macro_indicators")
+              .select("indicator_value")
+              .eq("indicator_name", name)
+              .eq("indicator_date", today_str)
+              .not_.is_("indicator_value", "null")
+              .limit(1)
+              .execute().data
+        )
+        return bool(rows)
+    except Exception:
+        return False
+
 # ── Main ───────────────────────────────────────────────────────────────────
 
 def main():
@@ -382,8 +398,13 @@ def main():
     except Exception as e:
         logger.warning(f"  MOSPI: FAILED (non-fatal) — {e}")
 
-    # Source 3: Yahoo Finance — US 10-yr (SG1 backup) + Silver (SG2 backup)
+    # Source 3: Yahoo Finance — US 10-yr + Silver + India VIX
+    # Skip if today's value already exists (re-run or late-in-day execution).
+    _today_str = str(today_ist())
     for symbol, name in [("%5ETNX", "US_10YR_YIELD"), ("SI%3DF", "SILVER_PRICE")]:
+        if _already_written_today(sb, name, _today_str):
+            logger.info(f"  Yahoo {name}: already written today — skipping")
+            continue
         try:
             row = fetch_yahoo_finance(symbol, name)
             if row:
@@ -393,7 +414,10 @@ def main():
             logger.warning(f"  Yahoo {name}: FAILED (non-fatal) — {e}")
 
     try:
-        vix_row = fetch_india_vix()
+        if _already_written_today(sb, "INDIA_VIX", _today_str):
+            logger.info("  India VIX: already written today — skipping")
+        else:
+            vix_row = fetch_india_vix()
         if vix_row:
             all_rows.append(vix_row)
             logger.info(f"  India VIX: {vix_row['indicator_value']}")

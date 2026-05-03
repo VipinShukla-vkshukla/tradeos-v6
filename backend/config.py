@@ -10,6 +10,8 @@ import pytz
 from dotenv import load_dotenv
 from loguru import logger
 from supabase import create_client, Client
+import yfinance as yf
+from datetime import datetime, timedelta
 
 # ── Load .env ────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
@@ -188,3 +190,69 @@ logger.info(
     f"TradeOS v6 config loaded | Capital=₹{TOTAL_CAPITAL:,.0f} | "
     f"DRY_RUN={DRY_RUN} | Phase={cfg('autonomy_phase', '0')}"
 )
+
+def yf_fetch_with_cache(
+    sb,
+    ticker:     str,
+    cache_table: str,
+    cache_key:   str,
+    today:       str,
+    *,
+    fallback_column: str = "value",
+    max_stale_days:  int = 1,
+) -> float | None:
+    """
+    Fetch a single scalar value (latest close / price) for a yfinance ticker.
+    Cache-first: reads from Supabase, calls yfinance only on a cache miss.
+
+    Args:
+        sb              : Supabase client
+        ticker          : yfinance ticker string e.g. "^NSEI", "^TNX", "SI=F"
+        cache_table     : Supabase table to check first e.g. "macro_indicators"
+        cache_key       : row identifier in that table e.g. "US_10YR_YIELD"
+        today           : date string YYYY-MM-DD
+        fallback_column : column name holding the cached value (default "value")
+        max_stale_days  : treat cache as valid if row date >= today - N days
+                          (handles weekends/holidays gracefully)
+
+    Returns:
+        float | None
+    """
+    # ── 1. Try Supabase cache first ───────────────────────────────────────
+    stale_cutoff = str(
+        (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=max_stale_days)).date()
+    )
+    try:
+        rows = (
+            sb.table(cache_table)
+              .select(f"date,{fallback_column}")
+              .eq("key", cache_key)
+              .gte("date", stale_cutoff)
+              .order("date", desc=True)
+              .limit(1)
+              .execute().data
+        )
+        if rows:
+            val = rows[0].get(fallback_column)
+            if val is not None:
+                logger.debug(
+                    f"  yf_cache HIT  | {cache_key} = {val} "
+                    f"(from {cache_table}, date={rows[0]['date']})"
+                )
+                return float(val)
+    except Exception as exc:
+        logger.debug(f"  yf_cache read failed for {cache_key}: {exc}")
+
+    # ── 2. Cache miss — call yfinance ─────────────────────────────────────
+    try:
+        logger.debug(f"  yf_cache MISS | {cache_key} → fetching {ticker} from yfinance")
+        df = yf.download(ticker, period="5d", interval="1d",
+                         auto_adjust=True, progress=False)
+        if df.empty:
+            return None
+        val = float(df["Close"].dropna().iloc[-1])
+        logger.debug(f"  yf live       | {ticker} = {val}")
+        return val
+    except Exception as exc:
+        logger.warning(f"  yfinance failed for {ticker}: {exc}")
+        return None

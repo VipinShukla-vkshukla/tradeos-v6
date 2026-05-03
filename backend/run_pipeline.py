@@ -198,10 +198,10 @@ def main():
             ("07_fii_dii",             step_fii_dii,             False),  # fii_net_5d/20d, fii_flag
             ("08_nse_events",          step_nse_events,          False),  # event_calendar
             ("09_asm_gsm",             step_asm_gsm,             False),  # safety_lists ASM/FO_BAN
-            ("10_compute_regime",      step_compute_regime,      False),  # auto calculation of market regime a substitute of sheet regime input, runs after compute_indicators to use breadth data, regime_predict is non-fatal ML enhancement on top of this
-            ("11_regime_predict",      step_regime_predict,      False),  # ML predicted_regime (P2-D)
+            ("10_compute_indicators",  step_compute_indicators,  False),  # chartink_raw_data (current + 370d history), stock_data_daily (sheet baseline for reconcile), nifty_total_market (index flags), nifty_upcoming_events (next 14d), master_shortlist (in_master_shortlist flag), market_regime (nifty price for rs_vs_nifty), system_config (field trust levels)
+            ("11_compute_regime",      step_compute_regime,      False),  # auto calculation of market regime a substitute of sheet regime input, runs after compute_indicators to use breadth data, regime_predict is non-fatal ML enhancement on top of this
+            ("12_regime_predict",      step_regime_predict,      False),  # ML predicted_regime (P2-D)
             # ── Computation (after all raw data is fresh) ──
-            ("12_compute_indicators",  step_compute_indicators,  False),  # chartink_raw_data (current + 370d history), stock_data_daily (sheet baseline for reconcile), nifty_total_market (index flags), nifty_upcoming_events (next 14d), master_shortlist (in_master_shortlist flag), market_regime (nifty price for rs_vs_nifty), system_config (field trust levels)
             ("13_screen_stocks",       step_screen_stocks,       False),  # 9 engines scan 500 stocks → all or top 30 based on condition → msl_computed (shadow) or master_shortlist (hybrid/full)
             ("14_compute_msl",          step_compute_msl,          False),  # 15 intelligence functions enrich screener symbols → holding_score, bb_context, vwap_alignment, final_score
             # ── Signal generation (all inputs now fresh) ──

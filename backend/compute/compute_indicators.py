@@ -1,18 +1,60 @@
 """
-TradeOS v6 — Phase 2: Compute Indicators v2.2
+TradeOS v6 — Phase 2: Compute Indicators v2.3
 ==============================================
 Hybrid reconciliation with field-level trust graduation.
 
-CHANGE LOG v2.1 → v2.2
-  - fetch_bulk_history_yf() inlined directly — no external module dependency.
-    Eliminates "No module named 'fetch_bulk_history_yf'" GitHub Actions error.
-  - Removed importlib dynamic loader block entirely.
-  - All functionality identical to v2.1 + separate fetch_bulk_history_yf.py.
+CHANGE LOG v2.2 → v2.3
+  - Replaced single MIN_SESSIONS_REQUIRED with two purpose-specific constants:
+      MIN_SESSIONS_FULL_FETCH  = 0   — only brand-new symbols get a full pull
+      MIN_SESSIONS_FOR_RETURNS = 260 — quality threshold; NOT a fetch trigger
+  - Added 3rd classification bucket: need_yf_gap
+      count == 0              → need_yf_full  (new symbol, full pull)
+      0 < count < 260         → need_yf_gap   (partial history, backfill to cutoff)
+      count >= 260, stale     → need_yf_tail  (sufficient, short tail refresh)
+      count >= 260, current   → sufficient    (nothing needed)
+  - Fixed sym_cached_up_to bug: gap/full symbols now write ALL fetched rows;
+    tail symbols still write only rows newer than their latest cached date.
+    upsert on_conflict="symbol,date" deduplicates safely.
+  - Removed duplicate list declarations (dead code).
+  - Removed unused gap_sym_starts dict (dead code).
+  - Moved low-session warning into need_yf_gap branch where it is reachable.
+  - Fixed yfinance log line to report full + gap + tail counts correctly.
+  - Fixed seed log to reference correct constant (was still using removed
+    MIN_SESSIONS_REQUIRED — would have raised NameError).
+  - days_back=370 + 100-day buffer = 470 calendar days ≈ 335 trading sessions,
+    sufficient for ret_12m (needs closes[240]).
 
 DESIGN OVERVIEW
   Runs AFTER ingest_sheets.py. Sheet values are already in stock_data_daily.
   Script computes from chartink_raw_data + Supabase lookup tables, then
   reconciles field-by-field using per-field trust levels from system_config.
+
+HISTORICAL RETURNS — HOW THEY ARE POPULATED
+  All return fields are sourced from price_history_yf (cached OHLCV).
+  yfinance is ONLY called when:
+    a) A symbol has zero cached rows (brand new)
+    b) A symbol has < 260 rows (partial history — backfill to cutoff)
+    c) A symbol's latest cached date is behind today (tail refresh)
+  On normal trading days after initial load, yfinance is NOT called.
+
+  Fields populated from history:
+    ret_1w        — closes[5]   (1 week back)
+    ret_1m        — closes[20]  (1 month back)
+    ret_3m        — closes[60]  (3 months back)
+    ret_6m        — closes[120] (6 months back)
+    ret_12m       — closes[240] (12 months back)
+    price_6m_ago  — closes[120]
+    price_12m_ago — closes[240]
+    close_30d     — closes[30]
+    high_52w      — max(highs[:252])
+    low_52w       — min(lows[:252])
+    high_30d      — max(highs[:30])
+    low_30d       — min(lows[:30])
+    consol_range  — derived from high_30d / low_30d
+    wk_hi_high    — recent vs prior 5-session highs
+    wk_hi_low     — recent vs prior 5-session lows
+    bk_trigger    — composite breakout signal
+    breakout_setup — proximity + trend + momentum signal
 
 FIELD TRUST LEVELS (stored in system_config, key = compute_trust_<field>)
   RECONCILE       — compare vs sheet, use computed if within tolerance,
@@ -20,54 +62,21 @@ FIELD TRUST LEVELS (stored in system_config, key = compute_trust_<field>)
   COMPUTE_ALWAYS  — ignore sheet, always use computed (field is verified)
   SHEET_ALWAYS    — always use sheet, do not overwrite (field is different basis)
 
-  Default for all computable fields: RECONCILE
-  Once you verify a field consistently matches, set to COMPUTE_ALWAYS.
-  If a field uses a genuinely different formula in the Sheet, set SHEET_ALWAYS.
-
-DIVERGED BEHAVIOUR
-  When a field diverges beyond tolerance AND trust = RECONCILE:
-    - Sheet value is used (safe fallback)
-    - Field logged in divergence summary with delta%
-    - compute_meta JSONB records both values for your review
-  This is a calibration signal, not a permanent rule. As you fix compute
-  formulas, divergence drops to 0 and COMPUTE_ALWAYS takes over.
-
-FIELDS PREVIOUSLY SHEET_ONLY — NOW COMPUTED FROM SUPABASE
-  upcoming_events      — nifty_upcoming_events.details (next event in 14 days)
-  upcoming_event_type  — nifty_upcoming_events.purpose
-  in_master_shortlist  — master_shortlist table (symbol present for today)
-  index_membership     — nifty_total_market.nifty_200 / nifty_500 booleans
-
 FIELDS GENUINELY NOT COMPUTABLE
-  fii_sector_flow      — sector-level FII requires paid data (Bloomberg etc.)
-                         Set to NULL explicitly. Do not source from Sheet
-                         (Sheet value is an estimate anyway).
-
-HISTORICAL RETURNS — GRACEFUL DEGRADATION
-  fetch_bulk_history_yf() uses price_history_yf (cached) + yfinance.
-  On Day 1 of Phase 2 you may have < 120 sessions → ret_6m returns None.
-  Reconciliation will use the Sheet value for those fields automatically
-  until price_history_yf accumulates enough history (~6 months).
-  No code change needed — degradation is handled transparently.
-
-REMOVING RECONCILIATION
-  Per-field: UPDATE system_config SET value='COMPUTE_ALWAYS'
-             WHERE key='compute_trust_vol_ratio';
-  All fields: UPDATE system_config SET value='false'
-              WHERE key='compute_indicators_reconcile';
-  CLI: python compute_indicators.py --no-reconcile
+  fii_sector_flow — sector-level FII requires paid data (Bloomberg etc.)
+                    Set to NULL explicitly. Do not source from Sheet.
 
 PERFORMANCE
   6 bulk queries total for all 500 symbols (not 1000 per-symbol like v1):
     1. chartink_raw_data today
     2. stock_data_daily today (sheet baseline)
     3. price_history_yf cache (chunked, 20 symbols at a time)
-    4. nifty_upcoming_events (next 14 days)
+    4. nifty_upcoming_events (next 30 days)
     5. master_shortlist today (in_master_shortlist flag)
     6. nifty_total_market (index_membership — static, cached)
     + 1 scalar: market_regime for nifty return
+  yfinance called ONLY for new / partial / stale symbols.
 """
-
 
 import sys
 import os
@@ -97,10 +106,14 @@ except ImportError:
 
 DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
 
-# ── Cache config ──────────────────────────────────────────────────────────────
-MIN_SESSIONS_REQUIRED = 260   # minimum cached sessions to skip full yfinance fetch
-                              # ret_12m needs 240; symbols below this threshold
-                              # will trigger a full yfinance pull on first run
+# ── Cache session thresholds ──────────────────────────────────────────────────
+MIN_SESSIONS_FULL_FETCH  = 0    # Symbols with ZERO cached rows → full yfinance pull.
+                                 # Any symbol with even 1 row is extended by tail/gap only.
+
+MIN_SESSIONS_FOR_RETURNS = 260  # Below this, ret_6m / ret_12m degrade gracefully to None.
+                                 # Triggers a gap-fill fetch to backfill history.
+                                 # NOT a full-refetch trigger — existing rows are preserved.
+                                 # 260 sessions ≈ 12 months of trading days.
 
 # ── Tolerance thresholds ──────────────────────────────────────────────────────
 DIVERGE_THRESHOLD = 0.02   # 2%  for most numeric fields
@@ -132,11 +145,10 @@ RENAME_MAP = {
     "market_cap_cat": "market_cap_category",
     "qtr_net_profit": "quarterly_net_profit",
     "qtr_var_profit": "quarterly_variance",
-    "pct_change":     "pct_change",   # v1 BUG FIX: was 'pct_change_daily'
+    "pct_change":     "pct_change",
 }
 
 PASSTHROUGH_FIELDS = [
-    # Same name in chartink_raw_data and stock_data_daily — copied as-is
     "high_30d", "sma_10", "sma_20", "sma_50", "sma_200",
     "ema_10", "ema_20", "ema_50", "rsi_daily", "rsi_weekly", "rsi_monthly",
     "volume", "vwap_20d", "vwap_50d", "atr_14",
@@ -145,7 +157,6 @@ PASSTHROUGH_FIELDS = [
     "market_cap", "sector", "industry", "company_name",
 ]
 
-# Fields owned by other scripts — compute_indicators never reads or writes these
 OTHER_SCRIPT_FIELDS = {
     "asm_flag",         # ingest_asm_gsm.py
     "fo_ban_flag",      # ingest_asm_gsm.py
@@ -156,131 +167,234 @@ OTHER_SCRIPT_FIELDS = {
     "value_cr",         # ingest_bhavcopy.py
 }
 
-# Fields that cannot be computed from any available free data source
-# Set to NULL explicitly — do not source from Sheet (Sheet value is estimated)
 NOT_COMPUTABLE_FIELDS = {
-    "fii_sector_flow",  # requires sector-level FII data (paid: Bloomberg, SEBI direct)
+    "fii_sector_flow",
 }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 1: BULK HISTORY — price_history_yf cache + yfinance fallback
-# (previously a separate module: fetch_bulk_history_yf.py)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def fetch_bulk_history_yf(sb, today: str, symbols: list,
                            days_back: int = 370,
                            cache_to_db: bool = True,
-                           dry_run: bool = False) -> dict:
+                           dry_run: bool = False,
+                           today_ohlcv: dict | None = None) -> dict:
     """
     Fetch OHLC history for all symbols.
-    Priority: price_history_yf (cached) → yfinance (live fetch + write-through cache).
+
+    Data priority:
+      1. price_history_yf (Supabase cache) — always queried first
+      2. yfinance — called ONLY for:
+           a) new symbols with zero cached rows    (need_yf_full)
+           b) symbols with < 260 cached sessions  (need_yf_gap — backfill)
+           c) symbols with stale latest date      (need_yf_tail — short refresh)
 
     Args:
         sb          : Supabase client
-        today       : date string YYYY-MM-DD
-        symbols     : list of NSE symbol strings e.g. ['RELIANCE', 'TCS']
-        days_back   : calendar days of history to request
-        cache_to_db : if True, saves yfinance results to price_history_yf table
-        dry_run     : if True, skips writing to price_history_yf
+        today       : last trading day YYYY-MM-DD (already resolved by caller)
+        symbols     : list of NSE symbol strings
+        days_back   : calendar days of history window (cutoff = days_back + 100)
+        cache_to_db : if True, saves yfinance results to price_history_yf
+        dry_run     : if True, skips all writes
+        today_ohlcv : {symbol: {open,high,low,close,volume}} from chartink_raw_data
 
     Returns:
         {symbol: [{close, low, high, date}, ...]} newest first
     """
-    cutoff  = str((datetime.strptime(today, "%Y-%m-%d") - timedelta(days=days_back + 100)).date())
-    result  = {}
+    # cutoff = 470 calendar days ≈ 335 trading sessions (covers ret_12m = 240 sessions)
+    cutoff   = str((datetime.strptime(today, "%Y-%m-%d") - timedelta(days=days_back + 100)).date())
+    result   = {}
 
-    # ── Step 1: lightweight sufficiency check (symbol + date only) ────────
+    # ── Step 1: Lightweight sufficiency check (symbol + date only) ────────
     logger.info(
         f"  fetch_bulk_history_yf: checking price_history_yf cache "
-        f"({len(symbols)} symbols)..."
+        f"({len(symbols)} symbols) | cutoff={cutoff}..."
     )
 
-    sym_counts: dict = {}   # {symbol: row_count}
+    sym_counts: dict = {}   # {symbol: row_count within cutoff window}
     sym_latest: dict = {}   # {symbol: most_recent_date_str}
 
-    for i in range(0, len(symbols), 20):
-        chunk = symbols[i:i + 20]
-        rows = (sb.table("price_history_yf")
-                  .select("symbol,date")
-                  .in_("symbol", chunk)
-                  .gte("date", cutoff)
-                  .lte("date", today)
-                  .order("date", desc=True)
-                  .limit(10000)
-                  .execute().data)
-        counts: dict = defaultdict(int)
-        latest: dict = {}
-        for r in rows:
-            sym = r.get("symbol")
-            if not sym:
-                continue
-            counts[sym] += 1
-            if sym not in latest:
-                latest[sym] = r["date"]   # first = most recent (ordered desc)
-        sym_counts.update(counts)
-        sym_latest.update(latest)
+    summary_rows = sb.rpc(
+        "get_symbol_history_summary",
+        {"p_symbols": symbols, "p_cutoff": cutoff, "p_today": today}
+    ).execute().data
 
-    # Classify symbols
+    sym_counts = {r["symbol"]: r["row_count"]   for r in summary_rows if r.get("symbol")}
+    sym_latest = {r["symbol"]: r["latest_date"] for r in summary_rows if r.get("symbol")}
+    sym_first  = {r["symbol"]: r["first_date"]  for r in summary_rows if r.get("symbol")}
+
+    # ── Step 1b: Seed today's OHLCV from chartink into cache ─────────────
+    # Avoids tail-refresh calls for symbols that are already current.
+    # chartink captured today's OHLCV — writing it here sets
+    # sym_latest[sym] == today so classification skips tail entirely.
+    new_sym_count = len([s for s in symbols if sym_counts.get(s, 0) == 0])
+
+    if today_ohlcv:
+        seed_rows = [
+            {
+                "symbol": sym,
+                "date":   today,
+                "open":   ohlcv.get("open"),
+                "high":   ohlcv.get("high"),
+                "low":    ohlcv.get("low"),
+                "close":  ohlcv.get("close"),
+                "volume": ohlcv.get("volume"),
+            }
+            for sym, ohlcv in today_ohlcv.items()
+            if ohlcv.get("close")
+        ]
+        if cache_to_db and not dry_run and seed_rows:
+            for i in range(0, len(seed_rows), 500):
+                sb.table("price_history_yf").upsert(
+                    seed_rows[i:i + 500], on_conflict="symbol,date"
+                ).execute()
+        # Update sym_latest in memory so classification sees latest == today.
+        # Do NOT update sym_counts — counts must reflect pre-seed state
+        # so classification correctly identifies gap/full symbols.
+        for sym in today_ohlcv:
+            if today_ohlcv[sym].get("close"):
+                sym_latest[sym] = today
+
+        logger.info(
+            f"  Today OHLCV seeded from chartink: {len(seed_rows)} symbols"
+            f" | tail calls eliminated for current symbols"
+            + (f" | {new_sym_count} brand-new symbols still need full yfinance fetch"
+               if new_sym_count else "")
+        )
+
+# ── Step 2: Classify symbols into 5 buckets ───────────────────────────
+    #
+    #   need_yf_full   : count == 0               → brand new, no history at all
+    #   need_yf_gap    : cache genuinely incomplete→ gap vs expected sessions > 15%
+    #   ipo_syms       : count < 260 but cache is  → young listing, cache complete
+    #                    complete for its age         for its age, skip yfinance
+    #   need_yf_tail   : count >= 260, stale       → short tail refresh
+    #   sufficient     : count >= 260, current     → nothing needed
+    #
+    need_yf_full:    list = []
+    need_yf_gap:     list = []
+    need_yf_tail:    list = []
     sufficient_syms: list = []
-    need_yf_full:    list = []   # no base history  → full days_back pull
-    need_yf_tail:    list = []   # has base history → tail 7-day refresh only
+    ipo_syms:        list = []   # young but cache-complete
 
     for sym in symbols:
         count  = sym_counts.get(sym, 0)
-        latest = sym_latest.get(sym, "")
-        if count < MIN_SESSIONS_REQUIRED:
+        latest = sym_latest.get(sym, today)
+        first  = sym_first.get(sym)          # MIN(date) from RPC — None if no rows
+
+        if count == 0:
+            # Genuinely new symbol — no history at all
             need_yf_full.append(sym)
+            continue
+
+        # ── Is cache complete relative to this symbol's actual age? ──────
+        # For established symbols: first ≈ cutoff date (Jan 2025)
+        #   → expected ≈ 335 sessions, completeness check is strict
+        # For IPOs: first = their actual listing date (e.g. Oct 2025)
+        #   → expected ≈ 120 sessions, so count/expected ≈ 96% → cache complete
+        if first:
+            d1 = datetime.strptime(str(first), "%Y-%m-%d").date()
+            d2 = datetime.strptime(today,      "%Y-%m-%d").date()
+            expected = max(1, int((d2 - d1).days * (5 / 7) * 0.96))
+            cache_completeness = count / expected
+            is_cache_complete  = cache_completeness >= 0.85
         else:
-            sufficient_syms.append(sym)
-            if latest < today:          # cache is stale → tail refresh needed
-                need_yf_tail.append(sym)
-            # else: sym already has today's data → skip entirely
+            expected           = MIN_SESSIONS_FOR_RETURNS
+            cache_completeness = 0.0
+            is_cache_complete  = False
+
+        if count < MIN_SESSIONS_FOR_RETURNS:
+            if is_cache_complete:
+                # Young listing — cache is as full as it can be, skip yfinance
+                ipo_syms.append(sym)
+                logger.debug(
+                    f"  {sym}: young listing — {count}/{expected} expected sessions "
+                    f"({cache_completeness:.0%}) | ret_6m/ret_12m will be None until matured"
+                )
+            else:
+                # Genuine gap — cache is missing data that should exist
+                need_yf_gap.append(sym)
+                logger.warning(
+                    f"  {sym}: cache gap — {count}/{expected} expected sessions "
+                    f"({cache_completeness:.0%}) — gap-fill triggered back to {cutoff}"
+                )
+            continue
+
+        # Sufficient history (count >= 260)
+        sufficient_syms.append(sym)
+        if latest < today:
+            need_yf_tail.append(sym)
+        # else: current and sufficient — nothing needed
+
+    need_yf_backfill = need_yf_full + need_yf_gap   # both use full cutoff as start
+    need_yf          = need_yf_backfill + need_yf_tail
 
     logger.info(
-        f"  price_history_yf: {len(sufficient_syms)} have base | "
-        f"{len(need_yf_tail)} tail-refresh | {len(need_yf_full)} full fetch"
+        f"  price_history_yf: {len(sufficient_syms)} sufficient"
+        f" | {len(need_yf_tail)} tail-refresh"
+        f" | {len(need_yf_gap)} gap-fill (genuine cache gaps)"
+        f" | {len(ipo_syms)} young listings (cache complete, skipping yfinance)"
+        f" | {len(need_yf_full)} full fetch (new symbols)"
+        + ("\n  ⚠ Cold start: all symbols have zero cached history — "
+           "full yfinance pull required"
+           if len(need_yf_full) == len(symbols) else "")
+        + ("\n  ✓ yfinance not needed — all symbols sufficient and current"
+           if not need_yf else "")
     )
 
-    # ── Step 2: fetch full OHLCV for cache-sufficient symbols ─────────────
-    # 20 symbols × ~319 sessions ≈ 6 380 rows/query — within Supabase cap
-    for i in range(0, len(sufficient_syms), 20):
-        chunk = sufficient_syms[i:i + 20]
-        rows = (sb.table("price_history_yf")
-                  .select("symbol,date,open,high,low,close,volume")
-                  .in_("symbol", chunk)
-                  .gte("date", cutoff)
-                  .lte("date", today)
-                  .order("date", desc=True)
-                  .limit(10000)
-                  .execute().data)
-        for r in rows:
-            sym = r.get("symbol")
-            if not sym:
-                continue
-            result.setdefault(sym, []).append({
-                "close": float(r["close"]) if r.get("close") else None,
-                "low":   float(r["low"])   if r.get("low")   else None,
-                "high":  float(r["high"])  if r.get("high")  else None,
-                "date":  r.get("date"),
-            })
+    # ── Step 3: Load full OHLCV from cache ────────────────────────────────
+    # Covers both sufficient symbols (260+ sessions) and IPO symbols
+    # (young but cache-complete). Neither needs yfinance.
+    # Chunk = 3 symbols × ~335 rows ≈ 1005 rows — stays under Supabase 1000
+    # row default. Paginate with .range() to handle any symbol safely.
+    OHLCV_CHUNK = 3
+    syms_to_load = sufficient_syms + ipo_syms   # ipo_syms served from cache
 
-    # ── Step 3: yfinance for missing / stale symbols ──────────────────────
-    need_yf = need_yf_full + need_yf_tail
+    for i in range(0, len(syms_to_load), OHLCV_CHUNK):
+        chunk = syms_to_load[i:i + OHLCV_CHUNK]
+        offset = 0
+        while True:
+            rows = (sb.table("price_history_yf")
+                      .select("symbol,date,open,high,low,close,volume")
+                      .in_("symbol", chunk)
+                      .gte("date", cutoff)
+                      .lte("date", today)
+                      .order("date", desc=True)
+                      .range(offset, offset + 999)
+                      .execute().data)
+            for r in rows:
+                sym = r.get("symbol")
+                if not sym:
+                    continue
+                result.setdefault(sym, []).append({
+                    "close": float(r["close"]) if r.get("close") else None,
+                    "low":   float(r["low"])   if r.get("low")   else None,
+                    "high":  float(r["high"])  if r.get("high")  else None,
+                    "date":  r.get("date"),
+                })
+            if len(rows) < 1000:
+                break        # last page
+            offset += 1000
 
+    # ── Step 4: yfinance for new / gap / stale symbols ────────────────────
     if need_yf and YF_AVAILABLE:
         logger.info(
-            f"  yfinance: {len(need_yf_full)} full + {len(need_yf_tail)} tail fetches..."
+            f"  yfinance: {len(need_yf_full)} new symbol"
+            f" + {len(need_yf_gap)} gap-fill"
+            f" + {len(need_yf_tail)} tail fetches..."
         )
+
         end_date = str((datetime.strptime(today, "%Y-%m-%d") + timedelta(days=1)).date())
-        # Dynamic tail cutoff — covers multi-day gaps from failures/holidays/weekends.
-        # Uses the oldest sym_latest among tail symbols as the anchor, plus 3-day buffer.
-        # Capped at 60 days to prevent runaway fetches on a cold restart.
+
+        # Tail cutoff: dynamic — covers multi-day gaps from failures/holidays/weekends.
+        # Uses oldest sym_latest among tail symbols as anchor, caps at 60 days.
         if need_yf_tail:
             oldest_cached = min(sym_latest.get(s, today) for s in need_yf_tail)
             gap_days = (datetime.strptime(today, "%Y-%m-%d").date() -
                         datetime.strptime(oldest_cached, "%Y-%m-%d").date()).days
-            tail_days = min(max(gap_days + 3, 7), 60)
+            tail_days = min(max(gap_days + 1, 3), 60)
         else:
             tail_days = 7
         tail_cutoff = str((datetime.strptime(today, "%Y-%m-%d") - timedelta(days=tail_days)).date())
@@ -300,12 +414,14 @@ def fetch_bulk_history_yf(sb, today: str, symbols: list,
             )
             return df, tkrs
 
-        rows_to_cache: list = []
-
+        # Backfill (full + gap) uses global cutoff; tail uses short tail_cutoff
         batches = [
-            (need_yf_full, *_download_batch(need_yf_full, cutoff)),
-            (need_yf_tail, *_download_batch(need_yf_tail, tail_cutoff)),
+            (need_yf_backfill, *_download_batch(need_yf_backfill, cutoff)),
+            (need_yf_tail,     *_download_batch(need_yf_tail,     tail_cutoff)),
         ]
+
+        rows_to_cache: list    = []
+        need_yf_backfill_set   = set(need_yf_backfill)   # O(1) lookup inside loop
 
         for batch_syms, raw_df, batch_tickers in batches:
             if raw_df is None or not batch_syms:
@@ -328,6 +444,17 @@ def fetch_bulk_history_yf(sb, today: str, symbols: list,
 
                     sym_df = sym_df.dropna(subset=["Close"]).sort_index(ascending=False)
 
+                    # ── KEY FIX: write threshold per bucket ───────────────
+                    # Backfill (full + gap): write ALL rows — "1970-01-01" means
+                    #   nothing is excluded. upsert on symbol,date deduplicates.
+                    # Tail: write only rows NEWER than the latest cached date
+                    #   to avoid unnecessary upsert overhead.
+                    write_from = (
+                        "1970-01-01"
+                        if sym in need_yf_backfill_set
+                        else sym_latest.get(sym, "1970-01-01")
+                    )
+
                     history: list = []
                     for date_idx, row in sym_df.iterrows():
                         date_str = str(date_idx.date())
@@ -339,7 +466,7 @@ def fetch_bulk_history_yf(sb, today: str, symbols: list,
                         }
                         history.append(entry)
 
-                        if cache_to_db and not dry_run:
+                        if cache_to_db and not dry_run and date_str > write_from:
                             rows_to_cache.append({
                                 "symbol": sym,
                                 "date":   date_str,
@@ -350,7 +477,7 @@ def fetch_bulk_history_yf(sb, today: str, symbols: list,
                                 "volume": int(row["Volume"]) if row.get("Volume") else None,
                             })
 
-                    # Tail-refresh: merge new rows into existing result
+                    # Tail-refresh: merge new rows into existing cached result
                     if sym in result:
                         existing_dates = {r["date"] for r in result[sym]}
                         for h in history:
@@ -360,20 +487,20 @@ def fetch_bulk_history_yf(sb, today: str, symbols: list,
                     else:
                         result[sym] = history
 
-                    logger.debug(f"  yfinance: {sym} — {len(history)} sessions")
+                    logger.debug(f"  yfinance: {sym} — {len(history)} sessions fetched")
 
                 except Exception as exc:
                     logger.warning(f"  yfinance: {sym} failed — {exc}")
 
-        # ── Step 4: write-through cache ───────────────────────────────────
+        # ── Step 5: Write-through cache ───────────────────────────────────
         if cache_to_db and not dry_run and rows_to_cache:
-            logger.info(f"  Caching {len(rows_to_cache)} rows to price_history_yf...")
+            logger.info(f"  Caching {len(rows_to_cache)} new rows to price_history_yf...")
             for i in range(0, len(rows_to_cache), 500):
                 sb.table("price_history_yf").upsert(
                     rows_to_cache[i:i + 500],
                     on_conflict="symbol,date"
                 ).execute()
-            logger.info("  Cached successfully")
+            logger.info(f"  Cached successfully — {len(rows_to_cache)} rows written")
         elif dry_run and rows_to_cache:
             logger.info(f"  [DRY RUN] Skipping cache write of {len(rows_to_cache)} rows")
 
@@ -386,9 +513,9 @@ def fetch_bulk_history_yf(sb, today: str, symbols: list,
     total_sessions = sum(len(v) for v in result.values())
     yf_fetched     = sum(1 for s in need_yf if result.get(s))
     logger.info(
-        f"  fetch_bulk_history_yf: {len(result)} symbols | "
-        f"{total_sessions} total sessions | "
-        f"{yf_fetched} fetched from yfinance"
+        f"  fetch_bulk_history_yf complete: {len(result)} symbols loaded"
+        f" | {total_sessions} total sessions"
+        f" | {yf_fetched} symbols fetched from yfinance"
     )
     return result
 
@@ -412,7 +539,7 @@ def fetch_sheet_values(sb, today: str) -> dict:
 
 def fetch_upcoming_events(sb, today: str, window_days: int = 30) -> dict:
     """
-    {symbol: {events_str, event_type_str}} for next window_days.
+    {symbol: {upcoming_events, upcoming_event_type}} for next window_days.
     Takes the nearest event per symbol.
     """
     cutoff = str(
@@ -510,7 +637,7 @@ def fetch_raw_prices(sb, today: str, symbols: list | None = None) -> dict:
                .select("symbol,value_cr,delivery_pct,delivery_qty")
                .eq("date", today))
     if symbols:
-        query = query.in_("symbol", symbols)   # ← scope to chartink universe only
+        query = query.in_("symbol", symbols)
     rows = query.execute().data
     result: dict = {}
     for r in rows:
@@ -555,22 +682,36 @@ def compute_from_raw(raw: dict, sym_history: list, events: dict,
                      price_row: dict = None) -> dict:
     """
     Compute all derivable fields for one symbol.
-    sym_history: [{close, low, high, date?}] newest first.
+
+    sym_history: [{close, low, high, date}] newest first — sourced entirely
+    from price_history_yf. All return fields, rolling highs/lows, and
+    breakout signals are derived from this list.
+
+    Return field session requirements:
+      ret_1w        closes[5]    ~1 week
+      ret_1m        closes[20]   ~1 month
+      ret_3m        closes[60]   ~3 months
+      ret_6m        closes[120]  ~6 months
+      ret_12m       closes[240]  ~12 months
+      price_6m_ago  closes[120]
+      price_12m_ago closes[240]
+      close_30d     closes[30]
+    All return None gracefully if history is insufficient.
     """
     out: dict = {}
     sym = raw.get("symbol", "")
 
-    # ── Raw values (chartink field names) ─────────────────────────────────
-    close      = float(raw.get("daily_close") or 0)
-    volume     = float(raw.get("volume")       or 0)
-    avg_vol_20 = float(raw.get("avg_vol_20")   or 0)
-    atr_14     = float(raw.get("atr_14")       or 0)
-    sma_50     = float(raw.get("sma_50")       or 0)
+    # ── Raw values from chartink ──────────────────────────────────────────
+    close       = float(raw.get("daily_close") or 0)
+    volume      = float(raw.get("volume")       or 0)
+    avg_vol_20  = float(raw.get("avg_vol_20")   or 0)
+    atr_14      = float(raw.get("atr_14")       or 0)
+    sma_50      = float(raw.get("sma_50")       or 0)
     _sma200_raw = raw.get("sma_200")
-    sma_200    = float(_sma200_raw) if _sma200_raw not in (None, "", 0) else 0.0
+    sma_200     = float(_sma200_raw) if _sma200_raw not in (None, "", 0) else 0.0
     if _sma200_raw not in (None, "", 0):
         out["sma_200"] = round(float(_sma200_raw), 4)
-    supertrend = float(raw.get("supertrend")   or 0)
+    supertrend  = float(raw.get("supertrend")   or 0)
 
     # ── 52-week high/low from rolling history (252 sessions) ──────────────
     window_52w = sym_history[:252]
@@ -600,33 +741,34 @@ def compute_from_raw(raw: dict, sym_history: list, events: dict,
     out["above_sma50"]  = bool(close > sma_50)  if sma_50  > 0 else None
     out["sma50_gt_200"] = bool(sma_50 > sma_200) if sma_50 > 0 and sma_200 > 0 else None
     if "sma_200" not in out and sma_200 > 0:
-        out["sma_200"] = round(sma_200, 4)
+        out["sma_200"]  = round(sma_200, 4)
     out["above_st"]     = bool(close > supertrend) if supertrend > 0 else None
     if week52_hi > week52_lo > 0:
         out["price_location"] = round(
             (close - week52_lo) / (week52_hi - week52_lo) * 100, 2
         )
 
-    # ── Level 2 — historical series ───────────────────────────────────────
+    # ── Level 2 — Historical return series ───────────────────────────────
+    # All sourced from price_history_yf via sym_history (newest first).
+    # _ret(n) returns None gracefully when insufficient sessions exist.
     closes = [h["close"] for h in sym_history]
-    lows   = [h["low"]   for h in sym_history if h.get("low")]
-    highs  = [h["high"]  for h in sym_history if h.get("high")]
 
     def _ret(n: int) -> float | None:
+        """Return % change vs n sessions ago. None if history insufficient."""
         if len(closes) > n and closes[n] not in (None, 0):
             return round((close - closes[n]) / closes[n] * 100, 4)
         return None
 
-    out["ret_1w"]        = _ret(5)
-    out["ret_1m"]        = _ret(20)
-    out["ret_3m"]        = _ret(60)
-    out["ret_6m"]        = _ret(120)
-    out["ret_12m"]       = _ret(240)
+    out["ret_1w"]        = _ret(5)     # ~1 week   (5 trading sessions)
+    out["ret_1m"]        = _ret(20)    # ~1 month  (20 trading sessions)
+    out["ret_3m"]        = _ret(60)    # ~3 months (60 trading sessions)
+    out["ret_6m"]        = _ret(120)   # ~6 months (120 trading sessions)
+    out["ret_12m"]       = _ret(240)   # ~12 months (240 trading sessions)
     out["price_6m_ago"]  = round(closes[120], 2) if len(closes) > 120 else None
     out["price_12m_ago"] = round(closes[240], 2) if len(closes) > 240 else None
     out["close_30d"]     = round(closes[30],  2) if len(closes) > 30  else None
 
-    # ── 30-day window high/low/consol ─────────────────────────────────────
+    # ── 30-day rolling high / low / consolidation range ───────────────────
     window   = sym_history[:30] if len(sym_history) >= 30 else sym_history
     lows_30  = [h["low"]  for h in window if h.get("low")  is not None]
     highs_30 = [h["high"] for h in window if h.get("high") is not None]
@@ -641,7 +783,7 @@ def compute_from_raw(raw: dict, sym_history: list, events: dict,
     if high_30d and low_30d and low_30d > 0:
         out["consol_range"] = round((high_30d - low_30d) / low_30d * 100, 4)
 
-    # ── wk_hi_high / wk_hi_low ───────────────────────────────────────────
+    # ── wk_hi_high / wk_hi_low — recent 5 sessions vs prior 5 ───────────
     window_10 = sym_history[:15]
     highs_10  = [h["high"] for h in window_10 if h.get("high") is not None][:10]
     lows_10   = [h["low"]  for h in window_10 if h.get("low")  is not None][:10]
@@ -649,7 +791,7 @@ def compute_from_raw(raw: dict, sym_history: list, events: dict,
     out["wk_hi_high"] = (
         bool(max(highs_10[:5]) > max(highs_10[5:10])) if len(highs_10) >= 10 else None
     )
-    out["wk_hi_low"]  = (
+    out["wk_hi_low"] = (
         bool(min(lows_10[:5]) > min(lows_10[5:10]))   if len(lows_10)  >= 10 else None
     )
 
@@ -673,14 +815,14 @@ def compute_from_raw(raw: dict, sym_history: list, events: dict,
         _sma50_threshold = max(8.0, 1.5 * _atr_pct)
         _delivery_ok     = (_delivery >= 35 or _value_cr >= 50)
         out["bk_trigger"] = bool(
-            close        >  _high_30d              and
-            close        >  _close_30d             and
-            _vol_ratio   >= 1.5                    and
-            _above_st                              and
-            (_open == 0 or close > _open)          and
-            55 <= _rsi_daily  <= 75                and
-            _rsi_weekly  >  55                     and
-            _dist_sma50  <= _sma50_threshold       and
+            close        >  _high_30d          and
+            close        >  _close_30d         and
+            _vol_ratio   >= 1.5                and
+            _above_st                          and
+            (_open == 0 or close > _open)      and
+            55 <= _rsi_daily  <= 75            and
+            _rsi_weekly  >  55                 and
+            _dist_sma50  <= _sma50_threshold   and
             _delivery_ok
         )
     else:
@@ -704,19 +846,19 @@ def compute_from_raw(raw: dict, sym_history: list, events: dict,
     ]):
         _proximity_threshold = _close_30d_bs * (1 - min(0.03, _atr_pct_bs / 100))
         out["breakout_setup"] = bool(
-            close          >= _proximity_threshold  and
-            _above_sma50                            and
-            _sma50_gt_200                           and
-            _wk_hi_high    and _wk_hi_low           and
-            _vol_ratio_bs  >= 1.2                   and
-            55 <= _rsi_daily_bs  <= 75              and
-            _rsi_weekly_bs >  50                    and
+            close          >= _proximity_threshold and
+            _above_sma50                           and
+            _sma50_gt_200                          and
+            _wk_hi_high    and _wk_hi_low          and
+            _vol_ratio_bs  >= 1.2                  and
+            55 <= _rsi_daily_bs  <= 75             and
+            _rsi_weekly_bs >  50                   and
             _consol_bs     <  10
         )
     else:
         out["breakout_setup"] = None
 
-    # ── Previously SHEET_ONLY — now from Supabase lookups ─────────────────
+    # ── Previously SHEET_ONLY — now computed from Supabase lookups ────────
     ev = events.get(sym, {})
     out["upcoming_events"]     = ev.get("upcoming_events")
     out["upcoming_event_type"] = ev.get("upcoming_event_type")
@@ -740,7 +882,7 @@ def compute_from_raw(raw: dict, sym_history: list, events: dict,
             if val is not None:
                 out[field] = val
 
-    # ── Cast bigint fields (chartink may return decimals) ─────────────────
+    # ── Cast bigint fields (chartink may return float) ────────────────────
     BIGINT_FIELDS = {"volume", "market_cap", "avg_vol_20d", "avg_vol_50d"}
     for field in BIGINT_FIELDS:
         if out.get(field) is not None:
@@ -774,9 +916,9 @@ def reconcile_row(computed: dict, sheet_row: dict,
 
     Trust levels:
       RECONCILE      — compare vs sheet; use computed if within tolerance,
-                       sheet if diverged (calibration phase behaviour).
-      COMPUTE_ALWAYS — always use computed regardless of sheet value.
-      SHEET_ALWAYS   — always use sheet regardless of computed value.
+                       sheet if diverged (calibration phase).
+      COMPUTE_ALWAYS — always use computed (field verified).
+      SHEET_ALWAYS   — always use sheet (field uses different formula/basis).
 
     When reconcile_enabled=False: all fields treated as COMPUTE_ALWAYS.
     """
@@ -830,7 +972,7 @@ def reconcile_row(computed: dict, sheet_row: dict,
             final[field] = s_val
             continue
 
-        # Boolean
+        # Boolean comparison
         if isinstance(c_val, bool) or isinstance(s_val, bool):
             c_b, s_b = bool(c_val), bool(s_val)
             if c_b == s_b:
@@ -839,14 +981,16 @@ def reconcile_row(computed: dict, sheet_row: dict,
             else:
                 final[field] = s_val
                 meta["diverged"][field] = {
-                    "computed": c_b, "sheet": s_b,
-                    "delta_pct": 100.0, "type": "bool_mismatch",
-                    "trust": trust,
-                    "action": "investigate — field formula may differ",
+                    "computed":  c_b,
+                    "sheet":     s_b,
+                    "delta_pct": 100.0,
+                    "type":      "bool_mismatch",
+                    "trust":     trust,
+                    "action":    "investigate — field formula may differ",
                 }
             continue
 
-        # Numeric
+        # Numeric comparison
         try:
             diverged, delta_pct = _numeric_diverged(c_val, s_val, field)
             if not diverged:
@@ -889,11 +1033,10 @@ def reconcile_row(computed: dict, sheet_row: dict,
 
 def resolve_last_trading_day(sb, reference_date: str, max_lookback: int = 10) -> str:
     """
-    Walk backwards from reference_date until we find a date that is:
-      - Not a Saturday/Sunday
-      - Not in nse_holidays table
+    Walk backwards from reference_date to find the last day that:
+      - Is not Saturday/Sunday
+      - Is not in nse_holidays table
       - Has actual data in chartink_raw_data
-    Raises RuntimeError if no valid date found within max_lookback days.
     """
     holiday_rows = sb.table("nse_holidays").select("date").execute().data
     holidays     = {row["date"] for row in holiday_rows}
@@ -918,13 +1061,24 @@ def resolve_last_trading_day(sb, reference_date: str, max_lookback: int = 10) ->
             if date_str != reference_date:
                 logger.info(f"  Resolved trading date: {reference_date} → {date_str}")
             return date_str
-        logger.debug(f"  No data for {date_str} — stepping back")
+        logger.debug(f"  No chartink data for {date_str} — stepping back")
         candidate -= timedelta(days=1)
 
     raise RuntimeError(
         f"No trading day with data found within {max_lookback} days before {reference_date}"
     )
 
+def expected_trading_sessions(from_date: str, to_date: str) -> int:
+    """
+    Approximate trading sessions between two dates.
+    Formula: calendar days × (5/7) × 0.96
+      5/7  = removes weekends
+      0.96 = removes ~4% for public holidays (NSE averages ~10-12/year)
+    """
+    d1 = datetime.strptime(from_date, "%Y-%m-%d").date()
+    d2 = datetime.strptime(to_date,   "%Y-%m-%d").date()
+    calendar_days = (d2 - d1).days
+    return max(0, int(calendar_days * (5 / 7) * 0.96))
 
 def main():
     if is_kill_switch_active():
@@ -937,7 +1091,7 @@ def main():
     reconcile_enabled = cfg_bool("compute_indicators_reconcile", True)
     mode_label        = "HYBRID" if reconcile_enabled else "COMPUTE_ONLY"
     logger.info(
-        f"compute_indicators v2.2 — {today} — {mode_label}"
+        f"compute_indicators v2.3 — {today} — {mode_label}"
         + (" [DRY RUN]" if DRY_RUN else "")
     )
 
@@ -948,16 +1102,34 @@ def main():
         logger.error(str(exc))
         return {"status": "no_data"}
 
-    # ── 6 bulk queries — no per-symbol calls ──────────────────────────────
+    # ── Pass 1: 6 bulk queries — no per-symbol DB calls ──────────────────
     logger.info("Pass 1: bulk data fetch...")
     raw_rows = fetch_all_raw(sb, today)
     if not raw_rows:
         logger.warning(f"No chartink_raw_data for {today}")
         return {"status": "no_data"}
 
-    sheet_map              = fetch_sheet_values(sb, today) if reconcile_enabled else {}
-    symbols                = [r["symbol"] for r in raw_rows if r.get("symbol")]
-    bulk_history           = fetch_bulk_history_yf(sb, today, symbols, dry_run=DRY_RUN)
+    sheet_map = fetch_sheet_values(sb, today) if reconcile_enabled else {}
+    symbols   = [r["symbol"] for r in raw_rows if r.get("symbol")]
+
+    # Seed today's OHLCV into price_history_yf from chartink.
+    # Makes sym_latest[sym] == today → skips tail-refresh for current symbols.
+    today_ohlcv = {
+        r["symbol"]: {
+            "open":   r.get("daily_open"),
+            "high":   r.get("daily_high"),
+            "low":    r.get("daily_low"),
+            "close":  r.get("daily_close"),
+            "volume": r.get("volume"),
+        }
+        for r in raw_rows if r.get("symbol") and r.get("daily_close")
+    }
+
+    bulk_history           = fetch_bulk_history_yf(
+                                sb, today, symbols,
+                                dry_run=DRY_RUN,
+                                today_ohlcv=today_ohlcv
+                             )
     events_map             = fetch_upcoming_events(sb, today)
     msl_set                = fetch_msl_symbols(sb, today)
     index_map, company_map = fetch_index_membership(sb)
@@ -971,11 +1143,11 @@ def main():
         if overridden:
             logger.info(f"  Field trust overrides: {overridden}")
 
-    # ── Compute + reconcile per symbol ────────────────────────────────────
+    # ── Pass 2: Compute + reconcile per symbol ────────────────────────────
     logger.info("Pass 2: computing and reconciling...")
-    upsert_rows       = []
-    skipped           = 0
-    total_always      = total_match = total_only = total_sheet_always = 0
+    upsert_rows        = []
+    skipped            = 0
+    total_always       = total_match = total_only = total_sheet_always = 0
     all_diverged: dict = defaultdict(list)
 
     for raw in raw_rows:
@@ -985,12 +1157,14 @@ def main():
             continue
         try:
             computed = compute_from_raw(
-                raw, bulk_history.get(sym, []),
+                raw,
+                bulk_history.get(sym, []),
                 events_map, msl_set, index_map, company_map,
                 sheet_row=sheet_map.get(sym, {}),
                 price_row=prices_map.get(sym, {}),
             )
-            # Level 3 — market-relative (needs separate nifty scalar)
+
+            # Level 3 — market-relative (requires separate nifty scalar)
             if nifty_ret is not None and computed.get("ret_1m") is not None:
                 computed["rs_vs_nifty"] = round(computed["ret_1m"] - nifty_ret, 4)
 
@@ -1018,7 +1192,7 @@ def main():
                     all_diverged[field].append(div["delta_pct"])
 
         except Exception as exc:
-            logger.warning(f"{sym}: failed — {exc}")
+            logger.warning(f"{sym}: computation failed — {exc}")
             skipped += 1
 
     # ── Reconciliation summary ────────────────────────────────────────────
@@ -1027,12 +1201,12 @@ def main():
     logger.info(f"COMPUTE INDICATORS SUMMARY — {today} — {mode_label}")
     logger.info(f"  Symbols: {n} processed | {skipped} skipped")
     if reconcile_enabled:
-        logger.info(f"  COMPUTE_ALWAYS (verified fields):     {total_always:>6} decisions")
-        logger.info(f"  COMPUTED_MATCH (within tolerance):    {total_match:>6} decisions")
-        logger.info(f"  COMPUTED_ONLY  (sheet was NULL):      {total_only:>6} decisions")
-        logger.info(f"  SHEET_ALWAYS   (confirmed diff basis):{total_sheet_always:>6} decisions")
+        logger.info(f"  COMPUTE_ALWAYS (verified fields):      {total_always:>6} decisions")
+        logger.info(f"  COMPUTED_MATCH (within tolerance):     {total_match:>6} decisions")
+        logger.info(f"  COMPUTED_ONLY  (sheet was NULL):       {total_only:>6} decisions")
+        logger.info(f"  SHEET_ALWAYS   (confirmed diff basis): {total_sheet_always:>6} decisions")
         if all_diverged:
-            logger.info(f"  DIVERGED (using sheet, needs review): {len(all_diverged)} field types")
+            logger.info(f"  DIVERGED (using sheet, needs review):  {len(all_diverged)} field types")
             logger.info(f"  {'Field':<30} {'Avg delta':>10}  {'Symbols':>8}  Action")
             logger.info(f"  {'-'*65}")
             for field, deltas in sorted(
@@ -1064,7 +1238,7 @@ def main():
             )
         return {"computed": n, "skipped": skipped, "dry_run": True}
 
-    # ── Batch upsert — 50 rows per call ──────────────────────────────────
+    # ── Pass 3: Batch upsert — 50 rows per call ───────────────────────────
     logger.info(f"Pass 3: writing {n} rows to stock_data_daily...")
     written = 0
     for i in range(0, len(upsert_rows), 50):
@@ -1088,7 +1262,7 @@ def main():
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="TradeOS v6 — Compute Indicators v2.2")
+    parser = argparse.ArgumentParser(description="TradeOS v6 — Compute Indicators v2.3")
     parser.add_argument("--dry-run",      action="store_true")
     parser.add_argument("--no-reconcile", action="store_true",
                         help="Skip sheet reconciliation — use computed everywhere")

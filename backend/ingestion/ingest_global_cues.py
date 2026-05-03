@@ -47,6 +47,27 @@ def compute_gap_signal(gift_nifty: float | None, nifty_last: float | None) -> tu
         return pct, label
     return None, "UNKNOWN"
 
+def _read_macro_indicator(sb, name: str, today_str: str) -> float | None:
+    """
+    Read today's value from macro_indicators (written by step 02).
+    Returns None on cache miss so caller falls back to Yahoo.
+    Uses actual schema: indicator_name / indicator_value / indicator_date.
+    """
+    try:
+        rows = (
+            sb.table("macro_indicators")
+              .select("indicator_value")
+              .eq("indicator_name", name)
+              .eq("indicator_date", today_str)
+              .not_.is_("indicator_value", "null")
+              .limit(1)
+              .execute().data
+        )
+        if rows:
+            return float(rows[0]["indicator_value"])
+    except Exception as e:
+        logger.debug(f"  macro_indicators read for {name} failed: {e}")
+    return None
 
 def classify_crude_impact(crude: float | None, crude_prev: float | None) -> str:
     if not crude or not crude_prev or crude_prev == 0:
@@ -115,10 +136,23 @@ def main(time_slot: str = "EVENING"):
     # SG1: US 10-year Treasury yield — primary driver of FII EM outflows.
     # A yield spike from 4.2% to 4.8% predicts FII selling 1-2 days before flows show in data.
     # ^TNX quotes yield in % (e.g. 4.52 = 4.52%). Change in basis points = chg_pct * 100.
-    us_10yr    = fetch_from_yahoo("^TNX",     http)
-    # SG2: Silver price — Jewellery (Titan, Kalyan, Senco) + Metals Mining (Hindustan Zinc).
-    # Silver has higher beta than gold; was missing from commodity coverage entirely.
-    silver     = fetch_from_yahoo("SI=F",     http)
+    # US 10-yr: step 02 already fetched and wrote this to macro_indicators.
+    # Read from DB to avoid a duplicate Yahoo request. Fall back only on miss.
+    _today_str = today.isoformat()
+    us_10yr = _read_macro_indicator(sb, "US_10YR_YIELD", _today_str)
+    if us_10yr is None:
+        us_10yr = fetch_from_yahoo("^TNX", http)
+        logger.debug("  us_10yr: macro_indicators miss — fetched from Yahoo")
+    else:
+        logger.debug(f"  us_10yr: macro_indicators hit — {us_10yr}")
+
+    # SG2: Silver price — same pattern
+    silver = _read_macro_indicator(sb, "SILVER_PRICE", _today_str)
+    if silver is None:
+        silver = fetch_from_yahoo("SI=F", http)
+        logger.debug("  silver: macro_indicators miss — fetched from Yahoo")
+    else:
+        logger.debug(f"  silver: macro_indicators hit — {silver}")
 
     # ── Previous row — same session type for apples-to-apples change % ──
     # MORNING vs MORNING = true US close-to-close (US closed at 1:30 AM IST)

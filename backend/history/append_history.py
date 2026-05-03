@@ -16,14 +16,27 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
 from config import get_supabase, today_ist, DRY_RUN, is_kill_switch_active
+from config import cfg
 
 # Exact columns in regime_history (from schema dump Mar 23 + live Supabase):
+# AFTER:
 REGIME_HISTORY_COLS = {
+    # Original fields
     "date", "regime", "nifty_price", "nifty_50dma", "nifty_200dma",
     "nifty_weekly_rsi", "india_vix", "avg_sector_breadth",
     "ctl_enabled", "sbs_enabled", "tpo_enabled", "eap_enabled",
     "regime_score", "nifty_1d_chg_pct", "nifty_5d_chg_pct",
     "nifty_20d_chg_pct", "advance_decline_ratio", "above_200dma_pct",
+    # Added by compute_regime v2.0 — required for ML classifier training
+    "computed_regime",       # rule-based computed regime (vs manual sheet regime)
+    "regime_score_computed", # 0–100 score that drove computed_regime
+    "vix_5d_delta",          # VIX direction signal (falling vs rising)
+    "midcap_breadth",        # smallcap/midcap divergence detector
+    "smallcap_breadth",
+    "gift_premium_pct",      # GIFT Nifty pre-open signal
+    "sp500_5d_ret",          # global cue
+    "usdinr_5d_chg",         # rupee direction signal
+    "banknifty_weekly_rsi",  # banking sector confirmation
 }
 
 
@@ -41,12 +54,27 @@ def main():
         return {"skipped": True}
 
     # Read today's MSL
-    rows = sb.table("master_shortlist").select(
-        "date,symbol,company_name,base_rank,sector,strategy_source,current_price,"
-        "price_location,dist_fv_pct,entry_timing_type,momentum_phase,velocity_state,"
-        "trend_maturity,struct_edge,in_position,reentry_mode,lifecycle,expected_r,"
-        "validity_score,final_score"
+    msl_mode   = cfg("compute_msl_mode", "shadow")
+    source_tbl = "msl_computed" if msl_mode == "shadow" else "master_shortlist"
+
+    rows = sb.table(source_tbl).select(
+        "date,symbol,company_name,base_rank,priority_rank,sector,strategy_source,"
+        "current_price,price_location,dist_fv_pct,entry_timing_type,momentum_phase,"
+        "velocity_state,trend_maturity,struct_edge,in_position,reentry_mode,lifecycle,"
+        "expected_r,validity_score,final_score,momentum_state,holding_score,risk_score,"
+        "breakout_readiness,persistent_phase"
     ).eq("date", today).execute().data
+
+    if not rows and source_tbl == "msl_computed":
+        # Fallback: msl_computed empty (screen_stocks not in shadow mode?) → use master_shortlist
+        rows = sb.table("master_shortlist").select(
+            "date,symbol,company_name,base_rank,sector,strategy_source,current_price,"
+            "price_location,dist_fv_pct,entry_timing_type,momentum_phase,velocity_state,"
+            "trend_maturity,struct_edge,in_position,reentry_mode,lifecycle,expected_r,"
+            "validity_score,final_score"
+        ).eq("date", today).execute().data
+        if rows:
+            logger.warning(f"  msl_computed empty — falling back to master_shortlist for history")
 
     if not rows:
         logger.warning("No MSL rows for today — skipping history")
@@ -75,6 +103,10 @@ def main():
             "expected_r":       r.get("expected_r"),
             "validity_score":   r.get("validity_score"),
             "final_score":      r.get("final_score"),
+            "momentum_state":   r.get("momentum_state"),
+            "holding_score":    r.get("holding_score"),
+            "risk_score":       r.get("risk_score"),
+            "breakout_readiness": r.get("breakout_readiness"),
         })
 
     if not DRY_RUN:

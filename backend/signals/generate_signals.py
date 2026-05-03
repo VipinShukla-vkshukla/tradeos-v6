@@ -877,27 +877,46 @@ def generate(run_date: date | None = None) -> list:
                 msl_row, open_map, stock_data, T, regime_name=regime_name
             )
 
-            if is_entry:
-                position_state = "BUY_CANDIDATE"
-                if is_entry:
-                # Signal-type specific min_rr check (can only run after type is known)
-                    if signal_type_candidate in ENTRY_SIGNAL_TYPES:
-                        sig_min_rr = T.get(f"min_rr_{signal_type_candidate}")
-                        if sig_min_rr and near_miss_data.get("implied_rr") and near_miss_data.get("implied_rr", 99) < sig_min_rr:
-                            is_entry           = False
-                            filter_reason      = f"insufficient_rr_for_{signal_type_candidate}"
-                            near_miss_data     = {"blocked_by": "signal_type_rr", "implied_rr": near_miss_data["implied_rr"], "min_rr": sig_min_rr}
-                            signal_type_candidate = "WATCH"
-                    position_state = "BUY_CANDIDATE"
-                    signal_type    = signal_type_candidate
-                signal_subtype = filter_reason
-                filter_reason  = None
-                near_miss_data = {}
-            else:
-                position_state = "WATCHING"
-                signal_type    = "WATCH"
-                if not show_watch:
-                    continue
+        # AFTER:
+        if is_entry:
+            # Signal-type specific min_rr check — AFTER type is known, BEFORE committing.
+            # Computes implied_rr directly (not from near_miss_data which is empty for passing signals).
+            if signal_type_candidate in ENTRY_SIGNAL_TYPES:
+                sig_min_rr = T.get(f"min_rr_{signal_type_candidate}")
+                if sig_min_rr:
+                    ep_  = msl_row.get("entry_zone_low")
+                    cp_  = msl_row.get("current_price")
+                    er_  = float(msl_row.get("expected_r") or 0)
+                    if ep_ and cp_ and er_ > 0:
+                        stop_   = float(ep_) * (1 - T["stop_buffer_pct"])
+                        risk_   = float(ep_) - stop_
+                        target_ = float(ep_) + risk_ * er_
+                        cp_f_   = float(cp_)
+                        if cp_f_ > stop_ and (cp_f_ - stop_) > 0:
+                            impl_rr = (target_ - cp_f_) / (cp_f_ - stop_)
+                            if impl_rr < sig_min_rr:
+                                is_entry = False
+                                near_miss_data = {
+                                    "blocked_by": "signal_type_rr",
+                                    "implied_rr": round(impl_rr, 2),
+                                    "min_rr":     sig_min_rr,
+                                    "would_be":   signal_type_candidate,
+                                }
+                                filter_reason         = f"insufficient_rr_for_{signal_type_candidate}"
+                                signal_type_candidate = None
+
+        # Re-evaluate after possible signal-type RR gate
+        if is_entry:
+            position_state = "BUY_CANDIDATE"
+            signal_type    = signal_type_candidate
+            signal_subtype = filter_reason
+            filter_reason  = None
+            near_miss_data = {}
+        else:
+            position_state = "WATCHING"
+            signal_type    = "WATCH"
+            if not show_watch:
+                continue
 
         if asm_flag and position_state != "OPEN_POSITION":
             signal_type = "BLOCKED_ASM"

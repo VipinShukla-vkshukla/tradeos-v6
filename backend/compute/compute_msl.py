@@ -492,12 +492,11 @@ def load_data(sb, today: str, mode: str) -> dict:
             history_map[sym].append(r)
 
     # ── 4. Market regime ─────────────────────────────────────────────────────
-    # NOTE (BUG #8 DESIGN DECISION): step 10 (compute_regime) runs BEFORE step 12
-    # (compute_indicators) in the pipeline. This means above_200dma_pct (breadth) in
-    # market_regime reflects the PREVIOUS run's stock_data_daily, not today's freshly
-    # computed breadth. This is a known one-run lag. The alternative is to move
-    # compute_regime to after compute_indicators in the pipeline (steps swap 10↔12).
-    # For now, document and accept — the lag is typically < 0.5% breadth drift.
+    # NOTE: step 10 (compute_indicators) now runs BEFORE step 11 (compute_regime).
+    # above_200dma_pct uses today's freshly reconciled sma_200 values.
+    # midcap_breadth and smallcap_breadth use today's market_cap_category field
+    # (populated by compute_indicators from chartink_raw_data.market_cap_cat).
+    # No data lag — the one-run staleness issue documented in v2 is resolved.
     regime_rows = sb.table("market_regime").select("*").order("date", desc=True).limit(1).execute().data
     regime = regime_rows[0] if regime_rows else {}
 
@@ -719,28 +718,29 @@ def build_regime_context(regime: dict, global_cues: dict, macro_data: dict,
     vix     = float(regime.get("india_vix") or 0)
     breadth = float(regime.get("above_200dma_pct") or 50)
 
+# AFTER:
     rsi_extended = {
-        "TRENDING":  80,
-        "RISK ON":   78,
-        "NEUTRAL":   72,
-        "CAUTION":   67,
-        "RISK OFF":  62,
+        "TRENDING":   80,
+        "RISK ON":    78,
+        "NEUTRAL":    72,
+        "RECOVERING": 68,   # bounce confirmed but not yet neutral — tighter than NEUTRAL
+        "RISK OFF":   62,
     }.get(active_regime, 72)
 
     momentum_decay = {
-        "TRENDING":  0.85,
-        "RISK ON":   0.80,
-        "NEUTRAL":   0.70,
-        "CAUTION":   0.55,
-        "RISK OFF":  0.40,
+        "TRENDING":   0.85,
+        "RISK ON":    0.80,
+        "NEUTRAL":    0.70,
+        "RECOVERING": 0.60,  # partial momentum restoration; trust not yet rebuilt
+        "RISK OFF":   0.40,
     }.get(active_regime, 0.70)
 
     regime_boost = {
-        "TRENDING":  8,
-        "RISK ON":   5,
-        "NEUTRAL":   0,
-        "CAUTION":  -5,
-        "RISK OFF": -12,
+        "TRENDING":   8,
+        "RISK ON":    5,
+        "NEUTRAL":    0,
+        "RECOVERING": -3,   # coming out of bear — positive signal but not confirmed bull
+        "RISK OFF":  -12,
     }.get(active_regime, 0)
 
     # VIX penalty
@@ -802,6 +802,7 @@ def build_regime_context(regime: dict, global_cues: dict, macro_data: dict,
         "macro_boost":       macro_boost,
         "is_bull":           active_regime in ("TRENDING", "RISK ON"),
         "is_bear":           active_regime in ("RISK OFF",),
+        "is_recovering":     active_regime == "RECOVERING",
         "vix":               vix,
         "breadth":           breadth,
         "fii_flag":          fii_flag,
@@ -1359,7 +1360,7 @@ def compute_lifecycle(s: dict, hist: list, regime_ctx: dict,
     sma_50      = float(s.get("sma_50") or 0)
 
     extended_thresh = get_rsi_extended_threshold(regime_ctx, adx)
-    exit_threshold  = 2 if regime_ctx.get("is_bear") else 3
+    exit_threshold = 2 if (regime_ctx.get("is_bear") or regime_ctx.get("is_recovering")) else 3
 
     exit_signals = sum([
         rsi_d < 42,
@@ -1498,7 +1499,10 @@ def compute_entry_zones(s: dict, strategy: str, regime_ctx: dict) -> tuple:
     if not close or not atr_14:
         return None, None
 
-    regime_factor = 1.12 if regime_ctx["is_bear"] else (0.95 if regime_ctx["is_bull"] else 1.0)
+    regime_factor = (1.12 if regime_ctx["is_bear"]
+                 else 1.06 if regime_ctx.get("is_recovering")  # slightly wider zone required
+                 else 0.95 if regime_ctx["is_bull"]
+                 else 1.0)
     strat = (strategy or "").upper()
 
     if "CTL" in strat or "TPO" in strat:
@@ -1965,14 +1969,24 @@ def compute_risk_score(s: dict, regime_ctx: dict, fund_ctx: dict,
     risk += fund_ctx.get("fundamental_penalty", 0) * (5 / 12)
 
     # BUG #7 FIX: Event risk from step 08 (NSE events)
-    event_bias   = (msl_row.get("event_bias") or "NEUTRAL").upper()
-    upcoming     = (msl_row.get("upcoming_news") or "").lower()
-    event_risk   = 0
+    # event_bias from msl_row (ingest_sheets populated) — falls back to stock_data_daily
+    # which compute_indicators populates from nifty_upcoming_events table.
+    event_bias = (msl_row.get("event_bias") or "NEUTRAL").upper()
+    # upcoming_news from msl_row; upcoming_events from stock_data_daily (compute_indicators)
+    upcoming   = (msl_row.get("upcoming_news")
+                  or s.get("upcoming_events")       # compute_indicators → nifty_upcoming_events
+                  or "").lower()
+    event_type = (s.get("upcoming_event_type") or "").upper()   # also from compute_indicators
+
+    event_risk = 0
     if event_bias == "NEGATIVE":                event_risk += 8
-    elif event_bias == "POSITIVE":              event_risk -= 2    # positive event = slight tailwind
-    if "earnings" in upcoming or "result" in upcoming: event_risk += 5
-    if "agm" in upcoming or "dividend" in upcoming:    event_risk += 2
-    risk += max(0, min(event_risk, 12))   # capped at 12 pts event risk
+    elif event_bias == "POSITIVE":              event_risk -= 2
+    if "earnings" in upcoming or "result" in upcoming:  event_risk += 5
+    elif event_type in ("QUARTERLY_RESULTS", "FINANCIAL RESULTS", "BOARD_MEETING"):
+        event_risk += 5   # same trigger from structured field when headline not available
+    if "agm" in upcoming or "dividend" in upcoming:     event_risk += 2
+    elif event_type in ("AGM", "DIVIDEND"):              event_risk += 2
+    risk += max(0, min(event_risk, 12))
 
     # Regime risk multiplier
     if regime_ctx["is_bear"]:
