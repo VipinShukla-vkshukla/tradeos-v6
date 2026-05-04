@@ -182,7 +182,7 @@ def load_context(sb, trade_date: str) -> dict:
           .eq("date", trade_date)
           .in_("signal_type", [
               "PRIME_SETUP", "BREAKOUT_SETUP", "REENTRY_SETUP",
-              "BUY_CANDIDATE", "STAGED_ENTRY"
+              "BUY_CANDIDATE", "STAGED_ENTRY","MARKET_TOP_PICK",
           ])
           .order("score_adjusted", desc=True)
           .execute().data
@@ -792,32 +792,67 @@ def write_signal_enrichment(sb, result: dict, candidates: list[dict],
 
 def write_final_picks(sb, result: dict, trade_date: str, provider: str,
                       candidate_count: int):
-    """Store full ranked JSON in ai_context.__FINAL_PICKS__ for alerts, display, and echo."""
+    """
+    Store ranked JSON in ai_context.__FINAL_PICKS__.
+ 
+    SPLIT STORAGE (v4 fix):
+      conviction_reason   ← ranked_candidates only  (heavy, up to 7800 chars)
+      strategy_validation ← portfolio_guidance + warnings + correlations
+                            (light, up to 3500 chars — always fits)
+    """
+    from loguru import logger
+    import json
+ 
     guidance = result.get("portfolio_guidance") or {}
     ranked   = result.get("ranked_candidates") or []
     tier1    = [r for r in ranked if r.get("tier") == "TIER_1"]
     tier2    = [r for r in ranked if r.get("tier") == "TIER_2"]
-
+ 
+    # ── Payload split ──────────────────────────────────────────────────────
+    # conviction_reason: ranked_candidates only — the heavy list
+    candidates_payload = {"ranked_candidates": ranked}
+ 
+    # strategy_validation: all guidance/meta — compact, always < 3500 chars
+    guidance_payload = {
+        "portfolio_guidance":        result.get("portfolio_guidance", {}),
+        "sector_exposure_warnings":  result.get("sector_exposure_warnings", []),
+        "correlation_groups":        result.get("correlation_groups", []),
+        "self_improvement_notes":    result.get("self_improvement_notes", []),
+    }
+ 
     try:
         sb.table("ai_context").upsert({
-            "date":              trade_date,
-            "symbol":            "__FINAL_PICKS__",
-            "conviction":        guidance.get("position_sizing_override", "REDUCED_25PCT"),
-            "conviction_reason": json.dumps(result, ensure_ascii=False)[:8000],
-            "risks":             [w.get("recommendation","") for w in
-                                  (result.get("sector_exposure_warnings") or [])[:3]],
-            "catalyst":          "; ".join(guidance.get("sectors_to_overweight") or []),
-            "suggested_action":  guidance.get("position_sizing_override", "REDUCED_25PCT"),
-            "provider":          provider,
+            "date":               trade_date,
+            "symbol":             "__FINAL_PICKS__",
+            "conviction":         guidance.get("position_sizing_override", "REDUCED_25PCT"),
+ 
+            # ranked_candidates — main read target in send_alerts
+            "conviction_reason":  json.dumps(candidates_payload,
+                                             ensure_ascii=False)[:7800],
+ 
+            # portfolio_guidance + warnings + correlations — now never truncated
+            "strategy_validation": json.dumps(guidance_payload,
+                                              ensure_ascii=False)[:3500],
+ 
+            "risks":              [w.get("recommendation", "")
+                                   for w in (result.get("sector_exposure_warnings") or [])[:3]],
+            "catalyst":           "; ".join(guidance.get("sectors_to_overweight") or []),
+            "suggested_action":   guidance.get("position_sizing_override", "REDUCED_25PCT"),
+            "provider":           provider,
             "ai_note": (
                 f"TIER_1:{len(tier1)} TIER_2:{len(tier2)} total:{candidate_count} | "
-                f"{guidance.get('new_positions_guidance','')[:150]} | "
-                f"{guidance.get('capital_deployment_narrative','')[:150]}"
+                f"{guidance.get('new_positions_guidance', '')[:150]} | "
+                f"{guidance.get('capital_deployment_narrative', '')[:150]}"
             )[:500],
-            "fallback_used":     False,
-            "confidence":        0.9,
+            "fallback_used":  False,
+            "confidence":     0.9,
         }, on_conflict="date,symbol").execute()
-        logger.info("ai_context __FINAL_PICKS__ written")
+ 
+        logger.info(
+            f"ai_context __FINAL_PICKS__ written (split payload) | "
+            f"candidates:{len(candidates_payload['ranked_candidates'])} | "
+            f"guidance_keys:{list(guidance_payload.keys())}"
+        )
     except Exception as e:
         logger.warning(f"__FINAL_PICKS__ write failed: {e}")
 
