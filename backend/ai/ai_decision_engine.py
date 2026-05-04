@@ -81,18 +81,9 @@ DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
 # ── Trading-day resolution ─────────────────────────────────────────────────
 
 def get_last_trading_date(sb, reference_date: date | None = None) -> str:
-    """
-    Return the most-recent NSE trading date on or before *reference_date*
-    (defaults to today IST).  Skips weekends (Sat/Sun) and any date found
-    in the public.nse_holidays table.
-
-    Looks back up to 10 calendar days — more than enough to cover any
-    long-weekend / festive cluster.
-    """
     if reference_date is None:
         reference_date = today_ist()
 
-    # Pre-load NSE holidays for the surrounding window (cheap single query)
     window_start = reference_date - timedelta(days=10)
     try:
         holiday_rows = (
@@ -104,18 +95,40 @@ def get_last_trading_date(sb, reference_date: date | None = None) -> str:
         )
         holiday_set = {r["date"] for r in (holiday_rows or [])}
     except Exception as exc:
-        logger.warning(f"Could not fetch nse_holidays — treating all weekdays as trading days: {exc}")
+        logger.warning(f"Could not fetch nse_holidays: {exc}")
         holiday_set = set()
 
     candidate = reference_date
     for _ in range(10):
-        # weekday() → 0=Mon … 4=Fri; 5=Sat, 6=Sun
-        if candidate.weekday() < 5 and str(candidate) not in holiday_set:
-            return str(candidate)
+        if candidate.weekday() >= 5 or str(candidate) in holiday_set:
+            candidate -= timedelta(days=1)
+            continue
+
+        # ── KEY FIX: verify signal_log actually has data for this date ──
+        # A valid trading day at 00:55 may not have pipeline data yet.
+        # Roll back until we find a date where step 15 has already run.
+        try:
+            probe = (
+                sb.table("signal_log")
+                  .select("date")
+                  .eq("date", str(candidate))
+                  .limit(1)
+                  .execute().data
+            )
+            if probe:
+                if str(candidate) != str(reference_date):
+                    logger.info(
+                        f"No signal_log data for {reference_date} yet "
+                        f"(pipeline not run) — using last available: {candidate}"
+                    )
+                return str(candidate)
+        except Exception as exc:
+            logger.warning(f"signal_log probe failed for {candidate}: {exc}")
+            return str(candidate)   # fallback: trust the date if probe errors
+
         candidate -= timedelta(days=1)
 
-    # Fallback — should never reach here
-    logger.error("Could not find a trading date in the last 10 days — using reference date as-is")
+    logger.error("Could not find a trading date with signal_log data in last 10 days")
     return str(reference_date)
 
 _SYSTEM_PROMPT = (
@@ -682,7 +695,7 @@ def call_ai(prompt: str) -> dict | None:
 
     logger.info(f"Step 19 AI call via provider: {provider}")
     try:
-        full_text = raw_completion(full_prompt, max_tokens=6000)
+        full_text = raw_completion(full_prompt, max_tokens=12000)
     except Exception as e:
         logger.warning(f"AI call failed: {e}")
         return None
@@ -828,11 +841,11 @@ def write_final_picks(sb, result: dict, trade_date: str, provider: str,
  
             # ranked_candidates — main read target in send_alerts
             "conviction_reason":  json.dumps(candidates_payload,
-                                             ensure_ascii=False)[:7800],
+                                             ensure_ascii=False),
  
             # portfolio_guidance + warnings + correlations — now never truncated
             "strategy_validation": json.dumps(guidance_payload,
-                                              ensure_ascii=False)[:3500],
+                                              ensure_ascii=False),
  
             "risks":              [w.get("recommendation", "")
                                    for w in (result.get("sector_exposure_warnings") or [])[:3]],

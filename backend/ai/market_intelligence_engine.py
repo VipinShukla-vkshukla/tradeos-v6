@@ -87,9 +87,20 @@ def _last_trading_day(sb) -> str:
         holidays = set()
     d = today_ist()
     for _ in range(10):
-        d -= timedelta(days=1)
         if d.weekday() < 5 and str(d) not in holidays:
-            return str(d)
+            try:
+                probe = (
+                    sb.table("signal_log")
+                      .select("date")
+                      .eq("date", str(d))
+                      .limit(1)
+                      .execute().data
+                )
+                if probe:
+                    return str(d)
+            except Exception:
+                return str(d)
+        d -= timedelta(days=1)
     return str(today_ist() - timedelta(days=1))
 
 
@@ -462,7 +473,7 @@ def build_prompt(ctx: dict, stock_intel: list[dict]) -> str:
     ]
 
     if ctx["sector_impacts"]:
-        lines.append(f"  Sector impacts (from global): {json.dumps(ctx['sector_impacts'])[:400]}")
+        lines.append(f"  Sector impacts (from global): {json.dumps(ctx['sector_impacts'])}")
 
     if ctx["macro"]:
         lines += ["", "═══ MACRO INDICATORS (recent) ═══"]
@@ -819,11 +830,19 @@ def write_market_intel(sb, result: dict, date_str: str, provider: str):
             "date":              date_str,
             "symbol":            "__MARKET_INTEL__",
             "conviction":        tone.get("position_sizing_guidance", "REDUCED_25PCT"),
-            "conviction_reason": json.dumps(result, ensure_ascii=False)[:8000],
+            "conviction_reason": json.dumps(result, ensure_ascii=False),
             "risks":             [i.get("driver", "") for i in
                                   (result.get("macro_sector_impacts") or [])[:3]],
             "catalyst":          "; ".join(tone.get("setup_types_favoured") or []),
             "suggested_action":  tone.get("position_sizing_guidance", "REDUCED_25PCT"),
+            "conflicts": json.dumps({
+                "fii_exit_sectors":   (result.get("fii_outlook") or {}).get("exit_sectors", []),
+                "setup_types_avoid":  tone.get("setup_types_to_avoid", []),
+                "regulatory_alerts":  [
+                    a for a in (result.get("regulatory_alerts") or [])
+                    if a.get("action") not in ("NO_ACTION", None)
+                ],
+            }, ensure_ascii=False),
             "provider":          provider,
             "ai_note":           (tone.get("summary", "") + " | " +
                                   tone.get("echo_comparison", ""))[:500],

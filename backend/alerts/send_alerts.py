@@ -104,6 +104,7 @@ import json
 import time
 from datetime import timedelta
 from pathlib import Path
+import html
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
@@ -122,6 +123,15 @@ ENTRY_TYPES = {
     "REENTRY_SETUP", "STAGED_ENTRY", "MARKET_TOP_PICK",
 }
 
+def esc(text: str) -> str:
+    """
+    Escape HTML special characters in AI-generated free text.
+    Prevents Telegram from misinterpreting < > & as HTML tags.
+    Only apply to dynamic content — NOT to your own <b> <i> tags.
+    """
+    if not text:
+        return ""
+    return html.escape(str(text), quote=False)
 
 # ── Telegram sender ────────────────────────────────────────────────────────
 
@@ -322,12 +332,29 @@ def load_data(sb, today: str) -> dict:
         holidays = set()
     signal_date = today
     d = today_ist()
-    for _ in range(5):
+    for _ in range(10):
         if d.weekday() < 5 and str(d) not in holidays:
-            signal_date = str(d)
-            break
+            # Same fix as step 19 — verify signal_log actually has data
+            try:
+                probe = (
+                    sb.table("signal_log")
+                    .select("date")
+                    .eq("date", str(d))
+                    .limit(1)
+                    .execute().data
+                )
+                if probe:
+                    signal_date = str(d)
+                    if str(d) != today:
+                        logger.info(
+                            f"No signal_log data for {today} yet "
+                            f"— using last available: {d}"
+                        )
+                    break
+            except Exception:
+                signal_date = str(d)   # probe failed, trust the date
+                break
         d -= timedelta(days=1)
-
     # ── __FINAL_PICKS__: merge conviction_reason + strategy_validation ──
     final_picks_data = None
     try:
@@ -580,6 +607,7 @@ def load_data(sb, today: str) -> dict:
 
     return {
         "signal_date":       signal_date,
+        "display_date":      today,
         "final_picks":       final_picks_data,
         "market_intel":      market_intel,
         "signals":           signals,
@@ -807,7 +835,13 @@ def build_evening(data: dict) -> str:
 
     sig_map = {s.get("symbol"): s for s in signals}
 
-    lines = [f"<b>📊 TradeOS Evening · {date_str}</b>", ""]
+    display = data.get("display_date", date_str)
+    stale   = display != date_str
+    lines = [
+        f"<b>📊 TradeOS Evening · {display}</b>"
+        + (f"  <i>(data: {date_str})</i>" if stale else ""),
+        ""
+    ]
     lines += build_regime_header(regime, fii, cues)
 
     # ── Anomalies ──
@@ -835,7 +869,7 @@ def build_evening(data: dict) -> str:
             ico     = "🚨" if urgency == "IMMEDIATE" else "⚠️"
             lines.append(
                 f"  {ico} [{urgency}] {alert.get('action', '')} — "
-                f"{alert.get('news_item', '')[:100]}"
+                f" {esc(alert.get('news_item', '')[:100])}"
                 + (f" | {alert.get('affected_symbols', [])}" if alert.get("affected_symbols") else "")
             )
         lines.append("")
@@ -879,7 +913,7 @@ def build_evening(data: dict) -> str:
             reason = s.get("filter_reason") or s.get("ai_conviction_reason") or ""
             lines.append(
                 f"  <b>{s['symbol']}</b>"
-                + (f"  <i>— {reason[:100]}</i>" if reason else "")
+                + (f"  <i>— {esc(reason[:100])}</i>" if reason else "")
             )
         lines.append("")
 
@@ -890,7 +924,7 @@ def build_evening(data: dict) -> str:
         for s in avoid_events:
             lines.append(
                 f"  🚫 <b>{s['symbol']}</b> [{s.get('sector','?')}]"
-                + (f" — {s.get('filter_reason','')[:80]}" if s.get("filter_reason") else "")
+                + (f" — {esc(s.get('filter_reason','')[:80])}" if s.get("filter_reason") else "")
             )
         lines.append("")
 
@@ -908,11 +942,11 @@ def build_evening(data: dict) -> str:
         sizing = guidance.get("position_sizing_override") or fp.get("_sizing", "?")
         lines.append(f"💼 <b>SIZING: {sizing}</b>")
         if guidance.get("new_positions_guidance"):
-            lines.append(f"  <i>{guidance['new_positions_guidance'][:120]}</i>")
+            lines.append(f"  <i>{esc(guidance.get('new_positions_guidance'))[:120]}</i>")
         if guidance.get("capital_deployment_narrative"):
-            lines.append(f"  <i>{guidance['capital_deployment_narrative'][:200]}</i>")
+            lines.append(f"  <i>{esc(guidance.get('capital_deployment_narrative'))[:200]}</i>")
         if fp.get("_ai_note"):
-            lines.append(f"  <i>{fp['_ai_note'][:200]}</i>")
+            lines.append(f"  <i>{esc(fp.get('_ai_note'))[:200]}</i>")
         if guidance.get("sectors_to_overweight"):
             lines.append(f"  ▲ Overweight: {', '.join(guidance['sectors_to_overweight'][:4])}")
         if guidance.get("sectors_to_underweight"):
@@ -935,22 +969,21 @@ def build_evening(data: dict) -> str:
                     + (f"  📎{corr}" if corr else "")
                 )
                 if c.get("thesis"):
-                    lines.append(f"  💬 {c['thesis']}")
+                    lines.append(f"  💬 {esc(c['thesis'])}")
                 if c.get("entry_note"):
-                    lines.append(f"  📍 Entry: {c['entry_note']}")
+                    lines.append(f"  📍 Entry: {esc(c['entry_note'])}")
                 if c.get("invalidation"):
-                    lines.append(f"  ❌ Invalid if: {c['invalidation']}")
+                    lines.append(f"  ❌ Invalid if: {esc(c['invalidation'])}")
                 if c.get("catalyst"):
-                    lines.append(f"  💡 {c['catalyst'][:100]}")
+                    lines.append(f"  💡 {esc(c['catalyst'][:100])}")
                 if c.get("risks"):
-                    risk_str = " · ".join(str(r) for r in (c["risks"] or [])[:2])
+                    risk_str = " · ".join(esc(str(r)) for r in (c["risks"] or [])[:2])
                     if risk_str:
                         lines.append(f"  ⚠️ {risk_str}")
-                ez = zone_line(c["symbol"], msl_map)
-                if ez: lines.append(f"  {ez}")
                 if c.get("lessons_applied"):
-                    ls = " · ".join((c["lessons_applied"] or [])[:2])
-                    if ls: lines.append(f"  📚 <i>{ls[:120]}</i>")
+                    ls = " · ".join(esc(l) for l in (c["lessons_applied"] or [])[:2])
+                    if ls:
+                        lines.append(f"  📚 <i>{ls[:120]}</i>")
             lines.append("")
 
         # TIER_2: Watch for trigger
@@ -960,11 +993,11 @@ def build_evening(data: dict) -> str:
                 c_ico = conviction_icon(c.get("conviction"))
                 lines.append(f"\n  {c_ico} <b>{c['symbol']}</b>  [{c.get('action', '?')}]")
                 if c.get("thesis"):
-                    lines.append(f"  💬 {c['thesis'][:150]}")
+                    lines.append(f"  💬 {esc(c['thesis'][:150])}")
                 if c.get("entry_note"):
-                    lines.append(f"  📍 Trigger: {c['entry_note']}")
+                    lines.append(f"  📍 Trigger: {esc(c['entry_note'])}")
                 if c.get("invalidation"):
-                    lines.append(f"  ❌ Invalid if: {c['invalidation']}")
+                    lines.append(f"  ❌ Invalid if: {esc(c['invalidation'])}")
                 ez = zone_line(c["symbol"], msl_map)
                 if ez: lines.append(f"  {ez}")
             lines.append("")
@@ -994,8 +1027,8 @@ def build_evening(data: dict) -> str:
                 reason = note_raw[1].strip() if len(note_raw) > 1 else ""
                 ez     = zone_line(s["symbol"], msl_map)
                 lines.append(f"\n  💡 <b>{s['symbol']}</b> [{flag}]  {s.get('sector', '?')}")
-                if reason: lines.append(f"  {reason[:160]}")
-                if ez:     lines.append(f"  {ez}")
+                if reason: lines.append(f"  {esc(reason[:160])}")
+                if ez:     lines.append(f"  {esc(ez)}")
             lines.append("")
 
         # Sector exposure warnings (now always loaded — v4 fix)
@@ -1003,9 +1036,9 @@ def build_evening(data: dict) -> str:
             lines.append("⚠️ <b>SECTOR CONCENTRATION WARNINGS</b>")
             for w in warnings:
                 lines.append(
-                    f"  {w.get('sector', '?')}: {w.get('candidate_count', '?')} candidates "
-                    f"(hold {w.get('already_held', 0)}) — {w.get('recommendation', '')[:100]}"
-                    f"  → Allow: <b>{w.get('allow_count', 1)}</b>"
+                    f"  {esc(w.get('sector', '?'))}: {esc(w.get('candidate_count', '?'))} candidates "
+                    f"(hold {w.get('already_held', 0)}) — {esc(w.get('recommendation', '')[:100])}"
+                    f"  → Allow: <b>{esc(w.get('allow_count', 1))}</b>"
                 )
             lines.append("")
 
@@ -1015,7 +1048,7 @@ def build_evening(data: dict) -> str:
             for g in corr_groups:
                 lines.append(
                     f"  [{g.get('group_label', '?')}] {g.get('symbols', [])} "
-                    f"— {g.get('recommendation', '')[:100]}"
+                    f"— {esc(g.get('recommendation', '')[:100])}"
                 )
             lines.append("")
 
@@ -1094,7 +1127,13 @@ def build_morning(data: dict) -> str:
 
     sig_map = {s.get("symbol"): s for s in signals}
 
-    lines = [f"<b>🌅 TradeOS Morning · {date_str}</b>", ""]
+    display = data.get("display_date", date_str)
+    stale   = display != date_str
+    lines = [
+        f"<b>🌅 TradeOS Morning · {display}</b>"
+        + (f"  <i>(data: {date_str})</i>" if stale else ""),
+        ""
+    ]
     lines += build_regime_header(regime, fii, cues)
     lines.append("")
 
@@ -1169,7 +1208,7 @@ def build_morning(data: dict) -> str:
             reason = s.get("filter_reason") or s.get("ai_conviction_reason") or ""
             lines.append(
                 f"  <b>{s['symbol']}</b>"
-                + (f" — {reason[:80]}" if reason else "")
+                + (f" — {esc(reason[:80])}" if reason else "")
             )
         lines.append("")
 
@@ -1183,12 +1222,12 @@ def build_morning(data: dict) -> str:
 
         lines.append(f"💼 <b>TODAY'S APPROACH: {sizing}</b>")
         if guidance.get("new_positions_guidance"):
-            lines.append(f"  <i>{guidance['new_positions_guidance'][:150]}</i>")
+            lines.append(f"  <i>{esc(guidance['new_positions_guidance'][:150])}</i>")
         # Capital deployment narrative — now always present (v4 fix)
         if guidance.get("capital_deployment_narrative"):
-            lines.append(f"  <i>{guidance['capital_deployment_narrative'][:150]}</i>")
+            lines.append(f"  <i>{esc(guidance['capital_deployment_narrative'][:150])}</i>")
         elif fp.get("_ai_note"):
-            lines.append(f"  <i>{fp['_ai_note'][:200]}</i>")
+            lines.append(f"  <i>{esc(fp['_ai_note'][:200])}</i>")
         if guidance.get("sectors_to_overweight"):
             lines.append(f"  ▲ {', '.join(guidance['sectors_to_overweight'][:4])}")
         lines.append("")
@@ -1207,11 +1246,11 @@ def build_morning(data: dict) -> str:
                     + (f"  conf:{conf:.0%}" if conf else "")
                 )
                 if c.get("entry_note"):
-                    lines.append(f"    📍 {c['entry_note']}")
+                    lines.append(f"    📍 {esc(c['entry_note'])}")
                 if c.get("invalidation"):
-                    lines.append(f"    ❌ Skip if: {c['invalidation']}")
+                    lines.append(f"    ❌ Skip if: {esc(c['invalidation'])}")
                 ez = zone_line(c["symbol"], msl_map)
-                if ez: lines.append(f"    {ez}")
+                if ez: lines.append(f"    {esc(ez)}")
             lines.append("")
 
         # TIER_2: intraday triggers — was missing in v3, now shown in morning
@@ -1221,9 +1260,9 @@ def build_morning(data: dict) -> str:
                 c_ico = conviction_icon(c.get("conviction"))
                 lines.append(f"  {c_ico} <b>{c['symbol']}</b>  [{c.get('action', '?')}]")
                 if c.get("entry_note"):
-                    lines.append(f"    📍 {c['entry_note']}")
+                    lines.append(f"    📍 {esc(c['entry_note'])}")
                 ez = zone_line(c["symbol"], msl_map)
-                if ez: lines.append(f"    {ez}")
+                if ez: lines.append(f"    {esc(ez)}")
             lines.append("")
 
     # ── Events in next 3 days (non-today) ──
