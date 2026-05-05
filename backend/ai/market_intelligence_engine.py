@@ -80,6 +80,7 @@ _SYSTEM_PROMPT = (
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
+# AFTER — same pattern as step 13/14/screen_stocks/compute_msl
 def _last_trading_day(sb) -> str:
     try:
         holidays = {r["date"][:10] for r in sb.table("nse_holidays").select("date").execute().data}
@@ -90,7 +91,7 @@ def _last_trading_day(sb) -> str:
         if d.weekday() < 5 and str(d) not in holidays:
             try:
                 probe = (
-                    sb.table("signal_log")
+                    sb.table("stock_data_daily")
                       .select("date")
                       .eq("date", str(d))
                       .limit(1)
@@ -102,7 +103,6 @@ def _last_trading_day(sb) -> str:
                 return str(d)
         d -= timedelta(days=1)
     return str(today_ist() - timedelta(days=1))
-
 
 def _lesson_confidence(lesson: dict) -> float:
     applied = lesson.get("times_applied") or 0

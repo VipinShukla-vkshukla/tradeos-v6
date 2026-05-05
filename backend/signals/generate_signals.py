@@ -249,7 +249,7 @@ def resolve_last_trading_day(sb, reference_date: str, max_lookback: int = 10) ->
             continue
 
         probe = (
-            sb.table("master_shortlist")
+            sb.table("stock_data_daily")
               .select("date")
               .eq("date", date_str)
               .limit(1)
@@ -262,11 +262,10 @@ def resolve_last_trading_day(sb, reference_date: str, max_lookback: int = 10) ->
                 logger.info(f"  Trading day confirmed: {date_str}")
             return date_str
 
-        logger.debug(f"  {date_str} — no master_shortlist rows (compute_msl not yet run?) — stepping back")
-        candidate -= _td(days=1)
+        logger.debug(f"  {date_str} — no stock_data_daily rows (bhavcopy not yet run?) — stepping back")
 
     raise RuntimeError(
-        f"No valid trading day with master_shortlist data found "
+        f"No valid trading day with stock_data_daily data found "
         f"within {max_lookback} days before {reference_date}. "
         f"Ensure compute_msl has run for a recent trading day."
     )
