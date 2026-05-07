@@ -55,7 +55,7 @@ import requests
 from loguru import logger
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import get_supabase, today_ist, is_kill_switch_active, cfg, AI_KEYS
+from config import get_supabase, today_ist, is_kill_switch_active, cfg, AI_KEYS, get_trade_date
 
 DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
 
@@ -80,29 +80,6 @@ _SYSTEM_PROMPT = (
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
-# AFTER — same pattern as step 13/14/screen_stocks/compute_msl
-def _last_trading_day(sb) -> str:
-    try:
-        holidays = {r["date"][:10] for r in sb.table("nse_holidays").select("date").execute().data}
-    except Exception:
-        holidays = set()
-    d = today_ist()
-    for _ in range(10):
-        if d.weekday() < 5 and str(d) not in holidays:
-            try:
-                probe = (
-                    sb.table("stock_data_daily")
-                      .select("date")
-                      .eq("date", str(d))
-                      .limit(1)
-                      .execute().data
-                )
-                if probe:
-                    return str(d)
-            except Exception:
-                return str(d)
-        d -= timedelta(days=1)
-    return str(today_ist() - timedelta(days=1))
 
 def _lesson_confidence(lesson: dict) -> float:
     applied = lesson.get("times_applied") or 0
@@ -237,7 +214,9 @@ def build_market_context(sb, today_str: str, last_td: str) -> dict:
                               "fundamental_quality,market_cap,st_cushion_pct,"
                               "bb_width_pct,bb_position_pct,dist_vwap_20d_pct,"
                               "ma_alignment_score,stoch_context,persistent_phase,"
-                              "reentry_mode,position_state,suggested")
+                              "reentry_mode,position_state,suggested,"
+                              "dist_sma50,ret_3m,ret_12m,low_52w,pct_change,"
+                              "low_30d,consol_range,fii_sector_flow")
                       .eq("date", last_td)
                       .in_("symbol", symbols)
                       .execute().data)
@@ -262,6 +241,14 @@ def build_market_context(sb, today_str: str, last_td: str) -> dict:
             merged["bb_position_pct"]  = msl.get("bb_position_pct")
             merged["ma_alignment_score"] = msl.get("ma_alignment_score")
             merged["stoch_context"]    = msl.get("stoch_context")
+            merged["dist_sma50"]       = msl.get("dist_sma50")
+            merged["ret_3m"]           = msl.get("ret_3m")
+            merged["ret_12m"]          = msl.get("ret_12m")
+            merged["low_52w"]          = msl.get("low_52w")
+            merged["pct_change"]       = msl.get("pct_change")
+            merged["low_30d"]          = msl.get("low_30d")
+            merged["consol_range"]     = msl.get("consol_range")
+            merged["fii_sector_flow"]  = msl.get("fii_sector_flow")
             candidates.append(merged)
     else:
         candidates = []
@@ -561,27 +548,43 @@ def build_prompt(ctx: dict, stock_intel: list[dict]) -> str:
     )
     lines += ["", candidates_header]
 
-    lines += [
-        "",
-        "═══ VALIDATED SIGNAL CANDIDATES (post step-15 gate filtering) ═══",
-        "  These stocks passed 11 technical gates: ATR-normalised zone, R:R viability,",
-        "  structural breakdown check, risk_score, liquidity, lifecycle, momentum gates.",
-        "  Signal quality: PRIME_SETUP > BREAKOUT_SETUP > REENTRY_SETUP > BUY_CANDIDATE",
-        "  Your task: assess each against TODAY's macro/FII/news context. Output sentiment_modifier.",
-    ]
     for m in ctx["candidates"]:
+        # Line 1: identity, price, position context
         lines.append(
-            f"  {m.get('symbol','?')} | {m.get('sector','?')} | {m.get('signal_type','?')} | "
-            f"Score:{float(m.get('score_adjusted',0) or 0):.1f} | "
-            f"CMP:₹{m.get('current_price','?')} Zone:₹{m.get('entry_zone_low','?')}-{m.get('entry_zone_high','?')} "
+            f"  {m.get('symbol','?')} | {m.get('sector','?')} | "
+            f"{m.get('signal_type','?')} | Score:{float(m.get('score_adjusted',0) or 0):.1f} | "
+            f"CMP:₹{m.get('current_price','?')} "
+            f"Zone:₹{m.get('entry_zone_low','?')}-{m.get('entry_zone_high','?')} "
             f"Dist:{m.get('dist_entry_pct','?')}% | "
+            f"DaysTrig:{m.get('days_to_trigger_est','?')}d | "
             f"Lifecycle:{m.get('lifecycle','?')} ExpR:{m.get('expected_r_msl','?')}x | "
-            f"Validity:{m.get('validity_score','?')} | "
-            f"Engines:{m.get('engines_count','?')} Conv:{m.get('convergence_pts','?')} | "
-            f"SectorRk:{m.get('sector_rank_at_entry','?')} IndTop5:{m.get('industry_top5','?')} | "
-            f"FIIFlag:{m.get('fii_flag','?')} | ST:{m.get('st_cushion_pct','?')}% | "
-            f"Trigger:{m.get('days_to_trigger_est','?')}d | "
-            f"Quality:{m.get('fundamental_quality','?')} MCap:₹{m.get('market_cap','?')}Cr"
+            f"Eng:{m.get('engines_count','?')} Conv:{m.get('convergence_pts','?')} | "
+            f"SRk:{m.get('sector_rank_at_entry','?')} IndTop5:{m.get('industry_top5','?')} | "
+            f"FII:{m.get('fii_flag','?')} MCap:₹{m.get('market_cap','?')}Cr "
+            f"Qual:{m.get('fundamental_quality','?')}"
+        )
+        # Line 2: technicals now visible to AI
+        _low52 = m.get('low_52w')
+        _cmp   = m.get('current_price')
+        _dist_52w_low = (
+            round((float(_cmp) - float(_low52)) / float(_low52) * 100, 1)
+            if _low52 and _cmp and float(_low52) > 0 else "?"
+        )
+        lines.append(
+            f"    → Mom:{m.get('momentum_state','?')}/{m.get('momentum_phase','?')}"
+            f"/{m.get('velocity_state','?')} "
+            f"Struct:{m.get('struct_edge','?')} Entry:{m.get('entry_timing_type','?')} | "
+            f"RSI-D:{m.get('rsi_daily','?')} RSI-W:{m.get('rsi_weekly','?')} "
+            f"ADX:{m.get('adx','?')} RSvN:{m.get('rs_vs_nifty','?')} "
+            f"Ret3M:{m.get('ret_3m','?')}% Ret6M:{m.get('ret_6m','?')}% "
+            f"Ret12M:{m.get('ret_12m','?')}% Vol:{m.get('vol_ratio','?')}x | "
+            f"HoldSc:{m.get('holding_score','?')} BrkRdy:{m.get('breakout_readiness','?')} "
+            f"MomSc:{m.get('momentum_score','?')} InstSc:{m.get('institutional_score','?')} | "
+            f"ST:{m.get('st_cushion_pct','?')}% MACD:{m.get('macd_direction','?')} "
+            f"BB:{m.get('bb_context','?')} WkStr:{m.get('weekly_structure','?')} "
+            f"PSAR:{m.get('psar_dual_confirmed','?')} | "
+            f"Dist50:{m.get('dist_sma50','?')}% From52wL:{_dist_52w_low}% "
+            f"Consol:{m.get('consol_range','?')}% FIISec:₹{m.get('fii_sector_flow','?')}Cr"
         )
 
     if stock_intel:
@@ -877,8 +880,9 @@ def main():
     logger.info("=" * 60)
 
     sb        = get_supabase()
-    last_td   = _last_trading_day(sb)
-    today_str = last_td 
+    last_td   = get_trade_date(sb)
+    today_str = last_td
+    logger.info(f"Trade date: {last_td} | Calendar: {today_ist()}")
     logger.info(f"Today: {today_str} | Last trading day: {last_td}")
 
     # Pass 1

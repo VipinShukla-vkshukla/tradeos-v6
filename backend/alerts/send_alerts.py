@@ -968,12 +968,14 @@ def build_evening(data: dict) -> str:
                     + (f"  conf:{conf:.0%}" if conf else "")
                     + (f"  📎{corr}" if corr else "")
                 )
+                ez = zone_line(c["symbol"], msl_map)
+                if ez: lines.append(f"  {ez}  <i>[DB]</i>")
                 if c.get("thesis"):
                     lines.append(f"  💬 {esc(c['thesis'])}")
                 if c.get("entry_note"):
-                    lines.append(f"  📍 Entry: {esc(c['entry_note'])}")
+                    lines.append(f"  📍 {esc(c['entry_note'])}  <i>[AI]</i>")
                 if c.get("invalidation"):
-                    lines.append(f"  ❌ Invalid if: {esc(c['invalidation'])}")
+                    lines.append(f"  ❌ {esc(c['invalidation'])}  <i>[AI]</i>")
                 if c.get("catalyst"):
                     lines.append(f"  💡 {esc(c['catalyst'][:100])}")
                 if c.get("risks"):
@@ -982,8 +984,7 @@ def build_evening(data: dict) -> str:
                         lines.append(f"  ⚠️ {risk_str}")
                 if c.get("lessons_applied"):
                     ls = " · ".join(esc(l) for l in (c["lessons_applied"] or [])[:2])
-                    if ls:
-                        lines.append(f"  📚 <i>{ls[:120]}</i>")
+                    if ls: lines.append(f"  📚 <i>{ls[:120]}</i>")
             lines.append("")
 
         # TIER_2: Watch for trigger
@@ -992,14 +993,14 @@ def build_evening(data: dict) -> str:
             for c in tier2:
                 c_ico = conviction_icon(c.get("conviction"))
                 lines.append(f"\n  {c_ico} <b>{c['symbol']}</b>  [{c.get('action', '?')}]")
+                ez = zone_line(c["symbol"], msl_map)
+                if ez: lines.append(f"  {ez}  <i>[DB]</i>")
                 if c.get("thesis"):
                     lines.append(f"  💬 {esc(c['thesis'][:150])}")
                 if c.get("entry_note"):
-                    lines.append(f"  📍 Trigger: {esc(c['entry_note'])}")
+                    lines.append(f"  📍 {esc(c['entry_note'])}  <i>[AI]</i>")
                 if c.get("invalidation"):
-                    lines.append(f"  ❌ Invalid if: {esc(c['invalidation'])}")
-                ez = zone_line(c["symbol"], msl_map)
-                if ez: lines.append(f"  {ez}")
+                    lines.append(f"  ❌ {esc(c['invalidation'])}  <i>[AI]</i>")
             lines.append("")
 
         # TIER_3: Monitor
@@ -1245,12 +1246,12 @@ def build_morning(data: dict) -> str:
                     + (f"  <b>{alloc:.0f}%</b>" if alloc else "")
                     + (f"  conf:{conf:.0%}" if conf else "")
                 )
-                if c.get("entry_note"):
-                    lines.append(f"    📍 {esc(c['entry_note'])}")
-                if c.get("invalidation"):
-                    lines.append(f"    ❌ Skip if: {esc(c['invalidation'])}")
                 ez = zone_line(c["symbol"], msl_map)
-                if ez: lines.append(f"    {esc(ez)}")
+                if ez: lines.append(f"    {ez}  <i>[DB]</i>")
+                if c.get("entry_note"):
+                    lines.append(f"    📍 {esc(c['entry_note'])}  <i>[AI]</i>")
+                if c.get("invalidation"):
+                    lines.append(f"    ❌ {esc(c['invalidation'])}  <i>[AI]</i>")
             lines.append("")
 
         # TIER_2: intraday triggers — was missing in v3, now shown in morning
@@ -1259,10 +1260,10 @@ def build_morning(data: dict) -> str:
             for c in tier2:
                 c_ico = conviction_icon(c.get("conviction"))
                 lines.append(f"  {c_ico} <b>{c['symbol']}</b>  [{c.get('action', '?')}]")
-                if c.get("entry_note"):
-                    lines.append(f"    📍 {esc(c['entry_note'])}")
                 ez = zone_line(c["symbol"], msl_map)
-                if ez: lines.append(f"    {esc(ez)}")
+                if ez: lines.append(f"    {ez}  <i>[DB]</i>")
+                if c.get("entry_note"):
+                    lines.append(f"    📍 {esc(c['entry_note'])}  <i>[AI]</i>")
             lines.append("")
 
     # ── Events in next 3 days (non-today) ──

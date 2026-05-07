@@ -304,3 +304,29 @@ def get_news_window(sb, trading_day: str) -> tuple[str, str]:
         datetime.strptime(prev_trading_day, "%Y-%m-%d").date() + timedelta(days=1)
     )
     return window_start, trading_day
+
+# Add to config.py after the existing helper functions
+def get_trade_date(sb=None) -> str:
+    """
+    Canonical trade date for all pipeline steps.
+    Probes stock_data_daily — only written after bhavcopy (step 5).
+    Handles: holidays, weekends, pre-market runs, post-market runs.
+    """
+    if sb is None:
+        sb = get_supabase()
+    try:
+        rows = (
+            sb.table("stock_data_daily")
+              .select("date")
+              .order("date", desc=True)
+              .limit(1)
+              .execute().data
+        )
+        if rows:
+            td = rows[0]["date"]
+            if td != str(today_ist()):
+                logger.info(f"  trade_date={td} (calendar={today_ist()})")
+            return td
+    except Exception as e:
+        logger.warning(f"get_trade_date probe failed: {e} — using today_ist()")
+    return str(today_ist())

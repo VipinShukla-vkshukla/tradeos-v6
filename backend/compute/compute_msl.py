@@ -1574,7 +1574,12 @@ def compute_entry_zones(s: dict, strategy: str, regime_ctx: dict,
     strat = (strategy or "").upper()
 
     if "CTL" in strat or "TPO" in strat:
-        anchor = max(sma_50, vwap_20d) if sma_50 > 0 and vwap_20d > 0 else (sma_50 or vwap_20d or close)
+         # If stock has trended well above SMA50, use EMA20 (faster-tracking) as anchor
+        use_ema_anchor = (close > 0 and sma_50 > 0 and ema_20 > 0
+                          and close > sma_50 * 1.08 and ema_20 > sma_50)
+        anchor = ema_20 if use_ema_anchor else (
+            max(sma_50, vwap_20d) if sma_50 > 0 and vwap_20d > 0 else (sma_50 or vwap_20d or close)
+        )
         if anchor > 0:
             ez_low  = round(anchor * (1 - 0.012 * regime_factor), 2)
             ez_high = round(anchor * (1 + 0.020 / regime_factor), 2)
@@ -1605,15 +1610,24 @@ def compute_entry_zones(s: dict, strategy: str, regime_ctx: dict,
         ez_low  = round(shift, 2)
         ez_high = round(shift + width, 2)
 
-    if (ez_high and close > ez_high * 1.03
-                and momentum_state == "HOT"
-                and momentum_phase in ("EXPANSION", "EARLY")
-                and velocity_state == "ACCELERATING"
-                and struct_edge == "YES"
-                and atr_14 > 0
-                and not regime_ctx.get("is_bear")):
+    if ez_high and close > ez_high * 1.03 and atr_14 > 0:
+        hot_adjust_signals = sum([
+            momentum_state == "HOT",
+            momentum_phase in ("EXPANSION", "EARLY", "EXTENDED"),
+            velocity_state == "ACCELERATING",
+            struct_edge == "YES",
+            not regime_ctx.get("is_bear"),
+        ])
+        if hot_adjust_signals >= 3:
             ez_low  = round(close - atr_14 * 1.0, 2)
             ez_high = round(close + atr_14 * 0.3, 2)
+
+    # Ensure zone width ≥ 1.2× ATR — prevents zones too narrow to be tradeable
+    if ez_low and ez_high and atr_14 and (ez_high - ez_low) < atr_14 * 1.2:
+        midpoint = (ez_high + ez_low) / 2
+        ez_low  = round(midpoint - atr_14 * 0.6, 2)
+        ez_high = round(midpoint + atr_14 * 0.6, 2)
+
     return ez_low, ez_high
 
 
@@ -2414,6 +2428,15 @@ def compute_all(sb, data: dict, today: str) -> list:
                 "active_regime":        regime_ctx["regime"],
                 "rsi_extended_thresh":  get_rsi_extended_threshold(regime_ctx, adx),
                 "fii_flag":             regime_ctx["fii_flag"],
+                # ── Enriched stock context (feeds AI steps 18-19) ──
+                "dist_sma50":           float(s.get("dist_sma50") or 0),
+                "ret_3m":               float(s.get("ret_3m") or 0),
+                "ret_12m":              float(s.get("ret_12m") or 0),
+                "low_52w":              float(s.get("low_52w") or 0),
+                "pct_change":           float(s.get("pct_change") or 0),
+                "low_30d":              float(s.get("low_30d") or 0),
+                "consol_range":         float(s.get("consol_range") or 0),
+                "fii_sector_flow":      s.get("fii_sector_flow"),
                 # ── Metadata ──
                 "compute_source":       "compute_msl_v3",
                 "computed_at":          datetime.now(IST).isoformat(),

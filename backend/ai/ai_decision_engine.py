@@ -73,7 +73,7 @@ from pathlib import Path
 from loguru import logger
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import get_supabase, today_ist, is_kill_switch_active, cfg, cfg_int
+from config import get_supabase, today_ist, is_kill_switch_active, cfg, cfg_int, get_trade_date
 
 DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
 
@@ -145,6 +145,11 @@ _SYSTEM_PROMPT = (
     "When you see a group of 4 similar stocks, you cap them to the best 1-2. "
     "When FII is selling a sector, you drop those candidates regardless of their technical score. "
     "You generate new rules when you detect patterns that should be remembered. "
+    "Output ONLY valid JSON — no preamble, no markdown."
+    "PRICE RULE: Every price you write in thesis, entry_note, and invalidation "
+    "MUST come from the CMP and Zone values shown in the candidate data. "
+    "Never use prices from training memory. If CMP or Zone is missing for a candidate, "
+    "assign it TIER_3/SKIP — do not invent a price. "
     "Output ONLY valid JSON — no preamble, no markdown."
 )
 
@@ -246,13 +251,16 @@ def load_context(sb, trade_date: str) -> dict:
               "fundamental_quality,market_cap,st_cushion_pct,"
               "bb_width_pct,bb_position_pct,ma_alignment_score,"
               "stoch_context,persistent_phase,suggested,notes,"
-              "days_in_list,rank_vel_3d,score_vel_5d"
+              "days_in_list,rank_vel_3d,score_vel_5d,"
+              "dist_sma50,ret_3m,ret_12m,low_52w,pct_change,"
+              "low_30d,consol_range,fii_sector_flow"
           )
           .eq("date", trade_date)
           .in_("symbol", symbols)
           .execute().data
     )
     msl_map = {r["symbol"]: r for r in msl_rows}
+
 
     candidates = []
     for sig in sig_rows:
@@ -272,6 +280,14 @@ def load_context(sb, trade_date: str) -> dict:
         merged["days_in_list"]       = msl.get("days_in_list")
         merged["rank_vel_3d"]        = msl.get("rank_vel_3d")
         merged["score_vel_5d"]       = msl.get("score_vel_5d")
+        merged["dist_sma50"]         = msl.get("dist_sma50")
+        merged["ret_3m"]             = msl.get("ret_3m")
+        merged["ret_12m"]            = msl.get("ret_12m")
+        merged["low_52w"]            = msl.get("low_52w")
+        merged["pct_change"]         = msl.get("pct_change")
+        merged["low_30d"]            = msl.get("low_30d")
+        merged["consol_range"]       = msl.get("consol_range")
+        merged["fii_sector_flow"]    = msl.get("fii_sector_flow")
         candidates.append(merged)
 
     # ── Market intel from step 18 ──
@@ -518,9 +534,15 @@ def build_prompt(ctx: dict, trade_date: str) -> str:
                 )
 
     _COLUMNS = (
-        "  Columns: Symbol | Sector | SignalType | Score(adj) | CMP | Zone | "
-        "Dist% | DaysTrig | Lifecycle | HoldScore | ExpR | Validity | Engines | Conv | SectorRk | "
-        "FIIFlag | ST% | RSI-D | RSvNifty | Ret6M | Vol | InScanner | Quality | MCap"
+        "  Line 1 — Identity + Price + Position:\n"
+        "    Symbol | Sector | SignalType | Score | CMP | Zone(entry) | "
+        "Dist% | DaysTrig | Lifecycle/Maturity | HoldScore | ExpR | Engines | "
+        "SectorRk | FIIFlag | MCap | Quality\n"
+        "  Line 2 — Technicals + Momentum (all from today's Supabase data):\n"
+        "    Momentum(state/phase/velocity) | StructEdge | EntryTiming | "
+        "RSI-D | RSI-W | ADX | RSvNifty | Ret6M | Vol | Del% | "
+        "BrkReadiness | MomScore | InstScore | ST% | "
+        "MACD | BB | WeeklyStr | PSAR | ScoreVel | RkVel"
     )
 
     if ctx.get("promoted_from_watch"):
@@ -558,29 +580,48 @@ def build_prompt(ctx: dict, trade_date: str) -> str:
             _COLUMNS,
         ]
     for c in ctx["candidates"]:
+        # Line 1: identity, price, position sizing context
         lines.append(
-            f"  {c.get('symbol','?'):<12} | {c.get('sector','?')[:20]:<20} | "
-            f"{c.get('signal_type','?'):<15} | "
-            f"Score:{float(c.get('score_adjusted',0) or 0):.1f} | "
+            f"  {c.get('symbol','?'):<12} | {c.get('sector','?')[:16]:<16} | "
+            f"{c.get('signal_type','?'):<15} | Score:{float(c.get('score_adjusted',0) or 0):.1f} | "
             f"CMP:₹{c.get('current_price','?')} "
             f"Zone:₹{c.get('entry_zone_low','?')}-{c.get('entry_zone_high','?')} "
             f"Dist:{c.get('dist_entry_pct','?')}% | "
             f"DaysTrig:{c.get('days_to_trigger_est','?')} | "
             f"{c.get('lifecycle','?')}/{c.get('trend_maturity','?')} | "
-            f"HoldScore:{c.get('holding_score','?')} | "
-            f"ExpR:{c.get('expected_r_msl','?')}x Valid:{c.get('validity_score','?')} | "
+            f"HoldSc:{c.get('holding_score','?')} ExpR:{c.get('expected_r_msl','?')}x "
+            f"Valid:{c.get('validity_score','?')} | "
             f"Eng:{c.get('engines_count','?')} Conv:{c.get('convergence_pts','?')} | "
             f"SRk:{c.get('sector_rank_at_entry','?')} FII:{c.get('fii_flag','?')} | "
-            f"ST:{c.get('st_cushion_pct','?')}% "
-            f"RSI:{c.get('rsi_daily','?')} "
-            f"RSvNifty:{c.get('rs_vs_nifty','?')} "
-            f"Ret6M:{c.get('ret_6m','?')}% "
-            f"Vol:{c.get('vol_ratio','?')}x | "
-            f"EAP:{c.get('eap_action','NO_CHANGE')} "
-            f"Scnr:{c.get('in_scanner',False)} "
-            f"Quality:{c.get('fundamental_quality','?')} "
-            f"MCap:₹{c.get('market_cap','?')}Cr | "
-            f"DaysOL:{c.get('days_in_list','?')} RkVel:{c.get('rank_vel_3d','?')}"
+            f"MCap:₹{c.get('market_cap','?')}Cr Qual:{c.get('fundamental_quality','?')}"
+        )
+        # Line 2: full technical picture
+        _low52 = c.get('low_52w')
+        _cmp   = c.get('current_price')
+        _dist_52w_low = (
+            round((float(_cmp) - float(_low52)) / float(_low52) * 100, 1)
+            if _low52 and _cmp and float(_low52) > 0 else "?"
+        )
+        lines.append(
+            f"    → Mom:{c.get('momentum_state','?')}/{c.get('momentum_phase','?')}"
+            f"/{c.get('velocity_state','?')} "
+            f"Struct:{c.get('struct_edge','?')} Entry:{c.get('entry_timing_type','?')} | "
+            f"RSI-D:{c.get('rsi_daily','?')} RSI-W:{c.get('rsi_weekly','?')} "
+            f"ADX:{c.get('adx','?')} RSvN:{c.get('rs_vs_nifty','?')} "
+            f"Ret3M:{c.get('ret_3m','?')}% Ret6M:{c.get('ret_6m','?')}% "
+            f"Ret12M:{c.get('ret_12m','?')}% "
+            f"Vol:{c.get('vol_ratio','?')}x Del:{c.get('delivery_pct','?')}% | "
+            f"BrkRdy:{c.get('breakout_readiness','?')} "
+            f"MomSc:{c.get('momentum_score','?')} "
+            f"InstSc:{c.get('institutional_score','?')} "
+            f"ST:{c.get('st_cushion_pct','?')}% | "
+            f"MACD:{c.get('macd_direction','?')} BB:{c.get('bb_context','?')} "
+            f"WkStr:{c.get('weekly_structure','?')} PSAR:{c.get('psar_dual_confirmed','?')} | "
+            f"Dist50:{c.get('dist_sma50','?')}% From52wL:{_dist_52w_low}% "
+            f"Consol:{c.get('consol_range','?')}% "
+            f"FIISec:₹{c.get('fii_sector_flow','?')}Cr | "
+            f"DaysOL:{c.get('days_in_list','?')} ScVel:{c.get('score_vel_5d','?')} "
+            f"RkVel:{c.get('rank_vel_3d','?')}"
         )
 
     # ── NEAR-MISS UPGRADES — must be OUTSIDE the raw string ──
@@ -905,6 +946,47 @@ def write_self_improvement_lessons(sb, result: dict, trade_date: str) -> int:
             logger.warning(f"Self-improvement lesson write failed: {e}")
     return written
 
+def _validate_ai_prices(result: dict, candidates: list[dict]) -> None:
+    """
+    Cross-check prices in AI output against master_shortlist ground truth.
+    Logs WARNING for any price >25% off DB value. Does NOT modify result.
+    This catches hallucinations caused by null price input (date bug recurrence).
+    """
+    import re
+    price_re = re.compile(r'₹([\d,]+(?:\.\d+)?)')
+    db_map   = {c["symbol"]: float(c.get("current_price") or 0) for c in candidates}
+
+    issues = []
+    for item in (result.get("ranked_candidates") or []):
+        sym    = item.get("symbol", "?")
+        db_cmp = db_map.get(sym, 0)
+        tier   = item.get("tier", "TIER_3")
+        if not db_cmp:
+            if tier in ("TIER_1", "TIER_2"):
+                issues.append(f"{sym}({tier}): no DB price — output unverifiable")
+            continue
+        for field in ("entry_note", "invalidation", "thesis"):
+            for raw in price_re.findall(item.get(field) or ""):
+                try:
+                    p       = float(raw.replace(",", ""))
+                    pct_off = abs(p - db_cmp) / db_cmp * 100
+                    if pct_off > 25:
+                        issues.append(
+                            f"{sym}.{field}: ₹{p:,.0f} vs DB ₹{db_cmp:,.0f} "
+                            f"({pct_off:.0f}% off)"
+                        )
+                except ValueError:
+                    pass
+
+    if issues:
+        logger.warning(f"AI price validation — {len(issues)} suspect values:")
+        for iss in issues[:10]:
+            logger.warning(f"  ⚠️  {iss}")
+    else:
+        logger.info(
+            f"AI price validation ✅ — all prices within 25% of DB CMP "
+            f"({len(db_map)} candidates checked)"
+        )
 
 # ── Main ───────────────────────────────────────────────────────────────────
 
@@ -918,7 +1000,7 @@ def main():
     logger.info("=" * 60)
 
     sb         = get_supabase()
-    trade_date = get_last_trading_date(sb)
+    trade_date = get_trade_date(sb)
 
     if trade_date != str(today_ist()):
         logger.info(f"Non-trading day detected — rolling back to last trading date: {trade_date}")
@@ -930,6 +1012,14 @@ def main():
     if not ctx or not ctx.get("candidates"):
         logger.warning("No candidates available — step 19 skipped")
         return {"status": "no_candidates"}
+
+    null_price = [c["symbol"] for c in candidates if c.get("current_price") is None]
+    if null_price:
+        logger.warning(
+            f"⚠️  {len(null_price)} candidates have null current_price — "
+            f"AI hallucination risk: {null_price}. "
+            f"Verify master_shortlist has compute_msl data for {trade_date}"
+        )
 
     if not ctx.get("market_intel"):
         logger.warning(
@@ -964,6 +1054,7 @@ def main():
         return {"status": "ai_failed"}
 
     logger.info(f"AI responded in {elapsed:.1f}s")
+    _validate_ai_prices(result, candidates)
 
     provider = cfg("ai_provider", "unknown")
     ranked   = result.get("ranked_candidates") or []
