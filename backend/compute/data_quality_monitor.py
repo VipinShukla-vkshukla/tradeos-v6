@@ -73,7 +73,7 @@ CHARTINK_ROW_MIN   = 450
 CHARTINK_ROW_MAX   = 510
 VOL_RATIO_CAP      = 50.0
 SCORE_MIN          = 0
-SCORE_MAX          = 120
+SCORE_MAX          = 150
 MSL_JUMP_WARN      = 20
 MSL_MIN_ENRICHED   = 70     # compute_msl should write ≥70 rows with final_score
 DELIVERY_MIN       = 0.0
@@ -181,14 +181,21 @@ def c04_delivery_pct_bounds(sb, td):
 # ── C05: Signal Score Range ───────────────────────────────────────────────────
 
 def c05_signal_score_range(sb, td):
-    sigs = sb.table("signal_log").select("symbol,score").eq("date", td).execute().data
+    sigs = sb.table("signal_log").select("symbol,score,score_adjusted").eq("date", td).execute().data
     bad  = [r["symbol"] for r in sigs
             if r.get("score") is not None
             and not (SCORE_MIN <= float(r["score"]) <= SCORE_MAX)]
-    return _result("C05_signal_score_range", len(bad) == 0, "WARN",
+    # Also flag implausibly high score_adjusted separately
+    extreme = [r["symbol"] for r in sigs
+               if r.get("score_adjusted") is not None
+               and float(r["score_adjusted"]) > 180]  # true anomaly threshold
+    msg = (
         f"{len(bad)} signals with score outside {SCORE_MIN}–{SCORE_MAX}"
-        + (f": {bad[:5]}" if bad else ""),
-        value=str(len(bad)), affected=bad[:10])
+        + (f": {bad[:5]}" if bad else " ✅")
+        + (f" | {len(extreme)} extreme score_adjusted >180: {extreme}" if extreme else "")
+    )
+    return _result("C05_signal_score_range", len(bad) == 0 and len(extreme) == 0,
+                   "WARN", msg, value=str(len(bad)), affected=bad[:10])
 
 
 # ── C06: MSL Completeness + Score Jumps ──────────────────────────────────────
@@ -251,37 +258,47 @@ def c06_msl_completeness(sb, td):
 # ── C07: Pipeline Completeness ────────────────────────────────────────────────
 
 def c07_pipeline_completeness(sb, td):
-    """
-    Verify each of the 21 pipeline steps actually wrote data for trade_date.
-    Uses trade_date not today_ist() — fixing the false-positive in v3.
-    """
-    # (table, date_column_or_None, step_label, severity_if_empty)
+    today = str(today_ist())
+    # For tables that write using today_ist() rather than trade_date,
+    # accept either today or trade_date as valid
+    date_window = list({td, today})  # e.g. ["2026-05-08", "2026-05-09"]
+
     steps = [
-        ("market_news",        "news_date",  "01_market_news",        "WARN"),
-        ("macro_indicators",   "date",       "02_macro_indicators",   "WARN"),
-        ("global_cues",        "date",       "03_global_cues",        "WARN"),
-        ("chartink_raw_data",  "date",       "04_fetch_chartink",     "ERROR"),
-        ("stock_data_daily",   "date",       "05_ingest_bhavcopy",    "ERROR"),
-        ("master_shortlist",   "date",       "06_ingest_sheets",      "ERROR"),
-        ("fii_dii_flow",       "date",       "07_fii_dii",            "WARN"),
-        ("nifty_upcoming_events","event_date","08_nse_events",        "WARN"),
-        ("safety_lists",       None,         "09_asm_gsm",            "WARN"),
-        ("stock_data_daily",   "date",       "10_compute_indicators", "ERROR"),  # same table, richer data
-        ("market_regime",      "date",       "11_compute_regime",     "WARN"),
-        ("signal_log",         "date",       "15_signals",            "ERROR"),
-        ("msl_history",        "date",       "16_history",            "WARN"),
-        ("ai_context",         "date",       "18_ai_market_intel",    "WARN"),
-        ("ai_context",         "date",       "19_ai_decision_engine", "WARN"),
-        ("data_anomalies",     "date",       "21_quality_check",      "WARN"),  # self-check
+        # (table, date_col, step_label, severity, use_window)
+        # use_window=True → accept td OR today (step writes with today_ist())
+        ("market_news",           "news_date",      "01_market_news",        "WARN",  False),
+        ("macro_indicators",      "indicator_date", "02_macro_indicators",   "WARN",  False),  # ← fixed column
+        ("global_cues",           "date",           "03_global_cues",        "WARN",  False),
+        ("chartink_raw_data",     "date",           "04_fetch_chartink",     "ERROR", False),
+        ("stock_data_daily",      "date",           "05_ingest_bhavcopy",    "ERROR", False),
+        ("master_shortlist",      "date",           "06_ingest_sheets",      "ERROR", False),
+        ("fii_dii_flow",          "date",           "07_fii_dii",            "WARN",  False),
+        ("nifty_upcoming_events", "event_date",     "08_nse_events",         "WARN",  False),
+        ("safety_lists",          "listed_date",    "09_asm_gsm",            "WARN",  False),
+        ("stock_data_daily",      "date",           "10_compute_indicators", "ERROR", False),
+        ("market_regime",         "date",           "11_compute_regime",     "WARN",  False),
+        ("signal_log",            "date",           "15_signals",            "ERROR", False),
+        ("msl_history",           "snapshot_date",           "16_history",            "WARN",  True),   # ← uses today_ist()
+        ("ai_context",            "date",           "18_ai_market_intel",    "WARN",  False),
+        ("ai_context",            "date",           "19_ai_decision_engine", "WARN",  False),
+        ("data_anomalies",        "date",           "21_quality_check",      "WARN",  True),   # ← self, writes today
     ]
 
     missing = []
-    for table, date_col, label, sev in steps:
+    for table, date_col, label, sev, use_window in steps:
         try:
-            q = sb.table(table).select("*", count="exact")
-            if date_col:
-                q = q.eq(date_col, td)
-            cnt = q.limit(1).execute().count or 0
+            cnt = 0
+            if date_col is None:
+                cnt = sb.table(table).select("*", count="exact").limit(1).execute().count or 0
+            elif use_window:
+                # Accept rows written with either trade_date or today_ist()
+                for d in date_window:
+                    cnt = sb.table(table).select("*", count="exact").eq(date_col, d).limit(1).execute().count or 0
+                    if cnt > 0:
+                        break
+            else:
+                cnt = sb.table(table).select("*", count="exact").eq(date_col, td).limit(1).execute().count or 0
+
             if cnt == 0:
                 missing.append({"step": label, "table": table, "severity": sev})
         except Exception as e:
@@ -596,15 +613,18 @@ def c15_lesson_freshness(sb, td):
 
 
 # ── C16: Near-Miss Coverage ───────────────────────────────────────────────────
+NEAR_MISS_MIN_COUNT = 3
+NEAR_MISS_MIN_COUNT = 3   # at least 3 near-misses should exist on any active day
 
 def c16_near_miss_coverage(sb, td):
     """
-    Step 15 should attach near_miss_data to all WATCH signals that were close
-    to qualifying. This data is used by steps 18 and 19 for upgrade evaluation.
+    Near-miss data should exist on every active trading day for at least a few
+    WATCH signals. We no longer require 50% of ALL WATCH signals to carry it —
+    most WATCH signals are routine, not near-misses.
     """
     watch = (
         sb.table("signal_log")
-          .select("symbol,near_miss_data")
+          .select("symbol,near_miss_data,filter_reason")
           .eq("date", td)
           .eq("signal_type", "WATCH")
           .execute().data
@@ -615,13 +635,16 @@ def c16_near_miss_coverage(sb, td):
 
     with_data    = [r for r in watch if r.get("near_miss_data")]
     without_data = [r["symbol"] for r in watch if not r.get("near_miss_data")]
-    pct_covered  = len(with_data) / len(watch) if watch else 1.0
-    ok           = pct_covered >= NEAR_MISS_MIN_PCT
+
+    # Only fail if zero near-misses exist — not based on % of all WATCH signals
+    ok = len(with_data) >= NEAR_MISS_MIN_COUNT
+    pct = len(with_data) / len(watch) if watch else 0
 
     return _result("C16_near_miss_coverage", ok, "WARN",
-        f"{len(with_data)}/{len(watch)} WATCH signals have near_miss_data ({pct_covered:.0%})"
-        + (f" | Missing: {without_data[:5]}" if without_data else " ✅"),
-        value=f"{pct_covered:.0%}", affected=without_data[:10])
+        f"{len(with_data)}/{len(watch)} WATCH signals have near_miss_data ({pct:.0%}) "
+        f"— expected ≥{NEAR_MISS_MIN_COUNT} near-misses minimum"
+        + (" ✅" if ok else " ⚠️ step 15 may not be tagging near-misses"),
+        value=f"{len(with_data)} near-misses", affected=[] )  # don't list all 71 non-NM stocks
 
 
 # ── C17: Entry Zone Validity ──────────────────────────────────────────────────

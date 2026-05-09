@@ -237,6 +237,11 @@ def load_context(sb, trade_date: str) -> dict:
             .limit(20).execute().data
         )
         promoted_from_watch = True
+        if len(sig_rows) == 20:
+            logger.warning(
+                "WATCH fallback hit limit of 20 — there may be more near-miss "
+                "signals not being ranked. Consider raising the limit."
+            )
         if not sig_rows:
             logger.warning("No near-miss WATCH signals either — step 19 has nothing to rank")
             return {}
@@ -340,11 +345,19 @@ def load_context(sb, trade_date: str) -> dict:
           .eq("date", trade_date).order("rank").execute().data
     )
     if not sector_rows:
-        sector_rows = (
+        latest = (
             sb.table("sector_strength")
-              .select("sector,rank,top4_flag,sector_state,avg_rsi_daily,fii_flow_sector")
-              .order("date", desc=True).limit(20).execute().data
+              .select("date")
+              .order("date", desc=True)
+              .limit(1).execute().data
         )
+        if latest:
+            sector_rows = (
+                sb.table("sector_strength")
+                  .select("sector,rank,top4_flag,sector_state,avg_rsi_daily,fii_flow_sector")
+                  .eq("date", latest[0]["date"])
+                  .order("rank").execute().data
+            )
 
     # ── Lessons — sorted by live confidence ──
     lesson_rows = (
@@ -352,17 +365,20 @@ def load_context(sb, trade_date: str) -> dict:
           .select("id,corrective_rule,scenario_type,impacted_sector,"
                   "times_applied,times_worked,confidence,source")
           .eq("is_active", True)
-          .order("times_applied", desc=True).limit(12).execute().data
+          .execute().data          # ← no limit, no order — Python will do both
     )
     for l in lesson_rows:
         l["live_confidence"] = _lesson_confidence(l)
     lesson_rows.sort(key=lambda x: x["live_confidence"], reverse=True)
+    lesson_rows = lesson_rows[:12]
 
     # ── Macro indicators — recent ──
+    macro_cutoff = str(date.today() - timedelta(days=10))
     macro_rows = (
         sb.table("macro_indicators")
           .select("indicator_date,indicator_name,indicator_value,previous_value,change_bps")
-          .order("indicator_date", desc=True).limit(8).execute().data
+          .gte("indicator_date", macro_cutoff)
+          .order("indicator_date", desc=True).execute().data
     )
 
     # ── Historical echoes: last 5 __FINAL_PICKS__ with outcome context ──
@@ -1012,7 +1028,7 @@ def main():
         return {"status": "no_candidates"}
 
     candidates = ctx["candidates"]
-    
+
     null_price = [c["symbol"] for c in candidates if c.get("current_price") is None]
     if null_price:
         logger.warning(
