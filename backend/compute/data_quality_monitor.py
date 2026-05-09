@@ -64,6 +64,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
     get_supabase, today_ist, IST,
     is_kill_switch_active, logger,
+    get_trade_date,
 )
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
@@ -107,39 +108,6 @@ BUY_SIGNAL_TYPES = {
     "BUY_CANDIDATE", "PRIME_SETUP", "BREAKOUT_SETUP",
     "REENTRY_SETUP", "STAGED_ENTRY", "MARKET_TOP_PICK",
 }
-
-
-# ── Trade date resolver ───────────────────────────────────────────────────────
-
-def _resolve_trade_date(sb) -> str:
-    """
-    Returns the latest date for which stock_data_daily has rows.
-    This is the canonical trade_date — stock_data_daily is only written
-    after bhavcopy ingestion (step 5) and compute_indicators (step 10).
-
-    Handles all 5 scenarios correctly:
-      1. Holiday          → last trading day with data
-      2. Weekend          → last Friday with data
-      3. Pre-market hours → yesterday (bhavcopy not run yet for today)
-      4. Post-market run  → today (bhavcopy already written by step 5)
-      5. CI/automated run → same as above
-    """
-    try:
-        rows = (
-            sb.table("stock_data_daily")
-              .select("date")
-              .order("date", desc=True)
-              .limit(1)
-              .execute().data
-        )
-        if rows:
-            td = rows[0]["date"]
-            if td != str(today_ist()):
-                logger.info(f"  Quality: trade_date resolved to {td} (today_ist={today_ist()})")
-            return td
-    except Exception as e:
-        logger.warning(f"  Quality: stock_data_daily probe failed: {e} — using today_ist()")
-    return str(today_ist())
 
 
 # ── Result builder ────────────────────────────────────────────────────────────
@@ -749,6 +717,74 @@ def c19_signal_date_alignment(sb, td):
         value=f"sig={sig_date} sdd={td}")
 
 
+# ── C20: Trade Date Integrity ─────────────────────────────────────────────────
+
+def c20_trade_date_integrity(sb, td):
+    """
+    Validates that the resolved trade_date is correct for the current run time.
+    Detects: bhavcopy missing post-6pm, stale date on weekday, future date.
+
+    Scenarios:
+      Weekday post-6pm  → td must == today        (FAIL if not)
+      Weekday pre-6pm   → td == yesterday          (OK — expected)
+      Weekend/Holiday   → td == last trading day   (OK — expected)
+    """
+    import pytz
+    now_ist      = datetime.now(IST)
+    calendar_today = str(today_ist())
+    bhavcopy_eta = now_ist.replace(hour=18, minute=0, second=0, microsecond=0)
+    is_weekday   = now_ist.weekday() < 5
+    bhavcopy_written = (td == calendar_today)
+
+    # Check holiday list
+    try:
+        holiday_rows = sb.table("nse_holidays").select("date").execute().data
+        holidays     = {r["date"] for r in holiday_rows}
+        is_holiday   = calendar_today in holidays
+    except Exception:
+        holidays   = set()
+        is_holiday = False
+
+    is_trading_day = is_weekday and not is_holiday
+
+    # Determine expected state and status
+    if not is_trading_day:
+        status = "OK"
+        note   = f"Non-trading day (weekend/holiday) — previous trading day {td} expected"
+
+    elif now_ist < bhavcopy_eta:
+        status = "OK"
+        note   = (
+            f"Pre-bhavcopy window ({now_ist.strftime('%H:%M')} IST) — "
+            f"previous date {td} expected, today's bhavcopy not yet written"
+        )
+    else:
+        if bhavcopy_written:
+            status = "OK"
+            note   = f"Post-6pm ✅ bhavcopy written on time for {td}"
+        else:
+            status = "ERROR"
+            note   = (
+                f"Post-6pm ❌ bhavcopy NOT written — "
+                f"trade_date={td} but calendar={calendar_today}. "
+                f"Step 05 (ingest_bhavcopy) likely failed."
+            )
+
+    ok = status == "OK"
+    log_fn = logger.info if ok else logger.error
+    log_fn(
+        f"  C20_trade_date | td={td} | calendar={calendar_today} | "
+        f"bhavcopy={'✅' if bhavcopy_written else '⚠️'} | "
+        f"trading_day={is_trading_day} | run_time={now_ist.strftime('%H:%M')} IST | "
+        f"status={status}"
+    )
+
+    return _result(
+        "C20_trade_date_integrity", ok, status,
+        note,
+        value=f"td={td} cal={calendar_today} bhavcopy={'yes' if bhavcopy_written else 'no'}"
+    )
+
 # ── Telegram Alert ────────────────────────────────────────────────────────────
 
 def _send_error_alert(errors: list, warnings: list):
@@ -800,13 +836,12 @@ def main():
     sb = get_supabase()
 
     # ── Resolve trade date (same probe as step 15 — stock_data_daily) ──
-    td      = _resolve_trade_date(sb)
-    today   = str(today_ist())
-    stale   = td != today
-
+    td    = get_trade_date(sb, mode="auto", caller="21_quality_check")
+    today = str(today_ist())
+    stale = td != today
     logger.info(
         f"data_quality_monitor v4: 19 checks | trade_date={td}"
-        + (f" (calendar={today})" if stale else "")
+        + (f" (calendar={today} — bhavcopy not yet written)" if stale else " — bhavcopy ✅")
     )
 
     all_checks = [
@@ -829,6 +864,7 @@ def main():
         ("C17", lambda: c17_entry_zone_validity(sb, td)),
         ("C18", lambda: c18_tier_distribution(sb, td)),
         ("C19", lambda: c19_signal_date_alignment(sb, td)),
+        ("C20", lambda: c20_trade_date_integrity(sb, td)),
     ]
 
     results = []
@@ -871,7 +907,7 @@ def main():
 
     logger.success(
         f"Quality v4: ✅{ok_n} OK | ⚠️{warn_n} WARN | 🔴{err_n} ERROR | "
-        f"19 checks | trade_date={td}"
+        f"20 checks | trade_date={td}"
     )
     return {
         "date":    td,

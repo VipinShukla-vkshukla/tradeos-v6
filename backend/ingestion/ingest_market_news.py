@@ -1,6 +1,6 @@
 """
 TradeOS v6 — Phase 2: Market News Ingestion
-Runs as step 00a — first step of evening pipeline, before fetch_chartink.
+Runs as step 01 — first step of evening pipeline, before fetch_chartink.
 Scrapes 8 sources to populate market_news table so
 market_intelligence_engine.py has structured news context.
 
@@ -649,6 +649,7 @@ def main():
         f"Market News done: {len(all_items)} scraped → {written} written | "
         f"Sources: {source_counts}"
     )
+    logger.info(f"  news_date written to Supabase: {today_str}")
     return {
         "status":  "ok",
         "scraped": len(all_items),

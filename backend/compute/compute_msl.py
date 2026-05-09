@@ -2436,7 +2436,6 @@ def compute_all(sb, data: dict, today: str) -> list:
                 "pct_change":           float(s.get("pct_change") or 0),
                 "low_30d":              float(s.get("low_30d") or 0),
                 "consol_range":         float(s.get("consol_range") or 0),
-                "fii_sector_flow":      s.get("fii_sector_flow"),
                 # ── Metadata ──
                 "compute_source":       "compute_msl_v3",
                 "computed_at":          datetime.now(IST).isoformat(),

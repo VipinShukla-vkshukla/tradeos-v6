@@ -55,7 +55,7 @@ import requests
 from loguru import logger
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import get_supabase, today_ist, is_kill_switch_active, cfg, AI_KEYS, get_trade_date
+from config import get_supabase, today_ist, is_kill_switch_active, cfg, AI_KEYS, get_trade_date, get_step_window
 
 DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
 
@@ -91,7 +91,7 @@ def _lesson_confidence(lesson: dict) -> float:
 
 # ── Pass 1: Context assembly ───────────────────────────────────────────────
 
-def build_market_context(sb, today_str: str, last_td: str) -> dict:
+def build_market_context(sb, window_start, window_end_trade, window_end_calendar, last_td):
     """
     Full market context. Candidates from signal_log (gate-filtered by step 15)
     joined with master_shortlist for complete picture.
@@ -116,19 +116,44 @@ def build_market_context(sb, today_str: str, last_td: str) -> dict:
     fii = fii[0] if fii else {}
 
     # ── Global cues — sector_impacts JSONB unpacked ──
-    cues = (sb.table("global_cues").select("*")
-              .eq("session", "EVENING").order("date", desc=True).limit(1).execute().data)
-    if not cues:
-        cues = (sb.table("global_cues").select("*").order("date", desc=True).limit(1).execute().data)
-    cues = cues[0] if cues else {}
+    cues_rows = (sb.table("global_cues").select("*")
+            .gte("date", window_start)
+            .lte("date", window_end_calendar)
+                .order("date", desc=True)
+                .execute().data)
+
+    if not cues_rows:
+        cues_rows = (sb.table("global_cues").select("*")
+                    .order("date", desc=True).limit(1).execute().data)
+
+    # Use latest as primary cue, keep others for prompt context
+    cues = cues_rows[0] if cues_rows else {}
+    cues_history = cues_rows[1:] if len(cues_rows) > 1 else []  # extra sessions for prompt
     sector_impacts = cues.pop("sector_impacts", {}) or {}
+    logger.info(f"  global_cues: {len(cues_rows)} sessions in window | primary={cues.get('date','?')}")
 
     # ── Macro indicators — last 10 across all indicators ──
     macro_rows = (sb.table("macro_indicators")
                     .select("indicator_date,indicator_name,indicator_value,"
                             "previous_value,change_bps,source")
-                    .order("indicator_date", desc=True).limit(10).execute().data)
+                    .gte("indicator_date", window_start)
+                    .lte("indicator_date", window_end_calendar)
+                    .order("indicator_date", desc=True)
+                    .limit(15).execute().data)
 
+    # Fallback: if no new macro in window, grab last 5 for context
+    if not macro_rows:
+        macro_rows = (sb.table("macro_indicators")
+                        .select("indicator_date,indicator_name,indicator_value,"
+                                "previous_value,change_bps,source")
+                        .order("indicator_date", desc=True).limit(5).execute().data)
+        logger.info("  macro_indicators: no new data in window — using last 5 for context")
+    else:
+        logger.info(
+            f"  macro_indicators: {len(macro_rows)} new prints | "
+            f"window {window_start} → {window_end_calendar}"
+        )
+        
     # ── Sector strength — ALL sectors ranked ──
     sectors = (sb.table("sector_strength")
                  .select("sector,rank,top4_flag,sector_state,avg_rsi_daily,"
@@ -149,14 +174,15 @@ def build_market_context(sb, today_str: str, last_td: str) -> dict:
                     .eq("date", last_td).order("rank").limit(15).execute().data)
 
     # ── Market news — window query: captures weekend + holiday news ──
-    from config import get_news_window
-    _news_start, _news_end = get_news_window(sb, today_str)
+    _news_start = window_start
+    _news_end   = window_end_calendar
     news = (sb.table("market_news")
-              .select("headline,source,category,impact_type,parsed_symbols")
-              .gte("news_date", _news_start)
-              .lte("news_date", _news_end)
-              .order("news_date", desc=True)
-              .limit(40).execute().data)
+            .select("headline,source,category,impact_type,parsed_symbols,news_date")
+            .gte("news_date", _news_start)
+            .lte("news_date", _news_end)
+            .order("news_date", desc=True)
+            .limit(60)                          # increase cap — more days = more news
+            .execute().data)
     logger.info(f"  market_news: {len(news)} items | window {_news_start} → {_news_end}")
 
     # ── Gate-filtered candidates from signal_log ──
@@ -216,7 +242,7 @@ def build_market_context(sb, today_str: str, last_td: str) -> dict:
                               "ma_alignment_score,stoch_context,persistent_phase,"
                               "reentry_mode,position_state,suggested,"
                               "dist_sma50,ret_3m,ret_12m,low_52w,pct_change,"
-                              "low_30d,consol_range,fii_sector_flow")
+                              "low_30d,consol_range")
                       .eq("date", last_td)
                       .in_("symbol", symbols)
                       .execute().data)
@@ -248,7 +274,6 @@ def build_market_context(sb, today_str: str, last_td: str) -> dict:
             merged["pct_change"]       = msl.get("pct_change")
             merged["low_30d"]          = msl.get("low_30d")
             merged["consol_range"]     = msl.get("consol_range")
-            merged["fii_sector_flow"]  = msl.get("fii_sector_flow")
             candidates.append(merged)
     else:
         candidates = []
@@ -329,6 +354,7 @@ def build_market_context(sb, today_str: str, last_td: str) -> dict:
         "regime":         regime,
         "fii":            fii,
         "cues":           cues,
+        "cues_history":     cues_history,
         "sector_impacts": sector_impacts,
         "macro":          macro_rows,
         "sectors":        sectors,
@@ -423,7 +449,7 @@ def fetch_stock_intel(symbol: str, company_name: str, session: requests.Session)
 
 # ── Prompt builder ─────────────────────────────────────────────────────────
 
-def build_prompt(ctx: dict, stock_intel: list[dict]) -> str:
+def build_prompt(ctx: dict, stock_intel: list[dict], window_start: str, window_end: str) -> str:
     r   = ctx["regime"]
     fii = ctx["fii"]
     c   = ctx["cues"]
@@ -433,6 +459,9 @@ def build_prompt(ctx: dict, stock_intel: list[dict]) -> str:
 
     lines = [
         f"DATE: {today_ist()}",
+        f"DATA WINDOW: {window_start} → {window_end}  "
+        f"(captures all news/macro/cues since last run)",
+        "",
         "",
         "═══ MARKET REGIME ═══",
         f"  Regime: {regime_label} (confidence: {regime_conf:.0%}) | Score: {r.get('regime_score','?')}",
@@ -584,7 +613,7 @@ def build_prompt(ctx: dict, stock_intel: list[dict]) -> str:
             f"BB:{m.get('bb_context','?')} WkStr:{m.get('weekly_structure','?')} "
             f"PSAR:{m.get('psar_dual_confirmed','?')} | "
             f"Dist50:{m.get('dist_sma50','?')}% From52wL:{_dist_52w_low}% "
-            f"Consol:{m.get('consol_range','?')}% FIISec:₹{m.get('fii_sector_flow','?')}Cr"
+            f"Consol:{m.get('consol_range','?')}%"
         )
 
     if stock_intel:
@@ -879,15 +908,15 @@ def main():
     logger.info(f"STEP 18: AI Market Intelligence {'[DRY RUN]' if DRY_RUN else ''}")
     logger.info("=" * 60)
 
-    sb        = get_supabase()
-    last_td   = get_trade_date(sb)
-    today_str = last_td
-    logger.info(f"Trade date: {last_td} | Calendar: {today_ist()}")
-    logger.info(f"Today: {today_str} | Last trading day: {last_td}")
+    sb           = get_supabase()
+    last_td       = get_trade_date(sb, mode="auto", caller="18_ai_market_intel")
+    window_start, window_end_trade, window_end_calendar = get_step_window(
+        sb, "__MARKET_INTEL__", current_td=last_td
+    )
 
     # Pass 1
     logger.info("Pass 1: building market context...")
-    ctx = build_market_context(sb, today_str, last_td)
+    ctx = build_market_context(sb, window_start, window_end_trade, window_end_calendar, last_td)
     logger.info(
         f"  {len(ctx['candidates'])} signal candidates | {len(ctx['news'])} news | "
         f"{len(ctx['sectors'])} sectors | {len(ctx['macro'])} macro indicators | "
@@ -918,7 +947,7 @@ def main():
         total_headlines = sum(len(s["headlines"]) for s in stock_intel)
         logger.info(f"Pass 2 done: {total_headlines} headlines across {len(stock_intel)} stocks")
 
-    prompt = build_prompt(ctx, stock_intel)
+    prompt = build_prompt(ctx, stock_intel, window_start, window_end_calendar)
 
     if DRY_RUN:
         logger.info(f"[DRY RUN] Prompt: {len(prompt)} chars")

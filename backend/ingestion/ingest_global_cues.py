@@ -121,6 +121,9 @@ def main(time_slot: str = "EVENING"):
     logger.info(f"Global Cues Ingestion — {time_slot}")
     sb = get_supabase()
     today = today_ist()
+    today_str = today.isoformat()
+
+    logger.info(f"  date={today_str} | session={time_slot}")
 
     http = requests.Session()
     http.headers.update({"User-Agent": "Mozilla/5.0"})
@@ -139,7 +142,7 @@ def main(time_slot: str = "EVENING"):
     # US 10-yr: step 02 already fetched and wrote this to macro_indicators.
     # Read from DB to avoid a duplicate Yahoo request. Fall back only on miss.
     _today_str = today.isoformat()
-    us_10yr = _read_macro_indicator(sb, "US_10YR_YIELD", _today_str)
+    us_10yr = _read_macro_indicator(sb, "US_10YR_YIELD", today_str)
     if us_10yr is None:
         us_10yr = fetch_from_yahoo("^TNX", http)
         logger.debug("  us_10yr: macro_indicators miss — fetched from Yahoo")
@@ -147,7 +150,7 @@ def main(time_slot: str = "EVENING"):
         logger.debug(f"  us_10yr: macro_indicators hit — {us_10yr}")
 
     # SG2: Silver price — same pattern
-    silver = _read_macro_indicator(sb, "SILVER_PRICE", _today_str)
+    silver = _read_macro_indicator(sb, "SILVER_PRICE", today_str)
     if silver is None:
         silver = fetch_from_yahoo("SI=F", http)
         logger.debug("  silver: macro_indicators miss — fetched from Yahoo")
@@ -261,6 +264,7 @@ def main(time_slot: str = "EVENING"):
     dow_str = f"DOW={dow or 'N/A'} ({dow_chg_pct:+.2f}%)" if dow_chg_pct is not None else f"DOW={dow or 'N/A'}"
     logger.success(
         f"[{time_slot}] Global cues saved: "
+        f"Supabase Written date={today_str} | "
         f"Gift={gift_nifty or 'N/A'} | "
         f"USD/INR={usd_inr or 'N/A'} | "
         f"Crude={brent or 'N/A'} | "

@@ -253,7 +253,7 @@ def load_context(sb, trade_date: str) -> dict:
               "stoch_context,persistent_phase,suggested,notes,"
               "days_in_list,rank_vel_3d,score_vel_5d,"
               "dist_sma50,ret_3m,ret_12m,low_52w,pct_change,"
-              "low_30d,consol_range,fii_sector_flow"
+              "low_30d,consol_range"
           )
           .eq("date", trade_date)
           .in_("symbol", symbols)
@@ -287,7 +287,6 @@ def load_context(sb, trade_date: str) -> dict:
         merged["pct_change"]         = msl.get("pct_change")
         merged["low_30d"]            = msl.get("low_30d")
         merged["consol_range"]       = msl.get("consol_range")
-        merged["fii_sector_flow"]    = msl.get("fii_sector_flow")
         candidates.append(merged)
 
     # ── Market intel from step 18 ──
@@ -619,7 +618,6 @@ def build_prompt(ctx: dict, trade_date: str) -> str:
             f"WkStr:{c.get('weekly_structure','?')} PSAR:{c.get('psar_dual_confirmed','?')} | "
             f"Dist50:{c.get('dist_sma50','?')}% From52wL:{_dist_52w_low}% "
             f"Consol:{c.get('consol_range','?')}% "
-            f"FIISec:₹{c.get('fii_sector_flow','?')}Cr | "
             f"DaysOL:{c.get('days_in_list','?')} ScVel:{c.get('score_vel_5d','?')} "
             f"RkVel:{c.get('rank_vel_3d','?')}"
         )
@@ -1013,6 +1011,8 @@ def main():
         logger.warning("No candidates available — step 19 skipped")
         return {"status": "no_candidates"}
 
+    candidates = ctx["candidates"]
+    
     null_price = [c["symbol"] for c in candidates if c.get("current_price") is None]
     if null_price:
         logger.warning(
@@ -1027,7 +1027,6 @@ def main():
             "Proceeding without market overlay."
         )
 
-    candidates = ctx["candidates"]
     logger.info(
         f"  {len(candidates)} candidates | {len(ctx['positions'])} open positions | "
         f"{len(ctx['lessons'])} lessons | {len(ctx['echoes'])} echoes | "

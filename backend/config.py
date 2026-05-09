@@ -188,7 +188,8 @@ def buy_candidate_threshold() -> float:
 
 logger.info(
     f"TradeOS v6 config loaded | Capital=₹{TOTAL_CAPITAL:,.0f} | "
-    f"DRY_RUN={DRY_RUN} | Phase={cfg('autonomy_phase', '0')}"
+    f"DRY_RUN={DRY_RUN} | Phase={cfg('autonomy_phase', '0')} | "
+    f"Today's date={today_ist()}"
 )
 
 def yf_fetch_with_cache(
@@ -306,14 +307,17 @@ def get_news_window(sb, trading_day: str) -> tuple[str, str]:
     return window_start, trading_day
 
 # Add to config.py after the existing helper functions
-def get_trade_date(sb=None) -> str:
-    """
-    Canonical trade date for all pipeline steps.
-    Probes stock_data_daily — only written after bhavcopy (step 5).
-    Handles: holidays, weekends, pre-market runs, post-market runs.
-    """
+def get_trade_date(sb=None, mode: str = "auto", caller: str = "") -> str:
+    tag            = f"[{caller}] " if caller else ""
+    calendar_today = str(today_ist())
+
+    if mode == "today":
+        logger.info(f"  {tag}trade_date={calendar_today} | mode=today | source=calendar")
+        return calendar_today
+
     if sb is None:
         sb = get_supabase()
+
     try:
         rows = (
             sb.table("stock_data_daily")
@@ -324,9 +328,145 @@ def get_trade_date(sb=None) -> str:
         )
         if rows:
             td = rows[0]["date"]
-            if td != str(today_ist()):
-                logger.info(f"  trade_date={td} (calendar={today_ist()})")
+
+            if td == calendar_today:
+                logger.info(
+                    f"  {tag}trade_date={td} | mode={mode} | "
+                    f"source=stock_data_daily | bhavcopy=✅ written"
+                )
+            else:
+                # ── Classify WHY td != today before deciding log level ──
+                now_ist    = datetime.now(IST)
+                is_weekday = now_ist.weekday() < 5   # Mon=0 … Fri=4
+
+                # Check NSE holiday list
+                try:
+                    holiday_rows = sb.table("nse_holidays").select("date").execute().data
+                    holidays     = {r["date"] for r in holiday_rows}
+                    is_holiday   = calendar_today in holidays
+                except Exception:
+                    holidays   = set()
+                    is_holiday = False
+
+                bhavcopy_eta = now_ist.replace(hour=18, minute=0, second=0, microsecond=0)
+                is_trading_day = is_weekday and not is_holiday
+
+                if not is_trading_day:
+                    # Weekend or holiday — previous trading day is EXPECTED
+                    reason = "weekend" if not is_weekday else "holiday"
+                    logger.info(
+                        f"  {tag}trade_date={td} | mode={mode} | "
+                        f"source=stock_data_daily | bhavcopy=✅ expected "
+                        f"({reason} — previous trading day correct | calendar={calendar_today})"
+                    )
+                elif now_ist < bhavcopy_eta:
+                    # Trading day but before 6pm — bhavcopy not yet written
+                    logger.info(
+                        f"  {tag}trade_date={td} | mode={mode} | "
+                        f"source=stock_data_daily | bhavcopy=⏳ not yet "
+                        f"(pre-6pm on trading day | calendar={calendar_today})"
+                    )
+                else:
+                    # Trading day, post 6pm, bhavcopy missing — REAL problem
+                    logger.warning(
+                        f"  {tag}trade_date={td} | mode={mode} | "
+                        f"source=stock_data_daily | bhavcopy=❌ MISSING "
+                        f"(post-6pm on trading day — step 05 may have failed | "
+                        f"calendar={calendar_today})"
+                    )
+
             return td
+
     except Exception as e:
-        logger.warning(f"get_trade_date probe failed: {e} — using today_ist()")
-    return str(today_ist())
+        logger.warning(
+            f"  {tag}get_trade_date probe failed: {e} | "
+            f"fallback=today_ist() | date={calendar_today}"
+        )
+
+    return calendar_today
+
+def get_step_window(sb, step_symbol: str, current_td: str, fallback_days: int = 3) -> tuple[str, str, str]:
+    """
+    Returns (window_start, window_end_trade, window_end_calendar)
+
+    window_end_trade    — use for: signals, MSL, regime, sectors (stock data)
+    window_end_calendar — use for: news, macro, global_cues (can have weekend data)
+    """
+    calendar_today = str(today_ist())
+    now_ist        = datetime.now(IST)
+
+    # ── Step 1: Get last successful run date ─────────────────────────────
+    last_run = None
+    try:
+        rows = (
+            sb.table("ai_context")
+              .select("date")
+              .eq("symbol", step_symbol)
+              .lte("date", current_td)
+              .order("date", desc=True)
+              .limit(1)
+              .execute().data
+        )
+        if rows:
+            last_run = rows[0]["date"]
+    except Exception as e:
+        logger.warning(f"  get_step_window: probe failed for {step_symbol}: {e}")
+
+    if not last_run:
+        last_run = str(
+            (datetime.strptime(current_td, "%Y-%m-%d") - timedelta(days=fallback_days)).date()
+        )
+        logger.info(f"  {step_symbol} | no prior run found | fallback last_run={last_run}")
+
+    # ── Step 2: Compute raw window ────────────────────────────────────────
+    window_start        = str(
+        (datetime.strptime(last_run, "%Y-%m-%d") + timedelta(days=1)).date()
+    )
+    window_end_trade    = current_td      # stock data anchor
+    window_end_calendar = calendar_today  # news/macro can be today
+
+    # ── Step 3: Classify current run context ─────────────────────────────
+    is_weekday   = now_ist.weekday() < 5
+    try:
+        holiday_rows = sb.table("nse_holidays").select("date").execute().data
+        holidays     = {r["date"] for r in holiday_rows}
+    except Exception:
+        holidays = set()
+    is_holiday     = calendar_today in holidays
+    is_trading_day = is_weekday and not is_holiday
+
+    # Count missed trading days in window
+    trading_days_missed = 0
+    check = datetime.strptime(last_run, "%Y-%m-%d") + timedelta(days=1)
+    end   = datetime.strptime(current_td, "%Y-%m-%d")
+    while check < end:
+        if check.weekday() < 5 and str(check.date()) not in holidays:
+            trading_days_missed += 1
+        check += timedelta(days=1)
+
+    # ── Step 4: Apply guards ──────────────────────────────────────────────
+    if window_start > window_end_trade:
+        # Inverted — same-day re-run or weekend/holiday with no new trade date
+        reason = "weekend" if now_ist.weekday() >= 5 else ("holiday" if is_holiday else "same-day re-run")
+        logger.info(
+            f"  {step_symbol} | window={window_end_calendar} (news/macro) "
+            f"trade={window_end_trade} (signals) | "
+            f"last_run={last_run} | reason={reason}"
+        )
+        window_start = window_end_trade  # clamp start to trade anchor
+
+    else:
+        span = (datetime.strptime(window_end_calendar, "%Y-%m-%d") -
+                datetime.strptime(window_start, "%Y-%m-%d")).days + 1
+        if trading_days_missed > 1:
+            logger.warning(
+                f"  {step_symbol} | window={window_start}→{window_end_calendar} span={span}d | "
+                f"last_run={last_run} | ⚠️ {trading_days_missed} trading days missed"
+            )
+        else:
+            logger.info(
+                f"  {step_symbol} | window={window_start}→{window_end_calendar} span={span}d | "
+                f"last_run={last_run} | normal"
+            )
+
+    return window_start, window_end_trade, window_end_calendar

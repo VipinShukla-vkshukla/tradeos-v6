@@ -380,6 +380,7 @@ def main():
 
     logger.info(f"Macro Indicators Ingestion starting {'[DRY RUN]' if DRY_RUN else ''}")
     sb  = get_supabase()
+    _today_str = str(today_ist())
     all_rows: list[dict] = []
 
     # Source 1: RBI policy rates
@@ -445,7 +446,10 @@ def main():
 
     written = write_macro_indicators(sb, all_rows)
 
-    logger.success(f"Macro Indicators done: {len(all_rows)} fetched → {written} written")
+    logger.success(
+        f"Macro Indicators done: {len(all_rows)} fetched → {written} written | "
+        f"indicator_date written to Supabase: {_today_str}"
+    )
     return {"status": "ok", "fetched": len(all_rows), "written": written}
 
 
