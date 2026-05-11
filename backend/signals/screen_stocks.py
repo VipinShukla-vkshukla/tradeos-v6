@@ -110,7 +110,7 @@ WRITE_ALL_QUALIFIED  = True   # True = write all to msl_computed | False = write
 #               RVS/IAD still valid for open_syms and force_include.
 #               MOM/CTL/VBD heavily penalised — chasing in bear = capital destruction.
 #
-REGIME_ENGINE_WEIGHTS = {
+_REGIME_ENGINE_WEIGHTS_DEFAULT = {
     "TRENDING":   {"CTL": 1.2, "MOM": 1.2, "SBS": 1.1, "VBD": 1.0,
                    "IAD": 1.0, "RSB": 1.0, "TPO": 1.0, "RVS": 0.7, "SEC": 1.0},
     "RISK ON":    {"CTL": 1.1, "MOM": 1.1, "SBS": 1.1, "VBD": 1.0,
@@ -122,6 +122,17 @@ REGIME_ENGINE_WEIGHTS = {
     "RISK OFF":   {"CTL": 0.6, "MOM": 0.5, "SBS": 0.7, "VBD": 0.6,
                    "IAD": 1.2, "RSB": 1.2, "TPO": 0.7, "RVS": 1.4, "SEC": 1.0},
 }
+
+def get_regime_engine_weights() -> dict:
+    """
+    Load engine weights from system_config.
+    Brain can tune these values. Falls back to equal weights (1.0) on error.
+    """
+    raw = cfg("regime_engine_weights", "{}")
+    try:
+        return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return _REGIME_ENGINE_WEIGHTS_DEFAULT
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TRADING DAY RESOLVER
@@ -1052,7 +1063,8 @@ def aggregate_and_rank(
     """
 
     # ── Get regime engine weights (default to NEUTRAL if unknown) ─────────────
-    weights = REGIME_ENGINE_WEIGHTS.get(regime_name, REGIME_ENGINE_WEIGHTS["NEUTRAL"])
+    _rew = get_regime_engine_weights()
+    weights = _rew.get(regime_name, _rew.get("NEUTRAL", {}))
     logger.info(
         f"  Regime weights ({regime_name}): "
         + " | ".join(f"{e}={w}x" for e, w in sorted(weights.items()) if w != 1.0)

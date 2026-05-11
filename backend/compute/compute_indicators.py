@@ -95,7 +95,7 @@ for p in [str(repo_root), str(backend_dir), str(current_dir)]:
         sys.path.insert(0, p)
 
 # ── Config import ─────────────────────────────────────────────────────────────
-from config import get_supabase, today_ist, IST, is_kill_switch_active, cfg_bool, cfg, logger
+from config import get_supabase, today_ist, IST, is_kill_switch_active, cfg_bool, cfg, cfg_float, logger
 
 # ── yfinance (optional — graceful degradation if not installed) ───────────────
 try:
@@ -110,14 +110,14 @@ DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
 MIN_SESSIONS_FULL_FETCH  = 0    # Symbols with ZERO cached rows → full yfinance pull.
                                  # Any symbol with even 1 row is extended by tail/gap only.
 
-MIN_SESSIONS_FOR_RETURNS = 260  # Below this, ret_6m / ret_12m degrade gracefully to None.
+MIN_SESSIONS_FOR_RETURNS = cfg_float("compute_indicators_min_sessions_for_returns", 260)
                                  # Triggers a gap-fill fetch to backfill history.
                                  # NOT a full-refetch trigger — existing rows are preserved.
                                  # 260 sessions ≈ 12 months of trading days.
 
 # ── Tolerance thresholds ──────────────────────────────────────────────────────
-DIVERGE_THRESHOLD = 0.02   # 2%  for most numeric fields
-WIDE_THRESHOLD    = 0.10   # 10% for return/range fields (different session basis)
+DIVERGE_THRESHOLD = cfg_float("compute_indicators_diverge_threshold", 0.02)
+WIDE_THRESHOLD = cfg_float("compute_indicators_wide_threshold", 0.1)
 WIDE_TOLERANCE_FIELDS = {
     "ret_1w", "ret_1m", "ret_3m", "ret_6m", "ret_12m",
     "consol_range", "dist_sma50", "rs_vs_nifty", "low_30d",

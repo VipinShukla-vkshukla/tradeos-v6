@@ -151,9 +151,9 @@ except ImportError:
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
 
-HOLDING_SCORE_EXIT_THRESHOLD = 30   # matches signals v3 constant
-MFE_TRAILING_FAILURE_RATIO   = 0.5  # realised < 50% of MFE → trailing stop issue
-DEDUP_WINDOW_DAYS            = 30   # don't duplicate lessons within this window
+HOLDING_SCORE_EXIT_THRESHOLD = cfg_float("post_trade_analysis_holding_score_exit_threshold", 30)
+MFE_TRAILING_FAILURE_RATIO = cfg_float("post_trade_analysis_mfe_trailing_failure_ratio", 0.5)
+DEDUP_WINDOW_DAYS = cfg_float("post_trade_analysis_dedup_window_days", 30)
 
 PROVIDER_COST_INR = {
     "deepseek": 0.15, "claude": 0.40, "openai": 0.30,
@@ -830,9 +830,11 @@ def _update_lesson_outcomes(sb, applicable_lessons: list[dict],
         new_conf   = round(new_worked / new_applied, 3) if new_applied > 0 else 0.5
 
         # Retirement check
+        _retire_min = cfg_int("lesson_retire_min_applications", 10)
+        _retire_wr  = cfg_float("lesson_retire_win_rate", 0.25)
         should_retire = (
-            new_applied >= 10
-            and new_conf < 0.25
+            new_applied >= _retire_min
+            and new_conf < _retire_wr
             and "MANUAL" not in source
         )
 

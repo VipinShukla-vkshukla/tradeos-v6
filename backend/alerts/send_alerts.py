@@ -1374,6 +1374,45 @@ def build_compact(data: dict) -> str:
     return "\n".join(lines)
 
 
+def send_signal_with_keyboard(signal: dict) -> bool:
+    """
+    Sends an individual signal alert with inline confirmation keyboard.
+    Called for each ENTRY-type signal after the main digest.
+    Requires brain/position_manager to be present.
+    """
+    try:
+        from brain.position_manager import build_signal_keyboard, _tg_api
+    except ImportError:
+        logger.debug("position_manager not available — skipping keyboard send")
+        return False
+
+    try:
+        sym   = signal.get("symbol", "?")
+        stype = signal.get("signal_type", "")
+        price = float(signal.get("current_price") or signal.get("kite_price") or 0)
+        score = float(signal.get("score_adjusted") or signal.get("score") or 0)
+
+        text = (
+            f"<b>{stype}: {sym}</b>\n"
+            f"Price: ₹{price:.2f}  Score: {score:.0f}\n"
+            f"Tap below to confirm entry or skip."
+        )
+        keyboard = build_signal_keyboard(
+            signal_id=signal["id"],
+            symbol=sym,
+            signal_price=price,
+        )
+        _tg_api("sendMessage", {
+            "chat_id":      TELEGRAM_CHAT_ID,
+            "text":         text,
+            "parse_mode":   "HTML",
+            "reply_markup": json.dumps(keyboard),
+        })
+        return True
+    except Exception as e:
+        logger.warning(f"send_signal_with_keyboard failed for {signal.get('symbol')}: {e}")
+        return False
+
 # ── Main ───────────────────────────────────────────────────────────────────
 
 def main():
@@ -1415,6 +1454,13 @@ def main():
         mode = "structured"
 
     success = send_message(msg)
+
+    # Send per-signal keyboard messages for actionable entry signals
+    if cfg_bool("telegram_signal_keyboards_enabled", False):
+        entry_signals = [s for s in data["signals"] if s.get("signal_type") in ENTRY_TYPES
+                         and s.get("id")]
+        for sig in entry_signals:
+            send_signal_with_keyboard(sig)
 
     fp     = data.get("final_picks") or {}
     ranked = fp.get("ranked_candidates") or []

@@ -75,6 +75,7 @@ import sys, os
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from collections import Counter, defaultdict
+import json
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
 from config import get_supabase, today_ist, IST, cfg, cfg_bool, is_kill_switch_active, DRY_RUN
@@ -2155,6 +2156,20 @@ def compute_days_to_trigger(s: dict, ez_low: float) -> int | None:
     daily_prog  = atr_pct * 0.28
     return min(int(gap_pct / daily_prog) if daily_prog > 0 else 30, 30)
 
+# ADD this function before compute_final_score (around line 2159):
+
+def get_final_score_weights() -> dict:
+    raw = cfg("msl_final_score_weights",
+              '{"momentum":0.22,"validity":0.20,"trend_structure":0.15,'
+              '"institutional":0.13,"breakout":0.12,"sector":0.08,'
+              '"weekly_structure":0.06,"base_score":0.04}')
+    try:
+        return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return {"momentum":0.22,"validity":0.20,"trend_structure":0.15,
+                "institutional":0.13,"breakout":0.12,"sector":0.08,
+                "weekly_structure":0.06,"base_score":0.04}
+
 
 def compute_final_score(momentum_score: float, validity_score: float,
                          institutional_score: float, breakout_readiness: float,
@@ -2190,15 +2205,16 @@ def compute_final_score(momentum_score: float, validity_score: float,
     ma_score_100 = (ma_alignment / 6) * 100
     base_norm    = min(float(base_score or 50), 100)
 
+    w = get_final_score_weights()
     weighted = (
-        (momentum_score      or 0) * 0.22 +
-        (validity_score      or 0) * 0.20 +
-        ma_score_100               * 0.15 +
-        (institutional_score or 0) * 0.13 +
-        (breakout_readiness  or 0) * 0.12 +
-        sector_score               * 0.08 +
-        (weekly_structure_score or 30) * 0.06 +
-        base_norm                  * 0.04
+        (momentum_score      or 0) * w.get("momentum",          0.22) +
+        (validity_score      or 0) * w.get("validity",          0.20) +
+        ma_score_100               * w.get("trend_structure",   0.15) +
+        (institutional_score or 0) * w.get("institutional",     0.13) +
+        (breakout_readiness  or 0) * w.get("breakout",          0.12) +
+        sector_score               * w.get("sector",            0.08) +
+        (weekly_structure_score or 30) * w.get("weekly_structure", 0.06) +
+        base_norm                  * w.get("base_score",        0.04)
     )
 
     # Risk penalty — nonlinear

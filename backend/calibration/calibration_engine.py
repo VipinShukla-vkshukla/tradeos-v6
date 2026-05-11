@@ -70,10 +70,10 @@ from config import get_supabase, today_ist, is_kill_switch_active, cfg, cfg_int,
 
 # ── Calibration constants ──────────────────────────────────────────────────
 
-CALIBRATION_MIN_NEW_TRADES   = 15   # won't calibrate with fewer outcomes
-CALIBRATION_MAX_CHANGE_PCT   = 0.20 # max 20% change per parameter per run
-CALIBRATION_LOOKBACK_DAYS    = 90   # analyse trades closed in last 90 days
-MIN_LESSON_APPLICATIONS      = 10   # min uses before retiring a failing lesson
+CALIBRATION_MIN_NEW_TRADES = cfg_float("calibration_engine_calibration_min_new_trades", 15)
+CALIBRATION_MAX_CHANGE_PCT = cfg_float("calibration_engine_calibration_max_change_pct", 0.2)
+CALIBRATION_LOOKBACK_DAYS = cfg_float("calibration_engine_calibration_lookback_days", 90)
+MIN_LESSON_APPLICATIONS = cfg_float("calibration_engine_min_lesson_applications", 10)
 LESSON_RETIRE_WIN_RATE       = 0.30 # retire if win rate below this after 10+ uses
 
 # Absolute bounds — calibration cannot move parameters outside these

@@ -73,7 +73,7 @@ from pathlib import Path
 from loguru import logger
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import get_supabase, today_ist, is_kill_switch_active, cfg, cfg_int, get_trade_date
+from config import get_supabase, today_ist, is_kill_switch_active, cfg, cfg_float, cfg_int, get_trade_date
 
 DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
 

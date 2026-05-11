@@ -138,6 +138,13 @@ def main():
     def step_quality_check():
         from compute.data_quality_monitor import main as fn; return fn()
     
+    def step_performance_tracking():
+        """Compute and store daily/weekly/monthly performance metrics."""
+        from brain.performance_tracker import run_performance_tracking
+        import datetime
+        result = run_performance_tracking(for_date=datetime.date.today())
+        logger.info(f"Performance tracking: {result}")
+    
     def step_compute_regime():
         from compute.compute_regime import main as fn; return fn()
     
@@ -214,7 +221,8 @@ def main():
             ("19_ai_decision_engine",  step_ai_decision_engine,  False),  # conviction per signal
             # ── Output ──
             ("20_alerts",              step_alerts,              False),  # Telegram digest
-            ("21_quality_check",       step_quality_check,       False),  # always last
+            ("21_quality_check",       step_quality_check,       False), # data quality monitor with alerts
+            ("22_performance_tracking", step_performance_tracking, False), # daily/weekly/monthly performance metrics
         ]
     else:
         all_steps = steps_p0 + (steps_p1 if phase >= 1 else [])
@@ -240,6 +248,14 @@ def main():
             break
 
     print_summary(results, time.time() - t_start)
+    import datetime as _dt
+    if _dt.date.today().weekday() == 6:  # Sunday
+        try:
+            from brain.scheduler_yaml import trigger_brain_async
+            trigger_brain_async(mode="full")
+            logger.info("Brain engine triggered async (Sunday full run)")
+        except ImportError:
+            logger.debug("Brain scheduler not yet deployed — skipping")
     sys.exit(0 if all(r["ok"] for r in results.values()) else 1)
 
 

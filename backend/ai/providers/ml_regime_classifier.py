@@ -60,6 +60,7 @@ import argparse
 import math
 from pathlib import Path
 from datetime import datetime, timedelta
+from config import get_supabase, today_ist, is_kill_switch_active, cfg, cfg_float, cfg_int, logger
 
 _BACKEND_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(_BACKEND_ROOT))
@@ -95,12 +96,12 @@ FEATURES = [
     "sector_dispersion",   # std dev sector_strength.breadth_sma50 (default 0.0)
 ]
 
-MIN_TRAINING_SAMPLES = 20   # 9 features × 5 classes: RF handles this well at 20+.
+MIN_TRAINING_SAMPLES = cfg_float("ml_regime_classifier_min_training_samples", 20)
                              # Cross-val accuracy at 20 is noisy but directionally correct.
                              # Improves materially past 40. Retrain weekly via _should_retrain.
-MIN_PREDICT_SAMPLES  = 15
+MIN_PREDICT_SAMPLES = cfg_float("ml_regime_classifier_min_predict_samples", 15)
 MODEL_STALE_DAYS     = 7
-LOOKBACK_DAYS        = 365
+LOOKBACK_DAYS = cfg_float("ml_regime_classifier_lookback_days", 365)
 
 
 # ── Data Health Check ─────────────────────────────────────────────────────────

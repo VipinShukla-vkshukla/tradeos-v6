@@ -55,7 +55,7 @@ import requests
 from loguru import logger
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import get_supabase, today_ist, is_kill_switch_active, cfg, AI_KEYS, get_trade_date, get_step_window
+from config import get_supabase, today_ist, is_kill_switch_active, cfg,cfg_float, AI_KEYS, get_trade_date, get_step_window
 
 DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
 

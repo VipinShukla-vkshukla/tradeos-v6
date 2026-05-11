@@ -42,6 +42,8 @@ Required SQL:    sql_signal_log_market_context.sql (adds 4 new columns to signal
 Required script: generate_signals_v2.py (writes the 4 new market-context columns)
 """
 import json
+from config import  cfg_float, cfg_int
+import os
 from pathlib import Path
 try:
     # Normal import when used as a module inside the package (ai_router.py etc.)
@@ -93,7 +95,7 @@ FEATURES = [
     "fii_net_20d_ctx",   # FII 20d net at signal time (NEW v2)
 ]
 
-MIN_TRADES = 90  # 26 features × 2 classes × 1.75 safety margin
+MIN_TRADES = cfg_float("ml_provider_min_trades", 90)
 
 
 def _encode_regime(r: str) -> int:
