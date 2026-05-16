@@ -1,0 +1,291 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+/* TradeOS Intelligence Console Theme System */
+:root {
+  /* Core backgrounds - driven by theme store */
+  --bg-dashboard: #0a0f1a;
+  --bg-panel: #111827;
+  --bg-panel-hover: #1a2332;
+  --bg-header: #0d1321;
+  --bg-input: #1e293b;
+  --bg-modal: #151f2e;
+  --bg-tooltip: #1e293b;
+
+  /* Text colors */
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --text-inverse: #0f172a;
+
+  /* Borders */
+  --border-default: #1e293b;
+  --border-focus: #3b82f6;
+  --border-error: #ef4444;
+
+  /* Semantic colors */
+  --accent-primary: #3b82f6;
+  --accent-primary-hover: #2563eb;
+  --success: #22c55e;
+  --success-bg: rgba(34, 197, 94, 0.1);
+  --warning: #f59e0b;
+  --warning-bg: rgba(245, 158, 11, 0.1);
+  --danger: #ef4444;
+  --danger-bg: rgba(239, 68, 68, 0.1);
+  --info: #06b6d4;
+  --info-bg: rgba(6, 182, 212, 0.1);
+
+  /* Trading-specific */
+  --profit-green: #22c55e;
+  --loss-red: #ef4444;
+  --bullish: #22c55e;
+  --bearish: #ef4444;
+  --neutral: #94a3b8;
+
+  /* Chart palette */
+  --chart-1: #3b82f6;
+  --chart-2: #22c55e;
+  --chart-3: #f59e0b;
+  --chart-4: #8b5cf6;
+  --chart-5: #ec4899;
+  --chart-6: #06b6d4;
+  --chart-7: #f97316;
+  --chart-8: #14b8a6;
+
+  /* Component-specific */
+  --skeleton-base: #1e293b;
+  --skeleton-shimmer: #334155;
+  --badge-bg: #1e293b;
+  --scrollbar-thumb: #334155;
+  --scrollbar-track: #1e293b;
+
+  /* Radius */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+
+  /* shadcn compatibility */
+  --background: var(--bg-dashboard);
+  --foreground: var(--text-primary);
+  --card: var(--bg-panel);
+  --card-foreground: var(--text-primary);
+  --popover: var(--bg-modal);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--accent-primary);
+  --primary-foreground: var(--text-primary);
+  --secondary: var(--bg-panel-hover);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--bg-panel-hover);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--accent-primary);
+  --accent-foreground: var(--text-primary);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--text-primary);
+  --border: var(--border-default);
+  --input: var(--bg-input);
+  --ring: var(--border-focus);
+  --radius: var(--radius-md);
+}
+
+@theme inline {
+  --font-sans: 'Geist', 'Geist Fallback';
+  --font-mono: 'Geist Mono', 'Geist Mono Fallback';
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
+  --color-chart-7: var(--chart-7);
+  --color-chart-8: var(--chart-8);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* TradeOS Custom Utilities */
+@layer utilities {
+  /* Text colors */
+  .text-profit {
+    color: var(--profit-green);
+  }
+  .text-loss {
+    color: var(--loss-red);
+  }
+  .text-bullish {
+    color: var(--bullish);
+  }
+  .text-bearish {
+    color: var(--bearish);
+  }
+  .text-neutral-trade {
+    color: var(--neutral);
+  }
+
+  /* Backgrounds */
+  .bg-dashboard {
+    background-color: var(--bg-dashboard);
+  }
+  .bg-panel {
+    background-color: var(--bg-panel);
+  }
+  .bg-panel-hover {
+    background-color: var(--bg-panel-hover);
+  }
+  .bg-header {
+    background-color: var(--bg-header);
+  }
+  .bg-success-subtle {
+    background-color: var(--success-bg);
+  }
+  .bg-warning-subtle {
+    background-color: var(--warning-bg);
+  }
+  .bg-danger-subtle {
+    background-color: var(--danger-bg);
+  }
+  .bg-info-subtle {
+    background-color: var(--info-bg);
+  }
+
+  /* Skeleton animation */
+  .skeleton {
+    background: linear-gradient(
+      90deg,
+      var(--skeleton-base) 25%,
+      var(--skeleton-shimmer) 50%,
+      var(--skeleton-base) 75%
+    );
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  }
+
+  @keyframes skeleton-shimmer {
+    0% {
+      background-position: 200% 0;
+    }
+    100% {
+      background-position: -200% 0;
+    }
+  }
+
+  /* Custom scrollbar */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: var(--scrollbar-track);
+    border-radius: 4px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 4px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: var(--text-muted);
+  }
+
+  /* Panel styling */
+  .panel {
+    background-color: var(--bg-panel);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-lg);
+  }
+
+  .panel-hover:hover {
+    background-color: var(--bg-panel-hover);
+  }
+
+  /* Focus ring */
+  .focus-ring:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 2px;
+  }
+
+  /* Badge variants */
+  .badge-success {
+    background-color: var(--success-bg);
+    color: var(--success);
+  }
+  .badge-warning {
+    background-color: var(--warning-bg);
+    color: var(--warning);
+  }
+  .badge-danger {
+    background-color: var(--danger-bg);
+    color: var(--danger);
+  }
+  .badge-info {
+    background-color: var(--info-bg);
+    color: var(--info);
+  }
+
+  /* Tab styling */
+  .tab-active {
+    background-color: var(--accent-primary);
+    color: var(--text-primary);
+  }
+
+  .tab-inactive {
+    background-color: transparent;
+    color: var(--text-secondary);
+  }
+
+  .tab-inactive:hover {
+    background-color: var(--bg-panel-hover);
+    color: var(--text-primary);
+  }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+  
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

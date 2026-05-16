@@ -1,0 +1,274 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { TrendingUp, TrendingDown, Target, BarChart3, Trophy, Activity } from 'lucide-react';
+import { Panel, KPICard } from '@/components/core/Panel';
+import { DataGuard, SkeletonKPI, SkeletonChart, SkeletonTable } from '@/components/core/DataGuard';
+import { WinRateTrendChart } from '@/components/tabs/performance/WinRateTrendChart';
+import { SignalTypeBreakdown } from '@/components/tabs/performance/SignalTypeBreakdown';
+import { EngineLeaderboard } from '@/components/tabs/performance/EngineLeaderboard';
+import { formatCurrency, formatPercent } from '@/lib/formatters';
+import { queries } from '@/lib/supabase';
+import type { PerformanceMetricsRow, ClosedPosition, EngineStatsEntry } from '@/types/database';
+import type { WeeklyPerformance, EngineStats } from '@/types/database';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, Cell,
+} from 'recharts';
+
+// ─── Map PerformanceMetricsRow → WeeklyPerformance (what charts expect) ───
+function toWeeklyPerformance(rows: PerformanceMetricsRow[]): WeeklyPerformance[] {
+  return [...rows]
+    .sort((a, b) => a.metric_date.localeCompare(b.metric_date))
+    .map((r) => ({
+      week_start: r.metric_date,
+      win_rate: (r.win_rate_overall ?? 0) / 100,
+      total_trades: r.signals_generated ?? 0,
+      pnl: 0,
+      pnl_percent: r.avg_fwd_ret_5d ?? 0,
+    }));
+}
+
+// ─── Parse engine_stats JSONB → EngineStats[] (what charts expect) ────────
+function toEngineStats(rows: PerformanceMetricsRow[]): EngineStats[] {
+  for (const row of rows) {
+    let parsed: EngineStatsEntry[] | null = null;
+    if (Array.isArray(row.engine_stats)) parsed = row.engine_stats;
+    else if (typeof row.engine_stats === 'string') {
+      try { parsed = JSON.parse(row.engine_stats); } catch { continue; }
+    }
+    if (parsed && parsed.length > 0) {
+      return parsed.map((e) => ({
+        engine_name: e.engine_name,
+        total_signals: e.total_signals,
+        executed_signals: e.total_signals,
+        win_count: e.win_count,
+        loss_count: e.loss_count,
+        win_rate: e.win_rate / 100,
+        avg_pnl_percent: e.avg_pnl_pct ?? 0,
+        total_pnl: e.total_pnl ?? 0,
+        last_signal_date: row.metric_date,
+      }));
+    }
+  }
+  return [];
+}
+
+// ─── Monthly P&L breakdown chart (from closed_positions) ─────────────────
+function MonthlyPnLChart({ data }: { data: ClosedPosition[] }) {
+  const monthly: Record<string, number> = {};
+  for (const p of data) {
+    if (!p.exit_date) continue;
+    const month = p.exit_date.slice(0, 7); // YYYY-MM
+    monthly[month] = (monthly[month] ?? 0) + (p.realized_pnl ?? 0);
+  }
+  const chartData = Object.entries(monthly)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .slice(-12)
+    .map(([month, pnl]) => ({
+      month: new Date(month + '-01').toLocaleDateString('en-IN', { month: 'short', year: '2-digit' }),
+      pnl,
+    }));
+
+  if (chartData.length === 0) return (
+    <div className="h-48 flex items-center justify-center text-sm text-muted-foreground">
+      No monthly P&L data yet
+    </div>
+  );
+
+  return (
+    <div className="h-48">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" opacity={0.4} vertical={false} />
+          <XAxis dataKey="month" fontSize={11} tickLine={false} axisLine={false} stroke="var(--text-muted)" />
+          <YAxis fontSize={11} tickLine={false} axisLine={false} stroke="var(--text-muted)"
+            tickFormatter={(v) => `₹${Math.abs(v) >= 1000 ? (v / 1000).toFixed(0) + 'K' : v}`} />
+          <Tooltip
+            contentStyle={{ backgroundColor: 'var(--bg-tooltip)', border: '1px solid var(--border-default)', borderRadius: '6px', fontSize: '12px' }}
+            formatter={(v: number) => [formatCurrency(v, { showSign: true }), 'Realized P&L']}
+          />
+          <Bar dataKey="pnl" radius={[3, 3, 0, 0]} maxBarSize={32}>
+            {chartData.map((entry, i) => (
+              <Cell key={i} fill={entry.pnl >= 0 ? 'var(--profit-green)' : 'var(--loss-red)'} fillOpacity={0.8} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// ─── Strategy breakdown (from closed_positions) ───────────────────────────
+function StrategyBreakdown({ data }: { data: ClosedPosition[] }) {
+  const byStrategy: Record<string, { wins: number; losses: number; pnl: number }> = {};
+  for (const p of data) {
+    const s = p.strategy ?? 'UNKNOWN';
+    if (!byStrategy[s]) byStrategy[s] = { wins: 0, losses: 0, pnl: 0 };
+    if ((p.realized_pnl ?? 0) > 0) byStrategy[s].wins++;
+    else byStrategy[s].losses++;
+    byStrategy[s].pnl += p.realized_pnl ?? 0;
+  }
+
+  const rows = Object.entries(byStrategy)
+    .map(([strategy, v]) => ({ strategy, ...v, wr: v.wins + v.losses > 0 ? (v.wins / (v.wins + v.losses)) * 100 : 0 }))
+    .sort((a, b) => b.pnl - a.pnl);
+
+  return (
+    <div className="space-y-2">
+      {rows.map((r) => (
+        <div key={r.strategy} className="flex items-center gap-3 p-2.5 rounded-lg bg-panel-hover">
+          <div className="w-24 shrink-0">
+            <div className="font-medium text-sm">{r.strategy}</div>
+            <div className="text-xs text-muted-foreground">{r.wins + r.losses} trades</div>
+          </div>
+          <div className="flex-1">
+            <div className="flex justify-between text-xs mb-1">
+              <span className="text-muted-foreground">Win Rate</span>
+              <span className={r.wr >= 50 ? 'text-profit' : 'text-loss'}>{r.wr.toFixed(0)}%</span>
+            </div>
+            <div className="h-1.5 bg-border rounded-full overflow-hidden">
+              <div className={`h-full rounded-full ${r.wr >= 50 ? 'bg-profit' : 'bg-loss'}`} style={{ width: `${r.wr}%` }} />
+            </div>
+          </div>
+          <div className={`text-right shrink-0 text-sm font-mono font-medium ${r.pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
+            {formatCurrency(r.pnl, { compact: true, showSign: true })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Main Tab ─────────────────────────────────────────────────────────────
+export function PerformanceTab() {
+  const [metrics, setMetrics] = useState<PerformanceMetricsRow[]>([]);
+  const [closed, setClosed] = useState<ClosedPosition[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function load() {
+      setLoading(true);
+      try {
+        const [m, c] = await Promise.all([
+          queries.getPerformanceMetrics('weekly', 26),
+          queries.getClosedPositions(100),
+        ]);
+        if (m.error) throw m.error;
+        if (c.error) throw c.error;
+        setMetrics(m.data ?? []);
+        setClosed(c.data ?? []);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to load');
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, []);
+
+  // Derived stats from closed_positions (source of truth for real trades)
+  const wins = closed.filter((p) => (p.realized_pnl ?? 0) > 0);
+  const losses = closed.filter((p) => (p.realized_pnl ?? 0) <= 0);
+  const winRate = closed.length > 0 ? (wins.length / closed.length) * 100 : 0;
+  const totalPnl = closed.reduce((s, p) => s + (p.realized_pnl ?? 0), 0);
+  const avgWin = wins.length > 0 ? wins.reduce((s, p) => s + (p.realized_pnl ?? 0), 0) / wins.length : 0;
+  const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((s, p) => s + (p.realized_pnl ?? 0), 0) / losses.length) : 1;
+  const profitFactor = avgLoss > 0 ? (avgWin * wins.length) / (avgLoss * Math.max(losses.length, 1)) : 0;
+
+  // Streak
+  let streak = 0; let streakType: 'WIN' | 'LOSS' = 'WIN';
+  const sorted = [...closed].sort((a, b) => (b.exit_date ?? '').localeCompare(a.exit_date ?? ''));
+  for (const p of sorted) {
+    const won = (p.realized_pnl ?? 0) > 0;
+    if (streak === 0) { streakType = won ? 'WIN' : 'LOSS'; streak = 1; }
+    else if ((won && streakType === 'WIN') || (!won && streakType === 'LOSS')) streak++;
+    else break;
+  }
+
+  const weeklyTrend = toWeeklyPerformance(metrics);
+  const engineStats = toEngineStats(metrics);
+  const errObj = error ? new Error(error) : null;
+
+  return (
+    <div className="space-y-4">
+      {/* KPI Row */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {loading ? (
+          <><SkeletonKPI /><SkeletonKPI /><SkeletonKPI /><SkeletonKPI /></>
+        ) : (
+          <>
+            <KPICard title="Win Rate" value={`${winRate.toFixed(1)}%`}
+              description={`${closed.length} closed trades`} icon={<Target className="h-4 w-4" />}
+              change={closed.length > 0 ? { value: `${wins.length}W / ${losses.length}L`, type: winRate >= 50 ? 'increase' : 'decrease' } : undefined} />
+            <KPICard title="Total Realized P&L" value={formatCurrency(totalPnl, { compact: true })}
+              icon={<Activity className="h-4 w-4" />}
+              change={totalPnl !== 0 ? { value: totalPnl > 0 ? 'Net profitable' : 'Net loss', type: totalPnl > 0 ? 'increase' : 'decrease' } : undefined} />
+            <KPICard title="Profit Factor"
+              value={closed.length > 0 ? profitFactor.toFixed(2) : '—'}
+              description="Gross profit ÷ gross loss" icon={<BarChart3 className="h-4 w-4" />}
+              change={profitFactor > 0 ? { value: profitFactor >= 1.5 ? 'Healthy' : profitFactor >= 1 ? 'Marginal' : 'Negative edge', type: profitFactor >= 1.5 ? 'increase' : profitFactor >= 1 ? 'neutral' : 'decrease' } : undefined} />
+            <KPICard title="Current Streak"
+              value={closed.length > 0 ? `${streak} ${streakType === 'WIN' ? 'Wins' : 'Losses'}` : '—'}
+              icon={<Trophy className="h-4 w-4" />}
+              change={closed.length > 0 ? { value: streakType === 'WIN' ? 'Keep going' : 'Review setups', type: streakType === 'WIN' ? 'increase' : 'decrease' } : undefined} />
+          </>
+        )}
+      </div>
+
+      {/* Monthly P&L + Win Rate Trend */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Panel title="Monthly Realized P&L" description="12-month bar chart from closed_positions"
+          dataSource="supabase" tableName="closed_positions" isLoading={loading}>
+          <DataGuard data={closed} isLoading={loading} error={errObj}
+            loadingContent={<SkeletonChart className="h-48" />}
+            emptyTitle="No closed trades" emptyDescription="Closes your first trade to see monthly P&L">
+            {(data) => <MonthlyPnLChart data={data} />}
+          </DataGuard>
+        </Panel>
+
+        <Panel title="Win Rate Trend" description="Weekly rolling — from performance_metrics"
+          dataSource="supabase" tableName="performance_metrics" isLoading={loading}>
+          <DataGuard data={weeklyTrend} isLoading={loading} error={errObj}
+            loadingContent={<SkeletonChart className="h-48" />}
+            emptyTitle="No trend data" emptyDescription="Populated by your pipeline's performance_metrics step">
+            {(data) => <WinRateTrendChart data={data} />}
+          </DataGuard>
+        </Panel>
+      </div>
+
+      {/* Strategy Breakdown + Engine Leaderboard */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Panel title="Strategy P&L Breakdown" description="Realized P&L and win rate by strategy"
+          dataSource="supabase" tableName="closed_positions" isLoading={loading}>
+          <DataGuard data={closed} isLoading={loading} error={errObj}
+            loadingContent={<SkeletonTable rows={4} cols={1} />}
+            emptyTitle="No closed trades" emptyDescription="Strategy breakdown appears after your first closed trade">
+            {(data) => <StrategyBreakdown data={data} />}
+          </DataGuard>
+        </Panel>
+
+        <Panel title="Engine Leaderboard" description="From engine_stats in performance_metrics"
+          dataSource="supabase" tableName="performance_metrics" isLoading={loading}>
+          <DataGuard data={engineStats} isLoading={loading} error={errObj}
+            loadingContent={<SkeletonTable rows={5} cols={4} />}
+            emptyTitle="No engine stats yet"
+            emptyDescription="engine_stats JSONB column needs to be populated by your pipeline's compute_performance step">
+            {(data) => <EngineLeaderboard data={data} />}
+          </DataGuard>
+        </Panel>
+      </div>
+
+      {/* Signal type breakdown (only when engine_stats exist) */}
+      {engineStats.length > 0 && (
+        <Panel title="Signal Type Win Rate vs Avg P&L" description="Side-by-side comparison by engine"
+          dataSource="supabase" tableName="performance_metrics" isLoading={loading}>
+          <SignalTypeBreakdown data={engineStats} />
+        </Panel>
+      )}
+    </div>
+  );
+}
+
+export default PerformanceTab;
