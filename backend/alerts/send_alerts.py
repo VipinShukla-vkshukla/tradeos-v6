@@ -1475,6 +1475,45 @@ def main():
             f"| step19:{'ok' if has_fp else 'fallback'} "
             f"| guidance:{'ok' if has_guidance else 'missing'}"
         )
+    
+    # ── Write structured daily summary (queryable, replaces JSON hunting) ──
+    try:
+        ranked   = (data.get("final_picks") or {}).get("ranked_candidates") or []
+        _tier1   = len([r for r in ranked if r.get("tier") == "TIER_1"])
+        _tier2   = len([r for r in ranked if r.get("tier") == "TIER_2"])
+        _tier3   = len([r for r in ranked if r.get("tier") == "TIER_3"])
+
+        _buy_raw  = sum(1 for s in data["signals"] if s.get("signal_type") in ENTRY_TYPES)
+        _watch    = sum(1 for s in data["signals"] if s.get("signal_type") == "WATCH")
+        _exit_raw = sum(1 for s in data["signals"] if s.get("signal_type") == "EXIT")
+
+        _zero_reason = None
+        if _buy_raw == 0:
+            _zero_reason = "NO_RAW_SIGNALS"
+        elif not has_fp:
+            _zero_reason = "STEP19_MISSING"
+        elif _tier1 == 0 and _tier2 == 0:
+            _zero_reason = "AI_PASSED_ALL_TO_TIER3"
+
+        sb.table("signal_daily_summary").upsert({
+            "date":           today,
+            "buy_raw":        _buy_raw,
+            "watch_raw":      _watch,
+            "exit_raw":       _exit_raw,
+            "tier1":          _tier1,
+            "tier2":          _tier2,
+            "tier3":          _tier3,
+            "open_positions": len(data["open_pos"]),
+            "step19_ok":      has_fp,
+            "guidance_ok":    has_guidance,
+            "zero_reason":    _zero_reason,
+            "sizing":         (data.get("final_picks") or {}).get("_sizing"),
+            "ai_note":        ((data.get("final_picks") or {}).get("_ai_note") or ""),
+        }).execute()
+        logger.info(f"signal_daily_summary written: T1:{_tier1} T2:{_tier2} raw:{_buy_raw}")
+    except Exception as e:
+        logger.warning(f"signal_daily_summary write failed (non-fatal): {e}")
+    
     return {
         "sent":     success,
         "mode":     mode,

@@ -80,7 +80,7 @@ def _build_synthesis_prompt(quant_findings: dict, dataset: dict,
     table_data = {}
     for tname in ["signals", "msl_history", "ai_context", "lessons",
                    "open_positions", "closed_positions", "perf_history",
-                   "brain_run_history", "past_proposals"]:
+                   "brain_run_history", "past_proposals", "signal_summary"]:
         df = dataset.get(tname)
         if df is not None:
             table_data[tname] = _df_summary(df, tname)

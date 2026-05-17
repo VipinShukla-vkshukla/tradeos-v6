@@ -373,12 +373,117 @@ def compute_monthly_metrics(sb, month_end: date) -> dict:
         ),
     }
 
+def persist_signal_outcomes(sb, dataset: dict) -> int:
+    """
+    Write one row per signal to signal_outcomes once the forward
+    return window has closed. Safe to re-run — uses upsert on
+    (signal_date, symbol). Called by performance_tracker after
+    each brain run.
+    """
+    signals: pd.DataFrame = dataset.get("signals", pd.DataFrame())
+    if signals.empty:
+        logger.info("signal_outcomes: no signals to persist")
+        return 0
+
+    # ── Only write rows where at least 5d forward return exists ──
+    # (means the window has closed — no point writing incomplete rows)
+    has_outcome = signals["ret_fwd_5d"].notna() if "ret_fwd_5d" in signals.columns else pd.Series(False, index=signals.index)
+    signals = signals[has_outcome].copy()
+    if signals.empty:
+        logger.info("signal_outcomes: no completed forward windows yet")
+        return 0
+
+    # ── Join tier from ai_context.__FINAL_PICKS__ ──
+    # Build a symbol→tier map across all dates in the window
+    tier_map: dict[tuple, str] = {}
+    conviction_map: dict[tuple, str] = {}
+    try:
+        ai_rows = (
+            sb.table("ai_context")
+              .select("date,conviction_reason")
+              .eq("symbol", "__FINAL_PICKS__")
+              .gte("date", str(signals["date"].min()))
+              .execute().data or []
+        )
+        for row in ai_rows:
+            try:
+                candidates = json.loads(row.get("conviction_reason") or "{}")
+                for c in candidates.get("ranked_candidates") or []:
+                    key = (str(row["date"])[:10], c.get("symbol"))
+                    tier_map[key]       = c.get("tier", "UNKNOWN")
+                    conviction_map[key] = c.get("conviction", "")
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"signal_outcomes: tier join failed (non-fatal): {e}")
+
+    # ── Join actual P&L from closed_positions ──
+    closed: pd.DataFrame = dataset.get("closed_positions", pd.DataFrame())
+    pnl_map: dict[tuple, float] = {}
+    taken_map: dict[tuple, bool] = {}
+    if not closed.empty and "symbol" in closed.columns:
+        for _, cp in closed.iterrows():
+            # match on entry_date + symbol
+            key = (str(cp.get("entry_date") or "")[:10], cp.get("symbol"))
+            pnl_map[key]   = cp.get("pnl_pct") or cp.get("realized_pnl_pct")
+            taken_map[key] = True
+
+    # ── Build rows ──
+    rows = []
+    for _, s in signals.iterrows():
+        sig_date = str(s.get("date") or "")[:10]
+        symbol   = s.get("symbol")
+        if not sig_date or not symbol:
+            continue
+
+        key = (sig_date, symbol)
+
+        ret_5d  = s.get("ret_fwd_5d")
+        ret_10d = s.get("ret_fwd_10d")
+        ret_20d = s.get("ret_fwd_20d")
+        label   = s.get("outcome_label")   # WIN/LOSS/NEUTRAL — set by data_aggregator
+
+        rows.append({
+            "signal_date":    sig_date,
+            "symbol":         symbol,
+            "sector":         s.get("sector"),
+            "strategy":       s.get("strategy"),
+            "signal_type":    s.get("signal_type"),
+            "ai_tier":        tier_map.get(key, "UNRANKED"),
+            "ai_conviction":  conviction_map.get(key, ""),
+            "score_adjusted": float(s["score_adjusted"]) if pd.notna(s.get("score_adjusted")) else None,
+            "ret_fwd_5d":     float(ret_5d)  if pd.notna(ret_5d)  else None,
+            "ret_fwd_10d":    float(ret_10d) if pd.notna(ret_10d) else None,
+            "ret_fwd_20d":    float(ret_20d) if pd.notna(ret_20d) else None,
+            "outcome_label":  label,
+            "position_taken": taken_map.get(key, False),
+            "actual_pnl_pct": pnl_map.get(key),
+        })
+
+    if not rows:
+        return 0
+
+    # ── Upsert in batches of 200 ──
+    written = 0
+    for i in range(0, len(rows), 200):
+        batch = rows[i:i+200]
+        try:
+            sb.table("signal_outcomes").upsert(
+                batch,
+                on_conflict="signal_date,symbol"
+            ).execute()
+            written += len(batch)
+        except Exception as e:
+            logger.warning(f"signal_outcomes batch {i//200} failed: {e}")
+
+    logger.info(f"signal_outcomes: wrote {written} rows ({len([r for r in rows if r['position_taken']])} traded)")
+    return written
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ORCHESTRATOR
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_performance_tracking(for_date: date = None) -> dict:
+def run_performance_tracking(dataset: dict, for_date: date = None) -> dict:
     """
     Compute and store daily/weekly/monthly metrics.
     Call at end of daily pipeline run.
@@ -429,6 +534,12 @@ def run_performance_tracking(for_date: date = None) -> dict:
         except Exception as e:
             logger.warning(f"  Monthly metrics failed: {e}")
 
+
+    try:
+        from brain.performance_tracker import persist_signal_outcomes
+        persist_signal_outcomes(sb, dataset)
+    except Exception as e:
+        logger.warning(f"signal_outcomes persist failed (non-fatal): {e}")
     return {"date": str(for_date), "grains_stored": stored}
 
 
@@ -486,3 +597,5 @@ def send_weekly_telegram_summary(for_date: date = None):
 
     except Exception as e:
         logger.warning(f"Weekly Telegram summary failed: {e}")
+
+

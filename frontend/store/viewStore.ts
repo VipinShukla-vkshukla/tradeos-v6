@@ -48,7 +48,58 @@ export const useViewStore = create<ViewState>()(
       wizardStep: 0,
       wizardDraft: null,
 
-      setViews: (views) => set({ views }),
+      // ── setViews: MERGE, never full replace ──────────────────────────────
+      // Called when Supabase custom_views is loaded on page boot.
+      // Problem: Supabase may not store/return all local fields (viewType,
+      // primaryTable, baseTable). A full replace wipes those out, causing
+      // AutoDashboard to get undefined table/viewType → stuck loading or
+      // falling through to LiveDataView incorrectly.
+      //
+      // Strategy:
+      //   1. For views that exist in both local + Supabase: merge, but keep
+      //      local values for any field the remote doesn't have.
+      //   2. For views that exist only in local (Supabase save may have failed):
+      //      keep as-is.
+      //   3. For views that exist only in Supabase (added from another browser):
+      //      append.
+      setViews: (incomingViews) =>
+        set((state) => {
+          const incomingMap = new Map(incomingViews.map((v) => [v.id, v]));
+
+          // Update existing local views with remote data, preserving critical local fields
+          const merged = state.views.map((localView) => {
+            const remoteView = incomingMap.get(localView.id);
+            if (!remoteView) return localView; // local only — keep
+
+            // Merge: remote wins for most fields, but never overwrite with undefined/null
+            // for the fields CustomTabView needs to render correctly.
+            return {
+              ...localView,       // local baseline (has all fields)
+              ...remoteView,      // remote overrides (may be missing some fields)
+              // ─ Critical fields: keep local value if remote is missing ─
+              viewType: remoteView.viewType ?? localView.viewType,
+              primaryTable:
+                (remoteView as { primaryTable?: string }).primaryTable ??
+                (localView as { primaryTable?: string }).primaryTable,
+              baseTable:
+                (remoteView as { baseTable?: string }).baseTable ??
+                (localView as { baseTable?: string }).baseTable,
+              // Always keep the richer columns array
+              columns:
+                (remoteView.columns?.length ?? 0) > 0
+                  ? remoteView.columns
+                  : localView.columns,
+            };
+          });
+
+          // Append Supabase-only views (not in local store)
+          const localIds = new Set(state.views.map((v) => v.id));
+          incomingViews.forEach((v) => {
+            if (!localIds.has(v.id)) merged.push(v);
+          });
+
+          return { views: merged };
+        }),
 
       // addView: saves to Supabase first, then local store
       addView: async (view) => {
@@ -57,7 +108,8 @@ export const useViewStore = create<ViewState>()(
             id: view.id,
             name: view.name,
             description: view.description,
-            baseTable: view.primaryTable || (view as { baseTable?: string }).baseTable || '',
+            baseTable: (view as { primaryTable?: string; baseTable?: string }).primaryTable
+              || (view as { baseTable?: string }).baseTable || '',
             columns: view.columns,
             joins: view.joins,
             filters: view.filters,
@@ -137,7 +189,11 @@ export const useViewStore = create<ViewState>()(
         set((state) => ({
           views: state.views.map((v) =>
             v.id === viewId
-              ? { ...v, columns: v.columns.filter((c) => c.id !== columnId), updatedAt: new Date().toISOString() }
+              ? {
+                  ...v,
+                  columns: v.columns.filter((c) => c.id !== columnId),
+                  updatedAt: new Date().toISOString(),
+                }
               : v
           ),
         })),
@@ -147,7 +203,9 @@ export const useViewStore = create<ViewState>()(
           views: state.views.map((v) => {
             if (v.id !== viewId) return v;
             const map = new Map(v.columns.map((c) => [c.id, c]));
-            const reordered = columnIds.map((id) => map.get(id)).filter(Boolean) as ViewColumn[];
+            const reordered = columnIds
+              .map((id) => map.get(id))
+              .filter(Boolean) as ViewColumn[];
             return { ...v, columns: reordered, updatedAt: new Date().toISOString() };
           }),
         })),
@@ -165,7 +223,11 @@ export const useViewStore = create<ViewState>()(
         set((state) => ({
           views: state.views.map((v) =>
             v.id === viewId
-              ? { ...v, filters: v.filters.filter((f) => f.id !== filterId), updatedAt: new Date().toISOString() }
+              ? {
+                  ...v,
+                  filters: v.filters.filter((f) => f.id !== filterId),
+                  updatedAt: new Date().toISOString(),
+                }
               : v
           ),
         })),
@@ -176,7 +238,9 @@ export const useViewStore = create<ViewState>()(
             v.id === viewId
               ? {
                   ...v,
-                  filters: v.filters.map((f) => (f.id === filterId ? { ...f, ...updates } : f)),
+                  filters: v.filters.map((f) =>
+                    f.id === filterId ? { ...f, ...updates } : f
+                  ),
                   updatedAt: new Date().toISOString(),
                 }
               : v
@@ -196,14 +260,17 @@ export const useViewStore = create<ViewState>()(
         set((state) => ({
           views: state.views.map((v) =>
             v.id === viewId
-              ? { ...v, joins: (v.joins ?? []).filter((j) => j.id !== joinId), updatedAt: new Date().toISOString() }
+              ? {
+                  ...v,
+                  joins: (v.joins ?? []).filter((j) => j.id !== joinId),
+                  updatedAt: new Date().toISOString(),
+                }
               : v
           ),
         })),
     }),
     {
       name: 'tradeos-views',
-      // Persist locally as fallback when Supabase custom_views doesn't exist yet
       partialize: (state) => ({ views: state.views }),
     }
   )

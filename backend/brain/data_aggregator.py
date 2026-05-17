@@ -48,6 +48,7 @@ CORE_TABLES = [
     "brain_proposals",
     "config_change_log",
     "performance_metrics",
+    "signal_daily_summary",
 ]
 
 
@@ -362,6 +363,7 @@ def build_analysis_dataset(days: int = 90) -> dict:
                                          filters=[("status","eq","OPEN")])
     closed_positions  = _load_with_date_window(sb, "closed_positions", "exit_date", days)
     perf_history      = _load_with_date_window(sb, "performance_metrics", "metric_date", 180)
+    signal_summary    = _load_with_date_window(sb, "signal_daily_summary", "date", days)
     brain_history     = _safe_load_table(sb, "brain_analysis_log",
                                           order_col="run_date", limit=20)
     past_proposals    = _safe_load_table(sb, "brain_proposals",
@@ -435,4 +437,5 @@ def build_analysis_dataset(days: int = 90) -> dict:
         "win_threshold":          win_thresh,
         "stop_threshold":         stop_thresh,
         "eval_horizons":          horizons,
+        "signal_summary":         signal_summary,
     }

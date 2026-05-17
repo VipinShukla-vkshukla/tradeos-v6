@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { RefreshCw, Settings, Trash2 } from 'lucide-react';
+import { RefreshCw, Trash2 } from 'lucide-react';
 import { Panel } from '@/components/core/Panel';
 import { DataGuard, SkeletonTable } from '@/components/core/DataGuard';
 import { Button } from '@/components/ui/button';
@@ -24,9 +24,12 @@ export function LiveDataView({ view }: LiveDataViewProps) {
 
   const baseTable = view.primaryTable || (view as { baseTable?: string }).baseTable || '';
 
-  // Build column select string from view.columns
-  const selectColumns = view.columns.length > 0
-    ? view.columns
+  // ✅ Guard: ensure cols is always an array regardless of what view.columns is
+  const cols = Array.isArray(view.columns) ? view.columns : [];
+
+  // Build column select string — if no columns defined, fetch everything
+  const selectColumns = cols.length > 0
+    ? cols
         .filter((c) => c.visible !== false)
         .map((c) => c.alias ? `${c.sourceColumn}:${c.alias}` : c.sourceColumn)
         .join(', ')
@@ -73,11 +76,20 @@ export function LiveDataView({ view }: LiveDataViewProps) {
     removeViewFromTab(activeTabId, view.id);
   }
 
-  // Derive visible columns for table headers
-  const visibleColumns = view.columns.length > 0
-    ? view.columns.filter((c) => c.visible !== false)
+  // ✅ Derive visible columns:
+  //   1. Use view.columns if defined and non-empty
+  //   2. Fall back to keys from first data row (works when columns is undefined/empty)
+  const visibleColumns = cols.length > 0
+    ? cols.filter((c) => c.visible !== false)
     : data.length > 0
-      ? Object.keys(data[0]).map((k) => ({ sourceColumn: k, alias: undefined, visible: true, id: k, sourceTable: '', type: 'text' }))
+      ? Object.keys(data[0]).map((k) => ({
+          id: k,
+          sourceColumn: k,
+          sourceTable: baseTable,
+          alias: undefined,
+          visible: true,
+          type: 'text' as const,
+        }))
       : [];
 
   return (
@@ -112,8 +124,10 @@ export function LiveDataView({ view }: LiveDataViewProps) {
               <thead>
                 <tr className="border-b border-border">
                   {visibleColumns.map((col) => (
-                    <th key={col.id || col.sourceColumn}
-                      className="text-left py-2.5 px-3 font-medium text-muted-foreground text-xs">
+                    <th
+                      key={col.id || col.sourceColumn}
+                      className="text-left py-2.5 px-3 font-medium text-muted-foreground text-xs"
+                    >
                       {col.alias || col.sourceColumn}
                     </th>
                   ))}
@@ -127,10 +141,13 @@ export function LiveDataView({ view }: LiveDataViewProps) {
                       const val = row[key] ?? row[col.sourceColumn];
                       return (
                         <td key={col.id || col.sourceColumn} className="py-2.5 px-3 text-xs">
-                          {val == null ? <span className="text-muted-foreground">—</span> :
-                           typeof val === 'boolean' ? (val ? '✓' : '✗') :
-                           typeof val === 'object' ? JSON.stringify(val).slice(0, 60) :
-                           String(val)}
+                          {val == null
+                            ? <span className="text-muted-foreground">—</span>
+                            : typeof val === 'boolean'
+                              ? (val ? '✓' : '✗')
+                              : typeof val === 'object'
+                                ? JSON.stringify(val).slice(0, 60)
+                                : String(val)}
                         </td>
                       );
                     })}
