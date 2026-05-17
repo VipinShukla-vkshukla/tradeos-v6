@@ -572,48 +572,55 @@ def process_auto_approvals(config: dict) -> int:
 
 def send_telegram_digest(proposals: list, run_id: str, auto_applied: int = 0) -> bool:
     import os, urllib.request
-    token   = os.getenv("TELEGRAM_BOT_TOKEN","")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID","")
+
+    def esc(s):
+        """Escape HTML special chars for Telegram HTML parse mode."""
+        return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    token   = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
     if not token or not chat_id:
         return False
 
-    pending = [p for p in proposals if p.get("status","PENDING") == "PENDING"]
+    pending = [p for p in proposals if p.get("status", "PENDING") == "PENDING"]
     if not pending and auto_applied == 0:
         return True
 
-    lines = [f"🧠 *TradeOS Brain Engine*\nRun: `{run_id}`\n"]
+    lines = [f"🧠 <b>TradeOS Brain Engine</b>\nRun: <code>{esc(run_id)}</code>\n"]
     if auto_applied:
-        lines.append(f"✅ Auto-applied: *{auto_applied}* proposals\n")
+        lines.append(f"✅ Auto-applied: <b>{auto_applied}</b> proposals\n")
     if pending:
-        lines.append(f"⏳ *{len(pending)} proposals awaiting review:*\n")
+        lines.append(f"⏳ <b>{len(pending)} proposals awaiting review:</b>\n")
         for p in pending[:8]:
-            bt  = p.get("backtest_result") or {}
+            bt = p.get("backtest_result") or {}
             if isinstance(bt, str):
                 try: bt = json.loads(bt)
                 except: bt = {}
-            wr_s = f"+{bt['wr_delta']:.0f}pp" if isinstance(bt.get("wr_delta"),(int,float)) else ""
-            conf = float(p.get("confidence",0))
+            wr_s = f"+{bt['wr_delta']:.0f}pp" if isinstance(bt.get("wr_delta"), (int, float)) else ""
+            conf = float(p.get("confidence", 0))
             lines.append(
-                f"• `ID {p['id']}` [{p.get('proposal_type','')}] "
-                f"*{str(p.get('target_key',''))[:35]}*\n"
-                f"  {p.get('current_value','?')} → {p.get('proposed_value','?')}  "
-                f"conf={conf:.0%}  {wr_s}\n"
-                f"  _{str(p.get('rationale',''))[:90]}_\n"
+                f"• <code>ID {p['id']}</code> [{esc(p.get('proposal_type', ''))}] "
+                f"<b>{esc(str(p.get('target_key', ''))[:35])}</b>\n"
+                f"  {esc(p.get('current_value', '?'))} → {esc(p.get('proposed_value', '?'))}  "
+                f"conf={conf:.0%}  {esc(wr_s)}\n"
+                f"  <i>{esc(str(p.get('rationale', ''))[:90])}</i>\n"
             )
     lines += [
-        "\n*CLI:*",
-        "`python -m brain.change_manager approve <id>`",
-        "`python -m brain.change_manager rollback <id>`",
-        "`python -m brain.change_manager list`",
+        "\n<b>CLI:</b>",
+        "<code>python -m brain.change_manager approve &lt;id&gt;</code>",
+        "<code>python -m brain.change_manager rollback &lt;id&gt;</code>",
+        "<code>python -m brain.change_manager list</code>",
     ]
 
     try:
         data = json.dumps({
-            "chat_id": chat_id, "text": "\n".join(lines), "parse_mode": "Markdown"
+            "chat_id": chat_id,
+            "text": "\n".join(lines),
+            "parse_mode": "HTML"
         }).encode()
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            data=data, headers={"Content-Type":"application/json"},
+            data=data, headers={"Content-Type": "application/json"},
         )
         urllib.request.urlopen(req, timeout=10)
         return True

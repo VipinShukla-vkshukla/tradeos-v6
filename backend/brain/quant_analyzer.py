@@ -575,7 +575,6 @@ def analyze_brain_impact(signals: pd.DataFrame, past_proposals: pd.DataFrame) ->
             continue
 
         try:
-            import pandas as pd
             apply_date = pd.to_datetime(applied_at).date()
         except Exception:
             continue

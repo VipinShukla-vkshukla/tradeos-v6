@@ -207,6 +207,20 @@ def discover_engines(sb=None, config: dict = None) -> list[str]:
     except Exception:
         pass
 
+    # Fallback: import directly from screen_stocks (always in sync with actual engines)
+    try:
+        from signals.screen_stocks import _REGIME_ENGINE_WEIGHTS_DEFAULT
+        engines = set()
+        for regime_weights in _REGIME_ENGINE_WEIGHTS_DEFAULT.values():
+            if isinstance(regime_weights, dict):
+                engines.update(regime_weights.keys())
+        if engines:
+            logger.info(f"  Engine discovery: {len(engines)} engines from screen_stocks default "
+                        f"(tip: add regime_engine_weights to system_config to override)")
+            return sorted(engines)
+    except Exception as e:
+        logger.debug(f"  screen_stocks fallback failed: {e}")
+
     logger.warning("  Engine discovery failed — no engines found")
     return []
 

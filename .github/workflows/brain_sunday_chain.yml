@@ -22,6 +22,7 @@ on:
   workflow_run:
     workflows: ["TradeOS Brain Scheduler"]   # must match the `name:` in brain_scheduler.yml exactly
     types: [completed]
+  workflow_dispatch:   # allows manual "Run workflow" button in GitHub UI for testing
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -37,13 +38,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
-    # Only run when:
-    # 1. The triggering workflow succeeded (brain_full ran cleanly)
-    # 2. It was a scheduled run, not a manual workflow_dispatch
-    #    (avoids firing digest every time someone manually triggers brain_scheduler)
+    # Only run when either:
+    # A) Triggered by workflow_run: brain_scheduler completed a scheduled run successfully
+    #    (not a manual run — avoids digest firing every time you test brain_full manually)
+    # B) Triggered manually via workflow_dispatch (for testing)
     if: |
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'schedule'
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'schedule')
 
     steps:
       - uses: actions/checkout@v4

@@ -49,7 +49,7 @@ def _df_summary(df: pd.DataFrame, name: str, max_rows: int = 5) -> dict:
 
     # Sample rows — convert to JSON-safe dicts
     try:
-        sample = df.tail(max_rows).fillna("null").to_dict(orient="records")
+        sample = df.tail(max_rows).fillna("null").infer_objects(copy=False).to_dict(orient="records")
     except Exception:
         sample = []
 
@@ -63,7 +63,8 @@ def _df_summary(df: pd.DataFrame, name: str, max_rows: int = 5) -> dict:
 
 
 def _build_synthesis_prompt(quant_findings: dict, dataset: dict,
-                              script_scan_results: list) -> str:
+                              script_scan_results: list,
+                              registry=None) -> str:
     """
     Build the full synthesis prompt. The LLM receives:
       - Full quant findings (all analyses)
@@ -301,7 +302,8 @@ def _validate_proposal(p: dict, config: dict) -> Optional[dict]:
 
 def synthesize(quant_findings: dict, dataset: dict,
                script_scan_results: list = None,
-               max_proposals: int = 10) -> tuple[list[dict], dict]:
+               max_proposals: int = 10,
+               registry=None) -> tuple[list[dict], dict]:
     """
     Call the active AI provider to synthesize proposals and narrative.
     Returns: (proposals, narrative_dict)
@@ -316,7 +318,7 @@ def synthesize(quant_findings: dict, dataset: dict,
         return [], {}
 
     config = dataset.get("config", {})
-    prompt = _build_synthesis_prompt(quant_findings, dataset, script_scan_results or [])
+    prompt = _build_synthesis_prompt(quant_findings, dataset, script_scan_results or [], registry=registry)
 
     logger.info("  Calling LLM for synthesis (full data access)...")
     try:
