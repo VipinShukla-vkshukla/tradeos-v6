@@ -1,0 +1,76 @@
+name: TradeOS Brain Sunday Chain
+
+# ─────────────────────────────────────────────────────────────────────────────
+# This workflow does NOT run on a clock/cron schedule.
+#
+# It fires automatically when "TradeOS Brain Scheduler" completes.
+# Specifically: it runs weekly_perf_digest only after brain_full_weekly
+# has finished successfully — regardless of when GH Actions actually ran it.
+#
+# WHY THIS EXISTS:
+# GH Actions scheduled jobs can be delayed 30–90 minutes at peak times.
+# brain_full_weekly (Sunday 19:30 IST) and weekly_perf_digest (Sunday 20:00 IST)
+# are only 30 minutes apart. If brain_full is delayed by even 45 minutes,
+# a clock-based digest would fire on stale data before the brain finishes.
+#
+# This file solves that by making weekly_perf_digest event-driven, not time-driven.
+# It always runs after brain_full completes — 5 minutes later or 2 hours later,
+# it doesn't matter. Correct ordering is guaranteed.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_run:
+    workflows: ["TradeOS Brain Scheduler"]   # must match the `name:` in brain_scheduler.yml exactly
+    types: [completed]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  TZ: Asia/Kolkata
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  weekly_perf_digest:
+    name: "📨 Weekly Perf Digest (Telegram)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    # Only run when:
+    # 1. The triggering workflow succeeded (brain_full ran cleanly)
+    # 2. It was a scheduled run, not a manual workflow_dispatch
+    #    (avoids firing digest every time someone manually triggers brain_scheduler)
+    if: |
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'schedule'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install apscheduler pyyaml scipy
+
+      - name: Send weekly Telegram digest
+        env:
+          SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -c "from brain.performance_tracker import send_weekly_telegram_summary; send_weekly_telegram_summary()"
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-digest-logs-${{ github.run_id }}
+          path: backend/logs/
+          retention-days: 3

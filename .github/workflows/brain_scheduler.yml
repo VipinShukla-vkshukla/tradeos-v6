@@ -1,0 +1,259 @@
+name: TradeOS Brain Scheduler
+
+# ─── SCHEDULE OVERVIEW (all times IST = UTC+5:30) ────────────────────────────
+# Mon–Fri 20:30 IST  → performance_tracking    (0 15 * * 1-5)
+# Wed     19:30 IST  → brain_quant_midweek      (0 14 * * 3)
+# Sat     10:00 IST  → script_scan_weekly       (30 4 * * 6)
+# Sun     19:30 IST  → brain_full_weekly        (0 14 * * 0)
+# Sun     21:00 IST  → expire_proposals         (30 15 * * 0)
+#
+# NOTE: weekly_perf_digest is NOT here. It lives in brain_sunday_chain.yml
+# and triggers automatically when brain_full_weekly completes — this
+# guarantees correct ordering regardless of GH Actions scheduling delays.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    - cron: '0 15 * * 1-5'   # performance_tracking
+    - cron: '0 14 * * 3'     # brain_quant_midweek
+    - cron: '30 4 * * 6'     # script_scan_weekly
+    - cron: '0 14 * * 0'     # brain_full_weekly
+    - cron: '30 15 * * 0'    # expire_proposals
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'Job to run manually'
+        required: true
+        type: choice
+        options:
+          - performance_tracking
+          - brain_full_weekly
+          - brain_quant_midweek
+          - script_scan_weekly
+          - expire_proposals
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  TZ: Asia/Kolkata
+
+defaults:
+  run:
+    working-directory: backend
+
+# ═════════════════════════════════════════════════════════════════════════════
+# JOB 1 — Performance Tracking (Mon–Fri 20:30 IST)
+# ═════════════════════════════════════════════════════════════════════════════
+jobs:
+  performance_tracking:
+    name: "📊 Performance Tracking"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: |
+      github.event.schedule == '0 15 * * 1-5' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'performance_tracking')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install apscheduler pyyaml scipy
+
+      - name: Run performance tracking
+        env:
+          SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -c "from brain.performance_tracker import run_performance_tracking; run_performance_tracking()"
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-tracking-logs-${{ github.run_id }}
+          path: backend/logs/
+          retention-days: 5
+
+# ═════════════════════════════════════════════════════════════════════════════
+# JOB 2 — Brain Quant Mid-Week (Wednesday 19:30 IST)
+# ═════════════════════════════════════════════════════════════════════════════
+  brain_quant_midweek:
+    name: "🔬 Brain Quant (Mid-Week)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: |
+      github.event.schedule == '0 14 * * 3' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'brain_quant_midweek')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install apscheduler pyyaml scipy
+
+      - name: Run quant brain
+        env:
+          SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -m brain.brain_engine --mode quant
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: brain-quant-logs-${{ github.run_id }}
+          path: backend/logs/
+          retention-days: 5
+
+# ═════════════════════════════════════════════════════════════════════════════
+# JOB 3 — Script Scanner (Saturday 10:00 IST)
+# ═════════════════════════════════════════════════════════════════════════════
+  script_scan_weekly:
+    name: "🔍 Script Scanner (Weekly)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: |
+      github.event.schedule == '30 4 * * 6' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'script_scan_weekly')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install apscheduler pyyaml scipy
+
+      - name: Run script scanner
+        env:
+          SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python -c "from brain.script_scanner import run_scan; run_scan()"
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: script-scan-logs-${{ github.run_id }}
+          path: backend/logs/
+          retention-days: 5
+
+# ═════════════════════════════════════════════════════════════════════════════
+# JOB 4 — Brain Full Weekly (Sunday 19:30 IST)
+# When this job completes successfully, brain_sunday_chain.yml auto-fires
+# to run weekly_perf_digest — no clock-time dependency, always in order.
+# ═════════════════════════════════════════════════════════════════════════════
+  brain_full_weekly:
+    name: "🧠 Brain Full (Weekly)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: |
+      github.event.schedule == '0 14 * * 0' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'brain_full_weekly')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install apscheduler pyyaml scipy
+
+      - name: Run full brain
+        env:
+          SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ANTHROPIC_API_KEY:      ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY:         ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY:         ${{ secrets.GEMINI_API_KEY }}
+          DEEPSEEK_API_KEY:       ${{ secrets.DEEPSEEK_API_KEY }}
+          GROK_API_KEY:           ${{ secrets.GROK_API_KEY }}
+          AZURE_OPENAI_API_KEY:   ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_ENDPOINT:  ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -m brain.brain_engine --mode full
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: brain-full-logs-${{ github.run_id }}
+          path: backend/logs/
+          retention-days: 7
+
+# ═════════════════════════════════════════════════════════════════════════════
+# JOB 5 — Expire Old Proposals (Sunday 21:00 IST)
+# No ordering dependency — safe to run on clock time
+# ═════════════════════════════════════════════════════════════════════════════
+  expire_proposals:
+    name: "🗑️ Expire Old Proposals"
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    if: |
+      github.event.schedule == '30 15 * * 0' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'expire_proposals')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install apscheduler pyyaml scipy
+
+      - name: Expire stale proposals
+        env:
+          SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python -c "
+          from config import get_supabase
+          from datetime import datetime, timezone
+          sb = get_supabase()
+          result = sb.table('brain_proposals').update({'status':'EXPIRED'}).eq('status','PENDING').lt('expires_at', datetime.now(timezone.utc).isoformat()).execute()
+          print(f'Expired proposals: {len(result.data)}')
+          "
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: expire-proposals-logs-${{ github.run_id }}
+          path: backend/logs/
+          retention-days: 3
