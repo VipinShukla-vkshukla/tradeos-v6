@@ -727,7 +727,8 @@ suggested_allocation_pct: % of available capital (0 if SKIP, e.g. 5.0 for 5%)
       "applies_to_sectors": ["sector1"],
       "confidence": "LOW"
     }
-  ]
+  ],
+  "summary": "3-4 sentence condensed summary of today's action: how many picks, sizing stance, top 2 names and why, key risk to watch. Write as if briefing a trader in 30 seconds."
 }""")
 
     return "\n".join(lines)
@@ -908,10 +909,12 @@ def write_final_picks(sb, result: dict, trade_date: str, provider: str,
             "suggested_action":   guidance.get("position_sizing_override", "REDUCED_25PCT"),
             "provider":           provider,
             "ai_note": (
-                f"TIER_1:{len(tier1)} TIER_2:{len(tier2)} total:{candidate_count} | "
-                f"{guidance.get('new_positions_guidance', '')[:150]} | "
-                f"{guidance.get('capital_deployment_narrative', '')[:150]}"
-            )[:500],
+                result.get("summary") or (
+                    f"TIER_1:{len(tier1)} TIER_2:{len(tier2)} total:{candidate_count} | "
+                    f"{guidance.get('new_positions_guidance', '')[:200]} | "
+                    f"{guidance.get('capital_deployment_narrative', '')[:300]}"
+                )
+            )[:2000],
             "fallback_used":  False,
             "confidence":     0.9,
         }, on_conflict="date,symbol").execute()
