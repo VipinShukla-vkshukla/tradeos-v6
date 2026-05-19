@@ -138,13 +138,6 @@ def main():
     def step_quality_check():
         from compute.data_quality_monitor import main as fn; return fn()
     
-    def step_performance_tracking():
-        """Compute and store daily/weekly/monthly performance metrics."""
-        from brain.performance_tracker import run_performance_tracking
-        import datetime
-        result = run_performance_tracking(for_date=datetime.date.today())
-        logger.info(f"Performance tracking: {result}")
-    
     def step_compute_regime():
         from compute.compute_regime import main as fn; return fn()
     
@@ -222,7 +215,6 @@ def main():
             # ── Output ──
             ("20_alerts",              step_alerts,              False),  # Telegram digest
             ("21_quality_check",       step_quality_check,       False), # data quality monitor with alerts
-            ("22_performance_tracking", step_performance_tracking, False), # daily/weekly/monthly performance metrics
         ]
     else:
         all_steps = steps_p0 + (steps_p1 if phase >= 1 else [])
