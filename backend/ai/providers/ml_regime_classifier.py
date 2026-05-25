@@ -60,14 +60,16 @@ import argparse
 import math
 from pathlib import Path
 from datetime import datetime, timedelta
-from config import get_supabase, today_ist, is_kill_switch_active, cfg, cfg_float, cfg_int, logger
 
+# ── Path setup MUST come before any local-module imports ──────────────────
 _BACKEND_ROOT = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(_BACKEND_ROOT))
+if str(_BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_ROOT))
 
+# Now safe to import local modules
 from config import (
     get_supabase, today_ist, IST,
-    is_kill_switch_active, cfg_int, logger,
+    is_kill_switch_active, cfg, cfg_float, cfg_int, logger,
 )
 
 # ── Constants ─────────────────────────────────────────────────────────────────

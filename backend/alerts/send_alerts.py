@@ -135,6 +135,34 @@ def esc(text: str) -> str:
 
 # ── Telegram sender ────────────────────────────────────────────────────────
 
+# ── Telegram sender ────────────────────────────────────────────────────────
+
+_TELEGRAM_LIMIT = 4096   # Telegram's hard per-message limit
+
+def _split_html_safe(text: str, limit: int = _TELEGRAM_LIMIT) -> list[str]:
+    """
+    Split a Telegram HTML message at newline boundaries so no HTML tag
+    is ever sheared across a part boundary.
+
+    Strategy:
+      1. Walk backwards from `limit` chars to find the last newline.
+      2. Repeat on the remainder until the whole message is consumed.
+
+    If a single line exceeds `limit` (pathological), it's hard-split and
+    may render broken — but that's a content problem, not a code problem.
+    """
+    parts = []
+    while len(text) > limit:
+        cut = text.rfind("\n", 0, limit)   # last newline before limit
+        if cut <= 0:
+            cut = limit                    # no newline found — hard cut
+        parts.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+    if text:
+        parts.append(text)
+    return parts
+
+
 def send_message(text: str) -> bool:
     import requests
     token   = TELEGRAM_TOKEN
@@ -142,6 +170,12 @@ def send_message(text: str) -> bool:
     if not token or not chat_id:
         logger.warning("Telegram credentials not set")
         return False
+
+    # Split BEFORE sending — never rely on a 400 to trigger the split
+    parts = _split_html_safe(text)
+    if len(parts) > 1:
+        results = [send_message(p) for p in parts]
+        return all(results)
 
     url     = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
@@ -159,10 +193,6 @@ def send_message(text: str) -> bool:
                 logger.warning(f"Telegram rate limit — waiting {wait}s")
                 time.sleep(wait)
                 continue
-            if resp.status_code == 400 and len(text) > 4000:
-                mid = len(text) // 2
-                send_message(text[:mid])
-                return send_message(text[mid:])
             logger.error(f"Telegram error {resp.status_code}: {resp.text[:200]}")
             return False
         except Exception as e:
@@ -942,11 +972,11 @@ def build_evening(data: dict) -> str:
         sizing = guidance.get("position_sizing_override") or fp.get("_sizing", "?")
         lines.append(f"💼 <b>SIZING: {sizing}</b>")
         if guidance.get("new_positions_guidance"):
-            lines.append(f"  <i>{esc(guidance.get('new_positions_guidance'))[:120]}</i>")
+            lines.append(f"  <i>{esc((guidance.get('new_positions_guidance') or '')[:120])}</i>")
         if guidance.get("capital_deployment_narrative"):
-            lines.append(f"  <i>{esc(guidance.get('capital_deployment_narrative'))[:200]}</i>")
+            lines.append(f"  <i>{esc((guidance.get('capital_deployment_narrative') or '')[:200])}</i>")
         if fp.get("_ai_note"):
-            lines.append(f"  <i>{esc(fp.get('_ai_note'))[:200]}</i>")
+            lines.append(f"  <i>{esc((fp.get('_ai_note') or '')[:200])}</i>")
         if guidance.get("sectors_to_overweight"):
             lines.append(f"  ▲ Overweight: {', '.join(guidance['sectors_to_overweight'][:4])}")
         if guidance.get("sectors_to_underweight"):
@@ -971,7 +1001,7 @@ def build_evening(data: dict) -> str:
                 ez = zone_line(c["symbol"], msl_map)
                 if ez: lines.append(f"  {ez}  <i>[DB]</i>")
                 if c.get("thesis"):
-                    lines.append(f"  💬 {esc(c['thesis'])}")
+                    lines.append(f"  💬 {esc((c['thesis'] or ''))}")
                 if c.get("entry_note"):
                     lines.append(f"  📍 {esc(c['entry_note'])}  <i>[AI]</i>")
                 if c.get("invalidation"):
