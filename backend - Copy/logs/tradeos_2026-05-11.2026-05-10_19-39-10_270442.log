@@ -1,0 +1,1705 @@
+00:09:11 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+00:09:31 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+00:09:31 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_183931 | mode=full | dry=False
+00:09:31 | INFO     | __main__:85 - Step 1/6 — Scanning scripts for hardcoded values...
+00:09:31 | INFO     | brain.script_scanner:93 - Discovered 63 Python files for scanning
+00:09:34 | INFO     | brain.script_scanner:491 - Script scan complete: 63 scripts registered
+00:09:34 | INFO     | __main__:91 - 
+════════════════════════════════════════════════════════════
+SCRIPT SCANNER REPORT
+════════════════════════════════════════════════════════════
+Scripts discovered: 63
+  Full cfg() coverage:    51
+  Partial cfg() coverage: 7
+  No cfg() coverage:      5
+
+Scripts with tunable hardcoded values:
+
+  compute\compute_regime.py [PARTIAL]
+    Reads: ['macro_indicators', 'stock_data_daily'] | Writes: []
+    L80: SCORE_TRENDING = 78  → cfg key: compute_regime_score_trending
+    L81: SCORE_RISK_ON = 60  → cfg key: compute_regime_score_risk_on
+    L82: SCORE_NEUTRAL = 40  → cfg key: compute_regime_score_neutral
+    L83: SCORE_RECOVERING = 25  → cfg key: compute_regime_score_recovering
+
+  compute\data_quality_monitor.py [NONE]
+    Reads: ['ai_context', 'lessons', 'master_shortlist', 'msl_history', 'open_positions', 'signal_log', 'stock_data_daily'] | Writes: ['stock_data_daily']
+    L72: CHARTINK_ROW_MIN = 450  → cfg key: data_quality_monitor_chartink_row_min
+    L73: CHARTINK_ROW_MAX = 510  → cfg key: data_quality_monitor_chartink_row_max
+    L74: VOL_RATIO_CAP = 50.0  → cfg key: data_quality_monitor_vol_ratio_cap
+    L76: SCORE_MAX = 150  → cfg key: data_quality_monitor_score_max
+    L78: MSL_MIN_ENRICHED = 70  → cfg key: data_quality_monitor_msl_min_enriched
+    ... and 5 more
+
+  signals\screen_stocks.py [PARTIAL]
+    Reads: ['master_shortlist', 'msl_computed', 'open_positions', 'stock_data_daily'] | Writes: ['msl_computed']
+    L87: MAX_SYMBOLS = 30  → cfg key: screen_stocks_max_symbols
+    L88: MAX_PER_SECTOR = 5  → cfg key: screen_stocks_max_per_sector
+    L89: MIN_MARKET_CAP = 300  → cfg key: screen_stocks_min_market_cap
+    L890: max_sector = 10  → cfg key: screen_stocks_max_sector
+    L934: min_score = 50  → cfg key: screen_stocks_min_score
+    ... and 4 more
+
+  ai\post_trade_analysis.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'nifty_upcoming_events', 'regime_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'signal_log', 'system_config']
+    L154: HOLDING_SCORE_EXIT_THRESHOLD = 30  → cfg key: post_trade_analysis_holding_score_exit_threshold
+    L155: MFE_TRAILING_FAILURE_RATIO = 0.5  → cfg key: post_trade_analysis_mfe_trailing_failure_ratio
+    L156: DEDUP_WINDOW_DAYS = 30  → cfg key: post_trade_analysis_dedup_window_days
+
+  compute\compute_msl.py [PARTIAL]
+    Reads: ['macro_indicators', 'master_shortlist', 'msl_computed', 'msl_history', 'open_positions', 'stock_data_daily'] | Writes: ['master_shortlist', 'msl_computed']
+    L116: MIN_VALUE_CR_DEFAULT = 10.0  → cfg key: compute_msl_min_value_cr_default
+
+  calibration\calibration_engine.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'system_config']
+    L73: CALIBRATION_MIN_NEW_TRADES = 15  → cfg key: calibration_engine_calibration_min_new_trades
+    L74: CALIBRATION_MAX_CHANGE_PCT = 0.2  → cfg key: calibration_engine_calibration_max_change_pct
+    L75: CALIBRATION_LOOKBACK_DAYS = 90  → cfg key: calibration_engine_calibration_lookback_days
+    L76: MIN_LESSON_APPLICATIONS = 10  → cfg key: calibration_engine_min_lesson_applications
+
+  compute\compute_indicators.py [PARTIAL]
+    Reads: ['master_shortlist', 'nifty_total_market', 'nifty_upcoming_events', 'stock_data_daily', 'system_config'] | Writes: ['stock_data_daily']
+    L113: MIN_SESSIONS_FOR_RETURNS = 260  → cfg key: compute_indicators_min_sessions_for_returns
+    L119: DIVERGE_THRESHOLD = 0.02  → cfg key: compute_indicators_diverge_threshold
+    L120: WIDE_THRESHOLD = 0.1  → cfg key: compute_indicators_wide_threshold
+
+  history\discovery_engine.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L37: MIN_SAMPLE_SIZE = 30  → cfg key: discovery_engine_min_sample_size
+    L38: P_VALUE_THRESHOLD = 0.05  → cfg key: discovery_engine_p_value_threshold
+    L39: MAX_PROPOSALS = 5  → cfg key: discovery_engine_max_proposals
+    L40: LOOKBACK_DAYS = 180  → cfg key: discovery_engine_lookback_days
+
+  ai\providers\ml_regime_classifier.py [PARTIAL]
+    Reads: ['regime_history'] | Writes: ['stock_data_daily']
+    L98: MIN_TRAINING_SAMPLES = 20  → cfg key: ml_regime_classifier_min_training_samples
+    L101: MIN_PREDICT_SAMPLES = 15  → cfg key: ml_regime_classifier_min_predict_samples
+    L103: LOOKBACK_DAYS = 365  → cfg key: ml_regime_classifier_lookback_days
+
+  ingestion\ingest_sheets.py [NONE]
+    Reads: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions', 'signal_log'] | Writes: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions']
+    L174: threshold = 0.005  → cfg key: ingest_sheets_threshold
+
+  ai\providers\ml_provider.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L96: MIN_TRADES = 90  → cfg key: ml_provider_min_trades
+
+  control\sl_monitor.py [NONE]
+    Reads: [] | Writes: ['open_positions']
+    L41: PROXIMITY_PCT = 2.0  → cfg key: sl_monitor_proximity_pct
+
+════════════════════════════════════════════════════════════
+To migrate a script: brain will auto-generate SCRIPT_PATCH proposals.
+Enable: set brain_script_patching_enabled=true in system_config.
+════════════════════════════════════════════════════════════
+
+00:09:34 | INFO     | __main__:101 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+00:09:34 | INFO     | brain.data_aggregator:347 - Building analysis dataset (90d, win≥3.0%, stop≤-5.0%)...
+00:09:34 | INFO     | brain.data_aggregator:351 -   signal_log: 656 rows × 97 cols
+00:09:34 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 22 symbols...
+00:09:35 | INFO     | brain.data_aggregator:231 -   Outcomes: 94 evaluated, 62 wins (66.0%), coverage=14%
+00:09:36 | INFO     | brain.data_aggregator:408 - Dataset ready: 656 signals, 94 with outcomes (14.3% coverage), 6 tables loaded
+00:09:36 | INFO     | __main__:114 - Step 3/6 — Quantitative analysis (all fields)...
+00:09:36 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+00:09:36 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+00:09:36 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 66.0%)
+00:09:36 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+00:09:36 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+00:09:36 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+00:09:36 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+00:09:36 | INFO     | brain.quant_analyzer:683 -   Lessons: 0 proven, 0 retire candidates
+00:09:36 | INFO     | brain.quant_analyzer:770 - Quant analysis complete: 0 actionable findings across 110 fields
+00:09:36 | INFO     | __main__:123 - Step 4/6 — Backtesting quant proposals...
+00:09:36 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+00:09:36 | INFO     | __main__:140 - Step 5/6 — LLM synthesis (full data, all fields)...
+00:09:36 | INFO     | brain.llm_synthesizer:321 -   Calling LLM for synthesis (full data access)...
+00:09:56 | INFO     | brain.llm_synthesizer:373 -   LLM synthesis: 0 raw proposals, 5 validated
+00:09:56 | INFO     | __main__:157 - 
+════════════════════════════════════════════════════════════
+00:09:56 | INFO     | __main__:158 - BRAIN SUMMARY: 5 proposals
+00:09:56 | INFO     | __main__:159 -   Signals: 656 (14% outcomes)
+00:09:56 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/post_trade_analysis.py conf=70% 
+00:09:56 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/post_trade_analysis.py conf=70% 
+00:09:56 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/post_trade_analysis.py conf=70% 
+00:09:56 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/providers/ml_provider.py conf=70% 
+00:09:56 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/providers/ml_regime_classifier.py conf=70% 
+00:09:56 | INFO     | __main__:168 - ════════════════════════════════════════════════════════════
+
+00:09:56 | INFO     | __main__:178 - Step 6/6 — Saving proposals, processing approvals...
+00:09:57 | INFO     | brain.backtester_and_change_manager:202 -   Saved 5/5 proposals
+00:09:57 | WARNING  | brain.backtester_and_change_manager:489 -   Telegram digest failed: HTTP Error 400: Bad Request
+00:09:58 | SUCCESS  | __main__:211 - 🧠 Brain v2 complete in 27s — 5 proposals, 0 auto-applied, 5 pending review
+00:21:13 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+00:21:13 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_185113 | mode=full | dry=False
+00:21:13 | INFO     | __main__:85 - Step 1/6 — Scanning scripts for hardcoded values...
+00:21:13 | INFO     | brain.script_scanner:93 - Discovered 63 Python files for scanning
+00:21:16 | INFO     | brain.script_scanner:491 - Script scan complete: 63 scripts registered
+00:21:16 | INFO     | __main__:91 - 
+════════════════════════════════════════════════════════════
+SCRIPT SCANNER REPORT
+════════════════════════════════════════════════════════════
+Scripts discovered: 63
+  Full cfg() coverage:    51
+  Partial cfg() coverage: 7
+  No cfg() coverage:      5
+
+Scripts with tunable hardcoded values:
+
+  compute\compute_regime.py [PARTIAL]
+    Reads: ['macro_indicators', 'stock_data_daily'] | Writes: []
+    L80: SCORE_TRENDING = 78  → cfg key: compute_regime_score_trending
+    L81: SCORE_RISK_ON = 60  → cfg key: compute_regime_score_risk_on
+    L82: SCORE_NEUTRAL = 40  → cfg key: compute_regime_score_neutral
+    L83: SCORE_RECOVERING = 25  → cfg key: compute_regime_score_recovering
+
+  compute\data_quality_monitor.py [NONE]
+    Reads: ['ai_context', 'lessons', 'master_shortlist', 'msl_history', 'open_positions', 'signal_log', 'stock_data_daily'] | Writes: ['stock_data_daily']
+    L72: CHARTINK_ROW_MIN = 450  → cfg key: data_quality_monitor_chartink_row_min
+    L73: CHARTINK_ROW_MAX = 510  → cfg key: data_quality_monitor_chartink_row_max
+    L74: VOL_RATIO_CAP = 50.0  → cfg key: data_quality_monitor_vol_ratio_cap
+    L76: SCORE_MAX = 150  → cfg key: data_quality_monitor_score_max
+    L78: MSL_MIN_ENRICHED = 70  → cfg key: data_quality_monitor_msl_min_enriched
+    ... and 5 more
+
+  signals\screen_stocks.py [PARTIAL]
+    Reads: ['master_shortlist', 'msl_computed', 'open_positions', 'stock_data_daily'] | Writes: ['msl_computed']
+    L87: MAX_SYMBOLS = 30  → cfg key: screen_stocks_max_symbols
+    L88: MAX_PER_SECTOR = 5  → cfg key: screen_stocks_max_per_sector
+    L89: MIN_MARKET_CAP = 300  → cfg key: screen_stocks_min_market_cap
+    L890: max_sector = 10  → cfg key: screen_stocks_max_sector
+    L934: min_score = 50  → cfg key: screen_stocks_min_score
+    ... and 4 more
+
+  ai\post_trade_analysis.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'nifty_upcoming_events', 'regime_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'signal_log', 'system_config']
+    L154: HOLDING_SCORE_EXIT_THRESHOLD = 30  → cfg key: post_trade_analysis_holding_score_exit_threshold
+    L155: MFE_TRAILING_FAILURE_RATIO = 0.5  → cfg key: post_trade_analysis_mfe_trailing_failure_ratio
+    L156: DEDUP_WINDOW_DAYS = 30  → cfg key: post_trade_analysis_dedup_window_days
+
+  compute\compute_msl.py [PARTIAL]
+    Reads: ['macro_indicators', 'master_shortlist', 'msl_computed', 'msl_history', 'open_positions', 'stock_data_daily'] | Writes: ['master_shortlist', 'msl_computed']
+    L116: MIN_VALUE_CR_DEFAULT = 10.0  → cfg key: compute_msl_min_value_cr_default
+
+  calibration\calibration_engine.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'system_config']
+    L73: CALIBRATION_MIN_NEW_TRADES = 15  → cfg key: calibration_engine_calibration_min_new_trades
+    L74: CALIBRATION_MAX_CHANGE_PCT = 0.2  → cfg key: calibration_engine_calibration_max_change_pct
+    L75: CALIBRATION_LOOKBACK_DAYS = 90  → cfg key: calibration_engine_calibration_lookback_days
+    L76: MIN_LESSON_APPLICATIONS = 10  → cfg key: calibration_engine_min_lesson_applications
+
+  compute\compute_indicators.py [PARTIAL]
+    Reads: ['master_shortlist', 'nifty_total_market', 'nifty_upcoming_events', 'stock_data_daily', 'system_config'] | Writes: ['stock_data_daily']
+    L113: MIN_SESSIONS_FOR_RETURNS = 260  → cfg key: compute_indicators_min_sessions_for_returns
+    L119: DIVERGE_THRESHOLD = 0.02  → cfg key: compute_indicators_diverge_threshold
+    L120: WIDE_THRESHOLD = 0.1  → cfg key: compute_indicators_wide_threshold
+
+  history\discovery_engine.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L37: MIN_SAMPLE_SIZE = 30  → cfg key: discovery_engine_min_sample_size
+    L38: P_VALUE_THRESHOLD = 0.05  → cfg key: discovery_engine_p_value_threshold
+    L39: MAX_PROPOSALS = 5  → cfg key: discovery_engine_max_proposals
+    L40: LOOKBACK_DAYS = 180  → cfg key: discovery_engine_lookback_days
+
+  ai\providers\ml_regime_classifier.py [PARTIAL]
+    Reads: ['regime_history'] | Writes: ['stock_data_daily']
+    L98: MIN_TRAINING_SAMPLES = 20  → cfg key: ml_regime_classifier_min_training_samples
+    L101: MIN_PREDICT_SAMPLES = 15  → cfg key: ml_regime_classifier_min_predict_samples
+    L103: LOOKBACK_DAYS = 365  → cfg key: ml_regime_classifier_lookback_days
+
+  ingestion\ingest_sheets.py [NONE]
+    Reads: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions', 'signal_log'] | Writes: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions']
+    L174: threshold = 0.005  → cfg key: ingest_sheets_threshold
+
+  ai\providers\ml_provider.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L96: MIN_TRADES = 90  → cfg key: ml_provider_min_trades
+
+  control\sl_monitor.py [NONE]
+    Reads: [] | Writes: ['open_positions']
+    L41: PROXIMITY_PCT = 2.0  → cfg key: sl_monitor_proximity_pct
+
+════════════════════════════════════════════════════════════
+To migrate a script: brain will auto-generate SCRIPT_PATCH proposals.
+Enable: set brain_script_patching_enabled=true in system_config.
+════════════════════════════════════════════════════════════
+
+00:21:16 | INFO     | __main__:101 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+00:21:16 | INFO     | brain.data_aggregator:347 - Building analysis dataset (90d, win≥3.0%, stop≤-5.0%)...
+00:21:17 | INFO     | brain.data_aggregator:351 -   signal_log: 656 rows × 97 cols
+00:21:17 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 22 symbols...
+00:21:17 | INFO     | brain.data_aggregator:231 -   Outcomes: 94 evaluated, 62 wins (66.0%), coverage=14%
+00:21:18 | INFO     | brain.data_aggregator:408 - Dataset ready: 656 signals, 94 with outcomes (14.3% coverage), 6 tables loaded
+00:21:18 | INFO     | __main__:114 - Step 3/6 — Quantitative analysis (all fields)...
+00:21:18 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+00:21:18 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+00:21:18 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 66.0%)
+00:21:18 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+00:21:18 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+00:21:18 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+00:21:18 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+00:21:18 | INFO     | brain.quant_analyzer:683 -   Lessons: 0 proven, 0 retire candidates
+00:21:18 | INFO     | brain.quant_analyzer:770 - Quant analysis complete: 0 actionable findings across 110 fields
+00:21:18 | INFO     | __main__:123 - Step 4/6 — Backtesting quant proposals...
+00:21:18 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+00:21:18 | INFO     | __main__:140 - Step 5/6 — LLM synthesis (full data, all fields)...
+00:21:18 | INFO     | brain.llm_synthesizer:321 -   Calling LLM for synthesis (full data access)...
+00:21:35 | INFO     | brain.llm_synthesizer:378 -   LLM synthesis: 0 raw proposals, 5 validated
+00:21:35 | INFO     | __main__:157 - 
+════════════════════════════════════════════════════════════
+00:21:35 | INFO     | __main__:158 - BRAIN SUMMARY: 5 proposals
+00:21:35 | INFO     | __main__:159 -   Signals: 656 (14% outcomes)
+00:21:35 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/post_trade_analysis.py conf=70% 
+00:21:35 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/providers/ml_provider.py conf=70% 
+00:21:35 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/post_trade_analysis.py conf=70% 
+00:21:35 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/post_trade_analysis.py conf=70% 
+00:21:35 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/providers/ml_regime_classifier.py conf=70% 
+00:21:35 | INFO     | __main__:168 - ════════════════════════════════════════════════════════════
+
+00:21:35 | INFO     | __main__:178 - Step 6/6 — Saving proposals, processing approvals...
+00:21:36 | INFO     | brain.backtester_and_change_manager:202 -   Saved 5/5 proposals
+00:21:37 | WARNING  | brain.backtester_and_change_manager:490 -   Telegram digest failed: HTTP Error 400: Bad Request
+00:21:37 | SUCCESS  | __main__:211 - 🧠 Brain v2 complete in 24s — 5 proposals, 0 auto-applied, 5 pending review
+00:30:50 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+00:30:50 | ERROR    | __main__:269 - Proposal 16: missing script_path or diff
+00:34:09 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+00:34:09 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_190409 | mode=full | dry=False
+00:34:09 | INFO     | __main__:85 - Step 1/6 — Scanning scripts for hardcoded values...
+00:34:09 | INFO     | brain.script_scanner:93 - Discovered 63 Python files for scanning
+00:34:14 | INFO     | brain.script_scanner:491 - Script scan complete: 63 scripts registered
+00:34:14 | INFO     | __main__:91 - 
+════════════════════════════════════════════════════════════
+SCRIPT SCANNER REPORT
+════════════════════════════════════════════════════════════
+Scripts discovered: 63
+  Full cfg() coverage:    51
+  Partial cfg() coverage: 7
+  No cfg() coverage:      5
+
+Scripts with tunable hardcoded values:
+
+  compute\compute_regime.py [PARTIAL]
+    Reads: ['macro_indicators', 'stock_data_daily'] | Writes: []
+    L80: SCORE_TRENDING = 78  → cfg key: compute_regime_score_trending
+    L81: SCORE_RISK_ON = 60  → cfg key: compute_regime_score_risk_on
+    L82: SCORE_NEUTRAL = 40  → cfg key: compute_regime_score_neutral
+    L83: SCORE_RECOVERING = 25  → cfg key: compute_regime_score_recovering
+
+  compute\data_quality_monitor.py [NONE]
+    Reads: ['ai_context', 'lessons', 'master_shortlist', 'msl_history', 'open_positions', 'signal_log', 'stock_data_daily'] | Writes: ['stock_data_daily']
+    L72: CHARTINK_ROW_MIN = 450  → cfg key: data_quality_monitor_chartink_row_min
+    L73: CHARTINK_ROW_MAX = 510  → cfg key: data_quality_monitor_chartink_row_max
+    L74: VOL_RATIO_CAP = 50.0  → cfg key: data_quality_monitor_vol_ratio_cap
+    L76: SCORE_MAX = 150  → cfg key: data_quality_monitor_score_max
+    L78: MSL_MIN_ENRICHED = 70  → cfg key: data_quality_monitor_msl_min_enriched
+    ... and 5 more
+
+  signals\screen_stocks.py [PARTIAL]
+    Reads: ['master_shortlist', 'msl_computed', 'open_positions', 'stock_data_daily'] | Writes: ['msl_computed']
+    L87: MAX_SYMBOLS = 30  → cfg key: screen_stocks_max_symbols
+    L88: MAX_PER_SECTOR = 5  → cfg key: screen_stocks_max_per_sector
+    L89: MIN_MARKET_CAP = 300  → cfg key: screen_stocks_min_market_cap
+    L890: max_sector = 10  → cfg key: screen_stocks_max_sector
+    L934: min_score = 50  → cfg key: screen_stocks_min_score
+    ... and 4 more
+
+  ai\post_trade_analysis.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'nifty_upcoming_events', 'regime_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'signal_log', 'system_config']
+    L154: HOLDING_SCORE_EXIT_THRESHOLD = 30  → cfg key: post_trade_analysis_holding_score_exit_threshold
+    L155: MFE_TRAILING_FAILURE_RATIO = 0.5  → cfg key: post_trade_analysis_mfe_trailing_failure_ratio
+    L156: DEDUP_WINDOW_DAYS = 30  → cfg key: post_trade_analysis_dedup_window_days
+
+  compute\compute_msl.py [PARTIAL]
+    Reads: ['macro_indicators', 'master_shortlist', 'msl_computed', 'msl_history', 'open_positions', 'stock_data_daily'] | Writes: ['master_shortlist', 'msl_computed']
+    L116: MIN_VALUE_CR_DEFAULT = 10.0  → cfg key: compute_msl_min_value_cr_default
+
+  calibration\calibration_engine.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'system_config']
+    L73: CALIBRATION_MIN_NEW_TRADES = 15  → cfg key: calibration_engine_calibration_min_new_trades
+    L74: CALIBRATION_MAX_CHANGE_PCT = 0.2  → cfg key: calibration_engine_calibration_max_change_pct
+    L75: CALIBRATION_LOOKBACK_DAYS = 90  → cfg key: calibration_engine_calibration_lookback_days
+    L76: MIN_LESSON_APPLICATIONS = 10  → cfg key: calibration_engine_min_lesson_applications
+
+  compute\compute_indicators.py [PARTIAL]
+    Reads: ['master_shortlist', 'nifty_total_market', 'nifty_upcoming_events', 'stock_data_daily', 'system_config'] | Writes: ['stock_data_daily']
+    L113: MIN_SESSIONS_FOR_RETURNS = 260  → cfg key: compute_indicators_min_sessions_for_returns
+    L119: DIVERGE_THRESHOLD = 0.02  → cfg key: compute_indicators_diverge_threshold
+    L120: WIDE_THRESHOLD = 0.1  → cfg key: compute_indicators_wide_threshold
+
+  history\discovery_engine.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L37: MIN_SAMPLE_SIZE = 30  → cfg key: discovery_engine_min_sample_size
+    L38: P_VALUE_THRESHOLD = 0.05  → cfg key: discovery_engine_p_value_threshold
+    L39: MAX_PROPOSALS = 5  → cfg key: discovery_engine_max_proposals
+    L40: LOOKBACK_DAYS = 180  → cfg key: discovery_engine_lookback_days
+
+  ai\providers\ml_regime_classifier.py [PARTIAL]
+    Reads: ['regime_history'] | Writes: ['stock_data_daily']
+    L98: MIN_TRAINING_SAMPLES = 20  → cfg key: ml_regime_classifier_min_training_samples
+    L101: MIN_PREDICT_SAMPLES = 15  → cfg key: ml_regime_classifier_min_predict_samples
+    L103: LOOKBACK_DAYS = 365  → cfg key: ml_regime_classifier_lookback_days
+
+  ingestion\ingest_sheets.py [NONE]
+    Reads: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions', 'signal_log'] | Writes: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions']
+    L174: threshold = 0.005  → cfg key: ingest_sheets_threshold
+
+  ai\providers\ml_provider.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L96: MIN_TRADES = 90  → cfg key: ml_provider_min_trades
+
+  control\sl_monitor.py [NONE]
+    Reads: [] | Writes: ['open_positions']
+    L41: PROXIMITY_PCT = 2.0  → cfg key: sl_monitor_proximity_pct
+
+════════════════════════════════════════════════════════════
+To migrate a script: brain will auto-generate SCRIPT_PATCH proposals.
+Enable: set brain_script_patching_enabled=true in system_config.
+════════════════════════════════════════════════════════════
+
+00:34:14 | INFO     | __main__:101 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+00:34:14 | INFO     | brain.data_aggregator:347 - Building analysis dataset (90d, win≥3.0%, stop≤-5.0%)...
+00:34:15 | INFO     | brain.data_aggregator:351 -   signal_log: 656 rows × 97 cols
+00:34:15 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 22 symbols...
+00:34:16 | INFO     | brain.data_aggregator:231 -   Outcomes: 94 evaluated, 62 wins (66.0%), coverage=14%
+00:34:16 | INFO     | brain.data_aggregator:408 - Dataset ready: 656 signals, 94 with outcomes (14.3% coverage), 6 tables loaded
+00:34:16 | INFO     | __main__:114 - Step 3/6 — Quantitative analysis (all fields)...
+00:34:16 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+00:34:16 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+00:34:16 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 66.0%)
+00:34:16 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+00:34:16 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+00:34:16 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+00:34:17 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+00:34:17 | INFO     | brain.quant_analyzer:683 -   Lessons: 0 proven, 0 retire candidates
+00:34:17 | INFO     | brain.quant_analyzer:770 - Quant analysis complete: 0 actionable findings across 110 fields
+00:34:17 | INFO     | __main__:123 - Step 4/6 — Backtesting quant proposals...
+00:34:17 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+00:34:17 | INFO     | __main__:140 - Step 5/6 — LLM synthesis (full data, all fields)...
+00:34:17 | INFO     | brain.llm_synthesizer:321 -   Calling LLM for synthesis (full data access)...
+00:34:38 | INFO     | brain.llm_synthesizer:379 -   LLM synthesis: 0 raw proposals, 5 validated
+00:34:38 | INFO     | __main__:157 - 
+════════════════════════════════════════════════════════════
+00:34:38 | INFO     | __main__:158 - BRAIN SUMMARY: 5 proposals
+00:34:38 | INFO     | __main__:159 -   Signals: 656 (14% outcomes)
+00:34:38 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/post_trade_analysis.py conf=70% 
+00:34:38 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/post_trade_analysis.py conf=70% 
+00:34:38 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/post_trade_analysis.py conf=70% 
+00:34:38 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/providers/ml_provider.py conf=70% 
+00:34:38 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/providers/ml_regime_classifier.py conf=70% 
+00:34:38 | INFO     | __main__:168 - ════════════════════════════════════════════════════════════
+
+00:34:38 | INFO     | __main__:178 - Step 6/6 — Saving proposals, processing approvals...
+00:34:38 | INFO     | brain.backtester_and_change_manager:202 -   Saved 5/5 proposals
+00:34:39 | WARNING  | brain.backtester_and_change_manager:490 -   Telegram digest failed: HTTP Error 400: Bad Request
+00:34:39 | SUCCESS  | __main__:211 - 🧠 Brain v2 complete in 29s — 5 proposals, 0 auto-applied, 9 pending review
+00:38:30 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+00:38:30 | ERROR    | __main__:269 - Proposal 21: missing script_path or diff
+00:47:29 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+00:47:29 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_191729 | mode=full | dry=False
+00:47:29 | INFO     | __main__:85 - Step 1/6 — Scanning scripts for hardcoded values...
+00:47:29 | INFO     | brain.script_scanner:93 - Discovered 63 Python files for scanning
+00:47:33 | INFO     | brain.script_scanner:491 - Script scan complete: 63 scripts registered
+00:47:33 | INFO     | __main__:91 - 
+════════════════════════════════════════════════════════════
+SCRIPT SCANNER REPORT
+════════════════════════════════════════════════════════════
+Scripts discovered: 63
+  Full cfg() coverage:    51
+  Partial cfg() coverage: 7
+  No cfg() coverage:      5
+
+Scripts with tunable hardcoded values:
+
+  compute\compute_regime.py [PARTIAL]
+    Reads: ['macro_indicators', 'stock_data_daily'] | Writes: []
+    L80: SCORE_TRENDING = 78  → cfg key: compute_regime_score_trending
+    L81: SCORE_RISK_ON = 60  → cfg key: compute_regime_score_risk_on
+    L82: SCORE_NEUTRAL = 40  → cfg key: compute_regime_score_neutral
+    L83: SCORE_RECOVERING = 25  → cfg key: compute_regime_score_recovering
+
+  compute\data_quality_monitor.py [NONE]
+    Reads: ['ai_context', 'lessons', 'master_shortlist', 'msl_history', 'open_positions', 'signal_log', 'stock_data_daily'] | Writes: ['stock_data_daily']
+    L72: CHARTINK_ROW_MIN = 450  → cfg key: data_quality_monitor_chartink_row_min
+    L73: CHARTINK_ROW_MAX = 510  → cfg key: data_quality_monitor_chartink_row_max
+    L74: VOL_RATIO_CAP = 50.0  → cfg key: data_quality_monitor_vol_ratio_cap
+    L76: SCORE_MAX = 150  → cfg key: data_quality_monitor_score_max
+    L78: MSL_MIN_ENRICHED = 70  → cfg key: data_quality_monitor_msl_min_enriched
+    ... and 5 more
+
+  signals\screen_stocks.py [PARTIAL]
+    Reads: ['master_shortlist', 'msl_computed', 'open_positions', 'stock_data_daily'] | Writes: ['msl_computed']
+    L87: MAX_SYMBOLS = 30  → cfg key: screen_stocks_max_symbols
+    L88: MAX_PER_SECTOR = 5  → cfg key: screen_stocks_max_per_sector
+    L89: MIN_MARKET_CAP = 300  → cfg key: screen_stocks_min_market_cap
+    L890: max_sector = 10  → cfg key: screen_stocks_max_sector
+    L934: min_score = 50  → cfg key: screen_stocks_min_score
+    ... and 4 more
+
+  ai\post_trade_analysis.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'nifty_upcoming_events', 'regime_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'signal_log', 'system_config']
+    L154: HOLDING_SCORE_EXIT_THRESHOLD = 30  → cfg key: post_trade_analysis_holding_score_exit_threshold
+    L155: MFE_TRAILING_FAILURE_RATIO = 0.5  → cfg key: post_trade_analysis_mfe_trailing_failure_ratio
+    L156: DEDUP_WINDOW_DAYS = 30  → cfg key: post_trade_analysis_dedup_window_days
+
+  compute\compute_msl.py [PARTIAL]
+    Reads: ['macro_indicators', 'master_shortlist', 'msl_computed', 'msl_history', 'open_positions', 'stock_data_daily'] | Writes: ['master_shortlist', 'msl_computed']
+    L116: MIN_VALUE_CR_DEFAULT = 10.0  → cfg key: compute_msl_min_value_cr_default
+
+  calibration\calibration_engine.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'system_config']
+    L73: CALIBRATION_MIN_NEW_TRADES = 15  → cfg key: calibration_engine_calibration_min_new_trades
+    L74: CALIBRATION_MAX_CHANGE_PCT = 0.2  → cfg key: calibration_engine_calibration_max_change_pct
+    L75: CALIBRATION_LOOKBACK_DAYS = 90  → cfg key: calibration_engine_calibration_lookback_days
+    L76: MIN_LESSON_APPLICATIONS = 10  → cfg key: calibration_engine_min_lesson_applications
+
+  compute\compute_indicators.py [PARTIAL]
+    Reads: ['master_shortlist', 'nifty_total_market', 'nifty_upcoming_events', 'stock_data_daily', 'system_config'] | Writes: ['stock_data_daily']
+    L113: MIN_SESSIONS_FOR_RETURNS = 260  → cfg key: compute_indicators_min_sessions_for_returns
+    L119: DIVERGE_THRESHOLD = 0.02  → cfg key: compute_indicators_diverge_threshold
+    L120: WIDE_THRESHOLD = 0.1  → cfg key: compute_indicators_wide_threshold
+
+  history\discovery_engine.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L37: MIN_SAMPLE_SIZE = 30  → cfg key: discovery_engine_min_sample_size
+    L38: P_VALUE_THRESHOLD = 0.05  → cfg key: discovery_engine_p_value_threshold
+    L39: MAX_PROPOSALS = 5  → cfg key: discovery_engine_max_proposals
+    L40: LOOKBACK_DAYS = 180  → cfg key: discovery_engine_lookback_days
+
+  ai\providers\ml_regime_classifier.py [PARTIAL]
+    Reads: ['regime_history'] | Writes: ['stock_data_daily']
+    L98: MIN_TRAINING_SAMPLES = 20  → cfg key: ml_regime_classifier_min_training_samples
+    L101: MIN_PREDICT_SAMPLES = 15  → cfg key: ml_regime_classifier_min_predict_samples
+    L103: LOOKBACK_DAYS = 365  → cfg key: ml_regime_classifier_lookback_days
+
+  ingestion\ingest_sheets.py [NONE]
+    Reads: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions', 'signal_log'] | Writes: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions']
+    L174: threshold = 0.005  → cfg key: ingest_sheets_threshold
+
+  ai\providers\ml_provider.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L96: MIN_TRADES = 90  → cfg key: ml_provider_min_trades
+
+  control\sl_monitor.py [NONE]
+    Reads: [] | Writes: ['open_positions']
+    L41: PROXIMITY_PCT = 2.0  → cfg key: sl_monitor_proximity_pct
+
+════════════════════════════════════════════════════════════
+To migrate a script: brain will auto-generate SCRIPT_PATCH proposals.
+Enable: set brain_script_patching_enabled=true in system_config.
+════════════════════════════════════════════════════════════
+
+00:47:33 | INFO     | __main__:101 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+00:47:33 | INFO     | brain.data_aggregator:347 - Building analysis dataset (90d, win≥3.0%, stop≤-5.0%)...
+00:47:33 | INFO     | brain.data_aggregator:351 -   signal_log: 656 rows × 97 cols
+00:47:33 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 22 symbols...
+00:47:34 | INFO     | brain.data_aggregator:231 -   Outcomes: 94 evaluated, 62 wins (66.0%), coverage=14%
+00:47:35 | INFO     | brain.data_aggregator:408 - Dataset ready: 656 signals, 94 with outcomes (14.3% coverage), 6 tables loaded
+00:47:35 | INFO     | __main__:114 - Step 3/6 — Quantitative analysis (all fields)...
+00:47:35 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+00:47:35 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+00:47:35 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 66.0%)
+00:47:35 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+00:47:35 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+00:47:35 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+00:47:35 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+00:47:35 | INFO     | brain.quant_analyzer:683 -   Lessons: 0 proven, 0 retire candidates
+00:47:35 | INFO     | brain.quant_analyzer:770 - Quant analysis complete: 0 actionable findings across 110 fields
+00:47:35 | INFO     | __main__:123 - Step 4/6 — Backtesting quant proposals...
+00:47:35 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+00:47:35 | INFO     | __main__:140 - Step 5/6 — LLM synthesis (full data, all fields)...
+00:47:35 | INFO     | brain.llm_synthesizer:321 -   Calling LLM for synthesis (full data access)...
+00:47:57 | WARNING  | brain.llm_synthesizer:392 -   Could not generate diff for ai/post_trade_analysis.py:HOLDING_SCORE_EXIT_THRESHOLD
+00:47:57 | WARNING  | brain.llm_synthesizer:392 -   Could not generate diff for ai/post_trade_analysis.py:MFE_TRAILING_FAILURE_RATIO
+00:47:57 | WARNING  | brain.llm_synthesizer:392 -   Could not generate diff for ai/post_trade_analysis.py:DEDUP_WINDOW_DAYS
+00:47:57 | WARNING  | brain.llm_synthesizer:392 -   Could not generate diff for ai/providers/ml_provider.py:MIN_TRADES
+00:47:57 | WARNING  | brain.llm_synthesizer:392 -   Could not generate diff for ai/providers/ml_regime_classifier.py:MIN_TRAINING_SAMPLES
+00:47:57 | INFO     | brain.llm_synthesizer:412 -   LLM synthesis: 0 raw proposals, 0 validated
+00:47:57 | INFO     | __main__:157 - 
+════════════════════════════════════════════════════════════
+00:47:57 | INFO     | __main__:158 - BRAIN SUMMARY: 0 proposals
+00:47:57 | INFO     | __main__:159 -   Signals: 656 (14% outcomes)
+00:47:57 | INFO     | __main__:168 - ════════════════════════════════════════════════════════════
+
+00:47:57 | INFO     | __main__:178 - Step 6/6 — Saving proposals, processing approvals...
+00:47:57 | INFO     | brain.backtester_and_change_manager:202 -   Saved 0/0 proposals
+00:47:58 | SUCCESS  | __main__:211 - 🧠 Brain v2 complete in 29s — 0 proposals, 0 auto-applied, 0 pending review
+00:53:02 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+00:53:02 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_192302 | mode=full | dry=False
+00:53:02 | INFO     | __main__:85 - Step 1/6 — Scanning scripts for hardcoded values...
+00:53:02 | INFO     | brain.script_scanner:93 - Discovered 63 Python files for scanning
+00:53:06 | INFO     | brain.script_scanner:491 - Script scan complete: 63 scripts registered
+00:53:06 | INFO     | __main__:91 - 
+════════════════════════════════════════════════════════════
+SCRIPT SCANNER REPORT
+════════════════════════════════════════════════════════════
+Scripts discovered: 63
+  Full cfg() coverage:    51
+  Partial cfg() coverage: 7
+  No cfg() coverage:      5
+
+Scripts with tunable hardcoded values:
+
+  compute\compute_regime.py [PARTIAL]
+    Reads: ['macro_indicators', 'stock_data_daily'] | Writes: []
+    L80: SCORE_TRENDING = 78  → cfg key: compute_regime_score_trending
+    L81: SCORE_RISK_ON = 60  → cfg key: compute_regime_score_risk_on
+    L82: SCORE_NEUTRAL = 40  → cfg key: compute_regime_score_neutral
+    L83: SCORE_RECOVERING = 25  → cfg key: compute_regime_score_recovering
+
+  compute\data_quality_monitor.py [NONE]
+    Reads: ['ai_context', 'lessons', 'master_shortlist', 'msl_history', 'open_positions', 'signal_log', 'stock_data_daily'] | Writes: ['stock_data_daily']
+    L72: CHARTINK_ROW_MIN = 450  → cfg key: data_quality_monitor_chartink_row_min
+    L73: CHARTINK_ROW_MAX = 510  → cfg key: data_quality_monitor_chartink_row_max
+    L74: VOL_RATIO_CAP = 50.0  → cfg key: data_quality_monitor_vol_ratio_cap
+    L76: SCORE_MAX = 150  → cfg key: data_quality_monitor_score_max
+    L78: MSL_MIN_ENRICHED = 70  → cfg key: data_quality_monitor_msl_min_enriched
+    ... and 5 more
+
+  signals\screen_stocks.py [PARTIAL]
+    Reads: ['master_shortlist', 'msl_computed', 'open_positions', 'stock_data_daily'] | Writes: ['msl_computed']
+    L87: MAX_SYMBOLS = 30  → cfg key: screen_stocks_max_symbols
+    L88: MAX_PER_SECTOR = 5  → cfg key: screen_stocks_max_per_sector
+    L89: MIN_MARKET_CAP = 300  → cfg key: screen_stocks_min_market_cap
+    L890: max_sector = 10  → cfg key: screen_stocks_max_sector
+    L934: min_score = 50  → cfg key: screen_stocks_min_score
+    ... and 4 more
+
+  ai\post_trade_analysis.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'nifty_upcoming_events', 'regime_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'signal_log', 'system_config']
+    L154: HOLDING_SCORE_EXIT_THRESHOLD = 30  → cfg key: post_trade_analysis_holding_score_exit_threshold
+    L155: MFE_TRAILING_FAILURE_RATIO = 0.5  → cfg key: post_trade_analysis_mfe_trailing_failure_ratio
+    L156: DEDUP_WINDOW_DAYS = 30  → cfg key: post_trade_analysis_dedup_window_days
+
+  compute\compute_msl.py [PARTIAL]
+    Reads: ['macro_indicators', 'master_shortlist', 'msl_computed', 'msl_history', 'open_positions', 'stock_data_daily'] | Writes: ['master_shortlist', 'msl_computed']
+    L116: MIN_VALUE_CR_DEFAULT = 10.0  → cfg key: compute_msl_min_value_cr_default
+
+  calibration\calibration_engine.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'system_config']
+    L73: CALIBRATION_MIN_NEW_TRADES = 15  → cfg key: calibration_engine_calibration_min_new_trades
+    L74: CALIBRATION_MAX_CHANGE_PCT = 0.2  → cfg key: calibration_engine_calibration_max_change_pct
+    L75: CALIBRATION_LOOKBACK_DAYS = 90  → cfg key: calibration_engine_calibration_lookback_days
+    L76: MIN_LESSON_APPLICATIONS = 10  → cfg key: calibration_engine_min_lesson_applications
+
+  compute\compute_indicators.py [PARTIAL]
+    Reads: ['master_shortlist', 'nifty_total_market', 'nifty_upcoming_events', 'stock_data_daily', 'system_config'] | Writes: ['stock_data_daily']
+    L113: MIN_SESSIONS_FOR_RETURNS = 260  → cfg key: compute_indicators_min_sessions_for_returns
+    L119: DIVERGE_THRESHOLD = 0.02  → cfg key: compute_indicators_diverge_threshold
+    L120: WIDE_THRESHOLD = 0.1  → cfg key: compute_indicators_wide_threshold
+
+  history\discovery_engine.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L37: MIN_SAMPLE_SIZE = 30  → cfg key: discovery_engine_min_sample_size
+    L38: P_VALUE_THRESHOLD = 0.05  → cfg key: discovery_engine_p_value_threshold
+    L39: MAX_PROPOSALS = 5  → cfg key: discovery_engine_max_proposals
+    L40: LOOKBACK_DAYS = 180  → cfg key: discovery_engine_lookback_days
+
+  ai\providers\ml_regime_classifier.py [PARTIAL]
+    Reads: ['regime_history'] | Writes: ['stock_data_daily']
+    L98: MIN_TRAINING_SAMPLES = 20  → cfg key: ml_regime_classifier_min_training_samples
+    L101: MIN_PREDICT_SAMPLES = 15  → cfg key: ml_regime_classifier_min_predict_samples
+    L103: LOOKBACK_DAYS = 365  → cfg key: ml_regime_classifier_lookback_days
+
+  ingestion\ingest_sheets.py [NONE]
+    Reads: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions', 'signal_log'] | Writes: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions']
+    L174: threshold = 0.005  → cfg key: ingest_sheets_threshold
+
+  ai\providers\ml_provider.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L96: MIN_TRADES = 90  → cfg key: ml_provider_min_trades
+
+  control\sl_monitor.py [NONE]
+    Reads: [] | Writes: ['open_positions']
+    L41: PROXIMITY_PCT = 2.0  → cfg key: sl_monitor_proximity_pct
+
+════════════════════════════════════════════════════════════
+To migrate a script: brain will auto-generate SCRIPT_PATCH proposals.
+Enable: set brain_script_patching_enabled=true in system_config.
+════════════════════════════════════════════════════════════
+
+00:53:06 | INFO     | __main__:101 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+00:53:06 | INFO     | brain.data_aggregator:347 - Building analysis dataset (90d, win≥3.0%, stop≤-5.0%)...
+00:53:07 | INFO     | brain.data_aggregator:351 -   signal_log: 656 rows × 97 cols
+00:53:07 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 22 symbols...
+00:53:07 | INFO     | brain.data_aggregator:231 -   Outcomes: 94 evaluated, 62 wins (66.0%), coverage=14%
+00:53:08 | INFO     | brain.data_aggregator:408 - Dataset ready: 656 signals, 94 with outcomes (14.3% coverage), 6 tables loaded
+00:53:08 | INFO     | __main__:114 - Step 3/6 — Quantitative analysis (all fields)...
+00:53:08 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+00:53:08 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+00:53:08 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 66.0%)
+00:53:08 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+00:53:08 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+00:53:08 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+00:53:08 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+00:53:08 | INFO     | brain.quant_analyzer:683 -   Lessons: 0 proven, 0 retire candidates
+00:53:08 | INFO     | brain.quant_analyzer:770 - Quant analysis complete: 0 actionable findings across 110 fields
+00:53:08 | INFO     | __main__:123 - Step 4/6 — Backtesting quant proposals...
+00:53:08 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+00:53:08 | INFO     | __main__:140 - Step 5/6 — LLM synthesis (full data, all fields)...
+00:53:08 | INFO     | brain.llm_synthesizer:321 -   Calling LLM for synthesis (full data access)...
+00:53:30 | WARNING  | brain.llm_synthesizer:435 -   Could not generate diff for ai/post_trade_analysis.py:HOLDING_SCORE_EXIT_THRESHOLD — scanner data may use different field names
+00:53:30 | WARNING  | brain.llm_synthesizer:435 -   Could not generate diff for ai/post_trade_analysis.py:MFE_TRAILING_FAILURE_RATIO — scanner data may use different field names
+00:53:30 | WARNING  | brain.llm_synthesizer:435 -   Could not generate diff for ai/providers/ml_provider.py:MIN_TRADES — scanner data may use different field names
+00:53:30 | WARNING  | brain.llm_synthesizer:435 -   Could not generate diff for ai/providers/ml_regime_classifier.py:MIN_TRAINING_SAMPLES — scanner data may use different field names
+00:53:30 | WARNING  | brain.llm_synthesizer:435 -   Could not generate diff for ai/providers/ml_regime_classifier.py:MIN_PREDICT_SAMPLES — scanner data may use different field names
+00:53:30 | WARNING  | __main__:149 - LLM synthesis failed (non-fatal): cannot unpack non-iterable NoneType object
+00:53:30 | INFO     | __main__:157 - 
+════════════════════════════════════════════════════════════
+00:53:30 | INFO     | __main__:158 - BRAIN SUMMARY: 0 proposals
+00:53:30 | INFO     | __main__:159 -   Signals: 656 (14% outcomes)
+00:53:30 | INFO     | __main__:168 - ════════════════════════════════════════════════════════════
+
+00:53:30 | INFO     | __main__:178 - Step 6/6 — Saving proposals, processing approvals...
+00:53:30 | INFO     | brain.backtester_and_change_manager:202 -   Saved 0/0 proposals
+00:53:31 | SUCCESS  | __main__:211 - 🧠 Brain v2 complete in 29s — 0 proposals, 0 auto-applied, 0 pending review
+00:55:22 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+00:55:22 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_192522 | mode=full | dry=False
+00:55:22 | INFO     | __main__:85 - Step 1/6 — Scanning scripts for hardcoded values...
+00:55:22 | INFO     | brain.script_scanner:93 - Discovered 63 Python files for scanning
+00:55:26 | INFO     | brain.script_scanner:491 - Script scan complete: 63 scripts registered
+00:55:26 | INFO     | __main__:91 - 
+════════════════════════════════════════════════════════════
+SCRIPT SCANNER REPORT
+════════════════════════════════════════════════════════════
+Scripts discovered: 63
+  Full cfg() coverage:    51
+  Partial cfg() coverage: 7
+  No cfg() coverage:      5
+
+Scripts with tunable hardcoded values:
+
+  compute\compute_regime.py [PARTIAL]
+    Reads: ['macro_indicators', 'stock_data_daily'] | Writes: []
+    L80: SCORE_TRENDING = 78  → cfg key: compute_regime_score_trending
+    L81: SCORE_RISK_ON = 60  → cfg key: compute_regime_score_risk_on
+    L82: SCORE_NEUTRAL = 40  → cfg key: compute_regime_score_neutral
+    L83: SCORE_RECOVERING = 25  → cfg key: compute_regime_score_recovering
+
+  compute\data_quality_monitor.py [NONE]
+    Reads: ['ai_context', 'lessons', 'master_shortlist', 'msl_history', 'open_positions', 'signal_log', 'stock_data_daily'] | Writes: ['stock_data_daily']
+    L72: CHARTINK_ROW_MIN = 450  → cfg key: data_quality_monitor_chartink_row_min
+    L73: CHARTINK_ROW_MAX = 510  → cfg key: data_quality_monitor_chartink_row_max
+    L74: VOL_RATIO_CAP = 50.0  → cfg key: data_quality_monitor_vol_ratio_cap
+    L76: SCORE_MAX = 150  → cfg key: data_quality_monitor_score_max
+    L78: MSL_MIN_ENRICHED = 70  → cfg key: data_quality_monitor_msl_min_enriched
+    ... and 5 more
+
+  signals\screen_stocks.py [PARTIAL]
+    Reads: ['master_shortlist', 'msl_computed', 'open_positions', 'stock_data_daily'] | Writes: ['msl_computed']
+    L87: MAX_SYMBOLS = 30  → cfg key: screen_stocks_max_symbols
+    L88: MAX_PER_SECTOR = 5  → cfg key: screen_stocks_max_per_sector
+    L89: MIN_MARKET_CAP = 300  → cfg key: screen_stocks_min_market_cap
+    L890: max_sector = 10  → cfg key: screen_stocks_max_sector
+    L934: min_score = 50  → cfg key: screen_stocks_min_score
+    ... and 4 more
+
+  ai\post_trade_analysis.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'nifty_upcoming_events', 'regime_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'signal_log', 'system_config']
+    L154: HOLDING_SCORE_EXIT_THRESHOLD = 30  → cfg key: post_trade_analysis_holding_score_exit_threshold
+    L155: MFE_TRAILING_FAILURE_RATIO = 0.5  → cfg key: post_trade_analysis_mfe_trailing_failure_ratio
+    L156: DEDUP_WINDOW_DAYS = 30  → cfg key: post_trade_analysis_dedup_window_days
+
+  compute\compute_msl.py [PARTIAL]
+    Reads: ['macro_indicators', 'master_shortlist', 'msl_computed', 'msl_history', 'open_positions', 'stock_data_daily'] | Writes: ['master_shortlist', 'msl_computed']
+    L116: MIN_VALUE_CR_DEFAULT = 10.0  → cfg key: compute_msl_min_value_cr_default
+
+  calibration\calibration_engine.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'system_config']
+    L73: CALIBRATION_MIN_NEW_TRADES = 15  → cfg key: calibration_engine_calibration_min_new_trades
+    L74: CALIBRATION_MAX_CHANGE_PCT = 0.2  → cfg key: calibration_engine_calibration_max_change_pct
+    L75: CALIBRATION_LOOKBACK_DAYS = 90  → cfg key: calibration_engine_calibration_lookback_days
+    L76: MIN_LESSON_APPLICATIONS = 10  → cfg key: calibration_engine_min_lesson_applications
+
+  compute\compute_indicators.py [PARTIAL]
+    Reads: ['master_shortlist', 'nifty_total_market', 'nifty_upcoming_events', 'stock_data_daily', 'system_config'] | Writes: ['stock_data_daily']
+    L113: MIN_SESSIONS_FOR_RETURNS = 260  → cfg key: compute_indicators_min_sessions_for_returns
+    L119: DIVERGE_THRESHOLD = 0.02  → cfg key: compute_indicators_diverge_threshold
+    L120: WIDE_THRESHOLD = 0.1  → cfg key: compute_indicators_wide_threshold
+
+  history\discovery_engine.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L37: MIN_SAMPLE_SIZE = 30  → cfg key: discovery_engine_min_sample_size
+    L38: P_VALUE_THRESHOLD = 0.05  → cfg key: discovery_engine_p_value_threshold
+    L39: MAX_PROPOSALS = 5  → cfg key: discovery_engine_max_proposals
+    L40: LOOKBACK_DAYS = 180  → cfg key: discovery_engine_lookback_days
+
+  ai\providers\ml_regime_classifier.py [PARTIAL]
+    Reads: ['regime_history'] | Writes: ['stock_data_daily']
+    L98: MIN_TRAINING_SAMPLES = 20  → cfg key: ml_regime_classifier_min_training_samples
+    L101: MIN_PREDICT_SAMPLES = 15  → cfg key: ml_regime_classifier_min_predict_samples
+    L103: LOOKBACK_DAYS = 365  → cfg key: ml_regime_classifier_lookback_days
+
+  ingestion\ingest_sheets.py [NONE]
+    Reads: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions', 'signal_log'] | Writes: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions']
+    L174: threshold = 0.005  → cfg key: ingest_sheets_threshold
+
+  ai\providers\ml_provider.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L96: MIN_TRADES = 90  → cfg key: ml_provider_min_trades
+
+  control\sl_monitor.py [NONE]
+    Reads: [] | Writes: ['open_positions']
+    L41: PROXIMITY_PCT = 2.0  → cfg key: sl_monitor_proximity_pct
+
+════════════════════════════════════════════════════════════
+To migrate a script: brain will auto-generate SCRIPT_PATCH proposals.
+Enable: set brain_script_patching_enabled=true in system_config.
+════════════════════════════════════════════════════════════
+
+00:55:26 | INFO     | __main__:101 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+00:55:26 | INFO     | brain.data_aggregator:347 - Building analysis dataset (90d, win≥3.0%, stop≤-5.0%)...
+00:55:27 | INFO     | brain.data_aggregator:351 -   signal_log: 656 rows × 97 cols
+00:55:27 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 22 symbols...
+00:55:27 | INFO     | brain.data_aggregator:231 -   Outcomes: 94 evaluated, 62 wins (66.0%), coverage=14%
+00:55:28 | INFO     | brain.data_aggregator:408 - Dataset ready: 656 signals, 94 with outcomes (14.3% coverage), 6 tables loaded
+00:55:28 | INFO     | __main__:114 - Step 3/6 — Quantitative analysis (all fields)...
+00:55:28 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+00:55:28 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+00:55:28 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 66.0%)
+00:55:28 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+00:55:28 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+00:55:28 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+00:55:28 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+00:55:28 | INFO     | brain.quant_analyzer:683 -   Lessons: 0 proven, 0 retire candidates
+00:55:28 | INFO     | brain.quant_analyzer:770 - Quant analysis complete: 0 actionable findings across 110 fields
+00:55:28 | INFO     | __main__:123 - Step 4/6 — Backtesting quant proposals...
+00:55:28 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+00:55:28 | INFO     | __main__:140 - Step 5/6 — LLM synthesis (full data, all fields)...
+00:55:28 | INFO     | brain.llm_synthesizer:321 -   Calling LLM for synthesis (full data access)...
+00:55:57 | WARNING  | brain.llm_synthesizer:440 -   Saved proposal WITHOUT diff for ai/post_trade_analysis.py:HOLDING_SCORE_EXIT_THRESHOLD
+00:55:57 | WARNING  | brain.llm_synthesizer:440 -   Saved proposal WITHOUT diff for ai/post_trade_analysis.py:MFE_TRAILING_FAILURE_RATIO
+00:55:57 | WARNING  | brain.llm_synthesizer:440 -   Saved proposal WITHOUT diff for ai/post_trade_analysis.py:DEDUP_WINDOW_DAYS
+00:55:57 | WARNING  | brain.llm_synthesizer:440 -   Saved proposal WITHOUT diff for ai/providers/ml_provider.py:MIN_TRADES
+00:55:57 | WARNING  | brain.llm_synthesizer:440 -   Saved proposal WITHOUT diff for ai/providers/ml_regime_classifier.py:MIN_TRAINING_SAMPLES
+00:55:57 | INFO     | brain.llm_synthesizer:442 -   LLM synthesis: 0 raw proposals, 5 validated
+00:55:57 | INFO     | __main__:157 - 
+════════════════════════════════════════════════════════════
+00:55:57 | INFO     | __main__:158 - BRAIN SUMMARY: 5 proposals
+00:55:57 | INFO     | __main__:159 -   Signals: 656 (14% outcomes)
+00:55:57 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/post_trade_analysis.py conf=70% 
+00:55:57 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/post_trade_analysis.py conf=70% 
+00:55:57 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/post_trade_analysis.py conf=70% 
+00:55:57 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/providers/ml_provider.py conf=70% 
+00:55:57 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/providers/ml_regime_classifier.py conf=70% 
+00:55:57 | INFO     | __main__:168 - ════════════════════════════════════════════════════════════
+
+00:55:57 | INFO     | __main__:178 - Step 6/6 — Saving proposals, processing approvals...
+00:55:58 | INFO     | brain.backtester_and_change_manager:202 -   Saved 5/5 proposals
+00:55:59 | WARNING  | brain.backtester_and_change_manager:495 -   Telegram digest failed: HTTP Error 400: Bad Request
+00:55:59 | SUCCESS  | __main__:211 - 🧠 Brain v2 complete in 36s — 5 proposals, 0 auto-applied, 5 pending review
+00:56:39 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+00:56:39 | ERROR    | __main__:269 - Proposal 26: missing script_path or diff
+00:57:16 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:00:51 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:01:20 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:01:41 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:01:41 | INFO     | brain.script_scanner:93 - Discovered 63 Python files for scanning
+01:01:45 | INFO     | brain.script_scanner:491 - Script scan complete: 63 scripts registered
+01:02:13 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:02:13 | INFO     | brain.script_scanner:93 - Discovered 63 Python files for scanning
+01:02:17 | INFO     | brain.script_scanner:491 - Script scan complete: 63 scripts registered
+01:02:24 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:02:24 | INFO     | brain.script_scanner:93 - Discovered 63 Python files for scanning
+01:02:28 | INFO     | brain.script_scanner:491 - Script scan complete: 63 scripts registered
+01:03:50 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:03:51 | ERROR    | __main__:269 - Proposal 26: missing script_path or diff
+01:03:56 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:03:56 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_193356 | mode=full | dry=False
+01:03:56 | INFO     | __main__:85 - Step 1/6 — Scanning scripts for hardcoded values...
+01:03:56 | INFO     | brain.script_scanner:93 - Discovered 63 Python files for scanning
+01:03:59 | INFO     | brain.script_scanner:491 - Script scan complete: 63 scripts registered
+01:03:59 | INFO     | __main__:91 - 
+════════════════════════════════════════════════════════════
+SCRIPT SCANNER REPORT
+════════════════════════════════════════════════════════════
+Scripts discovered: 63
+  Full cfg() coverage:    51
+  Partial cfg() coverage: 7
+  No cfg() coverage:      5
+
+Scripts with tunable hardcoded values:
+
+  compute\compute_regime.py [PARTIAL]
+    Reads: ['macro_indicators', 'stock_data_daily'] | Writes: []
+    L80: SCORE_TRENDING = 78  → cfg key: compute_regime_score_trending
+    L81: SCORE_RISK_ON = 60  → cfg key: compute_regime_score_risk_on
+    L82: SCORE_NEUTRAL = 40  → cfg key: compute_regime_score_neutral
+    L83: SCORE_RECOVERING = 25  → cfg key: compute_regime_score_recovering
+
+  compute\data_quality_monitor.py [NONE]
+    Reads: ['ai_context', 'lessons', 'master_shortlist', 'msl_history', 'open_positions', 'signal_log', 'stock_data_daily'] | Writes: ['stock_data_daily']
+    L72: CHARTINK_ROW_MIN = 450  → cfg key: data_quality_monitor_chartink_row_min
+    L73: CHARTINK_ROW_MAX = 510  → cfg key: data_quality_monitor_chartink_row_max
+    L74: VOL_RATIO_CAP = 50.0  → cfg key: data_quality_monitor_vol_ratio_cap
+    L76: SCORE_MAX = 150  → cfg key: data_quality_monitor_score_max
+    L78: MSL_MIN_ENRICHED = 70  → cfg key: data_quality_monitor_msl_min_enriched
+    ... and 5 more
+
+  signals\screen_stocks.py [PARTIAL]
+    Reads: ['master_shortlist', 'msl_computed', 'open_positions', 'stock_data_daily'] | Writes: ['msl_computed']
+    L87: MAX_SYMBOLS = 30  → cfg key: screen_stocks_max_symbols
+    L88: MAX_PER_SECTOR = 5  → cfg key: screen_stocks_max_per_sector
+    L89: MIN_MARKET_CAP = 300  → cfg key: screen_stocks_min_market_cap
+    L890: max_sector = 10  → cfg key: screen_stocks_max_sector
+    L934: min_score = 50  → cfg key: screen_stocks_min_score
+    ... and 4 more
+
+  ai\post_trade_analysis.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'nifty_upcoming_events', 'regime_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'signal_log', 'system_config']
+    L154: HOLDING_SCORE_EXIT_THRESHOLD = 30  → cfg key: post_trade_analysis_holding_score_exit_threshold
+    L155: MFE_TRAILING_FAILURE_RATIO = 0.5  → cfg key: post_trade_analysis_mfe_trailing_failure_ratio
+    L156: DEDUP_WINDOW_DAYS = 30  → cfg key: post_trade_analysis_dedup_window_days
+
+  compute\compute_msl.py [PARTIAL]
+    Reads: ['macro_indicators', 'master_shortlist', 'msl_computed', 'msl_history', 'open_positions', 'stock_data_daily'] | Writes: ['master_shortlist', 'msl_computed']
+    L116: MIN_VALUE_CR_DEFAULT = 10.0  → cfg key: compute_msl_min_value_cr_default
+
+  calibration\calibration_engine.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'system_config']
+    L73: CALIBRATION_MIN_NEW_TRADES = 15  → cfg key: calibration_engine_calibration_min_new_trades
+    L74: CALIBRATION_MAX_CHANGE_PCT = 0.2  → cfg key: calibration_engine_calibration_max_change_pct
+    L75: CALIBRATION_LOOKBACK_DAYS = 90  → cfg key: calibration_engine_calibration_lookback_days
+    L76: MIN_LESSON_APPLICATIONS = 10  → cfg key: calibration_engine_min_lesson_applications
+
+  compute\compute_indicators.py [PARTIAL]
+    Reads: ['master_shortlist', 'nifty_total_market', 'nifty_upcoming_events', 'stock_data_daily', 'system_config'] | Writes: ['stock_data_daily']
+    L113: MIN_SESSIONS_FOR_RETURNS = 260  → cfg key: compute_indicators_min_sessions_for_returns
+    L119: DIVERGE_THRESHOLD = 0.02  → cfg key: compute_indicators_diverge_threshold
+    L120: WIDE_THRESHOLD = 0.1  → cfg key: compute_indicators_wide_threshold
+
+  history\discovery_engine.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L37: MIN_SAMPLE_SIZE = 30  → cfg key: discovery_engine_min_sample_size
+    L38: P_VALUE_THRESHOLD = 0.05  → cfg key: discovery_engine_p_value_threshold
+    L39: MAX_PROPOSALS = 5  → cfg key: discovery_engine_max_proposals
+    L40: LOOKBACK_DAYS = 180  → cfg key: discovery_engine_lookback_days
+
+  ai\providers\ml_regime_classifier.py [PARTIAL]
+    Reads: ['regime_history'] | Writes: ['stock_data_daily']
+    L98: MIN_TRAINING_SAMPLES = 20  → cfg key: ml_regime_classifier_min_training_samples
+    L101: MIN_PREDICT_SAMPLES = 15  → cfg key: ml_regime_classifier_min_predict_samples
+    L103: LOOKBACK_DAYS = 365  → cfg key: ml_regime_classifier_lookback_days
+
+  ingestion\ingest_sheets.py [NONE]
+    Reads: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions', 'signal_log'] | Writes: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions']
+    L174: threshold = 0.005  → cfg key: ingest_sheets_threshold
+
+  ai\providers\ml_provider.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L96: MIN_TRADES = 90  → cfg key: ml_provider_min_trades
+
+  control\sl_monitor.py [NONE]
+    Reads: [] | Writes: ['open_positions']
+    L41: PROXIMITY_PCT = 2.0  → cfg key: sl_monitor_proximity_pct
+
+════════════════════════════════════════════════════════════
+To migrate a script: brain will auto-generate SCRIPT_PATCH proposals.
+Enable: set brain_script_patching_enabled=true in system_config.
+════════════════════════════════════════════════════════════
+
+01:03:59 | INFO     | __main__:101 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+01:03:59 | INFO     | brain.data_aggregator:347 - Building analysis dataset (90d, win≥3.0%, stop≤-5.0%)...
+01:04:00 | INFO     | brain.data_aggregator:351 -   signal_log: 656 rows × 97 cols
+01:04:00 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 22 symbols...
+01:04:00 | INFO     | brain.data_aggregator:231 -   Outcomes: 94 evaluated, 62 wins (66.0%), coverage=14%
+01:04:02 | INFO     | brain.data_aggregator:408 - Dataset ready: 656 signals, 94 with outcomes (14.3% coverage), 6 tables loaded
+01:04:02 | INFO     | __main__:114 - Step 3/6 — Quantitative analysis (all fields)...
+01:04:02 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+01:04:02 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+01:04:02 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 66.0%)
+01:04:02 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+01:04:02 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+01:04:02 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+01:04:02 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+01:04:02 | INFO     | brain.quant_analyzer:683 -   Lessons: 0 proven, 0 retire candidates
+01:04:02 | INFO     | brain.quant_analyzer:770 - Quant analysis complete: 0 actionable findings across 110 fields
+01:04:02 | INFO     | __main__:123 - Step 4/6 — Backtesting quant proposals...
+01:04:02 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+01:04:02 | INFO     | __main__:140 - Step 5/6 — LLM synthesis (full data, all fields)...
+01:04:02 | INFO     | brain.llm_synthesizer:321 -   Calling LLM for synthesis (full data access)...
+01:04:28 | WARNING  | __main__:149 - LLM synthesis failed (non-fatal): cannot unpack non-iterable NoneType object
+01:04:28 | INFO     | __main__:157 - 
+════════════════════════════════════════════════════════════
+01:04:28 | INFO     | __main__:158 - BRAIN SUMMARY: 0 proposals
+01:04:28 | INFO     | __main__:159 -   Signals: 656 (14% outcomes)
+01:04:28 | INFO     | __main__:168 - ════════════════════════════════════════════════════════════
+
+01:04:28 | INFO     | __main__:178 - Step 6/6 — Saving proposals, processing approvals...
+01:04:28 | INFO     | brain.backtester_and_change_manager:202 -   Saved 0/0 proposals
+01:04:29 | WARNING  | brain.backtester_and_change_manager:495 -   Telegram digest failed: HTTP Error 400: Bad Request
+01:04:29 | SUCCESS  | __main__:211 - 🧠 Brain v2 complete in 33s — 0 proposals, 0 auto-applied, 4 pending review
+01:05:34 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:06:18 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:09:59 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:09:59 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_193959 | mode=full | dry=False
+01:09:59 | INFO     | __main__:85 - Step 1/6 — Scanning scripts for hardcoded values...
+01:09:59 | INFO     | brain.script_scanner:93 - Discovered 64 Python files for scanning
+01:10:03 | INFO     | brain.script_scanner:491 - Script scan complete: 64 scripts registered
+01:10:03 | INFO     | __main__:91 - 
+════════════════════════════════════════════════════════════
+SCRIPT SCANNER REPORT
+════════════════════════════════════════════════════════════
+Scripts discovered: 64
+  Full cfg() coverage:    52
+  Partial cfg() coverage: 7
+  No cfg() coverage:      5
+
+Scripts with tunable hardcoded values:
+
+  compute\compute_regime.py [PARTIAL]
+    Reads: ['macro_indicators', 'stock_data_daily'] | Writes: []
+    L80: SCORE_TRENDING = 78  → cfg key: compute_regime_score_trending
+    L81: SCORE_RISK_ON = 60  → cfg key: compute_regime_score_risk_on
+    L82: SCORE_NEUTRAL = 40  → cfg key: compute_regime_score_neutral
+    L83: SCORE_RECOVERING = 25  → cfg key: compute_regime_score_recovering
+
+  compute\data_quality_monitor.py [NONE]
+    Reads: ['ai_context', 'lessons', 'master_shortlist', 'msl_history', 'open_positions', 'signal_log', 'stock_data_daily'] | Writes: ['stock_data_daily']
+    L72: CHARTINK_ROW_MIN = 450  → cfg key: data_quality_monitor_chartink_row_min
+    L73: CHARTINK_ROW_MAX = 510  → cfg key: data_quality_monitor_chartink_row_max
+    L74: VOL_RATIO_CAP = 50.0  → cfg key: data_quality_monitor_vol_ratio_cap
+    L76: SCORE_MAX = 150  → cfg key: data_quality_monitor_score_max
+    L78: MSL_MIN_ENRICHED = 70  → cfg key: data_quality_monitor_msl_min_enriched
+    ... and 5 more
+
+  signals\screen_stocks.py [PARTIAL]
+    Reads: ['master_shortlist', 'msl_computed', 'open_positions', 'stock_data_daily'] | Writes: ['msl_computed']
+    L87: MAX_SYMBOLS = 30  → cfg key: screen_stocks_max_symbols
+    L88: MAX_PER_SECTOR = 5  → cfg key: screen_stocks_max_per_sector
+    L89: MIN_MARKET_CAP = 300  → cfg key: screen_stocks_min_market_cap
+    L890: max_sector = 10  → cfg key: screen_stocks_max_sector
+    L934: min_score = 50  → cfg key: screen_stocks_min_score
+    ... and 4 more
+
+  ai\post_trade_analysis.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'nifty_upcoming_events', 'regime_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'signal_log', 'system_config']
+    L154: HOLDING_SCORE_EXIT_THRESHOLD = 30  → cfg key: post_trade_analysis_holding_score_exit_threshold
+    L155: MFE_TRAILING_FAILURE_RATIO = 0.5  → cfg key: post_trade_analysis_mfe_trailing_failure_ratio
+    L156: DEDUP_WINDOW_DAYS = 30  → cfg key: post_trade_analysis_dedup_window_days
+
+  compute\compute_msl.py [PARTIAL]
+    Reads: ['macro_indicators', 'master_shortlist', 'msl_computed', 'msl_history', 'open_positions', 'stock_data_daily'] | Writes: ['master_shortlist', 'msl_computed']
+    L116: MIN_VALUE_CR_DEFAULT = 10.0  → cfg key: compute_msl_min_value_cr_default
+
+  calibration\calibration_engine.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'system_config']
+    L73: CALIBRATION_MIN_NEW_TRADES = 15  → cfg key: calibration_engine_calibration_min_new_trades
+    L74: CALIBRATION_MAX_CHANGE_PCT = 0.2  → cfg key: calibration_engine_calibration_max_change_pct
+    L75: CALIBRATION_LOOKBACK_DAYS = 90  → cfg key: calibration_engine_calibration_lookback_days
+    L76: MIN_LESSON_APPLICATIONS = 10  → cfg key: calibration_engine_min_lesson_applications
+
+  compute\compute_indicators.py [PARTIAL]
+    Reads: ['master_shortlist', 'nifty_total_market', 'nifty_upcoming_events', 'stock_data_daily', 'system_config'] | Writes: ['stock_data_daily']
+    L113: MIN_SESSIONS_FOR_RETURNS = 260  → cfg key: compute_indicators_min_sessions_for_returns
+    L119: DIVERGE_THRESHOLD = 0.02  → cfg key: compute_indicators_diverge_threshold
+    L120: WIDE_THRESHOLD = 0.1  → cfg key: compute_indicators_wide_threshold
+
+  history\discovery_engine.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L37: MIN_SAMPLE_SIZE = 30  → cfg key: discovery_engine_min_sample_size
+    L38: P_VALUE_THRESHOLD = 0.05  → cfg key: discovery_engine_p_value_threshold
+    L39: MAX_PROPOSALS = 5  → cfg key: discovery_engine_max_proposals
+    L40: LOOKBACK_DAYS = 180  → cfg key: discovery_engine_lookback_days
+
+  ai\providers\ml_regime_classifier.py [PARTIAL]
+    Reads: ['regime_history'] | Writes: ['stock_data_daily']
+    L98: MIN_TRAINING_SAMPLES = 20  → cfg key: ml_regime_classifier_min_training_samples
+    L101: MIN_PREDICT_SAMPLES = 15  → cfg key: ml_regime_classifier_min_predict_samples
+    L103: LOOKBACK_DAYS = 365  → cfg key: ml_regime_classifier_lookback_days
+
+  ingestion\ingest_sheets.py [NONE]
+    Reads: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions', 'signal_log'] | Writes: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions']
+    L174: threshold = 0.005  → cfg key: ingest_sheets_threshold
+
+  ai\providers\ml_provider.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L96: MIN_TRADES = 90  → cfg key: ml_provider_min_trades
+
+  control\sl_monitor.py [NONE]
+    Reads: [] | Writes: ['open_positions']
+    L41: PROXIMITY_PCT = 2.0  → cfg key: sl_monitor_proximity_pct
+
+════════════════════════════════════════════════════════════
+To migrate a script: brain will auto-generate SCRIPT_PATCH proposals.
+Enable: set brain_script_patching_enabled=true in system_config.
+════════════════════════════════════════════════════════════
+
+01:10:03 | INFO     | __main__:101 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+01:10:03 | INFO     | brain.data_aggregator:347 - Building analysis dataset (90d, win≥3.0%, stop≤-5.0%)...
+01:10:03 | INFO     | brain.data_aggregator:351 -   signal_log: 656 rows × 97 cols
+01:10:03 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 22 symbols...
+01:10:04 | INFO     | brain.data_aggregator:231 -   Outcomes: 94 evaluated, 62 wins (66.0%), coverage=14%
+01:10:05 | INFO     | brain.data_aggregator:408 - Dataset ready: 656 signals, 94 with outcomes (14.3% coverage), 6 tables loaded
+01:10:05 | INFO     | __main__:114 - Step 3/6 — Quantitative analysis (all fields)...
+01:10:05 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+01:10:05 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+01:10:05 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 66.0%)
+01:10:05 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+01:10:05 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+01:10:05 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+01:10:05 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+01:10:05 | INFO     | brain.quant_analyzer:683 -   Lessons: 0 proven, 0 retire candidates
+01:10:05 | INFO     | brain.quant_analyzer:770 - Quant analysis complete: 0 actionable findings across 110 fields
+01:10:05 | INFO     | __main__:123 - Step 4/6 — Backtesting quant proposals...
+01:10:05 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+01:10:05 | INFO     | __main__:140 - Step 5/6 — LLM synthesis (full data, all fields)...
+01:10:05 | INFO     | brain.llm_synthesizer:321 -   Calling LLM for synthesis (full data access)...
+01:10:29 | INFO     | brain.llm_synthesizer:386 -   LLM synthesis: 0 raw proposals, 0 validated
+01:10:29 | INFO     | __main__:157 - 
+════════════════════════════════════════════════════════════
+01:10:29 | INFO     | __main__:158 - BRAIN SUMMARY: 0 proposals
+01:10:29 | INFO     | __main__:159 -   Signals: 656 (14% outcomes)
+01:10:29 | INFO     | __main__:168 - ════════════════════════════════════════════════════════════
+
+01:10:29 | INFO     | __main__:178 - Step 6/6 — Saving proposals, processing approvals...
+01:10:29 | INFO     | brain.backtester_and_change_manager:202 -   Saved 0/0 proposals
+01:10:29 | SUCCESS  | __main__:211 - 🧠 Brain v2 complete in 30s — 0 proposals, 0 auto-applied, 0 pending review
+01:12:43 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:12:43 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_194243 | mode=full | dry=False
+01:12:43 | INFO     | __main__:85 - Step 1/6 — Scanning scripts for hardcoded values...
+01:12:43 | INFO     | brain.script_scanner:93 - Discovered 64 Python files for scanning
+01:12:47 | INFO     | brain.script_scanner:491 - Script scan complete: 64 scripts registered
+01:12:47 | INFO     | __main__:91 - 
+════════════════════════════════════════════════════════════
+SCRIPT SCANNER REPORT
+════════════════════════════════════════════════════════════
+Scripts discovered: 64
+  Full cfg() coverage:    52
+  Partial cfg() coverage: 7
+  No cfg() coverage:      5
+
+Scripts with tunable hardcoded values:
+
+  compute\compute_regime.py [PARTIAL]
+    Reads: ['macro_indicators', 'stock_data_daily'] | Writes: []
+    L80: SCORE_TRENDING = 78  → cfg key: compute_regime_score_trending
+    L81: SCORE_RISK_ON = 60  → cfg key: compute_regime_score_risk_on
+    L82: SCORE_NEUTRAL = 40  → cfg key: compute_regime_score_neutral
+    L83: SCORE_RECOVERING = 25  → cfg key: compute_regime_score_recovering
+
+  compute\data_quality_monitor.py [NONE]
+    Reads: ['ai_context', 'lessons', 'master_shortlist', 'msl_history', 'open_positions', 'signal_log', 'stock_data_daily'] | Writes: ['stock_data_daily']
+    L72: CHARTINK_ROW_MIN = 450  → cfg key: data_quality_monitor_chartink_row_min
+    L73: CHARTINK_ROW_MAX = 510  → cfg key: data_quality_monitor_chartink_row_max
+    L74: VOL_RATIO_CAP = 50.0  → cfg key: data_quality_monitor_vol_ratio_cap
+    L76: SCORE_MAX = 150  → cfg key: data_quality_monitor_score_max
+    L78: MSL_MIN_ENRICHED = 70  → cfg key: data_quality_monitor_msl_min_enriched
+    ... and 5 more
+
+  signals\screen_stocks.py [PARTIAL]
+    Reads: ['master_shortlist', 'msl_computed', 'open_positions', 'stock_data_daily'] | Writes: ['msl_computed']
+    L87: MAX_SYMBOLS = 30  → cfg key: screen_stocks_max_symbols
+    L88: MAX_PER_SECTOR = 5  → cfg key: screen_stocks_max_per_sector
+    L89: MIN_MARKET_CAP = 300  → cfg key: screen_stocks_min_market_cap
+    L890: max_sector = 10  → cfg key: screen_stocks_max_sector
+    L934: min_score = 50  → cfg key: screen_stocks_min_score
+    ... and 4 more
+
+  ai\post_trade_analysis.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'nifty_upcoming_events', 'regime_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'signal_log', 'system_config']
+    L154: HOLDING_SCORE_EXIT_THRESHOLD = 30  → cfg key: post_trade_analysis_holding_score_exit_threshold
+    L155: MFE_TRAILING_FAILURE_RATIO = 0.5  → cfg key: post_trade_analysis_mfe_trailing_failure_ratio
+    L156: DEDUP_WINDOW_DAYS = 30  → cfg key: post_trade_analysis_dedup_window_days
+
+  compute\compute_msl.py [PARTIAL]
+    Reads: ['macro_indicators', 'master_shortlist', 'msl_computed', 'msl_history', 'open_positions', 'stock_data_daily'] | Writes: ['master_shortlist', 'msl_computed']
+    L116: MIN_VALUE_CR_DEFAULT = 10.0  → cfg key: compute_msl_min_value_cr_default
+
+  calibration\calibration_engine.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'system_config']
+    L73: CALIBRATION_MIN_NEW_TRADES = 15  → cfg key: calibration_engine_calibration_min_new_trades
+    L74: CALIBRATION_MAX_CHANGE_PCT = 0.2  → cfg key: calibration_engine_calibration_max_change_pct
+    L75: CALIBRATION_LOOKBACK_DAYS = 90  → cfg key: calibration_engine_calibration_lookback_days
+    L76: MIN_LESSON_APPLICATIONS = 10  → cfg key: calibration_engine_min_lesson_applications
+
+  compute\compute_indicators.py [PARTIAL]
+    Reads: ['master_shortlist', 'nifty_total_market', 'nifty_upcoming_events', 'stock_data_daily', 'system_config'] | Writes: ['stock_data_daily']
+    L113: MIN_SESSIONS_FOR_RETURNS = 260  → cfg key: compute_indicators_min_sessions_for_returns
+    L119: DIVERGE_THRESHOLD = 0.02  → cfg key: compute_indicators_diverge_threshold
+    L120: WIDE_THRESHOLD = 0.1  → cfg key: compute_indicators_wide_threshold
+
+  history\discovery_engine.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L37: MIN_SAMPLE_SIZE = 30  → cfg key: discovery_engine_min_sample_size
+    L38: P_VALUE_THRESHOLD = 0.05  → cfg key: discovery_engine_p_value_threshold
+    L39: MAX_PROPOSALS = 5  → cfg key: discovery_engine_max_proposals
+    L40: LOOKBACK_DAYS = 180  → cfg key: discovery_engine_lookback_days
+
+  ai\providers\ml_regime_classifier.py [PARTIAL]
+    Reads: ['regime_history'] | Writes: ['stock_data_daily']
+    L98: MIN_TRAINING_SAMPLES = 20  → cfg key: ml_regime_classifier_min_training_samples
+    L101: MIN_PREDICT_SAMPLES = 15  → cfg key: ml_regime_classifier_min_predict_samples
+    L103: LOOKBACK_DAYS = 365  → cfg key: ml_regime_classifier_lookback_days
+
+  ingestion\ingest_sheets.py [NONE]
+    Reads: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions', 'signal_log'] | Writes: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions']
+    L174: threshold = 0.005  → cfg key: ingest_sheets_threshold
+
+  ai\providers\ml_provider.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L96: MIN_TRADES = 90  → cfg key: ml_provider_min_trades
+
+  control\sl_monitor.py [NONE]
+    Reads: [] | Writes: ['open_positions']
+    L41: PROXIMITY_PCT = 2.0  → cfg key: sl_monitor_proximity_pct
+
+════════════════════════════════════════════════════════════
+To migrate a script: brain will auto-generate SCRIPT_PATCH proposals.
+Enable: set brain_script_patching_enabled=true in system_config.
+════════════════════════════════════════════════════════════
+
+01:12:47 | INFO     | __main__:101 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+01:12:47 | INFO     | brain.data_aggregator:347 - Building analysis dataset (90d, win≥3.0%, stop≤-5.0%)...
+01:12:47 | INFO     | brain.data_aggregator:351 -   signal_log: 656 rows × 97 cols
+01:12:47 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 22 symbols...
+01:12:48 | INFO     | brain.data_aggregator:231 -   Outcomes: 94 evaluated, 62 wins (66.0%), coverage=14%
+01:12:48 | INFO     | brain.data_aggregator:408 - Dataset ready: 656 signals, 94 with outcomes (14.3% coverage), 6 tables loaded
+01:12:48 | INFO     | __main__:114 - Step 3/6 — Quantitative analysis (all fields)...
+01:12:48 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+01:12:48 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+01:12:48 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 66.0%)
+01:12:49 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+01:12:49 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+01:12:49 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+01:12:49 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+01:12:49 | INFO     | brain.quant_analyzer:683 -   Lessons: 0 proven, 0 retire candidates
+01:12:49 | INFO     | brain.quant_analyzer:770 - Quant analysis complete: 0 actionable findings across 110 fields
+01:12:49 | INFO     | __main__:123 - Step 4/6 — Backtesting quant proposals...
+01:12:49 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+01:12:49 | INFO     | __main__:140 - Step 5/6 — LLM synthesis (full data, all fields)...
+01:12:49 | INFO     | brain.llm_synthesizer:321 -   Calling LLM for synthesis (full data access)...
+01:13:13 | INFO     | brain.llm_synthesizer:395 -   LLM synthesis: 0 raw proposals, 5 validated
+01:13:13 | INFO     | __main__:157 - 
+════════════════════════════════════════════════════════════
+01:13:13 | INFO     | __main__:158 - BRAIN SUMMARY: 5 proposals
+01:13:13 | INFO     | __main__:159 -   Signals: 656 (14% outcomes)
+01:13:13 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/post_trade_analysis.py conf=70% 
+01:13:13 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/providers/ml_provider.py conf=70% 
+01:13:13 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/providers/ml_regime_classifier.py conf=70% 
+01:13:13 | INFO     | __main__:166 -   [SCRIPT_PATCH] calibration/calibration_engine.py conf=70% 
+01:13:13 | INFO     | __main__:166 -   [SCRIPT_PATCH] compute/compute_indicators.py conf=70% 
+01:13:13 | INFO     | __main__:168 - ════════════════════════════════════════════════════════════
+
+01:13:13 | INFO     | __main__:178 - Step 6/6 — Saving proposals, processing approvals...
+01:13:14 | INFO     | brain.backtester_and_change_manager:202 -   Saved 5/5 proposals
+01:13:15 | SUCCESS  | __main__:211 - 🧠 Brain v2 complete in 32s — 5 proposals, 0 auto-applied, 5 pending review
+01:13:47 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:13:47 | ERROR    | __main__:325 - Patch apply error: startswith first arg must be str or a tuple of str, not bytes
+01:14:56 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:14:56 | SUCCESS  | __main__:318 -   Patch applied: ai/post_trade_analysis.py
+01:27:53 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:27:53 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_195753 | mode=full | dry=False
+01:27:53 | INFO     | __main__:85 - Step 1/6 — Scanning scripts for hardcoded values...
+01:27:53 | INFO     | brain.script_scanner:93 - Discovered 64 Python files for scanning
+01:27:56 | INFO     | brain.script_scanner:491 - Script scan complete: 64 scripts registered
+01:27:56 | INFO     | __main__:91 - 
+════════════════════════════════════════════════════════════
+SCRIPT SCANNER REPORT
+════════════════════════════════════════════════════════════
+Scripts discovered: 64
+  Full cfg() coverage:    52
+  Partial cfg() coverage: 7
+  No cfg() coverage:      5
+
+Scripts with tunable hardcoded values:
+
+  compute\compute_regime.py [PARTIAL]
+    Reads: ['macro_indicators', 'stock_data_daily'] | Writes: []
+    L80: SCORE_TRENDING = 78  → cfg key: compute_regime_score_trending
+    L81: SCORE_RISK_ON = 60  → cfg key: compute_regime_score_risk_on
+    L82: SCORE_NEUTRAL = 40  → cfg key: compute_regime_score_neutral
+    L83: SCORE_RECOVERING = 25  → cfg key: compute_regime_score_recovering
+
+  compute\data_quality_monitor.py [NONE]
+    Reads: ['ai_context', 'lessons', 'master_shortlist', 'msl_history', 'open_positions', 'signal_log', 'stock_data_daily'] | Writes: ['stock_data_daily']
+    L72: CHARTINK_ROW_MIN = 450  → cfg key: data_quality_monitor_chartink_row_min
+    L73: CHARTINK_ROW_MAX = 510  → cfg key: data_quality_monitor_chartink_row_max
+    L74: VOL_RATIO_CAP = 50.0  → cfg key: data_quality_monitor_vol_ratio_cap
+    L76: SCORE_MAX = 150  → cfg key: data_quality_monitor_score_max
+    L78: MSL_MIN_ENRICHED = 70  → cfg key: data_quality_monitor_msl_min_enriched
+    ... and 5 more
+
+  signals\screen_stocks.py [PARTIAL]
+    Reads: ['master_shortlist', 'msl_computed', 'open_positions', 'stock_data_daily'] | Writes: ['msl_computed']
+    L87: MAX_SYMBOLS = 30  → cfg key: screen_stocks_max_symbols
+    L88: MAX_PER_SECTOR = 5  → cfg key: screen_stocks_max_per_sector
+    L89: MIN_MARKET_CAP = 300  → cfg key: screen_stocks_min_market_cap
+    L890: max_sector = 10  → cfg key: screen_stocks_max_sector
+    L934: min_score = 50  → cfg key: screen_stocks_min_score
+    ... and 4 more
+
+  ai\post_trade_analysis.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'nifty_upcoming_events', 'regime_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'signal_log', 'system_config']
+    L154: HOLDING_SCORE_EXIT_THRESHOLD = 30  → cfg key: post_trade_analysis_holding_score_exit_threshold
+    L155: MFE_TRAILING_FAILURE_RATIO = 0.5  → cfg key: post_trade_analysis_mfe_trailing_failure_ratio
+    L156: DEDUP_WINDOW_DAYS = 30  → cfg key: post_trade_analysis_dedup_window_days
+
+  compute\compute_msl.py [PARTIAL]
+    Reads: ['macro_indicators', 'master_shortlist', 'msl_computed', 'msl_history', 'open_positions', 'stock_data_daily'] | Writes: ['master_shortlist', 'msl_computed']
+    L116: MIN_VALUE_CR_DEFAULT = 10.0  → cfg key: compute_msl_min_value_cr_default
+
+  calibration\calibration_engine.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'system_config']
+    L73: CALIBRATION_MIN_NEW_TRADES = 15  → cfg key: calibration_engine_calibration_min_new_trades
+    L74: CALIBRATION_MAX_CHANGE_PCT = 0.2  → cfg key: calibration_engine_calibration_max_change_pct
+    L75: CALIBRATION_LOOKBACK_DAYS = 90  → cfg key: calibration_engine_calibration_lookback_days
+    L76: MIN_LESSON_APPLICATIONS = 10  → cfg key: calibration_engine_min_lesson_applications
+
+  compute\compute_indicators.py [PARTIAL]
+    Reads: ['master_shortlist', 'nifty_total_market', 'nifty_upcoming_events', 'stock_data_daily', 'system_config'] | Writes: ['stock_data_daily']
+    L113: MIN_SESSIONS_FOR_RETURNS = 260  → cfg key: compute_indicators_min_sessions_for_returns
+    L119: DIVERGE_THRESHOLD = 0.02  → cfg key: compute_indicators_diverge_threshold
+    L120: WIDE_THRESHOLD = 0.1  → cfg key: compute_indicators_wide_threshold
+
+  history\discovery_engine.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L37: MIN_SAMPLE_SIZE = 30  → cfg key: discovery_engine_min_sample_size
+    L38: P_VALUE_THRESHOLD = 0.05  → cfg key: discovery_engine_p_value_threshold
+    L39: MAX_PROPOSALS = 5  → cfg key: discovery_engine_max_proposals
+    L40: LOOKBACK_DAYS = 180  → cfg key: discovery_engine_lookback_days
+
+  ai\providers\ml_regime_classifier.py [PARTIAL]
+    Reads: ['regime_history'] | Writes: ['stock_data_daily']
+    L98: MIN_TRAINING_SAMPLES = 20  → cfg key: ml_regime_classifier_min_training_samples
+    L101: MIN_PREDICT_SAMPLES = 15  → cfg key: ml_regime_classifier_min_predict_samples
+    L103: LOOKBACK_DAYS = 365  → cfg key: ml_regime_classifier_lookback_days
+
+  ingestion\ingest_sheets.py [NONE]
+    Reads: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions', 'signal_log'] | Writes: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions']
+    L174: threshold = 0.005  → cfg key: ingest_sheets_threshold
+
+  ai\providers\ml_provider.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L96: MIN_TRADES = 90  → cfg key: ml_provider_min_trades
+
+  control\sl_monitor.py [NONE]
+    Reads: [] | Writes: ['open_positions']
+    L41: PROXIMITY_PCT = 2.0  → cfg key: sl_monitor_proximity_pct
+
+════════════════════════════════════════════════════════════
+To migrate a script: brain will auto-generate SCRIPT_PATCH proposals.
+Enable: set brain_script_patching_enabled=true in system_config.
+════════════════════════════════════════════════════════════
+
+01:27:56 | INFO     | __main__:101 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+01:27:56 | INFO     | brain.data_aggregator:347 - Building analysis dataset (90d, win≥3.0%, stop≤-5.0%)...
+01:27:57 | INFO     | brain.data_aggregator:351 -   signal_log: 656 rows × 97 cols
+01:27:57 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 22 symbols...
+01:27:58 | INFO     | brain.data_aggregator:231 -   Outcomes: 94 evaluated, 62 wins (66.0%), coverage=14%
+01:27:59 | INFO     | brain.data_aggregator:408 - Dataset ready: 656 signals, 94 with outcomes (14.3% coverage), 6 tables loaded
+01:27:59 | INFO     | __main__:114 - Step 3/6 — Quantitative analysis (all fields)...
+01:27:59 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+01:27:59 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+01:27:59 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 66.0%)
+01:27:59 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+01:27:59 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+01:27:59 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+01:27:59 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+01:27:59 | INFO     | brain.quant_analyzer:683 -   Lessons: 0 proven, 0 retire candidates
+01:27:59 | INFO     | brain.quant_analyzer:770 - Quant analysis complete: 0 actionable findings across 110 fields
+01:27:59 | INFO     | __main__:123 - Step 4/6 — Backtesting quant proposals...
+01:27:59 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+01:27:59 | INFO     | __main__:140 - Step 5/6 — LLM synthesis (full data, all fields)...
+01:27:59 | INFO     | brain.llm_synthesizer:321 -   Calling LLM for synthesis (full data access)...
+01:28:20 | INFO     | brain.llm_synthesizer:396 -   LLM synthesis: 0 raw proposals, 5 validated
+01:28:20 | INFO     | __main__:157 - 
+════════════════════════════════════════════════════════════
+01:28:20 | INFO     | __main__:158 - BRAIN SUMMARY: 5 proposals
+01:28:20 | INFO     | __main__:159 -   Signals: 656 (14% outcomes)
+01:28:20 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/post_trade_analysis.py conf=70% 
+01:28:20 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/providers/ml_provider.py conf=70% 
+01:28:20 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/providers/ml_regime_classifier.py conf=70% 
+01:28:20 | INFO     | __main__:166 -   [SCRIPT_PATCH] calibration/calibration_engine.py conf=70% 
+01:28:20 | INFO     | __main__:166 -   [SCRIPT_PATCH] compute/compute_indicators.py conf=70% 
+01:28:20 | INFO     | __main__:168 - ════════════════════════════════════════════════════════════
+
+01:28:20 | INFO     | __main__:178 - Step 6/6 — Saving proposals, processing approvals...
+01:28:21 | ERROR    | brain.backtester_and_change_manager:202 -   Save proposal failed: {'code': 'PGRST204', 'details': None, 'hint': None, 'message': "Could not find the 'hardcoded_values' column of 'brain_proposals' in the schema cache"}
+01:28:21 | ERROR    | brain.backtester_and_change_manager:202 -   Save proposal failed: {'code': 'PGRST204', 'details': None, 'hint': None, 'message': "Could not find the 'hardcoded_values' column of 'brain_proposals' in the schema cache"}
+01:28:21 | ERROR    | brain.backtester_and_change_manager:202 -   Save proposal failed: {'code': 'PGRST204', 'details': None, 'hint': None, 'message': "Could not find the 'hardcoded_values' column of 'brain_proposals' in the schema cache"}
+01:28:21 | ERROR    | brain.backtester_and_change_manager:202 -   Save proposal failed: {'code': 'PGRST204', 'details': None, 'hint': None, 'message': "Could not find the 'hardcoded_values' column of 'brain_proposals' in the schema cache"}
+01:28:21 | ERROR    | brain.backtester_and_change_manager:202 -   Save proposal failed: {'code': 'PGRST204', 'details': None, 'hint': None, 'message': "Could not find the 'hardcoded_values' column of 'brain_proposals' in the schema cache"}
+01:28:21 | INFO     | brain.backtester_and_change_manager:203 -   Saved 0/5 proposals
+01:28:21 | SUCCESS  | __main__:211 - 🧠 Brain v2 complete in 28s — 5 proposals, 0 auto-applied, 0 pending review
+01:34:28 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:34:28 | INFO     | __main__:67 - 🧠 Brain v2 starting — brain_20260510_200428 | mode=full | dry=False
+01:34:28 | INFO     | __main__:81 - Step 1/6 — Scanning scripts for hardcoded values...
+01:34:28 | INFO     | brain.script_scanner:93 - Discovered 64 Python files for scanning
+01:34:32 | INFO     | brain.script_scanner:491 - Script scan complete: 64 scripts registered
+01:34:32 | INFO     | __main__:87 - 
+════════════════════════════════════════════════════════════
+SCRIPT SCANNER REPORT
+════════════════════════════════════════════════════════════
+Scripts discovered: 64
+  Full cfg() coverage:    52
+  Partial cfg() coverage: 7
+  No cfg() coverage:      5
+
+Scripts with tunable hardcoded values:
+
+  compute\compute_regime.py [PARTIAL]
+    Reads: ['macro_indicators', 'stock_data_daily'] | Writes: []
+    L80: SCORE_TRENDING = 78  → cfg key: compute_regime_score_trending
+    L81: SCORE_RISK_ON = 60  → cfg key: compute_regime_score_risk_on
+    L82: SCORE_NEUTRAL = 40  → cfg key: compute_regime_score_neutral
+    L83: SCORE_RECOVERING = 25  → cfg key: compute_regime_score_recovering
+
+  compute\data_quality_monitor.py [NONE]
+    Reads: ['ai_context', 'lessons', 'master_shortlist', 'msl_history', 'open_positions', 'signal_log', 'stock_data_daily'] | Writes: ['stock_data_daily']
+    L72: CHARTINK_ROW_MIN = 450  → cfg key: data_quality_monitor_chartink_row_min
+    L73: CHARTINK_ROW_MAX = 510  → cfg key: data_quality_monitor_chartink_row_max
+    L74: VOL_RATIO_CAP = 50.0  → cfg key: data_quality_monitor_vol_ratio_cap
+    L76: SCORE_MAX = 150  → cfg key: data_quality_monitor_score_max
+    L78: MSL_MIN_ENRICHED = 70  → cfg key: data_quality_monitor_msl_min_enriched
+    ... and 5 more
+
+  signals\screen_stocks.py [PARTIAL]
+    Reads: ['master_shortlist', 'msl_computed', 'open_positions', 'stock_data_daily'] | Writes: ['msl_computed']
+    L87: MAX_SYMBOLS = 30  → cfg key: screen_stocks_max_symbols
+    L88: MAX_PER_SECTOR = 5  → cfg key: screen_stocks_max_per_sector
+    L89: MIN_MARKET_CAP = 300  → cfg key: screen_stocks_min_market_cap
+    L890: max_sector = 10  → cfg key: screen_stocks_max_sector
+    L934: min_score = 50  → cfg key: screen_stocks_min_score
+    ... and 4 more
+
+  ai\post_trade_analysis.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'nifty_upcoming_events', 'regime_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'signal_log', 'system_config']
+    L154: HOLDING_SCORE_EXIT_THRESHOLD = 30  → cfg key: post_trade_analysis_holding_score_exit_threshold
+    L155: MFE_TRAILING_FAILURE_RATIO = 0.5  → cfg key: post_trade_analysis_mfe_trailing_failure_ratio
+    L156: DEDUP_WINDOW_DAYS = 30  → cfg key: post_trade_analysis_dedup_window_days
+
+  compute\compute_msl.py [PARTIAL]
+    Reads: ['macro_indicators', 'master_shortlist', 'msl_computed', 'msl_history', 'open_positions', 'stock_data_daily'] | Writes: ['master_shortlist', 'msl_computed']
+    L116: MIN_VALUE_CR_DEFAULT = 10.0  → cfg key: compute_msl_min_value_cr_default
+
+  calibration\calibration_engine.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'system_config']
+    L73: CALIBRATION_MIN_NEW_TRADES = 15  → cfg key: calibration_engine_calibration_min_new_trades
+    L74: CALIBRATION_MAX_CHANGE_PCT = 0.2  → cfg key: calibration_engine_calibration_max_change_pct
+    L75: CALIBRATION_LOOKBACK_DAYS = 90  → cfg key: calibration_engine_calibration_lookback_days
+    L76: MIN_LESSON_APPLICATIONS = 10  → cfg key: calibration_engine_min_lesson_applications
+
+  compute\compute_indicators.py [PARTIAL]
+    Reads: ['master_shortlist', 'nifty_total_market', 'nifty_upcoming_events', 'stock_data_daily', 'system_config'] | Writes: ['stock_data_daily']
+    L113: MIN_SESSIONS_FOR_RETURNS = 260  → cfg key: compute_indicators_min_sessions_for_returns
+    L119: DIVERGE_THRESHOLD = 0.02  → cfg key: compute_indicators_diverge_threshold
+    L120: WIDE_THRESHOLD = 0.1  → cfg key: compute_indicators_wide_threshold
+
+  history\discovery_engine.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L37: MIN_SAMPLE_SIZE = 30  → cfg key: discovery_engine_min_sample_size
+    L38: P_VALUE_THRESHOLD = 0.05  → cfg key: discovery_engine_p_value_threshold
+    L39: MAX_PROPOSALS = 5  → cfg key: discovery_engine_max_proposals
+    L40: LOOKBACK_DAYS = 180  → cfg key: discovery_engine_lookback_days
+
+  ai\providers\ml_regime_classifier.py [PARTIAL]
+    Reads: ['regime_history'] | Writes: ['stock_data_daily']
+    L98: MIN_TRAINING_SAMPLES = 20  → cfg key: ml_regime_classifier_min_training_samples
+    L101: MIN_PREDICT_SAMPLES = 15  → cfg key: ml_regime_classifier_min_predict_samples
+    L103: LOOKBACK_DAYS = 365  → cfg key: ml_regime_classifier_lookback_days
+
+  ingestion\ingest_sheets.py [NONE]
+    Reads: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions', 'signal_log'] | Writes: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions']
+    L174: threshold = 0.005  → cfg key: ingest_sheets_threshold
+
+  ai\providers\ml_provider.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L96: MIN_TRADES = 90  → cfg key: ml_provider_min_trades
+
+  control\sl_monitor.py [NONE]
+    Reads: [] | Writes: ['open_positions']
+    L41: PROXIMITY_PCT = 2.0  → cfg key: sl_monitor_proximity_pct
+
+════════════════════════════════════════════════════════════
+To migrate a script: brain will auto-generate SCRIPT_PATCH proposals.
+Enable: set brain_script_patching_enabled=true in system_config.
+════════════════════════════════════════════════════════════
+
+01:34:32 | INFO     | __main__:97 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+01:34:32 | INFO     | brain.data_aggregator:347 - Building analysis dataset (90d, win≥3.0%, stop≤-5.0%)...
+01:34:32 | INFO     | brain.data_aggregator:351 -   signal_log: 656 rows × 97 cols
+01:34:32 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 22 symbols...
+01:34:33 | INFO     | brain.data_aggregator:231 -   Outcomes: 94 evaluated, 62 wins (66.0%), coverage=14%
+01:34:34 | INFO     | brain.data_aggregator:408 - Dataset ready: 656 signals, 94 with outcomes (14.3% coverage), 6 tables loaded
+01:34:34 | INFO     | __main__:110 - Step 3/6 — Quantitative analysis (all fields)...
+01:34:34 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+01:34:34 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+01:34:34 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 66.0%)
+01:34:34 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+01:34:34 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+01:34:34 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+01:34:34 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+01:34:34 | INFO     | brain.quant_analyzer:683 -   Lessons: 0 proven, 0 retire candidates
+01:34:34 | INFO     | brain.quant_analyzer:770 - Quant analysis complete: 0 actionable findings across 110 fields
+01:34:34 | INFO     | __main__:119 - Step 4/6 — Backtesting quant proposals...
+01:34:34 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+01:34:34 | INFO     | __main__:136 - Step 5/6 — LLM synthesis (full data, all fields)...
+01:34:34 | INFO     | brain.llm_synthesizer:321 -   Calling LLM for synthesis (full data access)...
+01:34:59 | INFO     | brain.llm_synthesizer:396 -   LLM synthesis: 0 raw proposals, 5 validated
+01:34:59 | INFO     | __main__:153 - 
+════════════════════════════════════════════════════════════
+01:34:59 | INFO     | __main__:154 - BRAIN SUMMARY: 5 proposals
+01:34:59 | INFO     | __main__:155 -   Signals: 656 (14% outcomes)
+01:34:59 | INFO     | __main__:162 -   [SCRIPT_PATCH] ai/post_trade_analysis.py conf=70% 
+01:34:59 | INFO     | __main__:162 -   [SCRIPT_PATCH] ai/providers/ml_provider.py conf=70% 
+01:34:59 | INFO     | __main__:162 -   [SCRIPT_PATCH] ai/providers/ml_regime_classifier.py conf=70% 
+01:34:59 | INFO     | __main__:162 -   [SCRIPT_PATCH] calibration/calibration_engine.py conf=70% 
+01:34:59 | INFO     | __main__:162 -   [SCRIPT_PATCH] compute/compute_indicators.py conf=70% 
+01:34:59 | INFO     | __main__:164 - ════════════════════════════════════════════════════════════
+
+01:34:59 | INFO     | __main__:174 - Step 6/6 — Saving proposals, processing approvals...
+01:34:59 | ERROR    | brain.backtester_and_change_manager:201 -   Save proposal failed: {'code': 'PGRST204', 'details': None, 'hint': None, 'message': "Could not find the 'hardcoded_values' column of 'brain_proposals' in the schema cache"}
+01:34:59 | ERROR    | brain.backtester_and_change_manager:201 -   Save proposal failed: {'code': 'PGRST204', 'details': None, 'hint': None, 'message': "Could not find the 'hardcoded_values' column of 'brain_proposals' in the schema cache"}
+01:34:59 | ERROR    | brain.backtester_and_change_manager:201 -   Save proposal failed: {'code': 'PGRST204', 'details': None, 'hint': None, 'message': "Could not find the 'hardcoded_values' column of 'brain_proposals' in the schema cache"}
+01:34:59 | ERROR    | brain.backtester_and_change_manager:201 -   Save proposal failed: {'code': 'PGRST204', 'details': None, 'hint': None, 'message': "Could not find the 'hardcoded_values' column of 'brain_proposals' in the schema cache"}
+01:34:59 | ERROR    | brain.backtester_and_change_manager:201 -   Save proposal failed: {'code': 'PGRST204', 'details': None, 'hint': None, 'message': "Could not find the 'hardcoded_values' column of 'brain_proposals' in the schema cache"}
+01:34:59 | INFO     | brain.backtester_and_change_manager:202 -   Saved 0/5 proposals
+01:35:00 | SUCCESS  | __main__:207 - 🧠 Brain v2 complete in 32s — 5 proposals, 0 auto-applied, 0 pending review
+01:35:59 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:35:59 | INFO     | __main__:67 - 🧠 Brain v2 starting — brain_20260510_200559 | mode=full | dry=False
+01:35:59 | INFO     | __main__:81 - Step 1/6 — Scanning scripts for hardcoded values...
+01:35:59 | INFO     | brain.script_scanner:93 - Discovered 64 Python files for scanning
+01:36:03 | INFO     | brain.script_scanner:491 - Script scan complete: 64 scripts registered
+01:36:03 | INFO     | __main__:87 - 
+════════════════════════════════════════════════════════════
+SCRIPT SCANNER REPORT
+════════════════════════════════════════════════════════════
+Scripts discovered: 64
+  Full cfg() coverage:    52
+  Partial cfg() coverage: 7
+  No cfg() coverage:      5
+
+Scripts with tunable hardcoded values:
+
+  compute\compute_regime.py [PARTIAL]
+    Reads: ['macro_indicators', 'stock_data_daily'] | Writes: []
+    L80: SCORE_TRENDING = 78  → cfg key: compute_regime_score_trending
+    L81: SCORE_RISK_ON = 60  → cfg key: compute_regime_score_risk_on
+    L82: SCORE_NEUTRAL = 40  → cfg key: compute_regime_score_neutral
+    L83: SCORE_RECOVERING = 25  → cfg key: compute_regime_score_recovering
+
+  compute\data_quality_monitor.py [NONE]
+    Reads: ['ai_context', 'lessons', 'master_shortlist', 'msl_history', 'open_positions', 'signal_log', 'stock_data_daily'] | Writes: ['stock_data_daily']
+    L72: CHARTINK_ROW_MIN = 450  → cfg key: data_quality_monitor_chartink_row_min
+    L73: CHARTINK_ROW_MAX = 510  → cfg key: data_quality_monitor_chartink_row_max
+    L74: VOL_RATIO_CAP = 50.0  → cfg key: data_quality_monitor_vol_ratio_cap
+    L76: SCORE_MAX = 150  → cfg key: data_quality_monitor_score_max
+    L78: MSL_MIN_ENRICHED = 70  → cfg key: data_quality_monitor_msl_min_enriched
+    ... and 5 more
+
+  signals\screen_stocks.py [PARTIAL]
+    Reads: ['master_shortlist', 'msl_computed', 'open_positions', 'stock_data_daily'] | Writes: ['msl_computed']
+    L87: MAX_SYMBOLS = 30  → cfg key: screen_stocks_max_symbols
+    L88: MAX_PER_SECTOR = 5  → cfg key: screen_stocks_max_per_sector
+    L89: MIN_MARKET_CAP = 300  → cfg key: screen_stocks_min_market_cap
+    L890: max_sector = 10  → cfg key: screen_stocks_max_sector
+    L934: min_score = 50  → cfg key: screen_stocks_min_score
+    ... and 4 more
+
+  ai\post_trade_analysis.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'nifty_upcoming_events', 'regime_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'signal_log', 'system_config']
+    L154: HOLDING_SCORE_EXIT_THRESHOLD = 30  → cfg key: post_trade_analysis_holding_score_exit_threshold
+    L155: MFE_TRAILING_FAILURE_RATIO = 0.5  → cfg key: post_trade_analysis_mfe_trailing_failure_ratio
+    L156: DEDUP_WINDOW_DAYS = 30  → cfg key: post_trade_analysis_dedup_window_days
+
+  compute\compute_msl.py [PARTIAL]
+    Reads: ['macro_indicators', 'master_shortlist', 'msl_computed', 'msl_history', 'open_positions', 'stock_data_daily'] | Writes: ['master_shortlist', 'msl_computed']
+    L116: MIN_VALUE_CR_DEFAULT = 10.0  → cfg key: compute_msl_min_value_cr_default
+
+  calibration\calibration_engine.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'system_config']
+    L73: CALIBRATION_MIN_NEW_TRADES = 15  → cfg key: calibration_engine_calibration_min_new_trades
+    L74: CALIBRATION_MAX_CHANGE_PCT = 0.2  → cfg key: calibration_engine_calibration_max_change_pct
+    L75: CALIBRATION_LOOKBACK_DAYS = 90  → cfg key: calibration_engine_calibration_lookback_days
+    L76: MIN_LESSON_APPLICATIONS = 10  → cfg key: calibration_engine_min_lesson_applications
+
+  compute\compute_indicators.py [PARTIAL]
+    Reads: ['master_shortlist', 'nifty_total_market', 'nifty_upcoming_events', 'stock_data_daily', 'system_config'] | Writes: ['stock_data_daily']
+    L113: MIN_SESSIONS_FOR_RETURNS = 260  → cfg key: compute_indicators_min_sessions_for_returns
+    L119: DIVERGE_THRESHOLD = 0.02  → cfg key: compute_indicators_diverge_threshold
+    L120: WIDE_THRESHOLD = 0.1  → cfg key: compute_indicators_wide_threshold
+
+  history\discovery_engine.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L37: MIN_SAMPLE_SIZE = 30  → cfg key: discovery_engine_min_sample_size
+    L38: P_VALUE_THRESHOLD = 0.05  → cfg key: discovery_engine_p_value_threshold
+    L39: MAX_PROPOSALS = 5  → cfg key: discovery_engine_max_proposals
+    L40: LOOKBACK_DAYS = 180  → cfg key: discovery_engine_lookback_days
+
+  ai\providers\ml_regime_classifier.py [PARTIAL]
+    Reads: ['regime_history'] | Writes: ['stock_data_daily']
+    L98: MIN_TRAINING_SAMPLES = 20  → cfg key: ml_regime_classifier_min_training_samples
+    L101: MIN_PREDICT_SAMPLES = 15  → cfg key: ml_regime_classifier_min_predict_samples
+    L103: LOOKBACK_DAYS = 365  → cfg key: ml_regime_classifier_lookback_days
+
+  ingestion\ingest_sheets.py [NONE]
+    Reads: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions', 'signal_log'] | Writes: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions']
+    L174: threshold = 0.005  → cfg key: ingest_sheets_threshold
+
+  ai\providers\ml_provider.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L96: MIN_TRADES = 90  → cfg key: ml_provider_min_trades
+
+  control\sl_monitor.py [NONE]
+    Reads: [] | Writes: ['open_positions']
+    L41: PROXIMITY_PCT = 2.0  → cfg key: sl_monitor_proximity_pct
+
+════════════════════════════════════════════════════════════
+To migrate a script: brain will auto-generate SCRIPT_PATCH proposals.
+Enable: set brain_script_patching_enabled=true in system_config.
+════════════════════════════════════════════════════════════
+
+01:36:03 | INFO     | __main__:97 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+01:36:03 | INFO     | brain.data_aggregator:347 - Building analysis dataset (90d, win≥3.0%, stop≤-5.0%)...
+01:36:03 | INFO     | brain.data_aggregator:351 -   signal_log: 656 rows × 97 cols
+01:36:03 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 22 symbols...
+01:36:04 | INFO     | brain.data_aggregator:231 -   Outcomes: 94 evaluated, 62 wins (66.0%), coverage=14%
+01:36:05 | INFO     | brain.data_aggregator:408 - Dataset ready: 656 signals, 94 with outcomes (14.3% coverage), 6 tables loaded
+01:36:05 | INFO     | __main__:110 - Step 3/6 — Quantitative analysis (all fields)...
+01:36:05 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+01:36:05 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+01:36:05 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 66.0%)
+01:36:05 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+01:36:05 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+01:36:05 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+01:36:05 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+01:36:05 | INFO     | brain.quant_analyzer:683 -   Lessons: 0 proven, 0 retire candidates
+01:36:05 | INFO     | brain.quant_analyzer:770 - Quant analysis complete: 0 actionable findings across 110 fields
+01:36:05 | INFO     | __main__:119 - Step 4/6 — Backtesting quant proposals...
+01:36:05 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+01:36:05 | INFO     | __main__:136 - Step 5/6 — LLM synthesis (full data, all fields)...
+01:36:05 | INFO     | brain.llm_synthesizer:321 -   Calling LLM for synthesis (full data access)...
+01:36:26 | INFO     | brain.llm_synthesizer:396 -   LLM synthesis: 0 raw proposals, 5 validated
+01:36:26 | INFO     | __main__:153 - 
+════════════════════════════════════════════════════════════
+01:36:26 | INFO     | __main__:154 - BRAIN SUMMARY: 5 proposals
+01:36:26 | INFO     | __main__:155 -   Signals: 656 (14% outcomes)
+01:36:26 | INFO     | __main__:162 -   [SCRIPT_PATCH] ai/post_trade_analysis.py conf=70% 
+01:36:26 | INFO     | __main__:162 -   [SCRIPT_PATCH] ai/providers/ml_provider.py conf=70% 
+01:36:26 | INFO     | __main__:162 -   [SCRIPT_PATCH] ai/providers/ml_regime_classifier.py conf=70% 
+01:36:26 | INFO     | __main__:162 -   [SCRIPT_PATCH] calibration/calibration_engine.py conf=70% 
+01:36:26 | INFO     | __main__:162 -   [SCRIPT_PATCH] compute/compute_indicators.py conf=70% 
+01:36:26 | INFO     | __main__:164 - ════════════════════════════════════════════════════════════
+
+01:36:26 | INFO     | __main__:174 - Step 6/6 — Saving proposals, processing approvals...
+01:36:27 | INFO     | brain.backtester_and_change_manager:202 -   Saved 5/5 proposals
+01:36:28 | SUCCESS  | __main__:207 - 🧠 Brain v2 complete in 29s — 5 proposals, 0 auto-applied, 5 pending review
+01:37:51 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:37:51 | INFO     | __main__:327 -   Seeded system_config: post_trade_analysis_holding_score_exit_threshold = 30
+01:37:51 | INFO     | __main__:327 -   Seeded system_config: post_trade_analysis_mfe_trailing_failure_ratio = 0.5
+01:37:52 | INFO     | __main__:327 -   Seeded system_config: post_trade_analysis_dedup_window_days = 30
+01:37:52 | SUCCESS  | __main__:336 -   Patch applied: ai/post_trade_analysis.py
+01:40:06 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:40:06 | INFO     | __main__:327 -   Seeded system_config: ml_provider_min_trades = 90
+01:40:06 | SUCCESS  | __main__:336 -   Patch applied: ai/providers/ml_provider.py
+01:47:06 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:47:06 | INFO     | __main__:327 -   Seeded system_config: ml_regime_classifier_min_training_samples = 20
+01:47:06 | INFO     | __main__:327 -   Seeded system_config: ml_regime_classifier_min_predict_samples = 15
+01:47:07 | INFO     | __main__:327 -   Seeded system_config: ml_regime_classifier_lookback_days = 365
+01:47:07 | SUCCESS  | __main__:336 -   Patch applied: ai/providers/ml_regime_classifier.py
+01:47:14 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:47:14 | INFO     | __main__:327 -   Seeded system_config: calibration_engine_calibration_min_new_trades = 15
+01:47:14 | INFO     | __main__:327 -   Seeded system_config: calibration_engine_calibration_max_change_pct = 0.2
+01:47:14 | INFO     | __main__:327 -   Seeded system_config: calibration_engine_calibration_lookback_days = 90
+01:47:14 | INFO     | __main__:327 -   Seeded system_config: calibration_engine_min_lesson_applications = 10
+01:47:14 | SUCCESS  | __main__:336 -   Patch applied: calibration/calibration_engine.py
+01:47:20 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:47:33 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:47:34 | INFO     | __main__:327 -   Seeded system_config: compute_indicators_min_sessions_for_returns = 260
+01:47:34 | INFO     | __main__:327 -   Seeded system_config: compute_indicators_diverge_threshold = 0.02
+01:47:34 | INFO     | __main__:327 -   Seeded system_config: compute_indicators_wide_threshold = 0.1
+01:47:34 | SUCCESS  | __main__:336 -   Patch applied: compute/compute_indicators.py
+01:47:39 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:47:40 | SUCCESS  | __main__:336 -   Patch applied: compute/compute_indicators.py
+01:48:58 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-11
+01:48:58 | INFO     | __main__:67 - 🧠 Brain v2 starting — brain_20260510_201858 | mode=full | dry=False
+01:48:58 | INFO     | __main__:81 - Step 1/6 — Scanning scripts for hardcoded values...
+01:48:58 | INFO     | brain.script_scanner:93 - Discovered 64 Python files for scanning
+01:49:03 | INFO     | brain.script_scanner:491 - Script scan complete: 64 scripts registered
+01:49:03 | INFO     | __main__:87 - 
+════════════════════════════════════════════════════════════
+SCRIPT SCANNER REPORT
+════════════════════════════════════════════════════════════
+Scripts discovered: 64
+  Full cfg() coverage:    57
+  Partial cfg() coverage: 3
+  No cfg() coverage:      4
+
+Scripts with tunable hardcoded values:
+
+  compute\compute_regime.py [PARTIAL]
+    Reads: ['macro_indicators', 'stock_data_daily'] | Writes: []
+    L80: SCORE_TRENDING = 78  → cfg key: compute_regime_score_trending
+    L81: SCORE_RISK_ON = 60  → cfg key: compute_regime_score_risk_on
+    L82: SCORE_NEUTRAL = 40  → cfg key: compute_regime_score_neutral
+    L83: SCORE_RECOVERING = 25  → cfg key: compute_regime_score_recovering
+
+  compute\data_quality_monitor.py [NONE]
+    Reads: ['ai_context', 'lessons', 'master_shortlist', 'msl_history', 'open_positions', 'signal_log', 'stock_data_daily'] | Writes: ['stock_data_daily']
+    L72: CHARTINK_ROW_MIN = 450  → cfg key: data_quality_monitor_chartink_row_min
+    L73: CHARTINK_ROW_MAX = 510  → cfg key: data_quality_monitor_chartink_row_max
+    L74: VOL_RATIO_CAP = 50.0  → cfg key: data_quality_monitor_vol_ratio_cap
+    L76: SCORE_MAX = 150  → cfg key: data_quality_monitor_score_max
+    L78: MSL_MIN_ENRICHED = 70  → cfg key: data_quality_monitor_msl_min_enriched
+    ... and 5 more
+
+  signals\screen_stocks.py [PARTIAL]
+    Reads: ['master_shortlist', 'msl_computed', 'open_positions', 'stock_data_daily'] | Writes: ['msl_computed']
+    L87: MAX_SYMBOLS = 30  → cfg key: screen_stocks_max_symbols
+    L88: MAX_PER_SECTOR = 5  → cfg key: screen_stocks_max_per_sector
+    L89: MIN_MARKET_CAP = 300  → cfg key: screen_stocks_min_market_cap
+    L890: max_sector = 10  → cfg key: screen_stocks_max_sector
+    L934: min_score = 50  → cfg key: screen_stocks_min_score
+    ... and 4 more
+
+  compute\compute_msl.py [PARTIAL]
+    Reads: ['macro_indicators', 'master_shortlist', 'msl_computed', 'msl_history', 'open_positions', 'stock_data_daily'] | Writes: ['master_shortlist', 'msl_computed']
+    L116: MIN_VALUE_CR_DEFAULT = 10.0  → cfg key: compute_msl_min_value_cr_default
+
+  history\discovery_engine.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L37: MIN_SAMPLE_SIZE = 30  → cfg key: discovery_engine_min_sample_size
+    L38: P_VALUE_THRESHOLD = 0.05  → cfg key: discovery_engine_p_value_threshold
+    L39: MAX_PROPOSALS = 5  → cfg key: discovery_engine_max_proposals
+    L40: LOOKBACK_DAYS = 180  → cfg key: discovery_engine_lookback_days
+
+  ingestion\ingest_sheets.py [NONE]
+    Reads: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions', 'signal_log'] | Writes: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions']
+    L174: threshold = 0.005  → cfg key: ingest_sheets_threshold
+
+  control\sl_monitor.py [NONE]
+    Reads: [] | Writes: ['open_positions']
+    L41: PROXIMITY_PCT = 2.0  → cfg key: sl_monitor_proximity_pct
+
+════════════════════════════════════════════════════════════
+To migrate a script: brain will auto-generate SCRIPT_PATCH proposals.
+Enable: set brain_script_patching_enabled=true in system_config.
+════════════════════════════════════════════════════════════
+
+01:49:03 | INFO     | __main__:97 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+01:49:03 | INFO     | brain.data_aggregator:347 - Building analysis dataset (90d, win≥3.0%, stop≤-5.0%)...
+01:49:04 | INFO     | brain.data_aggregator:351 -   signal_log: 656 rows × 97 cols
+01:49:04 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 22 symbols...
+01:49:04 | INFO     | brain.data_aggregator:231 -   Outcomes: 94 evaluated, 62 wins (66.0%), coverage=14%
+01:49:05 | INFO     | brain.data_aggregator:408 - Dataset ready: 656 signals, 94 with outcomes (14.3% coverage), 6 tables loaded
+01:49:05 | INFO     | __main__:110 - Step 3/6 — Quantitative analysis (all fields)...
+01:49:05 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+01:49:05 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+01:49:05 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 66.0%)
+01:49:05 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+01:49:05 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+01:49:05 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+01:49:05 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+01:49:05 | ERROR    | __main__:114 - Quant analysis failed: cannot access local variable 'pd' where it is not associated with a value
+01:49:05 | INFO     | __main__:119 - Step 4/6 — Backtesting quant proposals...
+01:49:05 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+01:49:05 | INFO     | __main__:136 - Step 5/6 — LLM synthesis (full data, all fields)...
+01:49:05 | WARNING  | __main__:145 - LLM synthesis failed (non-fatal): name 'cfg_float' is not defined
+01:49:05 | INFO     | __main__:153 - 
+════════════════════════════════════════════════════════════
+01:49:05 | INFO     | __main__:154 - BRAIN SUMMARY: 0 proposals
+01:49:05 | INFO     | __main__:155 -   Signals: 656 (14% outcomes)
+01:49:05 | INFO     | __main__:164 - ════════════════════════════════════════════════════════════
+
+01:49:05 | INFO     | __main__:174 - Step 6/6 — Saving proposals, processing approvals...
+01:49:05 | INFO     | brain.backtester_and_change_manager:202 -   Saved 0/0 proposals
+01:49:05 | SUCCESS  | __main__:207 - 🧠 Brain v2 complete in 7s — 0 proposals, 0 auto-applied, 0 pending review

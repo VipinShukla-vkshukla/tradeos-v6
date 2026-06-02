@@ -1,0 +1,257 @@
+00:09:12 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:09:12 | INFO     | __main__:945 - =================================================================
+00:09:12 | INFO     | __main__:946 - STEP: Compute Regime v1.0 | 2026-04-13 | mode=SHADOW
+00:09:12 | INFO     | __main__:948 - =================================================================
+00:09:12 | INFO     | __main__:951 - Pass 1: loading data...
+00:09:14 | INFO     | __main__:279 -   Using fallback from last populated trading day: 2026-04-10
+00:09:14 | INFO     | __main__:330 -   Loaded: regime_history=10 days | VIX=18.85 (market_regime(fallback)) | FII flag=CAUTION | today_row=exists
+00:09:14 | INFO     | __main__:961 -   2026-04-13 is a holiday/weekend — effective date is 2026-04-10. Skipping write to avoid phantom row.
+00:09:14 | INFO     | __main__:971 - Pass 2: scoring pillars...
+00:09:14 | INFO     | __main__:992 -   Pillar scores:
+00:09:14 | INFO     | __main__:993 -     Price structure:   0.0/25
+00:09:14 | INFO     | __main__:994 -     Breadth:          14.0/25
+00:09:14 | INFO     | __main__:995 -     Momentum:          8.0/20
+00:09:14 | INFO     | __main__:996 -     Volatility/VIX:    6.0/15  (VIX=18.85)
+00:09:14 | INFO     | __main__:997 -     FII flows:         0.0/15
+00:09:14 | INFO     | __main__:998 -     ─────────────────────────────────
+00:09:14 | INFO     | __main__:999 -     TOTAL:            28.0/100
+00:09:14 | INFO     | __main__:1004 -   RECOVERING conditions met — breadth improving, VIX declining, Nifty bouncing
+00:09:14 | INFO     | __main__:1007 - Pass 3: applying hysteresis...
+00:09:14 | INFO     | __main__:1014 -   Computed regime: RECOVERING | Score: 28.0/100 | ⚠ DIVERGE (Sheet=RISK OFF)
+00:09:14 | WARNING  | __main__:1017 -   Regime divergence: Sheet says 'RISK OFF', compute_regime says 'RECOVERING'. SHADOW MODE: Sheet regime still active.
+00:09:14 | INFO     | __main__:1030 - Pass 4: writing (shadow mode)...
+00:09:14 | SUCCESS  | __main__:918 - ✓ market_regime updated | computed_regime=RECOVERING | score=28.0
+00:19:45 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:19:46 | INFO     | __main__:1109 - =================================================================
+00:19:46 | INFO     | __main__:1110 - STEP: Compute Regime v2.0 | 2026-04-13 | mode=SHADOW
+00:19:46 | INFO     | __main__:1112 - =================================================================
+00:19:46 | INFO     | __main__:120 -   2026-04-13 is non-trading — effective date is 2026-04-10
+00:19:46 | INFO     | __main__:1120 -   Non-trading day — will compute for 2026-04-10 but not create new row
+00:19:46 | INFO     | __main__:1123 - Pass 1: loading data...
+00:19:48 | WARNING  | __main__:353 -   GIFT Nifty fetch failed: {'code': '42703', 'details': None, 'hint': None, 'message': 'column global_cues.nifty_prev_close does not exist'}
+00:19:48 | INFO     | __main__:385 -   DB fallback from: 2026-04-10
+00:19:48 | INFO     | __main__:419 -   Loaded: regime_history=10 days | VIX=18.85 (macro_indicators) | FII flag=CAUTION | Nifty=24050.599609375 | above200dma=35.87%
+00:19:48 | INFO     | __main__:1136 - Pass 2: scoring pillars...
+00:19:48 | INFO     | __main__:1159 -   Pillar scores:
+00:19:48 | INFO     | __main__:1160 -     Price structure:    0.0/25
+00:19:48 | INFO     | __main__:1161 -     Breadth:           14.0/25
+00:19:48 | INFO     | __main__:1162 -     Momentum:           4.0/20
+00:19:48 | INFO     | __main__:1163 -     Volatility/VIX:     5.0/15  (VIX=18.85)
+00:19:48 | INFO     | __main__:1165 -     FII flows:          3.0/15
+00:19:48 | INFO     | __main__:1166 -     Global modifier:   +3.0/±5  (S&P500 5d=+3.6%)
+00:19:48 | INFO     | __main__:1168 -     ─────────────────────────────────────
+00:19:48 | INFO     | __main__:1169 -     TOTAL:             29.0/100
+00:19:48 | INFO     | __main__:1174 -   RECOVERING conditions met — breadth improving, VIX declining, Nifty bouncing
+00:19:48 | INFO     | __main__:1176 - Pass 3: applying hysteresis...
+00:19:48 | INFO     | __main__:990 -   UPGRADE: RISK OFF → RECOVERING (score=29.0)
+00:19:48 | INFO     | __main__:1184 -   Computed: RECOVERING | Score: 29.0/100 | ⚠ DIVERGE (Sheet=RISK OFF)
+00:19:48 | WARNING  | __main__:1187 -   Regime divergence: Sheet='RISK OFF', compute='RECOVERING'. SHADOW: Sheet still active.
+00:19:48 | INFO     | __main__:1198 - Pass 4: writing (shadow mode)...
+00:19:48 | INFO     | __main__:1204 -   Non-trading day — updating 2026-04-10 row (not creating 2026-04-13)
+00:19:48 | SUCCESS  | __main__:1088 - ✓ market_regime | computed_regime=RECOVERING | score=29.0 | date=2026-04-10
+00:33:10 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:33:10 | INFO     | __main__:1074 - =================================================================
+00:33:10 | INFO     | __main__:1075 - STEP: Compute Regime v2.0 | 2026-04-13 | mode=SHADOW
+00:33:10 | INFO     | __main__:1077 - =================================================================
+00:33:10 | INFO     | __main__:120 -   2026-04-13 is non-trading — effective date is 2026-04-10
+00:33:10 | INFO     | __main__:1085 -   Non-trading day — will compute for 2026-04-10 but not create new row
+00:33:10 | INFO     | __main__:1088 - Pass 1: loading data...
+00:33:11 | WARNING  | __main__:353 -   GIFT Nifty fetch failed: {'code': '42703', 'details': None, 'hint': None, 'message': 'column global_cues.nifty_prev_close does not exist'}
+00:33:12 | INFO     | __main__:385 -   DB fallback from: 2026-04-10
+00:33:12 | INFO     | __main__:419 -   Loaded: regime_history=10 days | VIX=18.85 (macro_indicators) | FII flag=CAUTION | Nifty=24050.599609375 | above200dma=35.87%
+00:33:12 | INFO     | __main__:1101 - Pass 2: scoring pillars...
+00:33:12 | INFO     | __main__:1124 -   Pillar scores:
+00:33:12 | INFO     | __main__:1125 -     Price structure:    0.0/25
+00:33:12 | INFO     | __main__:1126 -     Breadth:           14.0/25
+00:33:12 | INFO     | __main__:1127 -     Momentum:           4.0/20
+00:33:12 | INFO     | __main__:1128 -     Volatility/VIX:     5.0/15  (VIX=18.85)
+00:33:12 | INFO     | __main__:1130 -     FII flows:          3.0/15
+00:33:12 | INFO     | __main__:1131 -     Global modifier:   +3.0/±5  (S&P500 5d=+3.6%)
+00:33:12 | INFO     | __main__:1133 -     ─────────────────────────────────────
+00:33:12 | INFO     | __main__:1134 -     TOTAL:             29.0/100
+00:33:12 | INFO     | __main__:1139 -   RECOVERING conditions met — breadth improving, VIX declining, Nifty bouncing
+00:33:12 | INFO     | __main__:1141 - Pass 3: applying hysteresis...
+00:33:12 | INFO     | __main__:990 -   UPGRADE: RISK OFF → RECOVERING (score=29.0)
+00:33:12 | INFO     | __main__:1149 -   Computed: RECOVERING | Score: 29.0/100 | ⚠ DIVERGE (Sheet=RISK OFF)
+00:33:12 | WARNING  | __main__:1152 -   Regime divergence: Sheet='RISK OFF', compute='RECOVERING'. SHADOW: Sheet still active.
+00:33:12 | INFO     | __main__:1163 - Pass 4: writing (shadow mode)...
+00:33:12 | INFO     | __main__:1169 -   Non-trading day — updating 2026-04-10 row (not creating 2026-04-13)
+00:33:12 | SUCCESS  | __main__:1054 - ✓ market_regime | computed_regime=RECOVERING | score=29.0 | date=2026-04-10
+00:37:56 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:37:57 | INFO     | __main__:1076 - =================================================================
+00:37:57 | INFO     | __main__:1077 - STEP: Compute Regime v2.0 | 2026-04-13 | mode=SHADOW
+00:37:57 | INFO     | __main__:1079 - =================================================================
+00:37:57 | INFO     | __main__:120 -   2026-04-13 is non-trading — effective date is 2026-04-10
+00:37:57 | INFO     | __main__:1087 -   Non-trading day — will compute for 2026-04-10 but not create new row
+00:37:57 | INFO     | __main__:1090 - Pass 1: loading data...
+00:37:59 | INFO     | __main__:385 -   DB fallback from: 2026-04-10
+00:37:59 | INFO     | __main__:419 -   Loaded: regime_history=10 days | VIX=18.85 (macro_indicators) | FII flag=CAUTION | Nifty=24050.599609375 | above200dma=35.87%
+00:37:59 | INFO     | __main__:1103 - Pass 2: scoring pillars...
+00:37:59 | INFO     | __main__:1126 -   Pillar scores:
+00:37:59 | INFO     | __main__:1127 -     Price structure:    0.0/25
+00:37:59 | INFO     | __main__:1128 -     Breadth:           14.0/25
+00:37:59 | INFO     | __main__:1129 -     Momentum:           4.0/20
+00:37:59 | INFO     | __main__:1130 -     Volatility/VIX:     5.0/15  (VIX=18.85)
+00:37:59 | INFO     | __main__:1132 -     FII flows:          3.0/15
+00:37:59 | INFO     | __main__:1133 -     Global modifier:   +3.0/±5  (S&P500 5d=+3.6%)
+00:37:59 | INFO     | __main__:1135 -     ─────────────────────────────────────
+00:37:59 | INFO     | __main__:1136 -     TOTAL:             29.0/100
+00:37:59 | INFO     | __main__:1141 -   RECOVERING conditions met — breadth improving, VIX declining, Nifty bouncing
+00:37:59 | INFO     | __main__:1143 - Pass 3: applying hysteresis...
+00:37:59 | INFO     | __main__:990 -   UPGRADE: RISK OFF → RECOVERING (score=29.0)
+00:37:59 | INFO     | __main__:1151 -   Computed: RECOVERING | Score: 29.0/100 | ⚠ DIVERGE (Sheet=RISK OFF)
+00:38:00 | WARNING  | __main__:1154 -   Regime divergence: Sheet='RISK OFF', compute='RECOVERING'. SHADOW: Sheet still active.
+00:38:00 | INFO     | __main__:1165 - Pass 4: writing (shadow mode)...
+00:38:00 | INFO     | __main__:1171 -   Non-trading day — updating 2026-04-10 row (not creating 2026-04-13)
+00:38:00 | SUCCESS  | __main__:1056 - ✓ market_regime | computed_regime=RECOVERING | score=29.0 | date=2026-04-10
+00:41:06 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:41:08 | INFO     | __main__:1085 - =================================================================
+00:41:08 | INFO     | __main__:1086 - STEP: Compute Regime v2.0 | 2026-04-13 | mode=SHADOW
+00:41:08 | INFO     | __main__:1088 - =================================================================
+00:41:08 | INFO     | __main__:120 -   2026-04-13 is non-trading — effective date is 2026-04-10
+00:41:08 | INFO     | __main__:1096 -   Non-trading day — will compute for 2026-04-10 but not create new row
+00:41:08 | INFO     | __main__:1099 - Pass 1: loading data...
+00:41:09 | INFO     | __main__:359 -   GIFT Nifty=24050.6 | prev_close=23775.1 | premium=1.16%
+00:41:09 | INFO     | __main__:394 -   DB fallback from: 2026-04-10
+00:42:37 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:42:38 | INFO     | __main__:1088 - =================================================================
+00:42:38 | INFO     | __main__:1089 - STEP: Compute Regime v2.0 | 2026-04-13 | mode=SHADOW
+00:42:38 | INFO     | __main__:1091 - =================================================================
+00:42:38 | INFO     | __main__:120 -   2026-04-13 is non-trading — effective date is 2026-04-10
+00:42:38 | INFO     | __main__:1099 -   Non-trading day — will compute for 2026-04-10 but not create new row
+00:42:38 | INFO     | __main__:1102 - Pass 1: loading data...
+00:42:40 | INFO     | __main__:356 -   GIFT Nifty=24050.6 | prev_close=23775.1 | premium=1.16%
+00:42:40 | INFO     | __main__:397 -   DB fallback from: 2026-04-10
+00:42:40 | INFO     | __main__:431 -   Loaded: regime_history=10 days | VIX=18.85 (macro_indicators) | FII flag=CAUTION | Nifty=24050.599609375 | above200dma=35.87%
+00:42:40 | INFO     | __main__:1115 - Pass 2: scoring pillars...
+00:42:40 | INFO     | __main__:1138 -   Pillar scores:
+00:42:40 | INFO     | __main__:1139 -     Price structure:    0.0/25
+00:42:40 | INFO     | __main__:1140 -     Breadth:           14.0/25
+00:42:40 | INFO     | __main__:1141 -     Momentum:           6.0/20
+00:42:40 | INFO     | __main__:1142 -     Volatility/VIX:     5.0/15  (VIX=18.85)
+00:42:40 | INFO     | __main__:1144 -     FII flows:          3.0/15
+00:42:40 | INFO     | __main__:1145 -     Global modifier:   +3.0/±5  (S&P500 5d=+3.6%)
+00:42:40 | INFO     | __main__:1147 -     ─────────────────────────────────────
+00:42:40 | INFO     | __main__:1148 -     TOTAL:             31.0/100
+00:42:40 | INFO     | __main__:1153 -   RECOVERING conditions met — breadth improving, VIX declining, Nifty bouncing
+00:42:40 | INFO     | __main__:1155 - Pass 3: applying hysteresis...
+00:42:40 | INFO     | __main__:1002 -   UPGRADE: RISK OFF → RECOVERING (score=31.0)
+00:42:40 | INFO     | __main__:1163 -   Computed: RECOVERING | Score: 31.0/100 | ⚠ DIVERGE (Sheet=RISK OFF)
+00:42:40 | WARNING  | __main__:1166 -   Regime divergence: Sheet='RISK OFF', compute='RECOVERING'. SHADOW: Sheet still active.
+00:42:40 | INFO     | __main__:1177 - Pass 4: writing (shadow mode)...
+00:42:40 | INFO     | __main__:1183 -   Non-trading day — updating 2026-04-10 row (not creating 2026-04-13)
+00:42:40 | SUCCESS  | __main__:1068 - ✓ market_regime | computed_regime=RECOVERING | score=31.0 | date=2026-04-10
+00:49:56 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:49:57 | INFO     | __main__:1112 - =================================================================
+00:49:57 | INFO     | __main__:1113 - STEP: Compute Regime v2.0 | 2026-04-13 | mode=SHADOW
+00:49:57 | INFO     | __main__:1115 - =================================================================
+00:49:57 | INFO     | __main__:120 -   2026-04-13 is non-trading — effective date is 2026-04-10
+00:49:57 | INFO     | __main__:1123 -   Non-trading day — will compute for 2026-04-10 but not create new row
+00:49:57 | INFO     | __main__:1126 - Pass 1: loading data...
+00:49:59 | INFO     | __main__:380 -   GIFT Nifty=24050.6 | prev_close=23775.1 | premium=1.16%
+00:49:59 | INFO     | __main__:421 -   DB fallback from: 2026-04-10
+00:49:59 | INFO     | __main__:455 -   Loaded: regime_history=10 days | VIX=18.85 (macro_indicators) | FII flag=CAUTION | Nifty=24050.599609375 | above200dma=35.87%
+00:49:59 | INFO     | __main__:1139 - Pass 2: scoring pillars...
+00:49:59 | INFO     | __main__:1162 -   Pillar scores:
+00:49:59 | INFO     | __main__:1163 -     Price structure:    0.0/25
+00:49:59 | INFO     | __main__:1164 -     Breadth:           14.0/25
+00:49:59 | INFO     | __main__:1165 -     Momentum:           6.0/20
+00:49:59 | INFO     | __main__:1166 -     Volatility/VIX:     5.0/15  (VIX=18.85)
+00:49:59 | INFO     | __main__:1168 -     FII flows:          3.0/15
+00:49:59 | INFO     | __main__:1169 -     Global modifier:   +3.0/±5  (S&P500 5d=+3.6%)
+00:49:59 | INFO     | __main__:1171 -     ─────────────────────────────────────
+00:49:59 | INFO     | __main__:1172 -     TOTAL:             31.0/100
+00:49:59 | INFO     | __main__:1177 -   RECOVERING conditions met — breadth improving, VIX declining, Nifty bouncing
+00:49:59 | INFO     | __main__:1179 - Pass 3: applying hysteresis...
+00:49:59 | INFO     | __main__:1026 -   UPGRADE: RISK OFF → RECOVERING (score=31.0)
+00:49:59 | INFO     | __main__:1187 -   Computed: RECOVERING | Score: 31.0/100 | ⚠ DIVERGE (Sheet=RISK OFF)
+00:49:59 | WARNING  | __main__:1190 -   Regime divergence: Sheet='RISK OFF', compute='RECOVERING'. SHADOW: Sheet still active.
+00:49:59 | INFO     | __main__:1201 - Pass 4: writing (shadow mode)...
+00:49:59 | INFO     | __main__:1207 -   Non-trading day — updating 2026-04-10 row (not creating 2026-04-13)
+00:49:59 | SUCCESS  | __main__:1092 - ✓ market_regime | computed_regime=RECOVERING | score=31.0 | date=2026-04-10
+00:55:37 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:55:38 | INFO     | __main__:1257 - =================================================================
+00:55:38 | INFO     | __main__:1258 - STEP: Compute Regime v2.0 | 2026-04-13 | mode=SHADOW
+00:55:38 | INFO     | __main__:1260 - =================================================================
+00:55:38 | INFO     | __main__:120 -   2026-04-13 is non-trading — effective date is 2026-04-10
+00:55:38 | INFO     | __main__:1268 -   Non-trading day — will compute for 2026-04-10 but not create new row
+00:55:38 | INFO     | __main__:1271 - Pass 1: loading data...
+00:55:38 | INFO     | __main__:162 -   BankNifty: price=55912.75 | weekly_rsi=39.43
+00:55:39 | INFO     | __main__:525 -   GIFT Nifty=24050.6 | prev_close=23775.1 | premium=1.16%
+00:55:39 | INFO     | __main__:566 -   DB fallback from: 2026-04-10
+00:55:39 | INFO     | __main__:600 -   Loaded: regime_history=10 days | VIX=18.85 (macro_indicators) | FII flag=CAUTION | Nifty=24050.599609375 | above200dma=35.87%
+00:55:39 | INFO     | __main__:1284 - Pass 2: scoring pillars...
+00:55:39 | INFO     | __main__:1307 -   Pillar scores:
+00:55:39 | INFO     | __main__:1308 -     Price structure:    0.0/25
+00:55:39 | INFO     | __main__:1309 -     Breadth:           14.0/25
+00:55:39 | INFO     | __main__:1310 -     Momentum:           6.0/20
+00:55:39 | INFO     | __main__:1311 -     Volatility/VIX:     5.0/15  (VIX=18.85)
+00:55:39 | INFO     | __main__:1313 -     FII flows:          3.0/15
+00:55:39 | INFO     | __main__:1314 -     Global modifier:   +3.0/±5  (S&P500 5d=+3.6%)
+00:55:39 | INFO     | __main__:1316 -     ─────────────────────────────────────
+00:55:39 | INFO     | __main__:1317 -     TOTAL:             31.0/100
+00:55:39 | INFO     | __main__:1322 -   RECOVERING conditions met — breadth improving, VIX declining, Nifty bouncing
+00:55:39 | INFO     | __main__:1324 - Pass 3: applying hysteresis...
+00:55:39 | INFO     | __main__:1171 -   UPGRADE: RISK OFF → RECOVERING (score=31.0)
+00:55:39 | INFO     | __main__:1332 -   Computed: RECOVERING | Score: 31.0/100 | ⚠ DIVERGE (Sheet=RISK OFF)
+00:55:39 | WARNING  | __main__:1335 -   Regime divergence: Sheet='RISK OFF', compute='RECOVERING'. SHADOW: Sheet still active.
+00:55:39 | INFO     | __main__:1346 - Pass 4: writing (shadow mode)...
+00:55:39 | INFO     | __main__:1352 -   Non-trading day — updating 2026-04-10 row (not creating 2026-04-13)
+00:55:39 | SUCCESS  | __main__:1237 - ✓ market_regime | computed_regime=RECOVERING | score=31.0 | date=2026-04-10
+00:56:56 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:56:57 | INFO     | __main__:1088 - =================================================================
+00:56:57 | INFO     | __main__:1089 - STEP: Compute Regime v2.0 | 2026-04-13 | mode=SHADOW
+00:56:57 | INFO     | __main__:1091 - =================================================================
+00:56:57 | INFO     | __main__:120 -   2026-04-13 is non-trading — effective date is 2026-04-10
+00:56:57 | INFO     | __main__:1099 -   Non-trading day — will compute for 2026-04-10 but not create new row
+00:56:57 | INFO     | __main__:1102 - Pass 1: loading data...
+00:56:58 | INFO     | __main__:356 -   GIFT Nifty=24050.6 | prev_close=23775.1 | premium=1.16%
+00:56:58 | INFO     | __main__:397 -   DB fallback from: 2026-04-10
+00:56:58 | INFO     | __main__:431 -   Loaded: regime_history=10 days | VIX=18.85 (macro_indicators) | FII flag=CAUTION | Nifty=24050.599609375 | above200dma=35.87%
+00:56:58 | INFO     | __main__:1115 - Pass 2: scoring pillars...
+00:56:58 | INFO     | __main__:1138 -   Pillar scores:
+00:56:58 | INFO     | __main__:1139 -     Price structure:    0.0/25
+00:56:58 | INFO     | __main__:1140 -     Breadth:           14.0/25
+00:56:58 | INFO     | __main__:1141 -     Momentum:           6.0/20
+00:56:58 | INFO     | __main__:1142 -     Volatility/VIX:     5.0/15  (VIX=18.85)
+00:56:58 | INFO     | __main__:1144 -     FII flows:          3.0/15
+00:56:58 | INFO     | __main__:1145 -     Global modifier:   +3.0/±5  (S&P500 5d=+3.6%)
+00:56:58 | INFO     | __main__:1147 -     ─────────────────────────────────────
+00:56:58 | INFO     | __main__:1148 -     TOTAL:             31.0/100
+00:56:58 | INFO     | __main__:1153 -   RECOVERING conditions met — breadth improving, VIX declining, Nifty bouncing
+00:56:58 | INFO     | __main__:1155 - Pass 3: applying hysteresis...
+00:56:58 | INFO     | __main__:1002 -   UPGRADE: RISK OFF → RECOVERING (score=31.0)
+00:56:58 | INFO     | __main__:1163 -   Computed: RECOVERING | Score: 31.0/100 | ⚠ DIVERGE (Sheet=RISK OFF)
+00:56:58 | WARNING  | __main__:1166 -   Regime divergence: Sheet='RISK OFF', compute='RECOVERING'. SHADOW: Sheet still active.
+00:56:58 | INFO     | __main__:1177 - Pass 4: writing (shadow mode)...
+00:56:58 | INFO     | __main__:1183 -   Non-trading day — updating 2026-04-10 row (not creating 2026-04-13)
+00:56:58 | SUCCESS  | __main__:1068 - ✓ market_regime | computed_regime=RECOVERING | score=31.0 | date=2026-04-10
+00:59:52 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:59:53 | INFO     | __main__:1094 - =================================================================
+00:59:53 | INFO     | __main__:1095 - STEP: Compute Regime v2.0 | 2026-04-13 | mode=SHADOW
+00:59:53 | INFO     | __main__:1097 - =================================================================
+00:59:53 | INFO     | __main__:120 -   2026-04-13 is non-trading — effective date is 2026-04-10
+00:59:53 | INFO     | __main__:1105 -   Non-trading day — will compute for 2026-04-10 but not create new row
+00:59:53 | INFO     | __main__:1108 - Pass 1: loading data...
+00:59:54 | INFO     | __main__:246 -   BankNifty: price=55912.75 | weekly_rsi=39.43 | Nifty weekly_rsi=32.38
+00:59:55 | INFO     | __main__:362 -   GIFT Nifty=24050.6 | prev_close=23775.1 | premium=1.16%
+00:59:55 | INFO     | __main__:403 -   DB fallback from: 2026-04-10
+00:59:56 | INFO     | __main__:437 -   Loaded: regime_history=10 days | VIX=18.85 (macro_indicators) | FII flag=CAUTION | Nifty=24050.599609375 | above200dma=35.87%
+00:59:56 | INFO     | __main__:1121 - Pass 2: scoring pillars...
+00:59:56 | INFO     | __main__:1144 -   Pillar scores:
+00:59:56 | INFO     | __main__:1145 -     Price structure:    0.0/25
+00:59:56 | INFO     | __main__:1146 -     Breadth:           14.0/25
+00:59:56 | INFO     | __main__:1147 -     Momentum:           6.0/20
+00:59:56 | INFO     | __main__:1148 -     Volatility/VIX:     5.0/15  (VIX=18.85)
+00:59:56 | INFO     | __main__:1150 -     FII flows:          3.0/15
+00:59:56 | INFO     | __main__:1151 -     Global modifier:   +3.0/±5  (S&P500 5d=+3.6%)
+00:59:56 | INFO     | __main__:1153 -     ─────────────────────────────────────
+00:59:56 | INFO     | __main__:1154 -     TOTAL:             31.0/100
+00:59:56 | INFO     | __main__:1159 -   RECOVERING conditions met — breadth improving, VIX declining, Nifty bouncing
+00:59:56 | INFO     | __main__:1161 - Pass 3: applying hysteresis...
+00:59:56 | INFO     | __main__:1008 -   UPGRADE: RISK OFF → RECOVERING (score=31.0)
+00:59:56 | INFO     | __main__:1169 -   Computed: RECOVERING | Score: 31.0/100 | ⚠ DIVERGE (Sheet=RISK OFF)
+00:59:56 | WARNING  | __main__:1172 -   Regime divergence: Sheet='RISK OFF', compute='RECOVERING'. SHADOW: Sheet still active.
+00:59:56 | INFO     | __main__:1183 - Pass 4: writing (shadow mode)...
+00:59:56 | INFO     | __main__:1189 -   Non-trading day — updating 2026-04-10 row (not creating 2026-04-13)
+00:59:56 | SUCCESS  | __main__:1074 - ✓ market_regime | computed_regime=RECOVERING | score=31.0 | date=2026-04-10

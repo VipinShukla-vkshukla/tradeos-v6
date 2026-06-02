@@ -1,0 +1,23 @@
+12:34:15 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+12:34:15 | INFO     | __main__:138 -   Quality: trade_date resolved to 2026-05-06 (today_ist=2026-05-07)
+12:34:15 | INFO     | __main__:807 - data_quality_monitor v4: 19 checks | trade_date=2026-05-06 (calendar=2026-05-07)
+12:34:15 | INFO     | __main__:840 -   ✅ C01_chartink_row_count: chartink_raw_data: 501 rows for 2026-05-06 (expected 450–510)
+12:34:15 | INFO     | __main__:840 -   ✅ C02_rsi_range: 0 stocks with RSI outside 0–100
+12:34:15 | INFO     | __main__:840 -   ✅ C03_vol_ratio_cap: 0 vol_ratio outliers auto-capped to 50.0x
+12:34:15 | INFO     | __main__:840 -   ✅ C04_delivery_pct_bounds: 0 stocks with delivery_pct outside 0–100
+12:34:16 | INFO     | __main__:840 -   ✅ C05_signal_score_range: 0 signals with score outside 0–120
+12:34:16 | INFO     | __main__:840 -   ✅ C06_msl_completeness: compute_msl: 88 enriched rows ✅
+12:34:16 | INFO     | __main__:840 -   ⚠️ C07_pipeline_completeness: 2/16 steps missing data for 2026-05-06: ['02_macro_indicators', '16_history']
+12:34:16 | INFO     | __main__:840 -   ✅ C08_market_intel_validity: __MARKET_INTEL__ ✅ sizing=HALF fii_outlook ✅ sentiment=True
+12:34:16 | INFO     | __main__:840 -   ✅ C09_final_picks_validity: __FINAL_PICKS__ ✅ candidates:5 TIER_1:2 guidance:✅
+12:34:16 | INFO     | __main__:840 -   ✅ C10_candidate_price_coverage: 4 TIER_1/2 candidates checked | ✅ all have prices
+12:34:16 | INFO     | __main__:840 -   ✅ C11_regime_ml_vs_manual: predicted_regime not set — ml_regime_classifier not yet active
+12:34:16 | INFO     | __main__:840 -   ✅ C12_positions_vs_regime_cap: Open positions: 0/7 for NEUTRAL regime ✅
+12:34:17 | INFO     | __main__:840 -   ✅ C13_fii_regime_sizing_consistency: Regime=NEUTRAL | FII=CAUTION | Sizing=HALF ✅ consistent
+12:34:17 | INFO     | __main__:840 -   ✅ C14_signal_enrichment_coverage: 1/1 BUY signals enriched (100%) ✅
+12:34:17 | INFO     | __main__:840 -   ✅ C15_lesson_freshness: 23 AI lessons written in last 2 days ✅
+12:34:17 | INFO     | __main__:840 -   ✅ C16_near_miss_coverage: 62/75 WATCH signals have near_miss_data (83%) | Missing: ['NATCOPHARM', 'KEI', 'NATIONALUM', 'MAHABANK', 'NSLNISP']
+12:34:17 | INFO     | __main__:840 -   ✅ C17_entry_zone_validity: 0 MSL rows with inverted entry zone (zone_low ≥ zone_high) ✅
+12:34:17 | INFO     | __main__:840 -   ✅ C18_tier_distribution: TIER_1:2 TIER_2:2 TIER_3:1 total:5 ✅
+12:34:17 | INFO     | __main__:840 -   ✅ C19_signal_date_alignment: signal_log latest date: 2026-05-06 | stock_data_daily date: 2026-05-06 ✅ aligned
+12:34:17 | SUCCESS  | __main__:872 - Quality v4: ✅18 OK | ⚠️1 WARN | 🔴0 ERROR | 19 checks | trade_date=2026-05-06

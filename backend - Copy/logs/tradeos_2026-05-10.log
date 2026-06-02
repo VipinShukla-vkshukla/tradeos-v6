@@ -1,0 +1,903 @@
+22:59:49 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:03:22 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:03:22 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_173322 | mode=dry | dry=True
+23:03:22 | INFO     | __main__:101 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+23:03:22 | INFO     | brain.data_aggregator:347 - Building analysis dataset (60d, win≥3.0%, stop≤-5.0%)...
+23:03:23 | INFO     | brain.data_aggregator:351 -   signal_log: 636 rows × 97 cols
+23:03:23 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 17 symbols...
+23:03:24 | INFO     | brain.data_aggregator:231 -   Outcomes: 74 evaluated, 62 wins (83.8%), coverage=12%
+23:03:26 | INFO     | brain.data_aggregator:408 - Dataset ready: 636 signals, 74 with outcomes (11.6% coverage), 4 tables loaded
+23:03:26 | INFO     | __main__:114 - Step 3/6 — Quantitative analysis (all fields)...
+23:03:26 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+23:03:26 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+23:03:26 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 83.8%)
+23:03:26 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+23:03:26 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+23:03:26 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+23:03:26 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+23:03:26 | INFO     | brain.quant_analyzer:683 -   Lessons: 0 proven, 0 retire candidates
+23:03:26 | INFO     | brain.quant_analyzer:770 - Quant analysis complete: 0 actionable findings across 110 fields
+23:03:26 | INFO     | __main__:123 - Step 4/6 — Backtesting quant proposals...
+23:03:26 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+23:03:26 | INFO     | __main__:152 - Step 5/6 — LLM synthesis skipped (mode=quant)
+23:03:26 | INFO     | __main__:157 - 
+════════════════════════════════════════════════════════════
+23:03:26 | INFO     | __main__:158 - BRAIN SUMMARY: 0 proposals
+23:03:26 | INFO     | __main__:159 -   Signals: 636 (12% outcomes)
+23:03:26 | INFO     | __main__:168 - ════════════════════════════════════════════════════════════
+
+23:09:59 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:09:59 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_173959 | mode=dry | dry=True
+23:09:59 | INFO     | __main__:101 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+23:09:59 | INFO     | brain.data_aggregator:347 - Building analysis dataset (180d, win≥3.0%, stop≤-5.0%)...
+23:09:59 | INFO     | brain.data_aggregator:351 -   signal_log: 656 rows × 97 cols
+23:09:59 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 22 symbols...
+23:10:00 | INFO     | brain.data_aggregator:231 -   Outcomes: 94 evaluated, 62 wins (66.0%), coverage=14%
+23:10:01 | INFO     | brain.data_aggregator:408 - Dataset ready: 656 signals, 94 with outcomes (14.3% coverage), 5 tables loaded
+23:10:01 | INFO     | __main__:114 - Step 3/6 — Quantitative analysis (all fields)...
+23:10:01 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+23:10:01 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+23:10:01 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 66.0%)
+23:10:02 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+23:10:02 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+23:10:02 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+23:10:02 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+23:10:02 | INFO     | brain.quant_analyzer:683 -   Lessons: 0 proven, 0 retire candidates
+23:10:02 | INFO     | brain.quant_analyzer:770 - Quant analysis complete: 0 actionable findings across 110 fields
+23:10:02 | INFO     | __main__:123 - Step 4/6 — Backtesting quant proposals...
+23:10:02 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+23:10:02 | INFO     | __main__:152 - Step 5/6 — LLM synthesis skipped (mode=quant)
+23:10:02 | INFO     | __main__:157 - 
+════════════════════════════════════════════════════════════
+23:10:02 | INFO     | __main__:158 - BRAIN SUMMARY: 0 proposals
+23:10:02 | INFO     | __main__:159 -   Signals: 656 (14% outcomes)
+23:10:02 | INFO     | __main__:168 - ════════════════════════════════════════════════════════════
+
+23:11:40 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:11:40 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_174140 | mode=scan | dry=False
+23:11:40 | INFO     | __main__:85 - Step 1/6 — Scanning scripts for hardcoded values...
+23:11:40 | INFO     | brain.script_scanner:93 - Discovered 65 Python files for scanning
+23:12:02 | INFO     | brain.script_scanner:491 - Script scan complete: 65 scripts registered
+23:12:02 | INFO     | __main__:91 - 
+════════════════════════════════════════════════════════════
+SCRIPT SCANNER REPORT
+════════════════════════════════════════════════════════════
+Scripts discovered: 65
+  Full cfg() coverage:    51
+  Partial cfg() coverage: 7
+  No cfg() coverage:      7
+
+Scripts with tunable hardcoded values:
+
+  compute\compute_regime.py [PARTIAL]
+    Reads: ['macro_indicators', 'stock_data_daily'] | Writes: []
+    L80: SCORE_TRENDING = 78  → cfg key: compute_regime_score_trending
+    L81: SCORE_RISK_ON = 60  → cfg key: compute_regime_score_risk_on
+    L82: SCORE_NEUTRAL = 40  → cfg key: compute_regime_score_neutral
+    L83: SCORE_RECOVERING = 25  → cfg key: compute_regime_score_recovering
+
+  compute\data_quality_monitor.py [NONE]
+    Reads: ['ai_context', 'lessons', 'master_shortlist', 'msl_history', 'open_positions', 'signal_log', 'stock_data_daily'] | Writes: ['stock_data_daily']
+    L72: CHARTINK_ROW_MIN = 450  → cfg key: data_quality_monitor_chartink_row_min
+    L73: CHARTINK_ROW_MAX = 510  → cfg key: data_quality_monitor_chartink_row_max
+    L74: VOL_RATIO_CAP = 50.0  → cfg key: data_quality_monitor_vol_ratio_cap
+    L76: SCORE_MAX = 150  → cfg key: data_quality_monitor_score_max
+    L78: MSL_MIN_ENRICHED = 70  → cfg key: data_quality_monitor_msl_min_enriched
+    ... and 5 more
+
+  signals\screen_stocks.py [PARTIAL]
+    Reads: ['master_shortlist', 'msl_computed', 'open_positions', 'stock_data_daily'] | Writes: ['msl_computed']
+    L87: MAX_SYMBOLS = 30  → cfg key: screen_stocks_max_symbols
+    L88: MAX_PER_SECTOR = 5  → cfg key: screen_stocks_max_per_sector
+    L89: MIN_MARKET_CAP = 300  → cfg key: screen_stocks_min_market_cap
+    L880: max_sector = 10  → cfg key: screen_stocks_max_sector
+    L924: min_score = 50  → cfg key: screen_stocks_min_score
+    ... and 4 more
+
+  ai\post_trade_analysis.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'nifty_upcoming_events', 'regime_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'signal_log', 'system_config']
+    L154: HOLDING_SCORE_EXIT_THRESHOLD = 30  → cfg key: post_trade_analysis_holding_score_exit_threshold
+    L155: MFE_TRAILING_FAILURE_RATIO = 0.5  → cfg key: post_trade_analysis_mfe_trailing_failure_ratio
+    L156: DEDUP_WINDOW_DAYS = 30  → cfg key: post_trade_analysis_dedup_window_days
+
+  compute\compute_msl.py [PARTIAL]
+    Reads: ['macro_indicators', 'master_shortlist', 'msl_computed', 'msl_history', 'open_positions', 'stock_data_daily'] | Writes: ['master_shortlist', 'msl_computed']
+    L116: MIN_VALUE_CR_DEFAULT = 10.0  → cfg key: compute_msl_min_value_cr_default
+
+  ingestion\data_quality_monitor.py [NONE]
+    Reads: ['ai_context', 'master_shortlist', 'msl_history', 'open_positions', 'signal_log', 'stock_data_daily'] | Writes: ['stock_data_daily']
+    L50: CHARTINK_ROW_MIN = 450  → cfg key: data_quality_monitor_chartink_row_min
+    L51: CHARTINK_ROW_MAX = 510  → cfg key: data_quality_monitor_chartink_row_max
+    L52: VOL_RATIO_CAP = 50.0  → cfg key: data_quality_monitor_vol_ratio_cap
+    L54: SCORE_MAX = 120  → cfg key: data_quality_monitor_score_max
+    L57: DELIVERY_MAX = 100.0  → cfg key: data_quality_monitor_delivery_max
+
+  calibration\calibration_engine.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'system_config']
+    L73: CALIBRATION_MIN_NEW_TRADES = 15  → cfg key: calibration_engine_calibration_min_new_trades
+    L74: CALIBRATION_MAX_CHANGE_PCT = 0.2  → cfg key: calibration_engine_calibration_max_change_pct
+    L75: CALIBRATION_LOOKBACK_DAYS = 90  → cfg key: calibration_engine_calibration_lookback_days
+    L76: MIN_LESSON_APPLICATIONS = 10  → cfg key: calibration_engine_min_lesson_applications
+
+  compute\compute_indicators.py [PARTIAL]
+    Reads: ['master_shortlist', 'nifty_total_market', 'nifty_upcoming_events', 'stock_data_daily', 'system_config'] | Writes: ['stock_data_daily']
+    L113: MIN_SESSIONS_FOR_RETURNS = 260  → cfg key: compute_indicators_min_sessions_for_returns
+    L119: DIVERGE_THRESHOLD = 0.02  → cfg key: compute_indicators_diverge_threshold
+    L120: WIDE_THRESHOLD = 0.1  → cfg key: compute_indicators_wide_threshold
+
+  history\discovery_engine.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L37: MIN_SAMPLE_SIZE = 30  → cfg key: discovery_engine_min_sample_size
+    L38: P_VALUE_THRESHOLD = 0.05  → cfg key: discovery_engine_p_value_threshold
+    L39: MAX_PROPOSALS = 5  → cfg key: discovery_engine_max_proposals
+    L40: LOOKBACK_DAYS = 180  → cfg key: discovery_engine_lookback_days
+
+  ai\providers\ml_regime_classifier.py [PARTIAL]
+    Reads: ['regime_history'] | Writes: ['stock_data_daily']
+    L98: MIN_TRAINING_SAMPLES = 20  → cfg key: ml_regime_classifier_min_training_samples
+    L101: MIN_PREDICT_SAMPLES = 15  → cfg key: ml_regime_classifier_min_predict_samples
+    L103: LOOKBACK_DAYS = 365  → cfg key: ml_regime_classifier_lookback_days
+
+  ingestion\ingest_sheets - Copy.py [NONE]
+    Reads: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions', 'signal_log'] | Writes: ['closed_positions', 'lessons', 'master_shortlist', 'msl_history', 'nifty_total_market', 'nifty_upcoming_events', 'open_positions', 'stock_data_daily']
+    L288: threshold = 0.005  → cfg key: ingest_sheets - Copy_threshold
+
+  ingestion\ingest_sheets.py [NONE]
+    Reads: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions', 'signal_log'] | Writes: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions']
+    L174: threshold = 0.005  → cfg key: ingest_sheets_threshold
+
+  ai\providers\ml_provider.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L96: MIN_TRADES = 90  → cfg key: ml_provider_min_trades
+
+  control\sl_monitor.py [NONE]
+    Reads: [] | Writes: ['open_positions']
+    L41: PROXIMITY_PCT = 2.0  → cfg key: sl_monitor_proximity_pct
+
+════════════════════════════════════════════════════════════
+To migrate a script: brain will auto-generate SCRIPT_PATCH proposals.
+Enable: set brain_script_patching_enabled=true in system_config.
+════════════════════════════════════════════════════════════
+
+23:17:17 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:17:17 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_174717 | mode=quant | dry=False
+23:17:17 | INFO     | __main__:101 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+23:17:17 | INFO     | brain.data_aggregator:347 - Building analysis dataset (90d, win≥3.0%, stop≤-5.0%)...
+23:17:18 | INFO     | brain.data_aggregator:351 -   signal_log: 656 rows × 97 cols
+23:17:18 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 22 symbols...
+23:17:18 | INFO     | brain.data_aggregator:231 -   Outcomes: 94 evaluated, 62 wins (66.0%), coverage=14%
+23:17:20 | INFO     | brain.data_aggregator:408 - Dataset ready: 656 signals, 94 with outcomes (14.3% coverage), 5 tables loaded
+23:17:20 | INFO     | __main__:114 - Step 3/6 — Quantitative analysis (all fields)...
+23:17:20 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+23:17:20 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+23:17:20 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 66.0%)
+23:17:20 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+23:17:20 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+23:17:20 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+23:17:20 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+23:17:20 | INFO     | brain.quant_analyzer:683 -   Lessons: 0 proven, 0 retire candidates
+23:17:20 | INFO     | brain.quant_analyzer:770 - Quant analysis complete: 0 actionable findings across 110 fields
+23:17:20 | INFO     | __main__:123 - Step 4/6 — Backtesting quant proposals...
+23:17:20 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+23:17:20 | INFO     | __main__:152 - Step 5/6 — LLM synthesis skipped (mode=quant)
+23:17:20 | INFO     | __main__:157 - 
+════════════════════════════════════════════════════════════
+23:17:20 | INFO     | __main__:158 - BRAIN SUMMARY: 0 proposals
+23:17:20 | INFO     | __main__:159 -   Signals: 656 (14% outcomes)
+23:17:20 | INFO     | __main__:168 - ════════════════════════════════════════════════════════════
+
+23:17:20 | INFO     | __main__:178 - Step 6/6 — Saving proposals, processing approvals...
+23:17:20 | INFO     | brain.backtester_and_change_manager:200 -   Saved 0/0 proposals
+23:17:20 | SUCCESS  | __main__:211 - 🧠 Brain v2 complete in 3s — 0 proposals, 0 auto-applied, 0 pending review
+23:18:01 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:20:14 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:20:50 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:21:18 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:21:31 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:21:54 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:23:20 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:23:20 | INFO     | __main__:168 -   Resolved trading date: 2026-05-10 → 2026-05-08
+23:23:20 | INFO     | __main__:1574 - =================================================================
+23:23:20 | INFO     | __main__:1575 - STEP: Screen Stocks v1.1 | 2026-05-08 | mode=FULL
+23:23:20 | INFO     | __main__:1577 - =================================================================
+23:23:20 | INFO     | __main__:1579 - Pass 1: loading data...
+23:23:22 | INFO     | __main__:230 -   ingest_sheets symbols merged into force_include: 2
+23:23:22 | INFO     | __main__:238 -   Loaded: 502 stocks | 24 sectors | regime=NEUTRAL | asm=333 | fii=NEUTRAL | forced=30
+23:23:22 | INFO     | __main__:1611 - Pass 2: running engines (regime=NEUTRAL)...
+23:23:22 | INFO     | __main__:368 -   CTL: 30 candidates
+23:23:22 | INFO     | __main__:449 -   SBS: 2 candidates
+23:23:22 | INFO     | __main__:529 -   TPO: 1 candidates
+23:23:22 | INFO     | __main__:606 -   VBD: 0 candidates
+23:23:22 | INFO     | __main__:671 -   IAD: 0 candidates
+23:23:22 | INFO     | __main__:725 -   RSB: 0 candidates
+23:23:22 | INFO     | __main__:828 -   MOM: 39 candidates
+23:23:22 | INFO     | __main__:943 -   RVS: 10 candidates
+23:23:22 | INFO     | __main__:1019 -   SEC: 57 candidates
+23:23:22 | INFO     | __main__:1640 -   Engine totals: CTL=30 SBS=2 TPO=1 VBD=0 IAD=0 RSB=0 MOM=39 RVS=10 SEC=57 | Total unique=95
+23:23:22 | INFO     | __main__:1648 - Pass 3: aggregating and ranking...
+23:23:22 | INFO     | __main__:1067 -   Regime weights (NEUTRAL):  (all 1.0x)
+23:23:22 | INFO     | __main__:1183 -   Aggregated: 95 total unique | 91 after hard filters | 91 final
+23:23:22 | INFO     | __main__:1662 - 
+  ═══ TOP 91 SCREENED SYMBOLS (NEUTRAL) ═══
+23:23:22 | INFO     | __main__:1665 -      # 1 BHARATFORG   score=131.0  engines=CTL,MOM,SEC                  sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      # 2 APARINDS     score=124.3  engines=CTL,MOM,SEC                  sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      # 3 KIRLOSENG    score=123.6  engines=CTL,MOM,SEC                  sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      # 4 USHAMART     score=121.5  engines=CTL,MOM,SEC                  sector=metals & mining      rank=2
+23:23:22 | INFO     | __main__:1665 -      # 5 GRAPHITE     score=121.3  engines=CTL,MOM,SEC                  sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      # 6 SAIL         score=120.4  engines=CTL,MOM,SEC                  sector=metals & mining      rank=2
+23:23:22 | INFO     | __main__:1665 -      # 7 CUMMINSIND   score=119.3  engines=CTL,MOM,SEC                  sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      # 8 TORNTPOWER   score=117.5  engines=CTL,MOM,SEC                  sector=power & utilities    rank=3
+23:23:22 | INFO     | __main__:1665 -      # 9 CGPOWER      score=113.6  engines=CTL,MOM                      sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #10 POLYCAB      score=111.0  engines=CTL                          sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #11 NLCINDIA     score=109.2  engines=CTL,MOM                      sector=power & utilities    rank=3
+23:23:22 | INFO     | __main__:1665 -      #12 POWERINDIA   score=107.6  engines=CTL,MOM                      sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #13 COALINDIA    score=104.0  engines=RVS,SEC                      sector=metals & mining      rank=2
+23:23:22 | INFO     | __main__:1665 -      #14 HINDZINC     score=102.9  engines=CTL,MOM                      sector=metals & mining      rank=2
+23:23:22 | INFO     | __main__:1665 -      #15 NAM-INDIA    score=102.0  engines=MOM                          sector=financials           rank=9
+23:23:22 | INFO     | __main__:1665 -      #16 KEI          score=101.9  engines=MOM,SEC                      sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #17 WELCORP      score=101.0  engines=CTL                          sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #18 ABB          score= 99.8  engines=CTL,SEC                      sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #19 TIMKEN       score= 97.2  engines=SBS,SEC                      sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #20 TATASTEEL    score= 96.6  engines=CTL,SEC                      sector=metals & mining      rank=2
+23:23:22 | INFO     | __main__:1665 -      #21 ATUL         score= 95.0  engines=MOM                          sector=chemicals            rank=8
+23:23:22 | INFO     | __main__:1665 -      #22 AARTIIND     score= 95.0  engines=MOM                          sector=chemicals            rank=8
+23:23:22 | INFO     | __main__:1665 -      #23 SUNPHARMA    score= 95.0  engines=MOM                          sector=healthcare           rank=6
+23:23:22 | INFO     | __main__:1665 -      #24 DATAPATTNS   score= 95.0  engines=MOM                          sector=aerospace & defence  rank=5
+23:23:22 | INFO     | __main__:1665 -      #25 SCHAEFFLER   score= 94.2  engines=MOM,SEC                      sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #26 LLOYDSME     score= 93.0  engines=CTL,SEC                      sector=metals & mining      rank=2
+23:23:22 | INFO     | __main__:1665 -      #27 JBCHEPHARM   score= 93.0  engines=MOM                          sector=healthcare           rank=6
+23:23:22 | INFO     | __main__:1665 -      #28 HINDALCO     score= 92.7  engines=CTL,SEC                      sector=metals & mining      rank=2
+23:23:22 | INFO     | __main__:1665 -      #29 GPIL         score= 92.5  engines=CTL,RVS,SEC                  sector=metals & mining      rank=2
+23:23:22 | INFO     | __main__:1665 -      #30 NMDC         score= 92.3  engines=CTL,SEC                      sector=metals & mining      rank=2
+23:23:22 | INFO     | __main__:1665 -      #31 GESHIP       score= 92.0  engines=MOM                          sector=transportation       rank=7
+23:23:22 | INFO     | __main__:1665 -      #32 SIEMENS      score= 89.7  engines=CTL,SEC                      sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #33 ABCAPITAL    score= 89.0  engines=MOM                          sector=financials           rank=9
+23:23:22 | INFO     | __main__:1665 -      #34 POWERGRID    score= 88.9  engines=CTL,SEC,TPO                  sector=power & utilities    rank=3
+23:23:22 | INFO     | __main__:1665 -      #35 JSWSTEEL     score= 87.0  engines=CTL,SEC                      sector=metals & mining      rank=2
+23:23:22 | INFO     | __main__:1665 -      #36 NTPC         score= 86.3  engines=CTL,SEC                      sector=power & utilities    rank=3
+23:23:22 | INFO     | __main__:1665 -      #37 VEDL         score= 85.7  engines=MOM,SEC                      sector=metals & mining      rank=2
+23:23:22 | INFO     | __main__:1665 -      #38 ADANIPOWER   score= 85.0  engines=CTL                          sector=power & utilities    rank=3
+23:23:22 | INFO     | __main__:1665 -      #39 GLENMARK     score= 85.0  engines=MOM                          sector=healthcare           rank=6
+23:23:22 | INFO     | __main__:1665 -      #40 ASTERDM      score= 84.0  engines=MOM                          sector=healthcare           rank=6
+23:23:22 | INFO     | __main__:1665 -      #41 SOLARINDS    score= 84.0  engines=MOM                          sector=aerospace & defence  rank=5
+23:23:22 | INFO     | __main__:1665 -      #42 ANURAS       score= 84.0  engines=MOM                          sector=chemicals            rank=8
+23:23:22 | INFO     | __main__:1665 -      #43 NATIONALUM   score= 82.0  engines=RVS                          sector=metals & mining      rank=2
+23:23:22 | INFO     | __main__:1665 -      #44 EMMVEE       score= 82.0  engines=SEC                          sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #45 ELGIEQUIP    score= 82.0  engines=SEC                          sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #46 TATAPOWER    score= 81.1  engines=CTL,SEC                      sector=power & utilities    rank=3
+23:23:22 | INFO     | __main__:1665 -      #47 JINDALSTEL   score= 80.4  engines=CTL,SEC                      sector=metals & mining      rank=2
+23:23:22 | INFO     | __main__:1665 -      #48 ACUTAAS      score= 80.0  engines=MOM                          sector=healthcare           rank=6
+23:23:22 | INFO     | __main__:1665 -      #49 NAVINFLUOR   score= 80.0  engines=MOM                          sector=chemicals            rank=8
+23:23:22 | INFO     | __main__:1665 -      #50 APLAPOLLO    score= 80.0  engines=RVS                          sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #51 LTF          score= 79.0  engines=MOM                          sector=financials           rank=9
+23:23:22 | INFO     | __main__:1665 -      #52 GMDCLTD      score= 78.0  engines=SEC                          sector=metals & mining      rank=2
+23:23:22 | INFO     | __main__:1665 -      #53 SHYAMMETL    score= 78.0  engines=SEC                          sector=metals & mining      rank=2
+23:23:22 | INFO     | __main__:1665 -      #54 IPCALAB      score= 77.0  engines=MOM                          sector=healthcare           rank=6
+23:23:22 | INFO     | __main__:1665 -      #55 AIAENG       score= 77.0  engines=SEC                          sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #56 BEL          score= 76.0  engines=RVS                          sector=aerospace & defence  rank=5
+23:23:22 | INFO     | __main__:1665 -      #57 IFCI         score= 75.0  engines=MOM                          sector=financials           rank=9
+23:23:22 | INFO     | __main__:1665 -      #58 MCX          score= 75.0  engines=MOM                          sector=financials           rank=9
+23:23:22 | INFO     | __main__:1665 -      #59 LAURUSLABS   score= 75.0  engines=MOM                          sector=healthcare           rank=6
+23:23:22 | INFO     | __main__:1665 -      #60 SARDAEN      score= 74.9  engines=CTL,SEC                      sector=metals & mining      rank=2
+23:23:22 | INFO     | __main__:1665 -      #61 APOLLOHOSP   score= 74.0  engines=SBS                          sector=healthcare           rank=6
+23:23:22 | INFO     | __main__:1665 -      #62 ENRIN        score= 72.0  engines=SEC                          sector=power & utilities    rank=3
+23:23:22 | INFO     | __main__:1665 -      #63 CESC         score= 72.0  engines=SEC                          sector=power & utilities    rank=3
+23:23:22 | INFO     | __main__:1665 -      #64 HEG          score= 72.0  engines=RVS,SEC                      sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #65 TIINDIA      score= 70.0  engines=SEC                          sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #66 RKFORGE      score= 70.0  engines=SEC                          sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #67 NATCOPHARM   score= 69.0  engines=MOM                          sector=healthcare           rank=6
+23:23:22 | INFO     | __main__:1665 -      #68 LINDEINDIA   score= 68.0  engines=MOM                          sector=chemicals            rank=8
+23:23:22 | INFO     | __main__:1665 -      #69 SAILIFE      score= 68.0  engines=MOM                          sector=healthcare           rank=6
+23:23:22 | INFO     | __main__:1665 -      #70 SJVN         score= 67.0  engines=SEC                          sector=power & utilities    rank=3
+23:23:22 | INFO     | __main__:1665 -      #71 NSLNISP      score= 66.0  engines=SEC                          sector=metals & mining      rank=2
+23:23:22 | INFO     | __main__:1665 -      #72 GRAVITA      score= 66.0  engines=SEC                          sector=metals & mining      rank=2
+23:23:22 | INFO     | __main__:1665 -      #73 INDUSTOWER   score= 65.0  engines=RVS                          sector=telecom              rank=4
+23:23:22 | INFO     | __main__:1665 -      #74 PTCIL        score= 65.0  engines=SEC                          sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #75 NTPCGREEN    score= 64.0  engines=SEC                          sector=power & utilities    rank=3
+23:23:22 | INFO     | __main__:1665 -      #76 AUROPHARMA   score= 64.0  engines=MOM                          sector=healthcare           rank=6
+23:23:22 | INFO     | __main__:1665 -      #77 SHRIRAMFIN   score= 63.0  engines=RVS                          sector=financials           rank=9
+23:23:22 | INFO     | __main__:1665 -      #78 JPPOWER      score= 62.0  engines=SEC                          sector=power & utilities    rank=3
+23:23:22 | INFO     | __main__:1665 -      #79 JWL          score= 62.0  engines=SEC                          sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #80 INOXWIND     score= 62.0  engines=SEC                          sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #81 JINDALSAW    score= 60.0  engines=SEC                          sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #82 SUZLON       score= 60.0  engines=SEC                          sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #83 TITAGARH     score= 60.0  engines=SEC                          sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #84 JSWENERGY    score= 60.0  engines=SEC                          sector=power & utilities    rank=3
+23:23:22 | INFO     | __main__:1665 -      #85 ACE          score= 60.0  engines=SEC                          sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1665 -      #86 DRREDDY      score= 58.0  engines=RVS                          sector=healthcare           rank=6
+23:23:22 | INFO     | __main__:1665 -      #87 EMCURE       score= 58.0  engines=RVS                          sector=healthcare           rank=6
+23:23:22 | INFO     | __main__:1665 -      #88 MAZDOCK      score= 57.0  engines=SEC                          sector=aerospace & defence  rank=5
+23:23:22 | INFO     | __main__:1665 -      #89 ZENTEC       score= 57.0  engines=SEC                          sector=aerospace & defence  rank=5
+23:23:22 | INFO     | __main__:1665 -      #90 TEJASNET     score= 55.0  engines=SEC                          sector=telecom              rank=4
+23:23:22 | INFO     | __main__:1665 -      #91 TARIL        score= 55.0  engines=SEC                          sector=industrials          rank=1
+23:23:22 | INFO     | __main__:1681 -   Multi-engine confirmed: 31/91
+23:23:22 | INFO     | __main__:1682 -   Sector distribution: {'industrials': 29, 'metals & mining': 18, 'power & utilities': 12, 'financials': 6, 'chemicals': 5, 'healthcare': 13, 'aerospace & defence': 5, 'transportation': 1, 'telecom': 2}
+23:23:22 | INFO     | __main__:1683 -   Engine hits: {'CTL': 28, 'MOM': 38, 'SEC': 53, 'RVS': 10, 'SBS': 2, 'TPO': 1}
+23:23:22 | INFO     | __main__:1686 - Pass 4: writing (full mode)...
+23:23:22 | SUCCESS  | __main__:1288 - ✓ 91 symbols → master_shortlist
+23:23:22 | INFO     | __main__:1501 - Checking master_shortlist completeness...
+23:23:23 | INFO     | __main__:1530 - ======================================================================
+23:23:23 | INFO     | __main__:1531 - MASTER_SHORTLIST COMPLETENESS REPORT
+23:23:23 | INFO     | __main__:1532 - ======================================================================
+23:23:23 | WARNING  | __main__:1536 - ai_conviction             NULL in 72/93 rows (77.4%)
+23:23:23 | WARNING  | __main__:1536 - ai_conviction_reason      NULL in 72/93 rows (77.4%)
+23:23:23 | WARNING  | __main__:1536 - ai_fallback_used          NULL in 93/93 rows (100.0%)
+23:23:23 | WARNING  | __main__:1536 - ai_note                   NULL in 72/93 rows (77.4%)
+23:23:23 | WARNING  | __main__:1536 - ai_provider               NULL in 72/93 rows (77.4%)
+23:23:23 | WARNING  | __main__:1536 - ai_risks                  NULL in 72/93 rows (77.4%)
+23:23:23 | WARNING  | __main__:1536 - ai_shortlist_rank         NULL in 72/93 rows (77.4%)
+23:23:23 | WARNING  | __main__:1536 - ai_shortlist_reason       NULL in 72/93 rows (77.4%)
+23:23:23 | WARNING  | __main__:1536 - ai_suggested_action       NULL in 72/93 rows (77.4%)
+23:23:23 | WARNING  | __main__:1536 - company_name              NULL in 22/93 rows (23.7%)
+23:23:23 | WARNING  | __main__:1536 - composite_score           NULL in 2/93 rows (2.2%)
+23:23:23 | WARNING  | __main__:1536 - computed_at               NULL in 2/93 rows (2.2%)
+23:23:23 | WARNING  | __main__:1536 - convergence_pts           NULL in 2/93 rows (2.2%)
+23:23:23 | WARNING  | __main__:1536 - eap_adjustment            NULL in 2/93 rows (2.2%)
+23:23:23 | WARNING  | __main__:1536 - eap_revival               NULL in 93/93 rows (100.0%)
+23:23:23 | WARNING  | __main__:1536 - engine_scores_json        NULL in 2/93 rows (2.2%)
+23:23:23 | WARNING  | __main__:1536 - engines_count             NULL in 2/93 rows (2.2%)
+23:23:23 | WARNING  | __main__:1536 - engines_list              NULL in 2/93 rows (2.2%)
+23:23:23 | WARNING  | __main__:1536 - entry_action              NULL in 63/93 rows (67.7%)
+23:23:23 | WARNING  | __main__:1536 - entry_mode                NULL in 63/93 rows (67.7%)
+23:23:23 | WARNING  | __main__:1536 - entry_ready               NULL in 63/93 rows (67.7%)
+23:23:23 | WARNING  | __main__:1536 - event_bias                NULL in 64/93 rows (68.8%)
+23:23:23 | WARNING  | __main__:1536 - event_sectors             NULL in 63/93 rows (67.7%)
+23:23:23 | WARNING  | __main__:1536 - exec_eligibility          NULL in 63/93 rows (67.7%)
+23:23:23 | WARNING  | __main__:1536 - fv_high                   NULL in 63/93 rows (67.7%)
+23:23:23 | WARNING  | __main__:1536 - fv_low                    NULL in 63/93 rows (67.7%)
+23:23:23 | WARNING  | __main__:1536 - is_ipo                    NULL in 63/93 rows (67.7%)
+23:23:23 | WARNING  | __main__:1536 - ma_levels                 NULL in 93/93 rows (100.0%)
+23:23:23 | WARNING  | __main__:1536 - market_cap                NULL in 2/93 rows (2.2%)
+23:23:23 | WARNING  | __main__:1536 - notes                     NULL in 93/93 rows (100.0%)
+23:23:23 | WARNING  | __main__:1536 - opp_type                  NULL in 63/93 rows (67.7%)
+23:23:23 | WARNING  | __main__:1536 - persistent_phase          NULL in 4/93 rows (4.3%)
+23:23:23 | WARNING  | __main__:1536 - pos_type                  NULL in 63/93 rows (67.7%)
+23:23:23 | WARNING  | __main__:1536 - priority_rank             NULL in 2/93 rows (2.2%)
+23:23:23 | WARNING  | __main__:1536 - rank_vel_3d               NULL in 18/93 rows (19.4%)
+23:23:23 | WARNING  | __main__:1536 - score_vel_5d              NULL in 62/93 rows (66.7%)
+23:23:23 | WARNING  | __main__:1536 - screener_source           NULL in 2/93 rows (2.2%)
+23:23:23 | WARNING  | __main__:1536 - sector_rank               NULL in 2/93 rows (2.2%)
+23:23:23 | WARNING  | __main__:1536 - st_cushion_pct            NULL in 5/93 rows (5.4%)
+23:23:23 | WARNING  | __main__:1536 - suggested                 NULL in 63/93 rows (67.7%)
+23:23:23 | WARNING  | __main__:1536 - trade_allowed             NULL in 63/93 rows (67.7%)
+23:23:23 | WARNING  | __main__:1536 - upcoming_news             NULL in 92/93 rows (98.9%)
+23:23:23 | INFO     | __main__:1538 - ======================================================================
+23:23:23 | ERROR    | __main__:1543 - Columns never populated by script:
+23:23:23 | ERROR    | __main__:1545 -    -> ai_fallback_used
+23:23:23 | ERROR    | __main__:1545 -    -> eap_revival
+23:23:23 | ERROR    | __main__:1545 -    -> ma_levels
+23:23:23 | ERROR    | __main__:1545 -    -> notes
+23:23:23 | SUCCESS  | __main__:1547 - Completeness check finished.
+23:23:23 | INFO     | __main__:1313 -   EAP revival: no penalized stocks found yesterday — skipping
+23:23:23 | INFO     | __main__:1408 -   Outcomes: no msl_computed data for 2026-05-03 — skipping 5d
+23:23:23 | INFO     | __main__:1408 -   Outcomes: no msl_computed data for 2026-04-28 — skipping 10d
+23:23:23 | INFO     | __main__:1408 -   Outcomes: no msl_computed data for 2026-04-23 — skipping 15d
+23:23:23 | INFO     | __main__:1437 -   Outcomes: nothing to log (no past data aligns with today)
+23:24:23 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:24:23 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_175423 | mode=dry | dry=True
+23:24:23 | INFO     | __main__:101 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+23:24:23 | INFO     | brain.data_aggregator:347 - Building analysis dataset (60d, win≥3.0%, stop≤-5.0%)...
+23:24:24 | INFO     | brain.data_aggregator:351 -   signal_log: 636 rows × 97 cols
+23:24:24 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 17 symbols...
+23:24:24 | INFO     | brain.data_aggregator:231 -   Outcomes: 74 evaluated, 62 wins (83.8%), coverage=12%
+23:24:25 | INFO     | brain.data_aggregator:408 - Dataset ready: 636 signals, 74 with outcomes (11.6% coverage), 5 tables loaded
+23:24:25 | INFO     | __main__:114 - Step 3/6 — Quantitative analysis (all fields)...
+23:24:25 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+23:24:25 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+23:24:25 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 83.8%)
+23:24:26 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+23:24:26 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+23:24:26 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+23:24:26 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+23:24:26 | INFO     | brain.quant_analyzer:683 -   Lessons: 0 proven, 0 retire candidates
+23:24:26 | INFO     | brain.quant_analyzer:770 - Quant analysis complete: 0 actionable findings across 110 fields
+23:24:26 | INFO     | __main__:123 - Step 4/6 — Backtesting quant proposals...
+23:24:26 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+23:24:26 | INFO     | __main__:152 - Step 5/6 — LLM synthesis skipped (mode=quant)
+23:24:26 | INFO     | __main__:157 - 
+════════════════════════════════════════════════════════════
+23:24:26 | INFO     | __main__:158 - BRAIN SUMMARY: 0 proposals
+23:24:26 | INFO     | __main__:159 -   Signals: 636 (12% outcomes)
+23:24:26 | INFO     | __main__:168 - ════════════════════════════════════════════════════════════
+
+23:25:02 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:25:02 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_175502 | mode=full | dry=False
+23:25:02 | INFO     | __main__:85 - Step 1/6 — Scanning scripts for hardcoded values...
+23:25:02 | INFO     | brain.script_scanner:93 - Discovered 63 Python files for scanning
+23:25:06 | INFO     | brain.script_scanner:491 - Script scan complete: 63 scripts registered
+23:25:06 | INFO     | __main__:91 - 
+════════════════════════════════════════════════════════════
+SCRIPT SCANNER REPORT
+════════════════════════════════════════════════════════════
+Scripts discovered: 63
+  Full cfg() coverage:    51
+  Partial cfg() coverage: 7
+  No cfg() coverage:      5
+
+Scripts with tunable hardcoded values:
+
+  compute\compute_regime.py [PARTIAL]
+    Reads: ['macro_indicators', 'stock_data_daily'] | Writes: []
+    L80: SCORE_TRENDING = 78  → cfg key: compute_regime_score_trending
+    L81: SCORE_RISK_ON = 60  → cfg key: compute_regime_score_risk_on
+    L82: SCORE_NEUTRAL = 40  → cfg key: compute_regime_score_neutral
+    L83: SCORE_RECOVERING = 25  → cfg key: compute_regime_score_recovering
+
+  compute\data_quality_monitor.py [NONE]
+    Reads: ['ai_context', 'lessons', 'master_shortlist', 'msl_history', 'open_positions', 'signal_log', 'stock_data_daily'] | Writes: ['stock_data_daily']
+    L72: CHARTINK_ROW_MIN = 450  → cfg key: data_quality_monitor_chartink_row_min
+    L73: CHARTINK_ROW_MAX = 510  → cfg key: data_quality_monitor_chartink_row_max
+    L74: VOL_RATIO_CAP = 50.0  → cfg key: data_quality_monitor_vol_ratio_cap
+    L76: SCORE_MAX = 150  → cfg key: data_quality_monitor_score_max
+    L78: MSL_MIN_ENRICHED = 70  → cfg key: data_quality_monitor_msl_min_enriched
+    ... and 5 more
+
+  signals\screen_stocks.py [PARTIAL]
+    Reads: ['master_shortlist', 'msl_computed', 'open_positions', 'stock_data_daily'] | Writes: ['msl_computed']
+    L87: MAX_SYMBOLS = 30  → cfg key: screen_stocks_max_symbols
+    L88: MAX_PER_SECTOR = 5  → cfg key: screen_stocks_max_per_sector
+    L89: MIN_MARKET_CAP = 300  → cfg key: screen_stocks_min_market_cap
+    L890: max_sector = 10  → cfg key: screen_stocks_max_sector
+    L934: min_score = 50  → cfg key: screen_stocks_min_score
+    ... and 4 more
+
+  ai\post_trade_analysis.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'nifty_upcoming_events', 'regime_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'signal_log', 'system_config']
+    L154: HOLDING_SCORE_EXIT_THRESHOLD = 30  → cfg key: post_trade_analysis_holding_score_exit_threshold
+    L155: MFE_TRAILING_FAILURE_RATIO = 0.5  → cfg key: post_trade_analysis_mfe_trailing_failure_ratio
+    L156: DEDUP_WINDOW_DAYS = 30  → cfg key: post_trade_analysis_dedup_window_days
+
+  compute\compute_msl.py [PARTIAL]
+    Reads: ['macro_indicators', 'master_shortlist', 'msl_computed', 'msl_history', 'open_positions', 'stock_data_daily'] | Writes: ['master_shortlist', 'msl_computed']
+    L116: MIN_VALUE_CR_DEFAULT = 10.0  → cfg key: compute_msl_min_value_cr_default
+
+  calibration\calibration_engine.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'system_config']
+    L73: CALIBRATION_MIN_NEW_TRADES = 15  → cfg key: calibration_engine_calibration_min_new_trades
+    L74: CALIBRATION_MAX_CHANGE_PCT = 0.2  → cfg key: calibration_engine_calibration_max_change_pct
+    L75: CALIBRATION_LOOKBACK_DAYS = 90  → cfg key: calibration_engine_calibration_lookback_days
+    L76: MIN_LESSON_APPLICATIONS = 10  → cfg key: calibration_engine_min_lesson_applications
+
+  compute\compute_indicators.py [PARTIAL]
+    Reads: ['master_shortlist', 'nifty_total_market', 'nifty_upcoming_events', 'stock_data_daily', 'system_config'] | Writes: ['stock_data_daily']
+    L113: MIN_SESSIONS_FOR_RETURNS = 260  → cfg key: compute_indicators_min_sessions_for_returns
+    L119: DIVERGE_THRESHOLD = 0.02  → cfg key: compute_indicators_diverge_threshold
+    L120: WIDE_THRESHOLD = 0.1  → cfg key: compute_indicators_wide_threshold
+
+  history\discovery_engine.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L37: MIN_SAMPLE_SIZE = 30  → cfg key: discovery_engine_min_sample_size
+    L38: P_VALUE_THRESHOLD = 0.05  → cfg key: discovery_engine_p_value_threshold
+    L39: MAX_PROPOSALS = 5  → cfg key: discovery_engine_max_proposals
+    L40: LOOKBACK_DAYS = 180  → cfg key: discovery_engine_lookback_days
+
+  ai\providers\ml_regime_classifier.py [PARTIAL]
+    Reads: ['regime_history'] | Writes: ['stock_data_daily']
+    L98: MIN_TRAINING_SAMPLES = 20  → cfg key: ml_regime_classifier_min_training_samples
+    L101: MIN_PREDICT_SAMPLES = 15  → cfg key: ml_regime_classifier_min_predict_samples
+    L103: LOOKBACK_DAYS = 365  → cfg key: ml_regime_classifier_lookback_days
+
+  ingestion\ingest_sheets.py [NONE]
+    Reads: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions', 'signal_log'] | Writes: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions']
+    L174: threshold = 0.005  → cfg key: ingest_sheets_threshold
+
+  ai\providers\ml_provider.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L96: MIN_TRADES = 90  → cfg key: ml_provider_min_trades
+
+  control\sl_monitor.py [NONE]
+    Reads: [] | Writes: ['open_positions']
+    L41: PROXIMITY_PCT = 2.0  → cfg key: sl_monitor_proximity_pct
+
+════════════════════════════════════════════════════════════
+To migrate a script: brain will auto-generate SCRIPT_PATCH proposals.
+Enable: set brain_script_patching_enabled=true in system_config.
+════════════════════════════════════════════════════════════
+
+23:25:06 | INFO     | __main__:101 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+23:25:06 | INFO     | brain.data_aggregator:347 - Building analysis dataset (60d, win≥3.0%, stop≤-5.0%)...
+23:25:06 | INFO     | brain.data_aggregator:351 -   signal_log: 636 rows × 97 cols
+23:25:06 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 17 symbols...
+23:25:06 | INFO     | brain.data_aggregator:231 -   Outcomes: 74 evaluated, 62 wins (83.8%), coverage=12%
+23:25:07 | INFO     | brain.data_aggregator:408 - Dataset ready: 636 signals, 74 with outcomes (11.6% coverage), 5 tables loaded
+23:25:07 | INFO     | __main__:114 - Step 3/6 — Quantitative analysis (all fields)...
+23:25:07 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+23:25:07 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+23:25:07 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 83.8%)
+23:25:07 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+23:25:07 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+23:25:07 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+23:25:07 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+23:25:07 | INFO     | brain.quant_analyzer:683 -   Lessons: 0 proven, 0 retire candidates
+23:25:07 | INFO     | brain.quant_analyzer:770 - Quant analysis complete: 0 actionable findings across 110 fields
+23:25:07 | INFO     | __main__:123 - Step 4/6 — Backtesting quant proposals...
+23:25:07 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+23:25:07 | INFO     | __main__:140 - Step 5/6 — LLM synthesis (full data, all fields)...
+23:25:07 | INFO     | brain.llm_synthesizer:321 -   Calling LLM for synthesis (full data access)...
+23:25:27 | INFO     | brain.llm_synthesizer:372 -   LLM synthesis: 0 raw proposals, 5 validated
+23:25:27 | INFO     | __main__:157 - 
+════════════════════════════════════════════════════════════
+23:25:27 | INFO     | __main__:158 - BRAIN SUMMARY: 5 proposals
+23:25:27 | INFO     | __main__:159 -   Signals: 636 (12% outcomes)
+23:25:27 | INFO     | __main__:166 -   [SCRIPT_PATCH] backend/ai/post_trade_analysis.py conf=70% 
+23:25:27 | INFO     | __main__:166 -   [SCRIPT_PATCH] backend/ai/post_trade_analysis.py conf=70% 
+23:25:27 | INFO     | __main__:166 -   [SCRIPT_PATCH] backend/ai/post_trade_analysis.py conf=70% 
+23:25:27 | INFO     | __main__:166 -   [SCRIPT_PATCH] backend/ai/providers/ml_provider.py conf=70% 
+23:25:27 | INFO     | __main__:166 -   [SCRIPT_PATCH] backend/ai/providers/ml_regime_classifier.py conf=70% 
+23:25:27 | INFO     | __main__:168 - ════════════════════════════════════════════════════════════
+
+23:25:27 | INFO     | __main__:178 - Step 6/6 — Saving proposals, processing approvals...
+23:25:27 | INFO     | brain.backtester_and_change_manager:200 -   Saved 5/5 proposals
+23:25:28 | WARNING  | brain.backtester_and_change_manager:419 -   Telegram digest failed: HTTP Error 400: Bad Request
+23:25:28 | SUCCESS  | __main__:211 - 🧠 Brain v2 complete in 26s — 5 proposals, 0 auto-applied, 5 pending review
+23:26:42 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:26:42 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_175642 | mode=scan | dry=False
+23:26:42 | INFO     | __main__:85 - Step 1/6 — Scanning scripts for hardcoded values...
+23:26:42 | INFO     | brain.script_scanner:93 - Discovered 63 Python files for scanning
+23:26:46 | INFO     | brain.script_scanner:491 - Script scan complete: 63 scripts registered
+23:26:46 | INFO     | __main__:91 - 
+════════════════════════════════════════════════════════════
+SCRIPT SCANNER REPORT
+════════════════════════════════════════════════════════════
+Scripts discovered: 63
+  Full cfg() coverage:    51
+  Partial cfg() coverage: 7
+  No cfg() coverage:      5
+
+Scripts with tunable hardcoded values:
+
+  compute\compute_regime.py [PARTIAL]
+    Reads: ['macro_indicators', 'stock_data_daily'] | Writes: []
+    L80: SCORE_TRENDING = 78  → cfg key: compute_regime_score_trending
+    L81: SCORE_RISK_ON = 60  → cfg key: compute_regime_score_risk_on
+    L82: SCORE_NEUTRAL = 40  → cfg key: compute_regime_score_neutral
+    L83: SCORE_RECOVERING = 25  → cfg key: compute_regime_score_recovering
+
+  compute\data_quality_monitor.py [NONE]
+    Reads: ['ai_context', 'lessons', 'master_shortlist', 'msl_history', 'open_positions', 'signal_log', 'stock_data_daily'] | Writes: ['stock_data_daily']
+    L72: CHARTINK_ROW_MIN = 450  → cfg key: data_quality_monitor_chartink_row_min
+    L73: CHARTINK_ROW_MAX = 510  → cfg key: data_quality_monitor_chartink_row_max
+    L74: VOL_RATIO_CAP = 50.0  → cfg key: data_quality_monitor_vol_ratio_cap
+    L76: SCORE_MAX = 150  → cfg key: data_quality_monitor_score_max
+    L78: MSL_MIN_ENRICHED = 70  → cfg key: data_quality_monitor_msl_min_enriched
+    ... and 5 more
+
+  signals\screen_stocks.py [PARTIAL]
+    Reads: ['master_shortlist', 'msl_computed', 'open_positions', 'stock_data_daily'] | Writes: ['msl_computed']
+    L87: MAX_SYMBOLS = 30  → cfg key: screen_stocks_max_symbols
+    L88: MAX_PER_SECTOR = 5  → cfg key: screen_stocks_max_per_sector
+    L89: MIN_MARKET_CAP = 300  → cfg key: screen_stocks_min_market_cap
+    L890: max_sector = 10  → cfg key: screen_stocks_max_sector
+    L934: min_score = 50  → cfg key: screen_stocks_min_score
+    ... and 4 more
+
+  ai\post_trade_analysis.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'nifty_upcoming_events', 'regime_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'signal_log', 'system_config']
+    L154: HOLDING_SCORE_EXIT_THRESHOLD = 30  → cfg key: post_trade_analysis_holding_score_exit_threshold
+    L155: MFE_TRAILING_FAILURE_RATIO = 0.5  → cfg key: post_trade_analysis_mfe_trailing_failure_ratio
+    L156: DEDUP_WINDOW_DAYS = 30  → cfg key: post_trade_analysis_dedup_window_days
+
+  compute\compute_msl.py [PARTIAL]
+    Reads: ['macro_indicators', 'master_shortlist', 'msl_computed', 'msl_history', 'open_positions', 'stock_data_daily'] | Writes: ['master_shortlist', 'msl_computed']
+    L116: MIN_VALUE_CR_DEFAULT = 10.0  → cfg key: compute_msl_min_value_cr_default
+
+  calibration\calibration_engine.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'system_config']
+    L73: CALIBRATION_MIN_NEW_TRADES = 15  → cfg key: calibration_engine_calibration_min_new_trades
+    L74: CALIBRATION_MAX_CHANGE_PCT = 0.2  → cfg key: calibration_engine_calibration_max_change_pct
+    L75: CALIBRATION_LOOKBACK_DAYS = 90  → cfg key: calibration_engine_calibration_lookback_days
+    L76: MIN_LESSON_APPLICATIONS = 10  → cfg key: calibration_engine_min_lesson_applications
+
+  compute\compute_indicators.py [PARTIAL]
+    Reads: ['master_shortlist', 'nifty_total_market', 'nifty_upcoming_events', 'stock_data_daily', 'system_config'] | Writes: ['stock_data_daily']
+    L113: MIN_SESSIONS_FOR_RETURNS = 260  → cfg key: compute_indicators_min_sessions_for_returns
+    L119: DIVERGE_THRESHOLD = 0.02  → cfg key: compute_indicators_diverge_threshold
+    L120: WIDE_THRESHOLD = 0.1  → cfg key: compute_indicators_wide_threshold
+
+  history\discovery_engine.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L37: MIN_SAMPLE_SIZE = 30  → cfg key: discovery_engine_min_sample_size
+    L38: P_VALUE_THRESHOLD = 0.05  → cfg key: discovery_engine_p_value_threshold
+    L39: MAX_PROPOSALS = 5  → cfg key: discovery_engine_max_proposals
+    L40: LOOKBACK_DAYS = 180  → cfg key: discovery_engine_lookback_days
+
+  ai\providers\ml_regime_classifier.py [PARTIAL]
+    Reads: ['regime_history'] | Writes: ['stock_data_daily']
+    L98: MIN_TRAINING_SAMPLES = 20  → cfg key: ml_regime_classifier_min_training_samples
+    L101: MIN_PREDICT_SAMPLES = 15  → cfg key: ml_regime_classifier_min_predict_samples
+    L103: LOOKBACK_DAYS = 365  → cfg key: ml_regime_classifier_lookback_days
+
+  ingestion\ingest_sheets.py [NONE]
+    Reads: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions', 'signal_log'] | Writes: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions']
+    L174: threshold = 0.005  → cfg key: ingest_sheets_threshold
+
+  ai\providers\ml_provider.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L96: MIN_TRADES = 90  → cfg key: ml_provider_min_trades
+
+  control\sl_monitor.py [NONE]
+    Reads: [] | Writes: ['open_positions']
+    L41: PROXIMITY_PCT = 2.0  → cfg key: sl_monitor_proximity_pct
+
+════════════════════════════════════════════════════════════
+To migrate a script: brain will auto-generate SCRIPT_PATCH proposals.
+Enable: set brain_script_patching_enabled=true in system_config.
+════════════════════════════════════════════════════════════
+
+23:27:02 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:27:02 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_175702 | mode=quant | dry=False
+23:27:02 | INFO     | __main__:101 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+23:27:02 | INFO     | brain.data_aggregator:347 - Building analysis dataset (90d, win≥3.0%, stop≤-5.0%)...
+23:27:03 | INFO     | brain.data_aggregator:351 -   signal_log: 656 rows × 97 cols
+23:27:03 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 22 symbols...
+23:27:03 | INFO     | brain.data_aggregator:231 -   Outcomes: 94 evaluated, 62 wins (66.0%), coverage=14%
+23:27:04 | INFO     | brain.data_aggregator:408 - Dataset ready: 656 signals, 94 with outcomes (14.3% coverage), 6 tables loaded
+23:27:04 | INFO     | __main__:114 - Step 3/6 — Quantitative analysis (all fields)...
+23:27:04 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+23:27:04 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+23:27:04 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 66.0%)
+23:27:04 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+23:27:04 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+23:27:04 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+23:27:04 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+23:27:04 | INFO     | brain.quant_analyzer:683 -   Lessons: 0 proven, 0 retire candidates
+23:27:04 | INFO     | brain.quant_analyzer:770 - Quant analysis complete: 0 actionable findings across 110 fields
+23:27:04 | INFO     | __main__:123 - Step 4/6 — Backtesting quant proposals...
+23:27:04 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+23:27:04 | INFO     | __main__:152 - Step 5/6 — LLM synthesis skipped (mode=quant)
+23:27:04 | INFO     | __main__:157 - 
+════════════════════════════════════════════════════════════
+23:27:04 | INFO     | __main__:158 - BRAIN SUMMARY: 0 proposals
+23:27:04 | INFO     | __main__:159 -   Signals: 656 (14% outcomes)
+23:27:04 | INFO     | __main__:168 - ════════════════════════════════════════════════════════════
+
+23:27:04 | INFO     | __main__:178 - Step 6/6 — Saving proposals, processing approvals...
+23:27:04 | INFO     | brain.backtester_and_change_manager:200 -   Saved 0/0 proposals
+23:27:05 | WARNING  | brain.backtester_and_change_manager:419 -   Telegram digest failed: HTTP Error 400: Bad Request
+23:27:05 | SUCCESS  | __main__:211 - 🧠 Brain v2 complete in 3s — 0 proposals, 0 auto-applied, 5 pending review
+23:27:27 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:29:11 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:31:34 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:31:34 | WARNING  | __main__:268 - Proposal 1 is SCRIPT_PATCH — not auto-applicable to system_config
+23:33:35 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:33:35 | WARNING  | __main__:268 - Proposal 1 is SCRIPT_PATCH — not auto-applicable to system_config
+23:43:57 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:43:57 | ERROR    | __main__:267 - Proposal 1: missing script_path or diff
+23:46:12 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:47:00 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:47:00 | INFO     | __main__:387 -   Rejected 1
+23:47:03 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:47:03 | INFO     | __main__:387 -   Rejected 2
+23:47:06 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:47:06 | INFO     | __main__:387 -   Rejected 3
+23:47:08 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:47:08 | INFO     | __main__:387 -   Rejected 4
+23:47:11 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:47:11 | INFO     | __main__:387 -   Rejected 5
+23:47:38 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:47:38 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_181738 | mode=scan | dry=False
+23:47:38 | INFO     | __main__:85 - Step 1/6 — Scanning scripts for hardcoded values...
+23:47:38 | INFO     | brain.script_scanner:93 - Discovered 63 Python files for scanning
+23:47:42 | INFO     | brain.script_scanner:491 - Script scan complete: 63 scripts registered
+23:47:42 | INFO     | __main__:91 - 
+════════════════════════════════════════════════════════════
+SCRIPT SCANNER REPORT
+════════════════════════════════════════════════════════════
+Scripts discovered: 63
+  Full cfg() coverage:    51
+  Partial cfg() coverage: 7
+  No cfg() coverage:      5
+
+Scripts with tunable hardcoded values:
+
+  compute\compute_regime.py [PARTIAL]
+    Reads: ['macro_indicators', 'stock_data_daily'] | Writes: []
+    L80: SCORE_TRENDING = 78  → cfg key: compute_regime_score_trending
+    L81: SCORE_RISK_ON = 60  → cfg key: compute_regime_score_risk_on
+    L82: SCORE_NEUTRAL = 40  → cfg key: compute_regime_score_neutral
+    L83: SCORE_RECOVERING = 25  → cfg key: compute_regime_score_recovering
+
+  compute\data_quality_monitor.py [NONE]
+    Reads: ['ai_context', 'lessons', 'master_shortlist', 'msl_history', 'open_positions', 'signal_log', 'stock_data_daily'] | Writes: ['stock_data_daily']
+    L72: CHARTINK_ROW_MIN = 450  → cfg key: data_quality_monitor_chartink_row_min
+    L73: CHARTINK_ROW_MAX = 510  → cfg key: data_quality_monitor_chartink_row_max
+    L74: VOL_RATIO_CAP = 50.0  → cfg key: data_quality_monitor_vol_ratio_cap
+    L76: SCORE_MAX = 150  → cfg key: data_quality_monitor_score_max
+    L78: MSL_MIN_ENRICHED = 70  → cfg key: data_quality_monitor_msl_min_enriched
+    ... and 5 more
+
+  signals\screen_stocks.py [PARTIAL]
+    Reads: ['master_shortlist', 'msl_computed', 'open_positions', 'stock_data_daily'] | Writes: ['msl_computed']
+    L87: MAX_SYMBOLS = 30  → cfg key: screen_stocks_max_symbols
+    L88: MAX_PER_SECTOR = 5  → cfg key: screen_stocks_max_per_sector
+    L89: MIN_MARKET_CAP = 300  → cfg key: screen_stocks_min_market_cap
+    L890: max_sector = 10  → cfg key: screen_stocks_max_sector
+    L934: min_score = 50  → cfg key: screen_stocks_min_score
+    ... and 4 more
+
+  ai\post_trade_analysis.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'nifty_upcoming_events', 'regime_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'signal_log', 'system_config']
+    L154: HOLDING_SCORE_EXIT_THRESHOLD = 30  → cfg key: post_trade_analysis_holding_score_exit_threshold
+    L155: MFE_TRAILING_FAILURE_RATIO = 0.5  → cfg key: post_trade_analysis_mfe_trailing_failure_ratio
+    L156: DEDUP_WINDOW_DAYS = 30  → cfg key: post_trade_analysis_dedup_window_days
+
+  compute\compute_msl.py [PARTIAL]
+    Reads: ['macro_indicators', 'master_shortlist', 'msl_computed', 'msl_history', 'open_positions', 'stock_data_daily'] | Writes: ['master_shortlist', 'msl_computed']
+    L116: MIN_VALUE_CR_DEFAULT = 10.0  → cfg key: compute_msl_min_value_cr_default
+
+  calibration\calibration_engine.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'system_config']
+    L73: CALIBRATION_MIN_NEW_TRADES = 15  → cfg key: calibration_engine_calibration_min_new_trades
+    L74: CALIBRATION_MAX_CHANGE_PCT = 0.2  → cfg key: calibration_engine_calibration_max_change_pct
+    L75: CALIBRATION_LOOKBACK_DAYS = 90  → cfg key: calibration_engine_calibration_lookback_days
+    L76: MIN_LESSON_APPLICATIONS = 10  → cfg key: calibration_engine_min_lesson_applications
+
+  compute\compute_indicators.py [PARTIAL]
+    Reads: ['master_shortlist', 'nifty_total_market', 'nifty_upcoming_events', 'stock_data_daily', 'system_config'] | Writes: ['stock_data_daily']
+    L113: MIN_SESSIONS_FOR_RETURNS = 260  → cfg key: compute_indicators_min_sessions_for_returns
+    L119: DIVERGE_THRESHOLD = 0.02  → cfg key: compute_indicators_diverge_threshold
+    L120: WIDE_THRESHOLD = 0.1  → cfg key: compute_indicators_wide_threshold
+
+  history\discovery_engine.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L37: MIN_SAMPLE_SIZE = 30  → cfg key: discovery_engine_min_sample_size
+    L38: P_VALUE_THRESHOLD = 0.05  → cfg key: discovery_engine_p_value_threshold
+    L39: MAX_PROPOSALS = 5  → cfg key: discovery_engine_max_proposals
+    L40: LOOKBACK_DAYS = 180  → cfg key: discovery_engine_lookback_days
+
+  ai\providers\ml_regime_classifier.py [PARTIAL]
+    Reads: ['regime_history'] | Writes: ['stock_data_daily']
+    L98: MIN_TRAINING_SAMPLES = 20  → cfg key: ml_regime_classifier_min_training_samples
+    L101: MIN_PREDICT_SAMPLES = 15  → cfg key: ml_regime_classifier_min_predict_samples
+    L103: LOOKBACK_DAYS = 365  → cfg key: ml_regime_classifier_lookback_days
+
+  ingestion\ingest_sheets.py [NONE]
+    Reads: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions', 'signal_log'] | Writes: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions']
+    L174: threshold = 0.005  → cfg key: ingest_sheets_threshold
+
+  ai\providers\ml_provider.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L96: MIN_TRADES = 90  → cfg key: ml_provider_min_trades
+
+  control\sl_monitor.py [NONE]
+    Reads: [] | Writes: ['open_positions']
+    L41: PROXIMITY_PCT = 2.0  → cfg key: sl_monitor_proximity_pct
+
+════════════════════════════════════════════════════════════
+To migrate a script: brain will auto-generate SCRIPT_PATCH proposals.
+Enable: set brain_script_patching_enabled=true in system_config.
+════════════════════════════════════════════════════════════
+
+23:53:16 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:53:16 | INFO     | __main__:71 - 🧠 Brain v2 starting — brain_20260510_182316 | mode=full | dry=False
+23:53:16 | INFO     | __main__:85 - Step 1/6 — Scanning scripts for hardcoded values...
+23:53:16 | INFO     | brain.script_scanner:93 - Discovered 63 Python files for scanning
+23:53:19 | INFO     | brain.script_scanner:491 - Script scan complete: 63 scripts registered
+23:53:19 | INFO     | __main__:91 - 
+════════════════════════════════════════════════════════════
+SCRIPT SCANNER REPORT
+════════════════════════════════════════════════════════════
+Scripts discovered: 63
+  Full cfg() coverage:    51
+  Partial cfg() coverage: 7
+  No cfg() coverage:      5
+
+Scripts with tunable hardcoded values:
+
+  compute\compute_regime.py [PARTIAL]
+    Reads: ['macro_indicators', 'stock_data_daily'] | Writes: []
+    L80: SCORE_TRENDING = 78  → cfg key: compute_regime_score_trending
+    L81: SCORE_RISK_ON = 60  → cfg key: compute_regime_score_risk_on
+    L82: SCORE_NEUTRAL = 40  → cfg key: compute_regime_score_neutral
+    L83: SCORE_RECOVERING = 25  → cfg key: compute_regime_score_recovering
+
+  compute\data_quality_monitor.py [NONE]
+    Reads: ['ai_context', 'lessons', 'master_shortlist', 'msl_history', 'open_positions', 'signal_log', 'stock_data_daily'] | Writes: ['stock_data_daily']
+    L72: CHARTINK_ROW_MIN = 450  → cfg key: data_quality_monitor_chartink_row_min
+    L73: CHARTINK_ROW_MAX = 510  → cfg key: data_quality_monitor_chartink_row_max
+    L74: VOL_RATIO_CAP = 50.0  → cfg key: data_quality_monitor_vol_ratio_cap
+    L76: SCORE_MAX = 150  → cfg key: data_quality_monitor_score_max
+    L78: MSL_MIN_ENRICHED = 70  → cfg key: data_quality_monitor_msl_min_enriched
+    ... and 5 more
+
+  signals\screen_stocks.py [PARTIAL]
+    Reads: ['master_shortlist', 'msl_computed', 'open_positions', 'stock_data_daily'] | Writes: ['msl_computed']
+    L87: MAX_SYMBOLS = 30  → cfg key: screen_stocks_max_symbols
+    L88: MAX_PER_SECTOR = 5  → cfg key: screen_stocks_max_per_sector
+    L89: MIN_MARKET_CAP = 300  → cfg key: screen_stocks_min_market_cap
+    L890: max_sector = 10  → cfg key: screen_stocks_max_sector
+    L934: min_score = 50  → cfg key: screen_stocks_min_score
+    ... and 4 more
+
+  ai\post_trade_analysis.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'nifty_upcoming_events', 'regime_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'signal_log', 'system_config']
+    L154: HOLDING_SCORE_EXIT_THRESHOLD = 30  → cfg key: post_trade_analysis_holding_score_exit_threshold
+    L155: MFE_TRAILING_FAILURE_RATIO = 0.5  → cfg key: post_trade_analysis_mfe_trailing_failure_ratio
+    L156: DEDUP_WINDOW_DAYS = 30  → cfg key: post_trade_analysis_dedup_window_days
+
+  compute\compute_msl.py [PARTIAL]
+    Reads: ['macro_indicators', 'master_shortlist', 'msl_computed', 'msl_history', 'open_positions', 'stock_data_daily'] | Writes: ['master_shortlist', 'msl_computed']
+    L116: MIN_VALUE_CR_DEFAULT = 10.0  → cfg key: compute_msl_min_value_cr_default
+
+  calibration\calibration_engine.py [PARTIAL]
+    Reads: ['closed_positions', 'lessons', 'msl_history', 'signal_log', 'system_config'] | Writes: ['lessons', 'system_config']
+    L73: CALIBRATION_MIN_NEW_TRADES = 15  → cfg key: calibration_engine_calibration_min_new_trades
+    L74: CALIBRATION_MAX_CHANGE_PCT = 0.2  → cfg key: calibration_engine_calibration_max_change_pct
+    L75: CALIBRATION_LOOKBACK_DAYS = 90  → cfg key: calibration_engine_calibration_lookback_days
+    L76: MIN_LESSON_APPLICATIONS = 10  → cfg key: calibration_engine_min_lesson_applications
+
+  compute\compute_indicators.py [PARTIAL]
+    Reads: ['master_shortlist', 'nifty_total_market', 'nifty_upcoming_events', 'stock_data_daily', 'system_config'] | Writes: ['stock_data_daily']
+    L113: MIN_SESSIONS_FOR_RETURNS = 260  → cfg key: compute_indicators_min_sessions_for_returns
+    L119: DIVERGE_THRESHOLD = 0.02  → cfg key: compute_indicators_diverge_threshold
+    L120: WIDE_THRESHOLD = 0.1  → cfg key: compute_indicators_wide_threshold
+
+  history\discovery_engine.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L37: MIN_SAMPLE_SIZE = 30  → cfg key: discovery_engine_min_sample_size
+    L38: P_VALUE_THRESHOLD = 0.05  → cfg key: discovery_engine_p_value_threshold
+    L39: MAX_PROPOSALS = 5  → cfg key: discovery_engine_max_proposals
+    L40: LOOKBACK_DAYS = 180  → cfg key: discovery_engine_lookback_days
+
+  ai\providers\ml_regime_classifier.py [PARTIAL]
+    Reads: ['regime_history'] | Writes: ['stock_data_daily']
+    L98: MIN_TRAINING_SAMPLES = 20  → cfg key: ml_regime_classifier_min_training_samples
+    L101: MIN_PREDICT_SAMPLES = 15  → cfg key: ml_regime_classifier_min_predict_samples
+    L103: LOOKBACK_DAYS = 365  → cfg key: ml_regime_classifier_lookback_days
+
+  ingestion\ingest_sheets.py [NONE]
+    Reads: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions', 'signal_log'] | Writes: ['closed_positions', 'lessons', 'master_shortlist', 'open_positions']
+    L174: threshold = 0.005  → cfg key: ingest_sheets_threshold
+
+  ai\providers\ml_provider.py [NONE]
+    Reads: ['closed_positions', 'signal_log'] | Writes: []
+    L96: MIN_TRADES = 90  → cfg key: ml_provider_min_trades
+
+  control\sl_monitor.py [NONE]
+    Reads: [] | Writes: ['open_positions']
+    L41: PROXIMITY_PCT = 2.0  → cfg key: sl_monitor_proximity_pct
+
+════════════════════════════════════════════════════════════
+To migrate a script: brain will auto-generate SCRIPT_PATCH proposals.
+Enable: set brain_script_patching_enabled=true in system_config.
+════════════════════════════════════════════════════════════
+
+23:53:19 | INFO     | __main__:101 - Step 2/6 — Loading full dataset (SELECT * everywhere)...
+23:53:19 | INFO     | brain.data_aggregator:347 - Building analysis dataset (90d, win≥3.0%, stop≤-5.0%)...
+23:53:20 | INFO     | brain.data_aggregator:351 -   signal_log: 656 rows × 97 cols
+23:53:20 | INFO     | brain.data_aggregator:140 -   Loading forward prices for 22 symbols...
+23:53:20 | INFO     | brain.data_aggregator:231 -   Outcomes: 94 evaluated, 62 wins (66.0%), coverage=14%
+23:53:21 | INFO     | brain.data_aggregator:408 - Dataset ready: 656 signals, 94 with outcomes (14.3% coverage), 6 tables loaded
+23:53:21 | INFO     | __main__:114 - Step 3/6 — Quantitative analysis (all fields)...
+23:53:21 | INFO     | brain.quant_analyzer:743 - Running quantitative analysis (all fields)...
+23:53:21 | INFO     | brain.quant_analyzer:218 -   Threshold sensitivity: 0 proposals
+23:53:21 | INFO     | brain.quant_analyzer:271 -   Engine performance: 0 divergences (baseline 66.0%)
+23:53:21 | INFO     | brain.quant_analyzer:300 -   Score correlations: 31 fields. Top: in_scanner=nan, Bottom: breakout_setup=0.007
+23:53:21 | INFO     | brain.quant_analyzer:351 -   Categorical analysis: 1 fields with meaningful spread
+23:53:21 | INFO     | brain.quant_analyzer:458 -   Regime×Engine interactions: 0 strong interactions
+23:53:21 | INFO     | brain.quant_analyzer:532 -   Multi-field combinations: 13 meaningful combinations found
+23:53:21 | INFO     | brain.quant_analyzer:683 -   Lessons: 0 proven, 0 retire candidates
+23:53:21 | INFO     | brain.quant_analyzer:770 - Quant analysis complete: 0 actionable findings across 110 fields
+23:53:21 | INFO     | __main__:123 - Step 4/6 — Backtesting quant proposals...
+23:53:21 | INFO     | brain.backtester_and_change_manager:163 -   Backtests: 0/0 passed
+23:53:21 | INFO     | __main__:140 - Step 5/6 — LLM synthesis (full data, all fields)...
+23:53:21 | INFO     | brain.llm_synthesizer:321 -   Calling LLM for synthesis (full data access)...
+23:53:45 | INFO     | brain.llm_synthesizer:372 -   LLM synthesis: 0 raw proposals, 5 validated
+23:53:45 | INFO     | __main__:157 - 
+════════════════════════════════════════════════════════════
+23:53:45 | INFO     | __main__:158 - BRAIN SUMMARY: 5 proposals
+23:53:45 | INFO     | __main__:159 -   Signals: 656 (14% outcomes)
+23:53:45 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/post_trade_analysis.py conf=70% 
+23:53:45 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/post_trade_analysis.py conf=70% 
+23:53:45 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/post_trade_analysis.py conf=70% 
+23:53:45 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/providers/ml_provider.py conf=70% 
+23:53:45 | INFO     | __main__:166 -   [SCRIPT_PATCH] ai/providers/ml_regime_classifier.py conf=70% 
+23:53:45 | INFO     | __main__:168 - ════════════════════════════════════════════════════════════
+
+23:53:45 | INFO     | __main__:178 - Step 6/6 — Saving proposals, processing approvals...
+23:53:46 | INFO     | brain.backtester_and_change_manager:200 -   Saved 5/5 proposals
+23:53:47 | WARNING  | brain.backtester_and_change_manager:487 -   Telegram digest failed: HTTP Error 400: Bad Request
+23:53:47 | SUCCESS  | __main__:211 - 🧠 Brain v2 complete in 31s — 5 proposals, 0 auto-applied, 5 pending review
+23:55:43 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:56:06 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-10
+23:56:06 | ERROR    | __main__:267 - Proposal 6: missing script_path or diff

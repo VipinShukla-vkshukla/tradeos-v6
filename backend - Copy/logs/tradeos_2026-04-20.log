@@ -1,0 +1,293 @@
+00:01:40 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:01:58 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:01:58 | INFO     | __main__:785 - compute_indicators v2.1 — 2026-04-20 — HYBRID
+00:01:58 | INFO     | __main__:764 -   Resolved trading date: 2026-04-20 → 2026-04-17
+00:01:58 | INFO     | __main__:798 - Pass 1: bulk data fetch...
+00:01:58 | INFO     | __main__:146 -   chartink_raw_data: 500 rows
+00:01:59 | INFO     | __main__:153 -   stock_data_daily (sheet baseline): 500 rows
+00:01:59 | INFO     | fetch_bulk_history_yf:64 -   fetch_bulk_history: checking price_history_yf cache (500 symbols)...
+00:02:01 | INFO     | fetch_bulk_history_yf:109 -   price_history_yf cache: 500 sufficient | 0 need yfinance
+00:02:03 | INFO     | fetch_bulk_history_yf:225 -   fetch_bulk_history: 500 symbols | 25000 total sessions | 0 fetched from yfinance
+00:02:03 | INFO     | __main__:214 -   Upcoming events: 196 symbols with events in next 30d
+00:02:03 | INFO     | __main__:240 -   MSL symbols: 23 in shortlist
+00:02:03 | INFO     | __main__:268 -   Index membership: 598 symbols mapped
+00:02:04 | INFO     | __main__:307 -   raw_prices: 1000 symbols with delivery/value data
+00:02:04 | INFO     | __main__:814 -   Nifty 1M return: 4.0359%
+00:02:04 | INFO     | __main__:818 -   Field trust overrides: {'pct_change': 'COMPUTE_ALWAYS'}
+00:02:04 | INFO     | __main__:821 - Pass 2: computing and reconciling...
+00:02:04 | INFO     | __main__:871 - =================================================================
+00:02:04 | INFO     | __main__:872 - COMPUTE INDICATORS SUMMARY — 2026-04-17 — HYBRID
+00:02:04 | INFO     | __main__:873 -   Symbols: 500 processed | 0 skipped
+00:02:04 | INFO     | __main__:875 -   COMPUTE_ALWAYS (verified fields):      500 decisions
+00:02:04 | INFO     | __main__:876 -   COMPUTED_MATCH (within tolerance):   33215 decisions
+00:02:04 | INFO     | __main__:877 -   COMPUTED_ONLY  (sheet was NULL):         0 decisions
+00:02:04 | INFO     | __main__:878 -   SHEET_ALWAYS   (confirmed diff basis):    0 decisions
+00:02:04 | INFO     | __main__:880 -   DIVERGED (using sheet, needs review): 19 field types
+00:02:04 | INFO     | __main__:881 -   Field                           Avg delta   Symbols  Action
+00:02:04 | INFO     | __main__:882 -   -----------------------------------------------------------------
+00:02:04 | INFO     | __main__:886 -   breakout_setup                     100.0%        16  → set SHEET_ALWAYS
+00:02:04 | INFO     | __main__:886 -   wk_hi_high                         100.0%        29  → set SHEET_ALWAYS
+00:02:04 | INFO     | __main__:886 -   low_30d                            100.0%         5  → set SHEET_ALWAYS
+00:02:04 | INFO     | __main__:886 -   sma50_gt_200                       100.0%         1  → set SHEET_ALWAYS
+00:02:04 | INFO     | __main__:886 -   above_sma50                        100.0%         6  → set SHEET_ALWAYS
+00:02:04 | INFO     | __main__:886 -   wk_hi_low                          100.0%         4  → set SHEET_ALWAYS
+00:02:04 | INFO     | __main__:886 -   bk_trigger                         100.0%         5  → set SHEET_ALWAYS
+00:02:04 | INFO     | __main__:886 -   ret_1m                              81.4%        44  → set SHEET_ALWAYS
+00:02:04 | INFO     | __main__:886 -   dist_sma50                          52.0%       101  → set SHEET_ALWAYS
+00:02:04 | INFO     | __main__:886 -   ret_1w                              48.3%        83  → set SHEET_ALWAYS
+00:02:04 | INFO     | __main__:886 -   sma_50                              41.7%         2  → set SHEET_ALWAYS
+00:02:04 | INFO     | __main__:886 -   sma_200                             39.8%         3  → set SHEET_ALWAYS
+00:02:04 | INFO     | __main__:886 -   sma_20                              39.0%         1  → set SHEET_ALWAYS
+00:02:04 | INFO     | __main__:886 -   low_52w                             26.2%       398  → set SHEET_ALWAYS
+00:02:04 | INFO     | __main__:886 -   high_52w                            24.0%       460  → set SHEET_ALWAYS
+00:02:04 | INFO     | __main__:886 -   consol_range                        23.7%       309  → set SHEET_ALWAYS
+00:02:04 | INFO     | __main__:886 -   close_30d                           16.9%        88  → set SHEET_ALWAYS
+00:02:04 | INFO     | __main__:886 -   high_30d                             3.6%       154  → investigate formula
+00:02:04 | INFO     | __main__:886 -   current_price                        2.1%         1  → investigate formula
+00:02:04 | INFO     | __main__:890 - 
+00:02:04 | INFO     | __main__:891 -   To graduate a verified field to COMPUTE_ALWAYS:
+00:02:04 | INFO     | __main__:892 -   UPDATE system_config SET value='COMPUTE_ALWAYS'
+00:02:04 | INFO     | __main__:893 -     WHERE key='compute_trust_<field_name>';
+00:02:04 | INFO     | __main__:896 - =================================================================
+00:02:04 | INFO     | __main__:912 - Pass 3: writing 500 rows to stock_data_daily...
+00:02:05 | SUCCESS  | __main__:920 - compute_indicators: 500 written | 0 skipped | 19 diverged field types requiring review
+00:07:33 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:07:33 | INFO     | __main__:785 - compute_indicators v2.1 — 2026-04-20 — HYBRID
+00:07:33 | INFO     | __main__:764 -   Resolved trading date: 2026-04-20 → 2026-04-17
+00:07:33 | INFO     | __main__:798 - Pass 1: bulk data fetch...
+00:07:33 | INFO     | __main__:146 -   chartink_raw_data: 500 rows
+00:07:34 | INFO     | __main__:153 -   stock_data_daily (sheet baseline): 500 rows
+00:07:34 | INFO     | fetch_bulk_history_yf:64 -   fetch_bulk_history: checking price_history_yf cache (500 symbols)...
+00:07:36 | INFO     | fetch_bulk_history_yf:110 -   price_history_yf cache: 500 have base | 500 tail-refresh | 0 full fetch
+00:07:36 | INFO     | fetch_bulk_history_yf:115 -   price_history_yf cache: 500 sufficient | 500 need yfinance
+00:07:37 | INFO     | fetch_bulk_history_yf:145 -   Fetching 500 symbols from yfinance...
+00:07:49 | ERROR    | fetch_bulk_history_yf:244 -   yfinance bulk download failed: cannot access local variable 'tickers' where it is not associated with a value
+00:07:49 | INFO     | fetch_bulk_history_yf:254 -   fetch_bulk_history: 500 symbols | 25000 total sessions | 500 fetched from yfinance
+00:07:50 | INFO     | __main__:214 -   Upcoming events: 196 symbols with events in next 30d
+00:07:50 | INFO     | __main__:240 -   MSL symbols: 23 in shortlist
+00:07:50 | INFO     | __main__:268 -   Index membership: 598 symbols mapped
+00:07:50 | INFO     | __main__:307 -   raw_prices: 1000 symbols with delivery/value data
+00:07:50 | INFO     | __main__:814 -   Nifty 1M return: 4.0359%
+00:07:50 | INFO     | __main__:818 -   Field trust overrides: {'pct_change': 'COMPUTE_ALWAYS'}
+00:07:50 | INFO     | __main__:821 - Pass 2: computing and reconciling...
+00:07:50 | INFO     | __main__:871 - =================================================================
+00:07:50 | INFO     | __main__:872 - COMPUTE INDICATORS SUMMARY — 2026-04-17 — HYBRID
+00:07:50 | INFO     | __main__:873 -   Symbols: 500 processed | 0 skipped
+00:07:50 | INFO     | __main__:875 -   COMPUTE_ALWAYS (verified fields):      500 decisions
+00:07:50 | INFO     | __main__:876 -   COMPUTED_MATCH (within tolerance):   33215 decisions
+00:07:50 | INFO     | __main__:877 -   COMPUTED_ONLY  (sheet was NULL):         0 decisions
+00:07:50 | INFO     | __main__:878 -   SHEET_ALWAYS   (confirmed diff basis):    0 decisions
+00:07:50 | INFO     | __main__:880 -   DIVERGED (using sheet, needs review): 19 field types
+00:07:50 | INFO     | __main__:881 -   Field                           Avg delta   Symbols  Action
+00:07:50 | INFO     | __main__:882 -   -----------------------------------------------------------------
+00:07:50 | INFO     | __main__:886 -   breakout_setup                     100.0%        16  → set SHEET_ALWAYS
+00:07:50 | INFO     | __main__:886 -   wk_hi_high                         100.0%        29  → set SHEET_ALWAYS
+00:07:50 | INFO     | __main__:886 -   low_30d                            100.0%         5  → set SHEET_ALWAYS
+00:07:50 | INFO     | __main__:886 -   sma50_gt_200                       100.0%         1  → set SHEET_ALWAYS
+00:07:50 | INFO     | __main__:886 -   above_sma50                        100.0%         6  → set SHEET_ALWAYS
+00:07:50 | INFO     | __main__:886 -   wk_hi_low                          100.0%         4  → set SHEET_ALWAYS
+00:07:50 | INFO     | __main__:886 -   bk_trigger                         100.0%         5  → set SHEET_ALWAYS
+00:07:50 | INFO     | __main__:886 -   ret_1m                              81.4%        44  → set SHEET_ALWAYS
+00:07:50 | INFO     | __main__:886 -   dist_sma50                          52.0%       101  → set SHEET_ALWAYS
+00:07:50 | INFO     | __main__:886 -   ret_1w                              48.3%        83  → set SHEET_ALWAYS
+00:07:50 | INFO     | __main__:886 -   sma_50                              41.7%         2  → set SHEET_ALWAYS
+00:07:50 | INFO     | __main__:886 -   sma_200                             39.8%         3  → set SHEET_ALWAYS
+00:07:50 | INFO     | __main__:886 -   sma_20                              39.0%         1  → set SHEET_ALWAYS
+00:07:50 | INFO     | __main__:886 -   low_52w                             26.2%       398  → set SHEET_ALWAYS
+00:07:50 | INFO     | __main__:886 -   high_52w                            24.0%       460  → set SHEET_ALWAYS
+00:07:50 | INFO     | __main__:886 -   consol_range                        23.7%       309  → set SHEET_ALWAYS
+00:07:50 | INFO     | __main__:886 -   close_30d                           16.9%        88  → set SHEET_ALWAYS
+00:07:50 | INFO     | __main__:886 -   high_30d                             3.6%       154  → investigate formula
+00:07:50 | INFO     | __main__:886 -   current_price                        2.1%         1  → investigate formula
+00:07:50 | INFO     | __main__:890 - 
+00:07:50 | INFO     | __main__:891 -   To graduate a verified field to COMPUTE_ALWAYS:
+00:07:50 | INFO     | __main__:892 -   UPDATE system_config SET value='COMPUTE_ALWAYS'
+00:07:50 | INFO     | __main__:893 -     WHERE key='compute_trust_<field_name>';
+00:07:50 | INFO     | __main__:896 - =================================================================
+00:07:50 | INFO     | __main__:912 - Pass 3: writing 500 rows to stock_data_daily...
+00:07:51 | SUCCESS  | __main__:920 - compute_indicators: 500 written | 0 skipped | 19 diverged field types requiring review
+00:10:45 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:10:45 | INFO     | __main__:785 - compute_indicators v2.1 — 2026-04-20 — HYBRID
+00:10:45 | INFO     | __main__:764 -   Resolved trading date: 2026-04-20 → 2026-04-17
+00:10:45 | INFO     | __main__:798 - Pass 1: bulk data fetch...
+00:10:45 | INFO     | __main__:146 -   chartink_raw_data: 500 rows
+00:10:46 | INFO     | __main__:153 -   stock_data_daily (sheet baseline): 500 rows
+00:10:46 | INFO     | fetch_bulk_history_yf:64 -   fetch_bulk_history: checking price_history_yf cache (500 symbols)...
+00:10:49 | INFO     | fetch_bulk_history_yf:110 -   price_history_yf cache: 500 have base | 500 tail-refresh | 0 full fetch
+00:10:49 | INFO     | fetch_bulk_history_yf:115 -   price_history_yf cache: 500 sufficient | 500 need yfinance
+00:10:53 | INFO     | fetch_bulk_history_yf:146 -   Fetching 0 full + 500 tail symbols from yfinance...
+00:11:05 | INFO     | fetch_bulk_history_yf:230 -   Caching 2500 rows to price_history_yf...
+00:11:07 | INFO     | fetch_bulk_history_yf:236 -   Cached successfully
+00:11:07 | INFO     | fetch_bulk_history_yf:248 -   fetch_bulk_history: 500 symbols | 25500 total sessions | 500 fetched from yfinance
+00:11:07 | INFO     | __main__:214 -   Upcoming events: 196 symbols with events in next 30d
+00:11:07 | INFO     | __main__:240 -   MSL symbols: 23 in shortlist
+00:11:07 | INFO     | __main__:268 -   Index membership: 598 symbols mapped
+00:11:07 | INFO     | __main__:307 -   raw_prices: 1000 symbols with delivery/value data
+00:11:08 | INFO     | __main__:814 -   Nifty 1M return: 4.0359%
+00:11:08 | INFO     | __main__:818 -   Field trust overrides: {'pct_change': 'COMPUTE_ALWAYS'}
+00:11:08 | INFO     | __main__:821 - Pass 2: computing and reconciling...
+00:11:08 | INFO     | __main__:871 - =================================================================
+00:11:08 | INFO     | __main__:872 - COMPUTE INDICATORS SUMMARY — 2026-04-17 — HYBRID
+00:11:08 | INFO     | __main__:873 -   Symbols: 500 processed | 0 skipped
+00:11:08 | INFO     | __main__:875 -   COMPUTE_ALWAYS (verified fields):      500 decisions
+00:11:08 | INFO     | __main__:876 -   COMPUTED_MATCH (within tolerance):   32522 decisions
+00:11:08 | INFO     | __main__:877 -   COMPUTED_ONLY  (sheet was NULL):         0 decisions
+00:11:08 | INFO     | __main__:878 -   SHEET_ALWAYS   (confirmed diff basis):    0 decisions
+00:11:08 | INFO     | __main__:880 -   DIVERGED (using sheet, needs review): 18 field types
+00:11:08 | INFO     | __main__:881 -   Field                           Avg delta   Symbols  Action
+00:11:08 | INFO     | __main__:882 -   -----------------------------------------------------------------
+00:11:08 | INFO     | __main__:886 -   rs_vs_nifty                        158.2%       355  → set SHEET_ALWAYS
+00:11:08 | INFO     | __main__:886 -   ret_1m                             149.9%       312  → set SHEET_ALWAYS
+00:11:08 | INFO     | __main__:886 -   ret_1w                             116.4%       362  → set SHEET_ALWAYS
+00:11:08 | INFO     | __main__:886 -   breakout_setup                     100.0%        16  → set SHEET_ALWAYS
+00:11:08 | INFO     | __main__:886 -   low_30d                            100.0%         5  → set SHEET_ALWAYS
+00:11:08 | INFO     | __main__:886 -   sma50_gt_200                       100.0%         1  → set SHEET_ALWAYS
+00:11:08 | INFO     | __main__:886 -   above_sma50                        100.0%         6  → set SHEET_ALWAYS
+00:11:08 | INFO     | __main__:886 -   bk_trigger                         100.0%         4  → set SHEET_ALWAYS
+00:11:08 | INFO     | __main__:886 -   dist_sma50                          52.0%       101  → set SHEET_ALWAYS
+00:11:08 | INFO     | __main__:886 -   sma_50                              41.7%         2  → set SHEET_ALWAYS
+00:11:08 | INFO     | __main__:886 -   sma_200                             39.8%         3  → set SHEET_ALWAYS
+00:11:08 | INFO     | __main__:886 -   sma_20                              39.0%         1  → set SHEET_ALWAYS
+00:11:08 | INFO     | __main__:886 -   low_52w                             26.2%       398  → set SHEET_ALWAYS
+00:11:08 | INFO     | __main__:886 -   high_52w                            24.0%       460  → set SHEET_ALWAYS
+00:11:08 | INFO     | __main__:886 -   consol_range                        18.7%       285  → set SHEET_ALWAYS
+00:11:08 | INFO     | __main__:886 -   close_30d                           17.7%        82  → set SHEET_ALWAYS
+00:11:08 | INFO     | __main__:886 -   high_30d                             3.3%         9  → investigate formula
+00:11:08 | INFO     | __main__:886 -   current_price                        2.1%         1  → investigate formula
+00:11:08 | INFO     | __main__:890 - 
+00:11:08 | INFO     | __main__:891 -   To graduate a verified field to COMPUTE_ALWAYS:
+00:11:08 | INFO     | __main__:892 -   UPDATE system_config SET value='COMPUTE_ALWAYS'
+00:11:08 | INFO     | __main__:893 -     WHERE key='compute_trust_<field_name>';
+00:11:08 | INFO     | __main__:896 - =================================================================
+00:11:08 | INFO     | __main__:912 - Pass 3: writing 500 rows to stock_data_daily...
+00:11:09 | SUCCESS  | __main__:920 - compute_indicators: 500 written | 0 skipped | 18 diverged field types requiring review
+00:11:37 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:12:21 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:12:23 | INFO     | compute_indicators:764 -   Resolved trading date: 2026-04-20 → 2026-04-17
+00:12:23 | INFO     | __main__:160 - Connecting to Google Sheets...
+00:12:23 | INFO     | __main__:163 - Reading STOCK_DATA tab (up to 600 rows)...
+00:12:42 | INFO     | __main__:171 -   500 rows read from sheet
+00:12:42 | INFO     | __main__:198 -   499 symbols parsed from sheet
+00:12:42 | INFO     | __main__:249 - Fetching chartink_raw_data for 2026-04-17...
+00:12:42 | INFO     | __main__:262 -   500 symbols in chartink_raw_data
+00:12:42 | INFO     | __main__:264 - Fetching bulk history and lookup tables...
+00:12:42 | INFO     | fetch_bulk_history_yf:64 -   fetch_bulk_history: checking price_history_yf cache (500 symbols)...
+00:12:44 | INFO     | fetch_bulk_history_yf:110 -   price_history_yf cache: 500 have base | 500 tail-refresh | 0 full fetch
+00:12:44 | INFO     | fetch_bulk_history_yf:115 -   price_history_yf cache: 500 sufficient | 500 need yfinance
+00:12:46 | INFO     | fetch_bulk_history_yf:146 -   Fetching 0 full + 500 tail symbols from yfinance...
+00:12:57 | INFO     | fetch_bulk_history_yf:230 -   Caching 2500 rows to price_history_yf...
+00:12:58 | INFO     | fetch_bulk_history_yf:236 -   Cached successfully
+00:12:58 | INFO     | fetch_bulk_history_yf:248 -   fetch_bulk_history: 500 symbols | 25000 total sessions | 500 fetched from yfinance
+00:12:58 | INFO     | compute_indicators:214 -   Upcoming events: 196 symbols with events in next 30d
+00:12:58 | INFO     | compute_indicators:240 -   MSL symbols: 23 in shortlist
+00:12:58 | INFO     | compute_indicators:268 -   Index membership: 598 symbols mapped
+00:12:58 | INFO     | compute_indicators:307 -   raw_prices: 1000 symbols with delivery/value data
+00:12:58 | INFO     | __main__:274 - Running compute_from_raw and comparing against sheet...
+00:12:59 | INFO     | __main__:365 - ============================================================
+00:12:59 | INFO     | __main__:366 - DIAGNOSIS — 2026-04-17
+00:12:59 | INFO     | __main__:367 -   Symbols   : 499 compared | 1 skipped (not in sheet)
+00:12:59 | INFO     | __main__:368 -   Decisions : 38397
+00:12:59 | INFO     | __main__:373 -   MATCH           :  29769 (77.5%)
+00:12:59 | INFO     | __main__:373 -   DIVERGED        :   3297 (8.6%)
+00:12:59 | INFO     | __main__:373 -   COMPUTED_ONLY   :   1186 (3.1%)
+00:12:59 | INFO     | __main__:373 -   SHEET_ONLY      :   2767 (7.2%)
+00:12:59 | INFO     | __main__:373 -   BOTH_NULL       :   1378 (3.6%)
+00:12:59 | INFO     | __main__:376 - 
+  Top diverged fields (by avg delta):
+00:12:59 | INFO     | __main__:377 -   Field                            Avg Δ%  # stocks  Action
+00:12:59 | INFO     | __main__:378 -   --------------------------------------------------------------
+00:12:59 | INFO     | __main__:387 -   pct_change                      7618.4%       476  → set SHEET_ALWAYS
+00:12:59 | INFO     | __main__:387 -   ret_1w                           167.1%       415  → set SHEET_ALWAYS
+00:12:59 | INFO     | __main__:387 -   breakout_setup                   100.0%        16  → set SHEET_ALWAYS
+00:12:59 | INFO     | __main__:387 -   low_30d                          100.0%        16  → set SHEET_ALWAYS
+00:12:59 | INFO     | __main__:387 -   wk_hi_high                       100.0%        10  → set SHEET_ALWAYS
+00:12:59 | INFO     | __main__:387 -   wk_hi_low                        100.0%        12  → set SHEET_ALWAYS
+00:12:59 | INFO     | __main__:387 -   sma50_gt_200                     100.0%         1  → set SHEET_ALWAYS
+00:12:59 | INFO     | __main__:387 -   above_sma50                      100.0%         6  → set SHEET_ALWAYS
+00:12:59 | INFO     | __main__:387 -   bk_trigger                       100.0%         3  → set SHEET_ALWAYS
+00:12:59 | INFO     | __main__:387 -   ret_1m                            85.6%        40  → set SHEET_ALWAYS
+00:12:59 | INFO     | __main__:387 -   dist_sma50                        49.4%       103  → set SHEET_ALWAYS
+00:12:59 | INFO     | __main__:387 -   sma_50                            41.8%         2  → set SHEET_ALWAYS
+00:12:59 | INFO     | __main__:387 -   sma_200                           39.8%         3  → set SHEET_ALWAYS
+00:12:59 | INFO     | __main__:387 -   sma_20                            39.5%         1  → set SHEET_ALWAYS
+00:12:59 | INFO     | __main__:387 -   low_52w                           26.2%       398  → set SHEET_ALWAYS
+00:12:59 | INFO     | __main__:387 -   high_52w                          24.0%       460  → set SHEET_ALWAYS
+00:12:59 | INFO     | __main__:387 -   consol_range                      19.5%       340  → set SHEET_ALWAYS
+00:12:59 | INFO     | __main__:387 -   close_30d                         16.5%        94  → set SHEET_ALWAYS
+00:12:59 | INFO     | __main__:387 -   high_30d                           3.6%        42  → within calibration
+00:12:59 | INFO     | __main__:387 -   sma_10                             2.6%         8  → within calibration
+00:12:59 | INFO     | __main__:389 - 
+  CSV: diagnose_indicators_2026-04-17.csv
+00:12:59 | INFO     | __main__:390 - ============================================================
+00:23:51 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:23:52 | INFO     | __main__:283 - Populating price_history_yf for 500 symbols (date: 2026-04-17)...
+00:23:52 | INFO     | __main__:64 -   fetch_bulk_history: checking price_history_yf cache (500 symbols)...
+00:23:54 | INFO     | __main__:110 -   price_history_yf cache: 0 have base | 0 tail-refresh | 500 full fetch
+00:23:54 | INFO     | __main__:115 -   price_history_yf cache: 0 sufficient | 500 need yfinance
+00:23:54 | INFO     | __main__:146 -   Fetching 500 full + 0 tail symbols from yfinance...
+00:24:13 | INFO     | __main__:230 -   Caching 152871 rows to price_history_yf...
+00:24:45 | INFO     | __main__:236 -   Cached successfully
+00:24:45 | INFO     | __main__:248 -   fetch_bulk_history: 500 symbols | 152871 total sessions | 500 fetched from yfinance
+00:24:45 | INFO     | __main__:285 - Done — 152871 total sessions cached
+00:25:05 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:25:05 | INFO     | __main__:283 - Populating price_history_yf for 500 symbols (date: 2026-04-17)...
+00:25:05 | INFO     | __main__:64 -   fetch_bulk_history: checking price_history_yf cache (500 symbols)...
+00:25:06 | INFO     | __main__:110 -   price_history_yf cache: 0 have base | 0 tail-refresh | 500 full fetch
+00:25:06 | INFO     | __main__:115 -   price_history_yf cache: 0 sufficient | 500 need yfinance
+00:25:06 | INFO     | __main__:146 -   Fetching 500 full + 0 tail symbols from yfinance...
+00:30:26 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:30:26 | INFO     | __main__:751 - compute_indicators v2.1 — 2026-04-20 — HYBRID
+00:30:27 | INFO     | __main__:730 -   Resolved trading date: 2026-04-20 → 2026-04-17
+00:30:27 | INFO     | __main__:764 - Pass 1: bulk data fetch...
+00:30:27 | INFO     | __main__:144 -   chartink_raw_data: 500 rows
+00:30:28 | INFO     | __main__:151 -   stock_data_daily (sheet baseline): 500 rows
+00:30:28 | INFO     | fetch_bulk_history_yf:64 -   fetch_bulk_history: checking price_history_yf cache (500 symbols)...
+00:30:29 | INFO     | fetch_bulk_history_yf:110 -   price_history_yf cache: 500 have base | 500 tail-refresh | 0 full fetch
+00:30:29 | INFO     | fetch_bulk_history_yf:115 -   price_history_yf cache: 500 sufficient | 500 need yfinance
+00:30:32 | INFO     | fetch_bulk_history_yf:146 -   Fetching 0 full + 500 tail symbols from yfinance...
+00:30:44 | INFO     | fetch_bulk_history_yf:230 -   Caching 2500 rows to price_history_yf...
+00:30:45 | INFO     | fetch_bulk_history_yf:236 -   Cached successfully
+00:30:45 | INFO     | fetch_bulk_history_yf:248 -   fetch_bulk_history: 500 symbols | 25000 total sessions | 500 fetched from yfinance
+00:30:45 | INFO     | __main__:212 -   Upcoming events: 196 symbols with events in next 30d
+00:30:45 | INFO     | __main__:238 -   MSL symbols: 23 in shortlist
+00:30:45 | INFO     | __main__:266 -   Index membership: 598 symbols mapped
+00:30:46 | INFO     | __main__:305 -   raw_prices: 1000 symbols with delivery/value data
+00:30:46 | INFO     | __main__:780 -   Nifty 1M return: 4.0359%
+00:30:46 | INFO     | __main__:784 -   Field trust overrides: {'pct_change': 'COMPUTE_ALWAYS'}
+00:30:46 | INFO     | __main__:787 - Pass 2: computing and reconciling...
+00:30:46 | INFO     | __main__:837 - =================================================================
+00:30:46 | INFO     | __main__:838 - COMPUTE INDICATORS SUMMARY — 2026-04-17 — HYBRID
+00:30:46 | INFO     | __main__:839 -   Symbols: 500 processed | 0 skipped
+00:30:46 | INFO     | __main__:841 -   COMPUTE_ALWAYS (verified fields):      500 decisions
+00:30:46 | INFO     | __main__:842 -   COMPUTED_MATCH (within tolerance):   32397 decisions
+00:30:46 | INFO     | __main__:843 -   COMPUTED_ONLY  (sheet was NULL):        29 decisions
+00:30:46 | INFO     | __main__:844 -   SHEET_ALWAYS   (confirmed diff basis):    0 decisions
+00:30:46 | INFO     | __main__:846 -   DIVERGED (using sheet, needs review): 19 field types
+00:30:46 | INFO     | __main__:847 -   Field                           Avg delta   Symbols  Action
+00:30:46 | INFO     | __main__:848 -   -----------------------------------------------------------------
+00:30:46 | INFO     | __main__:852 -   price_location                     170.4%       469  → set SHEET_ALWAYS
+00:30:46 | INFO     | __main__:852 -   rs_vs_nifty                        158.2%       355  → set SHEET_ALWAYS
+00:30:46 | INFO     | __main__:852 -   ret_1m                             149.9%       312  → set SHEET_ALWAYS
+00:30:46 | INFO     | __main__:852 -   ret_1w                             116.4%       362  → set SHEET_ALWAYS
+00:30:46 | INFO     | __main__:852 -   breakout_setup                     100.0%        16  → set SHEET_ALWAYS
+00:30:46 | INFO     | __main__:852 -   low_30d                            100.0%         5  → set SHEET_ALWAYS
+00:30:46 | INFO     | __main__:852 -   sma50_gt_200                       100.0%         1  → set SHEET_ALWAYS
+00:30:46 | INFO     | __main__:852 -   above_sma50                        100.0%         6  → set SHEET_ALWAYS
+00:30:46 | INFO     | __main__:852 -   bk_trigger                         100.0%         4  → set SHEET_ALWAYS
+00:30:46 | INFO     | __main__:852 -   dist_sma50                          52.0%       101  → set SHEET_ALWAYS
+00:30:46 | INFO     | __main__:852 -   sma_50                              41.7%         2  → set SHEET_ALWAYS
+00:30:46 | INFO     | __main__:852 -   sma_200                             39.8%         3  → set SHEET_ALWAYS
+00:30:46 | INFO     | __main__:852 -   sma_20                              39.0%         1  → set SHEET_ALWAYS
+00:30:46 | INFO     | __main__:852 -   low_52w                             24.3%       217  → set SHEET_ALWAYS
+00:30:46 | INFO     | __main__:852 -   consol_range                        18.7%       285  → set SHEET_ALWAYS
+00:30:46 | INFO     | __main__:852 -   close_30d                           17.7%        82  → set SHEET_ALWAYS
+00:30:46 | INFO     | __main__:852 -   high_52w                            17.6%       349  → set SHEET_ALWAYS
+00:30:46 | INFO     | __main__:852 -   high_30d                             3.3%         9  → investigate formula
+00:30:46 | INFO     | __main__:852 -   current_price                        2.1%         1  → investigate formula
+00:30:46 | INFO     | __main__:856 - 
+00:30:46 | INFO     | __main__:857 -   To graduate a verified field to COMPUTE_ALWAYS:
+00:30:46 | INFO     | __main__:858 -   UPDATE system_config SET value='COMPUTE_ALWAYS'
+00:30:46 | INFO     | __main__:859 -     WHERE key='compute_trust_<field_name>';
+00:30:46 | INFO     | __main__:862 - =================================================================
+00:30:46 | INFO     | __main__:878 - Pass 3: writing 500 rows to stock_data_daily...
+00:30:48 | SUCCESS  | __main__:886 - compute_indicators: 500 written | 0 skipped | 19 diverged field types requiring review

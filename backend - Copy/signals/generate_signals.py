@@ -263,7 +263,6 @@ def resolve_last_trading_day(sb, reference_date: str, max_lookback: int = 10) ->
             return date_str
 
         logger.debug(f"  {date_str} — no stock_data_daily rows (bhavcopy not yet run?) — stepping back")
-        candidate -= _td(days=1)
 
     raise RuntimeError(
         f"No valid trading day with stock_data_daily data found "

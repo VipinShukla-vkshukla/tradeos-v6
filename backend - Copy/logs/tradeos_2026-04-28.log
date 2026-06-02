@@ -1,0 +1,1030 @@
+00:21:14 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:21:14 | INFO     | __main__:751 - compute_indicators v2.1 — 2026-04-28 — HYBRID
+00:21:14 | INFO     | __main__:730 -   Resolved trading date: 2026-04-28 → 2026-04-27
+00:21:14 | INFO     | __main__:764 - Pass 1: bulk data fetch...
+00:21:14 | INFO     | __main__:144 -   chartink_raw_data: 500 rows
+00:21:15 | INFO     | __main__:151 -   stock_data_daily (sheet baseline): 500 rows
+00:21:15 | INFO     | fetch_bulk_history_yf:64 -   fetch_bulk_history: checking price_history_yf cache (500 symbols)...
+00:21:17 | INFO     | fetch_bulk_history_yf:110 -   price_history_yf cache: 0 have base | 0 tail-refresh | 500 full fetch
+00:21:17 | INFO     | fetch_bulk_history_yf:115 -   price_history_yf cache: 0 sufficient | 500 need yfinance
+00:21:17 | INFO     | fetch_bulk_history_yf:146 -   Fetching 500 full + 0 tail symbols from yfinance...
+00:21:35 | INFO     | fetch_bulk_history_yf:230 -   Caching 153080 rows to price_history_yf...
+00:21:58 | INFO     | fetch_bulk_history_yf:236 -   Cached successfully
+00:21:58 | INFO     | fetch_bulk_history_yf:248 -   fetch_bulk_history: 500 symbols | 153080 total sessions | 500 fetched from yfinance
+00:21:58 | INFO     | __main__:212 -   Upcoming events: 252 symbols with events in next 30d
+00:21:58 | INFO     | __main__:238 -   MSL symbols: 32 in shortlist
+00:21:58 | INFO     | __main__:266 -   Index membership: 598 symbols mapped
+00:21:59 | INFO     | __main__:305 -   raw_prices: 1000 symbols with delivery/value data
+00:21:59 | INFO     | __main__:780 -   Nifty 1M return: 2.1693%
+00:21:59 | INFO     | __main__:784 -   Field trust overrides: {'pct_change': 'COMPUTE_ALWAYS'}
+00:21:59 | INFO     | __main__:787 - Pass 2: computing and reconciling...
+00:21:59 | INFO     | __main__:837 - =================================================================
+00:21:59 | INFO     | __main__:838 - COMPUTE INDICATORS SUMMARY — 2026-04-27 — HYBRID
+00:21:59 | INFO     | __main__:839 -   Symbols: 500 processed | 0 skipped
+00:21:59 | INFO     | __main__:841 -   COMPUTE_ALWAYS (verified fields):      500 decisions
+00:21:59 | INFO     | __main__:842 -   COMPUTED_MATCH (within tolerance):   34511 decisions
+00:21:59 | INFO     | __main__:843 -   COMPUTED_ONLY  (sheet was NULL):         9 decisions
+00:21:59 | INFO     | __main__:844 -   SHEET_ALWAYS   (confirmed diff basis):    0 decisions
+00:21:59 | INFO     | __main__:846 -   DIVERGED (using sheet, needs review): 24 field types
+00:21:59 | INFO     | __main__:847 -   Field                           Avg delta   Symbols  Action
+00:21:59 | INFO     | __main__:848 -   -----------------------------------------------------------------
+00:21:59 | INFO     | __main__:852 -   ret_1w                             331.3%       405  → set SHEET_ALWAYS
+00:21:59 | INFO     | __main__:852 -   ret_3m                             219.7%       329  → set SHEET_ALWAYS
+00:21:59 | INFO     | __main__:852 -   ret_12m                            121.7%       383  → set SHEET_ALWAYS
+00:21:59 | INFO     | __main__:852 -   rs_vs_nifty                        114.1%       367  → set SHEET_ALWAYS
+00:21:59 | INFO     | __main__:852 -   wk_hi_low                          100.0%        15  → set SHEET_ALWAYS
+00:21:59 | INFO     | __main__:852 -   breakout_setup                     100.0%        24  → set SHEET_ALWAYS
+00:21:59 | INFO     | __main__:852 -   wk_hi_high                         100.0%        56  → set SHEET_ALWAYS
+00:21:59 | INFO     | __main__:852 -   bk_trigger                         100.0%         2  → set SHEET_ALWAYS
+00:21:59 | INFO     | __main__:852 -   sma50_gt_200                       100.0%         2  → set SHEET_ALWAYS
+00:21:59 | INFO     | __main__:852 -   above_sma50                        100.0%         5  → set SHEET_ALWAYS
+00:21:59 | INFO     | __main__:852 -   low_30d                             92.7%        12  → set SHEET_ALWAYS
+00:21:59 | INFO     | __main__:852 -   ret_6m                              75.1%       263  → set SHEET_ALWAYS
+00:21:59 | INFO     | __main__:852 -   dist_sma50                          69.5%       102  → set SHEET_ALWAYS
+00:21:59 | INFO     | __main__:852 -   ret_1m                              45.4%        76  → set SHEET_ALWAYS
+00:21:59 | INFO     | __main__:852 -   consol_range                        19.7%       326  → set SHEET_ALWAYS
+00:21:59 | INFO     | __main__:852 -   close_30d                           18.6%       190  → set SHEET_ALWAYS
+00:21:59 | INFO     | __main__:852 -   price_12m_ago                       15.0%        70  → set SHEET_ALWAYS
+00:21:59 | INFO     | __main__:852 -   price_6m_ago                        13.7%         6  → investigate formula
+00:21:59 | INFO     | __main__:852 -   price_location                      12.6%       162  → investigate formula
+00:21:59 | INFO     | __main__:852 -   sma_200                             12.1%         2  → investigate formula
+00:21:59 | INFO     | __main__:852 -   high_52w                             7.9%        52  → investigate formula
+00:21:59 | INFO     | __main__:852 -   low_52w                              4.4%        50  → investigate formula
+00:21:59 | INFO     | __main__:852 -   sma_50                               3.8%         1  → investigate formula
+00:21:59 | INFO     | __main__:852 -   high_30d                             3.5%        39  → investigate formula
+00:21:59 | INFO     | __main__:856 - 
+00:21:59 | INFO     | __main__:857 -   To graduate a verified field to COMPUTE_ALWAYS:
+00:21:59 | INFO     | __main__:858 -   UPDATE system_config SET value='COMPUTE_ALWAYS'
+00:21:59 | INFO     | __main__:859 -     WHERE key='compute_trust_<field_name>';
+00:21:59 | INFO     | __main__:862 - =================================================================
+00:21:59 | INFO     | __main__:878 - Pass 3: writing 500 rows to stock_data_daily...
+00:21:59 | WARNING  | __main__:894 - CSV export failed: [Errno 13] Permission denied: 'exports/compute_indicators_2026-04-27.csv'
+00:22:00 | SUCCESS  | __main__:902 - compute_indicators: 500 written | 0 skipped | 24 diverged field types requiring review
+00:28:19 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:28:19 | INFO     | __main__:751 - compute_indicators v2.1 — 2026-04-28 — COMPUTE_ONLY
+00:28:19 | INFO     | __main__:730 -   Resolved trading date: 2026-04-28 → 2026-04-27
+00:28:19 | INFO     | __main__:764 - Pass 1: bulk data fetch...
+00:28:19 | INFO     | __main__:144 -   chartink_raw_data: 500 rows
+00:28:19 | INFO     | fetch_bulk_history_yf:64 -   fetch_bulk_history: checking price_history_yf cache (500 symbols)...
+00:28:24 | INFO     | fetch_bulk_history_yf:110 -   price_history_yf cache: 0 have base | 0 tail-refresh | 500 full fetch
+00:28:24 | INFO     | fetch_bulk_history_yf:115 -   price_history_yf cache: 0 sufficient | 500 need yfinance
+00:28:24 | INFO     | fetch_bulk_history_yf:146 -   Fetching 500 full + 0 tail symbols from yfinance...
+00:28:43 | INFO     | fetch_bulk_history_yf:230 -   Caching 153080 rows to price_history_yf...
+00:29:05 | INFO     | fetch_bulk_history_yf:236 -   Cached successfully
+00:29:05 | INFO     | fetch_bulk_history_yf:248 -   fetch_bulk_history: 500 symbols | 153080 total sessions | 500 fetched from yfinance
+00:29:05 | INFO     | __main__:212 -   Upcoming events: 252 symbols with events in next 30d
+00:29:05 | INFO     | __main__:238 -   MSL symbols: 32 in shortlist
+00:29:05 | INFO     | __main__:266 -   Index membership: 598 symbols mapped
+00:29:05 | INFO     | __main__:305 -   raw_prices: 1000 symbols with delivery/value data
+00:29:05 | INFO     | __main__:780 -   Nifty 1M return: 2.1693%
+00:29:05 | INFO     | __main__:787 - Pass 2: computing and reconciling...
+00:29:05 | INFO     | __main__:837 - =================================================================
+00:29:05 | INFO     | __main__:838 - COMPUTE INDICATORS SUMMARY — 2026-04-27 — COMPUTE_ONLY
+00:29:05 | INFO     | __main__:839 -   Symbols: 500 processed | 0 skipped
+00:29:05 | INFO     | __main__:862 - =================================================================
+00:29:05 | INFO     | __main__:878 - Pass 3: writing 500 rows to stock_data_daily...
+00:29:06 | SUCCESS  | __main__:887 - compute_indicators: 500 written | 0 skipped | 0 diverged field types requiring review
+00:32:38 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:32:38 | INFO     | __main__:861 - ============================================================
+00:32:38 | INFO     | __main__:862 - STEP 1: Google Sheets Ingestion
+00:32:38 | INFO     | __main__:863 - ============================================================
+00:32:38 | INFO     | __main__:798 - Ingesting strategy configs...
+00:32:42 | INFO     | __main__:850 - ✓ STRATEGY_CONFIG: 4 strategies loaded
+00:32:42 | INFO     | __main__:161 - Ingesting MASTER_SHORTLIST...
+00:32:43 | INFO     | __main__:244 - ✓ MASTER_SHORTLIST: 32 rows upserted
+00:32:43 | INFO     | __main__:257 - No removed MSL symbols to reconcile
+00:32:43 | INFO     | __main__:264 - Ingesting OPEN_POSITIONS...
+00:32:44 | INFO     | __main__:323 - No rows to upsert
+00:32:44 | INFO     | __main__:374 - No removed symbols to reconcile
+00:32:44 | INFO     | __main__:398 - Ingesting CLOSED_POSITIONS...
+00:32:47 | INFO     | __main__:445 - ✓ CLOSED_POSITIONS: 69 rows upserted
+00:32:47 | INFO     | __main__:450 - Ingesting SECTOR_STRENGTH...
+00:32:48 | INFO     | __main__:481 - ✓ SECTOR_STRENGTH: 24 sectors upserted
+00:32:48 | INFO     | __main__:485 - Ingesting INDUSTRY_STRENGTH...
+00:32:48 | INFO     | __main__:517 - ✓ INDUSTRY_STRENGTH: 22 industries upserted
+00:32:48 | INFO     | __main__:569 - Ingesting EVENT_CALENDAR...
+00:32:49 | INFO     | __main__:603 - ✓ EVENT_CALENDAR: 53 events upserted
+00:32:49 | INFO     | __main__:608 - Ingesting LESSONS_LEARNED...
+00:32:50 | INFO     | __main__:651 - ✓ LESSONS_LEARNED: 0 new lessons added
+00:32:50 | INFO     | __main__:656 - Ingesting MASTER_SHORTLIST_HISTORY (708 rows)...
+00:32:51 | INFO     | __main__:709 - ✓ MSL_HISTORY: 983 rows upserted
+00:32:51 | INFO     | __main__:714 - Ingesting NSE_HOLIDAYS...
+00:32:52 | INFO     | __main__:729 - ✓ NSE_HOLIDAYS: 25 holidays
+00:32:52 | INFO     | __main__:734 - Ingesting Nifty Upcoming Events...
+00:32:52 | INFO     | __main__:762 - ✓ NIFTY UPCOMING EVENTS: 21 events
+00:32:52 | INFO     | __main__:767 - Ingesting NIFTY_TOTAL_MARKET...
+00:32:53 | INFO     | __main__:792 - ✓ NIFTY_TOTAL_MARKET: 598 stocks
+00:32:53 | INFO     | __main__:892 - 
+✓ Ingestion complete: 1831 total rows across 12 tables
+18:28:19 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+18:28:19 | INFO     | __main__:745 - Smart mode: model absent or stale — training now.
+18:28:19 | INFO     | __main__:405 - ============================================================
+18:28:19 | INFO     | __main__:406 - ML Regime Classifier — Training (schema-corrected v2)
+18:28:19 | INFO     | __main__:407 - ============================================================
+18:28:19 | INFO     | __main__:408 - 
+Data health check:
+18:28:19 | INFO     | __main__:140 -   [✓] regime_history             32 rows  latest=2026-04-27  (need 20)
+18:28:20 | INFO     | __main__:140 -   [⚠ CRITICAL] market_regime              28 rows  latest=2026-04-27  (need 30)
+18:28:20 | INFO     | __main__:140 -   [✓] fii_dii_flow               39 rows  latest=2026-04-27  (need 20)
+18:28:20 | INFO     | __main__:140 -   [✓] sector_strength           879 rows  latest=2026-04-28  (need 10)
+18:28:20 | INFO     | __main__:140 -   [✓] nifty_total_market        598 rows  latest=THELEELA  (need 100)
+18:28:20 | INFO     | __main__:140 -   [✓] stock_data_daily        16491 rows  latest=2026-04-27  (need 100)
+18:28:20 | INFO     | __main__:140 -   [✓] master_shortlist          443 rows  latest=2026-04-27  (need 1)
+18:28:20 | WARNING  | __main__:151 - 
+Critical tables below threshold: ['market_regime']
+  → regime_history: needs G14 fix (append_history.py running daily)
+  → fii_dii_flow: needs ingest_fii_dii.py running (Phase 1)
+  → sector_strength: needs compute_indicators.py running (Phase 2)
+  → market_regime: needs ingest_sheets.py running (Phase 0)
+
+18:28:20 | INFO     | __main__:410 - 
+18:28:28 | INFO     | __main__:372 - Training candidates: 32 labelled rows (cutoff=2025-04-28)
+18:28:29 | INFO     | __main__:392 - Training rows built: 7 usable, 25 skipped
+18:28:29 | WARNING  | __main__:423 - Insufficient training data: 7 rows (need 20).
+Market regime features come from market_regime table — ensure:
+  1. ingest_sheets.py has been running (nifty_5d_chg_pct, advance_decline_ratio)
+  2. regime_history has ≥30 rows (append_history.py G14 fix running daily)
+  3. fii_dii_flow.fii_net_5d/20d populated (ingest_fii_dii.py Phase 1)
+  4. sector_strength.breadth_sma50 populated (compute_indicators.py Phase 2)
+18:28:29 | WARNING  | __main__:520 - Model not found at C:\Users\vkshu\CRITICAL\Equity Indian Market Framework\tradeos-v6-complete\tradeos-v6\backend\models\ml_regime_model.pkl.
+First run: run --train (or wait for Sunday evolution_weekly.yml W2).
+Manual regime from ingest_sheets controls until model exists.
+19:27:03 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=True | Phase=2
+19:27:03 | INFO     | __main__:1385 - =================================================================
+19:27:03 | INFO     | __main__:1386 - STEP: Screen Stocks v1.1 | 2026-04-28 | mode=SHADOW [DRY RUN]
+19:27:03 | INFO     | __main__:1388 - =================================================================
+19:27:03 | INFO     | __main__:1390 - Pass 1: loading data...
+19:27:04 | WARNING  | __main__:140 - stock_data_daily: falling back to 2026-04-27
+19:27:04 | INFO     | __main__:173 -   Loaded: 500 stocks | 24 sectors | regime=RECOVERING | asm=302 | fii=CAUTION | forced=0
+19:27:04 | INFO     | __main__:1422 - Pass 2: running engines (regime=RECOVERING)...
+19:27:04 | INFO     | __main__:303 -   CTL: 34 candidates
+19:27:04 | INFO     | __main__:384 -   SBS: 0 candidates
+19:27:04 | INFO     | __main__:464 -   TPO: 0 candidates
+19:27:04 | INFO     | __main__:541 -   VBD: 4 candidates
+19:27:04 | INFO     | __main__:606 -   IAD: 1 candidates
+19:27:04 | INFO     | __main__:660 -   RSB: 1 candidates
+19:27:04 | INFO     | __main__:763 -   MOM: 16 candidates [RECOVERING strict mode]
+19:27:04 | INFO     | __main__:790 -   RVS: RECOVERING mode — primary engine, relaxed gates
+19:27:04 | INFO     | __main__:878 -   RVS: 10 candidates
+19:27:04 | INFO     | __main__:906 -   SEC: RECOVERING mode — restricting to top 3 sectors
+19:27:04 | INFO     | __main__:954 -   SEC: 42 candidates [top 3 sectors only]
+19:27:04 | INFO     | __main__:1451 -   Engine totals: CTL=34 SBS=0 TPO=0 VBD=4 IAD=1 RSB=1 MOM=16 RVS=10 SEC=42 | Total unique=77
+19:27:04 | INFO     | __main__:1459 - Pass 3: aggregating and ranking...
+19:27:04 | INFO     | __main__:1001 -   Regime weights (RECOVERING): CTL=0.8x | IAD=1.3x | MOM=0.7x | RSB=1.3x | RVS=1.5x | SBS=0.9x | SEC=1.2x | TPO=0.9x | VBD=0.8x
+19:27:04 | INFO     | __main__:1112 -   Aggregated: 77 total unique | 73 after hard filters | 30 final
+19:27:04 | INFO     | __main__:1473 - 
+  ═══ TOP 30 SCREENED SYMBOLS (RECOVERING) ═══
+19:27:04 | INFO     | __main__:1476 -      # 1 BEL          score=138.0  engines=RVS                          sector=aerospace & defence  rank=4
+19:27:04 | INFO     | __main__:1476 -      # 2 APLAPOLLO    score=135.0  engines=RVS                          sector=industrials          rank=3
+19:27:04 | INFO     | __main__:1476 -      # 3 SHRIRAMFIN   score=135.0  engines=RVS                          sector=financials           rank=10
+19:27:04 | INFO     | __main__:1476 -      # 4 MUTHOOTFIN   score=132.0  engines=RVS                          sector=financials           rank=10
+19:27:04 | INFO     | __main__:1476 -      # 5 AXISBANK     score=132.0  engines=RVS                          sector=bank                 rank=6
+19:27:04 | INFO     | __main__:1476 -      # 6 CANBK        score=132.0  engines=RVS                          sector=bank                 rank=6
+19:27:04 | INFO     | __main__:1476 -      # 7 AJANTPHARM   score=123.0  engines=RVS                          sector=healthcare           rank=5
+19:27:04 | INFO     | __main__:1476 -      # 8 BANKINDIA    score=106.5  engines=RVS                          sector=bank                 rank=6
+19:27:04 | INFO     | __main__:1476 -      # 9 UNIONBANK    score=105.0  engines=RVS                          sector=bank                 rank=6
+19:27:04 | INFO     | __main__:1476 -      #10 INDIANB      score=105.0  engines=RVS                          sector=bank                 rank=6
+19:27:04 | INFO     | __main__:1476 -      #11 HINDALCO     score=101.9  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+19:27:04 | INFO     | __main__:1476 -      #12 NATIONALUM   score=101.6  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+19:27:04 | INFO     | __main__:1476 -      #13 TATASTEEL    score= 96.6  engines=CTL,SEC                      sector=metals & mining      rank=1
+19:27:04 | INFO     | __main__:1476 -      #14 VEDL         score= 96.3  engines=CTL,SEC                      sector=metals & mining      rank=1
+19:27:04 | INFO     | __main__:1476 -      #15 SARDAEN      score= 95.7  engines=CTL,SEC                      sector=metals & mining      rank=1
+19:27:04 | INFO     | __main__:1476 -      #16 POWERGRID    score= 95.7  engines=CTL,MOM,SEC                  sector=power & utilities    rank=2
+19:27:04 | INFO     | __main__:1476 -      #17 CUMMINSIND   score= 95.6  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+19:27:04 | INFO     | __main__:1476 -      #18 APOLLOHOSP   score= 92.3  engines=RSB                          sector=healthcare           rank=5
+19:27:04 | INFO     | __main__:1476 -      #19 TORNTPOWER   score= 90.1  engines=CTL,VBD                      sector=power & utilities    rank=2
+19:27:04 | INFO     | __main__:1476 -      #20 NTPC         score= 89.5  engines=CTL,SEC                      sector=power & utilities    rank=2
+19:27:04 | INFO     | __main__:1476 -      #21 CGPOWER      score= 88.7  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+19:27:04 | INFO     | __main__:1476 -      #22 EMMVEE       score= 86.4  engines=SEC                          sector=industrials          rank=3
+19:27:04 | INFO     | __main__:1476 -      #23 BHARATFORG   score= 84.1  engines=CTL,SEC                      sector=industrials          rank=3
+19:27:04 | INFO     | __main__:1476 -      #24 TATAPOWER    score= 81.6  engines=CTL                          sector=power & utilities    rank=2
+19:27:04 | INFO     | __main__:1476 -      #25 NLCINDIA     score= 79.2  engines=SEC                          sector=power & utilities    rank=2
+19:27:04 | INFO     | __main__:1476 -      #26 NAVINFLUOR   score= 78.0  engines=IAD                          sector=chemicals            rank=11
+19:27:04 | INFO     | __main__:1476 -      #27 ASTERDM      score= 68.6  engines=MOM                          sector=healthcare           rank=5
+19:27:04 | INFO     | __main__:1476 -      #28 ABSLAMC      score= 67.2  engines=MOM                          sector=financials           rank=10
+19:27:04 | INFO     | __main__:1476 -      #29 GICRE        score= 62.3  engines=MOM                          sector=financials           rank=10
+19:27:04 | INFO     | __main__:1476 -      #30 SOLARINDS    score= 61.6  engines=CTL                          sector=aerospace & defence  rank=4
+19:27:04 | INFO     | __main__:1492 -   Multi-engine confirmed: 11/30
+19:27:04 | INFO     | __main__:1493 -   Sector distribution: {'aerospace & defence': 2, 'industrials': 5, 'financials': 4, 'bank': 5, 'healthcare': 3, 'metals & mining': 5, 'power & utilities': 5, 'chemicals': 1}
+19:27:04 | INFO     | __main__:1494 -   Engine hits: {'RVS': 10, 'CTL': 13, 'MOM': 8, 'SEC': 12, 'RSB': 1, 'VBD': 1, 'IAD': 1}
+19:27:04 | INFO     | __main__:1497 - Pass 4: writing (shadow mode)...
+19:27:04 | INFO     | __main__:1132 - [DRY RUN] Would write 73 to msl_computed | 30 to master_shortlist | mode=shadow
+19:27:04 | INFO     | __main__:1137 -   #1 BEL          score=138.0  engines=RVS                       sector=aerospace & defence
+19:27:04 | INFO     | __main__:1137 -   #2 APLAPOLLO    score=135.0  engines=RVS                       sector=industrials
+19:27:04 | INFO     | __main__:1137 -   #3 SHRIRAMFIN   score=135.0  engines=RVS                       sector=financials
+19:27:04 | INFO     | __main__:1137 -   #4 MUTHOOTFIN   score=132.0  engines=RVS                       sector=financials
+19:27:04 | INFO     | __main__:1137 -   #5 AXISBANK     score=132.0  engines=RVS                       sector=bank
+19:27:04 | INFO     | __main__:1220 -   EAP revival: no penalized stocks found yesterday — skipping
+19:27:04 | INFO     | __main__:1288 -   Outcomes: no price data for today — skipping
+19:59:41 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=True | Phase=2
+19:59:41 | INFO     | __main__:1414 - =================================================================
+19:59:41 | INFO     | __main__:1415 - STEP: Screen Stocks v1.1 | 2026-04-28 | mode=SHADOW [DRY RUN]
+19:59:41 | INFO     | __main__:1417 - =================================================================
+19:59:41 | INFO     | __main__:1419 - Pass 1: loading data...
+19:59:41 | WARNING  | __main__:140 - stock_data_daily: falling back to 2026-04-27
+19:59:42 | INFO     | __main__:173 -   Loaded: 500 stocks | 24 sectors | regime=RECOVERING | asm=302 | fii=CAUTION | forced=0
+19:59:42 | INFO     | __main__:1451 - Pass 2: running engines (regime=RECOVERING)...
+19:59:42 | INFO     | __main__:303 -   CTL: 34 candidates
+19:59:42 | INFO     | __main__:384 -   SBS: 0 candidates
+19:59:42 | INFO     | __main__:464 -   TPO: 0 candidates
+19:59:42 | INFO     | __main__:541 -   VBD: 4 candidates
+19:59:42 | INFO     | __main__:606 -   IAD: 1 candidates
+19:59:42 | INFO     | __main__:660 -   RSB: 1 candidates
+19:59:42 | INFO     | __main__:763 -   MOM: 16 candidates [RECOVERING strict mode]
+19:59:42 | INFO     | __main__:790 -   RVS: RECOVERING mode — primary engine, relaxed gates
+19:59:42 | INFO     | __main__:878 -   RVS: 10 candidates
+19:59:42 | INFO     | __main__:906 -   SEC: RECOVERING mode — restricting to top 3 sectors
+19:59:42 | INFO     | __main__:954 -   SEC: 42 candidates [top 3 sectors only]
+19:59:42 | INFO     | __main__:1480 -   Engine totals: CTL=34 SBS=0 TPO=0 VBD=4 IAD=1 RSB=1 MOM=16 RVS=10 SEC=42 | Total unique=77
+19:59:42 | INFO     | __main__:1488 - Pass 3: aggregating and ranking...
+19:59:42 | INFO     | __main__:1001 -   Regime weights (RECOVERING): CTL=0.8x | IAD=1.3x | MOM=0.7x | RSB=1.3x | RVS=1.5x | SBS=0.9x | SEC=1.2x | TPO=0.9x | VBD=0.8x
+19:59:42 | INFO     | __main__:1112 -   Aggregated: 77 total unique | 73 after hard filters | 30 final
+19:59:42 | INFO     | __main__:1502 - 
+  ═══ TOP 30 SCREENED SYMBOLS (RECOVERING) ═══
+19:59:42 | INFO     | __main__:1505 -      # 1 BEL          score=138.0  engines=RVS                          sector=aerospace & defence  rank=4
+19:59:42 | INFO     | __main__:1505 -      # 2 APLAPOLLO    score=135.0  engines=RVS                          sector=industrials          rank=3
+19:59:42 | INFO     | __main__:1505 -      # 3 SHRIRAMFIN   score=135.0  engines=RVS                          sector=financials           rank=10
+19:59:42 | INFO     | __main__:1505 -      # 4 MUTHOOTFIN   score=132.0  engines=RVS                          sector=financials           rank=10
+19:59:42 | INFO     | __main__:1505 -      # 5 AXISBANK     score=132.0  engines=RVS                          sector=bank                 rank=6
+19:59:42 | INFO     | __main__:1505 -      # 6 CANBK        score=132.0  engines=RVS                          sector=bank                 rank=6
+19:59:42 | INFO     | __main__:1505 -      # 7 AJANTPHARM   score=123.0  engines=RVS                          sector=healthcare           rank=5
+19:59:42 | INFO     | __main__:1505 -      # 8 BANKINDIA    score=106.5  engines=RVS                          sector=bank                 rank=6
+19:59:42 | INFO     | __main__:1505 -      # 9 UNIONBANK    score=105.0  engines=RVS                          sector=bank                 rank=6
+19:59:42 | INFO     | __main__:1505 -      #10 INDIANB      score=105.0  engines=RVS                          sector=bank                 rank=6
+19:59:42 | INFO     | __main__:1505 -      #11 HINDALCO     score=101.9  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+19:59:42 | INFO     | __main__:1505 -      #12 NATIONALUM   score=101.6  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+19:59:42 | INFO     | __main__:1505 -      #13 TATASTEEL    score= 96.6  engines=CTL,SEC                      sector=metals & mining      rank=1
+19:59:42 | INFO     | __main__:1505 -      #14 VEDL         score= 96.3  engines=CTL,SEC                      sector=metals & mining      rank=1
+19:59:42 | INFO     | __main__:1505 -      #15 SARDAEN      score= 95.7  engines=CTL,SEC                      sector=metals & mining      rank=1
+19:59:42 | INFO     | __main__:1505 -      #16 POWERGRID    score= 95.7  engines=CTL,MOM,SEC                  sector=power & utilities    rank=2
+19:59:42 | INFO     | __main__:1505 -      #17 CUMMINSIND   score= 95.6  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+19:59:42 | INFO     | __main__:1505 -      #18 APOLLOHOSP   score= 92.3  engines=RSB                          sector=healthcare           rank=5
+19:59:42 | INFO     | __main__:1505 -      #19 TORNTPOWER   score= 90.1  engines=CTL,VBD                      sector=power & utilities    rank=2
+19:59:42 | INFO     | __main__:1505 -      #20 NTPC         score= 89.5  engines=CTL,SEC                      sector=power & utilities    rank=2
+19:59:42 | INFO     | __main__:1505 -      #21 CGPOWER      score= 88.7  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+19:59:42 | INFO     | __main__:1505 -      #22 EMMVEE       score= 86.4  engines=SEC                          sector=industrials          rank=3
+19:59:42 | INFO     | __main__:1505 -      #23 BHARATFORG   score= 84.1  engines=CTL,SEC                      sector=industrials          rank=3
+19:59:42 | INFO     | __main__:1505 -      #24 TATAPOWER    score= 81.6  engines=CTL                          sector=power & utilities    rank=2
+19:59:42 | INFO     | __main__:1505 -      #25 NLCINDIA     score= 79.2  engines=SEC                          sector=power & utilities    rank=2
+19:59:42 | INFO     | __main__:1505 -      #26 NAVINFLUOR   score= 78.0  engines=IAD                          sector=chemicals            rank=11
+19:59:42 | INFO     | __main__:1505 -      #27 ASTERDM      score= 68.6  engines=MOM                          sector=healthcare           rank=5
+19:59:42 | INFO     | __main__:1505 -      #28 ABSLAMC      score= 67.2  engines=MOM                          sector=financials           rank=10
+19:59:42 | INFO     | __main__:1505 -      #29 GICRE        score= 62.3  engines=MOM                          sector=financials           rank=10
+19:59:42 | INFO     | __main__:1505 -      #30 SOLARINDS    score= 61.6  engines=CTL                          sector=aerospace & defence  rank=4
+19:59:42 | INFO     | __main__:1521 -   Multi-engine confirmed: 11/30
+19:59:42 | INFO     | __main__:1522 -   Sector distribution: {'aerospace & defence': 2, 'industrials': 5, 'financials': 4, 'bank': 5, 'healthcare': 3, 'metals & mining': 5, 'power & utilities': 5, 'chemicals': 1}
+19:59:42 | INFO     | __main__:1523 -   Engine hits: {'RVS': 10, 'CTL': 13, 'MOM': 8, 'SEC': 12, 'RSB': 1, 'VBD': 1, 'IAD': 1}
+19:59:42 | INFO     | __main__:1526 - Pass 4: writing (shadow mode)...
+19:59:42 | INFO     | __main__:1132 - [DRY RUN] Would write 73 to msl_computed | 30 to master_shortlist | mode=shadow
+19:59:42 | INFO     | __main__:1137 -   #1 BEL          score=138.0  engines=RVS                       sector=aerospace & defence
+19:59:42 | INFO     | __main__:1137 -   #2 APLAPOLLO    score=135.0  engines=RVS                       sector=industrials
+19:59:42 | INFO     | __main__:1137 -   #3 SHRIRAMFIN   score=135.0  engines=RVS                       sector=financials
+19:59:42 | INFO     | __main__:1137 -   #4 MUTHOOTFIN   score=132.0  engines=RVS                       sector=financials
+19:59:42 | INFO     | __main__:1137 -   #5 AXISBANK     score=132.0  engines=RVS                       sector=bank
+20:00:03 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=True | Phase=2
+20:00:03 | INFO     | __main__:1414 - =================================================================
+20:00:03 | INFO     | __main__:1415 - STEP: Screen Stocks v1.1 | 2026-04-28 | mode=SHADOW [DRY RUN]
+20:00:03 | INFO     | __main__:1417 - =================================================================
+20:00:03 | INFO     | __main__:1419 - Pass 1: loading data...
+20:00:03 | WARNING  | __main__:140 - stock_data_daily: falling back to 2026-04-27
+20:00:04 | INFO     | __main__:173 -   Loaded: 500 stocks | 24 sectors | regime=RECOVERING | asm=302 | fii=CAUTION | forced=0
+20:00:04 | INFO     | __main__:1451 - Pass 2: running engines (regime=RECOVERING)...
+20:00:04 | INFO     | __main__:303 -   CTL: 34 candidates
+20:00:04 | INFO     | __main__:384 -   SBS: 0 candidates
+20:00:04 | INFO     | __main__:464 -   TPO: 0 candidates
+20:00:04 | INFO     | __main__:541 -   VBD: 4 candidates
+20:00:04 | INFO     | __main__:606 -   IAD: 1 candidates
+20:00:04 | INFO     | __main__:660 -   RSB: 1 candidates
+20:00:04 | INFO     | __main__:763 -   MOM: 16 candidates [RECOVERING strict mode]
+20:00:04 | INFO     | __main__:790 -   RVS: RECOVERING mode — primary engine, relaxed gates
+20:00:04 | INFO     | __main__:878 -   RVS: 10 candidates
+20:00:04 | INFO     | __main__:906 -   SEC: RECOVERING mode — restricting to top 3 sectors
+20:00:04 | INFO     | __main__:954 -   SEC: 42 candidates [top 3 sectors only]
+20:00:04 | INFO     | __main__:1480 -   Engine totals: CTL=34 SBS=0 TPO=0 VBD=4 IAD=1 RSB=1 MOM=16 RVS=10 SEC=42 | Total unique=77
+20:00:04 | INFO     | __main__:1488 - Pass 3: aggregating and ranking...
+20:00:04 | INFO     | __main__:1001 -   Regime weights (RECOVERING): CTL=0.8x | IAD=1.3x | MOM=0.7x | RSB=1.3x | RVS=1.5x | SBS=0.9x | SEC=1.2x | TPO=0.9x | VBD=0.8x
+20:00:04 | INFO     | __main__:1112 -   Aggregated: 77 total unique | 73 after hard filters | 30 final
+20:00:04 | INFO     | __main__:1502 - 
+  ═══ TOP 30 SCREENED SYMBOLS (RECOVERING) ═══
+20:00:04 | INFO     | __main__:1505 -      # 1 BEL          score=138.0  engines=RVS                          sector=aerospace & defence  rank=4
+20:00:04 | INFO     | __main__:1505 -      # 2 APLAPOLLO    score=135.0  engines=RVS                          sector=industrials          rank=3
+20:00:04 | INFO     | __main__:1505 -      # 3 SHRIRAMFIN   score=135.0  engines=RVS                          sector=financials           rank=10
+20:00:04 | INFO     | __main__:1505 -      # 4 MUTHOOTFIN   score=132.0  engines=RVS                          sector=financials           rank=10
+20:00:04 | INFO     | __main__:1505 -      # 5 AXISBANK     score=132.0  engines=RVS                          sector=bank                 rank=6
+20:00:04 | INFO     | __main__:1505 -      # 6 CANBK        score=132.0  engines=RVS                          sector=bank                 rank=6
+20:00:04 | INFO     | __main__:1505 -      # 7 AJANTPHARM   score=123.0  engines=RVS                          sector=healthcare           rank=5
+20:00:04 | INFO     | __main__:1505 -      # 8 BANKINDIA    score=106.5  engines=RVS                          sector=bank                 rank=6
+20:00:04 | INFO     | __main__:1505 -      # 9 UNIONBANK    score=105.0  engines=RVS                          sector=bank                 rank=6
+20:00:04 | INFO     | __main__:1505 -      #10 INDIANB      score=105.0  engines=RVS                          sector=bank                 rank=6
+20:00:04 | INFO     | __main__:1505 -      #11 HINDALCO     score=101.9  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+20:00:04 | INFO     | __main__:1505 -      #12 NATIONALUM   score=101.6  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+20:00:04 | INFO     | __main__:1505 -      #13 TATASTEEL    score= 96.6  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:00:04 | INFO     | __main__:1505 -      #14 VEDL         score= 96.3  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:00:04 | INFO     | __main__:1505 -      #15 SARDAEN      score= 95.7  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:00:04 | INFO     | __main__:1505 -      #16 POWERGRID    score= 95.7  engines=CTL,MOM,SEC                  sector=power & utilities    rank=2
+20:00:04 | INFO     | __main__:1505 -      #17 CUMMINSIND   score= 95.6  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+20:00:04 | INFO     | __main__:1505 -      #18 APOLLOHOSP   score= 92.3  engines=RSB                          sector=healthcare           rank=5
+20:00:04 | INFO     | __main__:1505 -      #19 TORNTPOWER   score= 90.1  engines=CTL,VBD                      sector=power & utilities    rank=2
+20:00:04 | INFO     | __main__:1505 -      #20 NTPC         score= 89.5  engines=CTL,SEC                      sector=power & utilities    rank=2
+20:00:04 | INFO     | __main__:1505 -      #21 CGPOWER      score= 88.7  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+20:00:04 | INFO     | __main__:1505 -      #22 EMMVEE       score= 86.4  engines=SEC                          sector=industrials          rank=3
+20:00:04 | INFO     | __main__:1505 -      #23 BHARATFORG   score= 84.1  engines=CTL,SEC                      sector=industrials          rank=3
+20:00:04 | INFO     | __main__:1505 -      #24 TATAPOWER    score= 81.6  engines=CTL                          sector=power & utilities    rank=2
+20:00:04 | INFO     | __main__:1505 -      #25 NLCINDIA     score= 79.2  engines=SEC                          sector=power & utilities    rank=2
+20:00:04 | INFO     | __main__:1505 -      #26 NAVINFLUOR   score= 78.0  engines=IAD                          sector=chemicals            rank=11
+20:00:04 | INFO     | __main__:1505 -      #27 ASTERDM      score= 68.6  engines=MOM                          sector=healthcare           rank=5
+20:00:04 | INFO     | __main__:1505 -      #28 ABSLAMC      score= 67.2  engines=MOM                          sector=financials           rank=10
+20:00:04 | INFO     | __main__:1505 -      #29 GICRE        score= 62.3  engines=MOM                          sector=financials           rank=10
+20:00:04 | INFO     | __main__:1505 -      #30 SOLARINDS    score= 61.6  engines=CTL                          sector=aerospace & defence  rank=4
+20:00:04 | INFO     | __main__:1521 -   Multi-engine confirmed: 11/30
+20:00:04 | INFO     | __main__:1522 -   Sector distribution: {'aerospace & defence': 2, 'industrials': 5, 'financials': 4, 'bank': 5, 'healthcare': 3, 'metals & mining': 5, 'power & utilities': 5, 'chemicals': 1}
+20:00:04 | INFO     | __main__:1523 -   Engine hits: {'RVS': 10, 'CTL': 13, 'MOM': 8, 'SEC': 12, 'RSB': 1, 'VBD': 1, 'IAD': 1}
+20:00:04 | INFO     | __main__:1526 - Pass 4: writing (shadow mode)...
+20:00:04 | INFO     | __main__:1132 - [DRY RUN] Would write 73 to msl_computed | 30 to master_shortlist | mode=shadow
+20:00:04 | INFO     | __main__:1137 -   #1 BEL          score=138.0  engines=RVS                       sector=aerospace & defence
+20:00:04 | INFO     | __main__:1137 -   #2 APLAPOLLO    score=135.0  engines=RVS                       sector=industrials
+20:00:04 | INFO     | __main__:1137 -   #3 SHRIRAMFIN   score=135.0  engines=RVS                       sector=financials
+20:00:04 | INFO     | __main__:1137 -   #4 MUTHOOTFIN   score=132.0  engines=RVS                       sector=financials
+20:00:04 | INFO     | __main__:1137 -   #5 AXISBANK     score=132.0  engines=RVS                       sector=bank
+20:01:42 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=True | Phase=2
+20:01:42 | INFO     | __main__:1414 - =================================================================
+20:01:42 | INFO     | __main__:1415 - STEP: Screen Stocks v1.1 | 2026-04-28 | mode=SHADOW [DRY RUN]
+20:01:42 | INFO     | __main__:1417 - =================================================================
+20:01:42 | INFO     | __main__:1419 - Pass 1: loading data...
+20:01:42 | WARNING  | __main__:140 - stock_data_daily: falling back to 2026-04-27
+20:01:42 | INFO     | __main__:173 -   Loaded: 500 stocks | 24 sectors | regime=RECOVERING | asm=302 | fii=CAUTION | forced=0
+20:01:42 | INFO     | __main__:1451 - Pass 2: running engines (regime=RECOVERING)...
+20:01:42 | INFO     | __main__:303 -   CTL: 34 candidates
+20:01:42 | INFO     | __main__:384 -   SBS: 0 candidates
+20:01:42 | INFO     | __main__:464 -   TPO: 0 candidates
+20:01:42 | INFO     | __main__:541 -   VBD: 4 candidates
+20:01:42 | INFO     | __main__:606 -   IAD: 1 candidates
+20:01:42 | INFO     | __main__:660 -   RSB: 1 candidates
+20:01:42 | INFO     | __main__:763 -   MOM: 16 candidates [RECOVERING strict mode]
+20:01:42 | INFO     | __main__:790 -   RVS: RECOVERING mode — primary engine, relaxed gates
+20:01:42 | INFO     | __main__:878 -   RVS: 10 candidates
+20:01:42 | INFO     | __main__:906 -   SEC: RECOVERING mode — restricting to top 3 sectors
+20:01:42 | INFO     | __main__:954 -   SEC: 42 candidates [top 3 sectors only]
+20:01:42 | INFO     | __main__:1480 -   Engine totals: CTL=34 SBS=0 TPO=0 VBD=4 IAD=1 RSB=1 MOM=16 RVS=10 SEC=42 | Total unique=77
+20:01:42 | INFO     | __main__:1488 - Pass 3: aggregating and ranking...
+20:01:42 | INFO     | __main__:1001 -   Regime weights (RECOVERING): CTL=0.8x | IAD=1.3x | MOM=0.7x | RSB=1.3x | RVS=1.5x | SBS=0.9x | SEC=1.2x | TPO=0.9x | VBD=0.8x
+20:01:42 | INFO     | __main__:1112 -   Aggregated: 77 total unique | 73 after hard filters | 30 final
+20:01:42 | INFO     | __main__:1502 - 
+  ═══ TOP 30 SCREENED SYMBOLS (RECOVERING) ═══
+20:01:42 | INFO     | __main__:1505 -      # 1 BEL          score=138.0  engines=RVS                          sector=aerospace & defence  rank=4
+20:01:42 | INFO     | __main__:1505 -      # 2 APLAPOLLO    score=135.0  engines=RVS                          sector=industrials          rank=3
+20:01:42 | INFO     | __main__:1505 -      # 3 SHRIRAMFIN   score=135.0  engines=RVS                          sector=financials           rank=10
+20:01:42 | INFO     | __main__:1505 -      # 4 MUTHOOTFIN   score=132.0  engines=RVS                          sector=financials           rank=10
+20:01:42 | INFO     | __main__:1505 -      # 5 AXISBANK     score=132.0  engines=RVS                          sector=bank                 rank=6
+20:01:42 | INFO     | __main__:1505 -      # 6 CANBK        score=132.0  engines=RVS                          sector=bank                 rank=6
+20:01:42 | INFO     | __main__:1505 -      # 7 AJANTPHARM   score=123.0  engines=RVS                          sector=healthcare           rank=5
+20:01:42 | INFO     | __main__:1505 -      # 8 BANKINDIA    score=106.5  engines=RVS                          sector=bank                 rank=6
+20:01:42 | INFO     | __main__:1505 -      # 9 UNIONBANK    score=105.0  engines=RVS                          sector=bank                 rank=6
+20:01:42 | INFO     | __main__:1505 -      #10 INDIANB      score=105.0  engines=RVS                          sector=bank                 rank=6
+20:01:42 | INFO     | __main__:1505 -      #11 HINDALCO     score=101.9  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+20:01:42 | INFO     | __main__:1505 -      #12 NATIONALUM   score=101.6  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+20:01:42 | INFO     | __main__:1505 -      #13 TATASTEEL    score= 96.6  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:01:42 | INFO     | __main__:1505 -      #14 VEDL         score= 96.3  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:01:42 | INFO     | __main__:1505 -      #15 SARDAEN      score= 95.7  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:01:42 | INFO     | __main__:1505 -      #16 POWERGRID    score= 95.7  engines=CTL,MOM,SEC                  sector=power & utilities    rank=2
+20:01:42 | INFO     | __main__:1505 -      #17 CUMMINSIND   score= 95.6  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+20:01:42 | INFO     | __main__:1505 -      #18 APOLLOHOSP   score= 92.3  engines=RSB                          sector=healthcare           rank=5
+20:01:42 | INFO     | __main__:1505 -      #19 TORNTPOWER   score= 90.1  engines=CTL,VBD                      sector=power & utilities    rank=2
+20:01:42 | INFO     | __main__:1505 -      #20 NTPC         score= 89.5  engines=CTL,SEC                      sector=power & utilities    rank=2
+20:01:42 | INFO     | __main__:1505 -      #21 CGPOWER      score= 88.7  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+20:01:42 | INFO     | __main__:1505 -      #22 EMMVEE       score= 86.4  engines=SEC                          sector=industrials          rank=3
+20:01:42 | INFO     | __main__:1505 -      #23 BHARATFORG   score= 84.1  engines=CTL,SEC                      sector=industrials          rank=3
+20:01:42 | INFO     | __main__:1505 -      #24 TATAPOWER    score= 81.6  engines=CTL                          sector=power & utilities    rank=2
+20:01:42 | INFO     | __main__:1505 -      #25 NLCINDIA     score= 79.2  engines=SEC                          sector=power & utilities    rank=2
+20:01:42 | INFO     | __main__:1505 -      #26 NAVINFLUOR   score= 78.0  engines=IAD                          sector=chemicals            rank=11
+20:01:42 | INFO     | __main__:1505 -      #27 ASTERDM      score= 68.6  engines=MOM                          sector=healthcare           rank=5
+20:01:42 | INFO     | __main__:1505 -      #28 ABSLAMC      score= 67.2  engines=MOM                          sector=financials           rank=10
+20:01:42 | INFO     | __main__:1505 -      #29 GICRE        score= 62.3  engines=MOM                          sector=financials           rank=10
+20:01:42 | INFO     | __main__:1505 -      #30 SOLARINDS    score= 61.6  engines=CTL                          sector=aerospace & defence  rank=4
+20:01:42 | INFO     | __main__:1521 -   Multi-engine confirmed: 11/30
+20:01:42 | INFO     | __main__:1522 -   Sector distribution: {'aerospace & defence': 2, 'industrials': 5, 'financials': 4, 'bank': 5, 'healthcare': 3, 'metals & mining': 5, 'power & utilities': 5, 'chemicals': 1}
+20:01:42 | INFO     | __main__:1523 -   Engine hits: {'RVS': 10, 'CTL': 13, 'MOM': 8, 'SEC': 12, 'RSB': 1, 'VBD': 1, 'IAD': 1}
+20:01:42 | INFO     | __main__:1526 - Pass 4: writing (shadow mode)...
+20:01:42 | INFO     | __main__:1132 - [DRY RUN] Would write 73 to msl_computed | 30 to master_shortlist | mode=shadow
+20:01:42 | INFO     | __main__:1137 -   #1 BEL          score=138.0  engines=RVS                       sector=aerospace & defence
+20:01:42 | INFO     | __main__:1137 -   #2 APLAPOLLO    score=135.0  engines=RVS                       sector=industrials
+20:01:42 | INFO     | __main__:1137 -   #3 SHRIRAMFIN   score=135.0  engines=RVS                       sector=financials
+20:01:42 | INFO     | __main__:1137 -   #4 MUTHOOTFIN   score=132.0  engines=RVS                       sector=financials
+20:01:42 | INFO     | __main__:1137 -   #5 AXISBANK     score=132.0  engines=RVS                       sector=bank
+20:02:08 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=True | Phase=2
+20:02:08 | INFO     | __main__:1414 - =================================================================
+20:02:08 | INFO     | __main__:1415 - STEP: Screen Stocks v1.1 | 2026-04-28 | mode=SHADOW [DRY RUN]
+20:02:08 | INFO     | __main__:1417 - =================================================================
+20:02:08 | INFO     | __main__:1419 - Pass 1: loading data...
+20:02:09 | WARNING  | __main__:140 - stock_data_daily: falling back to 2026-04-27
+20:02:10 | INFO     | __main__:173 -   Loaded: 500 stocks | 24 sectors | regime=RECOVERING | asm=302 | fii=CAUTION | forced=0
+20:02:10 | INFO     | __main__:1451 - Pass 2: running engines (regime=RECOVERING)...
+20:02:10 | INFO     | __main__:303 -   CTL: 34 candidates
+20:02:10 | INFO     | __main__:384 -   SBS: 0 candidates
+20:02:10 | INFO     | __main__:464 -   TPO: 0 candidates
+20:02:10 | INFO     | __main__:541 -   VBD: 4 candidates
+20:02:10 | INFO     | __main__:606 -   IAD: 1 candidates
+20:02:10 | INFO     | __main__:660 -   RSB: 1 candidates
+20:02:10 | INFO     | __main__:763 -   MOM: 16 candidates [RECOVERING strict mode]
+20:02:10 | INFO     | __main__:790 -   RVS: RECOVERING mode — primary engine, relaxed gates
+20:02:10 | INFO     | __main__:878 -   RVS: 10 candidates
+20:02:10 | INFO     | __main__:906 -   SEC: RECOVERING mode — restricting to top 3 sectors
+20:02:10 | INFO     | __main__:954 -   SEC: 42 candidates [top 3 sectors only]
+20:02:10 | INFO     | __main__:1480 -   Engine totals: CTL=34 SBS=0 TPO=0 VBD=4 IAD=1 RSB=1 MOM=16 RVS=10 SEC=42 | Total unique=77
+20:02:10 | INFO     | __main__:1488 - Pass 3: aggregating and ranking...
+20:02:10 | INFO     | __main__:1001 -   Regime weights (RECOVERING): CTL=0.8x | IAD=1.3x | MOM=0.7x | RSB=1.3x | RVS=1.5x | SBS=0.9x | SEC=1.2x | TPO=0.9x | VBD=0.8x
+20:02:10 | INFO     | __main__:1112 -   Aggregated: 77 total unique | 73 after hard filters | 30 final
+20:02:10 | INFO     | __main__:1502 - 
+  ═══ TOP 30 SCREENED SYMBOLS (RECOVERING) ═══
+20:02:10 | INFO     | __main__:1505 -      # 1 BEL          score=138.0  engines=RVS                          sector=aerospace & defence  rank=4
+20:02:10 | INFO     | __main__:1505 -      # 2 APLAPOLLO    score=135.0  engines=RVS                          sector=industrials          rank=3
+20:02:10 | INFO     | __main__:1505 -      # 3 SHRIRAMFIN   score=135.0  engines=RVS                          sector=financials           rank=10
+20:02:10 | INFO     | __main__:1505 -      # 4 MUTHOOTFIN   score=132.0  engines=RVS                          sector=financials           rank=10
+20:02:10 | INFO     | __main__:1505 -      # 5 AXISBANK     score=132.0  engines=RVS                          sector=bank                 rank=6
+20:02:10 | INFO     | __main__:1505 -      # 6 CANBK        score=132.0  engines=RVS                          sector=bank                 rank=6
+20:02:10 | INFO     | __main__:1505 -      # 7 AJANTPHARM   score=123.0  engines=RVS                          sector=healthcare           rank=5
+20:02:10 | INFO     | __main__:1505 -      # 8 BANKINDIA    score=106.5  engines=RVS                          sector=bank                 rank=6
+20:02:10 | INFO     | __main__:1505 -      # 9 UNIONBANK    score=105.0  engines=RVS                          sector=bank                 rank=6
+20:02:10 | INFO     | __main__:1505 -      #10 INDIANB      score=105.0  engines=RVS                          sector=bank                 rank=6
+20:02:10 | INFO     | __main__:1505 -      #11 HINDALCO     score=101.9  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+20:02:10 | INFO     | __main__:1505 -      #12 NATIONALUM   score=101.6  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+20:02:10 | INFO     | __main__:1505 -      #13 TATASTEEL    score= 96.6  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:02:10 | INFO     | __main__:1505 -      #14 VEDL         score= 96.3  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:02:10 | INFO     | __main__:1505 -      #15 SARDAEN      score= 95.7  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:02:10 | INFO     | __main__:1505 -      #16 POWERGRID    score= 95.7  engines=CTL,MOM,SEC                  sector=power & utilities    rank=2
+20:02:10 | INFO     | __main__:1505 -      #17 CUMMINSIND   score= 95.6  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+20:02:10 | INFO     | __main__:1505 -      #18 APOLLOHOSP   score= 92.3  engines=RSB                          sector=healthcare           rank=5
+20:02:10 | INFO     | __main__:1505 -      #19 TORNTPOWER   score= 90.1  engines=CTL,VBD                      sector=power & utilities    rank=2
+20:02:10 | INFO     | __main__:1505 -      #20 NTPC         score= 89.5  engines=CTL,SEC                      sector=power & utilities    rank=2
+20:02:10 | INFO     | __main__:1505 -      #21 CGPOWER      score= 88.7  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+20:02:10 | INFO     | __main__:1505 -      #22 EMMVEE       score= 86.4  engines=SEC                          sector=industrials          rank=3
+20:02:10 | INFO     | __main__:1505 -      #23 BHARATFORG   score= 84.1  engines=CTL,SEC                      sector=industrials          rank=3
+20:02:10 | INFO     | __main__:1505 -      #24 TATAPOWER    score= 81.6  engines=CTL                          sector=power & utilities    rank=2
+20:02:10 | INFO     | __main__:1505 -      #25 NLCINDIA     score= 79.2  engines=SEC                          sector=power & utilities    rank=2
+20:02:10 | INFO     | __main__:1505 -      #26 NAVINFLUOR   score= 78.0  engines=IAD                          sector=chemicals            rank=11
+20:02:10 | INFO     | __main__:1505 -      #27 ASTERDM      score= 68.6  engines=MOM                          sector=healthcare           rank=5
+20:02:10 | INFO     | __main__:1505 -      #28 ABSLAMC      score= 67.2  engines=MOM                          sector=financials           rank=10
+20:02:10 | INFO     | __main__:1505 -      #29 GICRE        score= 62.3  engines=MOM                          sector=financials           rank=10
+20:02:10 | INFO     | __main__:1505 -      #30 SOLARINDS    score= 61.6  engines=CTL                          sector=aerospace & defence  rank=4
+20:02:10 | INFO     | __main__:1521 -   Multi-engine confirmed: 11/30
+20:02:10 | INFO     | __main__:1522 -   Sector distribution: {'aerospace & defence': 2, 'industrials': 5, 'financials': 4, 'bank': 5, 'healthcare': 3, 'metals & mining': 5, 'power & utilities': 5, 'chemicals': 1}
+20:02:10 | INFO     | __main__:1523 -   Engine hits: {'RVS': 10, 'CTL': 13, 'MOM': 8, 'SEC': 12, 'RSB': 1, 'VBD': 1, 'IAD': 1}
+20:02:10 | INFO     | __main__:1526 - Pass 4: writing (shadow mode)...
+20:02:10 | INFO     | __main__:1132 - [DRY RUN] Would write 73 to msl_computed | 30 to master_shortlist | mode=shadow
+20:02:10 | INFO     | __main__:1137 -   #1 BEL          score=138.0  engines=RVS                       sector=aerospace & defence
+20:02:10 | INFO     | __main__:1137 -   #2 APLAPOLLO    score=135.0  engines=RVS                       sector=industrials
+20:02:10 | INFO     | __main__:1137 -   #3 SHRIRAMFIN   score=135.0  engines=RVS                       sector=financials
+20:02:10 | INFO     | __main__:1137 -   #4 MUTHOOTFIN   score=132.0  engines=RVS                       sector=financials
+20:02:10 | INFO     | __main__:1137 -   #5 AXISBANK     score=132.0  engines=RVS                       sector=bank
+20:02:32 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=True | Phase=2
+20:02:32 | INFO     | __main__:1415 - =================================================================
+20:02:32 | INFO     | __main__:1416 - STEP: Screen Stocks v1.1 | 2026-04-28 | mode=SHADOW [DRY RUN]
+20:02:32 | INFO     | __main__:1418 - =================================================================
+20:02:32 | INFO     | __main__:1420 - Pass 1: loading data...
+20:02:33 | WARNING  | __main__:141 - stock_data_daily: falling back to 2026-04-27
+20:02:34 | INFO     | __main__:174 -   Loaded: 500 stocks | 24 sectors | regime=RECOVERING | asm=302 | fii=CAUTION | forced=0
+20:02:34 | INFO     | __main__:1452 - Pass 2: running engines (regime=RECOVERING)...
+20:02:34 | INFO     | __main__:304 -   CTL: 34 candidates
+20:02:34 | INFO     | __main__:385 -   SBS: 0 candidates
+20:02:34 | INFO     | __main__:465 -   TPO: 0 candidates
+20:02:34 | INFO     | __main__:542 -   VBD: 4 candidates
+20:02:34 | INFO     | __main__:607 -   IAD: 1 candidates
+20:02:34 | INFO     | __main__:661 -   RSB: 1 candidates
+20:02:34 | INFO     | __main__:764 -   MOM: 16 candidates [RECOVERING strict mode]
+20:02:34 | INFO     | __main__:791 -   RVS: RECOVERING mode — primary engine, relaxed gates
+20:02:34 | INFO     | __main__:879 -   RVS: 10 candidates
+20:02:34 | INFO     | __main__:907 -   SEC: RECOVERING mode — restricting to top 3 sectors
+20:02:34 | INFO     | __main__:955 -   SEC: 42 candidates [top 3 sectors only]
+20:02:34 | INFO     | __main__:1481 -   Engine totals: CTL=34 SBS=0 TPO=0 VBD=4 IAD=1 RSB=1 MOM=16 RVS=10 SEC=42 | Total unique=77
+20:02:34 | INFO     | __main__:1489 - Pass 3: aggregating and ranking...
+20:02:34 | INFO     | __main__:1002 -   Regime weights (RECOVERING): CTL=0.8x | IAD=1.3x | MOM=0.7x | RSB=1.3x | RVS=1.5x | SBS=0.9x | SEC=1.2x | TPO=0.9x | VBD=0.8x
+20:02:34 | INFO     | __main__:1113 -   Aggregated: 77 total unique | 73 after hard filters | 30 final
+20:02:34 | INFO     | __main__:1503 - 
+  ═══ TOP 30 SCREENED SYMBOLS (RECOVERING) ═══
+20:02:34 | INFO     | __main__:1506 -      # 1 BEL          score=138.0  engines=RVS                          sector=aerospace & defence  rank=4
+20:02:34 | INFO     | __main__:1506 -      # 2 APLAPOLLO    score=135.0  engines=RVS                          sector=industrials          rank=3
+20:02:34 | INFO     | __main__:1506 -      # 3 SHRIRAMFIN   score=135.0  engines=RVS                          sector=financials           rank=10
+20:02:34 | INFO     | __main__:1506 -      # 4 MUTHOOTFIN   score=132.0  engines=RVS                          sector=financials           rank=10
+20:02:34 | INFO     | __main__:1506 -      # 5 AXISBANK     score=132.0  engines=RVS                          sector=bank                 rank=6
+20:02:34 | INFO     | __main__:1506 -      # 6 CANBK        score=132.0  engines=RVS                          sector=bank                 rank=6
+20:02:34 | INFO     | __main__:1506 -      # 7 AJANTPHARM   score=123.0  engines=RVS                          sector=healthcare           rank=5
+20:02:34 | INFO     | __main__:1506 -      # 8 BANKINDIA    score=106.5  engines=RVS                          sector=bank                 rank=6
+20:02:34 | INFO     | __main__:1506 -      # 9 UNIONBANK    score=105.0  engines=RVS                          sector=bank                 rank=6
+20:02:34 | INFO     | __main__:1506 -      #10 INDIANB      score=105.0  engines=RVS                          sector=bank                 rank=6
+20:02:34 | INFO     | __main__:1506 -      #11 HINDALCO     score=101.9  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+20:02:34 | INFO     | __main__:1506 -      #12 NATIONALUM   score=101.6  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+20:02:34 | INFO     | __main__:1506 -      #13 TATASTEEL    score= 96.6  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:02:34 | INFO     | __main__:1506 -      #14 VEDL         score= 96.3  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:02:34 | INFO     | __main__:1506 -      #15 SARDAEN      score= 95.7  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:02:34 | INFO     | __main__:1506 -      #16 POWERGRID    score= 95.7  engines=CTL,MOM,SEC                  sector=power & utilities    rank=2
+20:02:34 | INFO     | __main__:1506 -      #17 CUMMINSIND   score= 95.6  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+20:02:34 | INFO     | __main__:1506 -      #18 APOLLOHOSP   score= 92.3  engines=RSB                          sector=healthcare           rank=5
+20:02:34 | INFO     | __main__:1506 -      #19 TORNTPOWER   score= 90.1  engines=CTL,VBD                      sector=power & utilities    rank=2
+20:02:34 | INFO     | __main__:1506 -      #20 NTPC         score= 89.5  engines=CTL,SEC                      sector=power & utilities    rank=2
+20:02:34 | INFO     | __main__:1506 -      #21 CGPOWER      score= 88.7  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+20:02:34 | INFO     | __main__:1506 -      #22 EMMVEE       score= 86.4  engines=SEC                          sector=industrials          rank=3
+20:02:34 | INFO     | __main__:1506 -      #23 BHARATFORG   score= 84.1  engines=CTL,SEC                      sector=industrials          rank=3
+20:02:34 | INFO     | __main__:1506 -      #24 TATAPOWER    score= 81.6  engines=CTL                          sector=power & utilities    rank=2
+20:02:34 | INFO     | __main__:1506 -      #25 NLCINDIA     score= 79.2  engines=SEC                          sector=power & utilities    rank=2
+20:02:34 | INFO     | __main__:1506 -      #26 NAVINFLUOR   score= 78.0  engines=IAD                          sector=chemicals            rank=11
+20:02:34 | INFO     | __main__:1506 -      #27 ASTERDM      score= 68.6  engines=MOM                          sector=healthcare           rank=5
+20:02:34 | INFO     | __main__:1506 -      #28 ABSLAMC      score= 67.2  engines=MOM                          sector=financials           rank=10
+20:02:34 | INFO     | __main__:1506 -      #29 GICRE        score= 62.3  engines=MOM                          sector=financials           rank=10
+20:02:34 | INFO     | __main__:1506 -      #30 SOLARINDS    score= 61.6  engines=CTL                          sector=aerospace & defence  rank=4
+20:02:34 | INFO     | __main__:1522 -   Multi-engine confirmed: 11/30
+20:02:34 | INFO     | __main__:1523 -   Sector distribution: {'aerospace & defence': 2, 'industrials': 5, 'financials': 4, 'bank': 5, 'healthcare': 3, 'metals & mining': 5, 'power & utilities': 5, 'chemicals': 1}
+20:02:34 | INFO     | __main__:1524 -   Engine hits: {'RVS': 10, 'CTL': 13, 'MOM': 8, 'SEC': 12, 'RSB': 1, 'VBD': 1, 'IAD': 1}
+20:02:34 | INFO     | __main__:1527 - Pass 4: writing (shadow mode)...
+20:02:34 | INFO     | __main__:1133 - [DRY RUN] Would write 73 to msl_computed | 30 to master_shortlist | mode=shadow
+20:02:34 | INFO     | __main__:1138 -   #1 BEL          score=138.0  engines=RVS                       sector=aerospace & defence
+20:02:34 | INFO     | __main__:1138 -   #2 APLAPOLLO    score=135.0  engines=RVS                       sector=industrials
+20:02:34 | INFO     | __main__:1138 -   #3 SHRIRAMFIN   score=135.0  engines=RVS                       sector=financials
+20:02:34 | INFO     | __main__:1138 -   #4 MUTHOOTFIN   score=132.0  engines=RVS                       sector=financials
+20:02:34 | INFO     | __main__:1138 -   #5 AXISBANK     score=132.0  engines=RVS                       sector=bank
+20:04:35 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=True | Phase=2
+20:04:35 | INFO     | __main__:1419 - =================================================================
+20:04:35 | INFO     | __main__:1420 - STEP: Screen Stocks v1.1 | 2026-04-28 | mode=SHADOW [DRY RUN]
+20:04:35 | INFO     | __main__:1422 - =================================================================
+20:04:35 | INFO     | __main__:1424 - Pass 1: loading data...
+20:04:36 | WARNING  | __main__:141 - stock_data_daily: falling back to 2026-04-27
+20:04:36 | INFO     | __main__:174 -   Loaded: 500 stocks | 24 sectors | regime=RECOVERING | asm=302 | fii=CAUTION | forced=0
+20:04:36 | INFO     | __main__:1456 - Pass 2: running engines (regime=RECOVERING)...
+20:04:36 | INFO     | __main__:304 -   CTL: 34 candidates
+20:04:36 | INFO     | __main__:385 -   SBS: 0 candidates
+20:04:36 | INFO     | __main__:465 -   TPO: 0 candidates
+20:04:36 | INFO     | __main__:542 -   VBD: 4 candidates
+20:04:36 | INFO     | __main__:607 -   IAD: 1 candidates
+20:04:36 | INFO     | __main__:661 -   RSB: 1 candidates
+20:04:36 | INFO     | __main__:764 -   MOM: 16 candidates [RECOVERING strict mode]
+20:04:36 | INFO     | __main__:791 -   RVS: RECOVERING mode — primary engine, relaxed gates
+20:04:36 | INFO     | __main__:879 -   RVS: 10 candidates
+20:04:36 | INFO     | __main__:907 -   SEC: RECOVERING mode — restricting to top 3 sectors
+20:04:36 | INFO     | __main__:955 -   SEC: 42 candidates [top 3 sectors only]
+20:04:36 | INFO     | __main__:1485 -   Engine totals: CTL=34 SBS=0 TPO=0 VBD=4 IAD=1 RSB=1 MOM=16 RVS=10 SEC=42 | Total unique=77
+20:04:36 | INFO     | __main__:1493 - Pass 3: aggregating and ranking...
+20:04:36 | INFO     | __main__:1002 -   Regime weights (RECOVERING): CTL=0.8x | IAD=1.3x | MOM=0.7x | RSB=1.3x | RVS=1.5x | SBS=0.9x | SEC=1.2x | TPO=0.9x | VBD=0.8x
+20:04:36 | INFO     | __main__:1113 -   Aggregated: 77 total unique | 73 after hard filters | 30 final
+20:04:36 | INFO     | __main__:1507 - 
+  ═══ TOP 30 SCREENED SYMBOLS (RECOVERING) ═══
+20:04:36 | INFO     | __main__:1510 -      # 1 BEL          score=138.0  engines=RVS                          sector=aerospace & defence  rank=4
+20:04:36 | INFO     | __main__:1510 -      # 2 APLAPOLLO    score=135.0  engines=RVS                          sector=industrials          rank=3
+20:04:36 | INFO     | __main__:1510 -      # 3 SHRIRAMFIN   score=135.0  engines=RVS                          sector=financials           rank=10
+20:04:36 | INFO     | __main__:1510 -      # 4 MUTHOOTFIN   score=132.0  engines=RVS                          sector=financials           rank=10
+20:04:36 | INFO     | __main__:1510 -      # 5 AXISBANK     score=132.0  engines=RVS                          sector=bank                 rank=6
+20:04:36 | INFO     | __main__:1510 -      # 6 CANBK        score=132.0  engines=RVS                          sector=bank                 rank=6
+20:04:36 | INFO     | __main__:1510 -      # 7 AJANTPHARM   score=123.0  engines=RVS                          sector=healthcare           rank=5
+20:04:36 | INFO     | __main__:1510 -      # 8 BANKINDIA    score=106.5  engines=RVS                          sector=bank                 rank=6
+20:04:36 | INFO     | __main__:1510 -      # 9 UNIONBANK    score=105.0  engines=RVS                          sector=bank                 rank=6
+20:04:36 | INFO     | __main__:1510 -      #10 INDIANB      score=105.0  engines=RVS                          sector=bank                 rank=6
+20:04:36 | INFO     | __main__:1510 -      #11 HINDALCO     score=101.9  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+20:04:36 | INFO     | __main__:1510 -      #12 NATIONALUM   score=101.6  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+20:04:36 | INFO     | __main__:1510 -      #13 TATASTEEL    score= 96.6  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:04:36 | INFO     | __main__:1510 -      #14 VEDL         score= 96.3  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:04:36 | INFO     | __main__:1510 -      #15 SARDAEN      score= 95.7  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:04:36 | INFO     | __main__:1510 -      #16 POWERGRID    score= 95.7  engines=CTL,MOM,SEC                  sector=power & utilities    rank=2
+20:04:36 | INFO     | __main__:1510 -      #17 CUMMINSIND   score= 95.6  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+20:04:36 | INFO     | __main__:1510 -      #18 APOLLOHOSP   score= 92.3  engines=RSB                          sector=healthcare           rank=5
+20:04:36 | INFO     | __main__:1510 -      #19 TORNTPOWER   score= 90.1  engines=CTL,VBD                      sector=power & utilities    rank=2
+20:04:36 | INFO     | __main__:1510 -      #20 NTPC         score= 89.5  engines=CTL,SEC                      sector=power & utilities    rank=2
+20:04:36 | INFO     | __main__:1510 -      #21 CGPOWER      score= 88.7  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+20:04:36 | INFO     | __main__:1510 -      #22 EMMVEE       score= 86.4  engines=SEC                          sector=industrials          rank=3
+20:04:36 | INFO     | __main__:1510 -      #23 BHARATFORG   score= 84.1  engines=CTL,SEC                      sector=industrials          rank=3
+20:04:36 | INFO     | __main__:1510 -      #24 TATAPOWER    score= 81.6  engines=CTL                          sector=power & utilities    rank=2
+20:04:36 | INFO     | __main__:1510 -      #25 NLCINDIA     score= 79.2  engines=SEC                          sector=power & utilities    rank=2
+20:04:36 | INFO     | __main__:1510 -      #26 NAVINFLUOR   score= 78.0  engines=IAD                          sector=chemicals            rank=11
+20:04:36 | INFO     | __main__:1510 -      #27 ASTERDM      score= 68.6  engines=MOM                          sector=healthcare           rank=5
+20:04:36 | INFO     | __main__:1510 -      #28 ABSLAMC      score= 67.2  engines=MOM                          sector=financials           rank=10
+20:04:36 | INFO     | __main__:1510 -      #29 GICRE        score= 62.3  engines=MOM                          sector=financials           rank=10
+20:04:36 | INFO     | __main__:1510 -      #30 SOLARINDS    score= 61.6  engines=CTL                          sector=aerospace & defence  rank=4
+20:04:36 | INFO     | __main__:1526 -   Multi-engine confirmed: 11/30
+20:04:36 | INFO     | __main__:1527 -   Sector distribution: {'aerospace & defence': 2, 'industrials': 5, 'financials': 4, 'bank': 5, 'healthcare': 3, 'metals & mining': 5, 'power & utilities': 5, 'chemicals': 1}
+20:04:36 | INFO     | __main__:1528 -   Engine hits: {'RVS': 10, 'CTL': 13, 'MOM': 8, 'SEC': 12, 'RSB': 1, 'VBD': 1, 'IAD': 1}
+20:04:36 | INFO     | __main__:1531 - Pass 4: writing (shadow mode)...
+20:04:36 | INFO     | __main__:1133 - [DRY RUN] Would write 73 to msl_computed | 30 to master_shortlist | mode=shadow
+20:04:36 | INFO     | __main__:1138 -   #1 BEL          score=138.0  engines=RVS                       sector=aerospace & defence
+20:04:36 | INFO     | __main__:1138 -   #2 APLAPOLLO    score=135.0  engines=RVS                       sector=industrials
+20:04:36 | INFO     | __main__:1138 -   #3 SHRIRAMFIN   score=135.0  engines=RVS                       sector=financials
+20:04:36 | INFO     | __main__:1138 -   #4 MUTHOOTFIN   score=132.0  engines=RVS                       sector=financials
+20:04:36 | INFO     | __main__:1138 -   #5 AXISBANK     score=132.0  engines=RVS                       sector=bank
+20:04:37 | SUCCESS  | __main__:1397 - ✓ Excel exported: exports\screener_output_2026-04-28.xlsx
+20:04:37 | INFO     | __main__:1221 -   EAP revival: no penalized stocks found yesterday — skipping
+20:04:37 | INFO     | __main__:1289 -   Outcomes: no price data for today — skipping
+20:06:09 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=True | Phase=2
+20:06:09 | INFO     | __main__:1419 - =================================================================
+20:06:09 | INFO     | __main__:1420 - STEP: Screen Stocks v1.1 | 2026-04-28 | mode=SHADOW [DRY RUN]
+20:06:09 | INFO     | __main__:1422 - =================================================================
+20:06:09 | INFO     | __main__:1424 - Pass 1: loading data...
+20:06:09 | WARNING  | __main__:141 - stock_data_daily: falling back to 2026-04-27
+20:06:10 | INFO     | __main__:174 -   Loaded: 500 stocks | 24 sectors | regime=RECOVERING | asm=302 | fii=CAUTION | forced=0
+20:06:10 | INFO     | __main__:1456 - Pass 2: running engines (regime=RECOVERING)...
+20:06:10 | INFO     | __main__:304 -   CTL: 34 candidates
+20:06:10 | INFO     | __main__:385 -   SBS: 0 candidates
+20:06:10 | INFO     | __main__:465 -   TPO: 0 candidates
+20:06:10 | INFO     | __main__:542 -   VBD: 4 candidates
+20:06:10 | INFO     | __main__:607 -   IAD: 1 candidates
+20:06:10 | INFO     | __main__:661 -   RSB: 1 candidates
+20:06:10 | INFO     | __main__:764 -   MOM: 16 candidates [RECOVERING strict mode]
+20:06:10 | INFO     | __main__:791 -   RVS: RECOVERING mode — primary engine, relaxed gates
+20:06:10 | INFO     | __main__:879 -   RVS: 10 candidates
+20:06:10 | INFO     | __main__:907 -   SEC: RECOVERING mode — restricting to top 3 sectors
+20:06:10 | INFO     | __main__:955 -   SEC: 42 candidates [top 3 sectors only]
+20:06:10 | INFO     | __main__:1485 -   Engine totals: CTL=34 SBS=0 TPO=0 VBD=4 IAD=1 RSB=1 MOM=16 RVS=10 SEC=42 | Total unique=77
+20:06:10 | INFO     | __main__:1493 - Pass 3: aggregating and ranking...
+20:06:10 | INFO     | __main__:1002 -   Regime weights (RECOVERING): CTL=0.8x | IAD=1.3x | MOM=0.7x | RSB=1.3x | RVS=1.5x | SBS=0.9x | SEC=1.2x | TPO=0.9x | VBD=0.8x
+20:06:10 | INFO     | __main__:1113 -   Aggregated: 77 total unique | 73 after hard filters | 30 final
+20:06:10 | INFO     | __main__:1507 - 
+  ═══ TOP 30 SCREENED SYMBOLS (RECOVERING) ═══
+20:06:10 | INFO     | __main__:1510 -      # 1 BEL          score=138.0  engines=RVS                          sector=aerospace & defence  rank=4
+20:06:10 | INFO     | __main__:1510 -      # 2 APLAPOLLO    score=135.0  engines=RVS                          sector=industrials          rank=3
+20:06:10 | INFO     | __main__:1510 -      # 3 SHRIRAMFIN   score=135.0  engines=RVS                          sector=financials           rank=10
+20:06:10 | INFO     | __main__:1510 -      # 4 MUTHOOTFIN   score=132.0  engines=RVS                          sector=financials           rank=10
+20:06:10 | INFO     | __main__:1510 -      # 5 AXISBANK     score=132.0  engines=RVS                          sector=bank                 rank=6
+20:06:10 | INFO     | __main__:1510 -      # 6 CANBK        score=132.0  engines=RVS                          sector=bank                 rank=6
+20:06:10 | INFO     | __main__:1510 -      # 7 AJANTPHARM   score=123.0  engines=RVS                          sector=healthcare           rank=5
+20:06:10 | INFO     | __main__:1510 -      # 8 BANKINDIA    score=106.5  engines=RVS                          sector=bank                 rank=6
+20:06:10 | INFO     | __main__:1510 -      # 9 UNIONBANK    score=105.0  engines=RVS                          sector=bank                 rank=6
+20:06:10 | INFO     | __main__:1510 -      #10 INDIANB      score=105.0  engines=RVS                          sector=bank                 rank=6
+20:06:10 | INFO     | __main__:1510 -      #11 HINDALCO     score=101.9  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+20:06:10 | INFO     | __main__:1510 -      #12 NATIONALUM   score=101.6  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+20:06:10 | INFO     | __main__:1510 -      #13 TATASTEEL    score= 96.6  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:06:10 | INFO     | __main__:1510 -      #14 VEDL         score= 96.3  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:06:10 | INFO     | __main__:1510 -      #15 SARDAEN      score= 95.7  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:06:10 | INFO     | __main__:1510 -      #16 POWERGRID    score= 95.7  engines=CTL,MOM,SEC                  sector=power & utilities    rank=2
+20:06:10 | INFO     | __main__:1510 -      #17 CUMMINSIND   score= 95.6  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+20:06:10 | INFO     | __main__:1510 -      #18 APOLLOHOSP   score= 92.3  engines=RSB                          sector=healthcare           rank=5
+20:06:10 | INFO     | __main__:1510 -      #19 TORNTPOWER   score= 90.1  engines=CTL,VBD                      sector=power & utilities    rank=2
+20:06:10 | INFO     | __main__:1510 -      #20 NTPC         score= 89.5  engines=CTL,SEC                      sector=power & utilities    rank=2
+20:06:10 | INFO     | __main__:1510 -      #21 CGPOWER      score= 88.7  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+20:06:10 | INFO     | __main__:1510 -      #22 EMMVEE       score= 86.4  engines=SEC                          sector=industrials          rank=3
+20:06:10 | INFO     | __main__:1510 -      #23 BHARATFORG   score= 84.1  engines=CTL,SEC                      sector=industrials          rank=3
+20:06:10 | INFO     | __main__:1510 -      #24 TATAPOWER    score= 81.6  engines=CTL                          sector=power & utilities    rank=2
+20:06:10 | INFO     | __main__:1510 -      #25 NLCINDIA     score= 79.2  engines=SEC                          sector=power & utilities    rank=2
+20:06:10 | INFO     | __main__:1510 -      #26 NAVINFLUOR   score= 78.0  engines=IAD                          sector=chemicals            rank=11
+20:06:10 | INFO     | __main__:1510 -      #27 ASTERDM      score= 68.6  engines=MOM                          sector=healthcare           rank=5
+20:06:10 | INFO     | __main__:1510 -      #28 ABSLAMC      score= 67.2  engines=MOM                          sector=financials           rank=10
+20:06:10 | INFO     | __main__:1510 -      #29 GICRE        score= 62.3  engines=MOM                          sector=financials           rank=10
+20:06:10 | INFO     | __main__:1510 -      #30 SOLARINDS    score= 61.6  engines=CTL                          sector=aerospace & defence  rank=4
+20:06:10 | INFO     | __main__:1526 -   Multi-engine confirmed: 11/30
+20:06:10 | INFO     | __main__:1527 -   Sector distribution: {'aerospace & defence': 2, 'industrials': 5, 'financials': 4, 'bank': 5, 'healthcare': 3, 'metals & mining': 5, 'power & utilities': 5, 'chemicals': 1}
+20:06:10 | INFO     | __main__:1528 -   Engine hits: {'RVS': 10, 'CTL': 13, 'MOM': 8, 'SEC': 12, 'RSB': 1, 'VBD': 1, 'IAD': 1}
+20:06:10 | INFO     | __main__:1531 - Pass 4: writing (shadow mode)...
+20:06:10 | INFO     | __main__:1133 - [DRY RUN] Would write 73 to msl_computed | 30 to master_shortlist | mode=shadow
+20:06:10 | INFO     | __main__:1138 -   #1 BEL          score=138.0  engines=RVS                       sector=aerospace & defence
+20:06:10 | INFO     | __main__:1138 -   #2 APLAPOLLO    score=135.0  engines=RVS                       sector=industrials
+20:06:10 | INFO     | __main__:1138 -   #3 SHRIRAMFIN   score=135.0  engines=RVS                       sector=financials
+20:06:10 | INFO     | __main__:1138 -   #4 MUTHOOTFIN   score=132.0  engines=RVS                       sector=financials
+20:06:10 | INFO     | __main__:1138 -   #5 AXISBANK     score=132.0  engines=RVS                       sector=bank
+20:06:10 | SUCCESS  | __main__:1397 - ✓ Excel exported: exports\screener_output_2026-04-28.xlsx
+20:06:10 | INFO     | __main__:1221 -   EAP revival: no penalized stocks found yesterday — skipping
+20:06:10 | INFO     | __main__:1289 -   Outcomes: no price data for today — skipping
+20:09:02 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=True | Phase=2
+20:09:02 | INFO     | __main__:1419 - =================================================================
+20:09:02 | INFO     | __main__:1420 - STEP: Screen Stocks v1.1 | 2026-04-28 | mode=SHADOW [DRY RUN]
+20:09:02 | INFO     | __main__:1422 - =================================================================
+20:09:02 | INFO     | __main__:1424 - Pass 1: loading data...
+20:09:02 | WARNING  | __main__:141 - stock_data_daily: falling back to 2026-04-27
+20:09:03 | INFO     | __main__:174 -   Loaded: 500 stocks | 24 sectors | regime=RECOVERING | asm=302 | fii=CAUTION | forced=0
+20:09:03 | INFO     | __main__:1456 - Pass 2: running engines (regime=RECOVERING)...
+20:09:03 | INFO     | __main__:304 -   CTL: 34 candidates
+20:09:03 | INFO     | __main__:385 -   SBS: 0 candidates
+20:09:03 | INFO     | __main__:465 -   TPO: 0 candidates
+20:09:03 | INFO     | __main__:542 -   VBD: 4 candidates
+20:09:03 | INFO     | __main__:607 -   IAD: 1 candidates
+20:09:03 | INFO     | __main__:661 -   RSB: 1 candidates
+20:09:03 | INFO     | __main__:764 -   MOM: 16 candidates [RECOVERING strict mode]
+20:09:03 | INFO     | __main__:791 -   RVS: RECOVERING mode — primary engine, relaxed gates
+20:09:03 | INFO     | __main__:879 -   RVS: 10 candidates
+20:09:03 | INFO     | __main__:907 -   SEC: RECOVERING mode — restricting to top 3 sectors
+20:09:03 | INFO     | __main__:955 -   SEC: 42 candidates [top 3 sectors only]
+20:09:03 | INFO     | __main__:1485 -   Engine totals: CTL=34 SBS=0 TPO=0 VBD=4 IAD=1 RSB=1 MOM=16 RVS=10 SEC=42 | Total unique=77
+20:09:03 | INFO     | __main__:1493 - Pass 3: aggregating and ranking...
+20:09:03 | INFO     | __main__:1002 -   Regime weights (RECOVERING): CTL=0.8x | IAD=1.3x | MOM=0.7x | RSB=1.3x | RVS=1.5x | SBS=0.9x | SEC=1.2x | TPO=0.9x | VBD=0.8x
+20:09:03 | INFO     | __main__:1113 -   Aggregated: 77 total unique | 73 after hard filters | 30 final
+20:09:03 | INFO     | __main__:1507 - 
+  ═══ TOP 30 SCREENED SYMBOLS (RECOVERING) ═══
+20:09:03 | INFO     | __main__:1510 -      # 1 BEL          score=138.0  engines=RVS                          sector=aerospace & defence  rank=4
+20:09:03 | INFO     | __main__:1510 -      # 2 APLAPOLLO    score=135.0  engines=RVS                          sector=industrials          rank=3
+20:09:03 | INFO     | __main__:1510 -      # 3 SHRIRAMFIN   score=135.0  engines=RVS                          sector=financials           rank=10
+20:09:03 | INFO     | __main__:1510 -      # 4 MUTHOOTFIN   score=132.0  engines=RVS                          sector=financials           rank=10
+20:09:03 | INFO     | __main__:1510 -      # 5 AXISBANK     score=132.0  engines=RVS                          sector=bank                 rank=6
+20:09:03 | INFO     | __main__:1510 -      # 6 CANBK        score=132.0  engines=RVS                          sector=bank                 rank=6
+20:09:03 | INFO     | __main__:1510 -      # 7 AJANTPHARM   score=123.0  engines=RVS                          sector=healthcare           rank=5
+20:09:03 | INFO     | __main__:1510 -      # 8 BANKINDIA    score=106.5  engines=RVS                          sector=bank                 rank=6
+20:09:03 | INFO     | __main__:1510 -      # 9 UNIONBANK    score=105.0  engines=RVS                          sector=bank                 rank=6
+20:09:03 | INFO     | __main__:1510 -      #10 INDIANB      score=105.0  engines=RVS                          sector=bank                 rank=6
+20:09:03 | INFO     | __main__:1510 -      #11 HINDALCO     score=101.9  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+20:09:03 | INFO     | __main__:1510 -      #12 NATIONALUM   score=101.6  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+20:09:03 | INFO     | __main__:1510 -      #13 TATASTEEL    score= 96.6  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:09:03 | INFO     | __main__:1510 -      #14 VEDL         score= 96.3  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:09:03 | INFO     | __main__:1510 -      #15 SARDAEN      score= 95.7  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:09:03 | INFO     | __main__:1510 -      #16 POWERGRID    score= 95.7  engines=CTL,MOM,SEC                  sector=power & utilities    rank=2
+20:09:03 | INFO     | __main__:1510 -      #17 CUMMINSIND   score= 95.6  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+20:09:03 | INFO     | __main__:1510 -      #18 APOLLOHOSP   score= 92.3  engines=RSB                          sector=healthcare           rank=5
+20:09:03 | INFO     | __main__:1510 -      #19 TORNTPOWER   score= 90.1  engines=CTL,VBD                      sector=power & utilities    rank=2
+20:09:03 | INFO     | __main__:1510 -      #20 NTPC         score= 89.5  engines=CTL,SEC                      sector=power & utilities    rank=2
+20:09:03 | INFO     | __main__:1510 -      #21 CGPOWER      score= 88.7  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+20:09:03 | INFO     | __main__:1510 -      #22 EMMVEE       score= 86.4  engines=SEC                          sector=industrials          rank=3
+20:09:03 | INFO     | __main__:1510 -      #23 BHARATFORG   score= 84.1  engines=CTL,SEC                      sector=industrials          rank=3
+20:09:03 | INFO     | __main__:1510 -      #24 TATAPOWER    score= 81.6  engines=CTL                          sector=power & utilities    rank=2
+20:09:03 | INFO     | __main__:1510 -      #25 NLCINDIA     score= 79.2  engines=SEC                          sector=power & utilities    rank=2
+20:09:03 | INFO     | __main__:1510 -      #26 NAVINFLUOR   score= 78.0  engines=IAD                          sector=chemicals            rank=11
+20:09:03 | INFO     | __main__:1510 -      #27 ASTERDM      score= 68.6  engines=MOM                          sector=healthcare           rank=5
+20:09:03 | INFO     | __main__:1510 -      #28 ABSLAMC      score= 67.2  engines=MOM                          sector=financials           rank=10
+20:09:03 | INFO     | __main__:1510 -      #29 GICRE        score= 62.3  engines=MOM                          sector=financials           rank=10
+20:09:03 | INFO     | __main__:1510 -      #30 SOLARINDS    score= 61.6  engines=CTL                          sector=aerospace & defence  rank=4
+20:09:03 | INFO     | __main__:1526 -   Multi-engine confirmed: 11/30
+20:09:03 | INFO     | __main__:1527 -   Sector distribution: {'aerospace & defence': 2, 'industrials': 5, 'financials': 4, 'bank': 5, 'healthcare': 3, 'metals & mining': 5, 'power & utilities': 5, 'chemicals': 1}
+20:09:03 | INFO     | __main__:1528 -   Engine hits: {'RVS': 10, 'CTL': 13, 'MOM': 8, 'SEC': 12, 'RSB': 1, 'VBD': 1, 'IAD': 1}
+20:09:03 | INFO     | __main__:1531 - Pass 4: writing (shadow mode)...
+20:09:03 | INFO     | __main__:1133 - [DRY RUN] Would write 73 to msl_computed | 30 to master_shortlist | mode=shadow
+20:09:03 | INFO     | __main__:1138 -   #1 BEL          score=138.0  engines=RVS                       sector=aerospace & defence
+20:09:03 | INFO     | __main__:1138 -   #2 APLAPOLLO    score=135.0  engines=RVS                       sector=industrials
+20:09:03 | INFO     | __main__:1138 -   #3 SHRIRAMFIN   score=135.0  engines=RVS                       sector=financials
+20:09:03 | INFO     | __main__:1138 -   #4 MUTHOOTFIN   score=132.0  engines=RVS                       sector=financials
+20:09:03 | INFO     | __main__:1138 -   #5 AXISBANK     score=132.0  engines=RVS                       sector=bank
+20:09:03 | SUCCESS  | __main__:1397 - ✓ Excel exported: exports\screener_output_2026-04-28.xlsx
+20:09:03 | INFO     | __main__:1221 -   EAP revival: no penalized stocks found yesterday — skipping
+20:09:03 | INFO     | __main__:1289 -   Outcomes: no price data for today — skipping
+20:10:48 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=True | Phase=2
+20:10:48 | INFO     | __main__:1419 - =================================================================
+20:10:48 | INFO     | __main__:1420 - STEP: Screen Stocks v1.1 | 2026-04-28 | mode=SHADOW [DRY RUN]
+20:10:48 | INFO     | __main__:1422 - =================================================================
+20:10:48 | INFO     | __main__:1424 - Pass 1: loading data...
+20:10:49 | WARNING  | __main__:141 - stock_data_daily: falling back to 2026-04-27
+20:10:49 | INFO     | __main__:174 -   Loaded: 500 stocks | 24 sectors | regime=RECOVERING | asm=302 | fii=CAUTION | forced=0
+20:10:49 | INFO     | __main__:1456 - Pass 2: running engines (regime=RECOVERING)...
+20:10:49 | INFO     | __main__:304 -   CTL: 34 candidates
+20:10:49 | INFO     | __main__:385 -   SBS: 0 candidates
+20:10:49 | INFO     | __main__:465 -   TPO: 0 candidates
+20:10:49 | INFO     | __main__:542 -   VBD: 4 candidates
+20:10:49 | INFO     | __main__:607 -   IAD: 1 candidates
+20:10:49 | INFO     | __main__:661 -   RSB: 1 candidates
+20:10:49 | INFO     | __main__:764 -   MOM: 16 candidates [RECOVERING strict mode]
+20:10:49 | INFO     | __main__:791 -   RVS: RECOVERING mode — primary engine, relaxed gates
+20:10:49 | INFO     | __main__:879 -   RVS: 10 candidates
+20:10:49 | INFO     | __main__:907 -   SEC: RECOVERING mode — restricting to top 3 sectors
+20:10:49 | INFO     | __main__:955 -   SEC: 42 candidates [top 3 sectors only]
+20:10:49 | INFO     | __main__:1485 -   Engine totals: CTL=34 SBS=0 TPO=0 VBD=4 IAD=1 RSB=1 MOM=16 RVS=10 SEC=42 | Total unique=77
+20:10:49 | INFO     | __main__:1493 - Pass 3: aggregating and ranking...
+20:10:49 | INFO     | __main__:1002 -   Regime weights (RECOVERING): CTL=0.8x | IAD=1.3x | MOM=0.7x | RSB=1.3x | RVS=1.5x | SBS=0.9x | SEC=1.2x | TPO=0.9x | VBD=0.8x
+20:10:49 | INFO     | __main__:1113 -   Aggregated: 77 total unique | 73 after hard filters | 30 final
+20:10:49 | INFO     | __main__:1507 - 
+  ═══ TOP 30 SCREENED SYMBOLS (RECOVERING) ═══
+20:10:49 | INFO     | __main__:1510 -      # 1 BEL          score=138.0  engines=RVS                          sector=aerospace & defence  rank=4
+20:10:49 | INFO     | __main__:1510 -      # 2 APLAPOLLO    score=135.0  engines=RVS                          sector=industrials          rank=3
+20:10:49 | INFO     | __main__:1510 -      # 3 SHRIRAMFIN   score=135.0  engines=RVS                          sector=financials           rank=10
+20:10:49 | INFO     | __main__:1510 -      # 4 MUTHOOTFIN   score=132.0  engines=RVS                          sector=financials           rank=10
+20:10:49 | INFO     | __main__:1510 -      # 5 AXISBANK     score=132.0  engines=RVS                          sector=bank                 rank=6
+20:10:49 | INFO     | __main__:1510 -      # 6 CANBK        score=132.0  engines=RVS                          sector=bank                 rank=6
+20:10:49 | INFO     | __main__:1510 -      # 7 AJANTPHARM   score=123.0  engines=RVS                          sector=healthcare           rank=5
+20:10:49 | INFO     | __main__:1510 -      # 8 BANKINDIA    score=106.5  engines=RVS                          sector=bank                 rank=6
+20:10:49 | INFO     | __main__:1510 -      # 9 UNIONBANK    score=105.0  engines=RVS                          sector=bank                 rank=6
+20:10:49 | INFO     | __main__:1510 -      #10 INDIANB      score=105.0  engines=RVS                          sector=bank                 rank=6
+20:10:49 | INFO     | __main__:1510 -      #11 HINDALCO     score=101.9  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+20:10:49 | INFO     | __main__:1510 -      #12 NATIONALUM   score=101.6  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+20:10:49 | INFO     | __main__:1510 -      #13 TATASTEEL    score= 96.6  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:10:49 | INFO     | __main__:1510 -      #14 VEDL         score= 96.3  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:10:49 | INFO     | __main__:1510 -      #15 SARDAEN      score= 95.7  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:10:49 | INFO     | __main__:1510 -      #16 POWERGRID    score= 95.7  engines=CTL,MOM,SEC                  sector=power & utilities    rank=2
+20:10:49 | INFO     | __main__:1510 -      #17 CUMMINSIND   score= 95.6  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+20:10:49 | INFO     | __main__:1510 -      #18 APOLLOHOSP   score= 92.3  engines=RSB                          sector=healthcare           rank=5
+20:10:49 | INFO     | __main__:1510 -      #19 TORNTPOWER   score= 90.1  engines=CTL,VBD                      sector=power & utilities    rank=2
+20:10:49 | INFO     | __main__:1510 -      #20 NTPC         score= 89.5  engines=CTL,SEC                      sector=power & utilities    rank=2
+20:10:49 | INFO     | __main__:1510 -      #21 CGPOWER      score= 88.7  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+20:10:49 | INFO     | __main__:1510 -      #22 EMMVEE       score= 86.4  engines=SEC                          sector=industrials          rank=3
+20:10:49 | INFO     | __main__:1510 -      #23 BHARATFORG   score= 84.1  engines=CTL,SEC                      sector=industrials          rank=3
+20:10:49 | INFO     | __main__:1510 -      #24 TATAPOWER    score= 81.6  engines=CTL                          sector=power & utilities    rank=2
+20:10:49 | INFO     | __main__:1510 -      #25 NLCINDIA     score= 79.2  engines=SEC                          sector=power & utilities    rank=2
+20:10:49 | INFO     | __main__:1510 -      #26 NAVINFLUOR   score= 78.0  engines=IAD                          sector=chemicals            rank=11
+20:10:49 | INFO     | __main__:1510 -      #27 ASTERDM      score= 68.6  engines=MOM                          sector=healthcare           rank=5
+20:10:49 | INFO     | __main__:1510 -      #28 ABSLAMC      score= 67.2  engines=MOM                          sector=financials           rank=10
+20:10:49 | INFO     | __main__:1510 -      #29 GICRE        score= 62.3  engines=MOM                          sector=financials           rank=10
+20:10:49 | INFO     | __main__:1510 -      #30 SOLARINDS    score= 61.6  engines=CTL                          sector=aerospace & defence  rank=4
+20:10:49 | INFO     | __main__:1526 -   Multi-engine confirmed: 11/30
+20:10:49 | INFO     | __main__:1527 -   Sector distribution: {'aerospace & defence': 2, 'industrials': 5, 'financials': 4, 'bank': 5, 'healthcare': 3, 'metals & mining': 5, 'power & utilities': 5, 'chemicals': 1}
+20:10:49 | INFO     | __main__:1528 -   Engine hits: {'RVS': 10, 'CTL': 13, 'MOM': 8, 'SEC': 12, 'RSB': 1, 'VBD': 1, 'IAD': 1}
+20:10:49 | INFO     | __main__:1531 - Pass 4: writing (shadow mode)...
+20:10:49 | INFO     | __main__:1133 - [DRY RUN] Would write 73 to msl_computed | 30 to master_shortlist | mode=shadow
+20:10:49 | INFO     | __main__:1138 -   #1 BEL          score=138.0  engines=RVS                       sector=aerospace & defence
+20:10:49 | INFO     | __main__:1138 -   #2 APLAPOLLO    score=135.0  engines=RVS                       sector=industrials
+20:10:49 | INFO     | __main__:1138 -   #3 SHRIRAMFIN   score=135.0  engines=RVS                       sector=financials
+20:10:49 | INFO     | __main__:1138 -   #4 MUTHOOTFIN   score=132.0  engines=RVS                       sector=financials
+20:10:49 | INFO     | __main__:1138 -   #5 AXISBANK     score=132.0  engines=RVS                       sector=bank
+20:10:49 | SUCCESS  | __main__:1397 - ✓ Excel exported: exports\screener_output_2026-04-28.xlsx
+20:10:49 | INFO     | __main__:1221 -   EAP revival: no penalized stocks found yesterday — skipping
+20:10:49 | INFO     | __main__:1289 -   Outcomes: no price data for today — skipping
+20:13:30 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=True | Phase=2
+20:13:30 | INFO     | __main__:1419 - =================================================================
+20:13:30 | INFO     | __main__:1420 - STEP: Screen Stocks v1.1 | 2026-04-28 | mode=SHADOW [DRY RUN]
+20:13:30 | INFO     | __main__:1422 - =================================================================
+20:13:30 | INFO     | __main__:1424 - Pass 1: loading data...
+20:13:31 | WARNING  | __main__:141 - stock_data_daily: falling back to 2026-04-27
+20:13:32 | INFO     | __main__:174 -   Loaded: 500 stocks | 24 sectors | regime=RECOVERING | asm=302 | fii=CAUTION | forced=0
+20:13:32 | INFO     | __main__:1456 - Pass 2: running engines (regime=RECOVERING)...
+20:13:32 | INFO     | __main__:304 -   CTL: 34 candidates
+20:13:32 | INFO     | __main__:385 -   SBS: 0 candidates
+20:13:32 | INFO     | __main__:465 -   TPO: 0 candidates
+20:13:32 | INFO     | __main__:542 -   VBD: 4 candidates
+20:13:32 | INFO     | __main__:607 -   IAD: 1 candidates
+20:13:32 | INFO     | __main__:661 -   RSB: 1 candidates
+20:13:32 | INFO     | __main__:764 -   MOM: 16 candidates [RECOVERING strict mode]
+20:13:32 | INFO     | __main__:791 -   RVS: RECOVERING mode — primary engine, relaxed gates
+20:13:32 | INFO     | __main__:879 -   RVS: 10 candidates
+20:13:32 | INFO     | __main__:907 -   SEC: RECOVERING mode — restricting to top 3 sectors
+20:13:32 | INFO     | __main__:955 -   SEC: 42 candidates [top 3 sectors only]
+20:13:32 | INFO     | __main__:1485 -   Engine totals: CTL=34 SBS=0 TPO=0 VBD=4 IAD=1 RSB=1 MOM=16 RVS=10 SEC=42 | Total unique=77
+20:13:32 | INFO     | __main__:1493 - Pass 3: aggregating and ranking...
+20:13:32 | INFO     | __main__:1002 -   Regime weights (RECOVERING): CTL=0.8x | IAD=1.3x | MOM=0.7x | RSB=1.3x | RVS=1.5x | SBS=0.9x | SEC=1.2x | TPO=0.9x | VBD=0.8x
+20:13:32 | INFO     | __main__:1113 -   Aggregated: 77 total unique | 73 after hard filters | 73 final
+20:13:32 | INFO     | __main__:1507 - 
+  ═══ TOP 73 SCREENED SYMBOLS (RECOVERING) ═══
+20:13:32 | INFO     | __main__:1510 -      # 1 BEL          score=138.0  engines=RVS                          sector=aerospace & defence  rank=4
+20:13:32 | INFO     | __main__:1510 -      # 2 APLAPOLLO    score=135.0  engines=RVS                          sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      # 3 SHRIRAMFIN   score=135.0  engines=RVS                          sector=financials           rank=10
+20:13:32 | INFO     | __main__:1510 -      # 4 MUTHOOTFIN   score=132.0  engines=RVS                          sector=financials           rank=10
+20:13:32 | INFO     | __main__:1510 -      # 5 AXISBANK     score=132.0  engines=RVS                          sector=bank                 rank=6
+20:13:32 | INFO     | __main__:1510 -      # 6 CANBK        score=132.0  engines=RVS                          sector=bank                 rank=6
+20:13:32 | INFO     | __main__:1510 -      # 7 AJANTPHARM   score=123.0  engines=RVS                          sector=healthcare           rank=5
+20:13:32 | INFO     | __main__:1510 -      # 8 BANKINDIA    score=106.5  engines=RVS                          sector=bank                 rank=6
+20:13:32 | INFO     | __main__:1510 -      # 9 UNIONBANK    score=105.0  engines=RVS                          sector=bank                 rank=6
+20:13:32 | INFO     | __main__:1510 -      #10 INDIANB      score=105.0  engines=RVS                          sector=bank                 rank=6
+20:13:32 | INFO     | __main__:1510 -      #11 HINDALCO     score=101.9  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+20:13:32 | INFO     | __main__:1510 -      #12 NATIONALUM   score=101.6  engines=CTL,MOM,SEC                  sector=metals & mining      rank=1
+20:13:32 | INFO     | __main__:1510 -      #13 TATASTEEL    score= 96.6  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:13:32 | INFO     | __main__:1510 -      #14 VEDL         score= 96.3  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:13:32 | INFO     | __main__:1510 -      #15 SARDAEN      score= 95.7  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:13:32 | INFO     | __main__:1510 -      #16 POWERGRID    score= 95.7  engines=CTL,MOM,SEC                  sector=power & utilities    rank=2
+20:13:32 | INFO     | __main__:1510 -      #17 CUMMINSIND   score= 95.6  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #18 JINDALSTEL   score= 95.6  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:13:32 | INFO     | __main__:1510 -      #19 GPIL         score= 95.4  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:13:32 | INFO     | __main__:1510 -      #20 NMDC         score= 95.0  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:13:32 | INFO     | __main__:1510 -      #21 HINDZINC     score= 94.3  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:13:32 | INFO     | __main__:1510 -      #22 NSLNISP      score= 92.4  engines=SEC                          sector=metals & mining      rank=1
+20:13:32 | INFO     | __main__:1510 -      #23 APOLLOHOSP   score= 92.3  engines=RSB                          sector=healthcare           rank=5
+20:13:32 | INFO     | __main__:1510 -      #24 LLOYDSME     score= 92.0  engines=CTL                          sector=metals & mining      rank=1
+20:13:32 | INFO     | __main__:1510 -      #25 TORNTPOWER   score= 90.1  engines=CTL,VBD                      sector=power & utilities    rank=2
+20:13:32 | INFO     | __main__:1510 -      #26 JSWSTEEL     score= 90.1  engines=CTL,SEC                      sector=metals & mining      rank=1
+20:13:32 | INFO     | __main__:1510 -      #27 NTPC         score= 89.5  engines=CTL,SEC                      sector=power & utilities    rank=2
+20:13:32 | INFO     | __main__:1510 -      #28 CGPOWER      score= 88.7  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #29 EMMVEE       score= 86.4  engines=SEC                          sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #30 USHAMART     score= 84.2  engines=SEC,VBD                      sector=metals & mining      rank=1
+20:13:32 | INFO     | __main__:1510 -      #31 BHARATFORG   score= 84.1  engines=CTL,SEC                      sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #32 KEI          score= 83.7  engines=CTL,SEC                      sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #33 ELGIEQUIP    score= 82.3  engines=MOM,SEC                      sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #34 THERMAX      score= 81.8  engines=CTL,MOM                      sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #35 TATAPOWER    score= 81.6  engines=CTL                          sector=power & utilities    rank=2
+20:13:32 | INFO     | __main__:1510 -      #36 TIMKEN       score= 80.4  engines=SEC                          sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #37 GRAVITA      score= 80.4  engines=SEC                          sector=metals & mining      rank=1
+20:13:32 | INFO     | __main__:1510 -      #38 NLCINDIA     score= 79.2  engines=SEC                          sector=power & utilities    rank=2
+20:13:32 | INFO     | __main__:1510 -      #39 ABB          score= 79.2  engines=CTL                          sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #40 WELCORP      score= 79.2  engines=CTL                          sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #41 BHEL         score= 79.2  engines=CTL                          sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #42 ENRIN        score= 79.2  engines=SEC                          sector=power & utilities    rank=2
+20:13:32 | INFO     | __main__:1510 -      #43 COALINDIA    score= 78.4  engines=CTL                          sector=metals & mining      rank=1
+20:13:32 | INFO     | __main__:1510 -      #44 NAVINFLUOR   score= 78.0  engines=IAD                          sector=chemicals            rank=11
+20:13:32 | INFO     | __main__:1510 -      #45 JSL          score= 78.0  engines=SEC                          sector=metals & mining      rank=1
+20:13:32 | INFO     | __main__:1510 -      #46 RKFORGE      score= 77.5  engines=SEC,VBD                      sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #47 CESC         score= 76.5  engines=CTL,VBD                      sector=power & utilities    rank=2
+20:13:32 | INFO     | __main__:1510 -      #48 ADANIPOWER   score= 76.0  engines=CTL                          sector=power & utilities    rank=2
+20:13:32 | INFO     | __main__:1510 -      #49 AIAENG       score= 74.7  engines=CTL,SEC                      sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #50 POLYCAB      score= 74.4  engines=SEC                          sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #51 ACE          score= 74.4  engines=SEC                          sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #52 WAAREEENER   score= 74.4  engines=SEC                          sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #53 SCHAEFFLER   score= 74.1  engines=CTL,SEC                      sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #54 JSWENERGY    score= 73.2  engines=SEC                          sector=power & utilities    rank=2
+20:13:32 | INFO     | __main__:1510 -      #55 NHPC         score= 73.2  engines=SEC                          sector=power & utilities    rank=2
+20:13:32 | INFO     | __main__:1510 -      #56 SIEMENS      score= 72.8  engines=CTL                          sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #57 KIRLOSENG    score= 72.0  engines=SEC                          sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #58 CARBORUNIV   score= 72.0  engines=SEC                          sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #59 GMDCLTD      score= 72.0  engines=SEC                          sector=metals & mining      rank=1
+20:13:32 | INFO     | __main__:1510 -      #60 RRKABEL      score= 72.0  engines=SEC                          sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #61 RPOWER       score= 69.6  engines=SEC                          sector=power & utilities    rank=2
+20:13:32 | INFO     | __main__:1510 -      #62 SHYAMMETL    score= 69.6  engines=SEC                          sector=metals & mining      rank=1
+20:13:32 | INFO     | __main__:1510 -      #63 FEDERALBNK   score= 69.3  engines=MOM                          sector=bank                 rank=6
+20:13:32 | INFO     | __main__:1510 -      #64 ASTERDM      score= 68.6  engines=MOM                          sector=healthcare           rank=5
+20:13:32 | INFO     | __main__:1510 -      #65 ABSLAMC      score= 67.2  engines=MOM                          sector=financials           rank=10
+20:13:32 | INFO     | __main__:1510 -      #66 JPPOWER      score= 67.2  engines=SEC                          sector=power & utilities    rank=2
+20:13:32 | INFO     | __main__:1510 -      #67 JINDALSAW    score= 66.5  engines=MOM                          sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #68 POWERINDIA   score= 65.6  engines=CTL                          sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #69 GICRE        score= 62.3  engines=MOM                          sector=financials           rank=10
+20:13:32 | INFO     | __main__:1510 -      #70 FINCABLES    score= 62.3  engines=MOM                          sector=industrials          rank=3
+20:13:32 | INFO     | __main__:1510 -      #71 SOLARINDS    score= 61.6  engines=CTL                          sector=aerospace & defence  rank=4
+20:13:32 | INFO     | __main__:1510 -      #72 STARHEALTH   score= 58.8  engines=MOM                          sector=financials           rank=10
+20:13:32 | INFO     | __main__:1510 -      #73 MAHABANK     score= 56.0  engines=MOM                          sector=bank                 rank=6
+20:13:32 | INFO     | __main__:1526 -   Multi-engine confirmed: 24/73
+20:13:32 | INFO     | __main__:1527 -   Sector distribution: {'aerospace & defence': 2, 'industrials': 25, 'financials': 5, 'bank': 7, 'healthcare': 3, 'metals & mining': 18, 'power & utilities': 12, 'chemicals': 1}
+20:13:32 | INFO     | __main__:1528 -   Engine hits: {'RVS': 10, 'CTL': 31, 'MOM': 15, 'SEC': 40, 'RSB': 1, 'VBD': 4, 'IAD': 1}
+20:13:32 | INFO     | __main__:1531 - Pass 4: writing (shadow mode)...
+20:13:32 | INFO     | __main__:1133 - [DRY RUN] Would write 73 to msl_computed | 73 to master_shortlist | mode=shadow
+20:13:32 | INFO     | __main__:1138 -   #1 BEL          score=138.0  engines=RVS                       sector=aerospace & defence
+20:13:32 | INFO     | __main__:1138 -   #2 APLAPOLLO    score=135.0  engines=RVS                       sector=industrials
+20:13:32 | INFO     | __main__:1138 -   #3 SHRIRAMFIN   score=135.0  engines=RVS                       sector=financials
+20:13:32 | INFO     | __main__:1138 -   #4 MUTHOOTFIN   score=132.0  engines=RVS                       sector=financials
+20:13:32 | INFO     | __main__:1138 -   #5 AXISBANK     score=132.0  engines=RVS                       sector=bank
+20:13:32 | SUCCESS  | __main__:1397 - ✓ Excel exported: exports\screener_output_2026-04-28.xlsx
+20:13:32 | INFO     | __main__:1221 -   EAP revival: no penalized stocks found yesterday — skipping
+20:13:32 | INFO     | __main__:1289 -   Outcomes: no price data for today — skipping
+21:42:26 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=True | Phase=2
+21:42:26 | INFO     | __main__:2077 - ======================================================================
+21:42:26 | INFO     | __main__:2078 - STEP [14]: Compute MSL v3.0 | 2026-04-28 | mode=SHADOW [DRY RUN]
+21:42:26 | INFO     | __main__:2082 - ======================================================================
+21:42:26 | INFO     | __main__:2084 - Pass 1: loading data (9 bulk queries)...
+21:42:26 | INFO     | __main__:155 -   Symbol source: msl_computed (screen_stocks shadow) — 95 symbols
+21:42:26 | INFO     | __main__:175 -   Source table: msl_computed (95 symbols)
+21:42:27 | WARNING  | __main__:218 -   stock_data_daily: falling back to 2026-04-27
+21:44:09 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=True | Phase=2
+21:44:09 | INFO     | __main__:2077 - ======================================================================
+21:44:09 | INFO     | __main__:2078 - STEP [14]: Compute MSL v3.0 | 2026-04-28 | mode=SHADOW [DRY RUN]
+21:44:09 | INFO     | __main__:2082 - ======================================================================
+21:44:09 | INFO     | __main__:2084 - Pass 1: loading data (9 bulk queries)...
+21:44:09 | INFO     | __main__:155 -   Symbol source: msl_computed (screen_stocks shadow) — 95 symbols
+21:44:09 | INFO     | __main__:175 -   Source table: msl_computed (95 symbols)
+21:44:10 | WARNING  | __main__:218 -   stock_data_daily: falling back to 2026-04-27
+21:53:00 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=True | Phase=2
+21:53:00 | INFO     | __main__:149 - FII/DII Ingestion starting
+21:53:03 | SUCCESS  | __main__:169 - FII/DII saved: net=-2104Cr, flag=CAUTION
+21:54:10 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=True | Phase=2
+21:54:10 | INFO     | __main__:2077 - ======================================================================
+21:54:10 | INFO     | __main__:2078 - STEP [14]: Compute MSL v3.0 | 2026-04-28 | mode=SHADOW [DRY RUN]
+21:54:10 | INFO     | __main__:2082 - ======================================================================
+21:54:10 | INFO     | __main__:2084 - Pass 1: loading data (9 bulk queries)...
+21:54:10 | INFO     | __main__:155 -   Symbol source: msl_computed (screen_stocks shadow) — 95 symbols
+21:54:10 | INFO     | __main__:175 -   Source table: msl_computed (95 symbols)
+21:54:11 | WARNING  | __main__:218 -   stock_data_daily: falling back to 2026-04-27
+23:01:15 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=True | Phase=2
+23:01:15 | INFO     | __main__:2281 - ======================================================================
+23:01:15 | INFO     | __main__:2282 - STEP [14]: Compute MSL v3.0 | 2026-04-28 | mode=SHADOW [DRY RUN]
+23:01:15 | INFO     | __main__:2286 - ======================================================================
+23:01:15 | INFO     | __main__:2288 - Pass 1: loading data (9 bulk queries)...
+23:01:15 | INFO     | __main__:288 -   Symbol source: msl_computed (screen_stocks shadow) — 95 symbols
+23:01:15 | INFO     | __main__:308 -   Source table: msl_computed (95 symbols)
+23:01:16 | WARNING  | __main__:351 -   stock_data_daily: falling back to 2026-04-27
+23:01:16 | INFO     | __main__:528 -   Loaded: 95 symbols | 95 stock_data | 474 history | 24 sectors | regime=RECOVERING | 0 open positions | blocked=0 | FII=SELLING | news B:1/b:30
+23:01:16 | INFO     | __main__:2294 - Pass 2: computing all fields...
+23:01:16 | INFO     | __main__:1996 -   Regime context: RECOVERING | RSI extended @72 | regime_boost=+0 | macro_boost=-3.0 | VIX=18.0475 | breadth=47% | FII=SELLING | GIFT=+0.33%
+23:01:16 | INFO     | __main__:2182 -   Computed: 95 | skipped: 0
+23:01:16 | INFO     | __main__:2304 -   Results: 95 symbols
+23:01:16 | INFO     | __main__:2305 -   Avg final_score:         56.2
+23:01:16 | INFO     | __main__:2306 -   Avg momentum_score:      71.7
+23:01:16 | INFO     | __main__:2307 -   Avg institutional_score: 37.3
+23:01:16 | INFO     | __main__:2308 -   Avg breakout_readiness:  29.3
+23:01:16 | INFO     | __main__:2309 -   Avg risk_score:          23.3
+23:01:16 | INFO     | __main__:2310 -   Avg holding_score:       76.2
+23:01:16 | INFO     | __main__:2311 -   Avg MA alignment:        5.3/6
+23:01:16 | INFO     | __main__:2313 -   Momentum state:   {'HOT': 64, 'BUILDING': 24, 'WEAK': 5, 'STABLE': 2}
+23:01:16 | INFO     | __main__:2314 -   Momentum phase:   {'EXTENDED': 30, 'EXPANSION': 43, 'EXHAUSTED': 4, 'FLAT': 17, 'EARLY': 1}
+23:01:16 | INFO     | __main__:2315 -   Trend maturity:   {'LATE': 43, 'DEVELOPING': 25, 'EXHAUSTED': 7, 'FLAT': 11, 'FRESH': 9}
+23:01:16 | INFO     | __main__:2316 -   Lifecycle:        {'HOLD': 79, 'EXIT': 6, 'ADD': 10}
+23:01:16 | INFO     | __main__:2317 -   Entry timing:     {'REENTRY': 38, 'EXTENDED': 35, 'OPTIMAL': 6, 'CHASING': 16}
+23:01:16 | INFO     | __main__:2318 -   Weekly structure: {'STRONG': 81, 'WEAK': 3, 'CONSOLIDATING': 8, 'CAUTION': 3}
+23:01:16 | INFO     | __main__:2319 -   BB context:       {'UPPER_HALF': 46, 'RIDING_UPPER': 38, 'MIDDLE': 10, 'LOWER_HALF': 1}
+23:01:16 | INFO     | __main__:2320 -   VWAP alignment:   {'ABOVE_ALL_EXTENDED': 12, 'ABOVE_20D': 50, 'ABOVE_TODAY_ONLY': 1, 'MIXED': 9, 'ABOVE_ALL': 23}
+23:01:16 | INFO     | __main__:2321 -   Volume trend:     {'STABLE': 50, 'CONTRACTING': 17, 'EXPANDING': 26, 'DECLINING': 2}
+23:01:16 | INFO     | __main__:2322 -   Fund quality:     {'STABLE': 91, 'IMPROVING': 1, 'WEAK': 1, 'LOSS_MAKING': 2}
+23:01:16 | INFO     | __main__:2332 -   Score distribution: {'≥70': 2, '55-70': 60, '40-55': 28, '<40': 5}
+23:01:16 | INFO     | __main__:2338 -   Top 6 by final_score:
+23:01:16 | INFO     | __main__:2342 -     HINDALCO     final= 71.1  hold= 79.4  mom=HOT      phase=EXTENDED   MA=6/6  BB=UPPER_HALF           risk=24.0  struct=YES
+23:01:16 | INFO     | __main__:2342 -     CARBORUNIV   final= 70.1  hold= 80.8  mom=HOT      phase=EXTENDED   MA=5/6  BB=UPPER_HALF           risk=16.0  struct=NO
+23:01:16 | INFO     | __main__:2342 -     CUMMINSIND   final= 69.1  hold= 87.0  mom=HOT      phase=EXPANSION  MA=6/6  BB=UPPER_HALF           risk=22.0  struct=YES
+23:01:16 | INFO     | __main__:2342 -     USHAMART     final= 68.9  hold= 88.6  mom=HOT      phase=FLAT       MA=5/6  BB=RIDING_UPPER         risk=13.0  struct=NO
+23:01:16 | INFO     | __main__:2342 -     NTPC         final= 68.6  hold= 88.3  mom=HOT      phase=EXPANSION  MA=6/6  BB=RIDING_UPPER         risk=15.0  struct=YES
+23:01:16 | INFO     | __main__:2342 -     NMDC         final= 67.6  hold= 79.2  mom=HOT      phase=EARLY      MA=6/6  BB=UPPER_HALF           risk=25.0  struct=YES
+23:01:16 | INFO     | __main__:2359 -   ★ HOT + in zone (new opportunities): ['ABB', 'ABSLAMC', 'AIAENG', 'ANGELONE', 'AUBANK', 'AUROPHARMA', 'CGPOWER', 'DATAPATTNS', 'ELGIEQUIP', 'EMMVEE', 'ENRIN', 'GMDCLTD', 'GRAPHITE', 'HEG', 'JINDALSTEL', 'JPPOWER', 'KEI', 'MAHABANK', 'NAM-INDIA', 'POLYCAB', 'RPOWER', 'SOLARINDS', 'THERMAX']
+23:01:16 | INFO     | __main__:2369 -   🌱 FRESH trend + struct_edge: ['COALINDIA', 'CUB', 'IPCALAB', 'LTF', 'RRKABEL', 'TATASTEEL', 'TIMKEN']
+23:01:16 | INFO     | __main__:2418 -   Sheet vs computed divergences (31), top 40 by rank:
+23:01:16 | INFO     | __main__:2420 -     #1 NATIONALUM: mom WEAK→HOT  score 100→67.1
+23:01:16 | INFO     | __main__:2420 -     #2 GVT&D: NOT COMPUTED — sheet mom=HOT  score=96
+23:01:16 | INFO     | __main__:2420 -     #3 POWERINDIA: mom HOT→HOT  score 94→49.0
+23:01:16 | INFO     | __main__:2420 -     #4 HINDCOPPER: NOT COMPUTED — sheet mom=WEAK  score=80
+23:01:16 | INFO     | __main__:2420 -     #5 ADANIPOWER: mom HOT→HOT  score 68→46.0
+23:01:16 | INFO     | __main__:2420 -     #6 VEDL: mom WEAK→BUILDING  score 65→55.7
+23:01:16 | INFO     | __main__:2420 -     #7 WELCORP: mom STABLE→HOT  score 63→43.8
+23:01:16 | INFO     | __main__:2420 -     #8 BHARATFORG: mom STABLE→HOT  score 62→60.1
+23:01:16 | INFO     | __main__:2420 -     #10 CUMMINSIND: mom STABLE→HOT  score 59→69.1
+23:01:16 | INFO     | __main__:2420 -     #11 SAIL: NOT COMPUTED — sheet mom=HOT  score=59
+23:01:16 | INFO     | __main__:2420 -     #12 HINDALCO: mom HOT→HOT  score 59→71.1
+23:01:16 | INFO     | __main__:2420 -     #14 GRAPHITE: mom #N/A (No matches are found in FILTER evaluation.)→HOT  score 52→61.4
+23:01:16 | INFO     | __main__:2420 -     #15 LLOYDSME: mom #N/A (No matches are found in FILTER evaluation.)→HOT  score 50→56.9
+23:01:16 | INFO     | __main__:2420 -     #16 TATASTEEL: mom STABLE→HOT  score 50→66.0
+23:01:16 | INFO     | __main__:2420 -     #17 KEI: mom STABLE→HOT  score 50→58.5
+23:01:16 | INFO     | __main__:2420 -     #18 JINDALSTEL: mom STABLE→HOT  score 49→64.0
+23:01:16 | INFO     | __main__:2420 -     #19 GPIL: mom STABLE→BUILDING  score 48→58.8
+23:01:16 | INFO     | __main__:2420 -     #20 NMDC: mom BUILDING→HOT  score 46→67.6
+23:01:16 | INFO     | __main__:2420 -     #21 HINDZINC: mom STABLE→HOT  score 46→64.2
+23:01:16 | INFO     | __main__:2420 -     #22 SIEMENS: mom BUILDING→HOT  score 45→60.8
+23:01:16 | INFO     | __main__:2420 -     #23 TORNTPOWER: mom BUILDING→HOT  score 45→56.4
+23:01:16 | INFO     | __main__:2420 -     #24 CGPOWER: mom BUILDING→HOT  score 43→63.9
+23:01:16 | INFO     | __main__:2420 -     #25 NTPC: mom BUILDING→HOT  score 43→68.6
+23:01:16 | INFO     | __main__:2420 -     #26 POLYCAB: mom STABLE→HOT  score 42→55.4
+23:01:16 | INFO     | __main__:2420 -     #27 TATAPOWER: mom BUILDING→HOT  score 42→57.5
+23:01:16 | INFO     | __main__:2420 -     #28 SARDAEN: mom BUILDING→HOT  score 41→65.8
+23:01:16 | INFO     | __main__:2420 -     #29 JSWSTEEL: mom BUILDING→HOT  score 41→63.8
+23:01:16 | INFO     | __main__:2420 -     #30 COALINDIA: mom STABLE→BUILDING  score 40→59.2
+23:01:16 | INFO     | __main__:2420 -     #31 SOLARINDS: mom STABLE→HOT  score 37→63.7
+23:01:16 | INFO     | __main__:2420 -     #32 POWERGRID: mom STABLE→HOT  score 35→67.1
+23:01:16 | INFO     | __main__:2420 -     #33 JAINREC: NOT COMPUTED — sheet mom=#N/A (No matches are found in FILTER evaluation.)  score=16
+23:01:16 | INFO     | __main__:2436 - Pass 3: writing results...
+23:01:16 | INFO     | __main__:2196 - [DRY RUN] Would write 95 rows | mode=shadow
+23:01:16 | INFO     | __main__:2199 -   HINDALCO: final=71.1 mom=HOT phase=EXTENDED MA=6/6 BB=UPPER_HALF struct=YES hold=79.4 FII=SELLING
+23:01:16 | INFO     | __main__:2199 -   CARBORUNIV: final=70.1 mom=HOT phase=EXTENDED MA=5/6 BB=UPPER_HALF struct=NO hold=80.8 FII=SELLING
+23:01:16 | INFO     | __main__:2199 -   CUMMINSIND: final=69.1 mom=HOT phase=EXPANSION MA=6/6 BB=UPPER_HALF struct=YES hold=87.0 FII=SELLING
