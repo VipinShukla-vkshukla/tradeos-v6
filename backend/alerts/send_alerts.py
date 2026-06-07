@@ -115,6 +115,12 @@ MESSAGE STRUCTURE:
     TIER_2 Intraday Triggers (2-line compact)
     Today's Events + Next 3 days events
 
+  AFTERNOON:
+    Header: date + time
+    TIER_1 zone status only (live yfinance prices)
+    IN ZONE / APPROACHING / ABOVE / MISSED per pick
+    Timing note for 1:30–2:30 PM entry window
+
   COMPACT:
     One-screen mobile summary
 """
@@ -911,8 +917,8 @@ def build_evening(data: dict, sb=None) -> str:
     # ── Anomalies ──
     if data.get("anomalies"):
         lines += ["", "🚨 <b>DATA ALERTS</b>"]
-        for a in data["anomalies"][:3]:
-            lines.append(f"  ⚠️ {a.get('check_name','?')}: {a.get('message','')[:80]}")
+        for a in data["anomalies"]:
+            lines.append(f"  ⚠️ {a.get('check_name','?')}: {a.get('message','')}")
     lines.append("")
 
     # ── PATCH 6: Section 0 — MACRO + FII FLOW ─────────────────────────────
@@ -925,9 +931,9 @@ def build_evening(data: dict, sb=None) -> str:
         if mi.get("fii_bias"):
             _fii_line = f"  FII 5-sess: <b>{mi['fii_bias']}</b>"
             if mi.get("fii_sectors"):
-                _fii_line += f"  ▲ Buying: {', '.join(mi['fii_sectors'][:4])}"
+                _fii_line += f"  ▲ Buying: {', '.join(mi['fii_sectors'])}"
             if mi.get("fii_exit"):
-                _fii_line += f"  ▼ Selling: {', '.join(mi['fii_exit'][:3])}"
+                _fii_line += f"  ▼ Selling: {', '.join(mi['fii_exit'])}"
             lines.append(_fii_line)
         for _alert in (mi.get("alerts") or []):
             _urgency = str(_alert.get("urgency_level") or _alert.get("urgency") or "INFO").upper()
@@ -938,7 +944,7 @@ def build_evening(data: dict, sb=None) -> str:
             )
             lines.append(
                 f"  {_ico} [{_urgency}] {esc(_alert.get('action', ''))} — "
-                f"{esc(_alert.get('news_item', '')[:120])}{_sym_tag}"
+                f"{esc(_alert.get('news_item', ''))}{_sym_tag}"
             )
         lines.append("")
 
@@ -950,7 +956,7 @@ def build_evening(data: dict, sb=None) -> str:
         lines.append(f"  {mi['summary']}")
         # PATCH 5: echo restored at 300 chars with 📖 icon and esc()
         if mi.get("echo"):
-            lines.append(f"  📖 <i>{esc(mi['echo'][:300])}</i>")
+            lines.append(f"  📖 <i>{esc(mi['echo'])}</i>")
         lines.append("")
 
     # ── Section 2: Portfolio Health Snapshot ──
@@ -992,7 +998,7 @@ def build_evening(data: dict, sb=None) -> str:
             reason = s.get("filter_reason") or s.get("ai_conviction_reason") or ""
             lines.append(
                 f"  <b>{s['symbol']}</b>"
-                + (f"  <i>— {esc(reason[:100])}</i>" if reason else "")
+                + (f"  <i>— {esc(reason)}</i>" if reason else "")
             )
         lines.append("")
 
@@ -1003,7 +1009,7 @@ def build_evening(data: dict, sb=None) -> str:
         for s in avoid_events:
             lines.append(
                 f"  🚫 <b>{s['symbol']}</b> [{s.get('sector','?')}]"
-                + (f" — {esc(s.get('filter_reason','')[:80])}" if s.get("filter_reason") else "")
+                + (f" — {esc(s.get('filter_reason',''))}" if s.get("filter_reason") else "")
             )
         lines.append("")
 
@@ -1024,9 +1030,9 @@ def build_evening(data: dict, sb=None) -> str:
                       or fp.get("_ai_note") or "")
         _sec_parts = []
         if guidance.get("sectors_to_overweight"):
-            _sec_parts.append(f"▲ {'/'.join(guidance['sectors_to_overweight'][:2])}")
+            _sec_parts.append(f"▲ {'/'.join(guidance['sectors_to_overweight'])}")
         if guidance.get("sectors_to_underweight"):
-            _sec_parts.append(f"▼ {'/'.join(guidance['sectors_to_underweight'][:2])}")
+            _sec_parts.append(f"▼ {'/'.join(guidance['sectors_to_underweight'])}")
         lines.append(
             f"💼 <b>SIZING: {sizing}</b>"
             + (f"  {'  '.join(_sec_parts)}" if _sec_parts else "")
@@ -1076,9 +1082,9 @@ def build_evening(data: dict, sb=None) -> str:
                 # Line 2: entry condition · invalidation · readiness breakdown
                 parts2 = []
                 if c.get("entry_note"):
-                    parts2.append(esc(c["entry_note"][:80]))
+                    parts2.append(esc(c["entry_note"]))
                 if c.get("invalidation"):
-                    parts2.append(f"❌ {esc(c['invalidation'][:60])}")
+                    parts2.append(f"❌ {esc(c['invalidation'])}")
                 breakdown = c.get("readiness_breakdown", "")
                 if breakdown:
                     parts2.append(f"<i>{breakdown}</i>")
@@ -1090,9 +1096,9 @@ def build_evening(data: dict, sb=None) -> str:
                 catalyst = c.get("catalyst") or ""
                 if "] " in thesis:
                     thesis = thesis.split("] ", 1)[-1]
-                thesis = thesis.split("| Entry:")[0].strip()[:90]
+                thesis = thesis.split("| Entry:")[0].strip()
                 if catalyst and len(thesis) < 70:
-                    thesis += f" · 💡 {esc(catalyst[:50])}"
+                    thesis += f" · 💡 {esc(catalyst)}"
                 if thesis:
                     lines.append(f"   💬 {esc(thesis)}")
 
@@ -1119,9 +1125,9 @@ def build_evening(data: dict, sb=None) -> str:
                 # Line 2: entry condition · invalidation
                 parts2 = []
                 if c.get("entry_note"):
-                    parts2.append(f"📍 {esc(c['entry_note'][:80])}")
+                    parts2.append(f"📍 {esc(c['entry_note'])}")
                 if c.get("invalidation"):
-                    parts2.append(f"❌ {esc(c['invalidation'][:60])}")
+                    parts2.append(f"❌ {esc(c['invalidation'])}")
                 if parts2:
                     lines.append(f"   {' · '.join(parts2)}")
 
@@ -1152,7 +1158,7 @@ def build_evening(data: dict, sb=None) -> str:
                 reason = note_raw[1].strip() if len(note_raw) > 1 else ""
                 ez     = zone_line(s["symbol"], msl_map)
                 lines.append(f"\n  💡 <b>{s['symbol']}</b> [{flag}]  {s.get('sector', '?')}")
-                if reason: lines.append(f"  {esc(reason[:160])}")
+                if reason: lines.append(f"  {esc(reason)}")
                 if ez:     lines.append(f"  {esc(ez)}")
             lines.append("")
 
@@ -1164,7 +1170,7 @@ def build_evening(data: dict, sb=None) -> str:
                     f"  {esc(w.get('sector', '?'))}: "
                     f"{w.get('candidate_count', '?')} candidates "
                     f"(holding {w.get('already_held', 0)}) — "
-                    f"{esc(w.get('recommendation', '')[:120])}"
+                    f"{esc(w.get('recommendation', ''))}"
                     f"  → Allow: <b>{w.get('allow_count', 1)}</b>"
                 )
             lines.append("")
@@ -1176,7 +1182,7 @@ def build_evening(data: dict, sb=None) -> str:
                 lines.append(
                     f"  [{g.get('group_label', '?')}]"
                     f" {g.get('symbols', [])} — "
-                    f"{esc(g.get('recommendation', '')[:120])}"
+                    f"{esc(g.get('recommendation', ''))}"
                 )
             lines.append("")
 
@@ -1197,7 +1203,7 @@ def build_evening(data: dict, sb=None) -> str:
                     f"Score:<b>{float(s.get('score_adjusted') or s.get('score') or 0):.0f}</b>"
                 )
                 if s.get("ai_conviction_reason"):
-                    lines.append(f"  💬 {s['ai_conviction_reason'][:150]}")
+                    lines.append(f"  💬 {s['ai_conviction_reason']}")
                 ez = zone_line(s["symbol"], msl_map)
                 if ez: lines.append(f"  {ez}")
         lines.append("")
@@ -1211,9 +1217,9 @@ def build_evening(data: dict, sb=None) -> str:
             sym     = e.get("symbol", "?")
             tag     = "📂" if sym in pos_sym_set else "🔭"
             d_to    = e.get("days_to_event")
-            dt      = str(e.get("event_date", ""))[:10]
+            dt      = str(e.get("event_date", ""))
             purpose = e.get("purpose", "")
-            detail  = (e.get("details") or "")[:60]
+            detail  = (e.get("details") or "")
             d_str   = f"({d_to}d)" if d_to is not None else f"({dt})"
             lines.append(
                 f"  {tag} <b>{sym}</b>: {purpose} {d_str}"
@@ -1302,14 +1308,14 @@ def build_morning(data: dict, sb=None) -> str:
 
     # ── Today's events at the top — act before market opens ──
     upcoming = data.get("upcoming_events", [])
-    today_events = [e for e in upcoming if str(e.get("event_date", ""))[:10] == today_str]
+    today_events = [e for e in upcoming if str(e.get("event_date", "")) == today_str]
     if today_events:
         pos_sym_set = {p.get("symbol") for p in open_pos}
         lines.append("📅 <b>TODAY'S EVENTS — ACTION REQUIRED</b>")
         for e in today_events:
             tag     = "📂" if e.get("symbol") in pos_sym_set else "🔭"
             purpose = e.get("purpose", "")
-            detail  = (e.get("details") or "")[:60]
+            detail  = (e.get("details") or "")
             lines.append(
                 f"  {tag} <b>{e.get('symbol','?')}</b>: {purpose}"
                 + (f" — {detail}" if detail else "")
@@ -1371,7 +1377,7 @@ def build_morning(data: dict, sb=None) -> str:
             reason = s.get("filter_reason") or s.get("ai_conviction_reason") or ""
             lines.append(
                 f"  <b>{s['symbol']}</b>"
-                + (f" — {esc(reason[:80])}" if reason else "")
+                + (f" — {esc(reason)}" if reason else "")
             )
         lines.append("")
 
@@ -1393,7 +1399,7 @@ def build_morning(data: dict, sb=None) -> str:
                if guidance.get("sectors_to_overweight") else "")
         )
         if _mgtext:
-            lines.append(f"  <i>{esc(_mgtext[:150])}</i>")
+            lines.append(f"  <i>{esc(_mgtext)}</i>")
         lines.append("")
 
         # ── PATCH 13: TIER_1 — live zone status + readiness ─────────────
@@ -1453,9 +1459,9 @@ def build_morning(data: dict, sb=None) -> str:
 
                 # Line 3: entry condition / invalidation
                 if c.get("entry_note"):
-                    lines.append(f"   📍 {esc(c['entry_note'][:80])}")
+                    lines.append(f"   📍 {esc(c['entry_note'])}")
                 if c.get("invalidation"):
-                    lines.append(f"   ❌ {esc(c['invalidation'][:60])}")
+                    lines.append(f"   ❌ {esc(c['invalidation'])}")
 
             lines.append("")
 
@@ -1479,7 +1485,7 @@ def build_morning(data: dict, sb=None) -> str:
 
                 # Line 2: entry condition only (no rationale in morning)
                 if c.get("entry_note"):
-                    lines.append(f"    📍 {esc(c['entry_note'][:80])}")
+                    lines.append(f"    📍 {esc(c['entry_note'])}")
 
             lines.append("")
 
@@ -1502,6 +1508,98 @@ def build_morning(data: dict, sb=None) -> str:
 
     return "\n".join(lines)
 
+# ── Afternoon zone check ───────────────────────────────────────────────────
+
+def build_afternoon(data: dict, sb=None) -> str:
+    """
+    Afternoon zone check: 1:00 PM IST
+    Answers: Of last night's TIER_1 picks, which are at zone RIGHT NOW?
+    Uses live yfinance prices via compute_entry_readiness(use_live=True).
+    No position pulse, no global cues, no GTT section — zone status only.
+    """
+    from datetime import datetime as _dt
+    fp      = data.get("final_picks")
+    msl_map = data["msl_map"]
+    now_str = _dt.now().strftime("%I:%M %p")
+    date_str = data["signal_date"]
+
+    lines = [
+        f"<b>📊 AFTERNOON CONVICTION CHECK — {date_str}  |  TradeOS v6  |  {now_str}</b>",
+        "═" * 35,
+        "",
+    ]
+
+    if not fp or not fp.get("ranked_candidates"):
+        lines.append("<i>⚠️ No ranked candidates — step 19 data missing</i>")
+        return "\n".join(lines)
+
+    tier1 = [r for r in fp["ranked_candidates"] if r.get("tier") == "TIER_1"]
+
+    if not tier1:
+        lines.append("<i>No TIER_1 picks for today</i>")
+        return "\n".join(lines)
+
+    # Enrich with live yfinance prices — _pre_market=False at 1PM so
+    # timing_note automatically shows "1:30–2:30 PM · Limit at zone_low"
+    if _READINESS_AVAILABLE and sb:
+        try:
+            tier1 = compute_entry_readiness(
+                tier1, msl_map, sb=sb, use_live=True
+            )
+        except Exception as e:
+            logger.warning(f"afternoon readiness enrichment failed: {e}")
+
+    any_actionable = False
+
+    for c in tier1:
+        sym         = c.get("symbol", "?")
+        conv        = (c.get("conviction") or "").upper()
+        msl         = msl_map.get(sym, {})
+        zl          = float(msl.get("entry_zone_low")  or 0)
+        zh          = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
+        zone_status = c.get("zone_status", "")
+        timing_note = c.get("timing_note", "")
+        r_score     = c.get("readiness_score")
+        score_str   = f"[{r_score}/100]" if r_score else ""
+
+        if "IN ZONE" in zone_status:
+            status_ico = "✅"
+            any_actionable = True
+        elif "APPROACHING" in zone_status:
+            status_ico = "⬇️"
+        elif "ABOVE ZONE" in zone_status:
+            status_ico = "⚠️"
+        else:
+            status_ico = "❌"
+
+        # Line 1: status · symbol · zone range · live price · score
+        lines.append(
+            f"{status_ico} <b>{sym}</b>  ₹{zl:,.0f}–₹{zh:,.0f}  —  {zone_status}  {score_str}"
+        )
+
+        # Line 2: timing note
+        if timing_note:
+            lines.append(f"   <i>{esc(timing_note)}</i>")
+
+        # Line 3: vol + delivery breakdown — the decision layer
+        breakdown = c.get("readiness_breakdown", "")
+        if breakdown:
+            lines.append(f"   {breakdown}")
+
+        # Line 4: entry note if in zone, invalidation if missed
+        if c.get("entry_note") and "IN ZONE" in zone_status:
+            lines.append(f"   📍 {esc(c['entry_note'])}")
+        if c.get("invalidation") and "MISSED" in zone_status:
+            lines.append(f"   ❌ {esc(c['invalidation'][:60])}")
+
+        lines.append("")
+
+    if not any_actionable:
+        lines.append(
+            "<i>No TIER_1 picks in zone right now — monitor for 1:30–2:30 PM window</i>"
+        )
+
+    return "\n".join(lines)
 
 # ── Compact (mobile one-screen) ────────────────────────────────────────────
 
@@ -1646,7 +1744,8 @@ def main():
     if "--position-risk" in sys.argv:
         return {"status": "skipped", "reason": "covered by sl_monitor"}
 
-    is_morning = "--morning" in sys.argv
+    is_morning   = "--morning"   in sys.argv
+    is_afternoon = "--afternoon" in sys.argv
     sb    = get_supabase()
     today = str(today_ist())
     data  = load_data(sb, today)
@@ -1666,6 +1765,9 @@ def main():
     if is_morning:
         msg  = build_morning(data, sb=sb)
         mode = "morning"
+    elif is_afternoon:
+        msg  = build_afternoon(data, sb=sb)
+        mode = "afternoon"
     elif MESSAGE_STYLE == "compact":
         msg  = build_compact(data)
         mode = "compact"
