@@ -18,8 +18,10 @@ name: TradeOS v6 — Morning Pre-Market Brief
 
 on:
   schedule:
-    - cron: '30 1 * * 1-5'    # 7:00 AM IST (1:30 UTC), Mon–Fri
-  workflow_dispatch:           # Manual trigger from GitHub UI
+    - cron: '30 1 * * 1-5'    # fallback only
+  workflow_dispatch:
+  repository_dispatch:
+    types: [morning_alert_dispatch]
 
 jobs:
   morning-brief:

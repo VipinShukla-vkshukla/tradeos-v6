@@ -441,7 +441,16 @@ def persist_signal_outcomes(sb, dataset: dict) -> int:
         ret_5d  = s.get("ret_fwd_5d")
         ret_10d = s.get("ret_fwd_10d")
         ret_20d = s.get("ret_fwd_20d")
-        label   = s.get("outcome_label")   # WIN/LOSS/NEUTRAL — set by data_aggregator
+        label = s.get("outcome_label")
+        if not label:
+            if s.get("outcome_win") is True:
+                label = "WIN"
+            elif s.get("outcome_loss") is True:
+                label = "LOSS"
+            elif s.get("ret_fwd_5d") is not None:
+                label = "NEUTRAL"
+            else:
+                label = "PENDING"
 
         rows.append({
             "signal_date":    sig_date,
@@ -483,7 +492,7 @@ def persist_signal_outcomes(sb, dataset: dict) -> int:
 # ORCHESTRATOR
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_performance_tracking(dataset: dict, for_date: date = None) -> dict:
+def run_performance_tracking(dataset: dict = None, for_date: date = None) -> dict:
     """
     Compute and store daily/weekly/monthly metrics.
     Call at end of daily pipeline run.
@@ -535,11 +544,29 @@ def run_performance_tracking(dataset: dict, for_date: date = None) -> dict:
             logger.warning(f"  Monthly metrics failed: {e}")
 
 
+    # Persist per-signal outcomes.
+    # Standalone call (brain_scheduler, dataset=None): build historical dataset
+    #   looking back 5-30 days where the forward window has now closed.
+    # Pipeline call (dataset provided): dataset is today's fresh signals —
+    #   persist_signal_outcomes will find no completed windows and return 0,
+    #   which is correct; outcomes are written by the nightly standalone call.
     try:
-        from brain.performance_tracker import persist_signal_outcomes
-        persist_signal_outcomes(sb, dataset)
+        if dataset is None:
+            lookback_start = for_date - timedelta(days=30)
+            lookback_end   = for_date - timedelta(days=5)
+            hist_dataset   = _load_outcomes_for_date_range(
+                sb, lookback_start, lookback_end, eval_horizon=5
+            )
+            persist_signal_outcomes(sb, {"signals": hist_dataset,
+                                         "closed_positions": pd.DataFrame()})
+            logger.info(
+                f"signal_outcomes: standalone persist {lookback_start}→{lookback_end}"
+            )
+        else:
+            persist_signal_outcomes(sb, dataset)
     except Exception as e:
         logger.warning(f"signal_outcomes persist failed (non-fatal): {e}")
+
     return {"date": str(for_date), "grains_stored": stored}
 
 

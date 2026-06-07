@@ -1,5 +1,0 @@
-import requests
-resp = requests.get("https://www.rbi.org.in/pressreleases_rss.xml", timeout=15)
-print(repr(resp.content[:100]))
-print(resp.encoding)
-print(resp.headers.get("Content-Type"))

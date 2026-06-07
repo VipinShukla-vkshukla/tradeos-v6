@@ -54,7 +54,6 @@ def main():
     parser = argparse.ArgumentParser(description="TradeOS v6 Pipeline")
     parser.add_argument("--step",      help="Run single step only")
     parser.add_argument("--dry-run",   action="store_true")
-    parser.add_argument("--calibrate", action="store_true", help="Run weekly calibration only")
     args = parser.parse_args()
     if is_kill_switch_active():
         logger.critical("⛔ KILL SWITCH ACTIVE — pipeline aborted")
@@ -147,13 +146,7 @@ def main():
     def step_compute_msl():
         from compute.compute_msl import main as fn; return fn()
     
-    def step_calibration():
-        from calibration.calibration_engine import main as fn; return fn()
     
-    if args.calibrate:
-        result = step_calibration()
-        print(f"Calibration: {result}")
-        sys.exit(0)
 
     # ── Phase 0 steps ─────────────────────────────────────────────────────────
     steps_p0 = [
