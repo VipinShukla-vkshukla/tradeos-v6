@@ -296,7 +296,8 @@ def compute_entry_readiness(
         def _flag(score: float) -> str:
             return "✅" if score >= 70 else ("⚠️" if score >= 45 else "❌")
 
-        vol_str  = f"{(vol_display or 0):.1f}×"
+        _vol_is_live = bool(live_vol and avg_vol and elapsed > 0.05)
+        vol_str  = f"{(vol_display or 0):.1f}×{'📡' if _vol_is_live else '📅'}"
         del_str  = f"{(del_display or 0):.0f}%"
         dist_str = f"{abs(float(dist or 0)):.1f}%↓"
         breakdown = (
