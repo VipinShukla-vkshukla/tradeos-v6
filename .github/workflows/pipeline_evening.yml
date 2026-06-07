@@ -1,4 +1,4 @@
-name: TradeOS v6 Daily Pipeline
+name: TradeOS v6 Evening Pipeline
 
 on:
   schedule:
