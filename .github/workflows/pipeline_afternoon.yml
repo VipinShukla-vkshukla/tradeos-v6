@@ -4,6 +4,8 @@ on:
   schedule:
     - cron: '30 7 * * 1-5'   # 1:00 PM IST (07:30 UTC), weekdays only
   workflow_dispatch:           # Manual trigger from GitHub UI
+  repository_dispatch:
+    types: [afternoon_alert_dispatch]
 
 jobs:
   afternoon_alert:
