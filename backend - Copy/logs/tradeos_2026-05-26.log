@@ -1,0 +1,34 @@
+00:10:31 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-26
+00:10:31 | INFO     | __main__:1449 - send_alerts v4 | argv=['send_alerts.py']
+00:10:32 | INFO     | __main__:379 - No signal_log data for 2026-05-26 yet — using last available: 2026-05-25
+00:10:33 | INFO     | __main__:1470 - Data loaded: step19=✅ | guidance=✅ | 73 signals | 0 positions
+00:10:34 | SUCCESS  | __main__:1502 - Telegram (structured) sent: T1:2 T2:1 exit:0 pos:0 | step19:ok | guidance:ok
+00:10:34 | INFO     | __main__:1543 - signal_daily_summary written: T1:2 T2:1 raw:1
+00:12:36 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-05-26
+00:12:36 | INFO     | __main__:883 - Smart mode: model absent, stale, or outdated schema — training now.
+00:12:36 | INFO     | __main__:495 - ============================================================
+00:12:36 | INFO     | __main__:496 - ML Regime Classifier — Training (v3 — 5-state, 9 features)
+00:12:36 | INFO     | __main__:497 - ============================================================
+00:12:36 | INFO     | __main__:498 - 
+Data health check:
+00:12:36 | INFO     | __main__:137 -   [✓] regime_history             49 rows  latest=2026-05-25  (need 20.0)
+00:12:36 | INFO     | __main__:137 -   [✓] market_regime              46 rows  latest=2026-05-25  (need 30)
+00:12:37 | INFO     | __main__:137 -   [✓] fii_dii_flow               57 rows  latest=2026-05-25  (need 20)
+00:12:37 | INFO     | __main__:137 -   [✓] sector_strength          1330 rows  latest=2026-05-25  (need 10)
+00:12:37 | INFO     | __main__:137 -   [✓] nifty_total_market        600 rows  latest=THELEELA  (need 100)
+00:12:38 | INFO     | __main__:137 -   [✓] stock_data_daily        27474 rows  latest=2026-05-25  (need 100)
+00:12:38 | INFO     | __main__:137 -   [✓] master_shortlist         2057 rows  latest=2026-05-25  (need 1)
+00:12:38 | SUCCESS  | __main__:156 - All critical tables meet minimum data thresholds.
+00:12:38 | INFO     | __main__:500 - 
+00:12:45 | INFO     | __main__:447 - Training candidates: 49 labelled rows (cutoff=2025-05-26)
+00:12:50 | INFO     | __main__:477 - Training rows built: 44 usable, 5 skipped | Label distribution: {'RISK OFF': 22, 'RECOVERING': 7, 'NEUTRAL': 15}
+00:12:50 | INFO     | __main__:482 -   Skip reasons: {'nifty_5d_null': 5}
+00:12:51 | SUCCESS  | __main__:599 - 
+✓ Regime classifier v3 trained: 44 samples, CV accuracy=93.3% ±5.4%
+  Label distribution: {'TRENDING': 0, 'RISK ON': 0, 'NEUTRAL': 15, 'RECOVERING': 7, 'RISK OFF': 22}
+  Top features: avg_sector_breadth(0.207) > india_vix(0.205) > fii_net_5d(0.137)
+  Model saved → C:\Users\vkshu\CRITICAL\Equity Indian Market Framework\tradeos-v6-complete\tradeos-v6\backend\models\ml_regime_model.pkl
+00:12:51 | INFO     | __main__:691 - Model v3: 44 samples, CV=93.3%, trained=2026-05-26
+00:12:51 | INFO     | __main__:722 - Regime probability distribution: {'TRENDING': 0.0, 'RISK ON': 0.0, 'NEUTRAL': 0.7702, 'RECOVERING': 0.2037, 'RISK OFF': 0.0261}
+00:12:51 | INFO     | __main__:747 - market_regime updated: predicted_regime=NEUTRAL, confidence=77.0%
+00:12:51 | SUCCESS  | __main__:763 - Regime prediction: NEUTRAL (conf=77.0%) | manual=UNKNOWN

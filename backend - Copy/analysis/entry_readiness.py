@@ -210,7 +210,6 @@ def compute_entry_readiness(
     msl_map: dict,
     sb=None,
     use_live: bool = True,
-    sig_map: dict | None = None,
 ) -> list[dict]:
     """
     Enriches each candidate dict in-place with readiness fields.
@@ -270,7 +269,7 @@ def compute_entry_readiness(
         del_display = sdd.get("delivery_pct")
 
         # ── Factor 6: Regime alignment ───────────────────────────────────────
-        regime_str = (msl.get("active_regime") or msl.get("regime") or "NEUTRAL").upper()
+        regime_str = (msl.get("active_regime") or "NEUTRAL").upper()
         f_regime   = REGIME_SCORE.get(regime_str, 50.0)
 
         # ── Weighted total ────────────────────────────────────────────────────

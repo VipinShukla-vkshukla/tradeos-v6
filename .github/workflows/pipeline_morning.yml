@@ -17,8 +17,8 @@ name: TradeOS v6 — Morning Pre-Market Brief
 # Evening digest runs at 6 PM via pipeline_daily.yml
 
 on:
-  schedule:
-    - cron: '30 3 * * 1-5'    # fallback only
+  #schedule:
+  #  - cron: '30 3 * * 1-5'    # fallback only
   workflow_dispatch:
   repository_dispatch:
     types: [morning_alert_dispatch]

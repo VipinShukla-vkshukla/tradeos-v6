@@ -1,8 +1,8 @@
 name: TradeOS v6 Evening Pipeline
 
 on:
-  schedule:
-    - cron: '30 12 * * 1-5'   # fallback only — 6:00 PM IST (12:30 UTC)
+  #schedule:
+  #  - cron: '30 12 * * 1-5'   # fallback only — 6:00 PM IST (12:30 UTC)
   workflow_dispatch:
   repository_dispatch:
     types: [evening_pipeline_dispatch]

@@ -1,0 +1,4 @@
+21:03:28 | INFO     | config:187 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=True | Phase=2
+21:03:28 | WARNING  | __main__:520 - Model not found at C:\Users\vkshu\CRITICAL\Equity Indian Market Framework\tradeos-v6-complete\tradeos-v6\backend\models\ml_regime_model.pkl.
+First run: run --train (or wait for Sunday evolution_weekly.yml W2).
+Manual regime from ingest_sheets controls until model exists.

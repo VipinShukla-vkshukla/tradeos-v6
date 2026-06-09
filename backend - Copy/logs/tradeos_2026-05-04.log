@@ -1,0 +1,1334 @@
+00:12:34 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:12:34 | INFO     | __main__:71 - ════════════════════════════════════════════════════════════
+00:12:34 | INFO     | __main__:72 -   TradeOS v6 Pipeline | Phase 2
+00:12:34 | INFO     | __main__:73 - ════════════════════════════════════════════════════════════
+00:12:34 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:12:34 | INFO     | __main__:23 -   01_market_news
+00:12:34 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:12:34 | INFO     | ingestion.ingest_market_news:618 - Market News Ingestion starting 
+00:12:37 | INFO     | ingestion.ingest_market_news:641 -   NSE_CIRCULAR: 8 items
+00:12:37 | INFO     | ingestion.ingest_market_news:641 -   RBI: 8 items
+00:12:41 | INFO     | ingestion.ingest_market_news:641 -   NSE_BULK_DEAL: 17 items
+00:12:41 | INFO     | ingestion.ingest_market_news:641 -   ET_MARKETS: 12 items
+00:12:47 | INFO     | ingestion.ingest_market_news:641 -   GOOGLE_NEWS: 18 items
+00:12:48 | INFO     | ingestion.ingest_market_news:641 -   SEBI: 8 items
+00:12:48 | INFO     | ingestion.ingest_market_news:641 -   INVESTING_COMMODITIES: 10 items
+00:12:49 | INFO     | ingestion.ingest_market_news:641 -   INVESTING_MACRO: 12 items
+00:12:49 | SUCCESS  | ingestion.ingest_market_news:648 - Market News done: 93 scraped → 68 written | Sources: {'NSE_CIRCULAR': 8, 'RBI': 8, 'NSE_BULK_DEAL': 17, 'ET_MARKETS': 12, 'GOOGLE_NEWS': 18, 'SEBI': 8, 'INVESTING_COMMODITIES': 10, 'INVESTING_MACRO': 12}
+00:12:49 | INFO     | __main__:29 - ✓ 01_market_news done in 15.0s
+00:12:49 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:12:49 | INFO     | __main__:23 -   02_macro_indicators
+00:12:49 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:12:49 | INFO     | ingestion.ingest_macro_indicators:381 - Macro Indicators Ingestion starting 
+00:12:50 | INFO     | ingestion.ingest_macro_indicators:389 -   RBI DBIE: 5 indicators
+00:12:54 | INFO     | ingestion.ingest_macro_indicators:397 -   MOSPI: 2 indicators
+00:12:55 | INFO     | ingestion.ingest_macro_indicators:412 -   Yahoo US_10YR_YIELD: 4.378
+00:12:55 | INFO     | ingestion.ingest_macro_indicators:412 -   Yahoo SILVER_PRICE: 76.431
+00:12:55 | INFO     | ingestion.ingest_macro_indicators:423 -   India VIX: 18.46
+00:12:57 | INFO     | ingestion.ingest_macro_indicators:220 -   Nifty PCR: zero OI detected (market closed) — using last stored value
+00:12:57 | WARNING  | ingestion.ingest_macro_indicators:269 -   Nifty PCR: no cached value found — using neutral default 1.0
+00:12:57 | INFO     | ingestion.ingest_macro_indicators:432 -   Nifty PCR: 1.0 (source=DEFAULT_NEUTRAL)
+00:12:57 | INFO     | ingestion.ingest_macro_indicators:442 -   ET RSS CPI/WPI: 2 indicators
+00:12:58 | SUCCESS  | ingestion.ingest_macro_indicators:448 - Macro Indicators done: 13 fetched → 13 written
+00:12:58 | INFO     | __main__:29 - ✓ 02_macro_indicators done in 9.3s
+00:12:58 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:12:58 | INFO     | __main__:23 -   03_global_cues
+00:12:58 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:12:58 | INFO     | ingestion.ingest_global_cues:121 - Global Cues Ingestion — EVENING
+00:12:59 | SUCCESS  | ingestion.ingest_global_cues:262 - [EVENING] Global cues saved: Gift=23997.55 | USD/INR=94.88 | Crude=108.17 | DOW=49499.27 (+0.00%) | S&P=7230.12 | Gap=FLAT +0.00% | Bias=MIXED
+00:12:59 | INFO     | __main__:29 - ✓ 03_global_cues done in 0.9s
+00:12:59 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:12:59 | INFO     | __main__:23 -   04_fetch_chartink
+00:12:59 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:13:02 | INFO     | ingestion.fetch_chartink:76 - Navigating to Chartink login...
+00:13:04 | INFO     | ingestion.fetch_chartink:82 - ✓ Login submitted
+00:13:04 | INFO     | ingestion.fetch_chartink:85 - Navigating to Swing dashboard...
+00:13:13 | INFO     | ingestion.fetch_chartink:87 - Waiting for widgets to render...
+00:13:24 | WARNING  | ingestion.fetch_chartink:108 - 4 widgets failed to load — retrying page...
+00:13:43 | INFO     | ingestion.fetch_chartink:128 - Widget box: {'x': 928, 'y': 533, 'width': 441, 'height': 334}
+00:13:44 | INFO     | ingestion.fetch_chartink:133 - Widget box after scroll: {'x': 928, 'y': 281, 'width': 441, 'height': 334}
+00:13:44 | INFO     | ingestion.fetch_chartink:141 - Moving mouse: neutral → title (988,296) → CSV (1319,296)
+00:13:49 | INFO     | ingestion.fetch_chartink:150 - Clicking CSV button...
+00:13:49 | INFO     | ingestion.fetch_chartink:156 - ✓ CSV downloaded: 500 rows
+00:13:49 | INFO     | ingestion.fetch_chartink:177 - Writing 500 rows to 'Chartink Raw Data_Nifty 500'...
+00:13:54 | INFO     | ingestion.fetch_chartink:193 - ✓ Written to 'Chartink Raw Data_Nifty 500': 500 rows, 51 columns
+00:13:54 | INFO     | ingestion.fetch_chartink:199 - Upserting 500 rows to Supabase chartink_raw_data...
+00:13:56 | INFO     | ingestion.fetch_chartink:265 - ✓ Upserted to chartink_raw_data: 500 rows
+00:13:56 | INFO     | __main__:29 - ✓ 04_fetch_chartink done in 57.0s
+00:13:56 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:13:56 | INFO     | __main__:23 -   05_ingest_bhavcopy
+00:13:56 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:13:56 | INFO     | ingestion.ingest_bhavcopy:523 - ════════════════════════════════════════════════════════════
+00:13:56 | INFO     | ingestion.ingest_bhavcopy:524 -   STEP: Ingest Bhavcopy (NSE primary + BSE fallback)
+00:13:56 | INFO     | ingestion.ingest_bhavcopy:525 - ════════════════════════════════════════════════════════════
+00:13:56 | INFO     | ingestion.ingest_bhavcopy:115 -   2026-05-01 is an NSE holiday — stepping back
+00:13:56 | INFO     | ingestion.ingest_bhavcopy:530 - Trade date: 2026-04-30
+00:13:57 | INFO     | ingestion.ingest_bhavcopy:553 - Already complete for 2026-04-30 — raw_prices: 2455 rows | stock_data_daily: 500 rows — skipping
+00:13:57 | INFO     | __main__:29 - ✓ 05_ingest_bhavcopy done in 0.5s
+00:13:57 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:13:57 | INFO     | __main__:23 -   06_ingest_sheets
+00:13:57 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:13:57 | INFO     | ingestion.ingest_sheets:736 - ============================================================
+00:13:57 | INFO     | ingestion.ingest_sheets:737 - STEP 1: Google Sheets Ingestion
+00:13:57 | INFO     | ingestion.ingest_sheets:738 - ============================================================
+00:13:57 | INFO     | ingestion.ingest_sheets:673 - Ingesting strategy configs...
+00:14:20 | INFO     | ingestion.ingest_sheets:725 - ✓ STRATEGY_CONFIG: 4 strategies loaded
+00:14:20 | INFO     | ingestion.ingest_sheets:155 - Ingesting MASTER_SHORTLIST...
+00:14:21 | INFO     | ingestion.ingest_sheets:239 - ✓ MASTER_SHORTLIST: 28 rows upserted
+00:14:21 | INFO     | ingestion.ingest_sheets:253 - No removed MSL symbols to reconcile
+00:14:21 | INFO     | ingestion.ingest_sheets:260 - Ingesting OPEN_POSITIONS...
+00:14:22 | INFO     | ingestion.ingest_sheets:319 - No rows to upsert
+00:14:22 | INFO     | ingestion.ingest_sheets:370 - No removed symbols to reconcile
+00:14:22 | INFO     | ingestion.ingest_sheets:394 - Ingesting CLOSED_POSITIONS...
+00:14:25 | INFO     | ingestion.ingest_sheets:441 - ✓ CLOSED_POSITIONS: 69 rows upserted
+00:14:25 | INFO     | ingestion.ingest_sheets:446 - Ingesting SECTOR_STRENGTH...
+00:14:26 | INFO     | ingestion.ingest_sheets:477 - ✓ SECTOR_STRENGTH: 23 sectors upserted
+00:14:26 | INFO     | ingestion.ingest_sheets:481 - Ingesting INDUSTRY_STRENGTH...
+00:14:26 | INFO     | ingestion.ingest_sheets:513 - ✓ INDUSTRY_STRENGTH: 22 industries upserted
+00:14:26 | INFO     | ingestion.ingest_sheets:565 - Ingesting EVENT_CALENDAR...
+00:14:27 | INFO     | ingestion.ingest_sheets:599 - ✓ EVENT_CALENDAR: 53 events upserted
+00:14:27 | INFO     | ingestion.ingest_sheets:604 - Ingesting LESSONS_LEARNED...
+00:14:27 | INFO     | ingestion.ingest_sheets:647 - ✓ LESSONS_LEARNED: 0 new lessons added
+00:14:27 | INFO     | ingestion.ingest_sheets:652 - Ingesting NSE_HOLIDAYS...
+00:14:28 | INFO     | ingestion.ingest_sheets:667 - ✓ NSE_HOLIDAYS: 25 holidays
+00:14:28 | INFO     | ingestion.ingest_sheets:764 - 
+✓ Ingestion complete: 224 total rows across 9 tables
+00:14:28 | INFO     | __main__:29 - ✓ 06_ingest_sheets done in 31.1s
+00:14:28 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:14:28 | INFO     | __main__:23 -   07_fii_dii
+00:14:28 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:14:28 | INFO     | ingestion.ingest_fii_dii:149 - FII/DII Ingestion starting
+00:14:29 | SUCCESS  | ingestion.ingest_fii_dii:169 - FII/DII saved: net=-8048Cr, flag=CAUTION
+00:14:29 | INFO     | __main__:29 - ✓ 07_fii_dii done in 1.3s
+00:14:29 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:14:29 | INFO     | __main__:23 -   08_nse_events
+00:14:29 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:14:29 | INFO     | ingestion.ingest_nse_events:87 - NSE Events Ingestion starting
+00:14:31 | INFO     | ingestion.ingest_nse_events:101 - Fetched 328 raw events from NSE
+00:14:31 | INFO     | ingestion.ingest_nse_events:123 -   Deduped: 328 → 324 events
+00:14:31 | SUCCESS  | ingestion.ingest_nse_events:132 - NSE events saved: 324 events (next 90 days, 4 dupes dropped)
+00:14:31 | INFO     | __main__:29 - ✓ 08_nse_events done in 1.4s
+00:14:31 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:14:31 | INFO     | __main__:23 -   09_asm_gsm
+00:14:31 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:14:31 | INFO     | ingestion.ingest_asm_gsm:233 - Safety Lists Ingestion starting 
+00:14:33 | INFO     | ingestion.ingest_asm_gsm:243 - ASM: 259 | GSM: 52 | F&O Ban: 0
+00:14:41 | INFO     | ingestion.ingest_asm_gsm:223 - stock_data_daily flags: 311 asm_flag, 0 fo_ban_flag
+00:14:41 | SUCCESS  | ingestion.ingest_asm_gsm:266 - Safety lists saved: 311 total entries
+00:14:41 | INFO     | __main__:29 - ✓ 09_asm_gsm done in 10.2s
+00:14:41 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:14:41 | INFO     | __main__:23 -   10_compute_indicators
+00:14:41 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:14:41 | INFO     | compute.compute_indicators:1123 - compute_indicators v2.3 — 2026-05-04 — COMPUTE_ONLY
+00:14:41 | INFO     | compute.compute_indicators:1092 -   Resolved trading date: 2026-05-04 → 2026-04-30
+00:14:41 | INFO     | compute.compute_indicators:1136 - Pass 1: bulk data fetch...
+00:14:41 | INFO     | compute.compute_indicators:559 -   chartink_raw_data: 500 rows
+00:14:41 | INFO     | compute.compute_indicators:211 -   fetch_bulk_history_yf: checking price_history_yf cache (500 symbols) | cutoff=2025-01-15...
+00:14:43 | INFO     | compute.compute_indicators:260 -   Today OHLCV seeded from chartink: 500 symbols | tail calls eliminated for current symbols
+00:14:43 | INFO     | compute.compute_indicators:341 -   Young listings skipping yfinance (32 symbols):
+00:14:43 | INFO     | compute.compute_indicators:342 -   Symbol           Listed Since    Cached  Expected  Complete  Reason
+00:14:43 | INFO     | compute.compute_indicators:343 -   ----------------------------------------------------------------------
+00:14:43 | INFO     | compute.compute_indicators:354 -   ABLBL            2025-06-23         210       213      99%  needs 50 more sessions (~72d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   ACUTAAS          2025-06-02         226       227     100%  needs 34 more sessions (~49d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   AEGISVOPAK       2025-06-02         227       227     100%  needs 33 more sessions (~48d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   ANTHEM           2025-07-21         192       194      99%  needs 68 more sessions (~99d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   ATHERENERG       2025-05-06         246       246     100%  needs 14 more sessions (~20d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   BELRISE          2025-05-28         230       231     100%  needs 30 more sessions (~43d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   CANHLIFE         2025-10-17         129       133      97%  needs 131 more sessions (~191d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   CEMPRO           2025-09-10         156       159      98%  needs 104 more sessions (~151d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   COHANCE          2025-05-08         243       244     100%  needs 17 more sessions (~24d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   CPPLUS           2025-08-05         181       183      99%  needs 79 more sessions (~115d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   EMMVEE           2025-11-18         111       111     100%  needs 149 more sessions (~217d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   ENRIN            2025-06-19         212       216      98%  needs 48 more sessions (~70d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   GROWW            2025-11-12         115       115     100%  needs 145 more sessions (~211d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   HDBFS            2025-07-02         205       207      99%  needs 55 more sessions (~80d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   HEALTHCARE       2026-02-16          49        50      98%  needs 211 more sessions (~307d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   ICICIAMC         2025-12-19          88        90      98%  needs 172 more sessions (~250d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   JAINREC          2025-10-01         140       144      97%  needs 120 more sessions (~175d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   JSWCEMENT        2025-08-14         174       177      98%  needs 86 more sessions (~125d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   LENSKART         2025-11-10         117       117     100%  needs 143 more sessions (~208d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   LGEINDIA         2025-10-14         134       135      99%  needs 126 more sessions (~183d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   LTM              2026-02-18          47        48      98%  needs 213 more sessions (~310d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   MEESHO           2025-12-10          95        96      99%  needs 165 more sessions (~240d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   PINELABS         2025-11-14         113       114      99%  needs 147 more sessions (~214d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   PIRAMALFIN       2025-11-07         116       119      97%  needs 144 more sessions (~210d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   PWL              2025-11-18         110       111      99%  needs 150 more sessions (~218d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   TATACAP          2025-10-13         135       136      99%  needs 125 more sessions (~182d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   TENNIND          2025-11-19         110       111      99%  needs 150 more sessions (~218d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   THELEELA         2025-06-02         225       227      99%  needs 35 more sessions (~51d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   TMCV             2025-11-12         115       115     100%  needs 145 more sessions (~211d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   TMPV             2025-10-15         132       135      98%  needs 128 more sessions (~186d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   TRAVELFOOD       2025-07-14         197       198      99%  needs 63 more sessions (~91d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:354 -   URBANCO          2025-09-17         152       154      99%  needs 108 more sessions (~157d) to reach 260
+00:14:43 | INFO     | compute.compute_indicators:359 -   ----------------------------------------------------------------------
+00:14:43 | INFO     | compute.compute_indicators:364 -   price_history_yf: 468 sufficient | 0 tail-refresh | 0 gap-fill (genuine cache gaps) | 32 young listings (cache complete, skipping yfinance) | 0 full fetch (new symbols)
+  ✓ yfinance not needed — all symbols sufficient and current
+00:14:50 | INFO     | compute.compute_indicators:545 -   fetch_bulk_history_yf complete: 500 symbols loaded | 154116 total sessions | 0 symbols fetched from yfinance
+00:14:50 | INFO     | compute.compute_indicators:595 -   Upcoming events: 349 symbols with events in next 30d
+00:14:50 | INFO     | compute.compute_indicators:619 -   MSL symbols: 92 in shortlist
+00:14:50 | INFO     | compute.compute_indicators:643 -   Index membership: 600 symbols mapped
+00:14:50 | INFO     | compute.compute_indicators:681 -   raw_prices: 499 symbols with delivery/value data
+00:14:50 | INFO     | compute.compute_indicators:1170 -   Nifty 1M return: 3.8203%
+00:14:50 | INFO     | compute.compute_indicators:1177 - Pass 2: computing and reconciling...
+00:14:50 | INFO     | compute.compute_indicators:1230 - =================================================================
+00:14:50 | INFO     | compute.compute_indicators:1231 - COMPUTE INDICATORS SUMMARY — 2026-04-30 — COMPUTE_ONLY
+00:14:50 | INFO     | compute.compute_indicators:1232 -   Symbols: 500 processed | 0 skipped
+00:14:50 | INFO     | compute.compute_indicators:1256 - =================================================================
+00:14:50 | INFO     | compute.compute_indicators:1272 - Pass 3: writing 500 rows to stock_data_daily...
+00:14:51 | SUCCESS  | compute.compute_indicators:1280 - compute_indicators: 500 written | 0 skipped | 0 diverged field types requiring review
+00:14:51 | INFO     | __main__:29 - ✓ 10_compute_indicators done in 10.4s
+00:14:51 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:14:51 | INFO     | __main__:23 -   11_compute_regime
+00:14:51 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:14:51 | INFO     | compute.compute_regime:1439 - =================================================================
+00:14:51 | INFO     | compute.compute_regime:1440 - STEP: Compute Regime v2.0 | 2026-05-04 | mode=FULL
+00:14:51 | INFO     | compute.compute_regime:1442 - =================================================================
+00:14:51 | INFO     | compute.compute_regime:110 -   stock_data_daily last trading date: 2026-04-30
+00:14:51 | INFO     | compute.compute_regime:140 -   2026-05-04 is non-trading — effective date is 2026-04-30
+00:14:51 | INFO     | compute.compute_regime:1450 -   Non-trading day — computing for last trading date: 2026-04-30
+00:14:51 | INFO     | compute.compute_regime:1453 - Pass 1: loading data...
+00:14:52 | INFO     | compute.compute_regime:451 -   Nifty Supabase: price=23997.55 | dma50=24173.825 | dma200=25108.484599609375 | weekly_rsi=42.98
+00:14:52 | INFO     | compute.compute_regime:479 -   BankNifty: price=55403.6015625 | weekly_rsi=41.7 | Nifty weekly_rsi=42.98
+00:14:52 | INFO     | compute.compute_regime:566 -   VIX: current=18.46 | rows_fetched=6 | vix_5d_delta=0.41 | ✓ delta computed
+00:14:52 | INFO     | compute.compute_regime:601 -   GIFT Nifty=23997.55 | prev_close=24177.650390625 | premium=-0.74%
+00:14:52 | INFO     | compute.compute_regime:656 -   DB fallback from: 2026-04-30
+00:14:52 | INFO     | compute.compute_regime:690 -   Loaded: regime_history=10 days | VIX=18.46 (macro_indicators) | FII flag=CAUTION | Nifty=23997.55 | above200dma=43.96%
+00:14:52 | INFO     | compute.compute_regime:1466 - Pass 2: scoring pillars...
+00:14:52 | INFO     | compute.compute_regime:1489 -   Pillar scores:
+00:14:52 | INFO     | compute.compute_regime:1490 -     Price structure:    1.0/25
+00:14:52 | INFO     | compute.compute_regime:1491 -     Breadth:           14.0/25
+00:14:52 | INFO     | compute.compute_regime:1492 -     Momentum:           5.0/20
+00:14:52 | INFO     | compute.compute_regime:1493 -     Volatility/VIX:     5.0/15  (VIX=18.46, Δ5d=+0.41)
+00:14:52 | INFO     | compute.compute_regime:1495 -     FII flows:          3.0/15
+00:14:52 | INFO     | compute.compute_regime:1496 -     Global modifier:   +1.0/±5  (S&P500 5d=+1.0%)
+00:14:52 | INFO     | compute.compute_regime:1498 -     ─────────────────────────────────────
+00:14:52 | INFO     | compute.compute_regime:1499 -     TOTAL:             29.0/100
+00:14:52 | INFO     | compute.compute_regime:1509 - Pass 3: applying hysteresis...
+00:14:52 | INFO     | compute.compute_regime:1517 -   Computed: NEUTRAL | Score: 29.0/100 | ✅ AGREE
+00:14:52 | INFO     | compute.compute_regime:1527 -   vs ML predicted_regime: ✅ ML=NEUTRAL | Computed=NEUTRAL
+00:14:52 | INFO     | compute.compute_regime:1531 - Pass 4: writing (full mode)...
+00:14:52 | SUCCESS  | compute.compute_regime:1357 - ✓ market_regime UPSERT | computed_regime=NEUTRAL | score=29.0 | date=2026-04-30
+00:14:52 | INFO     | compute.compute_regime:1360 -   FULL MODE: regime field updated → Sheet decommissioned
+00:14:52 | INFO     | __main__:29 - ✓ 11_compute_regime done in 0.5s
+00:14:52 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:14:52 | INFO     | __main__:23 -   12_regime_predict
+00:14:52 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:14:57 | INFO     | __main__:29 - ✓ 12_regime_predict done in 4.7s
+00:14:57 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:14:57 | INFO     | __main__:23 -   13_screen_stocks
+00:14:57 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:14:57 | INFO     | signals.screen_stocks:158 -   Resolved trading date: 2026-05-04 → 2026-04-30
+00:14:57 | INFO     | signals.screen_stocks:1563 - =================================================================
+00:14:57 | INFO     | signals.screen_stocks:1564 - STEP: Screen Stocks v1.1 | 2026-04-30 | mode=FULL
+00:14:57 | INFO     | signals.screen_stocks:1566 - =================================================================
+00:14:57 | INFO     | signals.screen_stocks:1568 - Pass 1: loading data...
+00:14:57 | INFO     | signals.screen_stocks:220 -   ingest_sheets symbols merged into force_include: 2
+00:14:57 | INFO     | signals.screen_stocks:228 -   Loaded: 500 stocks | 24 sectors | regime=None | asm=311 | fii=CAUTION | forced=28
+00:14:57 | INFO     | signals.screen_stocks:1600 - Pass 2: running engines (regime=NEUTRAL)...
+00:14:57 | INFO     | signals.screen_stocks:358 -   CTL: 27 candidates
+00:14:57 | INFO     | signals.screen_stocks:439 -   SBS: 0 candidates
+00:14:57 | INFO     | signals.screen_stocks:519 -   TPO: 0 candidates
+00:14:57 | INFO     | signals.screen_stocks:596 -   VBD: 0 candidates
+00:14:57 | INFO     | signals.screen_stocks:661 -   IAD: 1 candidates
+00:14:57 | INFO     | signals.screen_stocks:715 -   RSB: 0 candidates
+00:14:57 | INFO     | signals.screen_stocks:818 -   MOM: 47 candidates
+00:14:57 | INFO     | signals.screen_stocks:933 -   RVS: 13 candidates
+00:14:57 | INFO     | signals.screen_stocks:1009 -   SEC: 54 candidates
+00:14:57 | INFO     | signals.screen_stocks:1629 -   Engine totals: CTL=27 SBS=0 TPO=0 VBD=0 IAD=1 RSB=0 MOM=47 RVS=13 SEC=54 | Total unique=94
+00:14:57 | INFO     | signals.screen_stocks:1637 - Pass 3: aggregating and ranking...
+00:14:57 | INFO     | signals.screen_stocks:1056 -   Regime weights (NEUTRAL):  (all 1.0x)
+00:14:57 | INFO     | signals.screen_stocks:1172 -   Aggregated: 95 total unique | 91 after hard filters | 90 final
+00:14:57 | INFO     | signals.screen_stocks:1651 - 
+  ═══ TOP 90 SCREENED SYMBOLS (NEUTRAL) ═══
+00:14:57 | INFO     | signals.screen_stocks:1654 -      # 1 NTPC         score=131.4  engines=CTL,MOM,SEC                  sector=power & utilities    rank=1
+00:14:57 | INFO     | signals.screen_stocks:1654 -      # 2 HINDALCO     score=130.0  engines=CTL,MOM,SEC                  sector=metals & mining      rank=2
+00:14:57 | INFO     | signals.screen_stocks:1654 -      # 3 TATAPOWER    score=124.4  engines=CTL,MOM,SEC                  sector=power & utilities    rank=1
+00:14:57 | INFO     | signals.screen_stocks:1654 -      # 4 CUMMINSIND   score=124.1  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      # 5 KEI          score=124.0  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      # 6 POWERGRID    score=122.2  engines=CTL,MOM,SEC                  sector=power & utilities    rank=1
+00:14:57 | INFO     | signals.screen_stocks:1654 -      # 7 BHARATFORG   score=122.2  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      # 8 ABB          score=120.2  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      # 9 CGPOWER      score=119.2  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #10 SAIL         score=118.8  engines=CTL,MOM                      sector=metals & mining      rank=2
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #11 JSWSTEEL     score=117.3  engines=CTL,MOM,SEC                  sector=metals & mining      rank=2
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #12 NMDC         score=114.9  engines=CTL,MOM,SEC                  sector=metals & mining      rank=2
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #13 COALINDIA    score=113.0  engines=CTL,MOM                      sector=metals & mining      rank=2
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #14 POLYCAB      score=109.3  engines=MOM,SEC                      sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #15 SARDAEN      score=108.6  engines=CTL,MOM,SEC                  sector=metals & mining      rank=2
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #16 SIEMENS      score=107.0  engines=CTL,MOM                      sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #17 LLOYDSME     score=105.0  engines=CTL                          sector=metals & mining      rank=2
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #18 ELGIEQUIP    score=105.0  engines=MOM,SEC                      sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #19 APARINDS     score=103.5  engines=MOM,SEC                      sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #20 SOLARINDS    score=102.2  engines=CTL,MOM                      sector=aerospace & defence  rank=4
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #21 ADANIPOWER   score=101.0  engines=CTL                          sector=power & utilities    rank=1
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #22 KIRLOSENG    score=100.6  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #23 TATASTEEL    score=100.1  engines=CTL,SEC                      sector=metals & mining      rank=2
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #24 TORNTPOWER   score= 99.2  engines=MOM,SEC                      sector=power & utilities    rank=1
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #25 WELCORP      score= 99.0  engines=CTL                          sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #26 BHEL         score= 99.0  engines=CTL                          sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #27 AIAENG       score= 97.6  engines=MOM,SEC                      sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #28 GPIL         score= 95.3  engines=CTL,SEC                      sector=metals & mining      rank=2
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #29 ATUL         score= 95.0  engines=MOM                          sector=chemicals            rank=8
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #30 GRAPHITE     score= 92.8  engines=MOM,SEC                      sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #31 HINDZINC     score= 92.3  engines=MOM,SEC                      sector=metals & mining      rank=2
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #32 ZENTEC       score= 91.9  engines=MOM,SEC                      sector=aerospace & defence  rank=4
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #33 NLCINDIA     score= 90.5  engines=MOM,SEC                      sector=power & utilities    rank=1
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #34 AUBANK       score= 90.0  engines=MOM                          sector=bank                 rank=9
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #35 CESC         score= 89.0  engines=CTL                          sector=power & utilities    rank=1
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #36 DRREDDY      score= 89.0  engines=MOM                          sector=healthcare           rank=6
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #37 TORNTPHARM   score= 88.0  engines=RVS                          sector=healthcare           rank=6
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #38 DATAPATTNS   score= 87.0  engines=MOM                          sector=aerospace & defence  rank=4
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #39 RRKABEL      score= 85.5  engines=MOM,SEC                      sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #40 INDUSINDBK   score= 84.0  engines=MOM                          sector=bank                 rank=9
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #41 FINCABLES    score= 84.0  engines=MOM                          sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #42 ASTERDM      score= 83.0  engines=MOM                          sector=healthcare           rank=6
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #43 THERMAX      score= 82.7  engines=CTL,SEC                      sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #44 POWERINDIA   score= 82.0  engines=CTL                          sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #45 AJANTPHARM   score= 82.0  engines=RVS                          sector=healthcare           rank=6
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #46 SBIN         score= 82.0  engines=RVS                          sector=bank                 rank=9
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #47 GRANULES     score= 81.0  engines=MOM                          sector=healthcare           rank=6
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #48 CUB          score= 81.0  engines=MOM                          sector=bank                 rank=9
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #49 MAHABANK     score= 81.0  engines=MOM                          sector=bank                 rank=9
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #50 ADANIPORTS   score= 80.0  engines=MOM                          sector=transportation       rank=7
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #51 RBLBANK      score= 80.0  engines=MOM                          sector=bank                 rank=9
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #52 SJVN         score= 77.0  engines=SEC                          sector=power & utilities    rank=1
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #53 NATIONALUM   score= 76.0  engines=RVS                          sector=metals & mining      rank=2
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #54 HEG          score= 75.1  engines=RVS,SEC                      sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #55 JINDALSTEL   score= 75.0  engines=RVS                          sector=metals & mining      rank=2
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #56 BEL          score= 74.0  engines=RVS                          sector=aerospace & defence  rank=4
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #57 GLENMARK     score= 74.0  engines=MOM                          sector=healthcare           rank=6
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #58 TIMKEN       score= 73.8  engines=RVS,SEC                      sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #59 USHAMART     score= 73.0  engines=SEC                          sector=metals & mining      rank=2
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #60 NSLNISP      score= 73.0  engines=SEC                          sector=metals & mining      rank=2
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #61 NTPCGREEN    score= 72.0  engines=SEC                          sector=power & utilities    rank=1
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #62 EMMVEE       score= 72.0  engines=SEC                          sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #63 TIINDIA      score= 72.0  engines=SEC                          sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #64 NHPC         score= 72.0  engines=SEC                          sector=power & utilities    rank=1
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #65 SUNPHARMA    score= 71.0  engines=MOM                          sector=healthcare           rank=6
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #66 GLAND        score= 70.0  engines=IAD                          sector=healthcare           rank=6
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #67 LUPIN        score= 70.0  engines=RVS                          sector=healthcare           rank=6
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #68 INOXWIND     score= 70.0  engines=SEC                          sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #69 ENRIN        score= 70.0  engines=SEC                          sector=power & utilities    rank=1
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #70 GESHIP       score= 68.0  engines=MOM                          sector=transportation       rank=7
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #71 GRAVITA      score= 68.0  engines=SEC                          sector=metals & mining      rank=2
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #72 SHYAMMETL    score= 68.0  engines=SEC                          sector=metals & mining      rank=2
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #73 HAL          score= 67.0  engines=SEC                          sector=aerospace & defence  rank=4
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #74 JSWENERGY    score= 67.0  engines=SEC                          sector=power & utilities    rank=1
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #75 BANDHANBNK   score= 65.0  engines=MOM                          sector=bank                 rank=9
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #76 VTL          score= 63.0  engines=MOM                          sector=textiles             rank=10
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #77 IPCALAB      score= 63.0  engines=MOM                          sector=healthcare           rank=6
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #78 KARURVYSYA   score= 63.0  engines=RVS                          sector=bank                 rank=9
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #79 JINDALSAW    score= 62.0  engines=SEC                          sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #80 RPOWER       score= 62.0  engines=SEC                          sector=power & utilities    rank=1
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #81 CARBORUNIV   score= 60.0  engines=SEC                          sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #82 JPPOWER      score= 60.0  engines=SEC                          sector=power & utilities    rank=1
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #83 FEDERALBNK   score= 59.0  engines=RVS                          sector=bank                 rank=9
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #84 SCHAEFFLER   score= 59.0  engines=SEC                          sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #85 BEML         score= 57.0  engines=SEC                          sector=aerospace & defence  rank=4
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #86 AXISBANK     score= 57.0  engines=RVS                          sector=bank                 rank=9
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #87 TITAGARH     score= 57.0  engines=SEC                          sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #88 ITI          score= 57.0  engines=SEC                          sector=aerospace & defence  rank=4
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #89 GMDCLTD      score= 56.0  engines=SEC                          sector=metals & mining      rank=2
+00:14:57 | INFO     | signals.screen_stocks:1654 -      #90 RKFORGE      score= 55.0  engines=SEC                          sector=industrials          rank=3
+00:14:57 | INFO     | signals.screen_stocks:1670 -   Multi-engine confirmed: 32/90
+00:14:57 | INFO     | signals.screen_stocks:1671 -   Sector distribution: {'power & utilities': 14, 'metals & mining': 17, 'industrials': 28, 'aerospace & defence': 7, 'chemicals': 1, 'bank': 10, 'healthcare': 10, 'transportation': 2, 'textiles': 1}
+00:14:57 | INFO     | signals.screen_stocks:1672 -   Engine hits: {'CTL': 26, 'MOM': 45, 'SEC': 51, 'RVS': 12, 'IAD': 1}
+00:14:57 | INFO     | signals.screen_stocks:1675 - Pass 4: writing (full mode)...
+00:14:57 | SUCCESS  | signals.screen_stocks:1277 - ✓ 90 symbols → master_shortlist
+00:14:57 | INFO     | signals.screen_stocks:1490 - Checking master_shortlist completeness...
+00:14:57 | INFO     | signals.screen_stocks:1519 - ======================================================================
+00:14:57 | INFO     | signals.screen_stocks:1520 - MASTER_SHORTLIST COMPLETENESS REPORT
+00:14:57 | INFO     | signals.screen_stocks:1521 - ======================================================================
+00:14:57 | WARNING  | signals.screen_stocks:1525 - ai_conviction             NULL in 72/92 rows (78.3%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - ai_conviction_reason      NULL in 72/92 rows (78.3%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - ai_fallback_used          NULL in 92/92 rows (100.0%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - ai_note                   NULL in 72/92 rows (78.3%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - ai_provider               NULL in 72/92 rows (78.3%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - ai_risks                  NULL in 72/92 rows (78.3%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - ai_shortlist_rank         NULL in 71/92 rows (77.2%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - ai_shortlist_reason       NULL in 71/92 rows (77.2%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - ai_suggested_action       NULL in 72/92 rows (78.3%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - company_name              NULL in 22/92 rows (23.9%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - composite_score           NULL in 2/92 rows (2.2%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - computed_at               NULL in 2/92 rows (2.2%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - convergence_pts           NULL in 2/92 rows (2.2%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - eap_adjustment            NULL in 2/92 rows (2.2%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - eap_revival               NULL in 92/92 rows (100.0%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - engine_scores_json        NULL in 2/92 rows (2.2%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - engines_count             NULL in 2/92 rows (2.2%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - engines_list              NULL in 2/92 rows (2.2%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - entry_action              NULL in 64/92 rows (69.6%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - entry_mode                NULL in 64/92 rows (69.6%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - entry_ready               NULL in 64/92 rows (69.6%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - event_bias                NULL in 65/92 rows (70.7%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - event_sectors             NULL in 65/92 rows (70.7%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - exec_eligibility          NULL in 64/92 rows (69.6%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - fv_high                   NULL in 64/92 rows (69.6%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - fv_low                    NULL in 64/92 rows (69.6%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - is_ipo                    NULL in 64/92 rows (69.6%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - ma_levels                 NULL in 92/92 rows (100.0%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - market_cap                NULL in 2/92 rows (2.2%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - notes                     NULL in 92/92 rows (100.0%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - opp_type                  NULL in 64/92 rows (69.6%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - pos_type                  NULL in 64/92 rows (69.6%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - priority_rank             NULL in 2/92 rows (2.2%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - rank_vel_3d               NULL in 50/92 rows (54.3%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - score_vel_5d              NULL in 60/92 rows (65.2%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - screener_source           NULL in 2/92 rows (2.2%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - sector_rank               NULL in 2/92 rows (2.2%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - st_cushion_pct            NULL in 4/92 rows (4.3%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - suggested                 NULL in 64/92 rows (69.6%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - trade_allowed             NULL in 64/92 rows (69.6%)
+00:14:57 | WARNING  | signals.screen_stocks:1525 - upcoming_news             NULL in 91/92 rows (98.9%)
+00:14:57 | INFO     | signals.screen_stocks:1527 - ======================================================================
+00:14:57 | ERROR    | signals.screen_stocks:1532 - Columns never populated by script:
+00:14:57 | ERROR    | signals.screen_stocks:1534 -    -> ai_fallback_used
+00:14:57 | ERROR    | signals.screen_stocks:1534 -    -> eap_revival
+00:14:57 | ERROR    | signals.screen_stocks:1534 -    -> ma_levels
+00:14:57 | ERROR    | signals.screen_stocks:1534 -    -> notes
+00:14:57 | SUCCESS  | signals.screen_stocks:1536 - Completeness check finished.
+00:14:57 | INFO     | signals.screen_stocks:1302 -   EAP revival: no penalized stocks found yesterday — skipping
+00:14:57 | INFO     | signals.screen_stocks:1397 -   Outcomes: no msl_computed data for 2026-04-25 — skipping 5d
+00:14:57 | INFO     | signals.screen_stocks:1397 -   Outcomes: no msl_computed data for 2026-04-20 — skipping 10d
+00:14:57 | INFO     | signals.screen_stocks:1397 -   Outcomes: no msl_computed data for 2026-04-15 — skipping 15d
+00:14:57 | INFO     | signals.screen_stocks:1426 -   Outcomes: nothing to log (no past data aligns with today)
+00:14:57 | INFO     | __main__:29 - ✓ 13_screen_stocks done in 0.9s
+00:14:57 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:14:57 | INFO     | __main__:23 -   14_compute_msl
+00:14:57 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:14:57 | INFO     | compute.compute_msl:277 -   Resolving trading day from 2026-05-04 (holidays loaded: 26)
+00:14:58 | INFO     | compute.compute_msl:307 -   Trading day resolved: 2026-05-04 → 2026-04-30
+00:14:58 | INFO     | compute.compute_msl:2520 - ======================================================================
+00:14:58 | INFO     | compute.compute_msl:2521 - STEP [14]: Compute MSL v3.0 | 2026-04-30 | mode=FULL
+00:14:58 | INFO     | compute.compute_msl:2525 - ======================================================================
+00:14:58 | INFO     | compute.compute_msl:2527 - Pass 1: loading data (9 bulk queries)...
+00:14:58 | INFO     | compute.compute_msl:374 -   Source table: master_shortlist (92 symbols)
+00:14:58 | INFO     | compute.compute_msl:703 -   market_news: 39 items | window 2026-04-30 → 2026-04-30
+00:14:58 | INFO     | compute.compute_msl:715 -   Loaded: 92 symbols | 92 stock_data | 562 history | 24 sectors | regime=None | 0 open positions | blocked=0 | FII=SELLING | news B:0/b:3
+00:14:58 | INFO     | compute.compute_msl:2549 - Pass 2: computing all fields...
+00:14:58 | INFO     | compute.compute_msl:2226 -   Regime context: NEUTRAL | RSI extended @72 | regime_boost=+0 | macro_boost=-2.0 | VIX=0.0 | breadth=50% | FII=SELLING | GIFT=+0.00%
+00:14:58 | INFO     | compute.compute_msl:2411 -   Computed: 92 | skipped: 0
+00:14:58 | INFO     | compute.compute_msl:2559 -   Results: 92 symbols
+00:14:58 | INFO     | compute.compute_msl:2560 -   Avg final_score:         56.8
+00:14:58 | INFO     | compute.compute_msl:2561 -   Avg momentum_score:      68.4
+00:14:58 | INFO     | compute.compute_msl:2562 -   Avg institutional_score: 35.7
+00:14:58 | INFO     | compute.compute_msl:2563 -   Avg breakout_readiness:  24.6
+00:14:58 | INFO     | compute.compute_msl:2564 -   Avg risk_score:          22.6
+00:14:58 | INFO     | compute.compute_msl:2565 -   Avg holding_score:       69.9
+00:14:58 | INFO     | compute.compute_msl:2566 -   Avg MA alignment:        5.1/6
+00:14:58 | INFO     | compute.compute_msl:2568 -   Momentum state:   {'BUILDING': 32, 'HOT': 50, 'WEAK': 7, 'STABLE': 3}
+00:14:58 | INFO     | compute.compute_msl:2569 -   Momentum phase:   {'EXPANSION': 42, 'EXTENDED': 27, 'EARLY': 3, 'FLAT': 15, 'EXHAUSTED': 5}
+00:14:58 | INFO     | compute.compute_msl:2570 -   Trend maturity:   {'DEVELOPING': 23, 'LATE': 36, 'FRESH': 17, 'FLAT': 12, 'EXHAUSTED': 4}
+00:14:58 | INFO     | compute.compute_msl:2571 -   Lifecycle:        {'HOLD': 74, 'ADD': 6, 'EXIT': 12}
+00:14:58 | INFO     | compute.compute_msl:2572 -   Entry timing:     {'OPTIMAL': 5, 'REENTRY': 66, 'EXTENDED': 12, 'CHASING': 9}
+00:14:58 | INFO     | compute.compute_msl:2573 -   Weekly structure: {'CAUTION': 17, 'STRONG': 52, 'WEAK': 11, 'CONSOLIDATING': 12}
+00:14:58 | INFO     | compute.compute_msl:2574 -   BB context:       {'RIDING_UPPER': 18, 'UPPER_HALF': 55, 'MIDDLE': 15, 'NEAR_LOWER': 1, 'LOWER_HALF': 3}
+00:14:58 | INFO     | compute.compute_msl:2575 -   VWAP alignment:   {'MIXED': 10, 'ABOVE_20D': 42, 'ABOVE_ALL': 28, 'ABOVE_ALL_EXTENDED': 12}
+00:14:58 | INFO     | compute.compute_msl:2576 -   Volume trend:     {'STABLE': 46, 'EXPANDING': 27, 'CONTRACTING': 14, 'DECLINING': 5}
+00:14:58 | INFO     | compute.compute_msl:2577 -   Fund quality:     {'STABLE': 88, 'WEAK': 2, 'LOSS_MAKING': 2}
+00:14:58 | INFO     | compute.compute_msl:2587 -   Score distribution: {'≥70': 5, '55-70': 50, '40-55': 30, '<40': 7}
+00:14:58 | INFO     | compute.compute_msl:2593 -   Top 6 by final_score:
+00:14:58 | INFO     | compute.compute_msl:2597 -     GVT&D        final= 72.3  hold= 78.3  mom=HOT      phase=EXTENDED   MA=6/6  BB=UPPER_HALF           risk=30.0  struct=YES
+00:14:58 | INFO     | compute.compute_msl:2597 -     SAIL         final= 72.2  hold= 86.8  mom=HOT      phase=EXTENDED   MA=6/6  BB=RIDING_UPPER         risk=23.0  struct=YES
+00:14:58 | INFO     | compute.compute_msl:2597 -     CGPOWER      final= 71.5  hold= 72.8  mom=HOT      phase=EXPANSION  MA=6/6  BB=UPPER_HALF           risk=25.0  struct=YES
+00:14:58 | INFO     | compute.compute_msl:2597 -     CUMMINSIND   final= 70.8  hold= 79.7  mom=HOT      phase=EXPANSION  MA=6/6  BB=UPPER_HALF           risk=27.0  struct=YES
+00:14:58 | INFO     | compute.compute_msl:2597 -     TATAPOWER    final= 70.6  hold= 86.6  mom=HOT      phase=EXPANSION  MA=6/6  BB=UPPER_HALF           risk=24.0  struct=YES
+00:14:58 | INFO     | compute.compute_msl:2597 -     KEI          final= 69.7  hold= 80.4  mom=HOT      phase=EXPANSION  MA=5/6  BB=UPPER_HALF           risk=18.0  struct=YES
+00:14:58 | INFO     | compute.compute_msl:2614 -   ★ HOT + in zone (new opportunities): ['HINDALCO', 'TATAPOWER', 'BHARATFORG', 'KEI', 'POWERGRID', 'ABB', 'CGPOWER', 'SAIL', 'NMDC', 'SIEMENS', 'KIRLOSENG', 'SOLARINDS']
+00:14:58 | INFO     | compute.compute_msl:2624 -   🌱 FRESH trend + struct_edge: ['SCHAEFFLER', 'ASTERDM', 'JSWSTEEL', 'SARDAEN', 'NTPC', 'TATASTEEL', 'AIAENG', 'INDUSINDBK', 'USHAMART', 'GRAPHITE', 'AUBANK', 'IPCALAB']
+00:14:58 | INFO     | compute.compute_msl:2673 -   Sheet vs computed divergences (74), top 40 by rank:
+00:14:58 | INFO     | compute.compute_msl:2675 -     #1 NTPC: mom BUILDING→BUILDING  score 131→62.3
+00:14:58 | INFO     | compute.compute_msl:2675 -     #2 HINDALCO: mom HOT→HOT  score 130→68.7
+00:14:58 | INFO     | compute.compute_msl:2675 -     #3 TATAPOWER: mom HOT→HOT  score 124→70.6
+00:14:58 | INFO     | compute.compute_msl:2675 -     #4 CUMMINSIND: mom HOT→HOT  score 124→70.8
+00:14:58 | INFO     | compute.compute_msl:2675 -     #5 KEI: mom HOT→HOT  score 124→69.7
+00:14:58 | INFO     | compute.compute_msl:2675 -     #6 POWERGRID: mom HOT→HOT  score 122→69.6
+00:14:58 | INFO     | compute.compute_msl:2675 -     #7 BHARATFORG: mom HOT→HOT  score 122→65.7
+00:14:58 | INFO     | compute.compute_msl:2675 -     #8 ABB: mom HOT→HOT  score 120→64.9
+00:14:58 | INFO     | compute.compute_msl:2675 -     #9 CGPOWER: mom HOT→HOT  score 119→71.5
+00:14:58 | INFO     | compute.compute_msl:2675 -     #10 SAIL: mom HOT→HOT  score 119→72.2
+00:14:58 | INFO     | compute.compute_msl:2675 -     #11 JSWSTEEL: mom BUILDING→BUILDING  score 117→66.3
+00:14:58 | INFO     | compute.compute_msl:2675 -     #12 NMDC: mom HOT→HOT  score 115→69.0
+00:14:58 | INFO     | compute.compute_msl:2675 -     #13 COALINDIA: mom HOT→HOT  score 113→67.5
+00:14:58 | INFO     | compute.compute_msl:2675 -     #14 POLYCAB: mom HOT→HOT  score 109→64.2
+00:14:58 | INFO     | compute.compute_msl:2675 -     #15 SARDAEN: mom BUILDING→BUILDING  score 109→62.6
+00:14:58 | INFO     | compute.compute_msl:2675 -     #16 SIEMENS: mom HOT→HOT  score 107→64.4
+00:14:58 | INFO     | compute.compute_msl:2675 -     #17 LLOYDSME: mom HOT→HOT  score 105→58.2
+00:14:58 | INFO     | compute.compute_msl:2675 -     #18 ELGIEQUIP: mom HOT→HOT  score 105→63.1
+00:14:58 | INFO     | compute.compute_msl:2675 -     #19 APARINDS: mom HOT→HOT  score 104→64.0
+00:14:58 | INFO     | compute.compute_msl:2675 -     #20 SOLARINDS: mom HOT→HOT  score 102→64.8
+00:14:58 | INFO     | compute.compute_msl:2675 -     #21 ADANIPOWER: mom HOT→HOT  score 101→56.6
+00:14:58 | INFO     | compute.compute_msl:2675 -     #22 KIRLOSENG: mom HOT→HOT  score 101→68.2
+00:14:58 | INFO     | compute.compute_msl:2675 -     #23 TATASTEEL: mom BUILDING→BUILDING  score 100→59.1
+00:14:58 | INFO     | compute.compute_msl:2675 -     #24 TORNTPOWER: mom HOT→HOT  score 99→66.8
+00:14:58 | INFO     | compute.compute_msl:2675 -     #25 WELCORP: mom HOT→HOT  score 99→49.1
+00:14:58 | INFO     | compute.compute_msl:2675 -     #26 BHEL: mom HOT→HOT  score 99→63.0
+00:14:58 | INFO     | compute.compute_msl:2675 -     #27 AIAENG: mom BUILDING→BUILDING  score 98→53.1
+00:14:58 | INFO     | compute.compute_msl:2675 -     #28 GPIL: mom BUILDING→BUILDING  score 95→55.7
+00:14:58 | INFO     | compute.compute_msl:2675 -     #29 ATUL: mom HOT→HOT  score 95→60.2
+00:14:58 | INFO     | compute.compute_msl:2675 -     #30 GRAPHITE: mom BUILDING→BUILDING  score 93→54.1
+00:14:58 | INFO     | compute.compute_msl:2675 -     #31 HINDZINC: mom BUILDING→BUILDING  score 92→53.7
+00:14:58 | INFO     | compute.compute_msl:2675 -     #32 ZENTEC: mom HOT→HOT  score 92→61.9
+00:14:58 | INFO     | compute.compute_msl:2675 -     #33 NLCINDIA: mom HOT→HOT  score 90→62.9
+00:14:58 | INFO     | compute.compute_msl:2675 -     #34 AUBANK: mom BUILDING→BUILDING  score 90→51.7
+00:14:58 | INFO     | compute.compute_msl:2675 -     #35 CESC: mom HOT→HOT  score 89→57.9
+00:14:58 | INFO     | compute.compute_msl:2675 -     #36 DRREDDY: mom HOT→HOT  score 89→55.0
+00:14:58 | INFO     | compute.compute_msl:2675 -     #37 TORNTPHARM: mom WEAK→WEAK  score 88→50.5
+00:14:58 | INFO     | compute.compute_msl:2675 -     #38 DATAPATTNS: mom HOT→HOT  score 87→61.3
+00:14:58 | INFO     | compute.compute_msl:2675 -     #39 RRKABEL: mom HOT→HOT  score 86→59.2
+00:14:58 | INFO     | compute.compute_msl:2675 -     #40 INDUSINDBK: mom HOT→HOT  score 84→53.3
+00:14:58 | INFO     | compute.compute_msl:2691 - Pass 3: writing results...
+00:14:58 | SUCCESS  | compute.compute_msl:2491 - ✓ full: 92 → master_shortlist
+00:14:58 | INFO     | __main__:29 - ✓ 14_compute_msl done in 0.8s
+00:14:58 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:14:58 | INFO     | __main__:23 -   15_signals
+00:14:58 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:14:58 | INFO     | signals.generate_signals:1168 - ============================================================
+00:14:58 | INFO     | signals.generate_signals:1169 - STEP [15]: Generate Signals v5 — Dynamic Thresholds
+00:14:58 | INFO     | signals.generate_signals:1170 - ============================================================
+00:14:58 | INFO     | signals.generate_signals:231 -   Resolving trading day from 2026-05-04 (holidays loaded: 26)
+00:14:58 | INFO     | signals.generate_signals:262 -   Trading day confirmed: 2026-05-04
+00:14:58 | INFO     | signals.generate_signals:845 -   Thresholds loaded: risk_block=80.0 holding_exit=30.0 min_rr=1.0 min_score_adj=45.0 prime_breakout_min=55.0
+00:14:58 | INFO     | signals.generate_signals:292 - stock_data_daily using last trading day 2026-04-30
+00:14:59 | INFO     | signals.generate_signals:326 -   MSL: 28 rows | compute_source: {'ingest_sheets': 28}
+00:14:59 | INFO     | signals.generate_signals:1178 - Signal breakdown:  {'WATCH': 11, 'BLOCKED_ASM': 1}
+00:14:59 | INFO     | signals.generate_signals:1179 - Subtype breakdown: {}
+00:14:59 | INFO     | signals.generate_signals:1189 -   BUY: 0 (PRIME:0 REENTRY:0)
+00:14:59 | INFO     | signals.generate_signals:1190 -   EXIT:0 REDUCE:0 WATCH:11 (near_miss:10)
+00:14:59 | INFO     | signals.generate_signals:1196 -     chase_3.4atrs_limit_2.3: 2 — WELCORP, POWERINDIA
+00:14:59 | INFO     | signals.generate_signals:1196 -     chase_0.8atrs_limit_0.5: 1 — ABB
+00:14:59 | INFO     | signals.generate_signals:1196 -     chase_2.7atrs_limit_2.3: 1 — BHEL
+00:14:59 | INFO     | signals.generate_signals:1196 -     target_already_reached: 1 — SAIL
+00:14:59 | INFO     | signals.generate_signals:1196 -     insufficient_rr_0.16x: 1 — HINDALCO
+00:14:59 | INFO     | signals.generate_signals:1196 -     chase_1.1atrs_limit_1.0: 1 — CUMMINSIND
+00:14:59 | INFO     | signals.generate_signals:1196 -     insufficient_rr_0.09x: 1 — BHARATFORG
+00:14:59 | INFO     | signals.generate_signals:1196 -     chase_3.1atrs_limit_2.3: 1 — LLOYDSME
+00:14:59 | INFO     | signals.generate_signals:1196 -     chase_2.6atrs_limit_1.0: 1 — ADANIPOWER
+00:14:59 | INFO     | signals.generate_signals:1196 -     exit_lifecycle_no_entry: 1 — KIRLOSENG
+00:14:59 | INFO     | signals.generate_signals:1206 -   💡 Near misses for step 19 upgrade evaluation:
+00:14:59 | INFO     | signals.generate_signals:1210 -     ABB: atr_chase — {'blocked_by': 'atr_chase', 'dist_atrs': 0.8, 'max_atrs': 0.5, 'gap_atrs': 0.3, 'would_be': 'BUY_CANDIDATE', 'momentum_state': 'WEAK', 'momentum_phase': 'EXTENDED', 'velocity_state': 'FLAT', 'struct_edge': '#ERROR! (FORMULA PARSE ERROR.)', 'score': 52.27161534058683}
+00:14:59 | INFO     | signals.generate_signals:1210 -     BHEL: atr_chase — {'blocked_by': 'atr_chase', 'dist_atrs': 2.7, 'max_atrs': 2.3, 'gap_atrs': 0.4, 'would_be': 'BUY_CANDIDATE', 'momentum_state': 'HOT', 'momentum_phase': 'EARLY', 'velocity_state': 'ACCELERATING', 'struct_edge': 'YES', 'score': 54.800723866462015}
+00:14:59 | INFO     | signals.generate_signals:1210 -     SAIL: target_reached — {'blocked_by': 'target_reached', 'target': 176.20982500000002, 'cp': 184.95}
+00:14:59 | INFO     | signals.generate_signals:1210 -     HINDALCO: rr — {'blocked_by': 'rr', 'implied_rr': 0.16, 'min_rr': 1.0}
+00:14:59 | INFO     | signals.generate_signals:1210 -     CUMMINSIND: atr_chase — {'blocked_by': 'atr_chase', 'dist_atrs': 1.1, 'max_atrs': 1.0, 'gap_atrs': 0.1, 'would_be': 'BUY_CANDIDATE', 'momentum_state': 'STABLE', 'momentum_phase': 'EXTENDED', 'velocity_state': 'FLAT', 'struct_edge': 'YES', 'score': 58.79938106222812}
+00:14:59 | ERROR    | __main__:33 - ✗ 15_signals FAILED in 0.6s: {'code': 'PGRST204', 'details': None, 'hint': None, 'message': "Could not find the 'industry_rank' column of 'signal_log' in the schema cache"}
+00:16:29 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:16:29 | INFO     | __main__:1168 - ============================================================
+00:16:29 | INFO     | __main__:1169 - STEP [15]: Generate Signals v5 — Dynamic Thresholds
+00:16:29 | INFO     | __main__:1170 - ============================================================
+00:16:29 | INFO     | __main__:231 -   Resolving trading day from 2026-05-04 (holidays loaded: 26)
+00:16:29 | INFO     | __main__:262 -   Trading day confirmed: 2026-05-04
+00:16:29 | INFO     | __main__:845 -   Thresholds loaded: risk_block=80.0 holding_exit=30.0 min_rr=1.0 min_score_adj=45.0 prime_breakout_min=55.0
+00:16:31 | INFO     | __main__:292 - stock_data_daily using last trading day 2026-04-30
+00:16:31 | INFO     | __main__:326 -   MSL: 28 rows | compute_source: {'ingest_sheets': 28}
+00:16:31 | INFO     | __main__:1178 - Signal breakdown:  {'WATCH': 11, 'BLOCKED_ASM': 1}
+00:16:31 | INFO     | __main__:1179 - Subtype breakdown: {}
+00:16:31 | INFO     | __main__:1189 -   BUY: 0 (PRIME:0 REENTRY:0)
+00:16:31 | INFO     | __main__:1190 -   EXIT:0 REDUCE:0 WATCH:11 (near_miss:10)
+00:16:31 | INFO     | __main__:1196 -     chase_3.4atrs_limit_2.3: 2 — WELCORP, POWERINDIA
+00:16:31 | INFO     | __main__:1196 -     chase_0.8atrs_limit_0.5: 1 — ABB
+00:16:31 | INFO     | __main__:1196 -     chase_2.7atrs_limit_2.3: 1 — BHEL
+00:16:31 | INFO     | __main__:1196 -     target_already_reached: 1 — SAIL
+00:16:31 | INFO     | __main__:1196 -     insufficient_rr_0.16x: 1 — HINDALCO
+00:16:31 | INFO     | __main__:1196 -     chase_1.1atrs_limit_1.0: 1 — CUMMINSIND
+00:16:31 | INFO     | __main__:1196 -     insufficient_rr_0.09x: 1 — BHARATFORG
+00:16:31 | INFO     | __main__:1196 -     chase_3.1atrs_limit_2.3: 1 — LLOYDSME
+00:16:31 | INFO     | __main__:1196 -     chase_2.6atrs_limit_1.0: 1 — ADANIPOWER
+00:16:31 | INFO     | __main__:1196 -     exit_lifecycle_no_entry: 1 — KIRLOSENG
+00:16:31 | INFO     | __main__:1206 -   💡 Near misses for step 19 upgrade evaluation:
+00:16:31 | INFO     | __main__:1210 -     ABB: atr_chase — {'blocked_by': 'atr_chase', 'dist_atrs': 0.8, 'max_atrs': 0.5, 'gap_atrs': 0.3, 'would_be': 'BUY_CANDIDATE', 'momentum_state': 'WEAK', 'momentum_phase': 'EXTENDED', 'velocity_state': 'FLAT', 'struct_edge': '#ERROR! (FORMULA PARSE ERROR.)', 'score': 52.27161534058683}
+00:16:31 | INFO     | __main__:1210 -     BHEL: atr_chase — {'blocked_by': 'atr_chase', 'dist_atrs': 2.7, 'max_atrs': 2.3, 'gap_atrs': 0.4, 'would_be': 'BUY_CANDIDATE', 'momentum_state': 'HOT', 'momentum_phase': 'EARLY', 'velocity_state': 'ACCELERATING', 'struct_edge': 'YES', 'score': 54.800723866462015}
+00:16:31 | INFO     | __main__:1210 -     SAIL: target_reached — {'blocked_by': 'target_reached', 'target': 176.20982500000002, 'cp': 184.95}
+00:16:31 | INFO     | __main__:1210 -     HINDALCO: rr — {'blocked_by': 'rr', 'implied_rr': 0.16, 'min_rr': 1.0}
+00:16:31 | INFO     | __main__:1210 -     CUMMINSIND: atr_chase — {'blocked_by': 'atr_chase', 'dist_atrs': 1.1, 'max_atrs': 1.0, 'gap_atrs': 0.1, 'would_be': 'BUY_CANDIDATE', 'momentum_state': 'STABLE', 'momentum_phase': 'EXTENDED', 'velocity_state': 'FLAT', 'struct_edge': 'YES', 'score': 58.79938106222812}
+00:17:11 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:17:11 | INFO     | __main__:1168 - ============================================================
+00:17:11 | INFO     | __main__:1169 - STEP [15]: Generate Signals v5 — Dynamic Thresholds
+00:17:11 | INFO     | __main__:1170 - ============================================================
+00:17:11 | INFO     | __main__:231 -   Resolving trading day from 2026-05-04 (holidays loaded: 26)
+00:17:11 | INFO     | __main__:262 -   Trading day confirmed: 2026-05-04
+00:17:11 | INFO     | __main__:845 -   Thresholds loaded: risk_block=80.0 holding_exit=30.0 min_rr=1.0 min_score_adj=45.0 prime_breakout_min=55.0
+00:17:12 | INFO     | __main__:292 - stock_data_daily using last trading day 2026-04-30
+00:17:13 | INFO     | __main__:326 -   MSL: 28 rows | compute_source: {'ingest_sheets': 28}
+00:17:13 | INFO     | __main__:1178 - Signal breakdown:  {'WATCH': 11, 'BLOCKED_ASM': 1}
+00:17:13 | INFO     | __main__:1179 - Subtype breakdown: {}
+00:17:13 | INFO     | __main__:1189 -   BUY: 0 (PRIME:0 REENTRY:0)
+00:17:13 | INFO     | __main__:1190 -   EXIT:0 REDUCE:0 WATCH:11 (near_miss:10)
+00:17:13 | INFO     | __main__:1196 -     chase_3.4atrs_limit_2.3: 2 — WELCORP, POWERINDIA
+00:17:13 | INFO     | __main__:1196 -     chase_0.8atrs_limit_0.5: 1 — ABB
+00:17:13 | INFO     | __main__:1196 -     chase_2.7atrs_limit_2.3: 1 — BHEL
+00:17:13 | INFO     | __main__:1196 -     target_already_reached: 1 — SAIL
+00:17:13 | INFO     | __main__:1196 -     insufficient_rr_0.16x: 1 — HINDALCO
+00:17:13 | INFO     | __main__:1196 -     chase_1.1atrs_limit_1.0: 1 — CUMMINSIND
+00:17:13 | INFO     | __main__:1196 -     insufficient_rr_0.09x: 1 — BHARATFORG
+00:17:13 | INFO     | __main__:1196 -     chase_3.1atrs_limit_2.3: 1 — LLOYDSME
+00:17:13 | INFO     | __main__:1196 -     chase_2.6atrs_limit_1.0: 1 — ADANIPOWER
+00:17:13 | INFO     | __main__:1196 -     exit_lifecycle_no_entry: 1 — KIRLOSENG
+00:17:13 | INFO     | __main__:1206 -   💡 Near misses for step 19 upgrade evaluation:
+00:17:13 | INFO     | __main__:1210 -     ABB: atr_chase — {'blocked_by': 'atr_chase', 'dist_atrs': 0.8, 'max_atrs': 0.5, 'gap_atrs': 0.3, 'would_be': 'BUY_CANDIDATE', 'momentum_state': 'WEAK', 'momentum_phase': 'EXTENDED', 'velocity_state': 'FLAT', 'struct_edge': '#ERROR! (FORMULA PARSE ERROR.)', 'score': 52.27161534058683}
+00:17:13 | INFO     | __main__:1210 -     BHEL: atr_chase — {'blocked_by': 'atr_chase', 'dist_atrs': 2.7, 'max_atrs': 2.3, 'gap_atrs': 0.4, 'would_be': 'BUY_CANDIDATE', 'momentum_state': 'HOT', 'momentum_phase': 'EARLY', 'velocity_state': 'ACCELERATING', 'struct_edge': 'YES', 'score': 54.800723866462015}
+00:17:13 | INFO     | __main__:1210 -     SAIL: target_reached — {'blocked_by': 'target_reached', 'target': 176.20982500000002, 'cp': 184.95}
+00:17:13 | INFO     | __main__:1210 -     HINDALCO: rr — {'blocked_by': 'rr', 'implied_rr': 0.16, 'min_rr': 1.0}
+00:17:13 | INFO     | __main__:1210 -     CUMMINSIND: atr_chase — {'blocked_by': 'atr_chase', 'dist_atrs': 1.1, 'max_atrs': 1.0, 'gap_atrs': 0.1, 'would_be': 'BUY_CANDIDATE', 'momentum_state': 'STABLE', 'momentum_phase': 'EXTENDED', 'velocity_state': 'FLAT', 'struct_edge': 'YES', 'score': 58.79938106222812}
+00:17:13 | INFO     | __main__:1156 - ✓ 12 signals written to signal_log
+00:17:30 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:17:30 | INFO     | __main__:71 - ════════════════════════════════════════════════════════════
+00:17:30 | INFO     | __main__:72 -   TradeOS v6 Pipeline | Phase 2
+00:17:30 | INFO     | __main__:73 - ════════════════════════════════════════════════════════════
+00:17:30 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:17:30 | INFO     | __main__:23 -   01_market_news
+00:17:30 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:17:30 | INFO     | ingestion.ingest_market_news:618 - Market News Ingestion starting 
+00:17:33 | INFO     | ingestion.ingest_market_news:641 -   NSE_CIRCULAR: 8 items
+00:17:33 | INFO     | ingestion.ingest_market_news:641 -   RBI: 8 items
+00:17:36 | INFO     | ingestion.ingest_market_news:641 -   NSE_BULK_DEAL: 17 items
+00:17:36 | INFO     | ingestion.ingest_market_news:641 -   ET_MARKETS: 12 items
+00:17:42 | INFO     | ingestion.ingest_market_news:641 -   GOOGLE_NEWS: 18 items
+00:17:44 | INFO     | ingestion.ingest_market_news:641 -   SEBI: 8 items
+00:17:44 | INFO     | ingestion.ingest_market_news:641 -   INVESTING_COMMODITIES: 10 items
+00:17:44 | INFO     | ingestion.ingest_market_news:641 -   INVESTING_MACRO: 12 items
+00:17:45 | SUCCESS  | ingestion.ingest_market_news:648 - Market News done: 93 scraped → 68 written | Sources: {'NSE_CIRCULAR': 8, 'RBI': 8, 'NSE_BULK_DEAL': 17, 'ET_MARKETS': 12, 'GOOGLE_NEWS': 18, 'SEBI': 8, 'INVESTING_COMMODITIES': 10, 'INVESTING_MACRO': 12}
+00:17:45 | INFO     | __main__:29 - ✓ 01_market_news done in 15.2s
+00:17:45 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:17:45 | INFO     | __main__:23 -   02_macro_indicators
+00:17:45 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:17:45 | INFO     | ingestion.ingest_macro_indicators:381 - Macro Indicators Ingestion starting 
+00:17:46 | INFO     | ingestion.ingest_macro_indicators:389 -   RBI DBIE: 5 indicators
+00:17:46 | INFO     | ingestion.ingest_macro_indicators:397 -   MOSPI: 2 indicators
+00:17:46 | INFO     | ingestion.ingest_macro_indicators:406 -   Yahoo US_10YR_YIELD: already written today — skipping
+00:17:46 | INFO     | ingestion.ingest_macro_indicators:406 -   Yahoo SILVER_PRICE: already written today — skipping
+00:17:46 | INFO     | ingestion.ingest_macro_indicators:418 -   India VIX: already written today — skipping
+00:17:46 | WARNING  | ingestion.ingest_macro_indicators:425 -   India VIX: FAILED (non-fatal) — cannot access local variable 'vix_row' where it is not associated with a value
+00:17:47 | INFO     | ingestion.ingest_macro_indicators:220 -   Nifty PCR: zero OI detected (market closed) — using last stored value
+00:17:47 | INFO     | ingestion.ingest_macro_indicators:255 -   Nifty PCR: using last stored value 1.0 from 2026-05-04
+00:17:47 | INFO     | ingestion.ingest_macro_indicators:432 -   Nifty PCR: 1.0 (source=NSE_OPTION_CHAIN_CACHED)
+00:17:47 | INFO     | ingestion.ingest_macro_indicators:442 -   ET RSS CPI/WPI: 2 indicators
+00:17:48 | SUCCESS  | ingestion.ingest_macro_indicators:448 - Macro Indicators done: 10 fetched → 10 written
+00:17:48 | INFO     | __main__:29 - ✓ 02_macro_indicators done in 2.7s
+00:17:48 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:17:48 | INFO     | __main__:23 -   03_global_cues
+00:17:48 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:17:48 | INFO     | ingestion.ingest_global_cues:121 - Global Cues Ingestion — EVENING
+00:17:49 | SUCCESS  | ingestion.ingest_global_cues:262 - [EVENING] Global cues saved: Gift=23997.55 | USD/INR=94.88 | Crude=108.17 | DOW=49499.27 (+0.00%) | S&P=7230.12 | Gap=UNKNOWN | Bias=MIXED
+00:17:49 | INFO     | __main__:29 - ✓ 03_global_cues done in 1.0s
+00:17:49 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:17:49 | INFO     | __main__:23 -   04_fetch_chartink
+00:17:49 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:17:51 | INFO     | ingestion.fetch_chartink:76 - Navigating to Chartink login...
+00:17:54 | INFO     | ingestion.fetch_chartink:82 - ✓ Login submitted
+00:17:54 | INFO     | ingestion.fetch_chartink:85 - Navigating to Swing dashboard...
+00:18:03 | INFO     | ingestion.fetch_chartink:87 - Waiting for widgets to render...
+00:18:15 | WARNING  | ingestion.fetch_chartink:108 - 4 widgets failed to load — retrying page...
+00:18:33 | INFO     | ingestion.fetch_chartink:128 - Widget box: {'x': 928, 'y': 533, 'width': 441, 'height': 334}
+00:18:34 | INFO     | ingestion.fetch_chartink:133 - Widget box after scroll: {'x': 928, 'y': 281, 'width': 441, 'height': 334}
+00:18:34 | INFO     | ingestion.fetch_chartink:141 - Moving mouse: neutral → title (988,296) → CSV (1319,296)
+00:18:39 | INFO     | ingestion.fetch_chartink:150 - Clicking CSV button...
+00:18:39 | INFO     | ingestion.fetch_chartink:156 - ✓ CSV downloaded: 500 rows
+00:18:39 | INFO     | ingestion.fetch_chartink:177 - Writing 500 rows to 'Chartink Raw Data_Nifty 500'...
+00:18:43 | INFO     | ingestion.fetch_chartink:193 - ✓ Written to 'Chartink Raw Data_Nifty 500': 500 rows, 51 columns
+00:18:43 | INFO     | ingestion.fetch_chartink:199 - Upserting 500 rows to Supabase chartink_raw_data...
+00:18:44 | INFO     | ingestion.fetch_chartink:265 - ✓ Upserted to chartink_raw_data: 500 rows
+00:18:44 | INFO     | __main__:29 - ✓ 04_fetch_chartink done in 55.5s
+00:18:44 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:18:44 | INFO     | __main__:23 -   05_ingest_bhavcopy
+00:18:44 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:18:44 | INFO     | ingestion.ingest_bhavcopy:523 - ════════════════════════════════════════════════════════════
+00:18:44 | INFO     | ingestion.ingest_bhavcopy:524 -   STEP: Ingest Bhavcopy (NSE primary + BSE fallback)
+00:18:44 | INFO     | ingestion.ingest_bhavcopy:525 - ════════════════════════════════════════════════════════════
+00:18:44 | INFO     | ingestion.ingest_bhavcopy:115 -   2026-05-01 is an NSE holiday — stepping back
+00:18:44 | INFO     | ingestion.ingest_bhavcopy:530 - Trade date: 2026-04-30
+00:18:45 | INFO     | ingestion.ingest_bhavcopy:553 - Already complete for 2026-04-30 — raw_prices: 2455 rows | stock_data_daily: 500 rows — skipping
+00:18:45 | INFO     | __main__:29 - ✓ 05_ingest_bhavcopy done in 0.3s
+00:18:45 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:18:45 | INFO     | __main__:23 -   06_ingest_sheets
+00:18:45 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:18:45 | INFO     | ingestion.ingest_sheets:736 - ============================================================
+00:18:45 | INFO     | ingestion.ingest_sheets:737 - STEP 1: Google Sheets Ingestion
+00:18:45 | INFO     | ingestion.ingest_sheets:738 - ============================================================
+00:18:45 | INFO     | ingestion.ingest_sheets:673 - Ingesting strategy configs...
+00:19:07 | INFO     | ingestion.ingest_sheets:725 - ✓ STRATEGY_CONFIG: 4 strategies loaded
+00:19:07 | INFO     | ingestion.ingest_sheets:155 - Ingesting MASTER_SHORTLIST...
+00:19:07 | INFO     | ingestion.ingest_sheets:239 - ✓ MASTER_SHORTLIST: 28 rows upserted
+00:19:07 | INFO     | ingestion.ingest_sheets:253 - No removed MSL symbols to reconcile
+00:19:07 | INFO     | ingestion.ingest_sheets:260 - Ingesting OPEN_POSITIONS...
+00:19:08 | INFO     | ingestion.ingest_sheets:319 - No rows to upsert
+00:19:08 | INFO     | ingestion.ingest_sheets:370 - No removed symbols to reconcile
+00:19:08 | INFO     | ingestion.ingest_sheets:394 - Ingesting CLOSED_POSITIONS...
+00:19:11 | INFO     | ingestion.ingest_sheets:441 - ✓ CLOSED_POSITIONS: 69 rows upserted
+00:19:11 | INFO     | ingestion.ingest_sheets:446 - Ingesting SECTOR_STRENGTH...
+00:19:12 | INFO     | ingestion.ingest_sheets:477 - ✓ SECTOR_STRENGTH: 23 sectors upserted
+00:19:12 | INFO     | ingestion.ingest_sheets:481 - Ingesting INDUSTRY_STRENGTH...
+00:19:13 | INFO     | ingestion.ingest_sheets:513 - ✓ INDUSTRY_STRENGTH: 22 industries upserted
+00:19:13 | INFO     | ingestion.ingest_sheets:565 - Ingesting EVENT_CALENDAR...
+00:19:13 | INFO     | ingestion.ingest_sheets:599 - ✓ EVENT_CALENDAR: 53 events upserted
+00:19:13 | INFO     | ingestion.ingest_sheets:604 - Ingesting LESSONS_LEARNED...
+00:19:14 | INFO     | ingestion.ingest_sheets:647 - ✓ LESSONS_LEARNED: 0 new lessons added
+00:19:14 | INFO     | ingestion.ingest_sheets:652 - Ingesting NSE_HOLIDAYS...
+00:19:15 | INFO     | ingestion.ingest_sheets:667 - ✓ NSE_HOLIDAYS: 25 holidays
+00:19:15 | INFO     | ingestion.ingest_sheets:764 - 
+✓ Ingestion complete: 224 total rows across 9 tables
+00:19:15 | INFO     | __main__:29 - ✓ 06_ingest_sheets done in 30.0s
+00:19:15 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:19:15 | INFO     | __main__:23 -   07_fii_dii
+00:19:15 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:19:15 | INFO     | ingestion.ingest_fii_dii:149 - FII/DII Ingestion starting
+00:19:16 | SUCCESS  | ingestion.ingest_fii_dii:169 - FII/DII saved: net=-8048Cr, flag=CAUTION
+00:19:16 | INFO     | __main__:29 - ✓ 07_fii_dii done in 1.3s
+00:19:16 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:19:16 | INFO     | __main__:23 -   08_nse_events
+00:19:16 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:19:16 | INFO     | ingestion.ingest_nse_events:87 - NSE Events Ingestion starting
+00:19:17 | INFO     | ingestion.ingest_nse_events:101 - Fetched 328 raw events from NSE
+00:19:17 | INFO     | ingestion.ingest_nse_events:123 -   Deduped: 328 → 324 events
+00:19:17 | SUCCESS  | ingestion.ingest_nse_events:132 - NSE events saved: 324 events (next 90 days, 4 dupes dropped)
+00:19:17 | INFO     | __main__:29 - ✓ 08_nse_events done in 1.4s
+00:19:17 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:19:17 | INFO     | __main__:23 -   09_asm_gsm
+00:19:17 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:19:17 | INFO     | ingestion.ingest_asm_gsm:233 - Safety Lists Ingestion starting 
+00:19:20 | INFO     | ingestion.ingest_asm_gsm:243 - ASM: 259 | GSM: 52 | F&O Ban: 0
+00:19:28 | INFO     | ingestion.ingest_asm_gsm:223 - stock_data_daily flags: 311 asm_flag, 0 fo_ban_flag
+00:19:28 | SUCCESS  | ingestion.ingest_asm_gsm:266 - Safety lists saved: 311 total entries
+00:19:28 | INFO     | __main__:29 - ✓ 09_asm_gsm done in 10.6s
+00:19:28 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:19:28 | INFO     | __main__:23 -   10_compute_indicators
+00:19:28 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:19:28 | INFO     | compute.compute_indicators:1123 - compute_indicators v2.3 — 2026-05-04 — COMPUTE_ONLY
+00:19:28 | INFO     | compute.compute_indicators:1092 -   Resolved trading date: 2026-05-04 → 2026-04-30
+00:19:28 | INFO     | compute.compute_indicators:1136 - Pass 1: bulk data fetch...
+00:19:28 | INFO     | compute.compute_indicators:559 -   chartink_raw_data: 500 rows
+00:19:28 | INFO     | compute.compute_indicators:211 -   fetch_bulk_history_yf: checking price_history_yf cache (500 symbols) | cutoff=2025-01-15...
+00:19:30 | INFO     | compute.compute_indicators:260 -   Today OHLCV seeded from chartink: 500 symbols | tail calls eliminated for current symbols
+00:19:30 | INFO     | compute.compute_indicators:341 -   Young listings skipping yfinance (32 symbols):
+00:19:30 | INFO     | compute.compute_indicators:342 -   Symbol           Listed Since    Cached  Expected  Complete  Reason
+00:19:30 | INFO     | compute.compute_indicators:343 -   ----------------------------------------------------------------------
+00:19:30 | INFO     | compute.compute_indicators:354 -   ABLBL            2025-06-23         210       213      99%  needs 50 more sessions (~72d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   ACUTAAS          2025-06-02         226       227     100%  needs 34 more sessions (~49d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   AEGISVOPAK       2025-06-02         227       227     100%  needs 33 more sessions (~48d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   ANTHEM           2025-07-21         192       194      99%  needs 68 more sessions (~99d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   ATHERENERG       2025-05-06         246       246     100%  needs 14 more sessions (~20d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   BELRISE          2025-05-28         230       231     100%  needs 30 more sessions (~43d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   CANHLIFE         2025-10-17         129       133      97%  needs 131 more sessions (~191d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   CEMPRO           2025-09-10         156       159      98%  needs 104 more sessions (~151d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   COHANCE          2025-05-08         243       244     100%  needs 17 more sessions (~24d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   CPPLUS           2025-08-05         181       183      99%  needs 79 more sessions (~115d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   EMMVEE           2025-11-18         111       111     100%  needs 149 more sessions (~217d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   ENRIN            2025-06-19         212       216      98%  needs 48 more sessions (~70d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   GROWW            2025-11-12         115       115     100%  needs 145 more sessions (~211d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   HDBFS            2025-07-02         205       207      99%  needs 55 more sessions (~80d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   HEALTHCARE       2026-02-16          49        50      98%  needs 211 more sessions (~307d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   ICICIAMC         2025-12-19          88        90      98%  needs 172 more sessions (~250d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   JAINREC          2025-10-01         140       144      97%  needs 120 more sessions (~175d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   JSWCEMENT        2025-08-14         174       177      98%  needs 86 more sessions (~125d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   LENSKART         2025-11-10         117       117     100%  needs 143 more sessions (~208d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   LGEINDIA         2025-10-14         134       135      99%  needs 126 more sessions (~183d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   LTM              2026-02-18          47        48      98%  needs 213 more sessions (~310d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   MEESHO           2025-12-10          95        96      99%  needs 165 more sessions (~240d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   PINELABS         2025-11-14         113       114      99%  needs 147 more sessions (~214d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   PIRAMALFIN       2025-11-07         116       119      97%  needs 144 more sessions (~210d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   PWL              2025-11-18         110       111      99%  needs 150 more sessions (~218d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   TATACAP          2025-10-13         135       136      99%  needs 125 more sessions (~182d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   TENNIND          2025-11-19         110       111      99%  needs 150 more sessions (~218d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   THELEELA         2025-06-02         225       227      99%  needs 35 more sessions (~51d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   TMCV             2025-11-12         115       115     100%  needs 145 more sessions (~211d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   TMPV             2025-10-15         132       135      98%  needs 128 more sessions (~186d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   TRAVELFOOD       2025-07-14         197       198      99%  needs 63 more sessions (~91d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:354 -   URBANCO          2025-09-17         152       154      99%  needs 108 more sessions (~157d) to reach 260
+00:19:30 | INFO     | compute.compute_indicators:359 -   ----------------------------------------------------------------------
+00:19:30 | INFO     | compute.compute_indicators:364 -   price_history_yf: 468 sufficient | 0 tail-refresh | 0 gap-fill (genuine cache gaps) | 32 young listings (cache complete, skipping yfinance) | 0 full fetch (new symbols)
+  ✓ yfinance not needed — all symbols sufficient and current
+00:19:37 | INFO     | compute.compute_indicators:545 -   fetch_bulk_history_yf complete: 500 symbols loaded | 154116 total sessions | 0 symbols fetched from yfinance
+00:19:37 | INFO     | compute.compute_indicators:595 -   Upcoming events: 349 symbols with events in next 30d
+00:19:37 | INFO     | compute.compute_indicators:619 -   MSL symbols: 92 in shortlist
+00:19:37 | INFO     | compute.compute_indicators:643 -   Index membership: 600 symbols mapped
+00:19:37 | INFO     | compute.compute_indicators:681 -   raw_prices: 499 symbols with delivery/value data
+00:19:37 | INFO     | compute.compute_indicators:1170 -   Nifty 1M return: 3.8203%
+00:19:37 | INFO     | compute.compute_indicators:1177 - Pass 2: computing and reconciling...
+00:19:37 | INFO     | compute.compute_indicators:1230 - =================================================================
+00:19:37 | INFO     | compute.compute_indicators:1231 - COMPUTE INDICATORS SUMMARY — 2026-04-30 — COMPUTE_ONLY
+00:19:37 | INFO     | compute.compute_indicators:1232 -   Symbols: 500 processed | 0 skipped
+00:19:37 | INFO     | compute.compute_indicators:1256 - =================================================================
+00:19:37 | INFO     | compute.compute_indicators:1272 - Pass 3: writing 500 rows to stock_data_daily...
+00:19:38 | SUCCESS  | compute.compute_indicators:1280 - compute_indicators: 500 written | 0 skipped | 0 diverged field types requiring review
+00:19:38 | INFO     | __main__:29 - ✓ 10_compute_indicators done in 10.6s
+00:19:38 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:19:38 | INFO     | __main__:23 -   11_compute_regime
+00:19:38 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:19:38 | INFO     | compute.compute_regime:1439 - =================================================================
+00:19:38 | INFO     | compute.compute_regime:1440 - STEP: Compute Regime v2.0 | 2026-05-04 | mode=FULL
+00:19:38 | INFO     | compute.compute_regime:1442 - =================================================================
+00:19:38 | INFO     | compute.compute_regime:110 -   stock_data_daily last trading date: 2026-04-30
+00:19:38 | INFO     | compute.compute_regime:140 -   2026-05-04 is non-trading — effective date is 2026-04-30
+00:19:38 | INFO     | compute.compute_regime:1450 -   Non-trading day — computing for last trading date: 2026-04-30
+00:19:38 | INFO     | compute.compute_regime:1453 - Pass 1: loading data...
+00:19:39 | INFO     | compute.compute_regime:451 -   Nifty Supabase: price=23997.55 | dma50=24173.825 | dma200=25108.484599609375 | weekly_rsi=42.98
+00:19:39 | INFO     | compute.compute_regime:479 -   BankNifty: price=55403.6015625 | weekly_rsi=41.7 | Nifty weekly_rsi=42.98
+00:19:39 | INFO     | compute.compute_regime:566 -   VIX: current=18.46 | rows_fetched=6 | vix_5d_delta=0.41 | ✓ delta computed
+00:19:39 | INFO     | compute.compute_regime:601 -   GIFT Nifty=23997.55 | prev_close=24177.650390625 | premium=-0.74%
+00:19:39 | INFO     | compute.compute_regime:656 -   DB fallback from: 2026-04-30
+00:19:39 | INFO     | compute.compute_regime:690 -   Loaded: regime_history=10 days | VIX=18.46 (macro_indicators) | FII flag=CAUTION | Nifty=23997.55 | above200dma=43.96%
+00:19:39 | INFO     | compute.compute_regime:1466 - Pass 2: scoring pillars...
+00:19:39 | INFO     | compute.compute_regime:1489 -   Pillar scores:
+00:19:39 | INFO     | compute.compute_regime:1490 -     Price structure:    1.0/25
+00:19:39 | INFO     | compute.compute_regime:1491 -     Breadth:           14.0/25
+00:19:39 | INFO     | compute.compute_regime:1492 -     Momentum:           5.0/20
+00:19:39 | INFO     | compute.compute_regime:1493 -     Volatility/VIX:     5.0/15  (VIX=18.46, Δ5d=+0.41)
+00:19:39 | INFO     | compute.compute_regime:1495 -     FII flows:          3.0/15
+00:19:39 | INFO     | compute.compute_regime:1496 -     Global modifier:   +1.0/±5  (S&P500 5d=+1.0%)
+00:19:39 | INFO     | compute.compute_regime:1498 -     ─────────────────────────────────────
+00:19:39 | INFO     | compute.compute_regime:1499 -     TOTAL:             29.0/100
+00:19:39 | INFO     | compute.compute_regime:1509 - Pass 3: applying hysteresis...
+00:19:39 | INFO     | compute.compute_regime:1517 -   Computed: NEUTRAL | Score: 29.0/100 | ✅ AGREE
+00:19:39 | INFO     | compute.compute_regime:1527 -   vs ML predicted_regime: ✅ ML=NEUTRAL | Computed=NEUTRAL
+00:19:39 | INFO     | compute.compute_regime:1531 - Pass 4: writing (full mode)...
+00:19:39 | SUCCESS  | compute.compute_regime:1357 - ✓ market_regime UPSERT | computed_regime=NEUTRAL | score=29.0 | date=2026-04-30
+00:19:39 | INFO     | compute.compute_regime:1360 -   FULL MODE: regime field updated → Sheet decommissioned
+00:19:39 | INFO     | __main__:29 - ✓ 11_compute_regime done in 0.5s
+00:19:39 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:19:39 | INFO     | __main__:23 -   12_regime_predict
+00:19:39 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:19:42 | INFO     | __main__:29 - ✓ 12_regime_predict done in 3.4s
+00:19:42 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:19:42 | INFO     | __main__:23 -   13_screen_stocks
+00:19:42 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:19:42 | INFO     | signals.screen_stocks:158 -   Resolved trading date: 2026-05-04 → 2026-04-30
+00:19:42 | INFO     | signals.screen_stocks:1563 - =================================================================
+00:19:42 | INFO     | signals.screen_stocks:1564 - STEP: Screen Stocks v1.1 | 2026-04-30 | mode=FULL
+00:19:42 | INFO     | signals.screen_stocks:1566 - =================================================================
+00:19:42 | INFO     | signals.screen_stocks:1568 - Pass 1: loading data...
+00:19:43 | INFO     | signals.screen_stocks:220 -   ingest_sheets symbols merged into force_include: 2
+00:19:43 | INFO     | signals.screen_stocks:228 -   Loaded: 500 stocks | 24 sectors | regime=None | asm=311 | fii=CAUTION | forced=28
+00:19:43 | INFO     | signals.screen_stocks:1600 - Pass 2: running engines (regime=NEUTRAL)...
+00:19:43 | INFO     | signals.screen_stocks:358 -   CTL: 27 candidates
+00:19:43 | INFO     | signals.screen_stocks:439 -   SBS: 0 candidates
+00:19:43 | INFO     | signals.screen_stocks:519 -   TPO: 0 candidates
+00:19:43 | INFO     | signals.screen_stocks:596 -   VBD: 0 candidates
+00:19:43 | INFO     | signals.screen_stocks:661 -   IAD: 1 candidates
+00:19:43 | INFO     | signals.screen_stocks:715 -   RSB: 0 candidates
+00:19:43 | INFO     | signals.screen_stocks:818 -   MOM: 47 candidates
+00:19:43 | INFO     | signals.screen_stocks:933 -   RVS: 13 candidates
+00:19:43 | INFO     | signals.screen_stocks:1009 -   SEC: 54 candidates
+00:19:43 | INFO     | signals.screen_stocks:1629 -   Engine totals: CTL=27 SBS=0 TPO=0 VBD=0 IAD=1 RSB=0 MOM=47 RVS=13 SEC=54 | Total unique=94
+00:19:43 | INFO     | signals.screen_stocks:1637 - Pass 3: aggregating and ranking...
+00:19:43 | INFO     | signals.screen_stocks:1056 -   Regime weights (NEUTRAL):  (all 1.0x)
+00:19:43 | INFO     | signals.screen_stocks:1172 -   Aggregated: 95 total unique | 91 after hard filters | 90 final
+00:19:43 | INFO     | signals.screen_stocks:1651 - 
+  ═══ TOP 90 SCREENED SYMBOLS (NEUTRAL) ═══
+00:19:43 | INFO     | signals.screen_stocks:1654 -      # 1 NTPC         score=131.4  engines=CTL,MOM,SEC                  sector=power & utilities    rank=1
+00:19:43 | INFO     | signals.screen_stocks:1654 -      # 2 HINDALCO     score=130.0  engines=CTL,MOM,SEC                  sector=metals & mining      rank=2
+00:19:43 | INFO     | signals.screen_stocks:1654 -      # 3 TATAPOWER    score=124.4  engines=CTL,MOM,SEC                  sector=power & utilities    rank=1
+00:19:43 | INFO     | signals.screen_stocks:1654 -      # 4 CUMMINSIND   score=124.1  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      # 5 KEI          score=124.0  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      # 6 BHARATFORG   score=122.2  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      # 7 POWERGRID    score=122.2  engines=CTL,MOM,SEC                  sector=power & utilities    rank=1
+00:19:43 | INFO     | signals.screen_stocks:1654 -      # 8 ABB          score=120.2  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      # 9 CGPOWER      score=119.2  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #10 SAIL         score=118.8  engines=CTL,MOM                      sector=metals & mining      rank=2
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #11 JSWSTEEL     score=117.3  engines=CTL,MOM,SEC                  sector=metals & mining      rank=2
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #12 NMDC         score=114.9  engines=CTL,MOM,SEC                  sector=metals & mining      rank=2
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #13 COALINDIA    score=113.0  engines=CTL,MOM                      sector=metals & mining      rank=2
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #14 POLYCAB      score=109.3  engines=MOM,SEC                      sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #15 SARDAEN      score=108.6  engines=CTL,MOM,SEC                  sector=metals & mining      rank=2
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #16 SIEMENS      score=107.0  engines=CTL,MOM                      sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #17 LLOYDSME     score=105.0  engines=CTL                          sector=metals & mining      rank=2
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #18 ELGIEQUIP    score=105.0  engines=MOM,SEC                      sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #19 APARINDS     score=103.5  engines=MOM,SEC                      sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #20 SOLARINDS    score=102.2  engines=CTL,MOM                      sector=aerospace & defence  rank=4
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #21 ADANIPOWER   score=101.0  engines=CTL                          sector=power & utilities    rank=1
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #22 KIRLOSENG    score=100.6  engines=CTL,MOM,SEC                  sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #23 TATASTEEL    score=100.1  engines=CTL,SEC                      sector=metals & mining      rank=2
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #24 TORNTPOWER   score= 99.2  engines=MOM,SEC                      sector=power & utilities    rank=1
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #25 WELCORP      score= 99.0  engines=CTL                          sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #26 BHEL         score= 99.0  engines=CTL                          sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #27 AIAENG       score= 97.6  engines=MOM,SEC                      sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #28 GPIL         score= 95.3  engines=CTL,SEC                      sector=metals & mining      rank=2
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #29 ATUL         score= 95.0  engines=MOM                          sector=chemicals            rank=8
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #30 GRAPHITE     score= 92.8  engines=MOM,SEC                      sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #31 HINDZINC     score= 92.3  engines=MOM,SEC                      sector=metals & mining      rank=2
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #32 ZENTEC       score= 91.9  engines=MOM,SEC                      sector=aerospace & defence  rank=4
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #33 NLCINDIA     score= 90.5  engines=MOM,SEC                      sector=power & utilities    rank=1
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #34 AUBANK       score= 90.0  engines=MOM                          sector=bank                 rank=9
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #35 CESC         score= 89.0  engines=CTL                          sector=power & utilities    rank=1
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #36 DRREDDY      score= 89.0  engines=MOM                          sector=healthcare           rank=6
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #37 TORNTPHARM   score= 88.0  engines=RVS                          sector=healthcare           rank=6
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #38 DATAPATTNS   score= 87.0  engines=MOM                          sector=aerospace & defence  rank=4
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #39 RRKABEL      score= 85.5  engines=MOM,SEC                      sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #40 INDUSINDBK   score= 84.0  engines=MOM                          sector=bank                 rank=9
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #41 FINCABLES    score= 84.0  engines=MOM                          sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #42 ASTERDM      score= 83.0  engines=MOM                          sector=healthcare           rank=6
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #43 THERMAX      score= 82.7  engines=CTL,SEC                      sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #44 POWERINDIA   score= 82.0  engines=CTL                          sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #45 AJANTPHARM   score= 82.0  engines=RVS                          sector=healthcare           rank=6
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #46 SBIN         score= 82.0  engines=RVS                          sector=bank                 rank=9
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #47 GRANULES     score= 81.0  engines=MOM                          sector=healthcare           rank=6
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #48 CUB          score= 81.0  engines=MOM                          sector=bank                 rank=9
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #49 MAHABANK     score= 81.0  engines=MOM                          sector=bank                 rank=9
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #50 ADANIPORTS   score= 80.0  engines=MOM                          sector=transportation       rank=7
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #51 RBLBANK      score= 80.0  engines=MOM                          sector=bank                 rank=9
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #52 SJVN         score= 77.0  engines=SEC                          sector=power & utilities    rank=1
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #53 NATIONALUM   score= 76.0  engines=RVS                          sector=metals & mining      rank=2
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #54 HEG          score= 75.1  engines=RVS,SEC                      sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #55 JINDALSTEL   score= 75.0  engines=RVS                          sector=metals & mining      rank=2
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #56 BEL          score= 74.0  engines=RVS                          sector=aerospace & defence  rank=4
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #57 GLENMARK     score= 74.0  engines=MOM                          sector=healthcare           rank=6
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #58 TIMKEN       score= 73.8  engines=RVS,SEC                      sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #59 USHAMART     score= 73.0  engines=SEC                          sector=metals & mining      rank=2
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #60 NSLNISP      score= 73.0  engines=SEC                          sector=metals & mining      rank=2
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #61 NHPC         score= 72.0  engines=SEC                          sector=power & utilities    rank=1
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #62 EMMVEE       score= 72.0  engines=SEC                          sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #63 TIINDIA      score= 72.0  engines=SEC                          sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #64 NTPCGREEN    score= 72.0  engines=SEC                          sector=power & utilities    rank=1
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #65 SUNPHARMA    score= 71.0  engines=MOM                          sector=healthcare           rank=6
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #66 GLAND        score= 70.0  engines=IAD                          sector=healthcare           rank=6
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #67 LUPIN        score= 70.0  engines=RVS                          sector=healthcare           rank=6
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #68 INOXWIND     score= 70.0  engines=SEC                          sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #69 ENRIN        score= 70.0  engines=SEC                          sector=power & utilities    rank=1
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #70 GESHIP       score= 68.0  engines=MOM                          sector=transportation       rank=7
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #71 GRAVITA      score= 68.0  engines=SEC                          sector=metals & mining      rank=2
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #72 SHYAMMETL    score= 68.0  engines=SEC                          sector=metals & mining      rank=2
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #73 HAL          score= 67.0  engines=SEC                          sector=aerospace & defence  rank=4
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #74 JSWENERGY    score= 67.0  engines=SEC                          sector=power & utilities    rank=1
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #75 BANDHANBNK   score= 65.0  engines=MOM                          sector=bank                 rank=9
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #76 VTL          score= 63.0  engines=MOM                          sector=textiles             rank=10
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #77 IPCALAB      score= 63.0  engines=MOM                          sector=healthcare           rank=6
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #78 KARURVYSYA   score= 63.0  engines=RVS                          sector=bank                 rank=9
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #79 RPOWER       score= 62.0  engines=SEC                          sector=power & utilities    rank=1
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #80 JINDALSAW    score= 62.0  engines=SEC                          sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #81 CARBORUNIV   score= 60.0  engines=SEC                          sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #82 JPPOWER      score= 60.0  engines=SEC                          sector=power & utilities    rank=1
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #83 FEDERALBNK   score= 59.0  engines=RVS                          sector=bank                 rank=9
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #84 SCHAEFFLER   score= 59.0  engines=SEC                          sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #85 BEML         score= 57.0  engines=SEC                          sector=aerospace & defence  rank=4
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #86 AXISBANK     score= 57.0  engines=RVS                          sector=bank                 rank=9
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #87 TITAGARH     score= 57.0  engines=SEC                          sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #88 ITI          score= 57.0  engines=SEC                          sector=aerospace & defence  rank=4
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #89 GMDCLTD      score= 56.0  engines=SEC                          sector=metals & mining      rank=2
+00:19:43 | INFO     | signals.screen_stocks:1654 -      #90 RKFORGE      score= 55.0  engines=SEC                          sector=industrials          rank=3
+00:19:43 | INFO     | signals.screen_stocks:1670 -   Multi-engine confirmed: 32/90
+00:19:43 | INFO     | signals.screen_stocks:1671 -   Sector distribution: {'power & utilities': 14, 'metals & mining': 17, 'industrials': 28, 'aerospace & defence': 7, 'chemicals': 1, 'bank': 10, 'healthcare': 10, 'transportation': 2, 'textiles': 1}
+00:19:43 | INFO     | signals.screen_stocks:1672 -   Engine hits: {'CTL': 26, 'MOM': 45, 'SEC': 51, 'RVS': 12, 'IAD': 1}
+00:19:43 | INFO     | signals.screen_stocks:1675 - Pass 4: writing (full mode)...
+00:19:43 | SUCCESS  | signals.screen_stocks:1277 - ✓ 90 symbols → master_shortlist
+00:19:43 | INFO     | signals.screen_stocks:1490 - Checking master_shortlist completeness...
+00:19:43 | INFO     | signals.screen_stocks:1519 - ======================================================================
+00:19:43 | INFO     | signals.screen_stocks:1520 - MASTER_SHORTLIST COMPLETENESS REPORT
+00:19:43 | INFO     | signals.screen_stocks:1521 - ======================================================================
+00:19:43 | WARNING  | signals.screen_stocks:1525 - ai_conviction             NULL in 72/92 rows (78.3%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - ai_conviction_reason      NULL in 72/92 rows (78.3%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - ai_fallback_used          NULL in 92/92 rows (100.0%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - ai_note                   NULL in 72/92 rows (78.3%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - ai_provider               NULL in 72/92 rows (78.3%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - ai_risks                  NULL in 72/92 rows (78.3%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - ai_shortlist_rank         NULL in 71/92 rows (77.2%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - ai_shortlist_reason       NULL in 71/92 rows (77.2%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - ai_suggested_action       NULL in 72/92 rows (78.3%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - company_name              NULL in 22/92 rows (23.9%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - composite_score           NULL in 2/92 rows (2.2%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - computed_at               NULL in 2/92 rows (2.2%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - convergence_pts           NULL in 2/92 rows (2.2%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - eap_adjustment            NULL in 2/92 rows (2.2%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - eap_revival               NULL in 92/92 rows (100.0%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - engine_scores_json        NULL in 2/92 rows (2.2%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - engines_count             NULL in 2/92 rows (2.2%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - engines_list              NULL in 2/92 rows (2.2%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - entry_action              NULL in 64/92 rows (69.6%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - entry_mode                NULL in 64/92 rows (69.6%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - entry_ready               NULL in 64/92 rows (69.6%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - event_bias                NULL in 65/92 rows (70.7%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - event_sectors             NULL in 65/92 rows (70.7%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - exec_eligibility          NULL in 64/92 rows (69.6%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - fv_high                   NULL in 64/92 rows (69.6%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - fv_low                    NULL in 64/92 rows (69.6%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - is_ipo                    NULL in 64/92 rows (69.6%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - ma_levels                 NULL in 92/92 rows (100.0%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - market_cap                NULL in 2/92 rows (2.2%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - notes                     NULL in 92/92 rows (100.0%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - opp_type                  NULL in 64/92 rows (69.6%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - pos_type                  NULL in 64/92 rows (69.6%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - priority_rank             NULL in 2/92 rows (2.2%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - rank_vel_3d               NULL in 50/92 rows (54.3%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - score_vel_5d              NULL in 60/92 rows (65.2%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - screener_source           NULL in 2/92 rows (2.2%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - sector_rank               NULL in 2/92 rows (2.2%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - st_cushion_pct            NULL in 4/92 rows (4.3%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - suggested                 NULL in 64/92 rows (69.6%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - trade_allowed             NULL in 64/92 rows (69.6%)
+00:19:43 | WARNING  | signals.screen_stocks:1525 - upcoming_news             NULL in 91/92 rows (98.9%)
+00:19:43 | INFO     | signals.screen_stocks:1527 - ======================================================================
+00:19:43 | ERROR    | signals.screen_stocks:1532 - Columns never populated by script:
+00:19:43 | ERROR    | signals.screen_stocks:1534 -    -> ai_fallback_used
+00:19:43 | ERROR    | signals.screen_stocks:1534 -    -> eap_revival
+00:19:43 | ERROR    | signals.screen_stocks:1534 -    -> ma_levels
+00:19:43 | ERROR    | signals.screen_stocks:1534 -    -> notes
+00:19:43 | SUCCESS  | signals.screen_stocks:1536 - Completeness check finished.
+00:19:43 | INFO     | signals.screen_stocks:1302 -   EAP revival: no penalized stocks found yesterday — skipping
+00:19:43 | INFO     | signals.screen_stocks:1397 -   Outcomes: no msl_computed data for 2026-04-25 — skipping 5d
+00:19:43 | INFO     | signals.screen_stocks:1397 -   Outcomes: no msl_computed data for 2026-04-20 — skipping 10d
+00:19:43 | INFO     | signals.screen_stocks:1397 -   Outcomes: no msl_computed data for 2026-04-15 — skipping 15d
+00:19:43 | INFO     | signals.screen_stocks:1426 -   Outcomes: nothing to log (no past data aligns with today)
+00:19:43 | INFO     | __main__:29 - ✓ 13_screen_stocks done in 0.9s
+00:19:43 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:19:43 | INFO     | __main__:23 -   14_compute_msl
+00:19:43 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:19:43 | INFO     | compute.compute_msl:277 -   Resolving trading day from 2026-05-04 (holidays loaded: 26)
+00:19:43 | INFO     | compute.compute_msl:307 -   Trading day resolved: 2026-05-04 → 2026-04-30
+00:19:43 | INFO     | compute.compute_msl:2520 - ======================================================================
+00:19:43 | INFO     | compute.compute_msl:2521 - STEP [14]: Compute MSL v3.0 | 2026-04-30 | mode=FULL
+00:19:43 | INFO     | compute.compute_msl:2525 - ======================================================================
+00:19:43 | INFO     | compute.compute_msl:2527 - Pass 1: loading data (9 bulk queries)...
+00:19:43 | INFO     | compute.compute_msl:374 -   Source table: master_shortlist (92 symbols)
+00:19:44 | INFO     | compute.compute_msl:703 -   market_news: 39 items | window 2026-04-30 → 2026-04-30
+00:19:44 | INFO     | compute.compute_msl:715 -   Loaded: 92 symbols | 92 stock_data | 562 history | 24 sectors | regime=None | 0 open positions | blocked=0 | FII=SELLING | news B:0/b:3
+00:19:44 | INFO     | compute.compute_msl:2549 - Pass 2: computing all fields...
+00:19:44 | INFO     | compute.compute_msl:2226 -   Regime context: NEUTRAL | RSI extended @72 | regime_boost=+0 | macro_boost=-2.0 | VIX=0.0 | breadth=50% | FII=SELLING | GIFT=+0.00%
+00:19:44 | INFO     | compute.compute_msl:2411 -   Computed: 92 | skipped: 0
+00:19:44 | INFO     | compute.compute_msl:2559 -   Results: 92 symbols
+00:19:44 | INFO     | compute.compute_msl:2560 -   Avg final_score:         56.8
+00:19:44 | INFO     | compute.compute_msl:2561 -   Avg momentum_score:      68.4
+00:19:44 | INFO     | compute.compute_msl:2562 -   Avg institutional_score: 35.7
+00:19:44 | INFO     | compute.compute_msl:2563 -   Avg breakout_readiness:  24.6
+00:19:44 | INFO     | compute.compute_msl:2564 -   Avg risk_score:          22.6
+00:19:44 | INFO     | compute.compute_msl:2565 -   Avg holding_score:       69.9
+00:19:44 | INFO     | compute.compute_msl:2566 -   Avg MA alignment:        5.1/6
+00:19:44 | INFO     | compute.compute_msl:2568 -   Momentum state:   {'BUILDING': 32, 'HOT': 50, 'WEAK': 7, 'STABLE': 3}
+00:19:44 | INFO     | compute.compute_msl:2569 -   Momentum phase:   {'EXPANSION': 42, 'EXTENDED': 27, 'EXHAUSTED': 5, 'FLAT': 15, 'EARLY': 3}
+00:19:44 | INFO     | compute.compute_msl:2570 -   Trend maturity:   {'DEVELOPING': 23, 'LATE': 36, 'FRESH': 17, 'EXHAUSTED': 4, 'FLAT': 12}
+00:19:44 | INFO     | compute.compute_msl:2571 -   Lifecycle:        {'HOLD': 74, 'EXIT': 12, 'ADD': 6}
+00:19:44 | INFO     | compute.compute_msl:2572 -   Entry timing:     {'OPTIMAL': 5, 'REENTRY': 66, 'EXTENDED': 12, 'CHASING': 9}
+00:19:44 | INFO     | compute.compute_msl:2573 -   Weekly structure: {'CAUTION': 17, 'CONSOLIDATING': 12, 'STRONG': 52, 'WEAK': 11}
+00:19:44 | INFO     | compute.compute_msl:2574 -   BB context:       {'RIDING_UPPER': 18, 'UPPER_HALF': 55, 'MIDDLE': 15, 'NEAR_LOWER': 1, 'LOWER_HALF': 3}
+00:19:44 | INFO     | compute.compute_msl:2575 -   VWAP alignment:   {'MIXED': 10, 'ABOVE_ALL_EXTENDED': 12, 'ABOVE_ALL': 28, 'ABOVE_20D': 42}
+00:19:44 | INFO     | compute.compute_msl:2576 -   Volume trend:     {'STABLE': 46, 'EXPANDING': 27, 'CONTRACTING': 14, 'DECLINING': 5}
+00:19:44 | INFO     | compute.compute_msl:2577 -   Fund quality:     {'STABLE': 88, 'WEAK': 2, 'LOSS_MAKING': 2}
+00:19:44 | INFO     | compute.compute_msl:2587 -   Score distribution: {'≥70': 5, '55-70': 50, '40-55': 30, '<40': 7}
+00:19:44 | INFO     | compute.compute_msl:2593 -   Top 6 by final_score:
+00:19:44 | INFO     | compute.compute_msl:2597 -     GVT&D        final= 72.3  hold= 78.3  mom=HOT      phase=EXTENDED   MA=6/6  BB=UPPER_HALF           risk=30.0  struct=YES
+00:19:44 | INFO     | compute.compute_msl:2597 -     SAIL         final= 72.2  hold= 86.8  mom=HOT      phase=EXTENDED   MA=6/6  BB=RIDING_UPPER         risk=23.0  struct=YES
+00:19:44 | INFO     | compute.compute_msl:2597 -     CGPOWER      final= 71.5  hold= 72.8  mom=HOT      phase=EXPANSION  MA=6/6  BB=UPPER_HALF           risk=25.0  struct=YES
+00:19:44 | INFO     | compute.compute_msl:2597 -     CUMMINSIND   final= 70.8  hold= 79.7  mom=HOT      phase=EXPANSION  MA=6/6  BB=UPPER_HALF           risk=27.0  struct=YES
+00:19:44 | INFO     | compute.compute_msl:2597 -     TATAPOWER    final= 70.6  hold= 86.6  mom=HOT      phase=EXPANSION  MA=6/6  BB=UPPER_HALF           risk=24.0  struct=YES
+00:19:44 | INFO     | compute.compute_msl:2597 -     KEI          final= 69.7  hold= 80.4  mom=HOT      phase=EXPANSION  MA=5/6  BB=UPPER_HALF           risk=18.0  struct=YES
+00:19:44 | INFO     | compute.compute_msl:2614 -   ★ HOT + in zone (new opportunities): ['ABB', 'TATAPOWER', 'BHARATFORG', 'KEI', 'POWERGRID', 'CGPOWER', 'SAIL', 'NMDC', 'SIEMENS', 'SOLARINDS', 'HINDALCO', 'KIRLOSENG']
+00:19:44 | INFO     | compute.compute_msl:2624 -   🌱 FRESH trend + struct_edge: ['JSWSTEEL', 'GRAPHITE', 'AUBANK', 'SCHAEFFLER', 'ASTERDM', 'NTPC', 'TATASTEEL', 'AIAENG', 'INDUSINDBK', 'SARDAEN', 'USHAMART', 'IPCALAB']
+00:19:44 | INFO     | compute.compute_msl:2673 -   Sheet vs computed divergences (74), top 40 by rank:
+00:19:44 | INFO     | compute.compute_msl:2675 -     #1 NTPC: mom BUILDING→BUILDING  score 131→62.3
+00:19:44 | INFO     | compute.compute_msl:2675 -     #2 HINDALCO: mom HOT→HOT  score 130→68.7
+00:19:44 | INFO     | compute.compute_msl:2675 -     #3 TATAPOWER: mom HOT→HOT  score 124→70.6
+00:19:44 | INFO     | compute.compute_msl:2675 -     #4 CUMMINSIND: mom HOT→HOT  score 124→70.8
+00:19:44 | INFO     | compute.compute_msl:2675 -     #5 KEI: mom HOT→HOT  score 124→69.7
+00:19:44 | INFO     | compute.compute_msl:2675 -     #6 BHARATFORG: mom HOT→HOT  score 122→65.7
+00:19:44 | INFO     | compute.compute_msl:2675 -     #7 POWERGRID: mom HOT→HOT  score 122→69.6
+00:19:44 | INFO     | compute.compute_msl:2675 -     #8 ABB: mom HOT→HOT  score 120→64.9
+00:19:44 | INFO     | compute.compute_msl:2675 -     #9 CGPOWER: mom HOT→HOT  score 119→71.5
+00:19:44 | INFO     | compute.compute_msl:2675 -     #10 SAIL: mom HOT→HOT  score 119→72.2
+00:19:44 | INFO     | compute.compute_msl:2675 -     #11 JSWSTEEL: mom BUILDING→BUILDING  score 117→66.3
+00:19:44 | INFO     | compute.compute_msl:2675 -     #12 NMDC: mom HOT→HOT  score 115→69.0
+00:19:44 | INFO     | compute.compute_msl:2675 -     #13 COALINDIA: mom HOT→HOT  score 113→67.5
+00:19:44 | INFO     | compute.compute_msl:2675 -     #14 POLYCAB: mom HOT→HOT  score 109→64.2
+00:19:44 | INFO     | compute.compute_msl:2675 -     #15 SARDAEN: mom BUILDING→BUILDING  score 109→62.6
+00:19:44 | INFO     | compute.compute_msl:2675 -     #16 SIEMENS: mom HOT→HOT  score 107→64.4
+00:19:44 | INFO     | compute.compute_msl:2675 -     #17 LLOYDSME: mom HOT→HOT  score 105→58.2
+00:19:44 | INFO     | compute.compute_msl:2675 -     #18 ELGIEQUIP: mom HOT→HOT  score 105→63.1
+00:19:44 | INFO     | compute.compute_msl:2675 -     #19 APARINDS: mom HOT→HOT  score 104→64.0
+00:19:44 | INFO     | compute.compute_msl:2675 -     #20 SOLARINDS: mom HOT→HOT  score 102→64.8
+00:19:44 | INFO     | compute.compute_msl:2675 -     #21 ADANIPOWER: mom HOT→HOT  score 101→56.6
+00:19:44 | INFO     | compute.compute_msl:2675 -     #22 KIRLOSENG: mom HOT→HOT  score 101→68.2
+00:19:44 | INFO     | compute.compute_msl:2675 -     #23 TATASTEEL: mom BUILDING→BUILDING  score 100→59.1
+00:19:44 | INFO     | compute.compute_msl:2675 -     #24 TORNTPOWER: mom HOT→HOT  score 99→66.8
+00:19:44 | INFO     | compute.compute_msl:2675 -     #25 WELCORP: mom HOT→HOT  score 99→49.1
+00:19:44 | INFO     | compute.compute_msl:2675 -     #26 BHEL: mom HOT→HOT  score 99→63.0
+00:19:44 | INFO     | compute.compute_msl:2675 -     #27 AIAENG: mom BUILDING→BUILDING  score 98→53.1
+00:19:44 | INFO     | compute.compute_msl:2675 -     #28 GPIL: mom BUILDING→BUILDING  score 95→55.7
+00:19:44 | INFO     | compute.compute_msl:2675 -     #29 ATUL: mom HOT→HOT  score 95→60.2
+00:19:44 | INFO     | compute.compute_msl:2675 -     #30 GRAPHITE: mom BUILDING→BUILDING  score 93→54.1
+00:19:44 | INFO     | compute.compute_msl:2675 -     #31 HINDZINC: mom BUILDING→BUILDING  score 92→53.7
+00:19:44 | INFO     | compute.compute_msl:2675 -     #32 ZENTEC: mom HOT→HOT  score 92→61.9
+00:19:44 | INFO     | compute.compute_msl:2675 -     #33 NLCINDIA: mom HOT→HOT  score 90→62.9
+00:19:44 | INFO     | compute.compute_msl:2675 -     #34 AUBANK: mom BUILDING→BUILDING  score 90→51.7
+00:19:44 | INFO     | compute.compute_msl:2675 -     #35 CESC: mom HOT→HOT  score 89→57.9
+00:19:44 | INFO     | compute.compute_msl:2675 -     #36 DRREDDY: mom HOT→HOT  score 89→55.0
+00:19:44 | INFO     | compute.compute_msl:2675 -     #37 TORNTPHARM: mom WEAK→WEAK  score 88→50.5
+00:19:44 | INFO     | compute.compute_msl:2675 -     #38 DATAPATTNS: mom HOT→HOT  score 87→61.3
+00:19:44 | INFO     | compute.compute_msl:2675 -     #39 RRKABEL: mom HOT→HOT  score 86→59.2
+00:19:44 | INFO     | compute.compute_msl:2675 -     #40 INDUSINDBK: mom HOT→HOT  score 84→53.3
+00:19:44 | INFO     | compute.compute_msl:2691 - Pass 3: writing results...
+00:19:44 | SUCCESS  | compute.compute_msl:2491 - ✓ full: 92 → master_shortlist
+00:19:44 | INFO     | __main__:29 - ✓ 14_compute_msl done in 0.8s
+00:19:44 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:19:44 | INFO     | __main__:23 -   15_signals
+00:19:44 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:19:44 | INFO     | signals.generate_signals:1168 - ============================================================
+00:19:44 | INFO     | signals.generate_signals:1169 - STEP [15]: Generate Signals v5 — Dynamic Thresholds
+00:19:44 | INFO     | signals.generate_signals:1170 - ============================================================
+00:19:44 | INFO     | signals.generate_signals:231 -   Resolving trading day from 2026-05-04 (holidays loaded: 26)
+00:19:44 | INFO     | signals.generate_signals:262 -   Trading day confirmed: 2026-05-04
+00:19:44 | INFO     | signals.generate_signals:845 -   Thresholds loaded: risk_block=80.0 holding_exit=30.0 min_rr=1.0 min_score_adj=45.0 prime_breakout_min=55.0
+00:19:44 | INFO     | signals.generate_signals:292 - stock_data_daily using last trading day 2026-04-30
+00:19:44 | INFO     | signals.generate_signals:326 -   MSL: 28 rows | compute_source: {'ingest_sheets': 28}
+00:19:44 | INFO     | signals.generate_signals:1178 - Signal breakdown:  {'WATCH': 11, 'BLOCKED_ASM': 1}
+00:19:44 | INFO     | signals.generate_signals:1179 - Subtype breakdown: {}
+00:19:44 | INFO     | signals.generate_signals:1189 -   BUY: 0 (PRIME:0 REENTRY:0)
+00:19:44 | INFO     | signals.generate_signals:1190 -   EXIT:0 REDUCE:0 WATCH:11 (near_miss:10)
+00:19:44 | INFO     | signals.generate_signals:1196 -     chase_3.4atrs_limit_2.3: 2 — WELCORP, POWERINDIA
+00:19:44 | INFO     | signals.generate_signals:1196 -     insufficient_rr_0.16x: 1 — HINDALCO
+00:19:44 | INFO     | signals.generate_signals:1196 -     chase_0.8atrs_limit_0.5: 1 — ABB
+00:19:44 | INFO     | signals.generate_signals:1196 -     chase_2.7atrs_limit_2.3: 1 — BHEL
+00:19:44 | INFO     | signals.generate_signals:1196 -     target_already_reached: 1 — SAIL
+00:19:44 | INFO     | signals.generate_signals:1196 -     chase_1.1atrs_limit_1.0: 1 — CUMMINSIND
+00:19:44 | INFO     | signals.generate_signals:1196 -     insufficient_rr_0.09x: 1 — BHARATFORG
+00:19:44 | INFO     | signals.generate_signals:1196 -     chase_3.1atrs_limit_2.3: 1 — LLOYDSME
+00:19:44 | INFO     | signals.generate_signals:1196 -     chase_2.6atrs_limit_1.0: 1 — ADANIPOWER
+00:19:44 | INFO     | signals.generate_signals:1196 -     exit_lifecycle_no_entry: 1 — KIRLOSENG
+00:19:44 | INFO     | signals.generate_signals:1206 -   💡 Near misses for step 19 upgrade evaluation:
+00:19:44 | INFO     | signals.generate_signals:1210 -     HINDALCO: rr — {'blocked_by': 'rr', 'implied_rr': 0.16, 'min_rr': 1.0}
+00:19:44 | INFO     | signals.generate_signals:1210 -     ABB: atr_chase — {'blocked_by': 'atr_chase', 'dist_atrs': 0.8, 'max_atrs': 0.5, 'gap_atrs': 0.3, 'would_be': 'BUY_CANDIDATE', 'momentum_state': 'WEAK', 'momentum_phase': 'EXTENDED', 'velocity_state': 'FLAT', 'struct_edge': '#ERROR! (FORMULA PARSE ERROR.)', 'score': 52.27161534058683}
+00:19:44 | INFO     | signals.generate_signals:1210 -     BHEL: atr_chase — {'blocked_by': 'atr_chase', 'dist_atrs': 2.7, 'max_atrs': 2.3, 'gap_atrs': 0.4, 'would_be': 'BUY_CANDIDATE', 'momentum_state': 'HOT', 'momentum_phase': 'EARLY', 'velocity_state': 'ACCELERATING', 'struct_edge': 'YES', 'score': 54.800723866462015}
+00:19:44 | INFO     | signals.generate_signals:1210 -     SAIL: target_reached — {'blocked_by': 'target_reached', 'target': 176.20982500000002, 'cp': 184.95}
+00:19:44 | INFO     | signals.generate_signals:1210 -     CUMMINSIND: atr_chase — {'blocked_by': 'atr_chase', 'dist_atrs': 1.1, 'max_atrs': 1.0, 'gap_atrs': 0.1, 'would_be': 'BUY_CANDIDATE', 'momentum_state': 'STABLE', 'momentum_phase': 'EXTENDED', 'velocity_state': 'FLAT', 'struct_edge': 'YES', 'score': 58.79938106222812}
+00:19:44 | INFO     | signals.generate_signals:1156 - ✓ 12 signals written to signal_log
+00:19:44 | INFO     | __main__:29 - ✓ 15_signals done in 0.5s
+00:19:44 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:19:44 | INFO     | __main__:23 -   16_history
+00:19:44 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:19:44 | INFO     | history.append_history:105 - STEP: Append MSL + Regime History Snapshot
+00:19:45 | INFO     | history.append_history:58 -   Resolving trading day from 2026-05-04 (holidays loaded: 26)
+00:19:45 | INFO     | history.append_history:89 -   Trading day confirmed: 2026-05-04
+00:19:45 | INFO     | history.append_history:186 - ✓ MSL History: 28 rows snapshotted for 2026-05-04
+00:19:45 | WARNING  | history.append_history:250 - regime_history snapshot failed (non-fatal): {'code': '23502', 'details': 'Failing row contains (2026-05-04, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null).', 'hint': None, 'message': 'null value in column "regime" of relation "regime_history" violates not-null constraint'}
+00:19:45 | INFO     | __main__:29 - ✓ 16_history done in 0.2s
+00:19:45 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:19:45 | INFO     | __main__:23 -   17_post_trade
+00:19:45 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:19:45 | INFO     | ai.post_trade_analysis:1334 - No recent closed trades to analyze
+00:19:45 | INFO     | __main__:29 - ✓ 17_post_trade done in 0.0s
+00:19:45 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:19:45 | INFO     | __main__:23 -   18_ai_market_intel
+00:19:45 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:19:45 | INFO     | ai.market_intelligence_engine:856 - ============================================================
+00:19:45 | INFO     | ai.market_intelligence_engine:857 - STEP 18: AI Market Intelligence 
+00:19:45 | INFO     | ai.market_intelligence_engine:858 - ============================================================
+00:19:45 | INFO     | ai.market_intelligence_engine:863 - Today: 2026-04-30 | Last trading day: 2026-04-30
+00:19:45 | INFO     | ai.market_intelligence_engine:866 - Pass 1: building market context...
+00:19:45 | INFO     | ai.market_intelligence_engine:172 -   market_news: 39 items | window 2026-04-30 → 2026-04-30
+00:19:45 | WARNING  | ai.market_intelligence_engine:194 - Zero buy candidates for 2026-04-30 — promoting top near-miss WATCH signals as provisional candidates for AI analysis
+00:19:46 | INFO     | ai.market_intelligence_engine:868 -   20 signal candidates | 39 news | 24 sectors | 10 macro indicators | 5 historical echoes
+00:19:46 | INFO     | ai.market_intelligence_engine:878 - Pass 2: fetching news for 20 candidates (BUY:20 WATCH:15)...
+00:20:13 | INFO     | ai.market_intelligence_engine:896 - Pass 2 done: 60 headlines across 20 stocks
+00:20:13 | INFO     | ai.market_intelligence_engine:906 - Calling AI...
+00:20:48 | INFO     | ai.market_intelligence_engine:780 - sentiment_modifier: 18 signal_log scores updated
+00:20:48 | INFO     | ai.market_intelligence_engine:833 - ai_context __MARKET_INTEL__ written
+00:20:48 | SUCCESS  | ai.market_intelligence_engine:927 - Step 18 done: 18 scores updated | 2 lessons | Sizing: HALF | FII 5-session: SELLING | Echo: Compared to 2026-04-28 call (REDUCED_25PCT sizing with FII selling and crude cau
+00:20:48 | INFO     | __main__:29 - ✓ 18_ai_market_intel done in 63.5s
+00:20:48 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:20:48 | INFO     | __main__:23 -   19_ai_decision_engine
+00:20:48 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:20:48 | INFO     | ai.ai_decision_engine:868 - ============================================================
+00:20:48 | INFO     | ai.ai_decision_engine:869 - STEP 19: AI Decision Engine 
+00:20:48 | INFO     | ai.ai_decision_engine:870 - ============================================================
+00:20:48 | INFO     | ai.ai_decision_engine:879 - Loading context...
+00:20:48 | WARNING  | ai.ai_decision_engine:193 - No gate-passed buy signals for 2026-05-04 — falling back to near-miss WATCH signals
+00:20:49 | WARNING  | ai.ai_decision_engine:887 - No __MARKET_INTEL__ found — step 18 may not have run. Proceeding without market overlay.
+00:20:49 | INFO     | ai.ai_decision_engine:893 -   10 candidates | 0 open positions | 12 lessons | 1 echoes | Sizing from step 18: ?
+00:20:49 | INFO     | ai.ai_decision_engine:909 - Calling AI (single batch, 10 candidates)...
+00:20:49 | INFO     | ai.ai_decision_engine:683 - Step 19 AI call via provider: deepseek
+00:21:39 | INFO     | ai.ai_decision_engine:918 - AI responded in 50.5s
+00:21:41 | INFO     | ai.ai_decision_engine:789 - signal_log + master_shortlist: 10 candidates enriched
+00:21:41 | INFO     | ai.ai_decision_engine:820 - ai_context __FINAL_PICKS__ written
+00:21:41 | SUCCESS  | ai.ai_decision_engine:933 - Step 19 done in 50.5s | TIER_1:2 TIER_2:3 TIER_3:5 | Enriched:10 | New rules:3 | Sizing:HALF
+00:21:41 | INFO     | ai.ai_decision_engine:939 -   Guidance: Max 2 new entries today — SAIL TIER_1 (6%) and POWERINDIA TIER_1 (6%) only. Total deployment 12% of capital; keep powder dry for potential pullbacks.
+00:21:41 | INFO     | ai.ai_decision_engine:940 -   Overweight: ['power & utilities', 'metals & mining'] | Underweight: ['industrials', 'bank', 'financials', 'i.t']
+00:21:41 | INFO     | ai.ai_decision_engine:948 -   ★ TIER_1: POWERINDIA(HIGH,6%) | SAIL(HIGH,6%)
+00:21:41 | INFO     | ai.ai_decision_engine:952 -   ⚠ industrials: 5 candidates, allow 0 — Sector ranked EXTENDED – PULLBACK ONLY. Cap at 0 entries today; all 5 candidates skipped. FII CAUTION adds further risk.
+00:21:41 | INFO     | ai.ai_decision_engine:952 -   ⚠ metals & mining: 3 candidates, allow 2 — Strong sector (#2 NORMAL) but 3 candidates create concentration risk. Cap at best 2 — SAIL (TIER_1) and HINDALCO (TIER_2) selected; LLOYDSME moved to TIER_2 wait.
+00:21:41 | INFO     | ai.ai_decision_engine:952 -   ⚠ power & utilities: 2 candidates, allow 1 — Top sector but both candidates extended (14-15% above zone). Cap at 1 — select POWERINDIA as TIER_1 (higher score), ADANIPOWER as TIER_2 backup.
+00:21:41 | INFO     | ai.ai_decision_engine:959 -   ⚡ Cluster [Metals & Mining]: ['SAIL', 'LLOYDSME', 'HINDALCO'] — Take best 2 only — SAIL (TIER_1) for entry now, HINDALCO (TIER_2) for dip. LLOYDSME as watch only.
+00:21:41 | INFO     | ai.ai_decision_engine:959 -   ⚡ Cluster [Power & Utilities]: ['POWERINDIA', 'ADANIPOWER'] — Take best 1 only — POWERINDIA TIER_1; ADANIPOWER as backup TIER_2.
+00:21:41 | INFO     | ai.ai_decision_engine:959 -   ⚡ Cluster [Industrials (EXTENDED)]: ['BHARATFORG', 'WELCORP', 'CUMMINSIND', 'BHEL', 'ABB'] — Avoid all until sector drops back to NORMAL. No entries today.
+00:21:41 | INFO     | __main__:29 - ✓ 19_ai_decision_engine done in 52.6s
+00:21:41 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:21:41 | INFO     | __main__:23 -   20_alerts
+00:21:41 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:21:41 | INFO     | alerts.send_alerts:806 - send_alerts v3 | argv=['run_pipeline.py']
+00:21:41 | WARNING  | alerts.send_alerts:200 - __FINAL_PICKS__ load failed: Unterminated string starting at: line 1 column 7883 (char 7882)
+00:21:41 | INFO     | alerts.send_alerts:824 - Data loaded: step19=❌ fallback | 12 signals | 0 positions
+00:21:42 | SUCCESS  | alerts.send_alerts:849 - Telegram (structured) sent: T1:0 T2:0 exit:0 add:0 pos:0 | step19:fallback
+00:21:42 | INFO     | __main__:29 - ✓ 20_alerts done in 1.2s
+00:21:42 | INFO     | __main__:22 - 
+────────────────────────────────────────────────────────────
+00:21:42 | INFO     | __main__:23 -   21_quality_check
+00:21:42 | INFO     | __main__:24 - ────────────────────────────────────────────────────────────
+00:21:42 | INFO     | compute.data_quality_monitor:821 - data_quality_monitor v3: 17 checks | 5-state regime | today=2026-05-04 | LTD=2026-04-30
+00:21:42 | INFO     | compute.data_quality_monitor:855 -   🔴 C01_chartink_row_count: chartink_raw_data: 0 rows (expected 450–510)
+00:21:42 | INFO     | compute.data_quality_monitor:855 -   ✅ C02_rsi_range: 0 stocks with RSI outside 0–100
+00:21:42 | INFO     | compute.data_quality_monitor:855 -   ✅ C03_vol_ratio_cap: All vol_ratio values within cap
+00:21:42 | INFO     | compute.data_quality_monitor:855 -   ✅ C04_delivery_pct_bounds: 0 stocks with delivery_pct outside 0–100
+00:21:42 | INFO     | compute.data_quality_monitor:855 -   ✅ C05_signal_score_range: 0 signals with score outside 0–120
+00:21:42 | WARNING  | compute.data_quality_monitor:857 - C06 threw exception: {'code': '42703', 'details': None, 'hint': None, 'message': 'column master_shortlist.score does not exist'}
+00:21:43 | INFO     | compute.data_quality_monitor:855 -   🔴 C07_pipeline_completeness: 12/17 steps missing data: ['02_macro_indicators', '03_global_cues', '04_fetch_chartink', '05_ingest_
+00:21:43 | WARNING  | compute.data_quality_monitor:857 - C08 threw exception: {'code': '42703', 'details': None, 'hint': None, 'message': 'column ai_context.context_json does not exist'}
+00:21:43 | INFO     | compute.data_quality_monitor:855 -   ⚠️ C09_regime_ml_vs_manual: Unknown regime label(s): manual='' — expected one of: TRENDING/RISK ON/NEUTRAL/RECOVERING/RISK OFF
+00:21:43 | INFO     | compute.data_quality_monitor:855 -   ✅ C10_positions_vs_regime_cap: Open positions: 0/6 for NEUTRAL regime
+00:21:43 | INFO     | compute.data_quality_monitor:855 -   🔴 C11_shortlist_validity: No __SHORTLIST__ in ai_context for 2026-04-30 — generate_shortlist failed or wrote wrong date
+00:21:43 | INFO     | compute.data_quality_monitor:855 -   ✅ C12_market_intel_validity: __MARKET_INTEL__ valid: sizing=HALF, top_picks=['TATAPOWER', 'COALINDIA']
+00:21:43 | WARNING  | compute.data_quality_monitor:857 - C13 threw exception: {'code': '42703', 'details': None, 'hint': None, 'message': 'column ai_context.id does not exist'}
+00:21:43 | WARNING  | compute.data_quality_monitor:857 - C14 threw exception: {'code': '42703', 'details': None, 'hint': None, 'message': 'column ai_context.context_json does not exist'}
+00:21:43 | INFO     | compute.data_quality_monitor:855 -   ✅ C15_fii_regime_consistency: FII/regime/sizing consistent: regime=NEUTRAL, sizing=HALF, fii=CAUTION
+00:21:43 | INFO     | compute.data_quality_monitor:855 -   ✅ C16_lesson_quality: All 17 AI:market_intel lessons well-formed
+00:21:43 | INFO     | compute.data_quality_monitor:855 -   ⚠️ C17_signal_enrich_coverage: ai_enrich coverage: 20/55 signals enriched (36%) — below 50% threshold
+00:21:43 | WARNING  | compute.data_quality_monitor:807 - Quality Telegram alert failed: cannot import name 'send_telegram_message' from 'alerts.send_alerts' (C:\Users\vkshu\CRITICAL\Equity Indian Market Framework\tradeos-v6-complete\tradeos-v6\backend\alerts\send_alerts.py)
+00:21:43 | SUCCESS  | compute.data_quality_monitor:885 - Quality v3: ✅8 OK | ⚠️6 WARN | 🔴3 ERROR | 17 checks | LTD=2026-04-30
+00:21:43 | INFO     | __main__:29 - ✓ 21_quality_check done in 1.3s
+00:21:43 | INFO     | __main__:42 - 
+════════════════════════════════════════════════════════════
+00:21:43 | INFO     | __main__:43 -   TradeOS v6 Pipeline — 2026-05-04 IST
+00:21:43 | INFO     | __main__:44 - ════════════════════════════════════════════════════════════
+00:21:43 | INFO     | __main__:47 -   ✅ OK  01_market_news                      15.2s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  02_macro_indicators                 2.7s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  03_global_cues                      1.0s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  04_fetch_chartink                   55.5s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  05_ingest_bhavcopy                  0.3s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  06_ingest_sheets                    30.0s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  07_fii_dii                          1.3s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  08_nse_events                       1.4s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  09_asm_gsm                          10.6s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  10_compute_indicators               10.6s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  11_compute_regime                   0.5s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  12_regime_predict                   3.4s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  13_screen_stocks                    0.9s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  14_compute_msl                      0.8s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  15_signals                          0.5s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  16_history                          0.2s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  17_post_trade                       0.0s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  18_ai_market_intel                  63.5s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  19_ai_decision_engine               52.6s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  20_alerts                           1.2s
+00:21:43 | INFO     | __main__:47 -   ✅ OK  21_quality_check                    1.3s
+00:21:43 | INFO     | __main__:48 - ────────────────────────────────────────────────────────────
+00:21:43 | INFO     | __main__:49 -   Total: 253.6s | ✅ 21 OK | ❌ 0 Failed
+00:21:43 | INFO     | __main__:50 - ════════════════════════════════════════════════════════════
+
+00:35:48 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+00:35:48 | INFO     | __main__:704 - ============================================================
+00:35:48 | INFO     | __main__:705 - STEP 20: Signal Calibration Engine
+00:35:48 | INFO     | __main__:706 - ============================================================
+00:35:48 | INFO     | __main__:718 - Starting calibration (lookback: 2026-02-03 to 2026-05-04)
+00:35:48 | INFO     | __main__:721 - Loading outcome data...
+00:35:48 | INFO     | __main__:726 -   37 closed trades | 212 active lessons
+00:35:48 | INFO     | __main__:733 - Analysing outcomes...
+00:35:48 | INFO     | __main__:735 -   Win rate: 37.8% | Risk block optimal: 50 | HS threshold optimal: 30 | Min score optimal: 45.0
+00:35:48 | INFO     | __main__:743 - Updating lesson confidence from outcomes...
+00:35:49 | INFO     | __main__:745 -   Lessons: 27 applied updates | 0 retired
+00:35:49 | INFO     | __main__:748 - Calling AI for calibration synthesis...
+00:35:53 | INFO     | __main__:751 -   AI: The statically proposed risk_block_threshold of 50 is too aggressive given the low win rate (37.8%) and heavy losses fro
+00:35:53 | INFO     | __main__:752 -   Overfitting risk: HIGH
+00:35:53 | WARNING  | __main__:755 - AI flagged HIGH overfitting risk — skipping threshold updates
+13:31:13 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+13:31:13 | INFO     | __main__:1168 - ============================================================
+13:31:13 | INFO     | __main__:1169 - STEP [15]: Generate Signals v5 — Dynamic Thresholds
+13:31:13 | INFO     | __main__:1170 - ============================================================
+13:31:13 | INFO     | __main__:231 -   Resolving trading day from 2026-05-04 (holidays loaded: 26)
+13:31:14 | INFO     | __main__:262 -   Trading day confirmed: 2026-05-04
+13:31:14 | INFO     | __main__:845 -   Thresholds loaded: risk_block=80.0 holding_exit=30.0 min_rr=1.0 min_score_adj=45.0 prime_breakout_min=55.0
+13:31:14 | INFO     | __main__:292 - stock_data_daily using last trading day 2026-04-30
+13:31:14 | INFO     | __main__:326 -   MSL: 28 rows | compute_source: {'ingest_sheets': 28}
+13:31:14 | INFO     | __main__:1178 - Signal breakdown:  {'WATCH': 11, 'BLOCKED_ASM': 1}
+13:31:14 | INFO     | __main__:1179 - Subtype breakdown: {}
+13:31:14 | INFO     | __main__:1189 -   BUY: 0 (PRIME:0 REENTRY:0)
+13:31:14 | INFO     | __main__:1190 -   EXIT:0 REDUCE:0 WATCH:11 (near_miss:10)
+13:31:14 | INFO     | __main__:1196 -     chase_3.4atrs_limit_2.3: 2 — WELCORP, POWERINDIA
+13:31:14 | INFO     | __main__:1196 -     target_already_reached: 1 — SAIL
+13:31:14 | INFO     | __main__:1196 -     insufficient_rr_0.16x: 1 — HINDALCO
+13:31:14 | INFO     | __main__:1196 -     insufficient_rr_0.09x: 1 — BHARATFORG
+13:31:14 | INFO     | __main__:1196 -     chase_1.1atrs_limit_1.0: 1 — CUMMINSIND
+13:31:14 | INFO     | __main__:1196 -     chase_3.1atrs_limit_2.3: 1 — LLOYDSME
+13:31:14 | INFO     | __main__:1196 -     chase_2.7atrs_limit_2.3: 1 — BHEL
+13:31:14 | INFO     | __main__:1196 -     chase_2.6atrs_limit_1.0: 1 — ADANIPOWER
+13:31:14 | INFO     | __main__:1196 -     exit_lifecycle_no_entry: 1 — KIRLOSENG
+13:31:14 | INFO     | __main__:1196 -     chase_0.8atrs_limit_0.5: 1 — ABB
+13:31:14 | INFO     | __main__:1206 -   💡 Near misses for step 19 upgrade evaluation:
+13:31:14 | INFO     | __main__:1210 -     SAIL: target_reached — {'blocked_by': 'target_reached', 'target': 176.20982500000002, 'cp': 184.95}
+13:31:14 | INFO     | __main__:1210 -     HINDALCO: rr — {'blocked_by': 'rr', 'implied_rr': 0.16, 'min_rr': 1.0}
+13:31:14 | INFO     | __main__:1210 -     BHARATFORG: rr — {'blocked_by': 'rr', 'implied_rr': 0.09, 'min_rr': 1.0}
+13:31:14 | INFO     | __main__:1210 -     CUMMINSIND: atr_chase — {'blocked_by': 'atr_chase', 'dist_atrs': 1.1, 'max_atrs': 1.0, 'gap_atrs': 0.1, 'would_be': 'BUY_CANDIDATE', 'momentum_state': 'STABLE', 'momentum_phase': 'EXTENDED', 'velocity_state': 'FLAT', 'struct_edge': 'YES', 'score': 58.79938106222812}
+13:31:14 | INFO     | __main__:1210 -     LLOYDSME: atr_chase — {'blocked_by': 'atr_chase', 'dist_atrs': 3.08, 'max_atrs': 2.3, 'gap_atrs': 0.78, 'would_be': 'BUY_CANDIDATE', 'momentum_state': 'HOT', 'momentum_phase': 'EXPANSION', 'velocity_state': 'ACCELERATING', 'struct_edge': 'YES', 'score': 55.021998375882184}
+13:31:15 | INFO     | __main__:1156 - ✓ 12 signals written to signal_log
+21:18:03 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+21:18:03 | INFO     | __main__:858 - ============================================================
+21:18:03 | INFO     | __main__:859 - STEP 18: AI Market Intelligence 
+21:18:03 | INFO     | __main__:860 - ============================================================
+21:18:03 | INFO     | __main__:865 - Today: 2026-05-04 | Last trading day: 2026-05-04
+21:18:03 | INFO     | __main__:868 - Pass 1: building market context...
+21:18:04 | INFO     | __main__:174 -   market_news: 40 items | window 2026-05-01 → 2026-05-04
+21:18:04 | WARNING  | __main__:196 - Zero buy candidates for 2026-05-04 — promoting top near-miss WATCH signals as provisional candidates for AI analysis
+21:18:05 | INFO     | __main__:870 -   20 signal candidates | 40 news | 24 sectors | 10 macro indicators | 5 historical echoes
+21:18:05 | INFO     | __main__:880 - Pass 2: fetching news for 20 candidates (BUY:20 WATCH:15)...
+21:18:34 | INFO     | __main__:898 - Pass 2 done: 60 headlines across 20 stocks
+21:18:34 | INFO     | __main__:908 - Calling AI...
+21:19:20 | INFO     | __main__:782 - sentiment_modifier: 16 signal_log scores updated
+21:19:21 | INFO     | __main__:835 - ai_context __MARKET_INTEL__ written
+21:19:21 | SUCCESS  | __main__:929 - Step 18 done: 16 scores updated | 2 lessons | Sizing: FULL | FII 5-session: SELLING | Echo: Compared to April 30 call (HALF sizing, cautious on FII selling and crude above 
+21:19:57 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+21:19:57 | INFO     | __main__:903 - ============================================================
+21:19:57 | INFO     | __main__:904 - STEP 19: AI Decision Engine 
+21:19:57 | INFO     | __main__:905 - ============================================================
+21:19:57 | INFO     | __main__:914 - Loading context...
+21:19:57 | WARNING  | __main__:193 - No gate-passed buy signals for 2026-05-04 — falling back to near-miss WATCH signals
+21:19:58 | INFO     | __main__:928 -   20 candidates | 0 open positions | 12 lessons | 2 echoes | Sizing from step 18: FULL
+21:19:58 | INFO     | __main__:944 - Calling AI (single batch, 20 candidates)...
+21:19:58 | INFO     | __main__:683 - Step 19 AI call via provider: deepseek
+21:21:32 | WARNING  | __main__:697 - JSON parse failed: Expecting ',' delimiter: line 359 column 6 (char 22056)
+21:21:32 | WARNING  | __main__:950 - AI call returned nothing — step 19 non-fatal exit
+01:20:03 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+01:20:03 | INFO     | __main__:858 - ============================================================
+01:20:03 | INFO     | __main__:859 - STEP 18: AI Market Intelligence 
+01:20:03 | INFO     | __main__:860 - ============================================================
+01:20:13 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2
+01:20:13 | INFO     | __main__:858 - ============================================================
+01:20:13 | INFO     | __main__:859 - STEP 18: AI Market Intelligence 
+01:20:13 | INFO     | __main__:860 - ============================================================
+01:20:13 | INFO     | __main__:865 - Today: 2026-05-04 | Last trading day: 2026-05-04
+01:20:13 | INFO     | __main__:868 - Pass 1: building market context...
+01:20:14 | INFO     | __main__:174 -   market_news: 40 items | window 2026-05-01 → 2026-05-04
+01:20:14 | WARNING  | __main__:196 - Zero buy candidates for 2026-05-04 — promoting top near-miss WATCH signals as provisional candidates for AI analysis
+01:20:15 | INFO     | __main__:870 -   20 signal candidates | 40 news | 24 sectors | 10 macro indicators | 5 historical echoes
+01:20:15 | INFO     | __main__:880 - Pass 2: fetching news for 20 candidates (BUY:20 WATCH:15)...
+01:20:44 | INFO     | __main__:898 - Pass 2 done: 60 headlines across 20 stocks
+01:20:44 | INFO     | __main__:908 - Calling AI...
+01:21:14 | INFO     | __main__:782 - sentiment_modifier: 14 signal_log scores updated
+01:21:14 | INFO     | __main__:835 - ai_context __MARKET_INTEL__ written
+01:21:14 | SUCCESS  | __main__:929 - Step 18 done: 14 scores updated | 1 lessons | Sizing: HALF | FII 5-session: SELLING | Echo: Compared to the 2026-04-30 call, FII selling has intensified (5-day ₹-28,716Cr v

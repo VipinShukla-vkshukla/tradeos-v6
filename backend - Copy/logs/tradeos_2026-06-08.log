@@ -1,0 +1,48 @@
+00:03:09 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-06-08
+00:03:09 | INFO     | __main__:1730 - send_alerts v5 | argv=['C:\\Users\\vkshu\\CRITICAL\\Equity Indian Market Framework\\tradeos-v6-complete\\tradeos-v6\\backend\\alerts\\send_alerts.py', '--afternoon']
+00:03:09 | INFO     | __main__:415 - No signal_log data for 2026-06-08 yet — using last available: 2026-06-05
+00:03:10 | INFO     | __main__:1752 - Data loaded: step19=✅ | guidance=✅ | 51 signals | 0 positions| readiness=✅
+00:03:14 | SUCCESS  | __main__:1789 - Telegram (afternoon) sent: T1:2 T2:2 exit:0 pos:0 | step19:ok | guidance:ok
+00:03:14 | INFO     | __main__:1830 - signal_daily_summary written: T1:2 T2:2 raw:0
+00:11:33 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-06-08
+00:11:33 | INFO     | __main__:1735 - send_alerts v5 | argv=['C:\\Users\\vkshu\\CRITICAL\\Equity Indian Market Framework\\tradeos-v6-complete\\tradeos-v6\\backend\\alerts\\send_alerts.py', '--afternoon']
+00:11:34 | INFO     | __main__:415 - No signal_log data for 2026-06-08 yet — using last available: 2026-06-05
+00:11:35 | INFO     | __main__:1757 - Data loaded: step19=✅ | guidance=✅ | 51 signals | 0 positions| readiness=✅
+00:11:38 | SUCCESS  | __main__:1794 - Telegram (afternoon) sent: T1:2 T2:2 exit:0 pos:0 | step19:ok | guidance:ok
+00:11:38 | INFO     | __main__:1835 - signal_daily_summary written: T1:2 T2:2 raw:0
+00:21:47 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-06-08
+00:21:47 | INFO     | __main__:1735 - send_alerts v5 | argv=['C:\\Users\\vkshu\\CRITICAL\\Equity Indian Market Framework\\tradeos-v6-complete\\tradeos-v6\\backend\\alerts\\send_alerts.py', '--afternoon']
+00:21:47 | INFO     | __main__:415 - No signal_log data for 2026-06-08 yet — using last available: 2026-06-05
+00:21:49 | INFO     | __main__:1757 - Data loaded: step19=✅ | guidance=✅ | 51 signals | 0 positions| readiness=✅
+00:21:52 | SUCCESS  | __main__:1794 - Telegram (afternoon) sent: T1:2 T2:2 exit:0 pos:0 | step19:ok | guidance:ok
+00:21:52 | INFO     | __main__:1835 - signal_daily_summary written: T1:2 T2:2 raw:0
+00:22:39 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-06-08
+00:22:39 | INFO     | __main__:1735 - send_alerts v5 | argv=['C:\\Users\\vkshu\\CRITICAL\\Equity Indian Market Framework\\tradeos-v6-complete\\tradeos-v6\\backend\\alerts\\send_alerts.py', '--afternoon']
+00:22:39 | INFO     | __main__:415 - No signal_log data for 2026-06-08 yet — using last available: 2026-06-05
+00:22:41 | INFO     | __main__:1757 - Data loaded: step19=✅ | guidance=✅ | 51 signals | 0 positions| readiness=✅
+00:22:45 | SUCCESS  | __main__:1794 - Telegram (afternoon) sent: T1:2 T2:2 exit:0 pos:0 | step19:ok | guidance:ok
+00:22:45 | INFO     | __main__:1835 - signal_daily_summary written: T1:2 T2:2 raw:0
+00:23:50 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-06-08
+00:23:50 | INFO     | __main__:1735 - send_alerts v5 | argv=['C:\\Users\\vkshu\\CRITICAL\\Equity Indian Market Framework\\tradeos-v6-complete\\tradeos-v6\\backend\\alerts\\send_alerts.py', '--morning']
+00:23:51 | INFO     | __main__:415 - No signal_log data for 2026-06-08 yet — using last available: 2026-06-05
+00:23:52 | INFO     | __main__:1757 - Data loaded: step19=✅ | guidance=✅ | 51 signals | 0 positions| readiness=✅
+00:23:55 | SUCCESS  | __main__:1794 - Telegram (morning) sent: T1:2 T2:2 exit:0 pos:0 | step19:ok | guidance:ok
+00:23:55 | INFO     | __main__:1835 - signal_daily_summary written: T1:2 T2:2 raw:0
+00:26:44 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-06-08
+00:26:44 | INFO     | __main__:1735 - send_alerts v5 | argv=['C:\\Users\\vkshu\\CRITICAL\\Equity Indian Market Framework\\tradeos-v6-complete\\tradeos-v6\\backend\\alerts\\send_alerts.py', '--morning']
+00:26:44 | INFO     | __main__:415 - No signal_log data for 2026-06-08 yet — using last available: 2026-06-05
+00:26:46 | INFO     | __main__:1757 - Data loaded: step19=✅ | guidance=✅ | 51 signals | 0 positions| readiness=✅
+00:26:51 | SUCCESS  | __main__:1794 - Telegram (morning) sent: T1:2 T2:2 exit:0 pos:0 | step19:ok | guidance:ok
+00:26:51 | INFO     | __main__:1835 - signal_daily_summary written: T1:2 T2:2 raw:0
+00:27:30 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-06-08
+00:27:30 | INFO     | __main__:1735 - send_alerts v5 | argv=['C:\\Users\\vkshu\\CRITICAL\\Equity Indian Market Framework\\tradeos-v6-complete\\tradeos-v6\\backend\\alerts\\send_alerts.py', '--evening']
+00:27:30 | INFO     | __main__:415 - No signal_log data for 2026-06-08 yet — using last available: 2026-06-05
+00:27:31 | INFO     | __main__:1757 - Data loaded: step19=✅ | guidance=✅ | 51 signals | 0 positions| readiness=✅
+00:27:32 | SUCCESS  | __main__:1794 - Telegram (structured) sent: T1:2 T2:2 exit:0 pos:0 | step19:ok | guidance:ok
+00:27:32 | INFO     | __main__:1835 - signal_daily_summary written: T1:2 T2:2 raw:0
+00:30:30 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-06-08
+00:30:30 | INFO     | __main__:1735 - send_alerts v5 | argv=['C:\\Users\\vkshu\\CRITICAL\\Equity Indian Market Framework\\tradeos-v6-complete\\tradeos-v6\\backend\\alerts\\send_alerts.py', '--evening']
+00:30:30 | INFO     | __main__:415 - No signal_log data for 2026-06-08 yet — using last available: 2026-06-05
+00:30:32 | INFO     | __main__:1757 - Data loaded: step19=✅ | guidance=✅ | 51 signals | 0 positions| readiness=✅
+00:30:34 | SUCCESS  | __main__:1794 - Telegram (structured) sent: T1:2 T2:2 exit:0 pos:0 | step19:ok | guidance:ok
+00:30:34 | INFO     | __main__:1835 - signal_daily_summary written: T1:2 T2:2 raw:0

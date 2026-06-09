@@ -1055,20 +1055,16 @@ def build_evening(data: dict, sb=None) -> str:
 
             lines.append(f"⭐ <b>TIER 1 — ACT NOW ({len(tier1)})</b>")
             for c in tier1:
-                sym    = c.get("symbol", "?")
-                conv   = (c.get("conviction") or "").upper()
-                action = c.get("action") or ""           # BUY / STAGED_ENTRY / REENTRY_SETUP etc.
-                conf   = float(c.get("confidence") or 0) # step 19 own confidence in pick
-                alloc  = float(c.get("suggested_allocation_pct") or 0)
-                corr   = c.get("correlation_group") or ""
-                msl    = msl_map.get(sym, {})
-                zl     = float(msl.get("entry_zone_low")  or 0)
-                zh     = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
-                er     = float(msl.get("expected_r")      or 2.0)
-                sl_p   = round(zl * (1 - STOP_BUFFER), 0) if zl else None
-                t1_p   = round(zl * (1 + STOP_BUFFER * er), 0) if zl else None
-                rr     = (round((t1_p - zl) / (zl - sl_p), 1)
-                          if t1_p and sl_p and zl and sl_p < zl else None)
+                sym   = c.get("symbol", "?")
+                conv  = (c.get("conviction") or "").upper()
+                msl   = msl_map.get(sym, {})
+                zl    = float(msl.get("entry_zone_low")  or 0)
+                zh    = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
+                er    = float(msl.get("expected_r")      or 2.0)
+                sl_p  = round(zl * (1 - STOP_BUFFER), 0) if zl else None
+                t1_p  = round(zl * (1 + STOP_BUFFER * er), 0) if zl else None
+                rr    = (round((t1_p - zl) / (zl - sl_p), 1)
+                         if t1_p and sl_p and zl and sl_p < zl else None)
                 r_icon    = c.get("readiness_icon") or conviction_icon(conv)
                 r_score   = c.get("readiness_score")
                 r_label   = c.get("readiness_label", "")
@@ -1076,19 +1072,26 @@ def build_evening(data: dict, sb=None) -> str:
                 dist_str  = f"({abs(float(dist)):.1f}%↓)" if dist is not None else ""
                 score_str = f"[{r_score}/100·{r_label}]" if r_score else ""
 
-                # Line 1: symbol · action · conviction · zone [DB] · alloc · conf · corr · RR · readiness
+                # Line 1: symbol · zone · targets · SL · R:R · readiness
                 lines.append(
-                    f"\n  {r_icon} <b>{sym}</b>"
-                    + (f" [{action}·{conv}]" if action else f" [{conv}]")
-                    + f"  ₹{zl:,.0f}–₹{zh:,.0f} {dist_str}  <i>[DB]</i>"
-                    + (f"  <b>{alloc:.0f}%</b>" if alloc else "")
-                    + (f"  conf:{conf:.0%}" if conf else "")
-                    + (f"  📎{corr}" if corr else "")
-                    + f"  → T1₹{t1_p:,.0f} | SL₹{sl_p:,.0f} · RR {rr}×  {score_str}"
+                    f"\n  {r_icon} <b>{sym}</b> [{conv}]"
+                    f"  ₹{zl:,.0f}–₹{zh:,.0f} {dist_str}"
+                    f"  → T1₹{t1_p:,.0f} | SL₹{sl_p:,.0f} · RR {rr}×  {score_str}"
                 )
 
-                # Line 2: WHY — thesis first (context before instruction), then catalyst
-                # v4 had thesis before entry_note for good reason: you read WHY before HOW
+                # Line 2: entry condition · invalidation · readiness breakdown
+                parts2 = []
+                if c.get("entry_note"):
+                    parts2.append(esc(c["entry_note"]))
+                if c.get("invalidation"):
+                    parts2.append(f"❌ {esc(c['invalidation'])}")
+                breakdown = c.get("readiness_breakdown", "")
+                if breakdown:
+                    parts2.append(f"<i>{breakdown}</i>")
+                if parts2:
+                    lines.append(f"   {' · '.join(parts2)}")
+
+                # Line 3: WHY — thesis + catalyst (evening learning layer)
                 thesis   = c.get("thesis") or c.get("ai_conviction_reason") or ""
                 catalyst = c.get("catalyst") or ""
                 if "] " in thesis:
@@ -1098,30 +1101,6 @@ def build_evening(data: dict, sb=None) -> str:
                     thesis += f" · 💡 {esc(catalyst)}"
                 if thesis:
                     lines.append(f"   💬 {esc(thesis)}")
-
-                # Line 3: HOW — entry condition [AI] · invalidation [AI] · readiness breakdown
-                parts3 = []
-                if c.get("entry_note"):
-                    parts3.append(f"📍 {esc(c['entry_note'])} <i>[AI]</i>")
-                if c.get("invalidation"):
-                    parts3.append(f"❌ {esc(c['invalidation'])} <i>[AI]</i>")
-                breakdown = c.get("readiness_breakdown", "")
-                if breakdown:
-                    parts3.append(f"<i>{breakdown}</i>")
-                if parts3:
-                    lines.append(f"   {' · '.join(parts3)}")
-
-                # Line 4: risks (restored from v4)
-                if c.get("risks"):
-                    risk_str = " · ".join(esc(str(r)) for r in (c["risks"] or [])[:2])
-                    if risk_str:
-                        lines.append(f"   ⚠️ {risk_str}")
-
-                # Line 5: lessons applied — confirms brain learning is active (restored from v4)
-                if c.get("lessons_applied"):
-                    ls = " · ".join(esc(l) for l in (c["lessons_applied"] or [])[:2])
-                    if ls:
-                        lines.append(f"   📚 <i>{ls[:120]}</i>")
 
             lines.append("")
 
@@ -1436,20 +1415,16 @@ def build_morning(data: dict, sb=None) -> str:
 
             lines.append(f"⭐ <b>WATCHLIST — TIER_1 ({len(tier1)} picks)</b>")
             for c in tier1:
-                sym    = c.get("symbol", "?")
-                conv   = (c.get("conviction") or "").upper()
-                action = c.get("action") or ""
-                conf   = float(c.get("confidence") or 0)
-                alloc  = float(c.get("suggested_allocation_pct") or 0)
-                corr   = c.get("correlation_group") or ""
-                msl    = msl_map.get(sym, {})
-                zl     = float(msl.get("entry_zone_low")  or 0)
-                zh     = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
-                er     = float(msl.get("expected_r")      or 2.0)
-                sl_p   = round(zl * (1 - STOP_BUFFER), 0) if zl else None
-                t1_p   = round(zl * (1 + STOP_BUFFER * er), 0) if zl else None
-                rr     = (round((t1_p - zl) / (zl - sl_p), 1)
-                          if t1_p and sl_p and zl and sl_p < zl else None)
+                sym   = c.get("symbol", "?")
+                conv  = (c.get("conviction") or "").upper()
+                msl   = msl_map.get(sym, {})
+                zl    = float(msl.get("entry_zone_low")  or 0)
+                zh    = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
+                er    = float(msl.get("expected_r")      or 2.0)
+                sl_p  = round(zl * (1 - STOP_BUFFER), 0) if zl else None
+                t1_p  = round(zl * (1 + STOP_BUFFER * er), 0) if zl else None
+                rr    = (round((t1_p - zl) / (zl - sl_p), 1)
+                         if t1_p and sl_p and zl and sl_p < zl else None)
                 r_icon    = c.get("readiness_icon") or conviction_icon(conv)
                 r_score   = c.get("readiness_score")
                 score_str = f"[{r_score}/100]" if r_score else ""
@@ -1470,28 +1445,23 @@ def build_morning(data: dict, sb=None) -> str:
                     else:
                         z_status = "📍 Verify zone"
 
-                # Line 1: symbol · action · conviction · zone status · conf · alloc · corr · readiness
+                # Line 1: symbol · live zone status · readiness score
                 lines.append(
-                    f"\n  {r_icon} <b>{sym}</b>"
-                    + (f" [{action}·{conv}]" if action else f" [{conv}]")
-                    + f"  {z_status}  {score_str}"
-                    + (f"  <b>{alloc:.0f}%</b>" if alloc else "")
-                    + (f"  conf:{conf:.0%}" if conf else "")
-                    + (f"  📎{corr}" if corr else "")
+                    f"\n  {r_icon} <b>{sym}</b> [{conv}]  {z_status}  {score_str}"
                 )
 
-                # Line 2: exact GTT levels [DB] · timing window
+                # Line 2: exact GTT levels · timing window
                 lines.append(
-                    f"   Entry₹{zl:,.0f}–₹{zh:,.0f}  <i>[DB]</i>"
+                    f"   Entry₹{zl:,.0f}–₹{zh:,.0f}"
                     f" | SL₹{sl_p:,.0f} | T1₹{t1_p:,.0f} | RR {rr}×"
                     f" · <i>{timing}</i>"
                 )
 
-                # Line 3: entry condition [AI] / invalidation [AI]
+                # Line 3: entry condition / invalidation
                 if c.get("entry_note"):
-                    lines.append(f"   📍 {esc(c['entry_note'])} <i>[AI]</i>")
+                    lines.append(f"   📍 {esc(c['entry_note'])}")
                 if c.get("invalidation"):
-                    lines.append(f"   ❌ {esc(c['invalidation'])} <i>[AI]</i>")
+                    lines.append(f"   ❌ {esc(c['invalidation'])}")
 
             lines.append("")
 
