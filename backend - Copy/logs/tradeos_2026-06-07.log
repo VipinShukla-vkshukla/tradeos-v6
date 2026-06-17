@@ -1,6 +1,0 @@
-23:52:57 | INFO     | config:189 - TradeOS v6 config loaded | Capital=₹200,000 | DRY_RUN=False | Phase=2 | Today's date=2026-06-07
-23:52:57 | INFO     | __main__:1637 - send_alerts v5 | argv=['C:\\Users\\vkshu\\CRITICAL\\Equity Indian Market Framework\\tradeos-v6-complete\\tradeos-v6\\backend\\alerts\\send_alerts.py', '--afternoon']
-23:52:57 | INFO     | __main__:409 - No signal_log data for 2026-06-07 yet — using last available: 2026-06-05
-23:52:59 | INFO     | __main__:1658 - Data loaded: step19=✅ | guidance=✅ | 51 signals | 0 positions| readiness=✅
-23:53:11 | SUCCESS  | __main__:1692 - Telegram (structured) sent: T1:2 T2:2 exit:0 pos:0 | step19:ok | guidance:ok
-23:53:11 | INFO     | __main__:1733 - signal_daily_summary written: T1:2 T2:2 raw:0
