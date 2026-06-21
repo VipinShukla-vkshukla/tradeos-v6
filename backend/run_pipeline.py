@@ -77,8 +77,8 @@ def main():
     def step_ingest_bhavcopy():
         from ingestion.ingest_bhavcopy import main as fn; return fn()
 
-    def step_ingest_sheets():
-        from ingestion.ingest_sheets import main as fn; return fn()
+    def step_ingest_sector_holiday_fixevents():
+        from ingestion.ingest_sector_holiday_fixevents import main as fn; return fn()
 
     def step_fii_dii():
         from ingestion.ingest_fii_dii import main as fn; return fn()
@@ -153,7 +153,7 @@ def main():
         ("01_global_cues",     step_global_cues_evening, False),
         ("02_fetch_chartink",  step_fetch_chartink,      True),
         ("03_ingest_bhavcopy", step_ingest_bhavcopy,     False),
-        ("04_ingest_sheets",   step_ingest_sheets,       True),
+        ("04_ingest_sheets",   step_ingest_sector_holiday_fixevents,       True),
         ("05_signals",         step_signals,             True),
         ("06_history",         step_history,             False),
     ]
@@ -187,7 +187,7 @@ def main():
             ("03_global_cues",         step_global_cues_evening, False),  # gift nifty, crude
             ("04_fetch_chartink",      step_fetch_chartink,      True),   # 500 stocks raw
             ("05_ingest_bhavcopy",     step_ingest_bhavcopy,     False),  # OHLCV + delivery
-            ("06_ingest_sheets",       step_ingest_sheets,       True),   # regime, MSL, sectors
+            ("06_ingest_sector_holiday_fixevents",       step_ingest_sector_holiday_fixevents,       True),   # regime, MSL, sectors
             # FIX: these three now run BEFORE signals (were after in original Phase 2)
             ("07_fii_dii",             step_fii_dii,             False),  # fii_net_5d/20d, fii_flag
             ("08_nse_events",          step_nse_events,          False),  # event_calendar
