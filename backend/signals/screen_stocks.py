@@ -1212,7 +1212,10 @@ def write_screener_results(sb, candidates: list, all_qualified: list, mode: str,
                 f"sector={c['sector']}"
             )
         return
-
+    rows = [...]
+    for i in range(0, len(rows), 50):
+        sb.table("msl_computed").upsert(rows[i:i+50], on_conflict="date,symbol").execute()
+    logger.success(f"✓ {len(rows)} symbols → msl_computed (always)")
     if mode in ("shadow", "hybrid"):
         rows = []
         for rank, c in enumerate(to_write, 1):

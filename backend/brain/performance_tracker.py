@@ -554,11 +554,25 @@ def run_performance_tracking(dataset: dict = None, for_date: date = None) -> dic
         if dataset is None:
             lookback_start = for_date - timedelta(days=30)
             lookback_end   = for_date - timedelta(days=5)
-            hist_dataset   = _load_outcomes_for_date_range(
-                sb, lookback_start, lookback_end, eval_horizon=5
-            )
-            persist_signal_outcomes(sb, {"signals": hist_dataset,
-                                         "closed_positions": pd.DataFrame()})
+
+            # Load each horizon separately
+            df5  = _load_outcomes_for_date_range(sb, lookback_start, lookback_end, eval_horizon=5)
+            df10 = _load_outcomes_for_date_range(sb, lookback_start, lookback_end, eval_horizon=10)
+            df20 = _load_outcomes_for_date_range(sb, lookback_start, lookback_end, eval_horizon=20)
+
+            # Merge 10d and 20d columns onto the primary 5d dataframe
+            if not df5.empty and not df10.empty:
+                df5 = df5.merge(
+                    df10[["date", "symbol", "ret_fwd_10d"]],
+                    on=["date", "symbol"], how="left"
+                )
+            if not df5.empty and not df20.empty:
+                df5 = df5.merge(
+                    df20[["date", "symbol", "ret_fwd_20d"]],
+                    on=["date", "symbol"], how="left"
+                )
+
+            persist_signal_outcomes(sb, {"signals": df5, "closed_positions": pd.DataFrame()})
             logger.info(
                 f"signal_outcomes: standalone persist {lookback_start}→{lookback_end}"
             )
