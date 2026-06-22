@@ -8,7 +8,7 @@ Data retention: REPLACE weekly (old events purged after their date passes)
 import sys
 import time
 import requests
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -53,11 +53,15 @@ def parse_events(raw_events: list, today: date) -> list[dict]:
             if not symbol or not date_str:
                 continue
 
-            # Parse event date
+            # Parse event date — try each format in order; date.fromisoformat
+            # is equivalent to strptime(..., "%Y-%m-%d") so there's no need
+            # for a separate code path for it (the previous ternary here
+            # always routed any 10-char dashed string to fromisoformat
+            # regardless of which fmt the loop was on, so DD-MM-YYYY dates
+            # never actually reached the strptime branch that handles them).
             for fmt in ("%d-%b-%Y", "%d-%m-%Y", "%Y-%m-%d"):
                 try:
-                    ev_date = date.fromisoformat(date_str) if "-" in date_str and len(date_str) == 10 \
-                              else __import__("datetime").datetime.strptime(date_str, fmt).date()
+                    ev_date = datetime.strptime(date_str, fmt).date()
                     break
                 except ValueError:
                     continue

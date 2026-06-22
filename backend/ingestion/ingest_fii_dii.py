@@ -84,13 +84,18 @@ def fetch_fii_dii_from_nse(session: requests.Session, trade_date: date) -> dict 
         return None
 
 
-def compute_rolling_flows(sb, today: date) -> dict:
+def compute_rolling_flows(sb, today: date, today_fii_net: float, today_dii_net: float) -> dict:
     try:
+        # Fetch the last 19 PRIOR trading days — today's row doesn't exist in
+        # the DB yet at this point in main(), so querying without today_fii_net/
+        # today_dii_net prepended would silently compute every "Nd" rolling sum
+        # one day short (i.e. ending yesterday, not today).
         rows = sb.table("fii_dii_flow").select("date,fii_net,dii_net") \
-            .order("date", desc=True).limit(20).execute().data
+            .lt("date", today.isoformat()) \
+            .order("date", desc=True).limit(19).execute().data
 
-        fii_nets = [float(r["fii_net"] or 0) for r in rows]
-        dii_nets = [float(r["dii_net"] or 0) for r in rows]
+        fii_nets = [today_fii_net] + [float(r["fii_net"] or 0) for r in rows]
+        dii_nets = [today_dii_net] + [float(r["dii_net"] or 0) for r in rows]
 
         n5  = sum(fii_nets[:5])  if len(fii_nets) >= 5  else None
         n10 = sum(fii_nets[:10]) if len(fii_nets) >= 10 else None
@@ -137,7 +142,8 @@ def compute_rolling_flows(sb, today: date) -> dict:
         logger.warning(f"Rolling flow compute failed: {e}")
         return {
             "fii_net_5d": None, "fii_net_10d": None, "fii_net_20d": None,
-            "dii_net_5d": None, "dii_net_20d": None, "fii_flag": "NEUTRAL"
+            "dii_net_5d": None, "dii_net_20d": None,
+            "fii_flag": "NEUTRAL", "dii_flag": "NEUTRAL",
         }
 
 
@@ -162,7 +168,7 @@ def main():
         logger.warning(f"No FII/DII data for {today} — market may be closed or NSE unavailable")
         return {"status": "no_data", "date": today.isoformat()}
 
-    rolling = compute_rolling_flows(sb, today)
+    rolling = compute_rolling_flows(sb, today, row["fii_net"], row["dii_net"])
     row.update(rolling)
 
     sb.table("fii_dii_flow").upsert(row, on_conflict="date").execute()

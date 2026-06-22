@@ -678,12 +678,16 @@ def load_data(sb, effective_date: str) -> dict:
                  .execute().data)
     history = [r for r in history if r.get("date") != effective_date][:10]
 
-    # FII/DII data
+    # FII/DII data — fetch 20 rows (not 5): score_fii()'s net_20d fallback
+    # sums whatever's in fii_history when fii_net_20d/fii_net_10d are both
+    # NULL, and needs the full 20-day window to be a genuine 20-day sum
+    # rather than being silently capped at 5 days and scored against
+    # thresholds calibrated for 20.
     fii_rows = (sb.table("fii_dii_flow")
                   .select("fii_net_cr,dii_net,fii_net_5d,fii_net_10d,fii_net_20d,"
                           "dii_net_5d,dii_net_20d,fii_flag,date")
                   .order("date", desc=True)
-                  .limit(5)
+                  .limit(20)
                   .execute().data)
     fii = fii_rows[0] if fii_rows else {}
 
@@ -1048,7 +1052,7 @@ def score_fii(fii: dict, fii_history: list) -> tuple[float, dict]:
     net_5d = fii.get("fii_net_5d")
 
     if net_5d is None and len(fii_history) >= 1:
-        dailies = [float(h["fii_net_cr"]) for h in fii_history[:3]
+        dailies = [float(h["fii_net_cr"]) for h in fii_history[:5]
                    if h.get("fii_net_cr") is not None]
         if dailies:
             net_5d = sum(dailies)

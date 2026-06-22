@@ -57,8 +57,6 @@ YAHOO_BASE = "https://query1.finance.yahoo.com/v8/finance/chart"
 
 # ── Source 1: RBI DBIE ────────────────────────────────────────────────────
 
-# REPLACE entire fetch_rbi_rates function
-# REPLACE entire fetch_rbi_rates function
 def fetch_rbi_rates() -> list[dict]:
     """
     Fetch RBI policy rates from Wikipedia's RBI page.
@@ -107,8 +105,6 @@ def fetch_rbi_rates() -> list[dict]:
 
 # ── Source 2: MOSPI (GDP + IIP via gov.in RSS) ───────────────────────────
 
-# REPLACE entire fetch_mospi_data function
-# REPLACE entire fetch_mospi_data function
 def fetch_mospi_data() -> list[dict]:
     """
     Fetch GDP and IIP from TradingEconomics meta description tags.
@@ -213,7 +209,7 @@ def fetch_nifty_pcr(sb) -> dict | None:
         filtered = data.get("filtered", {})
         put_oi   = filtered.get("PE", {}).get("totOI", 0)
         call_oi  = filtered.get("CE", {}).get("totOI", 0)
-        print(f"DEBUG raw OI → put={put_oi} call={call_oi}")  # add this
+        logger.debug(f"raw OI → put={put_oi} call={call_oi}")
 
         # Zero OI = market closed or no data — don't store, use last value
         if call_oi == 0 or put_oi == 0:
@@ -278,7 +274,6 @@ def _load_last_pcr(sb) -> dict | None:
 
 # ── Source 4: ET RSS — CPI/WPI from headlines ────────────────────────────
 
-# REPLACE entire fetch_cpi_wpi_from_et function
 def fetch_cpi_wpi_from_et() -> list[dict]:
     """
     Fetch CPI from TradingEconomics meta description.
@@ -419,9 +414,9 @@ def main():
             logger.info("  India VIX: already written today — skipping")
         else:
             vix_row = fetch_india_vix()
-        if vix_row:
-            all_rows.append(vix_row)
-            logger.info(f"  India VIX: {vix_row['indicator_value']}")
+            if vix_row:
+                all_rows.append(vix_row)
+                logger.info(f"  India VIX: {vix_row['indicator_value']}")
     except Exception as e:
         logger.warning(f"  India VIX: FAILED (non-fatal) — {e}")
 

@@ -97,10 +97,11 @@ def _now_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def fetch_asm(session: requests.Session) -> list[dict]:
+def fetch_asm(session: requests.Session) -> list[dict] | None:
+    """Returns None on fetch failure (caller must NOT treat as 'zero ASM symbols')."""
     data = _fetch_nse(session, NSE_ASM_URL, NSE_ASM_PAGE, "ASM")
     if data is None:
-        return []
+        return None
     rows = []
     ingested_at = _now_utc()
     # ASM JSON structure: {"longterm": {"data": [...]}, "shortterm": {"data": [...]}}
@@ -134,10 +135,11 @@ def fetch_asm(session: requests.Session) -> list[dict]:
     return rows
 
 
-def fetch_gsm(session: requests.Session) -> list[dict]:
+def fetch_gsm(session: requests.Session) -> list[dict] | None:
+    """Returns None on fetch failure (caller must NOT treat as 'zero GSM symbols')."""
     data = _fetch_nse(session, NSE_GSM_URL, NSE_GSM_PAGE, "GSM")
     if data is None:
-        return []
+        return None
     rows = []
     ingested_at = _now_utc()
     items = data.get("data", data) if isinstance(data, dict) else data
@@ -160,13 +162,14 @@ def fetch_gsm(session: requests.Session) -> list[dict]:
     return rows
 
 
-def fetch_fo_ban() -> list[dict]:
+def fetch_fo_ban() -> list[dict] | None:
     """
     F&O ban list CSV from nsearchives. No session/cookies needed.
     Actual format (confirmed from downloaded file):
       Line 1: "Securities in Ban For Trade Date DD-MON-YYYY:"  ← header, skip
       Line 2+: "1,SAIL"  ← serial number, symbol (comma-separated)
     nsearchives can be slow — use separate connect/read timeouts.
+    Returns None on fetch failure (caller must NOT treat as 'zero banned symbols').
     """
     try:
         resp = requests.get(
@@ -205,7 +208,7 @@ def fetch_fo_ban() -> list[dict]:
         return rows
     except Exception as e:
         logger.warning(f"F&O ban fetch failed: {e}")
-        return []
+        return None
 
 
 def update_stock_data_flags(sb, asm_syms: set[str], ban_syms: set[str], today: str):
@@ -235,36 +238,63 @@ def main():
     today = today_ist().isoformat()
 
     session  = nse_session()
-    asm_rows = fetch_asm(session)
+    asm_rows = fetch_asm(session)   # None = fetch failed, [] = confirmed zero symbols
     gsm_rows = fetch_gsm(session)
     ban_rows = fetch_fo_ban()
+
+    asm_ok = asm_rows is not None
+    gsm_ok = gsm_rows is not None
+    ban_ok = ban_rows is not None
+    asm_rows, gsm_rows, ban_rows = asm_rows or [], gsm_rows or [], ban_rows or []
     all_rows = asm_rows + gsm_rows + ban_rows
 
-    logger.info(f"ASM: {len(asm_rows)} | GSM: {len(gsm_rows)} | F&O Ban: {len(ban_rows)}")
+    logger.info(
+        f"ASM: {len(asm_rows)}{'' if asm_ok else ' (FETCH FAILED)'} | "
+        f"GSM: {len(gsm_rows)}{'' if gsm_ok else ' (FETCH FAILED)'} | "
+        f"F&O Ban: {len(ban_rows)}{'' if ban_ok else ' (FETCH FAILED)'}"
+    )
 
-    if not all_rows:
-        logger.warning("No safety list data fetched — NSE may be unavailable, keeping existing data")
+    if not (asm_ok or gsm_ok or ban_ok):
+        logger.warning("All safety list fetches failed — NSE may be unavailable, keeping existing data")
         return {"status": "no_data"}
 
     if DRY_RUN:
-        logger.info(f"[DRY RUN] Would write {len(all_rows)} safety list rows")
+        logger.info(f"[DRY RUN] Would write {len(all_rows)} safety list rows "
+                     f"(asm_ok={asm_ok} gsm_ok={gsm_ok} ban_ok={ban_ok})")
         for r in all_rows[:5]:
             logger.info(f"  {r['list_type']}: {r['symbol']} (stage={r['stage']}, listed_date={r['listed_date']}, ingested_at={r['ingested_at']})")
         return {"status": "dry_run", "asm": len(asm_rows), "gsm": len(gsm_rows), "fo_ban": len(ban_rows)}
 
     try:
-        # REPLACE: full DELETE then bulk INSERT (daily refresh)
-        sb.table("safety_lists").delete().neq("symbol", "__never__").execute()
-        for i in range(0, len(all_rows), 200):
-            sb.table("safety_lists").insert(all_rows[i:i+200]).execute()
+        # Only wipe+replace the list_types whose fetch actually succeeded today.
+        # A failed ASM/GSM fetch (common — Akamai bot detection) must NEVER
+        # delete yesterday's real surveillance entries just because the F&O
+        # ban CSV (a separate, more reliable source) happened to come through.
+        if asm_ok or gsm_ok:
+            types_to_clear = [t for t, ok in (("ASM", asm_ok), ("GSM", gsm_ok), ("ASM_SHORTTERM", asm_ok)) if ok]
+            sb.table("safety_lists").delete().in_("list_type", types_to_clear).execute()
+            rows_to_insert = asm_rows + gsm_rows
+            for i in range(0, len(rows_to_insert), 200):
+                sb.table("safety_lists").insert(rows_to_insert[i:i+200]).execute()
+        else:
+            logger.warning("ASM+GSM fetch both failed — leaving existing ASM/GSM safety_lists rows untouched")
+
+        if ban_ok:
+            sb.table("safety_lists").delete().eq("list_type", "FO_BAN").execute()
+            for i in range(0, len(ban_rows), 200):
+                sb.table("safety_lists").insert(ban_rows[i:i+200]).execute()
+        else:
+            logger.warning("F&O ban fetch failed — leaving existing FO_BAN safety_lists rows untouched")
 
         # Also mirror flags into stock_data_daily
         asm_syms = {r["symbol"] for r in asm_rows + gsm_rows}
         ban_syms = {r["symbol"] for r in ban_rows}
         update_stock_data_flags(sb, asm_syms, ban_syms, today)
 
-        logger.success(f"Safety lists saved: {len(all_rows)} total entries")
-        return {"status": "ok", "asm": len(asm_rows), "gsm": len(gsm_rows), "fo_ban": len(ban_rows)}
+        logger.success(f"Safety lists saved: {len(all_rows)} entries written "
+                        f"(asm_ok={asm_ok} gsm_ok={gsm_ok} ban_ok={ban_ok})")
+        return {"status": "ok", "asm": len(asm_rows), "gsm": len(gsm_rows), "fo_ban": len(ban_rows),
+                "asm_ok": asm_ok, "gsm_ok": gsm_ok, "ban_ok": ban_ok}
 
     except Exception as e:
         logger.error(f"Failed to save safety lists: {e}")
