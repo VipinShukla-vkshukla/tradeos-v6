@@ -1622,6 +1622,7 @@ def compute_entry_zones(s: dict, strategy: str, regime_ctx: dict,
         if hot_adjust_signals >= 3:
             ez_low  = round(close - atr_14 * 1.0, 2)
             ez_high = round(close + atr_14 * 0.3, 2)
+            hot_adjusted = True
 
     # Ensure zone width ≥ 1.2× ATR — prevents zones too narrow to be tradeable
     if ez_low and ez_high and atr_14 and (ez_high - ez_low) < atr_14 * 1.2:

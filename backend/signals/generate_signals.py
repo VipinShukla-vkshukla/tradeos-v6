@@ -643,23 +643,48 @@ def classify_entry_signal(msl_row: dict, open_map: dict,
                 }
                 return False, None, f"chase_{dist_in_atrs:.1f}atrs_limit_{max_atrs:.1f}", near_miss
 
-    # ── GATE 4C: R:R viability ────────────────────────────────────────────────
+    # ── GATE 4C: R:R viability ─────────────────────────────────────────────────
     if expected_r > 0 and ep > 0:
         stop_price   = ep * (1 - T["stop_buffer_pct"])
         ideal_risk   = ep - stop_price
         ideal_target = ep + (ideal_risk * expected_r)
+        chase_stop_mult = cfg_float("chase_stop_atr_multiplier", 1.5)
 
         if ideal_target <= cp:
-            near_miss = {"blocked_by": "target_reached", "target": ideal_target, "cp": cp}
-            return False, None, "target_already_reached", near_miss
+            # Stock has moved past original target. If ATR data is available,
+            # re-anchor stop/target to current price — the original ep-based
+            # stop would be unrealistically wide at current price.
+            if atr_pct > 0:
+                atr_abs  = cp * (atr_pct / 100)
+                new_stop = cp - (chase_stop_mult * atr_abs)
+                new_risk = cp - new_stop
+                if new_risk > 0:
+                    new_target       = cp + (new_risk * expected_r)
+                    remaining_upside = new_target - cp
+                    implied_rr       = remaining_upside / new_risk  # = expected_r by definition
+                    effective_min_rr = T.get(f"min_rr_{regime_name}", T["min_rr"])
+                    if implied_rr < effective_min_rr:
+                        near_miss = {"blocked_by": "rr_reanchored",
+                                    "implied_rr": round(implied_rr, 2),
+                                    "min_rr": effective_min_rr}
+                        return False, None, f"insufficient_rr_{implied_rr:.2f}x", near_miss
+                    # Fall through to Gate 5 with re-anchored evaluation
+                else:
+                    near_miss = {"blocked_by": "target_reached", "target": ideal_target, "cp": cp}
+                    return False, None, "target_already_reached", near_miss
+            else:
+                near_miss = {"blocked_by": "target_reached_no_atr", "target": ideal_target, "cp": cp}
+                return False, None, "target_already_reached_no_atr", near_miss
 
-        if cp > stop_price:
+        elif cp > stop_price:
             remaining_upside = ideal_target - cp
             current_risk     = cp - stop_price
             implied_rr       = remaining_upside / current_risk
             effective_min_rr = T.get(f"min_rr_{regime_name}", T["min_rr"])
             if implied_rr < effective_min_rr:
-                near_miss = {"blocked_by": "rr", "implied_rr": round(implied_rr, 2), "min_rr": effective_min_rr}
+                near_miss = {"blocked_by": "rr",
+                            "implied_rr": round(implied_rr, 2),
+                            "min_rr": effective_min_rr}
                 return False, None, f"insufficient_rr_{implied_rr:.2f}x", near_miss
 
     # ── GATE 5: Signal subtype + threshold validation (v5 ADDITION) ───────────
@@ -667,14 +692,16 @@ def classify_entry_signal(msl_row: dict, open_map: dict,
     # A stock that passes gates 3-4 is validated; gate 5 determines quality tier.
 
     # PRIME_SETUP — all momentum conditions + system_config RSI/ADX/vol thresholds
-    prime_momentum_ok = (
-        momentum_state == "HOT"
-        and momentum_phase in ("EXPANSION", "EARLY")
-        and velocity_state == "ACCELERATING"
-        and struct_edge == "YES"
-        and breakout_readiness >= T["prime_breakout_min"]
-        and trend_maturity not in LATE_MATURITY
-    )
+    prime_score = sum([
+    momentum_state == "HOT"                                * 3,
+    momentum_phase in ("EXPANSION", "EARLY")               * 2,
+    velocity_state == "ACCELERATING"                       * 2,
+    struct_edge == "YES"                                   * 2,
+    breakout_readiness >= T["prime_breakout_min"],
+    trend_maturity not in LATE_MATURITY,
+    ])
+    prime_min_score = cfg_int("prime_gate5_min_score", 8)   # 8/10 default = still strict
+    prime_momentum_ok = prime_score >= prime_min_score
     prime_technical_ok = (
         (rsi_d == 0 or T["prime_rsi_d_min"] <= rsi_d <= T["prime_rsi_d_max"])
         and (rsi_w == 0 or T["prime_rsi_w_min"] <= rsi_w <= T["prime_rsi_w_max"])
@@ -694,13 +721,18 @@ def classify_entry_signal(msl_row: dict, open_map: dict,
     # BREAKOUT_SETUP — with trend_maturity guard + prebreak thresholds
     if trend_maturity not in LATE_MATURITY:
         prebreak_tech_ok = (
-            (rsi_d == 0 or T["prebreak_rsi_d_min"] <= rsi_d <= T["prebreak_rsi_d_max"])
+            (rsi_d == 0 or T["prebreak_rsi_d_min"] <= rsi_d)
             and (rsi_w == 0 or rsi_w >= T["prebreak_rsi_w_min"])
             and (adx == 0 or T["prebreak_adx_min"] <= adx <= T["prebreak_adx_max"])
             and (vol_ratio == 0 or vol_ratio <= T["prebreak_vol_max"])
             and (consol_range == 0 or consol_range <= T["prebreak_consol_max"])
         )
-        if (bb_squeeze or breakout_readiness >= 70) and volume_trend == "EXPANDING" and prebreak_tech_ok:
+        # For volume_trend NULL → also accept STABLE with strong readiness:
+        volume_ok = (
+            volume_trend == "EXPANDING"
+            or (volume_trend in ("STABLE", "UNKNOWN") and breakout_readiness >= 75)
+        )
+        if (bb_squeeze or breakout_readiness >= 70) and volume_ok and prebreak_tech_ok:
             return True, "BREAKOUT_SETUP", "breakout_squeeze_volume", {}
         if breakout_readiness >= 60 and momentum_state in ("HOT", "BUILDING") and prebreak_tech_ok:
             return True, "BREAKOUT_SETUP", "breakout_readiness_high", {}
@@ -725,7 +757,7 @@ def classify_entry_signal(msl_row: dict, open_map: dict,
                          "rsi_d": rsi_d, "adx": adx, "vol": vol_ratio}
 
     # STAGED_ENTRY — approaching zone with building momentum
-    if entry_timing_type == "APPROACHING" and momentum_state in ("HOT", "BUILDING"):
+    if entry_timing_type == "APPROACHING" and momentum_state in ("HOT", "BUILDING", "STABLE"):
         staged_tech_ok = (
             (rsi_d == 0 or T["staged_rsi_d_min"] <= rsi_d <= T["staged_rsi_d_max"])
             and (rsi_w == 0 or rsi_w >= T["staged_rsi_w_min"])
@@ -778,45 +810,6 @@ def compute_adjusted_score(msl_row: dict, base_score: float,
         score = round(score * 0.95, 1)   # mild penalty — selective positioning
 
     return round(min(max(score, 0.0), 100.0), 1)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SCANNER CROSS-REFERENCE (identical to v4)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _apply_scanner_crossref(signals, sb, run_date):
-    try:
-        scanner_rows = (
-            sb.table("scanner_signals")
-              .select("symbol,pattern_type")
-              .eq("date", str(run_date))
-              .execute().data
-        )
-        if not scanner_rows:
-            return signals
-
-        scanner_map = {}
-        for row in scanner_rows:
-            sym = row.get("symbol") or ""
-            pat = row.get("pattern_type") or ""
-            if sym:
-                scanner_map.setdefault(sym, []).append(pat)
-
-        updated = 0
-        for sig in signals:
-            sym = sig["symbol"]
-            if sym in scanner_map:
-                sig["in_scanner"]       = True
-                sig["scanner_patterns"] = ",".join(scanner_map[sym])
-                if sig.get("in_rule_engine") and sig.get("signal_type") in ENTRY_SIGNAL_TYPES:
-                    current = sig.get("score_adjusted") or sig.get("score") or 0
-                    sig["score_adjusted"] = round(float(current) + 5, 1)
-                    updated += 1
-
-        logger.info(f"Scanner cross-ref: {len(scanner_map)} hits | {updated} signals +5")
-    except Exception as e:
-        logger.warning(f"Scanner cross-ref failed (non-fatal): {e}")
-    return signals
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1138,7 +1131,6 @@ def generate(run_date: date | None = None) -> list:
         }
         signals.append(sig)
 
-    signals = _apply_scanner_crossref(signals, sb, run_date)
     return signals
 
 

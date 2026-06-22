@@ -278,7 +278,7 @@ def main():
         return 0
 
     service = get_sheets_service()
-    write_to_sheet(service, df)
+    write_to_sheet(service, df) #Writes to comprehensive sheet tab
     upsert_to_supabase(df)
 
     return len(df)
