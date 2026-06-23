@@ -13,6 +13,13 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 
+CREATE EXTENSION IF NOT EXISTS "pg_cron" WITH SCHEMA "pg_catalog";
+
+
+
+
+
+
 COMMENT ON SCHEMA "public" IS 'standard public schema';
 
 
@@ -50,6 +57,199 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA "extensions";
 
 
 
+
+
+CREATE OR REPLACE FUNCTION "public"."fn_compute_sector_industry_strength"("p_date" "date" DEFAULT CURRENT_DATE) RETURNS "void"
+    LANGUAGE "plpgsql"
+    AS $$
+begin
+  -- ── SECTOR STRENGTH ──────────────────────────────────────────
+  with agg as (
+    select
+      sector,
+      count(*)::int as stock_count,
+      round(avg(rsi_daily)::numeric, 5)   as avg_rsi_daily,
+      round(avg(rsi_weekly)::numeric, 5)  as avg_rsi_weekly,
+      round(avg(rsi_monthly)::numeric, 5) as avg_rsi_monthly,
+      round(avg(ret_6m)::numeric, 5)      as avg_ret_6m,
+      round(100.0 * count(*) filter (where above_sma50)
+        / nullif(count(*) filter (where above_sma50 is not null), 0), 8) as breadth_sma50
+    from stock_data_daily
+    where date = p_date
+      and sector is not null
+      and sector not in ('', 'indices')
+      and coalesce(market_cap, 0) > 0
+    group by sector
+  ),
+  bounds as (
+    select min(avg_rsi_weekly) min_w, max(avg_rsi_weekly) max_w,
+           min(avg_rsi_monthly) min_m, max(avg_rsi_monthly) max_m
+    from agg
+  ),
+  scored as (
+    select agg.*,
+      0.6 * (avg_rsi_weekly  - bounds.min_w) / nullif(bounds.max_w - bounds.min_w, 0) +
+      0.4 * (avg_rsi_monthly - bounds.min_m) / nullif(bounds.max_m - bounds.min_m, 0)
+        as composite_score
+    from agg cross join bounds
+  ),
+  ranked as (
+    select *, rank() over (order by composite_score desc) as composite_rank
+    from scored
+  )
+  insert into sector_strength
+    (date, sector, stock_count, avg_rsi_daily, avg_rsi_weekly, avg_rsi_monthly,
+     avg_ret_6m, breadth_sma50, rank, top4_flag, sector_state)
+  select
+    p_date, sector, stock_count, avg_rsi_daily, avg_rsi_weekly, avg_rsi_monthly,
+    avg_ret_6m, breadth_sma50,
+    composite_rank,
+    composite_rank <= 5,
+    case when composite_rank <= 4 and avg_ret_6m > 30
+         then 'EXTENDED - PULLBACK ONLY' else 'NORMAL' end
+  from ranked
+  on conflict (date, sector) do update set
+    stock_count = excluded.stock_count, avg_rsi_daily = excluded.avg_rsi_daily,
+    avg_rsi_weekly = excluded.avg_rsi_weekly, avg_rsi_monthly = excluded.avg_rsi_monthly,
+    avg_ret_6m = excluded.avg_ret_6m, breadth_sma50 = excluded.breadth_sma50,
+    rank = excluded.rank, top4_flag = excluded.top4_flag, sector_state = excluded.sector_state;
+
+  -- ── INDUSTRY STRENGTH (same methodology, extrapolated — see note above) ──
+  with agg as (
+    select
+      industry,
+      count(*)::int as stock_count,
+      round(avg(rsi_daily)::numeric, 5)   as avg_rsi_daily,
+      round(avg(rsi_weekly)::numeric, 5)  as avg_rsi_weekly,
+      round(avg(rsi_monthly)::numeric, 5) as avg_rsi_monthly,
+      round(avg(ret_6m)::numeric, 5)      as avg_ret_6m,
+      round(100.0 * count(*) filter (where above_sma50)
+        / nullif(count(*) filter (where above_sma50 is not null), 0), 8) as breadth_sma50
+    from stock_data_daily
+    where date = p_date
+      and industry is not null
+      and industry not in ('', 'indices')
+      and coalesce(market_cap, 0) > 0
+    group by industry
+  ),
+  bounds as (
+    select min(avg_rsi_weekly) min_w, max(avg_rsi_weekly) max_w,
+           min(avg_rsi_monthly) min_m, max(avg_rsi_monthly) max_m
+    from agg
+  ),
+  scored as (
+    select agg.*,
+      0.6 * (avg_rsi_weekly  - bounds.min_w) / nullif(bounds.max_w - bounds.min_w, 0) +
+      0.4 * (avg_rsi_monthly - bounds.min_m) / nullif(bounds.max_m - bounds.min_m, 0)
+        as composite_score
+    from agg cross join bounds
+  ),
+  ranked as (
+    select *, rank() over (order by composite_score desc) as composite_rank
+    from scored
+  )
+  insert into industry_strength
+    (date, industry, stock_count, avg_rsi_daily, avg_rsi_weekly, avg_rsi_monthly,
+     avg_ret_6m, breadth_sma50, rank, top5_flag, industry_state)
+  select
+    p_date, industry, stock_count, avg_rsi_daily, avg_rsi_weekly, avg_rsi_monthly,
+    avg_ret_6m, breadth_sma50,
+    composite_rank,
+    composite_rank <= 5,
+    case when composite_rank <= 4 and avg_ret_6m > 30
+         then 'EXTENDED - PULLBACK ONLY' else 'NORMAL' end
+  from ranked
+  on conflict (date, industry) do update set
+    stock_count = excluded.stock_count, avg_rsi_daily = excluded.avg_rsi_daily,
+    avg_rsi_weekly = excluded.avg_rsi_weekly, avg_rsi_monthly = excluded.avg_rsi_monthly,
+    avg_ret_6m = excluded.avg_ret_6m, breadth_sma50 = excluded.breadth_sma50,
+    rank = excluded.rank, top5_flag = excluded.top5_flag, industry_state = excluded.industry_state;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."fn_compute_sector_industry_strength"("p_date" "date") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."fn_rollover_event_calendar"() RETURNS TABLE("rolled_event_name" "text", "prior_start" "date", "prior_end" "date", "next_start" "date", "next_end" "date")
+    LANGUAGE "plpgsql"
+    AS $$
+declare
+  r record;
+  v_step interval;
+  v_duration int;
+  v_new_start date;
+  v_new_end date;
+  v_iterations int;
+begin
+  for r in
+    select * from event_calendar
+    where recurrence_interval is not null
+      and end_date < current_date
+  loop
+    v_step := case r.recurrence_interval
+      when 'WEEKLY'     then interval '7 days'
+      when 'MONTHLY'     then interval '1 month'
+      when 'QUARTERLY'   then interval '3 months'
+      when 'SEMI_ANNUAL' then interval '6 months'
+      when 'ANNUAL'      then interval '1 year'
+      else null
+    end;
+ 
+    if v_step is null then
+      raise warning 'fn_rollover_event_calendar: unrecognized recurrence_interval "%" for event "%", skipping',
+        r.recurrence_interval, r.event_name;
+      continue;
+    end if;
+ 
+    v_duration   := r.end_date - r.start_date;
+    v_new_start  := r.start_date;
+    v_new_end    := r.end_date;
+    v_iterations := 0;
+ 
+    while v_new_end < current_date and v_iterations < 60 loop
+      v_new_start  := v_new_start + v_step;
+      v_new_end    := v_new_start + v_duration;
+      v_iterations := v_iterations + 1;
+    end loop;
+ 
+    update event_calendar
+       set start_date     = v_new_start,
+           end_date       = v_new_end,
+           last_rolled_at = now()
+     where id = r.id;
+ 
+    rolled_event_name := r.event_name;
+    prior_start := r.start_date;
+    prior_end   := r.end_date;
+    next_start  := v_new_start;
+    next_end    := v_new_end;
+    return next;
+  end loop;
+ 
+  -- Recompute is_active + event_status for every event with valid dates.
+  update event_calendar
+     set is_active = (current_date between start_date and end_date),
+         event_status = case
+           when current_date between start_date and end_date then 'ONGOING'
+           when start_date > current_date                    then 'UPCOMING'
+           else 'PAST'
+         end
+   where start_date is not null
+     and end_date is not null
+     and (
+       is_active is distinct from (current_date between start_date and end_date)
+       or event_status is distinct from case
+            when current_date between start_date and end_date then 'ONGOING'
+            when start_date > current_date                    then 'UPCOMING'
+            else 'PAST'
+          end
+     );
+end;
+$$;
+
+
+ALTER FUNCTION "public"."fn_rollover_event_calendar"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_public_tables"() RETURNS TABLE("table_name" "text")
@@ -169,6 +369,19 @@ begin new.updated_at = now(); return new; end; $$;
 
 ALTER FUNCTION "public"."set_updated_at"() OWNER TO "postgres";
 
+
+CREATE OR REPLACE FUNCTION "public"."update_modified_column"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    AS $$
+begin
+    new.updated_at = now();
+    return new;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."update_modified_column"() OWNER TO "postgres";
+
 SET default_tablespace = '';
 
 SET default_table_access_method = "heap";
@@ -194,38 +407,6 @@ CREATE TABLE IF NOT EXISTS "public"."ai_context" (
 
 
 ALTER TABLE "public"."ai_context" OWNER TO "postgres";
-
-
-CREATE TABLE IF NOT EXISTS "public"."ai_model_performance" (
-    "id" bigint NOT NULL,
-    "date" "date" DEFAULT CURRENT_DATE NOT NULL,
-    "provider" "text" NOT NULL,
-    "model" "text",
-    "calls_today" integer DEFAULT 0,
-    "cost_today" numeric DEFAULT 0,
-    "accuracy" numeric,
-    "avg_confidence" numeric,
-    "fallback_used" boolean DEFAULT false,
-    "created_at" timestamp with time zone DEFAULT "now"()
-);
-
-
-ALTER TABLE "public"."ai_model_performance" OWNER TO "postgres";
-
-
-CREATE SEQUENCE IF NOT EXISTS "public"."ai_model_performance_id_seq"
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE "public"."ai_model_performance_id_seq" OWNER TO "postgres";
-
-
-ALTER SEQUENCE "public"."ai_model_performance_id_seq" OWNED BY "public"."ai_model_performance"."id";
-
 
 
 CREATE TABLE IF NOT EXISTS "public"."brain_analysis_log" (
@@ -567,11 +748,30 @@ CREATE TABLE IF NOT EXISTS "public"."event_calendar" (
     "event_status" "text",
     "is_active" boolean,
     "priority" integer,
-    "is_risk_on_accelerator" "text"
+    "is_risk_on_accelerator" "text",
+    "recurrence_interval" "text",
+    "last_rolled_at" timestamp with time zone,
+    CONSTRAINT "event_calendar_recurrence_interval_check" CHECK ((("recurrence_interval" = ANY (ARRAY['WEEKLY'::"text", 'MONTHLY'::"text", 'QUARTERLY'::"text", 'SEMI_ANNUAL'::"text", 'ANNUAL'::"text"])) OR ("recurrence_interval" IS NULL)))
 );
 
 
 ALTER TABLE "public"."event_calendar" OWNER TO "postgres";
+
+
+COMMENT ON COLUMN "public"."event_calendar"."event_status" IS 'Computed daily by fn_rollover_event_calendar(): ONGOING / UPCOMING / PAST, derived purely from dates. Never set manually.';
+
+
+
+COMMENT ON COLUMN "public"."event_calendar"."is_active" IS 'Computed daily by fn_rollover_event_calendar() as (current_date between start_date and end_date), for every event, recurring or one-off. Never set manually — there is no Sheet sync for this table anymore.';
+
+
+
+COMMENT ON COLUMN "public"."event_calendar"."recurrence_interval" IS 'NULL = one-off / ad-hoc event — managed manually via SQL/Studio, never auto-rolled. Otherwise WEEKLY/MONTHLY/QUARTERLY/SEMI_ANNUAL/ANNUAL — fn_rollover_event_calendar() advances start_date/end_date forward once end_date < current_date.';
+
+
+
+COMMENT ON COLUMN "public"."event_calendar"."last_rolled_at" IS 'Timestamp of the most recent automatic rollover, for auditing.';
+
 
 
 CREATE SEQUENCE IF NOT EXISTS "public"."event_calendar_id_seq"
@@ -586,47 +786,6 @@ ALTER SEQUENCE "public"."event_calendar_id_seq" OWNER TO "postgres";
 
 
 ALTER SEQUENCE "public"."event_calendar_id_seq" OWNED BY "public"."event_calendar"."id";
-
-
-
-CREATE TABLE IF NOT EXISTS "public"."evolution_proposals" (
-    "id" bigint NOT NULL,
-    "proposed_date" "date",
-    "strategy" "text",
-    "param_name" "text",
-    "current_value" "text",
-    "proposed_value" "text",
-    "evidence" "text",
-    "expected_improvement" "text",
-    "trades_analyzed" integer,
-    "status" "text" DEFAULT 'PENDING'::"text",
-    "approved_by" "text",
-    "approved_at" timestamp with time zone,
-    "applied_at" timestamp with time zone,
-    "created_at" timestamp with time zone DEFAULT "now"(),
-    "week_of" "text",
-    "confidence" numeric,
-    "impact_measured_at" timestamp with time zone,
-    "performance_delta" numeric,
-    "notes" "text"
-);
-
-
-ALTER TABLE "public"."evolution_proposals" OWNER TO "postgres";
-
-
-CREATE SEQUENCE IF NOT EXISTS "public"."evolution_proposals_id_seq"
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE "public"."evolution_proposals_id_seq" OWNER TO "postgres";
-
-
-ALTER SEQUENCE "public"."evolution_proposals_id_seq" OWNED BY "public"."evolution_proposals"."id";
 
 
 
@@ -1204,7 +1363,9 @@ ALTER SEQUENCE "public"."nifty_upcoming_events_id_seq" OWNED BY "public"."nifty_
 
 CREATE TABLE IF NOT EXISTS "public"."nse_holidays" (
     "date" "date" NOT NULL,
-    "occasion" "text"
+    "occasion" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL
 );
 
 
@@ -1263,43 +1424,6 @@ ALTER TABLE "public"."open_positions" OWNER TO "postgres";
 
 
 COMMENT ON TABLE "public"."open_positions" IS 'Live positions from OPEN_POSITIONS Sheet tab (authoritative)';
-
-
-
-CREATE TABLE IF NOT EXISTS "public"."order_history" (
-    "id" bigint NOT NULL,
-    "order_date" "date" DEFAULT CURRENT_DATE NOT NULL,
-    "symbol" "text" NOT NULL,
-    "signal_id" bigint,
-    "broker_order_id" "text",
-    "order_type" "text",
-    "qty_requested" integer,
-    "qty_executed" integer,
-    "price_requested" numeric,
-    "price_executed" numeric,
-    "slippage_pct" numeric,
-    "status" "text",
-    "rejection_reason" "text",
-    "kite_response" "jsonb",
-    "created_at" timestamp with time zone DEFAULT "now"()
-);
-
-
-ALTER TABLE "public"."order_history" OWNER TO "postgres";
-
-
-CREATE SEQUENCE IF NOT EXISTS "public"."order_history_id_seq"
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE "public"."order_history_id_seq" OWNER TO "postgres";
-
-
-ALTER SEQUENCE "public"."order_history_id_seq" OWNED BY "public"."order_history"."id";
 
 
 
@@ -1441,37 +1565,6 @@ CREATE TABLE IF NOT EXISTS "public"."safety_lists" (
 ALTER TABLE "public"."safety_lists" OWNER TO "postgres";
 
 
-CREATE TABLE IF NOT EXISTS "public"."scanner_signals" (
-    "id" bigint NOT NULL,
-    "date" "date",
-    "symbol" "text",
-    "pattern" "text",
-    "confidence" numeric,
-    "details" "jsonb",
-    "in_msl" boolean,
-    "created_at" timestamp with time zone DEFAULT "now"(),
-    "pattern_type" "text"
-);
-
-
-ALTER TABLE "public"."scanner_signals" OWNER TO "postgres";
-
-
-CREATE SEQUENCE IF NOT EXISTS "public"."scanner_signals_id_seq"
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE "public"."scanner_signals_id_seq" OWNER TO "postgres";
-
-
-ALTER SEQUENCE "public"."scanner_signals_id_seq" OWNED BY "public"."scanner_signals"."id";
-
-
-
 CREATE TABLE IF NOT EXISTS "public"."screener_performance" (
     "id" bigint NOT NULL,
     "symbol" "text" NOT NULL,
@@ -1559,39 +1652,6 @@ CREATE TABLE IF NOT EXISTS "public"."sector_strength" (
 
 
 ALTER TABLE "public"."sector_strength" OWNER TO "postgres";
-
-
-CREATE TABLE IF NOT EXISTS "public"."shadow_trades" (
-    "id" bigint NOT NULL,
-    "signal_id" bigint,
-    "symbol" "text" NOT NULL,
-    "strategy" "text",
-    "action" "text",
-    "entry_price" numeric,
-    "qty" integer,
-    "approved_at" timestamp with time zone DEFAULT "now"(),
-    "would_execute" boolean DEFAULT false,
-    "notes" "text",
-    "created_at" timestamp with time zone DEFAULT "now"()
-);
-
-
-ALTER TABLE "public"."shadow_trades" OWNER TO "postgres";
-
-
-CREATE SEQUENCE IF NOT EXISTS "public"."shadow_trades_id_seq"
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE "public"."shadow_trades_id_seq" OWNER TO "postgres";
-
-
-ALTER SEQUENCE "public"."shadow_trades_id_seq" OWNED BY "public"."shadow_trades"."id";
-
 
 
 CREATE TABLE IF NOT EXISTS "public"."signal_daily_summary" (
@@ -2326,10 +2386,6 @@ CREATE OR REPLACE VIEW "public"."v_signal_performance" AS
 ALTER VIEW "public"."v_signal_performance" OWNER TO "postgres";
 
 
-ALTER TABLE ONLY "public"."ai_model_performance" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."ai_model_performance_id_seq"'::"regclass");
-
-
-
 ALTER TABLE ONLY "public"."brain_analysis_log" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."brain_analysis_log_id_seq"'::"regclass");
 
 
@@ -2362,10 +2418,6 @@ ALTER TABLE ONLY "public"."event_calendar" ALTER COLUMN "id" SET DEFAULT "nextva
 
 
 
-ALTER TABLE ONLY "public"."evolution_proposals" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."evolution_proposals_id_seq"'::"regclass");
-
-
-
 ALTER TABLE ONLY "public"."industry_strength" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."industry_strength_id_seq"'::"regclass");
 
 
@@ -2390,15 +2442,7 @@ ALTER TABLE ONLY "public"."nifty_upcoming_events" ALTER COLUMN "id" SET DEFAULT 
 
 
 
-ALTER TABLE ONLY "public"."order_history" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."order_history_id_seq"'::"regclass");
-
-
-
 ALTER TABLE ONLY "public"."performance_metrics" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."performance_metrics_id_seq"'::"regclass");
-
-
-
-ALTER TABLE ONLY "public"."scanner_signals" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."scanner_signals_id_seq"'::"regclass");
 
 
 
@@ -2407,10 +2451,6 @@ ALTER TABLE ONLY "public"."screener_performance" ALTER COLUMN "id" SET DEFAULT "
 
 
 ALTER TABLE ONLY "public"."script_change_log" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."script_change_log_id_seq"'::"regclass");
-
-
-
-ALTER TABLE ONLY "public"."shadow_trades" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."shadow_trades_id_seq"'::"regclass");
 
 
 
@@ -2424,11 +2464,6 @@ ALTER TABLE ONLY "public"."signal_outcomes" ALTER COLUMN "id" SET DEFAULT "nextv
 
 ALTER TABLE ONLY "public"."ai_context"
     ADD CONSTRAINT "ai_context_pkey" PRIMARY KEY ("date", "symbol");
-
-
-
-ALTER TABLE ONLY "public"."ai_model_performance"
-    ADD CONSTRAINT "ai_model_performance_pkey" PRIMARY KEY ("id");
 
 
 
@@ -2493,17 +2528,7 @@ ALTER TABLE ONLY "public"."data_anomalies"
 
 
 ALTER TABLE ONLY "public"."event_calendar"
-    ADD CONSTRAINT "event_calendar_event_name_start_date_key" UNIQUE ("event_name", "start_date");
-
-
-
-ALTER TABLE ONLY "public"."event_calendar"
     ADD CONSTRAINT "event_calendar_pkey" PRIMARY KEY ("id");
-
-
-
-ALTER TABLE ONLY "public"."evolution_proposals"
-    ADD CONSTRAINT "evolution_proposals_pkey" PRIMARY KEY ("id");
 
 
 
@@ -2607,11 +2632,6 @@ ALTER TABLE ONLY "public"."open_positions"
 
 
 
-ALTER TABLE ONLY "public"."order_history"
-    ADD CONSTRAINT "order_history_pkey" PRIMARY KEY ("id");
-
-
-
 ALTER TABLE ONLY "public"."performance_metrics"
     ADD CONSTRAINT "perf_metrics_pkey" PRIMARY KEY ("metric_date", "grain");
 
@@ -2642,11 +2662,6 @@ ALTER TABLE ONLY "public"."safety_lists"
 
 
 
-ALTER TABLE ONLY "public"."scanner_signals"
-    ADD CONSTRAINT "scanner_signals_pkey" PRIMARY KEY ("id");
-
-
-
 ALTER TABLE ONLY "public"."screener_performance"
     ADD CONSTRAINT "screener_performance_pkey" PRIMARY KEY ("id");
 
@@ -2664,11 +2679,6 @@ ALTER TABLE ONLY "public"."script_change_log"
 
 ALTER TABLE ONLY "public"."sector_strength"
     ADD CONSTRAINT "sector_strength_pkey" PRIMARY KEY ("date", "sector");
-
-
-
-ALTER TABLE ONLY "public"."shadow_trades"
-    ADD CONSTRAINT "shadow_trades_pkey" PRIMARY KEY ("id");
 
 
 
@@ -2716,15 +2726,15 @@ CREATE INDEX "custom_views_tab_id_idx" ON "public"."custom_views" USING "btree" 
 
 
 
+CREATE UNIQUE INDEX "event_calendar_oneoff_name_date_uidx" ON "public"."event_calendar" USING "btree" ("event_name", "start_date") WHERE ("recurrence_interval" IS NULL);
+
+
+
+CREATE UNIQUE INDEX "event_calendar_recurring_name_uidx" ON "public"."event_calendar" USING "btree" ("event_name") WHERE ("recurrence_interval" IS NOT NULL);
+
+
+
 CREATE INDEX "idx_ai_context_date" ON "public"."ai_context" USING "btree" ("date", "symbol");
-
-
-
-CREATE INDEX "idx_ai_model_perf_date" ON "public"."ai_model_performance" USING "btree" ("date" DESC);
-
-
-
-CREATE INDEX "idx_ai_model_perf_provider" ON "public"."ai_model_performance" USING "btree" ("provider");
 
 
 
@@ -2852,14 +2862,6 @@ CREATE INDEX "idx_msl_state" ON "public"."master_shortlist" USING "btree" ("date
 
 
 
-CREATE INDEX "idx_order_history_date" ON "public"."order_history" USING "btree" ("order_date" DESC);
-
-
-
-CREATE INDEX "idx_order_history_symbol" ON "public"."order_history" USING "btree" ("symbol");
-
-
-
 CREATE INDEX "idx_pm_date" ON "public"."performance_metrics" USING "btree" ("metric_date" DESC);
 
 
@@ -2888,10 +2890,6 @@ CREATE INDEX "idx_safety_symbol" ON "public"."safety_lists" USING "btree" ("symb
 
 
 
-CREATE INDEX "idx_scanner_date" ON "public"."scanner_signals" USING "btree" ("date");
-
-
-
 CREATE INDEX "idx_scl_date" ON "public"."script_change_log" USING "btree" ("applied_at" DESC);
 
 
@@ -2905,10 +2903,6 @@ CREATE INDEX "idx_scl_script" ON "public"."script_change_log" USING "btree" ("sc
 
 
 CREATE INDEX "idx_sdd_compute_meta" ON "public"."stock_data_daily" USING "gin" ("compute_meta") WHERE ("compute_meta" IS NOT NULL);
-
-
-
-CREATE INDEX "idx_shadow_trades_created" ON "public"."shadow_trades" USING "btree" ("created_at" DESC);
 
 
 
@@ -2952,6 +2946,10 @@ CREATE OR REPLACE TRIGGER "trg_open_positions_updated_at" BEFORE UPDATE ON "publ
 
 
 
+CREATE OR REPLACE TRIGGER "update_nse_holidays_modtime" BEFORE UPDATE ON "public"."nse_holidays" FOR EACH ROW EXECUTE FUNCTION "public"."update_modified_column"();
+
+
+
 ALTER TABLE ONLY "public"."config_change_log"
     ADD CONSTRAINT "config_change_log_proposal_id_fkey" FOREIGN KEY ("proposal_id") REFERENCES "public"."brain_proposals"("id") ON DELETE SET NULL;
 
@@ -2963,13 +2961,6 @@ ALTER TABLE ONLY "public"."script_change_log"
 
 
 ALTER TABLE "public"."ai_context" ENABLE ROW LEVEL SECURITY;
-
-
-ALTER TABLE "public"."ai_model_performance" ENABLE ROW LEVEL SECURITY;
-
-
-CREATE POLICY "allow_read" ON "public"."ai_model_performance" FOR SELECT USING (true);
-
 
 
 CREATE POLICY "allow_read" ON "public"."brain_analysis_log" FOR SELECT USING (true);
@@ -3087,9 +3078,6 @@ ALTER TABLE "public"."data_anomalies" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."event_calendar" ENABLE ROW LEVEL SECURITY;
 
 
-ALTER TABLE "public"."evolution_proposals" ENABLE ROW LEVEL SECURITY;
-
-
 ALTER TABLE "public"."fii_dii_flow" ENABLE ROW LEVEL SECURITY;
 
 
@@ -3135,9 +3123,6 @@ ALTER TABLE "public"."nse_holidays" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."open_positions" ENABLE ROW LEVEL SECURITY;
 
 
-ALTER TABLE "public"."order_history" ENABLE ROW LEVEL SECURITY;
-
-
 ALTER TABLE "public"."performance_metrics" ENABLE ROW LEVEL SECURITY;
 
 
@@ -3153,9 +3138,6 @@ ALTER TABLE "public"."regime_history" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."safety_lists" ENABLE ROW LEVEL SECURITY;
 
 
-ALTER TABLE "public"."scanner_signals" ENABLE ROW LEVEL SECURITY;
-
-
 ALTER TABLE "public"."screener_performance" ENABLE ROW LEVEL SECURITY;
 
 
@@ -3163,9 +3145,6 @@ ALTER TABLE "public"."script_change_log" ENABLE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."sector_strength" ENABLE ROW LEVEL SECURITY;
-
-
-ALTER TABLE "public"."shadow_trades" ENABLE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."signal_daily_summary" ENABLE ROW LEVEL SECURITY;
@@ -3204,6 +3183,9 @@ ALTER PUBLICATION "supabase_realtime" ADD TABLE ONLY "public"."master_shortlist"
 
 
 ALTER PUBLICATION "supabase_realtime" ADD TABLE ONLY "public"."open_positions";
+
+
+
 
 
 
@@ -3372,6 +3354,39 @@ GRANT ALL ON FUNCTION "public"."gtrgm_out"("public"."gtrgm") TO "service_role";
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+GRANT ALL ON FUNCTION "public"."fn_compute_sector_industry_strength"("p_date" "date") TO "anon";
+GRANT ALL ON FUNCTION "public"."fn_compute_sector_industry_strength"("p_date" "date") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."fn_compute_sector_industry_strength"("p_date" "date") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."fn_rollover_event_calendar"() TO "anon";
+GRANT ALL ON FUNCTION "public"."fn_rollover_event_calendar"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."fn_rollover_event_calendar"() TO "service_role";
 
 
 
@@ -3585,6 +3600,12 @@ GRANT ALL ON FUNCTION "public"."strict_word_similarity_op"("text", "text") TO "s
 
 
 
+GRANT ALL ON FUNCTION "public"."update_modified_column"() TO "anon";
+GRANT ALL ON FUNCTION "public"."update_modified_column"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."update_modified_column"() TO "service_role";
+
+
+
 GRANT ALL ON FUNCTION "public"."word_similarity"("text", "text") TO "postgres";
 GRANT ALL ON FUNCTION "public"."word_similarity"("text", "text") TO "anon";
 GRANT ALL ON FUNCTION "public"."word_similarity"("text", "text") TO "authenticated";
@@ -3635,21 +3656,15 @@ GRANT ALL ON FUNCTION "public"."word_similarity_op"("text", "text") TO "service_
 
 
 
+
+
+
+
+
+
 GRANT ALL ON TABLE "public"."ai_context" TO "anon";
 GRANT ALL ON TABLE "public"."ai_context" TO "authenticated";
 GRANT ALL ON TABLE "public"."ai_context" TO "service_role";
-
-
-
-GRANT ALL ON TABLE "public"."ai_model_performance" TO "anon";
-GRANT ALL ON TABLE "public"."ai_model_performance" TO "authenticated";
-GRANT ALL ON TABLE "public"."ai_model_performance" TO "service_role";
-
-
-
-GRANT ALL ON SEQUENCE "public"."ai_model_performance_id_seq" TO "anon";
-GRANT ALL ON SEQUENCE "public"."ai_model_performance_id_seq" TO "authenticated";
-GRANT ALL ON SEQUENCE "public"."ai_model_performance_id_seq" TO "service_role";
 
 
 
@@ -3752,18 +3767,6 @@ GRANT ALL ON TABLE "public"."event_calendar" TO "service_role";
 GRANT ALL ON SEQUENCE "public"."event_calendar_id_seq" TO "anon";
 GRANT ALL ON SEQUENCE "public"."event_calendar_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."event_calendar_id_seq" TO "service_role";
-
-
-
-GRANT ALL ON TABLE "public"."evolution_proposals" TO "anon";
-GRANT ALL ON TABLE "public"."evolution_proposals" TO "authenticated";
-GRANT ALL ON TABLE "public"."evolution_proposals" TO "service_role";
-
-
-
-GRANT ALL ON SEQUENCE "public"."evolution_proposals_id_seq" TO "anon";
-GRANT ALL ON SEQUENCE "public"."evolution_proposals_id_seq" TO "authenticated";
-GRANT ALL ON SEQUENCE "public"."evolution_proposals_id_seq" TO "service_role";
 
 
 
@@ -3893,18 +3896,6 @@ GRANT ALL ON TABLE "public"."open_positions" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."order_history" TO "anon";
-GRANT ALL ON TABLE "public"."order_history" TO "authenticated";
-GRANT ALL ON TABLE "public"."order_history" TO "service_role";
-
-
-
-GRANT ALL ON SEQUENCE "public"."order_history_id_seq" TO "anon";
-GRANT ALL ON SEQUENCE "public"."order_history_id_seq" TO "authenticated";
-GRANT ALL ON SEQUENCE "public"."order_history_id_seq" TO "service_role";
-
-
-
 GRANT ALL ON TABLE "public"."performance_metrics" TO "anon";
 GRANT ALL ON TABLE "public"."performance_metrics" TO "authenticated";
 GRANT ALL ON TABLE "public"."performance_metrics" TO "service_role";
@@ -3941,18 +3932,6 @@ GRANT ALL ON TABLE "public"."safety_lists" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."scanner_signals" TO "anon";
-GRANT ALL ON TABLE "public"."scanner_signals" TO "authenticated";
-GRANT ALL ON TABLE "public"."scanner_signals" TO "service_role";
-
-
-
-GRANT ALL ON SEQUENCE "public"."scanner_signals_id_seq" TO "anon";
-GRANT ALL ON SEQUENCE "public"."scanner_signals_id_seq" TO "authenticated";
-GRANT ALL ON SEQUENCE "public"."scanner_signals_id_seq" TO "service_role";
-
-
-
 GRANT ALL ON TABLE "public"."screener_performance" TO "anon";
 GRANT ALL ON TABLE "public"."screener_performance" TO "authenticated";
 GRANT ALL ON TABLE "public"."screener_performance" TO "service_role";
@@ -3980,18 +3959,6 @@ GRANT ALL ON SEQUENCE "public"."script_change_log_id_seq" TO "service_role";
 GRANT ALL ON TABLE "public"."sector_strength" TO "anon";
 GRANT ALL ON TABLE "public"."sector_strength" TO "authenticated";
 GRANT ALL ON TABLE "public"."sector_strength" TO "service_role";
-
-
-
-GRANT ALL ON TABLE "public"."shadow_trades" TO "anon";
-GRANT ALL ON TABLE "public"."shadow_trades" TO "authenticated";
-GRANT ALL ON TABLE "public"."shadow_trades" TO "service_role";
-
-
-
-GRANT ALL ON SEQUENCE "public"."shadow_trades_id_seq" TO "anon";
-GRANT ALL ON SEQUENCE "public"."shadow_trades_id_seq" TO "authenticated";
-GRANT ALL ON SEQUENCE "public"."shadow_trades_id_seq" TO "service_role";
 
 
 

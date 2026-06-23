@@ -1,76 +1,78 @@
 """
-TradeOS v6 — Send Alerts v6
+TradeOS v6 — Send Alerts v5
 ============================
 Pipeline position: final step — after step 19 (ai_decision_engine).
 
-WHAT CHANGED FROM v5 → v6 (2026-06-23 audit):
+WHAT CHANGED FROM v4 → v5:
 
-READINESS REDESIGN — entry_readiness.py no longer scores or blends.
-  Removed: WEIGHTS dict, conviction/final_score/volume/delivery/regime
-  scoring, the composite readiness_score/label/breakdown. Every one of
-  those inputs (dist_entry_pct, vol_ratio, delivery_pct, regime) is
-  already fed directly to ai_decision_engine's prompt and used to form
-  conviction/tier — re-blending them here was double-counting, which is
-  why a "41/100" score could contradict an AI "HIGH conviction" on the
-  same stock. What remains: live yfinance zone_status, a plain
-  live_vol_note (display only, never scored), and deterministic GTT math.
-  Conviction/confidence/thesis/risks/lessons_applied are step 19's own,
-  shown as-is, untouched by this module.
+PATCH 1 — entry_readiness import
+  Optional import of analysis.entry_readiness.compute_entry_readiness.
+  Graceful fallback if module not present (_READINESS_AVAILABLE = False).
 
-  Coverage extended to TIER_2 (previously TIER_1-only) in both
-  build_morning() and build_afternoon() — TIER_2 hasn't triggered yet,
-  so live zone status matters at least as much there.
-  build_evening() does NOT call entry_readiness at all — no live price
-  exists at 6 PM pipeline-run time, and dist_entry_pct from
-  master_shortlist is already shown directly.
+PATCH 2 — STOP_BUFFER constant
+  Reads stop_buffer_pct from config; defaults to 0.03 (3%).
+  Used by TIER_1 block and TOMORROW'S GTT ORDERS section.
 
-8 v4 fields restored across TIER_1 (lost in an earlier v4→v5 pass):
-  confidence %, suggested_allocation_pct, action, correlation_group,
-  [DB]/[AI] provenance tags on zone/entry_note/invalidation, risks,
-  lessons_applied (risks/lessons stay evening-only by design — morning/
-  afternoon are execution-focused, evening is the learning/context layer).
+PATCH 3 — build_position_block: compressed rationale (evening)
+  Removed static 130-char entry thesis.
+  Added 85-char compressed rationale sourced from entry_thesis_map
+  OR today's signal_log.ai_conviction_reason — whichever is available.
+  Morning (brief=True) path is unchanged.
 
-PATCH 16 — Multi-Channel Alert System  (system_config table driven)
-  Extends the Telegram sender into a full channel router.
-  Channel selection is read at runtime from the system_config Supabase table
-  so you can switch channels without touching code or restarting the process.
+PATCH 4 — build_evening: sb=None signature
+  Allows passing Supabase client for entry_readiness enrichment.
 
-  Channels available:
-    telegram          → original behaviour (re-activates if ban lifts)
-    discord           → recommended replacement; Markdown-formatted via webhook
-    email             → unlimited length; HTML + plain-text via SMTP
-    discord+email     → Discord primary + email simultaneous copy
-    all               → all three channels at once
+PATCH 5 — build_evening: restored echo at 300 chars with 📖 label
+  Previously 200 chars, no icon. Now 📖 prefixed, 300 chars, esc()-wrapped.
 
-  system_config keys consumed (SQL seed in PATCH 16 comment block below):
-    alert_channel          default: telegram
-    discord_webhook_url    Discord webhook URL
-    email_smtp_host        default: smtp.gmail.com
-    email_smtp_port        default: 587
-    email_from             sender address
-    email_to               recipient(s), comma-separated
-    email_password         SMTP app password (Gmail: use App Password, NOT login)
-    email_subject_prefix   default: TradeOS
+PATCH 6 — build_evening: MACRO + FII FLOW section (new, before market intel)
+  Shows FII 5-session sector flow (buying/selling) and regulatory alerts
+  in a dedicated top-level section. Complements build_regime_header which
+  already shows global indices — no duplication.
+  Market Intelligence section simplified to summary + echo only.
 
-  Internal senders added — no changes to any build_*() or formatter:
-    _send_telegram()      → original implementation, preserved unchanged
-    _send_discord()       → converts Telegram HTML → Discord Markdown then sends
-    _send_email()         → wraps content in dark <pre> block; HTML + plain parts
-    _html_to_discord_md() → <b>→**bold**  <i>→*italic*  <code>→`code`
-    _html_to_plain()      → strips all HTML tags for email plain-text fallback
+PATCH 7 — build_evening: single guidance line
+  Priority cascade: capital_deployment_narrative → new_positions_guidance →
+  _ai_note. Sectors compressed to ▲/▼ inline. One text line max.
 
-PATCH 17 — load_channel_config(sb)
-  Called in main() after get_supabase(). Reads all rows from system_config
-  and populates _CHANNEL_CFG dict. _ch(key, default) helper reads
-  _CHANNEL_CFG → cfg() → default in order, so env/config.py values remain
-  as fallback if a key isn't in the table.
+PATCH 8 — build_evening: TIER_1 compressed (3 lines) + readiness
+  Line 1: symbol · zone range · dist · T1 · SL · R:R · readiness score
+  Line 2: entry_note · invalidation · readiness breakdown
+  Line 3: 💬 thesis + catalyst (evening learning layer)
+  Optional compute_entry_readiness enrichment when sb is available.
 
-PATCH 18 — main(): channel-aware startup + subject routing
-  load_channel_config(sb) called before load_data().
-  Active channel logged at startup. Mode-specific subject_suffix passed
-  to send_message() (Evening / Morning / Afternoon / Compact).
-  Signal keyboards (Telegram-only feature) gated to telegram/all channels.
-  Backward-compat: 'telegram_alerts_enabled' key still gates the whole system.
+PATCH 9 — build_evening: TIER_2 compressed (2 lines)
+  Line 1: symbol · zone range · dist
+  Line 2: entry_note · invalidation
+
+PATCH 10 — build_evening: TOMORROW'S GTT ORDERS section
+  Appended before return. Shows Entry / SL / T1 / RR for all TIER_1 picks
+  with vol_ratio + delivery_pct reference (sourced from signal_log).
+  signal_log select updated to include vol_ratio, delivery_pct.
+
+PATCH 11 — build_morning: sb=None signature
+  Mirrors build_evening for entry_readiness enrichment at morning runtime.
+
+PATCH 12 — build_morning: single guidance line
+  Same priority cascade as Patch 7. Sectors inline.
+
+PATCH 13 — build_morning: TIER_1 live zone status + readiness
+  Line 1: symbol · zone_status (live via yfinance from readiness, or
+           computed from dist_entry_pct) · readiness score
+  Line 2: Entry / SL / T1 / RR · timing window
+  Line 3: entry_note / invalidation
+
+PATCH 14 — build_morning: TIER_2 compact (2 lines)
+  Inline zone computation replaces zone_line() call.
+
+PATCH 15 — main(): pass sb to both builders
+  build_morning(data, sb=sb) and build_evening(data, sb=sb).
+
+UNCHANGED from v4:
+  zone_line() — simplified to plain text (no <b> tags) to be safe with esc().
+  Sector concentration warnings and correlation groups — already full detail in v4.
+  build_compact(), send_signal_with_keyboard() — no changes.
+  load_data() — only signal_log select gains vol_ratio, delivery_pct columns.
 
 DATA SOURCES (all bound to confirmed schema):
   ai_context         → __FINAL_PICKS__ (conviction_reason + strategy_validation)
@@ -87,21 +89,20 @@ DATA SOURCES (all bound to confirmed schema):
   nifty_upcoming_events → symbol, purpose, details, event_date, days_to_event
   lessons            → 7-day AI + rule counts
   data_anomalies     → ERROR-level alerts
-  system_config      → alert_channel + channel credentials
 
 MESSAGE STRUCTURE:
   EVENING:
     Header: regime + FII + macro snapshot (build_regime_header)
-    Section 0: MACRO + FII FLOW (FII sector flow + regulatory alerts)
+    Section 0: MACRO + FII FLOW (FII sector flow + regulatory alerts) [NEW v5]
     Section 1: Market Intelligence (summary + echo)
     Section 2: Portfolio Health Snapshot
     Section 3: Open Positions (full lifecycle)
     Section 4: EXIT signals
-    Section 5: TIER_1 — Act Now (full context: conviction/conf/alloc/[DB]/[AI]/risks/lessons)
-    Section 6: TIER_2 — Watch for Trigger (compact)
+    Section 5: TIER_1 — Act Now (3-line compact + readiness)
+    Section 6: TIER_2 — Watch for Trigger (2-line compact)
     Section 7: TIER_3 — Monitor
     Section 8: Near Miss
-    Section 9: Sector Warnings + Correlation Groups
+    Section 9: Sector Warnings + Correlation Groups (full detail)
     Section 10: Upcoming Events
     Footer: GTT Orders + lesson count
 
@@ -110,14 +111,15 @@ MESSAGE STRUCTURE:
     Gap Risk Alert: SL breach risk positions
     Position Pulse: brief position status
     EXIT Today
-    TIER_1 Watchlist (live zone status + entry levels + [DB]/[AI] tags)
-    TIER_2 Intraday Triggers (live zone status, compact)
+    TIER_1 Watchlist (live zone status + entry levels)
+    TIER_2 Intraday Triggers (2-line compact)
     Today's Events + Next 3 days events
 
   AFTERNOON:
     Header: date + time
-    TIER_1 zone status (live yfinance prices) + TIER_2 watch-for-trigger
+    TIER_1 zone status only (live yfinance prices)
     IN ZONE / APPROACHING / ABOVE / MISSED per pick
+    Timing note for 1:30–2:30 PM entry window
 
   COMPACT:
     One-screen mobile summary
@@ -125,12 +127,8 @@ MESSAGE STRUCTURE:
 
 import sys
 import json
-import re
 import time
-import smtplib
 from datetime import timedelta
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from pathlib import Path
 import html
 
@@ -175,129 +173,27 @@ def esc(text: str) -> str:
         return ""
     return html.escape(str(text), quote=False)
 
-# ════════════════════════════════════════════════════════════════════════════
-# PATCH 16 — MULTI-CHANNEL ALERT SYSTEM
-# ════════════════════════════════════════════════════════════════════════════
-#
-# Seed your system_config table with these rows to activate a channel.
-# Only the rows you add take effect; missing keys fall back to cfg() / env.
-#
-#   INSERT INTO public.system_config (key, value, description) VALUES
-#     ('alert_channel',
-#       'discord',
-#       'Active channel(s): telegram | discord | email | discord+email | all'),
-#
-#     ('discord_webhook_url',
-#       'https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN',
-#       'Server → any channel → Settings → Integrations → Webhooks → New'),
-#
-#     ('email_smtp_host',
-#       'smtp.gmail.com',
-#       'SMTP server: smtp.gmail.com | smtp.office365.com | smtp.zoho.in'),
-#
-#     ('email_smtp_port',
-#       '587',
-#       'SMTP port: 587 (STARTTLS, recommended) | 465 (SSL)'),
-#
-#     ('email_from',
-#       'you@gmail.com',
-#       'Sender email address'),
-#
-#     ('email_to',
-#       'you@gmail.com',
-#       'Recipient(s) — comma-separate for multiple: a@x.com,b@x.com'),
-#
-#     ('email_password',
-#       '',
-#       'Gmail: Account → Security → 2-Step → App Passwords (16-char code)'),
-#
-#     ('email_subject_prefix',
-#       'TradeOS',
-#       'Email subject prefix: "TradeOS Evening" / "TradeOS Morning" etc.')
-#   ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value,
-#                                    updated_at = now();
-#
-# CHANNEL COMPARISON:
-#   telegram      → Original. 4096 chars/msg. Telegram HTML. Reactivates if
-#                   ban lifts — just set alert_channel = 'telegram'.
-#   discord       → Recommended replacement. Free. Great mobile app.
-#                   2000 chars/msg (split handled). No bot needed — webhook only.
-#                   HTML auto-converted to Discord **Markdown**.
-#   email         → Universal fallback. Unlimited length. Full HTML renders
-#                   in Gmail/Outlook. Works even if all chat apps are blocked.
-#   discord+email → Discord primary with email as simultaneous archive copy.
-#   all           → All three. Useful during channel migration.
-#
-# ════════════════════════════════════════════════════════════════════════════
+# ── Telegram sender ────────────────────────────────────────────────────────
 
-# Runtime channel config — populated once per run in main() by load_channel_config().
-# Starts empty; _ch() falls back to cfg() if a key is absent (backward-compat).
-_CHANNEL_CFG: dict = {}
-
-
-def _ch(key: str, default: str = "") -> str:
-    """
-    Channel config accessor — 3-tier priority:
-      1. system_config table  (_CHANNEL_CFG populated in main())
-      2. cfg() / env / config.py
-      3. hard-coded default
-
-    Use this for every channel credential so system_config overrides env
-    without requiring a process restart.
-    """
-    return _CHANNEL_CFG.get(key) or cfg(key, default) or default
-
-
-# ── PATCH 17: load_channel_config ─────────────────────────────────────────
-
-def load_channel_config(sb) -> dict:
-    """
-    Read all rows from system_config and return {key: value}.
-    Called once in main() after get_supabase(); result stored in _CHANNEL_CFG.
-
-    Keys not present in the table are silently absent — _ch() falls back
-    to cfg() for those. Supabase errors degrade gracefully: the module
-    continues with cfg() / env defaults so alerts are never silently dropped.
-    """
-    try:
-        rows = (
-            sb.table("system_config")
-              .select("key,value")
-              .execute().data or []
-        )
-        config = {
-            r["key"]: r["value"]
-            for r in rows
-            if r.get("key") and r.get("value") is not None
-        }
-        channel = config.get("alert_channel", "(not set — will use cfg() default)")
-        logger.info(
-            f"system_config loaded: {len(config)} keys  "
-            f"| alert_channel → {channel}"
-        )
-        return config
-    except Exception as e:
-        logger.warning(f"system_config load failed — using cfg() fallbacks: {e}")
-        return {}
-
-
-# ── Channel message limits ─────────────────────────────────────────────────
-
-_TELEGRAM_LIMIT = 4096    # Telegram hard per-message limit
-_DISCORD_LIMIT  = 1900    # Discord 2000-char limit with 100-char safety margin
-
+_TELEGRAM_LIMIT = 4096   # Telegram's hard per-message limit
 
 def _split_html_safe(text: str, limit: int = _TELEGRAM_LIMIT) -> list[str]:
     """
-    Split a message at newline boundaries so no content is sheared mid-line.
-    Accepts a per-channel limit: 4096 for Telegram, 1900 for Discord.
-    Hard-splits lines that exceed the limit in isolation (pathological content).
+    Split a Telegram HTML message at newline boundaries so no HTML tag
+    is ever sheared across a part boundary.
+
+    Strategy:
+      1. Walk backwards from `limit` chars to find the last newline.
+      2. Repeat on the remainder until the whole message is consumed.
+
+    If a single line exceeds `limit` (pathological), it's hard-split and
+    may render broken — but that's a content problem, not a code problem.
     """
     parts = []
     while len(text) > limit:
-        cut = text.rfind("\n", 0, limit)
+        cut = text.rfind("\n", 0, limit)   # last newline before limit
         if cut <= 0:
-            cut = limit
+            cut = limit                    # no newline found — hard cut
         parts.append(text[:cut])
         text = text[cut:].lstrip("\n")
     if text:
@@ -305,42 +201,7 @@ def _split_html_safe(text: str, limit: int = _TELEGRAM_LIMIT) -> list[str]:
     return parts
 
 
-# ── Format converters ──────────────────────────────────────────────────────
-
-def _html_to_discord_md(text: str) -> str:
-    """
-    Convert Telegram HTML markup → Discord Markdown in-place.
-
-      Telegram   →  Discord
-      <b>…</b>  →  **…**
-      <i>…</i>  →  *…*
-      <code>…</code> → `…`
-
-    Section dividers (═══), emoji, and ₹ symbols render fine in Discord
-    without conversion. Residual/unmatched tags are stripped so no raw HTML
-    leaks into Discord messages.
-    """
-    text = re.sub(r"<b>(.*?)</b>",       r"**\1**", text, flags=re.DOTALL)
-    text = re.sub(r"<i>(.*?)</i>",       r"*\1*",   text, flags=re.DOTALL)
-    text = re.sub(r"<code>(.*?)</code>", r"`\1`",   text, flags=re.DOTALL)
-    text = re.sub(r"<[^>]+>", "", text)
-    return text
-
-
-def _html_to_plain(text: str) -> str:
-    """Strip all HTML tags — plain-text fallback body for email MIME part."""
-    return re.sub(r"<[^>]+>", "", text)
-
-
-# ── Channel senders ────────────────────────────────────────────────────────
-
-def _send_telegram(text: str) -> bool:
-    """
-    Telegram sender — original implementation, unchanged.
-    Activates when alert_channel is 'telegram' or 'all'.
-    Preserved here so it reactivates automatically if/when the ban lifts:
-    just update system_config.alert_channel to 'telegram' and it's live.
-    """
+def send_message(text: str) -> bool:
     import requests
     token   = TELEGRAM_TOKEN
     chat_id = TELEGRAM_CHAT_ID
@@ -349,9 +210,10 @@ def _send_telegram(text: str) -> bool:
         return False
 
     # Split BEFORE sending — never rely on a 400 to trigger the split
-    parts = _split_html_safe(text, limit=_TELEGRAM_LIMIT)
+    parts = _split_html_safe(text)
     if len(parts) > 1:
-        return all(_send_telegram(p) for p in parts)
+        results = [send_message(p) for p in parts]
+        return all(results)
 
     url     = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
@@ -376,173 +238,6 @@ def _send_telegram(text: str) -> bool:
             logger.warning(f"Telegram attempt {attempt+1} failed: {e} — retry in {wait}s")
             time.sleep(wait)
     return False
-
-
-def _send_discord(text: str) -> bool:
-    """
-    Discord webhook sender.
-    Converts Telegram HTML → Discord Markdown, then splits into ≤1900-char
-    chunks at newline boundaries. A 0.5s gap between chunks respects Discord's
-    30-requests/min webhook rate limit comfortably.
-    """
-    import requests
-    webhook = _ch("discord_webhook_url")
-    if not webhook:
-        logger.warning(
-            "Discord webhook URL not configured — "
-            "add discord_webhook_url to system_config table"
-        )
-        return False
-
-    md_text = _html_to_discord_md(text)
-    parts   = _split_html_safe(md_text, limit=_DISCORD_LIMIT)
-
-    for i, part in enumerate(parts):
-        payload = {"content": part}
-        for attempt in range(3):
-            try:
-                resp = requests.post(webhook, json=payload, timeout=10)
-                if resp.status_code in (200, 204):
-                    break
-                if resp.status_code == 429:
-                    retry_after = resp.json().get("retry_after", 5)
-                    logger.warning(f"Discord rate limit — waiting {retry_after}s")
-                    time.sleep(float(retry_after))
-                    continue
-                logger.error(f"Discord error {resp.status_code}: {resp.text[:200]}")
-                return False
-            except Exception as e:
-                wait = [3, 10, 20][attempt]
-                logger.warning(f"Discord attempt {attempt+1} failed: {e} — retry in {wait}s")
-                time.sleep(wait)
-        else:
-            logger.error(f"Discord: all retries exhausted for part {i+1}/{len(parts)}")
-            return False
-
-        if i < len(parts) - 1:
-            time.sleep(0.5)   # polite inter-chunk gap
-
-    return True
-
-
-def _send_email(text: str, subject_suffix: str = "Alert") -> bool:
-    """
-    SMTP email sender. Delivers two MIME parts per message:
-      · text/html  — your existing Telegram HTML renders in Gmail / Outlook.
-                     Wrapped in a dark <pre> block to preserve line layout.
-      · text/plain — all tags stripped; fallback for plain-text mail clients.
-
-    Provider quick-reference:
-      Gmail        → smtp.gmail.com:587    (App Password required)
-      Outlook/O365 → smtp.office365.com:587
-      Zoho Mail    → smtp.zoho.in:587      (free plan supported)
-      Yahoo        → smtp.mail.yahoo.com:587
-    """
-    smtp_host = _ch("email_smtp_host", "smtp.gmail.com")
-    smtp_port = int(_ch("email_smtp_port", "587") or 587)
-    from_addr = _ch("email_from")
-    to_raw    = _ch("email_to")
-    password  = _ch("email_password")
-    prefix    = _ch("email_subject_prefix", "TradeOS")
-    to_addrs  = [a.strip() for a in to_raw.split(",") if a.strip()]
-
-    if not from_addr or not to_addrs or not password:
-        logger.warning(
-            "Email credentials incomplete — "
-            "set email_from / email_to / email_password in system_config"
-        )
-        return False
-
-    subject = f"{prefix} {subject_suffix}"
-    plain   = _html_to_plain(text)
-
-    # Dark background + monospaced pre-wrap preserves the ═══ section dividers,
-    # emoji columns, and ₹ price alignment that the build_*() functions produce.
-    html_body = (
-        "<!DOCTYPE html>"
-        '<html><body style="background:#111;color:#eee;'
-        'font-family:\'Courier New\',monospace;padding:20px;">'
-        '<pre style="white-space:pre-wrap;font-size:13px;line-height:1.6;'
-        'margin:0;">'
-        f"{text}"
-        "</pre></body></html>"
-    )
-
-    msg            = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = from_addr
-    msg["To"]      = ", ".join(to_addrs)
-    msg.attach(MIMEText(plain,     "plain", "utf-8"))
-    msg.attach(MIMEText(html_body, "html",  "utf-8"))
-
-    for attempt in range(3):
-        try:
-            with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
-                server.ehlo()
-                server.starttls()
-                server.ehlo()
-                server.login(from_addr, password)
-                server.sendmail(from_addr, to_addrs, msg.as_string())
-            logger.info(f"Email sent → {to_addrs}")
-            return True
-        except Exception as e:
-            wait = [5, 15, 30][attempt]
-            logger.warning(f"Email attempt {attempt+1} failed: {e} — retry in {wait}s")
-            time.sleep(wait)
-
-    logger.error("Email: all retries exhausted")
-    return False
-
-
-def send_message(text: str, subject_suffix: str = "Alert") -> bool:
-    """
-    Channel router — the only function called by the rest of send_alerts.py.
-
-    Reads alert_channel from system_config (via _ch()) at call time, so
-    changes to the table take effect on the next cron run with no code touch.
-
-    Valid alert_channel values:
-        telegram          → Telegram only  (original behaviour)
-        discord           → Discord only   (recommended; use during ban)
-        email             → Email only     (universal fallback)
-        discord+email     → Discord + email simultaneously
-        all               → All three channels
-
-    Returns True if at least one channel delivered successfully.
-    DRY_RUN mode logs a 300-char preview instead of sending to any channel.
-    """
-    channel = _ch("alert_channel", "telegram")
-
-    if DRY_RUN:
-        preview = text[:300].replace("\n", " ")
-        logger.info(f"[DRY_RUN] send_message ({channel}): {preview}…")
-        return True
-
-    results: dict[str, bool] = {}
-
-    if channel in ("telegram", "all"):
-        results["telegram"] = _send_telegram(text)
-
-    if channel in ("discord", "discord+email", "all"):
-        results["discord"] = _send_discord(text)
-
-    if channel in ("email", "discord+email", "all"):
-        results["email"] = _send_email(text, subject_suffix=subject_suffix)
-
-    if not results:
-        logger.error(
-            f"send_message: unknown alert_channel '{channel}' in system_config. "
-            "Valid values: telegram | discord | email | discord+email | all"
-        )
-        return False
-
-    failures = [ch for ch, ok in results.items() if not ok]
-    if failures:
-        logger.warning(f"Alert delivery failed on: {failures}")
-
-    return any(results.values())
-
-# ══ end PATCH 16 / 17 ════════════════════════════════════════════════════════
 
 
 # ── Formatters ────────────────────────────────────────────────────────────
@@ -1346,16 +1041,24 @@ def build_evening(data: dict, sb=None) -> str:
             lines.append(f"  <i>{esc(_gtext[:150])}</i>")
         lines.append("")
 
-        # ── TIER_1 — full context, no re-scoring (evening has no live data
-        #    to check anyway; dist_entry_pct below is the frozen EOD value
-        #    from master_shortlist, already correct, no entry_readiness call) ──
+        # ── PATCH 8: TIER_1 — 3-line compact + readiness score ──────────
         if tier1:
+            # Optional readiness enrichment (adds score, icon, breakdown,
+            # readiness_label per pick). use_live=False = DB data only.
+            if _READINESS_AVAILABLE and sb:
+                try:
+                    tier1 = compute_entry_readiness(
+                        tier1, msl_map, sb=sb, use_live=False
+                    )
+                except Exception as e:
+                    logger.warning(f"entry_readiness enrichment failed: {e}")
+
             lines.append(f"⭐ <b>TIER 1 — ACT NOW ({len(tier1)})</b>")
             for c in tier1:
                 sym    = c.get("symbol", "?")
                 conv   = (c.get("conviction") or "").upper()
-                action = c.get("action") or ""
-                conf   = float(c.get("confidence") or 0)
+                action = c.get("action") or ""           # BUY / STAGED_ENTRY / REENTRY_SETUP etc.
+                conf   = float(c.get("confidence") or 0) # step 19 own confidence in pick
                 alloc  = float(c.get("suggested_allocation_pct") or 0)
                 corr   = c.get("correlation_group") or ""
                 msl    = msl_map.get(sym, {})
@@ -1366,21 +1069,26 @@ def build_evening(data: dict, sb=None) -> str:
                 t1_p   = round(zl * (1 + STOP_BUFFER * er), 0) if zl else None
                 rr     = (round((t1_p - zl) / (zl - sl_p), 1)
                           if t1_p and sl_p and zl and sl_p < zl else None)
-                dist     = msl.get("dist_entry_pct")
-                dist_str = f"({abs(float(dist)):.1f}%↓)" if dist is not None else ""
+                r_icon    = c.get("readiness_icon") or conviction_icon(conv)
+                r_score   = c.get("readiness_score")
+                r_label   = c.get("readiness_label", "")
+                dist      = msl.get("dist_entry_pct")
+                dist_str  = f"({abs(float(dist)):.1f}%↓)" if dist is not None else ""
+                score_str = f"[{r_score}/100·{r_label}]" if r_score else ""
 
-                # Line 1: symbol · action · conviction · zone [DB] · alloc · conf · corr
+                # Line 1: symbol · action · conviction · zone [DB] · alloc · conf · corr · RR · readiness
                 lines.append(
-                    f"\n  {conviction_icon(conv)} <b>{sym}</b>"
+                    f"\n  {r_icon} <b>{sym}</b>"
                     + (f" [{action}·{conv}]" if action else f" [{conv}]")
                     + f"  ₹{zl:,.0f}–₹{zh:,.0f} {dist_str}  <i>[DB]</i>"
                     + (f"  <b>{alloc:.0f}%</b>" if alloc else "")
                     + (f"  conf:{conf:.0%}" if conf else "")
                     + (f"  📎{corr}" if corr else "")
-                    + f"  → T1₹{t1_p:,.0f} | SL₹{sl_p:,.0f} · RR {rr}×"
+                    + f"  → T1₹{t1_p:,.0f} | SL₹{sl_p:,.0f} · RR {rr}×  {score_str}"
                 )
 
-                # Line 2: WHY — thesis first (context before instruction)
+                # Line 2: WHY — thesis first (context before instruction), then catalyst
+                # v4 had thesis before entry_note for good reason: you read WHY before HOW
                 thesis   = c.get("thesis") or c.get("ai_conviction_reason") or ""
                 catalyst = c.get("catalyst") or ""
                 if "] " in thesis:
@@ -1391,12 +1099,15 @@ def build_evening(data: dict, sb=None) -> str:
                 if thesis:
                     lines.append(f"   💬 {esc(thesis)}")
 
-                # Line 3: HOW — entry condition [AI] · invalidation [AI]
+                # Line 3: HOW — entry condition [AI] · invalidation [AI] · readiness breakdown
                 parts3 = []
                 if c.get("entry_note"):
                     parts3.append(f"📍 {esc(c['entry_note'])} <i>[AI]</i>")
                 if c.get("invalidation"):
                     parts3.append(f"❌ {esc(c['invalidation'])} <i>[AI]</i>")
+                breakdown = c.get("readiness_breakdown", "")
+                if breakdown:
+                    parts3.append(f"<i>{breakdown}</i>")
                 if parts3:
                     lines.append(f"   {' · '.join(parts3)}")
 
@@ -1712,12 +1423,9 @@ def build_morning(data: dict, sb=None) -> str:
             lines.append(f"  <i>{esc(_mgtext)}</i>")
         lines.append("")
 
-        # ── TIER_1 — live zone status (no scoring) ──────────────────────
+        # ── PATCH 13: TIER_1 — live zone status + readiness ─────────────
         if tier1:
-            # use_live=True → yfinance live price for zone status + volume check.
-            # No re-scoring: conviction/tier/confidence below are untouched,
-            # frozen from step 19 — only zone_status/timing_note/live_vol_note
-            # are genuinely new at this checkpoint.
+            # use_live=True → yfinance live price for zone status + volume check
             if _READINESS_AVAILABLE and sb:
                 try:
                     tier1 = compute_entry_readiness(
@@ -1742,11 +1450,12 @@ def build_morning(data: dict, sb=None) -> str:
                 t1_p   = round(zl * (1 + STOP_BUFFER * er), 0) if zl else None
                 rr     = (round((t1_p - zl) / (zl - sl_p), 1)
                           if t1_p and sl_p and zl and sl_p < zl else None)
-                timing = c.get("timing_note", "Verify zone manually")
-                vol_note = c.get("live_vol_note")
+                r_icon    = c.get("readiness_icon") or conviction_icon(conv)
+                r_score   = c.get("readiness_score")
+                score_str = f"[{r_score}/100]" if r_score else ""
+                timing    = c.get("timing_note", "Verify zone manually")
 
-                # Zone status: prefer live entry_readiness output; fallback to
-                # the frozen dist_entry_pct if yfinance was unavailable
+                # Zone status: prefer live readiness output; fallback to dist_entry_pct
                 z_status = c.get("zone_status")
                 if not z_status:
                     dist = msl.get("dist_entry_pct")
@@ -1761,22 +1470,21 @@ def build_morning(data: dict, sb=None) -> str:
                     else:
                         z_status = "📍 Verify zone"
 
-                # Line 1: symbol · action · conviction · live zone status · alloc · conf · corr
+                # Line 1: symbol · action · conviction · zone status · conf · alloc · corr · readiness
                 lines.append(
-                    f"\n  {conviction_icon(conv)} <b>{sym}</b>"
+                    f"\n  {r_icon} <b>{sym}</b>"
                     + (f" [{action}·{conv}]" if action else f" [{conv}]")
-                    + f"  {z_status}"
+                    + f"  {z_status}  {score_str}"
                     + (f"  <b>{alloc:.0f}%</b>" if alloc else "")
                     + (f"  conf:{conf:.0%}" if conf else "")
                     + (f"  📎{corr}" if corr else "")
                 )
 
-                # Line 2: exact GTT levels [DB] · timing window · live volume (if available)
+                # Line 2: exact GTT levels [DB] · timing window
                 lines.append(
                     f"   Entry₹{zl:,.0f}–₹{zh:,.0f}  <i>[DB]</i>"
                     f" | SL₹{sl_p:,.0f} | T1₹{t1_p:,.0f} | RR {rr}×"
                     f" · <i>{timing}</i>"
-                    + (f" · {vol_note}" if vol_note else "")
                 )
 
                 # Line 3: entry condition [AI] / invalidation [AI]
@@ -1787,46 +1495,27 @@ def build_morning(data: dict, sb=None) -> str:
 
             lines.append("")
 
-        # ── TIER_2 — live zone status too (no scoring, same as TIER_1) ──
+        # ── PATCH 14: TIER_2 — 2-line compact ────────────────────────────
         if tier2:
-            if _READINESS_AVAILABLE and sb:
-                try:
-                    tier2 = compute_entry_readiness(
-                        tier2, msl_map, sb=sb, use_live=True
-                    )
-                except Exception as e:
-                    logger.warning(f"morning readiness enrichment failed (TIER_2): {e}")
-
             lines.append(f"🔭 <b>INTRADAY TRIGGERS — TIER_2 ({len(tier2)})</b>")
             for c in tier2:
-                sym      = c.get("symbol", "?")
-                conv     = (c.get("conviction") or "").upper()
-                msl      = msl_map.get(sym, {})
-                zl       = float(msl.get("entry_zone_low")  or 0)
-                zh       = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
-                vol_note = c.get("live_vol_note")
+                sym   = c.get("symbol", "?")
+                conv  = (c.get("conviction") or "").upper()
+                msl   = msl_map.get(sym, {})
+                zl    = float(msl.get("entry_zone_low")  or 0)
+                zh    = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
+                dist  = msl.get("dist_entry_pct")
+                dist_str = f"({abs(float(dist)):.1f}%↓)" if dist is not None else ""
 
-                # Zone status: prefer live entry_readiness output; fallback to dist_entry_pct
-                z_status = c.get("zone_status")
-                if not z_status:
-                    dist = msl.get("dist_entry_pct")
-                    z_status = f"({abs(float(dist)):.1f}%↓)" if dist is not None else ""
-
-                # Line 1: symbol · zone · live status
+                # Line 1: symbol · zone · dist
                 lines.append(
                     f"  {conviction_icon(conv)} <b>{sym}</b> [{conv}]"
-                    f"  ₹{zl:,.0f}–₹{zh:,.0f}"
-                    + (f"  {z_status}" if z_status else "")
+                    f"  ₹{zl:,.0f}–₹{zh:,.0f} {dist_str}"
                 )
 
-                # Line 2: entry condition + live volume pace (no rationale in morning)
-                p2 = []
+                # Line 2: entry condition only (no rationale in morning)
                 if c.get("entry_note"):
-                    p2.append(f"📍 {esc(c['entry_note'])}")
-                if vol_note:
-                    p2.append(vol_note)
-                if p2:
-                    lines.append(f"    {' · '.join(p2)}")
+                    lines.append(f"    📍 {esc(c['entry_note'])}")
 
             lines.append("")
 
@@ -1875,45 +1564,33 @@ def build_afternoon(data: dict, sb=None) -> str:
         return "\n".join(lines)
 
     tier1 = [r for r in fp["ranked_candidates"] if r.get("tier") == "TIER_1"]
-    tier2 = [r for r in fp["ranked_candidates"] if r.get("tier") == "TIER_2"]
 
-    if not tier1 and not tier2:
-        lines.append("<i>No TIER_1/TIER_2 picks for today</i>")
+    if not tier1:
+        lines.append("<i>No TIER_1 picks for today</i>")
         return "\n".join(lines)
 
     # Enrich with live yfinance prices — _pre_market=False at 1PM so
-    # timing_note automatically shows "1:30–2:30 PM · Limit at zone_low".
-    # No re-scoring here: conviction/confidence below are step 19's own,
-    # frozen, untouched — only zone_status/timing_note/live_vol_note are
-    # genuinely new live facts at this checkpoint. TIER_2 gets the same
-    # live check — they haven't triggered yet, so live zone status matters
-    # at least as much here as for TIER_1.
+    # timing_note automatically shows "1:30–2:30 PM · Limit at zone_low"
     if _READINESS_AVAILABLE and sb:
-        if tier1:
-            try:
-                tier1 = compute_entry_readiness(tier1, msl_map, sb=sb, use_live=True)
-            except Exception as e:
-                logger.warning(f"afternoon readiness enrichment failed (TIER_1): {e}")
-        if tier2:
-            try:
-                tier2 = compute_entry_readiness(tier2, msl_map, sb=sb, use_live=True)
-            except Exception as e:
-                logger.warning(f"afternoon readiness enrichment failed (TIER_2): {e}")
+        try:
+            tier1 = compute_entry_readiness(
+                tier1, msl_map, sb=sb, use_live=True
+            )
+        except Exception as e:
+            logger.warning(f"afternoon readiness enrichment failed: {e}")
 
     any_actionable = False
 
-    if tier1:
-        lines.append("⭐ <b>TIER 1 — ACT NOW</b>")
     for c in tier1:
         sym         = c.get("symbol", "?")
         conv        = (c.get("conviction") or "").upper()
-        conf        = float(c.get("confidence") or 0)
         msl         = msl_map.get(sym, {})
         zl          = float(msl.get("entry_zone_low")  or 0)
         zh          = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
         zone_status = c.get("zone_status", "")
         timing_note = c.get("timing_note", "")
-        vol_note    = c.get("live_vol_note")
+        r_score     = c.get("readiness_score")
+        score_str   = f"[{r_score}/100]" if r_score else ""
 
         if "IN ZONE" in zone_status:
             status_ico = "✅"
@@ -1925,63 +1602,32 @@ def build_afternoon(data: dict, sb=None) -> str:
         else:
             status_ico = "❌"
 
-        # Line 1: status · symbol · conviction · zone range [DB] · live status · confidence
+        # Line 1: status · symbol · zone range · live price · score
         lines.append(
-            f"{status_ico} <b>{sym}</b> [{conv}]  ₹{zl:,.0f}–₹{zh:,.0f} <i>[DB]</i>  —  {zone_status}"
-            + (f"  conf:{conf:.0%}" if conf else "")
+            f"{status_ico} <b>{sym}</b>  ₹{zl:,.0f}–₹{zh:,.0f}  —  {zone_status}  {score_str}"
         )
 
-        # Line 2: timing note + live volume pace (informational, not scored)
-        if timing_note or vol_note:
-            tn_parts = [p for p in [timing_note, vol_note] if p]
-            lines.append(f"   <i>{' · '.join(esc(p) for p in tn_parts)}</i>")
+        # Line 2: timing note
+        if timing_note:
+            lines.append(f"   <i>{esc(timing_note)}</i>")
 
-        # Line 3: entry note [AI] if in zone, invalidation [AI] if missed
+        # Line 3: vol + delivery breakdown — the decision layer
+        breakdown = c.get("readiness_breakdown", "")
+        if breakdown:
+            lines.append(f"   {breakdown}")
+
+        # Line 4: entry note if in zone, invalidation if missed
         if c.get("entry_note") and "IN ZONE" in zone_status:
-            lines.append(f"   📍 {esc(c['entry_note'])} <i>[AI]</i>")
+            lines.append(f"   📍 {esc(c['entry_note'])}")
         if c.get("invalidation") and "MISSED" in zone_status:
-            lines.append(f"   ❌ {esc(c['invalidation'][:60])} <i>[AI]</i>")
+            lines.append(f"   ❌ {esc(c['invalidation'][:60])}")
 
         lines.append("")
 
-    if tier1 and not any_actionable:
+    if not any_actionable:
         lines.append(
             "<i>No TIER_1 picks in zone right now — monitor for 1:30–2:30 PM window</i>"
         )
-        lines.append("")
-
-    # ── TIER_2 — same live check, "watch for trigger" framing ───────────
-    if tier2:
-        lines.append("🔭 <b>TIER 2 — WATCH FOR TRIGGER</b>")
-        for c in tier2:
-            sym         = c.get("symbol", "?")
-            conv        = (c.get("conviction") or "").upper()
-            msl         = msl_map.get(sym, {})
-            zl          = float(msl.get("entry_zone_low")  or 0)
-            zh          = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
-            zone_status = c.get("zone_status", "")
-            vol_note    = c.get("live_vol_note")
-
-            if "IN ZONE" in zone_status:
-                status_ico = "✅"
-            elif "APPROACHING" in zone_status:
-                status_ico = "⬇️"
-            elif "ABOVE ZONE" in zone_status:
-                status_ico = "⚠️"
-            elif zone_status:
-                status_ico = "❌"
-            else:
-                status_ico = "🔭"
-
-            lines.append(
-                f"{status_ico} <b>{sym}</b> [{conv}]  ₹{zl:,.0f}–₹{zh:,.0f}"
-                + (f"  —  {zone_status}" if zone_status else "")
-                + (f"  · {vol_note}" if vol_note else "")
-            )
-            if c.get("entry_note") and "IN ZONE" in zone_status:
-                lines.append(f"   📍 {esc(c['entry_note'])} <i>[AI]</i>")
-
-        lines.append("")
 
     return "\n".join(lines)
 
@@ -2116,24 +1762,13 @@ def send_signal_with_keyboard(signal: dict) -> bool:
 # ── Main ───────────────────────────────────────────────────────────────────
 
 def main():
-    logger.info(f"send_alerts v6 | argv={sys.argv}")
+    logger.info(f"send_alerts v5 | argv={sys.argv}")
     if is_kill_switch_active():
         logger.warning("Kill switch — send_alerts skipped")
         return {"status": "skipped"}
 
-    # ── PATCH 18: Load channel config from system_config before anything else ──
-    # Done early so _ch() is primed for all subsequent reads, including the
-    # alerts_enabled check below. 'telegram_alerts_enabled' is kept as the
-    # gate key for backward-compat; rename it to 'alerts_enabled' in system_config
-    # if you want a channel-agnostic name going forward.
-    sb = get_supabase()
-    channel_cfg = load_channel_config(sb)
-    _CHANNEL_CFG.update(channel_cfg)
-
-    active_channel = _ch("alert_channel", "telegram")
-
     if not cfg_bool("telegram_alerts_enabled", False):
-        logger.info(f"Alerts disabled (telegram_alerts_enabled=false) | channel={active_channel}")
+        logger.info("Telegram alerts disabled")
         return {}
 
     if "--position-risk" in sys.argv:
@@ -2141,6 +1776,7 @@ def main():
 
     is_morning   = "--morning"   in sys.argv
     is_afternoon = "--afternoon" in sys.argv
+    sb    = get_supabase()
     today = str(today_ist())
     data  = load_data(sb, today)
 
@@ -2151,45 +1787,32 @@ def main():
     logger.info(
         f"Data loaded: step19={'✅' if has_fp else '❌ fallback'} "
         f"| guidance={'✅' if has_guidance else '❌ missing'} "
-        f"| {len(data['signals'])} signals | {len(data['open_pos'])} positions "
-        f"| readiness={'✅' if _READINESS_AVAILABLE else '❌ unavailable'} "
-        f"| channel={active_channel}"
+        f"| {len(data['signals'])} signals | {len(data['open_pos'])} positions"
+        f"| readiness={'✅' if _READINESS_AVAILABLE else '❌ unavailable'}"
     )
 
-    # PATCH 18: subject_suffix passed so email subjects read naturally:
-    #   "TradeOS Evening" / "TradeOS Morning" / "TradeOS Afternoon"
+    # PATCH 15: pass sb to both builders for entry_readiness enrichment
     if is_morning:
-        msg            = build_morning(data, sb=sb)
-        mode           = "morning"
-        subject_suffix = "Morning"
+        msg  = build_morning(data, sb=sb)
+        mode = "morning"
     elif is_afternoon:
-        msg            = build_afternoon(data, sb=sb)
-        mode           = "afternoon"
-        subject_suffix = "Afternoon"
+        msg  = build_afternoon(data, sb=sb)
+        mode = "afternoon"
     elif MESSAGE_STYLE == "compact":
-        msg            = build_compact(data)
-        mode           = "compact"
-        subject_suffix = "Compact"
+        msg  = build_compact(data)
+        mode = "compact"
     else:
-        msg            = build_evening(data, sb=sb)
-        mode           = "structured"
-        subject_suffix = "Evening"
+        msg  = build_evening(data, sb=sb)
+        mode = "structured"
 
-    success = send_message(msg, subject_suffix=subject_suffix)
+    success = send_message(msg)
 
-    # Signal keyboards are a Telegram-only feature (inline buttons) —
-    # only fire them when Telegram is actually one of the active channels.
+    # Send per-signal keyboard messages for actionable entry signals
     if cfg_bool("telegram_signal_keyboards_enabled", False):
-        if active_channel in ("telegram", "all"):
-            entry_signals = [s for s in data["signals"] if s.get("signal_type") in ENTRY_TYPES
-                             and s.get("id")]
-            for sig in entry_signals:
-                send_signal_with_keyboard(sig)
-        else:
-            logger.debug(
-                "telegram_signal_keyboards_enabled=true but channel is "
-                f"'{active_channel}' — skipping keyboard sends"
-            )
+        entry_signals = [s for s in data["signals"] if s.get("signal_type") in ENTRY_TYPES
+                         and s.get("id")]
+        for sig in entry_signals:
+            send_signal_with_keyboard(sig)
 
     fp     = data.get("final_picks") or {}
     ranked = fp.get("ranked_candidates") or []
@@ -2199,7 +1822,7 @@ def main():
 
     if success:
         logger.success(
-            f"Alert ({mode} via {active_channel}) sent: T1:{tier1} T2:{tier2} exit:{exits} "
+            f"Telegram ({mode}) sent: T1:{tier1} T2:{tier2} exit:{exits} "
             f"pos:{len(data['open_pos'])} "
             f"| step19:{'ok' if has_fp else 'fallback'} "
             f"| guidance:{'ok' if has_guidance else 'missing'}"
@@ -2246,7 +1869,6 @@ def main():
     return {
         "sent":     success,
         "mode":     mode,
-        "channel":  active_channel,
         "tier1":    tier1,
         "tier2":    tier2,
         "step19":   has_fp,

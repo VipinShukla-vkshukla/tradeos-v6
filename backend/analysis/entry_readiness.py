@@ -1,29 +1,41 @@
 """
 analysis/entry_readiness.py
 
-Computes a per-candidate entry readiness score (0–100) using 6 factors:
-  1. AI conviction (HIGH / MEDIUM / LOW)                  weight 20%
-  2. Final score from master_shortlist                    weight 20%
-  3. Zone proximity (dist_entry_pct)                      weight 20%
-  4. Volume health (vol_ratio / live yfinance volume)     weight 20%
-  5. Delivery % from stock_data_daily (yesterday)         weight 10%
-  6. Regime alignment (active_regime from master_shortlist) weight 10%
+PURPOSE (narrowed, 2026-06 redesign):
+  Answer exactly one question that step 19 (ai_decision_engine) CANNOT answer
+  at pipeline run time: "where is the live price RIGHT NOW relative to the
+  entry zone, and is there real volume showing up today?"
 
-Called from send_alerts.py for TIER_1 candidates.
-  Evening  → use_live=False  (market closed, pipeline data only)
-  Morning  → use_live=True   (yfinance 15-min delayed price + volume)
+  This module does NOT re-score, re-rank, or re-weight conviction/tier.
+  Those were already decided by ai_decision_engine.py using dist_entry_pct,
+  vol_ratio, delivery_pct, and regime as direct prompt inputs — re-blending
+  the same numbers here would just double-count what the AI already
+  reasoned through with full market context. See backend audit notes
+  (2026-06-23) for the evidence trail.
+
+  What this module DOES provide, which is genuinely new at morning/afternoon
+  checkpoints and did not exist at evening pipeline-run time:
+    - live price vs entry_zone_low/entry_zone_high  → zone_status
+    - live volume-so-far, elapsed-time-adjusted     → live_vol_note (display only)
+    - a plain-English timing_note for what to do right now
+    - deterministic GTT order levels (entry/SL/T1/RR) — pure arithmetic,
+      not a judgment call, so no scoring concern applies here
+
+Called from send_alerts.py:
+  Morning   → use_live=True   (yfinance live price, pre-market / early session)
+  Afternoon → use_live=True   (yfinance live price, mid-session)
+  Evening   → NOT called. No live price exists at 6 PM pipeline-run time;
+              dist_entry_pct from master_shortlist is already shown directly
+              in the evening message, so there is nothing live to check.
 
 Adds to each candidate dict:
-  readiness_score      int 0–100
-  readiness_label      str  STRONG SETUP / CONDITIONAL / WAIT / SKIP TODAY
-  readiness_icon       str  🟢 / 🟡 / 🟠 / 🔴
-  readiness_breakdown  str  compact factor summary for Telegram
-  zone_status          str  ✅ IN ZONE / ⚠️ APPROACHING / ❌ MISSED  (live only)
-  timing_note          str  entry window recommendation
-  gtt_entry            float  zone_low  (exact GTT limit price)
-  gtt_sl               float  zone_low × (1 − stop_buffer)
-  gtt_t1               float  zone_low × (1 + stop_buffer × expected_r)
-  rr_ratio             float  (T1 − entry) / (entry − SL)
+  zone_status     str   "✅ IN ZONE (₹X)" / "⬇️ APPROACHING" / "⚠️ ABOVE ZONE" / "❌ MISSED"
+  timing_note     str   plain-English action guidance for this checkpoint
+  live_vol_note   str|None   "1.6× pace vs 20d avg (live)" — informational only, never scored
+  gtt_entry       float      zone_low (exact GTT limit price)
+  gtt_sl          float      zone_low × (1 − stop_buffer)
+  gtt_t1          float      zone_low × (1 + stop_buffer × expected_r)
+  rr_ratio        float      (T1 − entry) / (entry − SL)
 """
 
 from __future__ import annotations
@@ -48,80 +60,8 @@ try:
 except Exception:
     STOP_BUFFER: float = 0.03
 
-# ── Factor weight config ─────────────────────────────────────────────────────
-WEIGHTS = {
-    "conviction":  0.20,
-    "final_score": 0.20,
-    "zone_prox":   0.20,
-    "volume":      0.20,
-    "delivery":    0.10,
-    "regime":      0.10,
-}
-
-CONVICTION_SCORE: dict[str, float] = {"HIGH": 100.0, "MEDIUM": 65.0, "LOW": 30.0}
-REGIME_SCORE: dict[str, float] = {
-    "TRENDING":   100.0,
-    "RISK ON":     90.0,
-    "RECOVERING":  75.0,
-    "NEUTRAL":     50.0,
-    "RISK OFF":    15.0,
-}
-
 NSE_SESSION_START_MINS: int = 9 * 60 + 15   # 9:15 AM IST
 NSE_SESSION_TOTAL_MINS: int = 375            # 9:15 → 15:30
-
-
-# ── Scoring helpers ──────────────────────────────────────────────────────────
-
-def _score_zone_proximity(dist_entry_pct: Optional[float]) -> float:
-    """
-    Signed dist_entry_pct from master_shortlist:
-      negative = price below zone (approaching from below) — still enterable
-      positive = price above zone (entry missed)            — penalise harder
-    """
-    if dist_entry_pct is None:
-        return 50.0
-    d = float(dist_entry_pct)
-    if d <= 0:
-        # Price at or below zone — approaching from below (good)
-        ad = abs(d)
-        if ad <= 0.5: return 100.0
-        if ad <= 1.5: return 90.0
-        if ad <= 3.0: return 70.0
-        if ad <= 5.0: return 45.0
-        return max(0.0, 45.0 - (ad - 5.0) * 5.0)
-    else:
-        # Price above zone — entry window passed (penalise more steeply)
-        if d <= 0.5: return 90.0    # barely above — still might pull back
-        if d <= 1.5: return 60.0
-        if d <= 3.0: return 30.0
-        if d <= 5.0: return 10.0
-        return 0.0                  # 5%+ above zone = skip
-
-
-def _score_volume(vol_ratio: Optional[float]) -> float:
-    """100 = 2× average, 0 = no volume."""
-    if vol_ratio is None:
-        return 50.0
-    v = float(vol_ratio)
-    if v >= 2.0: return 100.0
-    if v >= 1.5: return 90.0
-    if v >= 1.2: return 80.0
-    if v >= 1.0: return 65.0
-    if v >= 0.8: return 45.0
-    return max(0.0, v * 45.0)
-
-
-def _score_delivery(delivery_pct: Optional[float]) -> float:
-    """100 = ≥65% delivery, 0 = no data."""
-    if delivery_pct is None:
-        return 50.0
-    d = float(delivery_pct)
-    if d >= 65.0: return 100.0
-    if d >= 50.0: return 85.0
-    if d >= 40.0: return 70.0
-    if d >= 30.0: return 55.0
-    return max(0.0, d * 1.5)
 
 
 # ── yfinance live fetch ──────────────────────────────────────────────────────
@@ -176,17 +116,21 @@ def fetch_live_data(symbols: list[str]) -> dict[str, dict]:
     return result
 
 
-# ── Stock data daily fetch ───────────────────────────────────────────────────
+# ── Stock data daily fetch (avg_vol_20d only — needed to normalise live vol) ─
 
-def _load_sdd_map(sb, symbols: list[str]) -> dict[str, dict]:
-    """Load latest stock_data_daily row per symbol for vol_ratio, delivery_pct, avg_vol_20d."""
-    sdd_map: dict[str, dict] = {}
+def _load_avg_vol_map(sb, symbols: list[str]) -> dict[str, int]:
+    """Load latest avg_vol_20d per symbol — the only field this module still
+    needs from stock_data_daily, purely to elapsed-adjust today's live volume.
+    vol_ratio/delivery_pct are intentionally NOT fetched here — they're
+    already inputs to ai_decision_engine's conviction; re-displaying yesterday's
+    EOD values as if they were live context at 1 PM would be misleading."""
+    out: dict[str, int] = {}
     if not sb or not symbols:
-        return sdd_map
+        return out
     try:
         rows = (
             sb.table("stock_data_daily")
-              .select("symbol,vol_ratio,delivery_pct,avg_vol_20d,volume")
+              .select("symbol,avg_vol_20d")
               .in_("symbol", symbols)
               .order("date", desc=True)
               .limit(len(symbols) * 3)
@@ -196,11 +140,11 @@ def _load_sdd_map(sb, symbols: list[str]) -> dict[str, dict]:
         for r in rows:
             s = r.get("symbol", "")
             if s and s not in seen:
-                sdd_map[s] = r
+                out[s] = int(r.get("avg_vol_20d") or 0)
                 seen.add(s)
     except Exception as e:
-        logger.warning(f"entry_readiness SDD fetch failed: {e}")
-    return sdd_map
+        logger.warning(f"entry_readiness avg_vol fetch failed: {e}")
+    return out
 
 
 # ── Main public function ─────────────────────────────────────────────────────
@@ -210,24 +154,29 @@ def compute_entry_readiness(
     msl_map: dict,
     sb=None,
     use_live: bool = True,
-    sig_map: dict | None = None,
 ) -> list[dict]:
     """
-    Enriches each candidate dict in-place with readiness fields.
+    Enriches each candidate dict in-place with live zone-status + GTT fields.
+    Does NOT touch conviction, tier, confidence, thesis, entry_note, risks,
+    lessons_applied, or any other field ai_decision_engine already decided —
+    those are frozen and displayed as-is by send_alerts.py.
 
     Args:
-        candidates : list of ai_context ranked_candidate dicts (TIER_1 picks)
+        candidates : TIER_1 ranked_candidate dicts
         msl_map    : symbol → master_shortlist row (already loaded by send_alerts.py)
-        sb         : Supabase client (used to load stock_data_daily + optional yfinance)
-        use_live   : True for morning alert (yfinance), False for evening (pipeline data only)
+        sb         : Supabase client (used only for avg_vol_20d lookup)
+        use_live   : if False, this function is a no-op pass-through
+                     (evening should not call this at all — see module docstring)
 
-    Returns the same list, each dict enriched with readiness_* keys.
+    Returns the same list, each dict enriched with zone_status/timing_note/
+    live_vol_note/gtt_* keys.
     """
-    syms    = [c.get("symbol", "") for c in candidates]
-    sdd_map = _load_sdd_map(sb, syms)
-    live_data: dict[str, dict] = {}
-    if use_live:
-        live_data = fetch_live_data(syms)
+    if not use_live:
+        return candidates
+
+    syms        = [c.get("symbol", "") for c in candidates]
+    avg_vol_map = _load_avg_vol_map(sb, syms)
+    live_data   = fetch_live_data(syms)
     _now        = datetime.now()
     _now_min    = _now.hour * 60 + _now.minute
     _pre_market = _now_min < NSE_SESSION_START_MINS  # True before 9:15 AM IST
@@ -235,106 +184,56 @@ def compute_entry_readiness(
     for c in candidates:
         sym  = c.get("symbol", "")
         msl  = msl_map.get(sym, {})
-        sdd  = sdd_map.get(sym, {})
         live = live_data.get(sym, {})
 
-        # ── Factor 1: AI conviction ──────────────────────────────────────────
-        conv    = (c.get("conviction") or msl.get("ai_conviction") or "").upper()
-        f_conv  = CONVICTION_SCORE.get(conv, 50.0)
+        zl = float(msl.get("entry_zone_low")  or 0)
+        zh = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
 
-        # ── Factor 2: Final score ────────────────────────────────────────────
-        fscore  = float(msl.get("final_score") or 0)
-        f_score = min(100.0, max(0.0, fscore))
-
-        # ── Factor 3: Zone proximity ─────────────────────────────────────────
-        dist   = msl.get("dist_entry_pct")
-        f_zone = _score_zone_proximity(dist)
-
-        # ── Factor 4: Volume (live if available, else yesterday's vol_ratio) ─
+        # ── Live volume note — informational only, never scored ─────────────
+        live_vol_note: Optional[str] = None
         live_vol  = live.get("volume_today")
         elapsed   = live.get("elapsed_pct", 1.0)
-        avg_vol   = int(sdd.get("avg_vol_20d") or 0)
-
+        avg_vol   = avg_vol_map.get(sym, 0)
         if live_vol and avg_vol and elapsed > 0.05:
-            # Normalise live volume to expected full-day pace
             expected_by_now = avg_vol * elapsed
-            live_ratio = live_vol / expected_by_now if expected_by_now > 0 else None
-            f_vol = _score_volume(live_ratio)
-            vol_display = live_ratio
-        else:
-            f_vol = _score_volume(sdd.get("vol_ratio"))
-            vol_display = sdd.get("vol_ratio")
+            if expected_by_now > 0:
+                live_ratio = live_vol / expected_by_now
+                live_vol_note = f"{live_ratio:.1f}× pace vs 20d avg (live)"
 
-        # ── Factor 5: Delivery % ─────────────────────────────────────────────
-        f_del       = _score_delivery(sdd.get("delivery_pct"))
-        del_display = sdd.get("delivery_pct")
-
-        # ── Factor 6: Regime alignment ───────────────────────────────────────
-        regime_str = (msl.get("active_regime") or msl.get("regime") or "NEUTRAL").upper()
-        f_regime   = REGIME_SCORE.get(regime_str, 50.0)
-
-        # ── Weighted total ────────────────────────────────────────────────────
-        raw = (
-            f_conv   * WEIGHTS["conviction"]  +
-            f_score  * WEIGHTS["final_score"] +
-            f_zone   * WEIGHTS["zone_prox"]   +
-            f_vol    * WEIGHTS["volume"]       +
-            f_del    * WEIGHTS["delivery"]     +
-            f_regime * WEIGHTS["regime"]
-        )
-        readiness = int(round(raw))
-
-        if readiness >= 75:
-            label, icon = "STRONG SETUP",  "🟢"
-        elif readiness >= 60:
-            label, icon = "CONDITIONAL",   "🟡"
-        elif readiness >= 40:
-            label, icon = "WAIT",          "🟠"
-        else:
-            label, icon = "SKIP TODAY",    "🔴"
-
-        # ── Breakdown string for Telegram ────────────────────────────────────
-        def _flag(score: float) -> str:
-            return "✅" if score >= 70 else ("⚠️" if score >= 45 else "❌")
-
-        _vol_is_live = bool(live_vol and avg_vol and elapsed > 0.05)
-        vol_str  = f"{(vol_display or 0):.1f}×{'📡' if _vol_is_live else '📅'}"
-        del_str  = f"{(del_display or 0):.0f}%"
-        dist_str = f"{abs(float(dist or 0)):.1f}%↓"
-        breakdown = (
-            f"Conv {_flag(f_conv)} {conv} · "
-            f"Zone {_flag(f_zone)} {dist_str} · "
-            f"Vol {_flag(f_vol)} {vol_str} · "
-            f"Del {_flag(f_del)} {del_str} · "
-            f"Regime {_flag(f_regime)} {regime_str}"
-        )
-
-        # ── Zone status (live price vs zone bounds) ───────────────────────────
+        # ── Zone status (live price vs zone bounds) — the one genuinely
+        #    new fact at this checkpoint ────────────────────────────────────
         zone_status = ""
         timing_note = ""
         live_price  = live.get("price")
-        zl          = float(msl.get("entry_zone_low")  or 0)
-        zh          = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
 
         if live_price and zl:
-
             if live_price < zl * 0.995:
-                zone_status = f"⬇️ APPROACHING (₹{live_price:,.0f}, {((zl - live_price) / zl * 100):.1f}% below zone)"
-                timing_note = "Wait · Price below zone · Watch for gap-up at open" if _pre_market else "Wait · Price below zone"
+                pct = (zl - live_price) / zl * 100
+                zone_status = f"⬇️ APPROACHING (₹{live_price:,.0f}, {pct:.1f}% below zone)"
+                timing_note = (
+                    "Wait · price below zone · watch for gap-up at open"
+                    if _pre_market else "Wait · price below zone"
+                )
             elif live_price <= zh:
                 zone_status = f"✅ IN ZONE (₹{live_price:,.0f})"
-                timing_note = "✅ GTT ready · Place limit at zone_low before 9:15 AM" if _pre_market else "1:30–2:30 PM · Limit at zone_low"
+                timing_note = (
+                    "✅ GTT ready · place limit at zone_low before 9:15 AM"
+                    if _pre_market else "1:30–2:30 PM · limit at zone_low"
+                )
             elif live_price <= zh * 1.015:
-                pct_above   = (live_price - zh) / zh * 100
-                zone_status = f"⚠️ ABOVE ZONE (₹{live_price:,.0f}, +{pct_above:.1f}%)"
-                timing_note = "Closed above zone · Confirm at open — pullback to zone needed" if _pre_market else "Watch for afternoon pullback to zone"
+                pct = (live_price - zh) / zh * 100
+                zone_status = f"⚠️ ABOVE ZONE (₹{live_price:,.0f}, +{pct:.1f}%)"
+                timing_note = (
+                    "Closed above zone · confirm at open — pullback to zone needed"
+                    if _pre_market else "Watch for afternoon pullback to zone"
+                )
             else:
-                pct_above   = (live_price - zh) / zh * 100
-                zone_status = f"❌ MISSED (₹{live_price:,.0f}, +{pct_above:.1f}% above zone)"
-                timing_note = "Skip today · Re-evaluate tomorrow"
+                pct = (live_price - zh) / zh * 100
+                zone_status = f"❌ MISSED (₹{live_price:,.0f}, +{pct:.1f}% above zone)"
+                timing_note = "Skip today · re-evaluate tomorrow"
 
-        # ── GTT values ────────────────────────────────────────────────────────
-        er      = float(msl.get("expected_r") or 2.0)
+        # ── GTT values — deterministic arithmetic, no judgment, no scoring ──
+        er        = float(msl.get("expected_r") or 2.0)
         gtt_entry = zl if zl else None
         gtt_sl    = round(zl * (1.0 - STOP_BUFFER), 2) if zl else None
         gtt_t1    = round(zl * (1.0 + STOP_BUFFER * er), 2) if zl else None
@@ -344,18 +243,105 @@ def compute_entry_readiness(
             else None
         )
 
-        # ── Enrich candidate in-place ─────────────────────────────────────────
         c.update({
-            "readiness_score":     readiness,
-            "readiness_label":     label,
-            "readiness_icon":      icon,
-            "readiness_breakdown": breakdown,
-            "zone_status":         zone_status,
-            "timing_note":         timing_note,
-            "gtt_entry":           gtt_entry,
-            "gtt_sl":              gtt_sl,
-            "gtt_t1":              gtt_t1,
-            "rr_ratio":            rr_ratio,
+            "zone_status":   zone_status,
+            "timing_note":   timing_note,
+            "live_vol_note": live_vol_note,
+            "gtt_entry":     gtt_entry,
+            "gtt_sl":        gtt_sl,
+            "gtt_t1":        gtt_t1,
+            "rr_ratio":      rr_ratio,
         })
 
     return candidates
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# STANDALONE SELF-TEST
+# ════════════════════════════════════════════════════════════════════════════
+# This module has no main pipeline role of its own — it's a library imported
+# by send_alerts.py. Running `python entry_readiness.py` with no entry point
+# does nothing by design; that's not a connection failure.
+#
+# This block gives you a real, isolated check instead. It does NOT touch
+# Supabase — zone bounds below are hard-coded mock values, not from
+# master_shortlist. What IS real: the yfinance live-price fetch for RELIANCE
+# (a highly liquid, always-available NSE ticker) and the GTT arithmetic.
+# If you see a live price below, your yfinance + network path genuinely works.
+#
+# Correct usage (so config.py + STOP_BUFFER resolve correctly):
+#   cd backend
+#   python -m analysis.entry_readiness
+#
+# Running it directly from inside analysis/ also works for this self-test
+# specifically (it doesn't require config.py), but won't reflect your real
+# stop_buffer_pct from system_config — it'll show the 0.03 default instead.
+#
+# To verify the FULL integration (this module + send_alerts.py + Supabase +
+# whichever alert channel is active), see the printed instructions at the
+# end of this self-test — that is the actual end-to-end proof, not this file.
+# ════════════════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    print("=" * 64)
+    print("entry_readiness.py — standalone self-test")
+    print("=" * 64)
+    print(f"yfinance available : {_YF_AVAILABLE}")
+    print(f"STOP_BUFFER         : {STOP_BUFFER}  "
+          f"({'from config.py' if STOP_BUFFER != 0.03 else 'default — config.py not reachable from this working directory, see note above'})")
+    print()
+
+    # Mock candidate + mock zone bounds (NOT from Supabase — this test never
+    # touches your database). RELIANCE is used because it's almost always
+    # tradeable on yfinance regardless of market hours, so a live price here
+    # is a meaningful proof of connectivity.
+    _mock_candidates = [{
+        "symbol": "RELIANCE", "conviction": "HIGH", "confidence": 0.87,
+        "action": "BUY", "suggested_allocation_pct": 7,
+        "correlation_group": "ENERGY",
+        "entry_note": "(mock — real entry_note comes from ai_decision_engine)",
+        "invalidation": "(mock — real invalidation comes from ai_decision_engine)",
+    }]
+    _mock_msl_map = {
+        "RELIANCE": {"entry_zone_low": 2900, "entry_zone_high": 2950,
+                     "expected_r": 2.0, "dist_entry_pct": -1.0},
+    }
+
+    print("Calling compute_entry_readiness() with 1 mock candidate, use_live=True...")
+    print("(fetching live price for RELIANCE via yfinance — needs internet)")
+    print()
+
+    out = compute_entry_readiness(_mock_candidates, _mock_msl_map, sb=None, use_live=True)
+    c = out[0]
+
+    print(f"  zone_status   : {c.get('zone_status') or '(empty)'}")
+    print(f"  timing_note   : {c.get('timing_note') or '(empty)'}")
+    print(f"  live_vol_note : {c.get('live_vol_note') or '(empty — needs avg_vol_20d from DB, not available in this standalone test)'}")
+    print(f"  GTT entry/SL/T1/RR : {c.get('gtt_entry')} / {c.get('gtt_sl')} / {c.get('gtt_t1')} / {c.get('rr_ratio')}")
+    print()
+
+    gtt_ok = c.get("gtt_entry") == 2900 and c.get("gtt_sl") and c.get("gtt_t1")
+    live_ok = bool(c.get("zone_status"))
+
+    print("─" * 64)
+    print(f"  GTT math          : {'✅ correct' if gtt_ok else '❌ check STOP_BUFFER / msl_map'}")
+    print(f"  Live price fetch  : {'✅ got a live price' if live_ok else '⚠️  empty — check internet, or run during/after NSE hours'}")
+    print("─" * 64)
+    print()
+    print("This only proves the MODULE works in isolation.")
+    print("To verify it's actually wired into your real pipeline, run the")
+    print("real entry point instead:")
+    print()
+    print("    cd backend")
+    print("    python alerts/send_alerts.py --morning")
+    print()
+    print("Look for this exact log line in the output:")
+    print("    Data loaded: step19=... | readiness=✅ ... | channel=...")
+    print()
+    print("  readiness=✅  → entry_readiness imported successfully into send_alerts.py")
+    print("  readiness=❌  → import failed; check for an ImportError above this line")
+    print("  channel=...   → confirms system_config / multi-channel router loaded")
+    print()
+    print("If you only see ONE log line and the script exits immediately,")
+    print("check system_config / env for telegram_alerts_enabled=true — main()")
+    print("returns early before reaching readiness/data loading if that's false.")
