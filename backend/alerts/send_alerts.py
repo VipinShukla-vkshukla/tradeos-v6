@@ -3,32 +3,7 @@ TradeOS v6 — Send Alerts v6
 ============================
 Pipeline position: final step — after step 19 (ai_decision_engine).
 
-WHAT CHANGED FROM v5 → v6 (2026-06-23 audit):
-
-READINESS REDESIGN — entry_readiness.py no longer scores or blends.
-  Removed: WEIGHTS dict, conviction/final_score/volume/delivery/regime
-  scoring, the composite readiness_score/label/breakdown. Every one of
-  those inputs (dist_entry_pct, vol_ratio, delivery_pct, regime) is
-  already fed directly to ai_decision_engine's prompt and used to form
-  conviction/tier — re-blending them here was double-counting, which is
-  why a "41/100" score could contradict an AI "HIGH conviction" on the
-  same stock. What remains: live yfinance zone_status, a plain
-  live_vol_note (display only, never scored), and deterministic GTT math.
-  Conviction/confidence/thesis/risks/lessons_applied are step 19's own,
-  shown as-is, untouched by this module.
-
-  Coverage extended to TIER_2 (previously TIER_1-only) in both
-  build_morning() and build_afternoon() — TIER_2 hasn't triggered yet,
-  so live zone status matters at least as much there.
-  build_evening() does NOT call entry_readiness at all — no live price
-  exists at 6 PM pipeline-run time, and dist_entry_pct from
-  master_shortlist is already shown directly.
-
-8 v4 fields restored across TIER_1 (lost in an earlier v4→v5 pass):
-  confidence %, suggested_allocation_pct, action, correlation_group,
-  [DB]/[AI] provenance tags on zone/entry_note/invalidation, risks,
-  lessons_applied (risks/lessons stay evening-only by design — morning/
-  afternoon are execution-focused, evening is the learning/context layer).
+WHAT CHANGED FROM v5 → v6:
 
 PATCH 16 — Multi-Channel Alert System  (system_config table driven)
   Extends the Telegram sender into a full channel router.
@@ -60,24 +35,45 @@ PATCH 16 — Multi-Channel Alert System  (system_config table driven)
     _html_to_plain()      → strips all HTML tags for email plain-text fallback
 
 PATCH 17 — load_channel_config(sb)
-  Called in main() after get_supabase(). Reads all rows from system_config
-  and populates _CHANNEL_CFG dict. _ch(key, default) helper reads
-  _CHANNEL_CFG → cfg() → default in order, so env/config.py values remain
-  as fallback if a key isn't in the table.
+  New function called in main() after get_supabase().
+  Reads all rows from system_config and populates _CHANNEL_CFG dict.
+  _ch(key, default) helper reads _CHANNEL_CFG → cfg() → default in order,
+  so env/config.py values remain as fallback if a key isn't in the table.
 
 PATCH 18 — main(): channel-aware startup + subject routing
   load_channel_config(sb) called before load_data().
-  Active channel logged at startup. Mode-specific subject_suffix passed
-  to send_message() (Evening / Morning / Afternoon / Compact).
-  Signal keyboards (Telegram-only feature) gated to telegram/all channels.
+  Active channel logged at startup alongside step-19 / readiness status.
+  Mode-specific subject_suffix passed to send_message() (Evening / Morning…).
   Backward-compat: 'telegram_alerts_enabled' key still gates the whole system.
+
+UNCHANGED from v5:
+  PATCH 1–15 — all behaviours identical.
+  All build_*() functions and formatters — zero formatting change.
+  send_signal_with_keyboard() — Telegram-specific; unchanged.
+  load_data() — unchanged.
+
+WHAT CHANGED FROM v4 → v5 (kept for reference):
+
+  PATCH 1  — entry_readiness optional import + _READINESS_AVAILABLE flag
+  PATCH 2  — STOP_BUFFER from stop_buffer_pct config key (default 0.03)
+  PATCH 3  — build_position_block: 85-char compressed rationale (evening)
+  PATCH 4  — build_evening: sb=None signature for readiness enrichment
+  PATCH 5  — build_evening: echo restored at 300 chars with 📖 label
+  PATCH 6  — build_evening: MACRO + FII FLOW section before Market Intel
+  PATCH 7  — build_evening: single guidance line with priority cascade
+  PATCH 8  — build_evening: TIER_1 compressed (3 lines) + readiness score
+  PATCH 9  — build_evening: TIER_2 compressed (2 lines)
+  PATCH 10 — build_evening: TOMORROW'S GTT ORDERS section
+  PATCH 11 — build_morning: sb=None signature
+  PATCH 12 — build_morning: single guidance line
+  PATCH 13 — build_morning: TIER_1 live zone status + readiness
+  PATCH 14 — build_morning: TIER_2 compact 2-line
+  PATCH 15 — main(): pass sb to both builders
 
 DATA SOURCES (all bound to confirmed schema):
   ai_context         → __FINAL_PICKS__ (conviction_reason + strategy_validation)
                         __MARKET_INTEL__ (conviction_reason + ai_note)
   signal_log         → all signals for signal_date
-                        signal types: EXIT, MARKET_TOP_PICK, BUY_CANDIDATE,
-                        REENTRY_SETUP, STAGED_ENTRY, WATCH, AVOID_ENTRY_EVENT
   open_positions     → full schema including target_1/2/3, high_water_mark,
                         locked_profit, partial_bookings, original_qty, current_qty
   master_shortlist   → entry zones, expected_r, dist_entry_pct
@@ -87,7 +83,7 @@ DATA SOURCES (all bound to confirmed schema):
   nifty_upcoming_events → symbol, purpose, details, event_date, days_to_event
   lessons            → 7-day AI + rule counts
   data_anomalies     → ERROR-level alerts
-  system_config      → alert_channel + channel credentials
+  system_config      → alert_channel + channel credentials (v6 NEW)
 
 MESSAGE STRUCTURE:
   EVENING:
@@ -97,8 +93,8 @@ MESSAGE STRUCTURE:
     Section 2: Portfolio Health Snapshot
     Section 3: Open Positions (full lifecycle)
     Section 4: EXIT signals
-    Section 5: TIER_1 — Act Now (full context: conviction/conf/alloc/[DB]/[AI]/risks/lessons)
-    Section 6: TIER_2 — Watch for Trigger (compact)
+    Section 5: TIER_1 — Act Now (3-line compact + readiness)
+    Section 6: TIER_2 — Watch for Trigger (2-line compact)
     Section 7: TIER_3 — Monitor
     Section 8: Near Miss
     Section 9: Sector Warnings + Correlation Groups
@@ -110,14 +106,13 @@ MESSAGE STRUCTURE:
     Gap Risk Alert: SL breach risk positions
     Position Pulse: brief position status
     EXIT Today
-    TIER_1 Watchlist (live zone status + entry levels + [DB]/[AI] tags)
-    TIER_2 Intraday Triggers (live zone status, compact)
+    TIER_1 Watchlist (live zone status + entry levels)
+    TIER_2 Intraday Triggers (2-line compact)
     Today's Events + Next 3 days events
 
   AFTERNOON:
     Header: date + time
-    TIER_1 zone status (live yfinance prices) + TIER_2 watch-for-trigger
-    IN ZONE / APPROACHING / ABOVE / MISSED per pick
+    TIER_1 zone status only (live yfinance prices)
 
   COMPACT:
     One-screen mobile summary
@@ -152,14 +147,12 @@ except ImportError:
 MESSAGE_STYLE = cfg("telegram_message_style", "structured")
 
 # ── PATCH 2: STOP_BUFFER constant ─────────────────────────────────────────
-# Used by TIER_1 zone computation and TOMORROW'S GTT ORDERS section.
 try:
     STOP_BUFFER: float = float(cfg("stop_buffer_pct", "0.03"))
 except Exception:
     STOP_BUFFER: float = 0.03
 
 # All signal types that represent actionable entry candidates
-# MARKET_TOP_PICK added in v4 — confirmed 63 live records, was missing from v3
 ENTRY_TYPES = {
     "BUY_CANDIDATE", "PRIME_SETUP", "BREAKOUT_SETUP",
     "REENTRY_SETUP", "STAGED_ENTRY", "MARKET_TOP_PICK",
@@ -174,6 +167,7 @@ def esc(text: str) -> str:
     if not text:
         return ""
     return html.escape(str(text), quote=False)
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # PATCH 16 — MULTI-CHANNEL ALERT SYSTEM
@@ -256,7 +250,7 @@ def load_channel_config(sb) -> dict:
     Called once in main() after get_supabase(); result stored in _CHANNEL_CFG.
 
     Keys not present in the table are silently absent — _ch() falls back
-    to cfg() for those. Supabase errors degrade gracefully: the module
+    to cfg() for those.  Supabase errors degrade gracefully: the module
     continues with cfg() / env defaults so alerts are never silently dropped.
     """
     try:
@@ -317,7 +311,7 @@ def _html_to_discord_md(text: str) -> str:
       <code>…</code> → `…`
 
     Section dividers (═══), emoji, and ₹ symbols render fine in Discord
-    without conversion. Residual/unmatched tags are stripped so no raw HTML
+    without conversion.  Residual/unmatched tags are stripped so no raw HTML
     leaks into Discord messages.
     """
     text = re.sub(r"<b>(.*?)</b>",       r"**\1**", text, flags=re.DOTALL)
@@ -336,7 +330,7 @@ def _html_to_plain(text: str) -> str:
 
 def _send_telegram(text: str) -> bool:
     """
-    Telegram sender — original implementation, unchanged.
+    Telegram sender — original v5 implementation, completely unchanged.
     Activates when alert_channel is 'telegram' or 'all'.
     Preserved here so it reactivates automatically if/when the ban lifts:
     just update system_config.alert_channel to 'telegram' and it's live.
@@ -348,7 +342,6 @@ def _send_telegram(text: str) -> bool:
         logger.warning("Telegram credentials not set")
         return False
 
-    # Split BEFORE sending — never rely on a 400 to trigger the split
     parts = _split_html_safe(text, limit=_TELEGRAM_LIMIT)
     if len(parts) > 1:
         return all(_send_telegram(p) for p in parts)
@@ -358,7 +351,6 @@ def _send_telegram(text: str) -> bool:
         "chat_id": chat_id, "text": text,
         "parse_mode": "HTML", "disable_web_page_preview": True,
     }
-
     for attempt in range(3):
         try:
             resp = requests.post(url, json=payload, timeout=10)
@@ -382,7 +374,7 @@ def _send_discord(text: str) -> bool:
     """
     Discord webhook sender.
     Converts Telegram HTML → Discord Markdown, then splits into ≤1900-char
-    chunks at newline boundaries. A 0.5s gap between chunks respects Discord's
+    chunks at newline boundaries.  A 0.5s gap between chunks respects Discord's
     30-requests/min webhook rate limit comfortably.
     """
     import requests
@@ -427,7 +419,7 @@ def _send_discord(text: str) -> bool:
 
 def _send_email(text: str, subject_suffix: str = "Alert") -> bool:
     """
-    SMTP email sender. Delivers two MIME parts per message:
+    SMTP email sender.  Delivers two MIME parts per message:
       · text/html  — your existing Telegram HTML renders in Gmail / Outlook.
                      Wrapped in a dark <pre> block to preserve line layout.
       · text/plain — all tags stripped; fallback for plain-text mail clients.
@@ -586,7 +578,7 @@ def fmt_inr(v) -> str:
     if v is None: return "—"
     try:
         val = float(v)
-        if abs(val) >= 1e7:  return f"₹{val/1e7:.1f}Cr"
+        if abs(val) >= 1e7:   return f"₹{val/1e7:.1f}Cr"
         elif abs(val) >= 1e5: return f"₹{val/1e5:.1f}L"
         else:                 return f"₹{val:,.0f}"
     except: return str(v)
@@ -667,7 +659,7 @@ def partial_booking_summary(partial_bookings, orig_qty, curr_qty) -> str:
         if not isinstance(bookings, list) or not bookings:
             return qty_line
         entries = []
-        for b in bookings[-2:]:           # show last 2 bookings only
+        for b in bookings[-2:]:
             if not isinstance(b, dict): continue
             price = b.get("price") or b.get("exit_price")
             pnl   = b.get("pnl_pct") or b.get("pnl")
@@ -783,7 +775,6 @@ def load_data(sb, today: str) -> dict:
         logger.warning(f"__MARKET_INTEL__ load failed: {e}")
 
     # ── Signal log — all types for signal_date ──
-    # v5: added vol_ratio, delivery_pct for TOMORROW'S GTT ORDERS reference line
     signals = (
         sb.table("signal_log")
           .select(
@@ -815,7 +806,7 @@ def load_data(sb, today: str) -> dict:
           .execute().data
     )
 
-    # ── Original entry thesis per position (signal_log JOIN via signal_date) ──
+    # ── Original entry thesis per position ──
     entry_thesis_map: dict[str, str] = {}
     pos_symbols = [p.get("symbol") for p in open_pos if p.get("symbol")]
     signal_dates_needed = list({
@@ -1087,8 +1078,6 @@ def build_position_block(
     brief=False → evening mode: full detail including rationale, partial bookings
 
     PATCH 3: entry thesis replaced with 85-char compressed rationale.
-    Sources: entry_thesis_map (from original signal date) OR today's
-    sig_map.ai_conviction_reason — whichever is available first.
     """
     sym    = p.get("symbol", "?")
     pnl    = float(p.get("pnl_pct")        or 0)
@@ -1155,7 +1144,6 @@ def build_position_block(
     lines.append(action_line)
 
     if brief:
-        # Morning mode ends here — no rationale, no partial detail
         event_risk = p.get("event_risk") or ""
         if event_risk:
             lines.append(f"  ⚠️ Event: {event_risk}")
@@ -1179,8 +1167,6 @@ def build_position_block(
         lines.append(f"  📅 News: {upcoming_news[:80]}")
 
     # ── PATCH 3: Compressed rationale (evening only, max 85 chars) ──
-    # Replaces the old 130-char static thesis block.
-    # Sources: entry_thesis_map (original signal date) → today's ai_conviction_reason
     thesis_raw = (entry_thesis_map.get(sym, "")
                   or today_sig.get("ai_conviction_reason", ""))
     if thesis_raw:
@@ -1194,7 +1180,6 @@ def build_position_block(
 
 # ── Evening digest ─────────────────────────────────────────────────────────
 
-# PATCH 4: sb=None added for entry_readiness enrichment
 def build_evening(data: dict, sb=None) -> str:
     fp       = data.get("final_picks")
     mi       = data.get("market_intel", {})
@@ -1226,11 +1211,7 @@ def build_evening(data: dict, sb=None) -> str:
             lines.append(f"  ⚠️ {a.get('check_name','?')}: {a.get('message','')}")
     lines.append("")
 
-    # ── PATCH 6: Section 0 — MACRO + FII FLOW ─────────────────────────────
-    # FII sector-level flow and regulatory alerts — the "what's happening globally"
-    # layer. Complements build_regime_header (which shows totals + global indices).
-    # NOT duplicated: regime header shows net FII flow; this section shows
-    # which sectors FII is accumulating/distributing and what events to watch.
+    # ── Section 0: MACRO + FII FLOW ────────────────────────────────────────
     if mi.get("fii_bias") or mi.get("alerts"):
         lines.append("═══ <b>🌍 MACRO + FII FLOW</b> ═══")
         if mi.get("fii_bias"):
@@ -1254,12 +1235,9 @@ def build_evening(data: dict, sb=None) -> str:
         lines.append("")
 
     # ── Section 1: Market Intelligence ────────────────────────────────────
-    # Scope: India market summary narrative + historical echo pattern.
-    # FII bias and alerts now live in Section 0 above.
     if mi.get("summary"):
         lines.append("═══ <b>📡 MARKET INTELLIGENCE</b> ═══")
         lines.append(f"  {mi['summary']}")
-        # PATCH 5: echo restored at 300 chars with 📖 icon and esc()
         if mi.get("echo"):
             lines.append(f"  📖 <i>{esc(mi['echo'])}</i>")
         lines.append("")
@@ -1328,11 +1306,11 @@ def build_evening(data: dict, sb=None) -> str:
         warnings    = fp.get("sector_exposure_warnings", [])
         corr_groups = fp.get("correlation_groups", [])
 
-        # ── PATCH 7: Single guidance line with priority cascade ──
-        sizing     = guidance.get("position_sizing_override") or fp.get("_sizing", "?")
-        _gtext     = (guidance.get("capital_deployment_narrative")
-                      or guidance.get("new_positions_guidance")
-                      or fp.get("_ai_note") or "")
+        # ── PATCH 7: Single guidance line ──
+        sizing  = guidance.get("position_sizing_override") or fp.get("_sizing", "?")
+        _gtext  = (guidance.get("capital_deployment_narrative")
+                   or guidance.get("new_positions_guidance")
+                   or fp.get("_ai_note") or "")
         _sec_parts = []
         if guidance.get("sectors_to_overweight"):
             _sec_parts.append(f"▲ {'/'.join(guidance['sectors_to_overweight'])}")
@@ -1346,10 +1324,16 @@ def build_evening(data: dict, sb=None) -> str:
             lines.append(f"  <i>{esc(_gtext[:150])}</i>")
         lines.append("")
 
-        # ── TIER_1 — full context, no re-scoring (evening has no live data
-        #    to check anyway; dist_entry_pct below is the frozen EOD value
-        #    from master_shortlist, already correct, no entry_readiness call) ──
+        # ── PATCH 8: TIER_1 — 3-line compact + readiness ──
         if tier1:
+            if _READINESS_AVAILABLE and sb:
+                try:
+                    tier1 = compute_entry_readiness(
+                        tier1, msl_map, sb=sb, use_live=False
+                    )
+                except Exception as e:
+                    logger.warning(f"entry_readiness enrichment failed: {e}")
+
             lines.append(f"⭐ <b>TIER 1 — ACT NOW ({len(tier1)})</b>")
             for c in tier1:
                 sym    = c.get("symbol", "?")
@@ -1366,21 +1350,23 @@ def build_evening(data: dict, sb=None) -> str:
                 t1_p   = round(zl * (1 + STOP_BUFFER * er), 0) if zl else None
                 rr     = (round((t1_p - zl) / (zl - sl_p), 1)
                           if t1_p and sl_p and zl and sl_p < zl else None)
-                dist     = msl.get("dist_entry_pct")
-                dist_str = f"({abs(float(dist)):.1f}%↓)" if dist is not None else ""
+                r_icon    = c.get("readiness_icon") or conviction_icon(conv)
+                r_score   = c.get("readiness_score")
+                r_label   = c.get("readiness_label", "")
+                dist      = msl.get("dist_entry_pct")
+                dist_str  = f"({abs(float(dist)):.1f}%↓)" if dist is not None else ""
+                score_str = f"[{r_score}/100·{r_label}]" if r_score else ""
 
-                # Line 1: symbol · action · conviction · zone [DB] · alloc · conf · corr
                 lines.append(
-                    f"\n  {conviction_icon(conv)} <b>{sym}</b>"
+                    f"\n  {r_icon} <b>{sym}</b>"
                     + (f" [{action}·{conv}]" if action else f" [{conv}]")
                     + f"  ₹{zl:,.0f}–₹{zh:,.0f} {dist_str}  <i>[DB]</i>"
                     + (f"  <b>{alloc:.0f}%</b>" if alloc else "")
                     + (f"  conf:{conf:.0%}" if conf else "")
                     + (f"  📎{corr}" if corr else "")
-                    + f"  → T1₹{t1_p:,.0f} | SL₹{sl_p:,.0f} · RR {rr}×"
+                    + f"  → T1₹{t1_p:,.0f} | SL₹{sl_p:,.0f} · RR {rr}×  {score_str}"
                 )
 
-                # Line 2: WHY — thesis first (context before instruction)
                 thesis   = c.get("thesis") or c.get("ai_conviction_reason") or ""
                 catalyst = c.get("catalyst") or ""
                 if "] " in thesis:
@@ -1391,22 +1377,22 @@ def build_evening(data: dict, sb=None) -> str:
                 if thesis:
                     lines.append(f"   💬 {esc(thesis)}")
 
-                # Line 3: HOW — entry condition [AI] · invalidation [AI]
                 parts3 = []
                 if c.get("entry_note"):
                     parts3.append(f"📍 {esc(c['entry_note'])} <i>[AI]</i>")
                 if c.get("invalidation"):
                     parts3.append(f"❌ {esc(c['invalidation'])} <i>[AI]</i>")
+                breakdown = c.get("readiness_breakdown", "")
+                if breakdown:
+                    parts3.append(f"<i>{breakdown}</i>")
                 if parts3:
                     lines.append(f"   {' · '.join(parts3)}")
 
-                # Line 4: risks (restored from v4)
                 if c.get("risks"):
                     risk_str = " · ".join(esc(str(r)) for r in (c["risks"] or [])[:2])
                     if risk_str:
                         lines.append(f"   ⚠️ {risk_str}")
 
-                # Line 5: lessons applied — confirms brain learning is active (restored from v4)
                 if c.get("lessons_applied"):
                     ls = " · ".join(esc(l) for l in (c["lessons_applied"] or [])[:2])
                     if ls:
@@ -1414,7 +1400,7 @@ def build_evening(data: dict, sb=None) -> str:
 
             lines.append("")
 
-        # ── PATCH 9: TIER_2 — 2-line compact ─────────────────────────────
+        # ── PATCH 9: TIER_2 — 2-line compact ──
         if tier2:
             lines.append(f"🔭 <b>TIER 2 — WATCH FOR TRIGGER ({len(tier2)})</b>")
             for c in tier2:
@@ -1426,13 +1412,11 @@ def build_evening(data: dict, sb=None) -> str:
                 dist  = msl.get("dist_entry_pct")
                 dist_str = f"({abs(float(dist)):.1f}%↓)" if dist is not None else ""
 
-                # Line 1: symbol · zone · dist
                 lines.append(
                     f"\n  {conviction_icon(conv)} <b>{sym}</b> [{conv}]"
                     f"  ₹{zl:,.0f}–₹{zh:,.0f} {dist_str}"
                 )
 
-                # Line 2: entry condition · invalidation
                 parts2 = []
                 if c.get("entry_note"):
                     parts2.append(f"📍 {esc(c['entry_note'])}")
@@ -1443,7 +1427,7 @@ def build_evening(data: dict, sb=None) -> str:
 
             lines.append("")
 
-        # TIER_3: Monitor (unchanged)
+        # TIER_3: Monitor
         if tier3:
             lines.append(f"👁 <b>TIER 3 — MONITOR ({len(tier3)})</b>")
             t3_str = " · ".join(
@@ -1453,7 +1437,7 @@ def build_evening(data: dict, sb=None) -> str:
             lines.append(f"  {t3_str}")
             lines.append("")
 
-        # Near-miss upgrades (WATCH signals flagged by step 18)
+        # Near-miss upgrades
         near_miss = [
             s for s in signals
             if s.get("signal_type") == "WATCH"
@@ -1472,7 +1456,7 @@ def build_evening(data: dict, sb=None) -> str:
                 if ez:     lines.append(f"  {esc(ez)}")
             lines.append("")
 
-        # Sector exposure warnings — full detail (learning layer, never compress)
+        # Sector exposure warnings
         if warnings:
             lines.append("⚠️ <b>SECTOR CONCENTRATION</b>")
             for w in warnings:
@@ -1485,7 +1469,7 @@ def build_evening(data: dict, sb=None) -> str:
                 )
             lines.append("")
 
-        # Correlation groups — full detail (portfolio construction learning)
+        # Correlation groups
         if corr_groups:
             lines.append("⚡ <b>CORRELATION GROUPS</b>")
             for g in corr_groups:
@@ -1497,7 +1481,7 @@ def build_evening(data: dict, sb=None) -> str:
             lines.append("")
 
     else:
-        # ── Fallback: step 19 didn't run — raw signal_log ──
+        # ── Fallback: step 19 unavailable — raw signal_log ──
         lines.append("<i>⚠️ Step 19 AI picks unavailable — showing raw signals</i>")
         buys = sorted(
             [s for s in signals if s.get("signal_type") in ENTRY_TYPES],
@@ -1537,9 +1521,7 @@ def build_evening(data: dict, sb=None) -> str:
             )
         lines.append("")
 
-    # ── PATCH 10: TOMORROW'S GTT ORDERS ──────────────────────────────────
-    # Placed at the bottom so it's easy to find before placing orders at 9 AM.
-    # vol_ratio + delivery_pct sourced from signal_log (added to select in v5).
+    # ── PATCH 10: TOMORROW'S GTT ORDERS ──
     if fp and fp.get("ranked_candidates"):
         _t1_orders = [r for r in fp["ranked_candidates"] if r.get("tier") == "TIER_1"]
         if _t1_orders:
@@ -1583,25 +1565,17 @@ def build_evening(data: dict, sb=None) -> str:
 
 # ── Morning brief ──────────────────────────────────────────────────────────
 
-# PATCH 11: sb=None added for entry_readiness enrichment
 def build_morning(data: dict, sb=None) -> str:
-    """
-    Morning brief: execution-focused, gap-risk-aware.
-    Answers: What do I action at market open? What are my position risks?
-
-    PATCH 11-14: sb param, guidance compression, TIER_1 live zone status,
-    TIER_2 compact 2-line format.
-    """
-    fp       = data.get("final_picks")
-    regime   = data["regime"]
-    fii      = data["fii"]
-    cues     = data["cues"]
-    open_pos = data["open_pos"]
-    signals  = data["signals"]
-    msl_map  = data["msl_map"]
-    eth_map  = data.get("entry_thesis_map", {})
-    ps       = data.get("portfolio_summary", {})
-    date_str = data["signal_date"]
+    fp        = data.get("final_picks")
+    regime    = data["regime"]
+    fii       = data["fii"]
+    cues      = data["cues"]
+    open_pos  = data["open_pos"]
+    signals   = data["signals"]
+    msl_map   = data["msl_map"]
+    eth_map   = data.get("entry_thesis_map", {})
+    ps        = data.get("portfolio_summary", {})
+    date_str  = data["signal_date"]
     today_str = str(today_ist())
 
     sig_map = {s.get("symbol"): s for s in signals}
@@ -1616,7 +1590,7 @@ def build_morning(data: dict, sb=None) -> str:
     lines += build_regime_header(regime, fii, cues)
     lines.append("")
 
-    # ── Today's events at the top — act before market opens ──
+    # ── Today's events at the top ──
     upcoming = data.get("upcoming_events", [])
     today_events = [e for e in upcoming if str(e.get("event_date", "")) == today_str]
     if today_events:
@@ -1632,7 +1606,7 @@ def build_morning(data: dict, sb=None) -> str:
             )
         lines.append("")
 
-    # ── Gap risk summary (pre-market SL breach alert) ──
+    # ── Gap risk summary ──
     gap_pct = float(cues.get("gift_nifty_chg_pct") or 0)
     if gap_pct != 0 and open_pos:
         breach_risk = []
@@ -1712,12 +1686,8 @@ def build_morning(data: dict, sb=None) -> str:
             lines.append(f"  <i>{esc(_mgtext)}</i>")
         lines.append("")
 
-        # ── TIER_1 — live zone status (no scoring) ──────────────────────
+        # ── PATCH 13: TIER_1 live zone status + readiness ──
         if tier1:
-            # use_live=True → yfinance live price for zone status + volume check.
-            # No re-scoring: conviction/tier/confidence below are untouched,
-            # frozen from step 19 — only zone_status/timing_note/live_vol_note
-            # are genuinely new at this checkpoint.
             if _READINESS_AVAILABLE and sb:
                 try:
                     tier1 = compute_entry_readiness(
@@ -1742,11 +1712,11 @@ def build_morning(data: dict, sb=None) -> str:
                 t1_p   = round(zl * (1 + STOP_BUFFER * er), 0) if zl else None
                 rr     = (round((t1_p - zl) / (zl - sl_p), 1)
                           if t1_p and sl_p and zl and sl_p < zl else None)
-                timing = c.get("timing_note", "Verify zone manually")
-                vol_note = c.get("live_vol_note")
+                r_icon    = c.get("readiness_icon") or conviction_icon(conv)
+                r_score   = c.get("readiness_score")
+                score_str = f"[{r_score}/100]" if r_score else ""
+                timing    = c.get("timing_note", "Verify zone manually")
 
-                # Zone status: prefer live entry_readiness output; fallback to
-                # the frozen dist_entry_pct if yfinance was unavailable
                 z_status = c.get("zone_status")
                 if not z_status:
                     dist = msl.get("dist_entry_pct")
@@ -1761,25 +1731,19 @@ def build_morning(data: dict, sb=None) -> str:
                     else:
                         z_status = "📍 Verify zone"
 
-                # Line 1: symbol · action · conviction · live zone status · alloc · conf · corr
                 lines.append(
-                    f"\n  {conviction_icon(conv)} <b>{sym}</b>"
+                    f"\n  {r_icon} <b>{sym}</b>"
                     + (f" [{action}·{conv}]" if action else f" [{conv}]")
-                    + f"  {z_status}"
+                    + f"  {z_status}  {score_str}"
                     + (f"  <b>{alloc:.0f}%</b>" if alloc else "")
                     + (f"  conf:{conf:.0%}" if conf else "")
                     + (f"  📎{corr}" if corr else "")
                 )
-
-                # Line 2: exact GTT levels [DB] · timing window · live volume (if available)
                 lines.append(
                     f"   Entry₹{zl:,.0f}–₹{zh:,.0f}  <i>[DB]</i>"
                     f" | SL₹{sl_p:,.0f} | T1₹{t1_p:,.0f} | RR {rr}×"
                     f" · <i>{timing}</i>"
-                    + (f" · {vol_note}" if vol_note else "")
                 )
-
-                # Line 3: entry condition [AI] / invalidation [AI]
                 if c.get("entry_note"):
                     lines.append(f"   📍 {esc(c['entry_note'])} <i>[AI]</i>")
                 if c.get("invalidation"):
@@ -1787,50 +1751,28 @@ def build_morning(data: dict, sb=None) -> str:
 
             lines.append("")
 
-        # ── TIER_2 — live zone status too (no scoring, same as TIER_1) ──
+        # ── PATCH 14: TIER_2 — 2-line compact ──
         if tier2:
-            if _READINESS_AVAILABLE and sb:
-                try:
-                    tier2 = compute_entry_readiness(
-                        tier2, msl_map, sb=sb, use_live=True
-                    )
-                except Exception as e:
-                    logger.warning(f"morning readiness enrichment failed (TIER_2): {e}")
-
             lines.append(f"🔭 <b>INTRADAY TRIGGERS — TIER_2 ({len(tier2)})</b>")
             for c in tier2:
-                sym      = c.get("symbol", "?")
-                conv     = (c.get("conviction") or "").upper()
-                msl      = msl_map.get(sym, {})
-                zl       = float(msl.get("entry_zone_low")  or 0)
-                zh       = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
-                vol_note = c.get("live_vol_note")
+                sym   = c.get("symbol", "?")
+                conv  = (c.get("conviction") or "").upper()
+                msl   = msl_map.get(sym, {})
+                zl    = float(msl.get("entry_zone_low")  or 0)
+                zh    = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
+                dist  = msl.get("dist_entry_pct")
+                dist_str = f"({abs(float(dist)):.1f}%↓)" if dist is not None else ""
 
-                # Zone status: prefer live entry_readiness output; fallback to dist_entry_pct
-                z_status = c.get("zone_status")
-                if not z_status:
-                    dist = msl.get("dist_entry_pct")
-                    z_status = f"({abs(float(dist)):.1f}%↓)" if dist is not None else ""
-
-                # Line 1: symbol · zone · live status
                 lines.append(
                     f"  {conviction_icon(conv)} <b>{sym}</b> [{conv}]"
-                    f"  ₹{zl:,.0f}–₹{zh:,.0f}"
-                    + (f"  {z_status}" if z_status else "")
+                    f"  ₹{zl:,.0f}–₹{zh:,.0f} {dist_str}"
                 )
-
-                # Line 2: entry condition + live volume pace (no rationale in morning)
-                p2 = []
                 if c.get("entry_note"):
-                    p2.append(f"📍 {esc(c['entry_note'])}")
-                if vol_note:
-                    p2.append(vol_note)
-                if p2:
-                    lines.append(f"    {' · '.join(p2)}")
+                    lines.append(f"    📍 {esc(c['entry_note'])}")
 
             lines.append("")
 
-    # ── Events in next 3 days (non-today) ──
+    # ── Events in next 3 days ──
     near_events = [
         e for e in upcoming
         if str(e.get("event_date", ""))[:10] != today_str
@@ -1849,19 +1791,16 @@ def build_morning(data: dict, sb=None) -> str:
 
     return "\n".join(lines)
 
+
 # ── Afternoon zone check ───────────────────────────────────────────────────
 
 def build_afternoon(data: dict, sb=None) -> str:
-    """
-    Afternoon zone check: 1:00 PM IST
-    Answers: Of last night's TIER_1 picks, which are at zone RIGHT NOW?
-    Uses live yfinance prices via compute_entry_readiness(use_live=True).
-    No position pulse, no global cues, no GTT section — zone status only.
-    """
     from datetime import datetime as _dt
-    fp      = data.get("final_picks")
-    msl_map = data["msl_map"]
-    now_str = _dt.now().strftime("%I:%M %p")
+    fp       = data.get("final_picks")
+    msl_map  = data["msl_map"]
+    open_pos = data.get("open_pos", [])
+    cues     = data.get("cues", {})
+    now_str  = _dt.now().strftime("%I:%M %p")
     date_str = data["signal_date"]
 
     lines = [
@@ -1874,116 +1813,197 @@ def build_afternoon(data: dict, sb=None) -> str:
         lines.append("<i>⚠️ No ranked candidates — step 19 data missing</i>")
         return "\n".join(lines)
 
-    tier1 = [r for r in fp["ranked_candidates"] if r.get("tier") == "TIER_1"]
-    tier2 = [r for r in fp["ranked_candidates"] if r.get("tier") == "TIER_2"]
+    ranked = fp["ranked_candidates"]
+    tier1  = [r for r in ranked if r.get("tier") == "TIER_1"]
+    tier2  = [r for r in ranked if r.get("tier") == "TIER_2"]
 
     if not tier1 and not tier2:
-        lines.append("<i>No TIER_1/TIER_2 picks for today</i>")
+        lines.append("<i>No picks today</i>")
         return "\n".join(lines)
 
-    # Enrich with live yfinance prices — _pre_market=False at 1PM so
-    # timing_note automatically shows "1:30–2:30 PM · Limit at zone_low".
-    # No re-scoring here: conviction/confidence below are step 19's own,
-    # frozen, untouched — only zone_status/timing_note/live_vol_note are
-    # genuinely new live facts at this checkpoint. TIER_2 gets the same
-    # live check — they haven't triggered yet, so live zone status matters
-    # at least as much here as for TIER_1.
     if _READINESS_AVAILABLE and sb:
-        if tier1:
-            try:
-                tier1 = compute_entry_readiness(tier1, msl_map, sb=sb, use_live=True)
-            except Exception as e:
-                logger.warning(f"afternoon readiness enrichment failed (TIER_1): {e}")
-        if tier2:
-            try:
-                tier2 = compute_entry_readiness(tier2, msl_map, sb=sb, use_live=True)
-            except Exception as e:
-                logger.warning(f"afternoon readiness enrichment failed (TIER_2): {e}")
+        try:
+            tier1 = compute_entry_readiness(
+                tier1, msl_map, sb=sb, use_live=True
+            )
+        except Exception as e:
+            logger.warning(f"afternoon readiness enrichment failed: {e}")
 
+    # ── Open position SL breach warning (context) ──────────────────────
+    gap_pct = float(cues.get("gift_nifty_chg_pct") or 0)
+    if gap_pct != 0 and open_pos:
+        breach = [
+            p["symbol"] for p in open_pos
+            if float(p.get("current_price") or 0) > 0
+            and float(p.get("active_sl") or 0) > 0
+            and float(p["current_price"]) * (1 + gap_pct / 100)
+               <= float(p["active_sl"])
+        ]
+        if breach:
+            lines.append(f"🚨 <b>OPEN POSITION SL RISK: {', '.join(breach)}</b>")
+            lines.append("")
+
+    # ════════════════════════════════════════════════════════════════════
+    # TIER 1 — Full conviction block
+    # Each stock gets: CMP · zone status · SL · T1 · RR · alloc ·
+    #                  thesis · entry note · timing · invalidation
+    # ════════════════════════════════════════════════════════════════════
     any_actionable = False
 
     if tier1:
-        lines.append("⭐ <b>TIER 1 — ACT NOW</b>")
-    for c in tier1:
-        sym         = c.get("symbol", "?")
-        conv        = (c.get("conviction") or "").upper()
-        conf        = float(c.get("confidence") or 0)
-        msl         = msl_map.get(sym, {})
-        zl          = float(msl.get("entry_zone_low")  or 0)
-        zh          = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
-        zone_status = c.get("zone_status", "")
-        timing_note = c.get("timing_note", "")
-        vol_note    = c.get("live_vol_note")
+        lines.append(f"⭐ <b>TIER 1 — ACT NOW ({len(tier1)})</b>")
 
-        if "IN ZONE" in zone_status:
-            status_ico = "✅"
-            any_actionable = True
-        elif "APPROACHING" in zone_status:
-            status_ico = "⬇️"
-        elif "ABOVE ZONE" in zone_status:
-            status_ico = "⚠️"
-        else:
-            status_ico = "❌"
+        for c in tier1:
+            sym  = c.get("symbol", "?")
+            conv = (c.get("conviction") or "").upper()
+            conf = float(c.get("confidence") or 0)
+            alloc = float(c.get("suggested_allocation_pct") or 0)
 
-        # Line 1: status · symbol · conviction · zone range [DB] · live status · confidence
-        lines.append(
-            f"{status_ico} <b>{sym}</b> [{conv}]  ₹{zl:,.0f}–₹{zh:,.0f} <i>[DB]</i>  —  {zone_status}"
-            + (f"  conf:{conf:.0%}" if conf else "")
-        )
+            msl  = msl_map.get(sym, {})
+            zl   = float(msl.get("entry_zone_low")  or 0)
+            zh   = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
+            er   = float(msl.get("expected_r")      or 2.0)
+            sl_p = round(zl * (1 - STOP_BUFFER), 0) if zl else None
+            t1_p = round(zl * (1 + STOP_BUFFER * er), 0) if zl else None
+            rr   = (round((t1_p - zl) / (zl - sl_p), 1)
+                    if t1_p and sl_p and zl and sl_p < zl else None)
 
-        # Line 2: timing note + live volume pace (informational, not scored)
-        if timing_note or vol_note:
-            tn_parts = [p for p in [timing_note, vol_note] if p]
-            lines.append(f"   <i>{' · '.join(esc(p) for p in tn_parts)}</i>")
+            # CMP: live price from readiness module → MSL EOD fallback
+            cp     = float(c.get("live_price") or msl.get("current_price") or 0)
+            cp_tag = "[live]" if c.get("live_price") else "[EOD]"
+            cp_str = f"₹{cp:,.0f} {cp_tag}" if cp > 0 else "—"
 
-        # Line 3: entry note [AI] if in zone, invalidation [AI] if missed
-        if c.get("entry_note") and "IN ZONE" in zone_status:
-            lines.append(f"   📍 {esc(c['entry_note'])} <i>[AI]</i>")
-        if c.get("invalidation") and "MISSED" in zone_status:
-            lines.append(f"   ❌ {esc(c['invalidation'][:60])} <i>[AI]</i>")
+            # Distance from CMP to zone floor (+ve = above zone, -ve = inside/below)
+            d2z = ((cp - zl) / zl * 100) if cp > 0 and zl > 0 else None
 
-        lines.append("")
-
-    if tier1 and not any_actionable:
-        lines.append(
-            "<i>No TIER_1 picks in zone right now — monitor for 1:30–2:30 PM window</i>"
-        )
-        lines.append("")
-
-    # ── TIER_2 — same live check, "watch for trigger" framing ───────────
-    if tier2:
-        lines.append("🔭 <b>TIER 2 — WATCH FOR TRIGGER</b>")
-        for c in tier2:
-            sym         = c.get("symbol", "?")
-            conv        = (c.get("conviction") or "").upper()
-            msl         = msl_map.get(sym, {})
-            zl          = float(msl.get("entry_zone_low")  or 0)
-            zh          = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
             zone_status = c.get("zone_status", "")
-            vol_note    = c.get("live_vol_note")
+            r_icon      = c.get("readiness_icon") or conviction_icon(conv)
+            r_score     = c.get("readiness_score")
+            r_label     = c.get("readiness_label", "")
+            breakdown   = c.get("readiness_breakdown", "")
+            timing_note = c.get("timing_note", "")
+            score_str   = f"  [{r_score}/100 · {r_label}]" if r_score else ""
 
-            if "IN ZONE" in zone_status:
-                status_ico = "✅"
-            elif "APPROACHING" in zone_status:
-                status_ico = "⬇️"
-            elif "ABOVE ZONE" in zone_status:
-                status_ico = "⚠️"
-            elif zone_status:
-                status_ico = "❌"
+            # ── Zone status → icon + plain-English action directive ──
+            z_upper = zone_status.upper()
+            if "IN ZONE" in z_upper or (d2z is not None and -2.0 <= d2z <= 0):
+                status_ico  = "✅"
+                action_word = "ENTER NOW"
+                action_cond = "vol > 1×  +  price ≥ VWAP before placing"
+                any_actionable = True
+            elif "APPROACHING" in z_upper or (d2z is not None and 0 < d2z <= 3.0):
+                status_ico  = "⬇️"
+                action_word = "WAIT"
+                hint        = f"{d2z:.1f}% above zone floor" if d2z is not None else "near zone"
+                action_cond = f"set price alert at ₹{zl:,.0f}  ({hint})"
+            elif "ABOVE ZONE" in z_upper or (d2z is not None and d2z > 3.0):
+                status_ico  = "⚠️"
+                action_word = "SKIP TODAY"
+                action_cond = "price overextended above zone — wait for pullback"
             else:
-                status_ico = "🔭"
+                status_ico  = "📍"
+                action_word = "VERIFY"
+                action_cond = "live data unavailable — check zone manually"
+
+            # ── Line 1: Header ──────────────────────────────────────────
+            lines.append(
+                f"\n{status_ico} <b>{sym}</b>"
+                + (f" [{conv}·{conf:.0%}]" if conf else f" [{conv}]")
+                + (f"  <b>{alloc:.0f}% alloc</b>" if alloc else "")
+                + score_str
+            )
+
+            # ── Line 2: CMP + zone + distance ───────────────────────────
+            if cp > 0 and zl > 0:
+                dist_label = (
+                    f"({abs(d2z):.1f}% inside zone)" if d2z is not None and d2z <= 0
+                    else f"({d2z:.1f}% above zone floor)" if d2z is not None
+                    else ""
+                )
+                lines.append(
+                    f"  CMP: <b>{cp_str}</b>"
+                    f"  Zone: ₹{zl:,.0f}–₹{zh:,.0f}  {dist_label}"
+                    f"  <i>{zone_status}</i>"
+                )
+            else:
+                lines.append(f"  Zone: ₹{zl:,.0f}–₹{zh:,.0f}  <i>{zone_status or 'check manually'}</i>")
+
+            # ── Line 3: Entry / SL / T1 / RR ────────────────────────────
+            if sl_p and t1_p:
+                lines.append(
+                    f"  Entry:₹{zl:,.0f} | SL:₹{sl_p:,.0f} | T1:₹{t1_p:,.0f}"
+                    + (f" | RR <b>{rr}×</b>" if rr else "")
+                )
+
+            # ── Line 4: Action directive ─────────────────────────────────
+            lines.append(f"  → <b>{action_word}</b>: {action_cond}")
+
+            # ── Line 5: Thesis (all stocks — the core "why") ─────────────
+            thesis = c.get("thesis") or c.get("ai_conviction_reason") or ""
+            if "] " in thesis:
+                thesis = thesis.split("] ", 1)[-1]
+            thesis = thesis.split("| Entry:")[0].strip()
+            if thesis:
+                lines.append(f"  💬 {esc(thesis[:120])}")
+
+            # ── Line 6: Entry note (all stocks — not just IN ZONE) ───────
+            if c.get("entry_note"):
+                lines.append(f"  📍 {esc(c['entry_note'])} <i>[AI]</i>")
+
+            # ── Line 7: Timing note (all stocks) ─────────────────────────
+            if timing_note:
+                lines.append(f"  🕐 <i>{esc(timing_note)}</i>")
+
+            # ── Line 8: Readiness breakdown ──────────────────────────────
+            if breakdown:
+                lines.append(f"  <i>{breakdown}</i>")
+
+            # ── Line 9: Invalidation (all stocks — not just MISSED) ──────
+            if c.get("invalidation"):
+                lines.append(f"  ❌ Skip if: {esc(c['invalidation'][:90])}")
+
+            # ── Line 10: Key risks ────────────────────────────────────────
+            if c.get("risks"):
+                risk_str = " · ".join(esc(str(r)) for r in (c["risks"] or [])[:2])
+                if risk_str:
+                    lines.append(f"  ⚠️ {risk_str}")
+
+        lines.append("")
+
+        if not any_actionable:
+            lines.append(
+                "<i>⏳ No TIER_1 picks in zone right now"
+                " — monitor for 1:30–2:30 PM entry window</i>"
+            )
+            lines.append("")
+
+    # ════════════════════════════════════════════════════════════════════
+    # TIER 2 — Compact trigger watch (2 lines per stock)
+    # CMP shown so you can see distance; entry_note for trigger condition
+    # ════════════════════════════════════════════════════════════════════
+    if tier2:
+        lines.append(f"🔭 <b>TIER 2 — TRIGGER WATCH ({len(tier2)})</b>")
+        for c in tier2:
+            sym  = c.get("symbol", "?")
+            conv = (c.get("conviction") or "").upper()
+            msl  = msl_map.get(sym, {})
+            zl   = float(msl.get("entry_zone_low")  or 0)
+            zh   = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
+            cp   = float(c.get("live_price") or msl.get("current_price") or 0)
+            d2z  = ((cp - zl) / zl * 100) if cp > 0 and zl > 0 else None
 
             lines.append(
-                f"{status_ico} <b>{sym}</b> [{conv}]  ₹{zl:,.0f}–₹{zh:,.0f}"
-                + (f"  —  {zone_status}" if zone_status else "")
-                + (f"  · {vol_note}" if vol_note else "")
+                f"\n  {conviction_icon(conv)} <b>{sym}</b> [{conv}]"
+                f"  Zone:₹{zl:,.0f}–₹{zh:,.0f}"
+                + (f"  CMP:₹{cp:,.0f} ({d2z:+.1f}%)" if cp > 0 and d2z is not None else "")
             )
-            if c.get("entry_note") and "IN ZONE" in zone_status:
-                lines.append(f"   📍 {esc(c['entry_note'])} <i>[AI]</i>")
+            if c.get("entry_note"):
+                lines.append(f"    📍 {esc(c['entry_note'])}")
 
         lines.append("")
 
     return "\n".join(lines)
+
 
 # ── Compact (mobile one-screen) ────────────────────────────────────────────
 
@@ -2018,11 +2038,11 @@ def build_compact(data: dict) -> str:
         )
 
     if fp and fp.get("ranked_candidates"):
-        ranked  = fp["ranked_candidates"]
-        tier1   = [r for r in ranked if r.get("tier") == "TIER_1"]
-        tier2   = [r for r in ranked if r.get("tier") == "TIER_2"]
+        ranked   = fp["ranked_candidates"]
+        tier1    = [r for r in ranked if r.get("tier") == "TIER_1"]
+        tier2    = [r for r in ranked if r.get("tier") == "TIER_2"]
         guidance = fp.get("portfolio_guidance", {})
-        sizing  = guidance.get("position_sizing_override") or fp.get("_sizing", "?")
+        sizing   = guidance.get("position_sizing_override") or fp.get("_sizing", "?")
         lines.append(f"💼 {sizing}")
         if tier1:
             lines.append("\n⭐ <b>ACT NOW</b>")
@@ -2052,12 +2072,12 @@ def build_compact(data: dict) -> str:
     if open_pos:
         lines.append(f"\n📂 <b>POSITIONS ({len(open_pos)})</b>")
         for p in open_pos:
-            pnl  = float(p.get("pnl_pct") or 0)
-            cp   = float(p.get("current_price") or 0)
-            sl   = float(p.get("active_sl") or 0)
-            ico  = "📈" if pnl >= 0 else "📉"
-            prox = sl_proximity_pct(cp, sl)
-            sl_w = " 🚨" if prox is not None and prox <= 3.0 else ""
+            pnl   = float(p.get("pnl_pct") or 0)
+            cp    = float(p.get("current_price") or 0)
+            sl    = float(p.get("active_sl") or 0)
+            ico   = "📈" if pnl >= 0 else "📉"
+            prox  = sl_proximity_pct(cp, sl)
+            sl_w  = " 🚨" if prox is not None and prox <= 3.0 else ""
             t_hit = " 🎯" if p.get("target_hit") else ""
             act   = p.get("action_required") or ""
             act_str = f"  [{act}]" if act and act != "HOLD" else ""
@@ -2073,11 +2093,12 @@ def build_compact(data: dict) -> str:
     return "\n".join(lines)
 
 
+# ── Signal keyboard (Telegram-specific — unchanged) ────────────────────────
+
 def send_signal_with_keyboard(signal: dict) -> bool:
     """
-    Sends an individual signal alert with inline confirmation keyboard.
-    Called for each ENTRY-type signal after the main digest.
-    Requires brain/position_manager to be present.
+    Sends an individual signal alert with inline Telegram confirmation keyboard.
+    Telegram-specific — only call when channel includes 'telegram'.
     """
     try:
         from brain.position_manager import build_signal_keyboard, _tg_api
@@ -2123,7 +2144,7 @@ def main():
 
     # ── PATCH 18: Load channel config from system_config before anything else ──
     # Done early so _ch() is primed for all subsequent reads, including the
-    # alerts_enabled check below. 'telegram_alerts_enabled' is kept as the
+    # alerts_enabled check below.  'telegram_alerts_enabled' is kept as the
     # gate key for backward-compat; rename it to 'alerts_enabled' in system_config
     # if you want a channel-agnostic name going forward.
     sb = get_supabase()
@@ -2132,6 +2153,7 @@ def main():
 
     active_channel = _ch("alert_channel", "telegram")
 
+    # ── Alerts gate (backward-compat: still reads telegram_alerts_enabled) ──
     if not cfg_bool("telegram_alerts_enabled", False):
         logger.info(f"Alerts disabled (telegram_alerts_enabled=false) | channel={active_channel}")
         return {}
@@ -2144,18 +2166,17 @@ def main():
     today = str(today_ist())
     data  = load_data(sb, today)
 
-    has_fp = bool(data.get("final_picks"))
-    has_guidance = bool(
-        (data.get("final_picks") or {}).get("portfolio_guidance")
-    )
+    has_fp       = bool(data.get("final_picks"))
+    has_guidance = bool((data.get("final_picks") or {}).get("portfolio_guidance"))
     logger.info(
         f"Data loaded: step19={'✅' if has_fp else '❌ fallback'} "
         f"| guidance={'✅' if has_guidance else '❌ missing'} "
         f"| {len(data['signals'])} signals | {len(data['open_pos'])} positions "
         f"| readiness={'✅' if _READINESS_AVAILABLE else '❌ unavailable'} "
-        f"| channel={active_channel}"
+        f"| channel={active_channel}"          # ← PATCH 18: channel in startup log
     )
 
+    # ── Build message + set subject suffix ────────────────────────────────
     # PATCH 18: subject_suffix passed so email subjects read naturally:
     #   "TradeOS Evening" / "TradeOS Morning" / "TradeOS Afternoon"
     if is_morning:
@@ -2177,12 +2198,13 @@ def main():
 
     success = send_message(msg, subject_suffix=subject_suffix)
 
-    # Signal keyboards are a Telegram-only feature (inline buttons) —
-    # only fire them when Telegram is actually one of the active channels.
+    # Signal keyboards (Telegram-only feature)
     if cfg_bool("telegram_signal_keyboards_enabled", False):
         if active_channel in ("telegram", "all"):
-            entry_signals = [s for s in data["signals"] if s.get("signal_type") in ENTRY_TYPES
-                             and s.get("id")]
+            entry_signals = [
+                s for s in data["signals"]
+                if s.get("signal_type") in ENTRY_TYPES and s.get("id")
+            ]
             for sig in entry_signals:
                 send_signal_with_keyboard(sig)
         else:
@@ -2199,7 +2221,8 @@ def main():
 
     if success:
         logger.success(
-            f"Alert ({mode} via {active_channel}) sent: T1:{tier1} T2:{tier2} exit:{exits} "
+            f"Alert ({mode} via {active_channel}) sent: "
+            f"T1:{tier1} T2:{tier2} exit:{exits} "
             f"pos:{len(data['open_pos'])} "
             f"| step19:{'ok' if has_fp else 'fallback'} "
             f"| guidance:{'ok' if has_guidance else 'missing'}"
@@ -2207,11 +2230,9 @@ def main():
 
     # ── Write structured daily summary ──
     try:
-        ranked   = (data.get("final_picks") or {}).get("ranked_candidates") or []
         _tier1   = len([r for r in ranked if r.get("tier") == "TIER_1"])
         _tier2   = len([r for r in ranked if r.get("tier") == "TIER_2"])
         _tier3   = len([r for r in ranked if r.get("tier") == "TIER_3"])
-
         _buy_raw  = sum(1 for s in data["signals"] if s.get("signal_type") in ENTRY_TYPES)
         _watch    = sum(1 for s in data["signals"] if s.get("signal_type") == "WATCH")
         _exit_raw = sum(1 for s in data["signals"] if s.get("signal_type") == "EXIT")
@@ -2238,19 +2259,23 @@ def main():
             "zero_reason":    _zero_reason,
             "sizing":         (data.get("final_picks") or {}).get("_sizing"),
             "ai_note":        ((data.get("final_picks") or {}).get("_ai_note") or ""),
+            # PATCH 18: record active channel for observability
+            # Requires: ALTER TABLE signal_daily_summary ADD COLUMN IF NOT EXISTS
+            #           alert_channel text;
+            # "alert_channel": active_channel,
         }).execute()
         logger.info(f"signal_daily_summary written: T1:{_tier1} T2:{_tier2} raw:{_buy_raw}")
     except Exception as e:
         logger.warning(f"signal_daily_summary write failed (non-fatal): {e}")
 
     return {
-        "sent":     success,
-        "mode":     mode,
-        "channel":  active_channel,
-        "tier1":    tier1,
-        "tier2":    tier2,
-        "step19":   has_fp,
-        "guidance": has_guidance,
+        "sent":          success,
+        "mode":          mode,
+        "channel":       active_channel,   # PATCH 18: included in return dict
+        "tier1":         tier1,
+        "tier2":         tier2,
+        "step19":        has_fp,
+        "guidance":      has_guidance,
     }
 
 
