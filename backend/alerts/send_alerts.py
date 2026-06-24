@@ -1854,91 +1854,87 @@ def build_afternoon(data: dict, sb=None) -> str:
         lines.append(f"⭐ <b>TIER 1 — ACT NOW ({len(tier1)})</b>")
 
         for c in tier1:
-            sym  = c.get("symbol", "?")
-            conv = (c.get("conviction") or "").upper()
-            conf = float(c.get("confidence") or 0)
+            sym   = c.get("symbol", "?")
+            conv  = (c.get("conviction") or "").upper()
+            conf  = float(c.get("confidence") or 0)
             alloc = float(c.get("suggested_allocation_pct") or 0)
 
-            msl  = msl_map.get(sym, {})
-            zl   = float(msl.get("entry_zone_low")  or 0)
-            zh   = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
-            er   = float(msl.get("expected_r")      or 2.0)
-            sl_p = round(zl * (1 - STOP_BUFFER), 0) if zl else None
-            t1_p = round(zl * (1 + STOP_BUFFER * er), 0) if zl else None
-            rr   = (round((t1_p - zl) / (zl - sl_p), 1)
-                    if t1_p and sl_p and zl and sl_p < zl else None)
+            msl = msl_map.get(sym, {})
+            zl  = float(msl.get("entry_zone_low")  or 0)
+            zh  = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
 
-            # CMP: live price from readiness module → MSL EOD fallback
-            cp     = float(c.get("live_price") or msl.get("current_price") or 0)
-            cp_tag = "[live]" if c.get("live_price") else "[EOD]"
-            cp_str = f"₹{cp:,.0f} {cp_tag}" if cp > 0 else "—"
+            # ── What compute_entry_readiness actually sets ──────────────
+            # zone_status  → "✅ IN ZONE (₹1,520)" / "⬇️ APPROACHING (₹X, Y% below zone)"
+            #                "⚠️ ABOVE ZONE (₹X, +Y%)" / "❌ MISSED (₹X, +Y% above zone)"
+            # timing_note  → plain-English action ("1:30–2:30 PM · limit at zone_low")
+            # live_vol_note→ "1.6× pace vs 20d avg (live)"  — None if unavailable
+            # gtt_entry/sl/t1/rr_ratio → pre-computed GTT levels (use these, not manual calc)
+            zone_status   = c.get("zone_status", "")
+            timing_note   = c.get("timing_note", "")
+            live_vol_note = c.get("live_vol_note")
+            gtt_entry     = c.get("gtt_entry")
+            gtt_sl        = c.get("gtt_sl")
+            gtt_t1        = c.get("gtt_t1")
+            rr            = c.get("rr_ratio")
 
-            # Distance from CMP to zone floor (+ve = above zone, -ve = inside/below)
-            d2z = ((cp - zl) / zl * 100) if cp > 0 and zl > 0 else None
+            # CMP: live price is embedded in zone_status string, e.g., "✅ IN ZONE (₹1,520)"
+            # Extract it with regex — this is the only reliable source of the live number.
+            # readiness_score / readiness_icon / readiness_breakdown are NOT set by this module.
+            _m  = re.search(r"₹([\d,]+)", zone_status)
+            cp  = float(_m.group(1).replace(",", "")) if _m else 0
 
-            zone_status = c.get("zone_status", "")
-            r_icon      = c.get("readiness_icon") or conviction_icon(conv)
-            r_score     = c.get("readiness_score")
-            r_label     = c.get("readiness_label", "")
-            breakdown   = c.get("readiness_breakdown", "")
-            timing_note = c.get("timing_note", "")
-            score_str   = f"  [{r_score}/100 · {r_label}]" if r_score else ""
-
-            # ── Zone status → icon + plain-English action directive ──
-            z_upper = zone_status.upper()
-            if "IN ZONE" in z_upper or (d2z is not None and -2.0 <= d2z <= 0):
-                status_ico  = "✅"
-                action_word = "ENTER NOW"
-                action_cond = "vol > 1×  +  price ≥ VWAP before placing"
+            # any_actionable flag — drive from zone_status string, not CMP arithmetic
+            if "IN ZONE" in zone_status.upper():
                 any_actionable = True
-            elif "APPROACHING" in z_upper or (d2z is not None and 0 < d2z <= 3.0):
-                status_ico  = "⬇️"
-                action_word = "WAIT"
-                hint        = f"{d2z:.1f}% above zone floor" if d2z is not None else "near zone"
-                action_cond = f"set price alert at ₹{zl:,.0f}  ({hint})"
-            elif "ABOVE ZONE" in z_upper or (d2z is not None and d2z > 3.0):
-                status_ico  = "⚠️"
-                action_word = "SKIP TODAY"
-                action_cond = "price overextended above zone — wait for pullback"
-            else:
-                status_ico  = "📍"
-                action_word = "VERIFY"
-                action_cond = "live data unavailable — check zone manually"
 
             # ── Line 1: Header ──────────────────────────────────────────
             lines.append(
-                f"\n{status_ico} <b>{sym}</b>"
+                f"\n{conviction_icon(conv)} <b>{sym}</b>"
                 + (f" [{conv}·{conf:.0%}]" if conf else f" [{conv}]")
                 + (f"  <b>{alloc:.0f}% alloc</b>" if alloc else "")
-                + score_str
             )
 
-            # ── Line 2: CMP + zone + distance ───────────────────────────
-            if cp > 0 and zl > 0:
-                dist_label = (
-                    f"({abs(d2z):.1f}% inside zone)" if d2z is not None and d2z <= 0
-                    else f"({d2z:.1f}% above zone floor)" if d2z is not None
-                    else ""
-                )
-                lines.append(
-                    f"  CMP: <b>{cp_str}</b>"
-                    f"  Zone: ₹{zl:,.0f}–₹{zh:,.0f}  {dist_label}"
-                    f"  <i>{zone_status}</i>"
-                )
+            # ── Line 2: Live zone status (module string already has price + distance) ──
+            if zone_status:
+                lines.append(f"  {zone_status}  |  Zone: ₹{zl:,.0f}–₹{zh:,.0f}")
             else:
-                lines.append(f"  Zone: ₹{zl:,.0f}–₹{zh:,.0f}  <i>{zone_status or 'check manually'}</i>")
-
-            # ── Line 3: Entry / SL / T1 / RR ────────────────────────────
-            if sl_p and t1_p:
                 lines.append(
-                    f"  Entry:₹{zl:,.0f} | SL:₹{sl_p:,.0f} | T1:₹{t1_p:,.0f}"
+                    f"  Zone: ₹{zl:,.0f}–₹{zh:,.0f}"
+                    f"  <i>(live data unavailable — check manually)</i>"
+                )
+
+            # ── Line 3: GTT levels from module + live vol ───────────────
+            # Use gtt_sl/gtt_t1/rr_ratio directly — already computed by module.
+            # Fallback to manual calc only if module didn't run (no sb / no yfinance).
+            if gtt_entry and gtt_sl and gtt_t1:
+                gtt_line = (
+                    f"  Entry:₹{gtt_entry:,.0f}"
+                    f" | SL:₹{gtt_sl:,.0f}"
+                    f" | T1:₹{gtt_t1:,.0f}"
                     + (f" | RR <b>{rr}×</b>" if rr else "")
                 )
+                if live_vol_note:
+                    gtt_line += f"   📊 {live_vol_note}"
+                lines.append(gtt_line)
+            elif zl:
+                # Fallback: module didn't run — compute manually
+                er    = float(msl.get("expected_r") or 2.0)
+                f_sl  = round(zl * (1 - STOP_BUFFER), 0)
+                f_t1  = round(zl * (1 + STOP_BUFFER * er), 0)
+                f_rr  = round((f_t1 - zl) / (zl - f_sl), 1) if f_sl < zl else None
+                lines.append(
+                    f"  Entry:₹{zl:,.0f} | SL:₹{f_sl:,.0f} | T1:₹{f_t1:,.0f}"
+                    + (f" | RR <b>{f_rr}×</b>" if f_rr else "")
+                    + "  <i>[EOD calc — live data unavailable]</i>"
+                )
 
-            # ── Line 4: Action directive ─────────────────────────────────
-            lines.append(f"  → <b>{action_word}</b>: {action_cond}")
+            # ── Line 4: Timing / action directive from module ───────────
+            # timing_note is authored by the module for morning / afternoon context:
+            # "1:30–2:30 PM · limit at zone_low" / "Skip today · re-evaluate tomorrow"
+            if timing_note:
+                lines.append(f"  🕐 {esc(timing_note)}")
 
-            # ── Line 5: Thesis (all stocks — the core "why") ─────────────
+            # ── Line 5: Thesis — the core "why" ────────────────────────
             thesis = c.get("thesis") or c.get("ai_conviction_reason") or ""
             if "] " in thesis:
                 thesis = thesis.split("] ", 1)[-1]
@@ -1946,23 +1942,15 @@ def build_afternoon(data: dict, sb=None) -> str:
             if thesis:
                 lines.append(f"  💬 {esc(thesis[:120])}")
 
-            # ── Line 6: Entry note (all stocks — not just IN ZONE) ───────
+            # ── Line 6: Entry note (all stocks) ────────────────────────
             if c.get("entry_note"):
                 lines.append(f"  📍 {esc(c['entry_note'])} <i>[AI]</i>")
 
-            # ── Line 7: Timing note (all stocks) ─────────────────────────
-            if timing_note:
-                lines.append(f"  🕐 <i>{esc(timing_note)}</i>")
-
-            # ── Line 8: Readiness breakdown ──────────────────────────────
-            if breakdown:
-                lines.append(f"  <i>{breakdown}</i>")
-
-            # ── Line 9: Invalidation (all stocks — not just MISSED) ──────
+            # ── Line 7: Invalidation (all stocks) ──────────────────────
             if c.get("invalidation"):
                 lines.append(f"  ❌ Skip if: {esc(c['invalidation'][:90])}")
 
-            # ── Line 10: Key risks ────────────────────────────────────────
+            # ── Line 8: Key risks ───────────────────────────────────────
             if c.get("risks"):
                 risk_str = " · ".join(esc(str(r)) for r in (c["risks"] or [])[:2])
                 if risk_str:
@@ -1978,24 +1966,27 @@ def build_afternoon(data: dict, sb=None) -> str:
             lines.append("")
 
     # ════════════════════════════════════════════════════════════════════
-    # TIER 2 — Compact trigger watch (2 lines per stock)
-    # CMP shown so you can see distance; entry_note for trigger condition
+    # TIER 2 — Compact trigger watch
+    # compute_entry_readiness only runs on TIER_1, so T2 has no live data.
+    # Show EOD price + distance from msl_map; entry_note for trigger condition.
     # ════════════════════════════════════════════════════════════════════
     if tier2:
         lines.append(f"🔭 <b>TIER 2 — TRIGGER WATCH ({len(tier2)})</b>")
+        lines.append(f"  <i>Zone ranges + EOD price — no live enrichment for TIER 2</i>")
         for c in tier2:
             sym  = c.get("symbol", "?")
             conv = (c.get("conviction") or "").upper()
             msl  = msl_map.get(sym, {})
             zl   = float(msl.get("entry_zone_low")  or 0)
             zh   = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
-            cp   = float(c.get("live_price") or msl.get("current_price") or 0)
-            d2z  = ((cp - zl) / zl * 100) if cp > 0 and zl > 0 else None
+            cp   = float(msl.get("current_price") or 0)   # EOD only — no live for T2
+            dist = msl.get("dist_entry_pct")
+            dist_str = f" ({abs(float(dist)):.1f}%↓)" if dist is not None else ""
 
             lines.append(
                 f"\n  {conviction_icon(conv)} <b>{sym}</b> [{conv}]"
-                f"  Zone:₹{zl:,.0f}–₹{zh:,.0f}"
-                + (f"  CMP:₹{cp:,.0f} ({d2z:+.1f}%)" if cp > 0 and d2z is not None else "")
+                f"  Zone:₹{zl:,.0f}–₹{zh:,.0f}{dist_str}"
+                + (f"  EOD:₹{cp:,.0f}" if cp > 0 else "")
             )
             if c.get("entry_note"):
                 lines.append(f"    📍 {esc(c['entry_note'])}")
