@@ -8,6 +8,7 @@ pandas==2.2.2
 numpy==1.26.4
 requests==2.32.3
 pytz==2024.1
+nsepython==2.97
 
 # Google Sheets API
 google-api-python-client==2.137.0

@@ -3,6 +3,21 @@
 
 ---
 
+## Upgrading an existing brain deployment (not a fresh install)
+
+If you already have brain v2 running:
+1. Run `migrations/2026_06_brain_v2_script_registry.sql` (adds 3 columns to `brain_script_registry` — safe, additive, idempotent)
+2. Run `migrations/2026_06_brain_v2_config_seed.sql` (seeds `brain_auto_apply_policy` + `brain_scan_roots`, disables `brain_script_patching_enabled`, removes the dead `brain_script_auto_patch` key)
+3. Replace the brain `.py` files with this version
+4. Replace `.github/workflows/brain_scheduler.yml` with this version
+5. Delete `.github/workflows/brain_sunday_chain.yml` — no longer used, folded into `brain_full_weekly` itself
+6. If you were running `brain/scheduler.yaml` / `brain/scheduler_yaml.py` as a standalone process anywhere, stop it — removed from this version, GitHub Actions is the only scheduling mechanism now
+
+Review `brain_auto_apply_policy` before the next scheduled run — the default ships
+conservative (only `THRESHOLD_CHANGE` set to `auto`), but it's your call.
+
+---
+
 ## File Structure
 
 The `brain/` folder lives under `backend/` as a sibling to `ai/`, `compute/`, `signals/`, and `alerts/`:
@@ -127,52 +142,87 @@ Two responsibilities in one file — import from it as:
 from brain.backtester_and_change_manager import run_backtests, save_proposals, ...
 ```
 
-**Backtester:** validates every quant finding before it becomes a proposal. Applies safety caps:
-- Max change per cycle: ±30% of current value
+**Backtester:** validates every quant finding AND every LLM-sourced THRESHOLD_CHANGE/
+ENGINE_WEIGHT proposal before it becomes a proposal — both go through the exact same
+mechanism now (previously LLM proposals were stamped as "always passes" and could
+never be evidence-checked; fixed). Applies safety caps:
+- Max change per cycle: ±30% of current value (thresholds), ±10% (engine weights, clamped to 0.3x–2.0x absolute)
 - Min backtest cohort: 10 signals
-- High-impact flag: triggered when proposed change would reduce signal pool by >50% (forces manual approval)
+- High-impact flag: thresholds — proposed change would reduce signal pool by >50%; engine weights — top-N candidate pool overlap drops below 50%. Either forces manual approval.
 
 **Change Manager:** owns the full proposal lifecycle:
 
 ```
-PENDING ──→ AUTO_APPLIED  (conf ≥ 0.90 + wr_delta ≥ 5pp + not high_impact)
+PENDING ──→ AUTO_APPLIED  (per-type policy in system_config.brain_auto_apply_policy)
         ──→ APPROVED       (manual: CLI or dashboard)
                 ──→ APPLIED ──→ ROLLED_BACK
         ──→ REJECTED
         ──→ EXPIRED        (30 days elapsed, no action)
 ```
 
-Auto-apply eligible types: `THRESHOLD_CHANGE`, `ENGINE_WEIGHT`, `REGIME_WEIGHT`
-Always manual: `SCRIPT_PATCH`, `CODE_SUGGESTION`, `INSIGHT`
+Auto-apply is governed by `system_config.brain_auto_apply_policy` — a per-proposal-type
+JSON (`{"TYPE": {"mode": "auto"|"review", "min_confidence": ..., "min_wr_delta_pp": ...}}`),
+editable any time without a code change. Default ships with only `THRESHOLD_CHANGE` set
+to `auto`; everything else (`ENGINE_WEIGHT`, `SCRIPT_PATCH`, `CODE_SUGGESTION`,
+`CONSISTENCY_CONFLICT`, `ENGINE_PERFORMANCE`, `INSIGHT`) starts as `review`. Manual
+approval (`approve <id>`) always works regardless of policy mode — the policy only
+gates the *automatic* approval loop.
 
 ---
 
 ### `llm_synthesizer.py` — LLM Analysis Layer
 Builds the full synthesis prompt from quant findings + every table's schema, stats, and sample rows, then calls your existing `ai_router`. The LLM sees all fields from all tables — no pre-filtering.
 
-Anti-hallucination enforced at two layers:
+Anti-hallucination enforced at three layers:
 1. Prompt level via `brain_prompt.py` rules
 2. Validation layer: rejects proposals missing reasoning chains, rejects unknown proposal types, caps LLM confidence by sample size (`n<20 → 0.60`, `n<50 → 0.75`, `n<100 → 0.85`)
+3. Backtest layer: `prepare_for_backtest()` resolves THRESHOLD_CHANGE/ENGINE_WEIGHT target keys to real dataframe fields/engines via `DynamicRegistry`, then runs them through the real backtester — proposals that can't be mechanically resolved or verified land PENDING with an honest "couldn't backtest" note, never auto-stamped as validated
 
-Valid proposal types the LLM can generate: `THRESHOLD_CHANGE`, `ENGINE_WEIGHT`, `REGIME_WEIGHT`, `SCRIPT_PATCH`, `CODE_SUGGESTION`, `INSIGHT`
+Valid proposal types: `THRESHOLD_CHANGE`, `ENGINE_WEIGHT`, `REGIME_WEIGHT`, `SCORE_WEIGHT_CHANGE`, `SCRIPT_PATCH`, `CODE_SUGGESTION`, `INSIGHT`, `ENGINE_PERFORMANCE`, `CONSISTENCY_CONFLICT`
+
+`SCORE_WEIGHT_CHANGE` covers additive score bonus/penalty magnitudes
+(`score_bonus_*`, `score_penalty_*`, `industry_bonus_*`) — a different
+mechanism from `THRESHOLD_CHANGE`: these don't filter which signals exist,
+they nudge score on signals that already qualified. See
+`quant_analyzer.analyze_score_component_sensitivity()` and
+`dynamic_registry.SCORE_COMPONENT_MAP`. Defaults to `review` in the auto-apply
+policy. A handful of floor/ceiling-style keys that don't follow the
+`signal_threshold_*` naming convention (`risk_block_threshold`,
+`holding_score_exit_threshold`, `add_holding_min`, `prime_breakout_min`,
+`min_rr_*` including regime-specific overrides) are covered by
+`dynamic_registry.EXTENDED_THRESHOLD_KEYS` and reuse the `THRESHOLD_CHANGE`
+mechanism directly.
 
 ---
 
-### `script_scanner.py` — AST Hardcode Detector
-Points at all `.py` files under `backend/` and for each one:
-1. Extracts all hardcoded numeric/string values that are candidates for `cfg()` migration
-2. Identifies which Supabase tables the script reads/writes
-3. Identifies which `system_config` keys the script already uses
-4. Generates a unified diff showing the proposed `cfg()` migration
-5. Registers everything in `brain_script_registry` (one row per script)
+### `script_scanner.py` + `script_profiler.py` + `consistency_checker.py`
+Three modules, one weekly cycle (`script_scan_weekly` → `brain.brain_engine --mode scan`):
 
-Auto-discovers new `.py` files — no registration step needed. New scripts appear in the next brain scan cycle.
+1. **`script_scanner.py`** — walks every active root in `system_config.brain_scan_roots`
+   (default: just `backend/`; add a root or flip `active` to bring `frontend/` into
+   scope once a TypeScript adapter exists — Python only today). For each script:
+   extracts hardcoded values that are candidates for `cfg()` migration, identifies
+   tables read/written and config keys used, generates the migration diff, registers
+   everything in `brain_script_registry`. Runs on every script, every cycle — cheap,
+   AST-based, no LLM call.
+2. **`script_profiler.py`** — only on scripts that are new or changed since the last
+   scan (diffed on `last_modified`). One LLM call per changed file: writes a plain-
+   English behavioral summary, explicit assumptions about every table/config resource
+   touched, and concrete flagged issues (dead code, missing error handling, logic that
+   contradicts its own docstring, etc.) — these become `CODE_SUGGESTION` proposals.
+3. **`consistency_checker.py`** — reads the assumptions every profiled script has
+   recorded, groups by shared table/config resource, and uses one batched LLM call to
+   flag genuine conflicts (e.g. one script writes a column as JSON, another reads it
+   as a comma-separated string) as `CONSISTENCY_CONFLICT` proposals.
 
-**Script patching — two phases:**
+Auto-discovers new `.py` files under any active root — no registration step needed.
 
-Phase 1 (default — `brain_script_patching_enabled = false`): brain detects hardcoded values, generates `SCRIPT_PATCH` proposals with unified diffs stored in `brain_proposals`. You review and apply manually.
-
-Phase 2 (opt-in — set to `true` in system_config): brain auto-applies `cfg()` migrations, backs up originals to `script_change_log`, commits to git with proposal ID in message. Rollback = `git revert` + restore from `script_change_log.backup_content`.
+**Script patching is always review-only.** Traced the actual mechanics: applying a
+SCRIPT_PATCH inside a GitHub Actions runner with no `git push` step doesn't persist
+anywhere — the runner is destroyed when the job ends. `SCRIPT_PATCH` proposals
+generate the diff for manual review/application; the brain never attempts to write
+or commit it. A real apply mechanism (PR-based, with proper git identity/permissions)
+is future work, not implemented here.
 
 ---
 
@@ -217,17 +267,6 @@ Manages open and closed positions via Telegram inline buttons. Integrates into `
 Button states: Enter, Skip, Watch, Update Price, Exit
 
 ---
-
-### `scheduler.yaml` + `scheduler_yaml.py` — Local Scheduler
-`scheduler.yaml` defines all jobs (schedule, command, timeout, failure handler).
-`scheduler_yaml.py` reads it via APScheduler — use when running on a VPS/local machine instead of GitHub Actions. More reliable than GH Actions for time-sensitive jobs.
-
-```bash
-python -m brain.scheduler_yaml              # start blocking scheduler (all jobs)
-python -m brain.scheduler_yaml --list       # list all jobs + next run times
-python -m brain.scheduler_yaml --cron       # print equivalent crontab (UTC)
-python -m brain.scheduler_yaml --run <job>  # run one job immediately
-```
 
 ---
 
@@ -331,15 +370,14 @@ See the integration block at the bottom of `brain/position_manager.py`.
 ## Scheduled Jobs
 
 ### GitHub Actions (`.github/workflows/brain_scheduler.yml`)
-Six jobs run automatically on separate cron triggers. Each job runs independently — a failure in one does not affect others.
+Five jobs run automatically on separate cron triggers. Each job runs independently — a failure in one does not affect others. There is no separate workflow for the weekly digest — `brain_full_weekly` computes weekly performance metrics and sends the digest itself, at the end of its own run.
 
 | Job | IST Schedule | UTC Cron | Mode | Timeout |
 |---|---|---|---|---|
 | `performance_tracking` | Mon–Fri 20:30 | `0 15 * * 1-5` | — | 15 min |
 | `brain_quant_midweek` | Wednesday 19:30 | `0 14 * * 3` | quant | 20 min |
-| `script_scan_weekly` | Saturday 10:00 | `30 4 * * 6` | scan | 10 min |
+| `script_scan_weekly` | Saturday 10:00 | `30 4 * * 6` | scan | 25 min |
 | `brain_full_weekly` | Sunday 19:30 | `0 14 * * 0` | full | 45 min |
-| `weekly_perf_digest` | Sunday 20:00 | `30 14 * * 0` | — | 5 min |
 | `expire_proposals` | Sunday 21:00 | `30 15 * * 0` | — | 2 min |
 
 Sunday jobs are time-gated 30–60 min apart to sequence: brain runs first, digest summarises its output, expire cleans up stale proposals last.
@@ -369,12 +407,6 @@ python -m brain.backtester_and_change_manager rollback <id>
 python -m brain.backtester_and_change_manager history
 python -m brain.backtester_and_change_manager history --n 50
 
-# Scheduler (local)
-python -m brain.scheduler_yaml                   # start blocking scheduler
-python -m brain.scheduler_yaml --list            # list all jobs + schedules
-python -m brain.scheduler_yaml --cron            # print crontab equivalent
-python -m brain.scheduler_yaml --run <job>       # run one job immediately
-
 # Performance (manual trigger)
 python -c "from brain.performance_tracker import run_performance_tracking; run_performance_tracking()"
 python -c "from brain.performance_tracker import send_weekly_telegram_summary; send_weekly_telegram_summary()"
@@ -390,8 +422,9 @@ python -c "from brain.performance_tracker import send_weekly_telegram_summary; s
 | Min signals for any statistic | 15 | `quant_analyzer.py` |
 | Min signals in backtest cohort | 10 | `backtester_and_change_manager.py` |
 | High-impact flag (>50% signal pool reduction) | always manual | `backtester_and_change_manager.py` |
-| `SCRIPT_PATCH` / `CODE_SUGGESTION` / `INSIGHT` | never auto-apply | `backtester_and_change_manager.py` |
+| `SCRIPT_PATCH` / `CODE_SUGGESTION` / `INSIGHT` / `CONSISTENCY_CONFLICT` / `ENGINE_PERFORMANCE` | never auto-apply | `backtester_and_change_manager.py` |
 | Engine weight bounds | 0.3× – 2.0× | `backtester_and_change_manager.py` |
+| Auto-apply policy | per-type, editable in `system_config.brain_auto_apply_policy` — manual approval always works regardless of mode | `backtester_and_change_manager.py` |
 | LLM confidence cap by sample size | n<20→0.60, n<50→0.75, n<100→0.85 | `brain_prompt.py` |
 | LLM reasoning chain required per proposal | rejects without it | `llm_synthesizer.py` |
 | Master kill switch | halts all brain activity immediately | `brain_engine.py` |

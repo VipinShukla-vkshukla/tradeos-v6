@@ -177,7 +177,7 @@ def build_market_context(sb, window_start, window_end_trade, window_end_calendar
     _news_start = window_start
     _news_end   = window_end_calendar
     news = (sb.table("market_news")
-            .select("headline,source,category,impact_type,parsed_symbols,news_date")
+            .select("headline,source,category,impact_type,magnitude,parsed_symbols,news_date")
             .gte("news_date", _news_start)
             .lte("news_date", _news_end)
             .order("news_date", desc=True)
@@ -200,7 +200,7 @@ def build_market_context(sb, window_start, window_end_trade, window_end_calendar
                           "eap_action,in_rule_engine,in_scanner")
                   .eq("date", last_td)
                   .in_("signal_type", ["PRIME_SETUP","BREAKOUT_SETUP","REENTRY_SETUP",
-                                       "BUY_CANDIDATE","STAGED_ENTRY"])
+                                       "BUY_CANDIDATE","STAGED_ENTRY","MOMENTUM_CONTINUATION"])
                   .order("score_adjusted", desc=True)
                   .limit(30).execute().data)
 
@@ -453,6 +453,7 @@ def build_prompt(ctx: dict, stock_intel: list[dict], window_start: str, window_e
     r   = ctx["regime"]
     fii = ctx["fii"]
     c   = ctx["cues"]
+    sector_impacts = ctx.get("sector_impacts", {})
 
     regime_label = r.get("predicted_regime") or r.get("regime", "UNKNOWN")
     regime_conf  = float(r.get("regime_confidence") or 0)
@@ -486,6 +487,8 @@ def build_prompt(ctx: dict, stock_intel: list[dict], window_start: str, window_e
         f"  DOW: {float(c.get('us_dow_chg_pct',0) or 0):+.2f}% | S&P: {float(c.get('sp500_chg_pct',0) or 0):+.2f}% | NQ: {float(c.get('us_nasdaq_chg_pct',0) or 0):+.2f}%",
         f"  Brent: ${c.get('brent_crude','?')} ({float(c.get('brent_chg_pct',0) or 0):+.2f}%) | "
         f"Gold: ${c.get('gold_price','?')} | USD/INR: ₹{c.get('usd_inr','?')} ({float(c.get('usd_inr_chg_pct',0) or 0):+.3f}%)",
+        f"  US 10yr: {c.get('us_10yr_yield','?')}% ({float(c.get('us_10yr_chg_bps',0) or 0):+.0f}bps)"
+        f" [{sector_impacts.get('us10yr_signal','?')}]",
     ]
 
     if ctx["sector_impacts"]:
@@ -522,7 +525,9 @@ def build_prompt(ctx: dict, stock_intel: list[dict], window_start: str, window_e
 
     lines += ["", "═══ MARKET NEWS (last 24h) ═══"]
     for n in ctx["news"][:25]:
-        lines.append(f"  [{n.get('source','?')}] {n.get('headline','')[:130]}")
+        mag = n.get("magnitude") or ""
+        mag_str = f"[{mag}] " if mag else ""
+        lines.append(f"  [{n.get('source','?')}] {mag_str}{n.get('impact_type','?')} | {n.get('headline','')[:120]}")
 
     lines += ["", "═══ UPCOMING EVENTS (next 14 days) ═══"]
     for e in ctx["events"][:12]:
@@ -572,7 +577,7 @@ def build_prompt(ctx: dict, stock_intel: list[dict], window_start: str, window_e
         "═══ VALIDATED SIGNAL CANDIDATES (post step-15 gate filtering) ═══\n"
         "  These stocks passed 11 technical gates: ATR-normalised zone, R:R viability,\n"
         "  structural breakdown check, risk_score, liquidity, lifecycle, momentum gates.\n"
-        "  Signal quality: PRIME_SETUP > BREAKOUT_SETUP > REENTRY_SETUP > BUY_CANDIDATE\n"
+        "  Signal quality: PRIME_SETUP > MOMENTUM_CONTINUATION > BREAKOUT_SETUP > REENTRY_SETUP > BUY_CANDIDATE\n"
         "  Your task: assess each against TODAY's macro/FII/news context. Output sentiment_modifier."
     )
     lines += ["", candidates_header]
@@ -685,6 +690,11 @@ Return a sentiment_modifier for EVERY symbol in the candidates list above.
     "exit_sectors": ["sector names FII is actively selling"],
     "confidence": "HIGH | MEDIUM | LOW",
     "key_signal_to_watch": "one specific data point that will confirm or deny this view"
+  },
+  "dii_outlook": {
+    "5session_signal": "STRONG_BUYING | BUYING | NEUTRAL | SELLING | STRONG_SELLING",
+    "absorbing_fii_selling": true,
+    "key_implication": "one line — floor signal (DII absorbing) or double pressure (both selling)"
   },
   "candidate_sentiment": [
     {

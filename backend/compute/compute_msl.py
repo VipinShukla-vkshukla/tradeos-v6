@@ -1613,7 +1613,7 @@ def compute_entry_zones(s: dict, strategy: str, regime_ctx: dict,
 
     if ez_high and close > ez_high * 1.03 and atr_14 > 0:
         hot_adjust_signals = sum([
-            momentum_state == "HOT",
+            momentum_state in ("HOT", "BUILDING"),
             momentum_phase in ("EXPANSION", "EARLY", "EXTENDED"),
             velocity_state == "ACCELERATING",
             struct_edge == "YES",

@@ -1394,7 +1394,7 @@ def log_screener_outcomes(sb, today: str, hold_days_list: list = None):
 
         try:
             past_rows = (
-                sb.table("msl_computed")
+                sb.table("master_shortlist")
                 .select("symbol,composite_score,engines_list,current_price,priority_rank")
                 .eq("date", past_date)
                 .execute()

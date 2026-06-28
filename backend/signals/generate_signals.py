@@ -66,6 +66,30 @@ from config import (
     is_kill_switch_active,
 )
 
+def _build_event_context(symbol: str, event_map: dict) -> dict:
+    """
+    Returns pre_results_flag, upcoming_event_type, upcoming_event_days
+    for a symbol. All nullable — no event = all None/False.
+    """
+    evt = event_map.get(symbol)
+    if not evt:
+        return {
+            "pre_results_flag":    False,
+            "upcoming_event_type": None,
+            "upcoming_event_days": None,
+        }
+    days     = int(evt.get("days_to_event") or 99)
+    purpose  = (evt.get("purpose") or "").upper()
+    is_results_event = any(
+        k in purpose
+        for k in ("RESULT", "DIVIDEND", "BOARD MEETING", "AGM", "EGM",
+                  "BONUS", "SPLIT", "RIGHTS", "FUND RAISING", "BUYBACK")
+    )
+    return {
+        "pre_results_flag":    is_results_event and days <= 5,
+        "upcoming_event_type": evt.get("purpose") if is_results_event else None,
+        "upcoming_event_days": days if is_results_event else None,
+    }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DYNAMIC CONFIG LOADER — reads all thresholds from system_config at runtime
@@ -98,6 +122,7 @@ def load_signal_thresholds() -> dict:
         "min_rr_BREAKOUT_SETUP":   cfg_float("min_rr_breakout",               1.4),
         "min_rr_REENTRY_SETUP":    cfg_float("min_rr_reentry",                1.1),
         "min_rr_STAGED_ENTRY":     cfg_float("min_rr_staged",                 1.0),
+        "min_rr_MOMENTUM_CONTINUATION": cfg_float("min_rr_momentum_cont",          0.9),
         "min_score_adj":           cfg_float("min_score_adjusted",             45.0),
         "prime_breakout_min":      cfg_float("prime_breakout_min",             55.0),
         "stop_buffer_pct":         cfg_float("stop_buffer_pct",                0.03),
@@ -204,7 +229,7 @@ def _load_atr_matrix() -> dict:
 
 ENTRY_SIGNAL_TYPES = frozenset({
     "BUY_CANDIDATE", "PRIME_SETUP", "BREAKOUT_SETUP",
-    "REENTRY_SETUP", "STAGED_ENTRY",
+    "REENTRY_SETUP", "STAGED_ENTRY", "MOMENTUM_CONTINUATION",
 })
 
 LATE_MATURITY  = frozenset({"LATE", "EXHAUSTED"})
@@ -737,6 +762,26 @@ def classify_entry_signal(msl_row: dict, open_map: dict,
         if breakout_readiness >= 60 and momentum_state in ("HOT", "BUILDING") and prebreak_tech_ok:
             return True, "BREAKOUT_SETUP", "breakout_readiness_high", {}
 
+    # MOMENTUM_CONTINUATION — HOT/BUILDING stock above zone, trend intact
+    # Fills the gap between PRIME (all conditions) and BUY_CANDIDATE (no type).
+    # Applies to strong trending stocks that passed Gate 4 (within ATR allowance)
+    # but missed PRIME (one condition absent) or BREAKOUT (ADX too high).
+    if (momentum_state in ("HOT", "BUILDING")
+            and momentum_phase in ("EXPANSION", "EARLY")
+            and velocity_state != "DECELERATING"
+            and trend_maturity not in LATE_MATURITY
+            and struct_edge == "YES"
+            and entry_timing_type in ("OPTIMAL", "CHASING", "REENTRY")):
+        mom_cont_tech_ok = (
+            (rsi_d == 0 or 52 <= rsi_d <= T.get("prime_rsi_d_max", 82))
+            and (rsi_w == 0 or rsi_w >= 54)
+            and (adx == 0 or adx >= 20)
+            and (vol_ratio == 0 or vol_ratio >= 1.0)
+            and (delivery_pct == 0 or delivery_pct >= 40)
+        )
+        if mom_cont_tech_ok:
+            return True, "MOMENTUM_CONTINUATION", "trend_continuation", {}
+
     # REENTRY_SETUP — with reentry thresholds
     reentry_flag = entry_timing_type == "REENTRY" or reentry_mode == "ELIGIBLE"
     if reentry_flag or below_zone:
@@ -801,6 +846,7 @@ def compute_adjusted_score(msl_row: dict, base_score: float,
     if signal_type == "PRIME_SETUP":      score += T["bonus_prime"]
     elif signal_type == "BREAKOUT_SETUP": score += T["bonus_breakout"]
     elif signal_type == "REENTRY_SETUP":  score += T["bonus_reentry"]
+    elif signal_type == "MOMENTUM_CONTINUATION":  score += T.get("bonus_momentum_cont", 2.0)
 
     if regime_name == "RISK OFF":
         score = round(score * 0.80, 1)   # steeper penalty — capital preservation mode
@@ -877,6 +923,29 @@ def generate(run_date: date | None = None) -> list:
     sb = get_supabase()
     sectors    = sb.table("sector_strength").select("sector,rank").eq("date", str(run_date)).execute().data
     sector_rank = {s["sector"]: s["rank"] for s in sectors if s.get("rank")}
+
+    # ── Event map: pre-results / corporate action flag ────────────────────
+    # Built here — after load_today_data() so msl list is available,
+    # and after sb is defined. Does NOT block signals — enriches them.
+    event_map: dict[str, dict] = {}
+    try:
+        msl_symbols = [r["symbol"] for r in msl if r.get("symbol")]
+        if msl_symbols:
+            event_rows = (
+                sb.table("nifty_upcoming_events")
+                  .select("symbol,purpose,details,event_date,days_to_event")
+                  .in_("symbol", msl_symbols)
+                  .gte("days_to_event", 0)
+                  .lte("days_to_event", 7)
+                  .execute().data
+            )
+            for r in sorted(event_rows, key=lambda x: int(x.get("days_to_event") or 99)):
+                if r["symbol"] not in event_map:
+                    event_map[r["symbol"]] = r
+            if event_map:
+                logger.info(f"  Event map: {len(event_map)} symbols have events within 7 days")
+    except Exception as e:
+        logger.warning(f"  Event map load failed (non-fatal): {e}")
 
     cfg_ctl = strat_cfg.get("CTL", {})
     cfg_sbs = strat_cfg.get("SBS", {})
@@ -993,6 +1062,22 @@ def generate(run_date: date | None = None) -> list:
         else:
             position_state = "WATCHING"
             signal_type    = "WATCH"
+            # Derive descriptive subtype from filter_reason so signal_subtype
+            # is never blank — makes Brain queries and manual review cleaner.
+            if not signal_subtype:
+                _fr = (filter_reason or "").lower()
+                if "chase" in _fr:             signal_subtype = "WATCH_ATR_CHASE"
+                elif "rr" in _fr:              signal_subtype = "WATCH_RR"
+                elif "breakdown" in _fr:       signal_subtype = "WATCH_BREAKDOWN"
+                elif "below_zone" in _fr:      signal_subtype = "WATCH_BELOW_ZONE"
+                elif "missing" in _fr:         signal_subtype = "WATCH_NO_DATA"
+                elif "target" in _fr:          signal_subtype = "WATCH_TARGET_REACHED"
+                elif "extended" in _fr:        signal_subtype = "WATCH_EXTENDED"
+                elif "lifecycle" in _fr:       signal_subtype = "WATCH_LIFECYCLE"
+                elif "risk" in _fr:            signal_subtype = "WATCH_HIGH_RISK"
+                elif "liquidity" in _fr:       signal_subtype = "WATCH_LIQUIDITY"
+                elif "low_adj" in _fr:         signal_subtype = "WATCH_LOW_SCORE"
+                else:                          signal_subtype = "WATCH_OTHER"
             if not show_watch:
                 continue
 
@@ -1128,6 +1213,10 @@ def generate(run_date: date | None = None) -> list:
             # Tells step 19 exactly WHY this stock is WATCH and how far it is from qualifying
             # Step 19 uses this to decide if today's macro/news context changes the answer
             "near_miss_data": json.dumps(near_miss_data) if near_miss_data else None,
+            # ── Pre-results / corporate action context ────────────────────
+            # Signals are NOT blocked. These fields surface in send_alerts
+            # so the trader can apply their own position-sizing judgment.
+            **_build_event_context(sym, event_map),
         }
         signals.append(sig)
 
@@ -1186,6 +1275,28 @@ def main():
         for reason, count in watch_reasons.most_common(10):
             examples = [s["symbol"] for s in watch_signals if s.get("filter_reason") == reason][:4]
             logger.info(f"    {reason}: {count} — {', '.join(examples)}")
+        if not DRY_RUN:
+            try:
+                _sb_wr = get_supabase()
+                _signal_date = (watch_signals[0]["date"] if watch_signals else str(today_ist()))
+                watch_reason_rows = [
+                    {
+                        "date":            _signal_date,
+                        "filter_reason":   reason or "unknown",
+                        "count":           cnt,
+                        "example_symbols": [
+                            s["symbol"] for s in watch_signals
+                            if s.get("filter_reason") == reason
+                        ][:6],
+                    }
+                    for reason, cnt in watch_reasons.most_common()
+                ]
+                _sb_wr.table("signal_watch_reasons").upsert(
+                    watch_reason_rows, on_conflict="date,filter_reason"
+                ).execute()
+                logger.info(f"  ✓ Watch reasons written: {len(watch_reason_rows)} categories")
+            except Exception as _e:
+                logger.warning(f"  signal_watch_reasons write failed (non-fatal): {_e}")
 
     if prime_setups:
         prime_str = ", ".join(

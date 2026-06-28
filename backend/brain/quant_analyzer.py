@@ -99,7 +99,15 @@ def analyze_threshold_sensitivity(signals: pd.DataFrame, config: dict,
             continue
 
         type_col = next((c for c in ["signal_subtype","signal_type"] if c in ev.columns), None)
-        if type_col:
+        if signal_group.startswith("regime:"):
+            regime_val = signal_group.split(":", 1)[1]
+            regime_col = next((c for c in ["regime","active_regime"] if c in ev.columns), None)
+            if regime_col:
+                mask = ev[regime_col] == regime_val
+                subset = ev[mask][[field,"outcome_win","max_fwd_return"]].dropna(subset=[field])
+            else:
+                subset = pd.DataFrame()
+        elif type_col:
             mask = ev[type_col].str.lower().str.contains(signal_group, na=False)
             subset = ev[mask][[field,"outcome_win","max_fwd_return"]].dropna(subset=[field])
         else:
@@ -182,6 +190,127 @@ def analyze_threshold_sensitivity(signals: pd.DataFrame, config: dict,
                 })
 
     logger.info(f"  Threshold sensitivity: {len(findings)} proposals")
+    return findings
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1b. SCORE COMPONENT SENSITIVITY
+# ─────────────────────────────────────────────────────────────────────────────
+
+def analyze_score_component_sensitivity(signals: pd.DataFrame, config: dict,
+                                          registry=None) -> list[dict]:
+    """
+    Additive score bonus/penalty magnitudes (score_bonus_*, score_penalty_*,
+    industry_bonus_*) tied to a condition — e.g. "+2 if psar_dual_confirmed".
+
+    Different mechanism from threshold sensitivity above: these don't filter
+    which signals exist, they nudge score on signals that already qualified.
+    Evidence is the win-rate gap between signals where the condition held vs
+    didn't; the proposal scales the magnitude toward that gap. This does NOT
+    simulate the downstream effect of a magnitude change on ranking/selection
+    (that would mean re-running the screener counterfactually) — it validates
+    that the underlying evidence is real and the current magnitude is roughly
+    sized to it, nothing more. SCORE_WEIGHT_CHANGE defaults to review-only
+    in the auto-apply policy for exactly this reason.
+    """
+    ev = _evaluable(signals)
+    if len(ev) < MIN_SAMPLES * 2:
+        return []
+
+    comp_map = registry.score_component_map if registry else {}
+    findings = []
+
+    for cfg_key, spec in comp_map.items():
+        field = spec["field"]
+        if field not in ev.columns:
+            continue
+        current_val = _safe_float(config.get(cfg_key, {}).get("value"))
+        if current_val is None:
+            continue
+
+        op  = spec["op"]
+        col = ev[field]
+
+        try:
+            if op == "eq":
+                mask = col == spec["value"]
+            elif op == "gte":
+                mask = pd.to_numeric(col, errors="coerce") >= spec["value"]
+            elif op == "gte_cfg":
+                cutoff = _safe_float(config.get(spec["value"], {}).get("value"))
+                if cutoff is None:
+                    continue
+                mask = pd.to_numeric(col, errors="coerce") >= cutoff
+            elif op == "range":
+                lo, hi = spec["value"]
+                numeric = pd.to_numeric(col, errors="coerce")
+                mask = numeric >= lo
+                if hi is None:
+                    cutoff = _safe_float(config.get("risk_penalty_threshold", {}).get("value"))
+                    mask = mask & (numeric < cutoff) if cutoff is not None else mask & False
+                else:
+                    mask = mask & (numeric < hi)
+            else:
+                continue
+        except Exception:
+            continue
+
+        mask = mask.fillna(False)
+        with_cond, without_cond = ev[mask], ev[~mask]
+        n_with, n_without = len(with_cond), len(without_cond)
+        if n_with < MIN_PROPOSAL or n_without < MIN_PROPOSAL:
+            continue
+
+        wr_with, wr_without = _win_rate(with_cond), _win_rate(without_cond)
+        if wr_with is None or wr_without is None:
+            continue
+
+        gap        = wr_with - wr_without
+        is_penalty = current_val < 0
+
+        if not is_penalty:
+            if gap > 12:
+                proposed, direction = round(current_val * 1.10, 2), "increase_bonus"
+            elif gap < 3:
+                proposed, direction = round(current_val * 0.90, 2), "decrease_bonus"
+            else:
+                continue
+        else:
+            if gap < -12:
+                proposed, direction = round(current_val * 1.10, 2), "increase_penalty"
+            elif gap > -3:
+                proposed, direction = round(current_val * 0.90, 2), "decrease_penalty"
+            else:
+                continue
+
+        # Don't trust a magnitude read off a sliver of the population either way
+        pop_share   = n_with / (n_with + n_without) * 100
+        high_impact = pop_share < 5 or pop_share > 95
+
+        findings.append({
+            "type":      "SCORE_WEIGHT_CHANGE",
+            "key":       cfg_key,
+            "field":     field,
+            "current":   current_val,
+            "proposed":  proposed,
+            "direction": direction,
+            "wr_with":   wr_with,
+            "wr_without": wr_without,
+            "delta_wr":  round(gap, 1),
+            "sample_size": int(n_with + n_without),
+            "condition_share_pct": round(pop_share, 1),
+            "high_impact": high_impact,
+            "evidence_summary": (
+                f"Signals where {cfg_key}'s condition holds ({field}, n={n_with}, "
+                f"{pop_share:.0f}% of pool) win {wr_with:.0f}% vs {wr_without:.0f}% "
+                f"otherwise ({gap:+.1f}pp). Current magnitude {current_val} → {proposed}."
+            ),
+            "confidence": min(0.70, 0.45 + abs(gap)/100 + min(n_with, n_without)/400),
+            "source": "quant",
+            "priority": 4,
+        })
+
+    logger.info(f"  Score component sensitivity: {len(findings)} proposals")
     return findings
 
 
@@ -736,6 +865,7 @@ def run_analysis(dataset: dict, registry=None) -> dict:
  
     findings = {
         "threshold_proposals":    analyze_threshold_sensitivity(signals, config, registry),
+        "score_component_findings": analyze_score_component_sensitivity(signals, config, registry),
         "engine_performance":     analyze_engine_performance(signals, registry),
         "score_correlations":     analyze_score_correlation(signals),
         "categorical_analysis":   analyze_categorical_fields(signals, registry),
@@ -756,6 +886,7 @@ def run_analysis(dataset: dict, registry=None) -> dict:
     }
 
     total = (len(findings["threshold_proposals"])
+             + len(findings["score_component_findings"])
              + len(findings["engine_performance"])
              + len(findings["regime_engine_interactions"])
              + len(findings["improvement_insights"]))

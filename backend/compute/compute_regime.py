@@ -1338,6 +1338,7 @@ def write_regime(sb, effective_date, mode, regime, score, breakdown, today_row, 
         "usdinr_5d_chg":   today_row.get("usdinr_5d_chg"),
         "midcap_breadth":  today_row.get("midcap_breadth"),
         "smallcap_breadth": today_row.get("smallcap_breadth"),
+        "nifty_pcr":        today_row.get("nifty_pcr"),
         "raw_data": json.dumps(raw_data) if raw_data else None,
     }
 

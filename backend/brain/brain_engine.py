@@ -2,13 +2,15 @@
 TradeOS v6 — Brain Engine v2: Orchestrator
 ============================================
 Full holistic pipeline:
-  script_scanner → data_aggregator → quant_analyzer → backtester
-  → llm_synthesizer → change_manager → performance_tracker → Telegram
+  script_scanner (+ behavioral profiler + consistency checker)
+  → data_aggregator → quant_analyzer → llm_synthesizer
+  → backtester (quant AND llm proposals, same mechanism)
+  → change_manager (per-type auto-apply policy) → performance_tracker → Telegram
 
 Modes:
-  full   — everything including LLM and script scanning (weekly)
-  quant  — quant + backtest + proposals, no LLM (mid-week)
-  scan   — script scan only (reports hardcoded values, no proposals)
+  full   — everything including LLM, script scanning/profiling, weekly digest (weekly)
+  quant  — quant + backtest + proposals, no LLM, no scan (mid-week)
+  scan   — script scan + profiling + consistency check only (no trading-data analysis)
   dry    — full analysis, no writes
 """
 
@@ -23,7 +25,7 @@ from typing import Optional
 from loguru import logger
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import get_supabase, cfg, cfg_int, cfg_float, is_kill_switch_active
+from config import get_supabase, cfg, cfg_int, is_kill_switch_active
 
 from brain.data_aggregator   import build_analysis_dataset
 from brain.quant_analyzer    import run_analysis
@@ -40,14 +42,40 @@ def _make_run_id() -> str:
 
 
 def _merge_proposals(quant_validated: list, llm_proposals: list, max_total: int) -> list:
+    """
+    Normalize every finding type into the unified schema (target_key/current_value/
+    proposed_value) BEFORE dedup. Without this, any finding that doesn't carry a
+    "key" field (ENGINE_WEIGHT, ENGINE_PERFORMANCE, INSIGHT — i.e. everything except
+    THRESHOLD_CHANGE) has no target_key, fails the "if not k: continue" check below,
+    and is silently dropped — never saved, never visible, never reviewable.
+    """
     seen, merged = set(), []
     for p in quant_validated + llm_proposals:
-        # Normalize quant field names → unified schema
+        p = dict(p)  # never mutate the caller's dict
+        ptype = p.get("type", "")
+
         if "key" in p and "target_key" not in p:
-            p = dict(p)
-            p["target_key"]    = p.pop("key")
-            p["current_value"] = str(p.pop("current", ""))
-            p["proposed_value"]= str(p.pop("proposed", ""))
+            p["target_key"]     = p.pop("key")
+            p["current_value"]  = str(p.pop("current", ""))
+            p["proposed_value"] = str(p.pop("proposed", ""))
+
+        elif "target_key" not in p:
+            if ptype == "ENGINE_WEIGHT" and p.get("regime") and p.get("engine"):
+                p["target_key"]     = f"{p['regime']}:{p['engine']}"
+                p.setdefault("current_value", str(p.get("baseline", "")))
+                p.setdefault("proposed_value", p.get("direction", ""))
+            elif ptype == "ENGINE_PERFORMANCE" and p.get("engine"):
+                p["target_key"]      = f"engine_performance:{p['engine']}"
+                p.setdefault("current_value", str(p.get("win_rate", "")))
+                p.setdefault("proposed_value", p.get("direction", ""))
+            elif ptype == "INSIGHT":
+                basis = (p.get("suggested_rule")
+                         or "-".join(p.get("fields", []))
+                         or str(p.get("evidence_summary", ""))[:60])
+                p["target_key"] = f"insight:{basis}"[:120] if basis else None
+                p.setdefault("current_value", "")
+                p.setdefault("proposed_value", "")
+
         k = p.get("target_key")
         if not k or k in seen:
             continue
@@ -77,21 +105,29 @@ def run(mode: str = "full", dry_run: bool = False,
 
     # ── Script scan (full mode only) ─────────────────────────────────────
     script_scan_results = []
+    scan_proposals       = []
     if mode in ("full", "scan"):
-        logger.info("Step 1/6 — Scanning scripts for hardcoded values...")
+        logger.info("Step 1/6 — Scanning scripts (hardcode + behavioral profiling "
+                    "+ cross-script consistency)...")
         try:
-            from brain.script_scanner import ScriptScanner
-            scanner = ScriptScanner()
-            script_scan_results = scanner.scan_all()
-            report  = scanner.generate_scan_report(script_scan_results)
+            from brain.script_scanner import run_scan
+            script_scan_results, report, scan_proposals = run_scan()
             logger.info(report)
         except Exception as e:
             logger.warning(f"Script scan failed (non-fatal): {e}")
             errors.append({"step": "script_scanner", "error": str(e)})
 
     if mode == "scan":
+        scan_proposals = sorted(
+            scan_proposals,
+            key=lambda x: (int(x.get("priority", 5)), -float(x.get("confidence", 0)))
+        )[:max_proposals]
+        saved_ids = save_proposals(scan_proposals, run_id) if scan_proposals else []
+        pending   = get_pending_proposals(get_supabase())
+        send_telegram_digest(pending, run_id, auto_applied=0)
         return {"run_id": run_id, "status": "SCAN_ONLY",
-                "scripts_scanned": len(script_scan_results)}
+                "scripts_scanned": len(script_scan_results),
+                "new_proposals": len(saved_ids)}
 
     # ── Data loading ─────────────────────────────────────────────────────
     logger.info("Step 2/6 — Loading full dataset (SELECT * everywhere)...")
@@ -135,25 +171,11 @@ def run(mode: str = "full", dry_run: bool = False,
         errors.append({"step": "quant_analyzer", "error": str(e)})
         quant_findings = {}
 
-    # ── Backtest ─────────────────────────────────────────────────────────
-    logger.info("Step 4/6 — Backtesting quant proposals...")
-    quant_raw = (quant_findings.get("threshold_proposals", [])
-                 + quant_findings.get("engine_performance", [])
-                 + quant_findings.get("improvement_insights", []))
-    try:
-        import pandas as pd
-        quant_validated = run_backtests(
-            dataset.get("signals", pd.DataFrame()), quant_raw
-        )
-    except Exception as e:
-        logger.error(f"Backtesting failed: {e}")
-        errors.append({"step": "backtester", "error": str(e)})
-        quant_validated = []
-
-    # ── LLM synthesis (full mode only) ───────────────────────────────────
+    # ── LLM synthesis (full mode only) — moved BEFORE backtesting ─────────
+    logger.info("Step 4/6 — LLM synthesis (full data, all fields)..."
+                 if mode == "full" else "Step 4/6 — LLM synthesis skipped (mode=quant)")
     narrative, llm_proposals = {}, []
     if mode == "full":
-        logger.info("Step 5/6 — LLM synthesis (full data, all fields)...")
         try:
             from brain.llm_synthesizer import synthesize
             llm_proposals, narrative = synthesize(
@@ -165,11 +187,40 @@ def run(mode: str = "full", dry_run: bool = False,
         except Exception as e:
             logger.warning(f"LLM synthesis failed (non-fatal): {e}")
             errors.append({"step": "llm_synthesizer", "error": str(e), "fatal": False})
-    else:
-        logger.info("Step 5/6 — LLM synthesis skipped (mode=quant)")
+
+    # ── Backtest — quant findings AND LLM proposals, same mechanism ───────
+    # LLM-sourced THRESHOLD_CHANGE/ENGINE_WEIGHT proposals used to get a fake
+    # "always passes" stamp and could never be evidence-checked. Now they're
+    # reshaped (via the registry's threshold_map) into the exact same raw
+    # finding format quant proposals use, and run through the identical
+    # backtester — auto-apply can only ever fire on real, measured evidence.
+    logger.info("Step 5/6 — Backtesting all proposals (quant + LLM)...")
+    quant_raw = (quant_findings.get("threshold_proposals", [])
+                 + quant_findings.get("score_component_findings", [])
+                 + quant_findings.get("engine_performance", [])
+                 + quant_findings.get("improvement_insights", []))
+
+    llm_backtestable, llm_passthrough = [], []
+    if llm_proposals:
+        try:
+            from brain.llm_synthesizer import prepare_for_backtest
+            llm_backtestable, llm_passthrough = prepare_for_backtest(llm_proposals, registry)
+        except Exception as e:
+            logger.warning(f"  LLM backtest prep failed, treating LLM proposals as review-only: {e}")
+            llm_passthrough = llm_proposals
+
+    try:
+        import pandas as pd
+        validated = run_backtests(
+            dataset.get("signals", pd.DataFrame()), quant_raw + llm_backtestable
+        )
+    except Exception as e:
+        logger.error(f"Backtesting failed: {e}")
+        errors.append({"step": "backtester", "error": str(e)})
+        validated = []
 
     # ── Merge and save ───────────────────────────────────────────────────
-    all_proposals = _merge_proposals(quant_validated, llm_proposals, max_proposals)
+    all_proposals = _merge_proposals(validated, llm_passthrough, max_proposals)
 
     logger.info(f"\n{'═'*60}")
     logger.info(f"BRAIN SUMMARY: {len(all_proposals)} proposals")
@@ -198,6 +249,22 @@ def run(mode: str = "full", dry_run: bool = False,
     auto_applied = process_auto_approvals(dataset.get("config", {}))
     pending      = get_pending_proposals(sb)
     send_telegram_digest(pending, run_id, auto_applied=auto_applied)
+
+    # ── Weekly performance digest — only on the full weekly cycle ─────────
+    # This replaces the separate brain_sunday_chain.yml workflow. That workflow
+    # fired on every completion of brain_scheduler.yml (up to 9x/week, not just
+    # after the Sunday run), and the weekly grain it reported on was never
+    # actually computed (its only caller never runs on a Sunday). Computing
+    # and sending it here means it happens exactly once, exactly when this
+    # job itself runs.
+    if mode == "full":
+        try:
+            from brain.performance_tracker import send_weekly_telegram_summary
+            run_performance_tracking(for_date=date.today())
+            send_weekly_telegram_summary(for_date=date.today())
+        except Exception as e:
+            logger.warning(f"Weekly performance digest failed (non-fatal): {e}")
+            errors.append({"step": "weekly_digest", "error": str(e), "fatal": False})
 
     # ── Log run ───────────────────────────────────────────────────────────
     elapsed = time.time() - start

@@ -7,9 +7,14 @@ name: TradeOS Brain Scheduler
 # Sun     19:30 IST  → brain_full_weekly        (0 14 * * 0)
 # Sun     21:00 IST  → expire_proposals         (30 15 * * 0)
 #
-# NOTE: weekly_perf_digest is NOT here. It lives in brain_sunday_chain.yml
-# and triggers automatically when brain_full_weekly completes — this
-# guarantees correct ordering regardless of GH Actions scheduling delays.
+# weekly_perf_digest no longer lives in a separate workflow. It used to be in
+# brain_sunday_chain.yml, triggered via workflow_run — but that trigger fires
+# on ANY completion of THIS workflow (all 5 schedules above, ~9 runs/week),
+# not specifically after brain_full_weekly, so the digest was firing far more
+# often than intended. It's now sent directly from inside brain_full_weekly's
+# own job (brain_engine.run(mode="full") computes weekly metrics and sends the
+# digest in the same process) — exactly once, exactly when this job runs.
+# brain_sunday_chain.yml should be deleted from the repo; it's no longer used.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -125,11 +130,16 @@ jobs:
 
 # ═════════════════════════════════════════════════════════════════════════════
 # JOB 3 — Script Scanner (Saturday 10:00 IST)
+# Now also runs behavioral profiling (new/changed scripts only) and the
+# cross-script consistency check — both LLM-based, hence the AI provider key
+# below, which this job didn't need/have before. Timeout raised accordingly:
+# was fine at 10 min for pure AST scanning, tight once it's making one LLM
+# call per changed file plus one batched consistency-check call.
 # ═════════════════════════════════════════════════════════════════════════════
   script_scan_weekly:
     name: "🔍 Script Scanner (Weekly)"
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     if: |
       github.event.schedule == '30 4 * * 6' ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'script_scan_weekly')
@@ -147,12 +157,21 @@ jobs:
           pip install -r requirements.txt
           pip install apscheduler pyyaml scipy
 
-      - name: Run script scanner
+      - name: Run script scanner (scan + profile + consistency check)
         env:
           SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DEEPSEEK_API_KEY:       ${{ secrets.DEEPSEEK_API_KEY }}
+          ANTHROPIC_API_KEY:      ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY:         ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY:         ${{ secrets.GEMINI_API_KEY }}
+          GROK_API_KEY:           ${{ secrets.GROK_API_KEY }}
+          AZURE_OPENAI_API_KEY:   ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_ENDPOINT:  ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python -c "from brain.script_scanner import run_scan; run_scan()"
+          python -m brain.brain_engine --mode scan
 
       - name: Upload logs on failure
         if: failure()
@@ -164,8 +183,8 @@ jobs:
 
 # ═════════════════════════════════════════════════════════════════════════════
 # JOB 4 — Brain Full Weekly (Sunday 19:30 IST)
-# When this job completes successfully, brain_sunday_chain.yml auto-fires
-# to run weekly_perf_digest — no clock-time dependency, always in order.
+# Now also computes + sends the weekly performance digest directly at the end
+# of its own run (brain_engine.py, mode="full") — see note at top of file.
 # ═════════════════════════════════════════════════════════════════════════════
   brain_full_weekly:
     name: "🧠 Brain Full (Weekly)"

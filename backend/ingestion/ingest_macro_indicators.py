@@ -187,42 +187,93 @@ def fetch_india_vix() -> dict | None:
     """
     return fetch_yahoo_finance("%5EINDIAVIX", "INDIA_VIX")
 
+# Two separate header sets — NSE checks these carefully
+_NSE_PAGE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Cache-Control": "max-age=0",
+}
+
+_NSE_API_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Referer": "https://www.nseindia.com/option-chain",   # ← critical: NSE validates this
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+    "X-Requested-With": "XMLHttpRequest",
+}
+
+
 def fetch_nifty_pcr(sb) -> dict | None:
     """
-    Fetch Nifty Put/Call ratio from NSE option chain API.
-    Falls back to last stored value if market is closed or OI is zero.
+    Nifty PCR from NSE option chain API.
+
+    NSE requires a 3-step warm-up and separate header sets for pages vs API:
+      Step 1: GET nseindia.com           — seeds base cookies (_ga, nseappid etc.)
+      Step 2: GET nseindia.com/option-chain — seeds bm_*, ak_* CDN cookies
+      Step 3: GET API with Referer set   — NSE validates Referer + cookie bundle
+
+    Without the correct Referer + Sec-Fetch headers on step 3, NSE returns 404
+    even if the cookies are present.
     """
+    session = requests.Session()
     try:
-        session = requests.Session()
-        session.get("https://www.nseindia.com", headers=HEADERS, timeout=10)
+        # Step 1 — seed base cookies
+        r1 = session.get("https://www.nseindia.com", headers=_NSE_PAGE_HEADERS, timeout=15)
+        logger.debug(f"NSE warm-up step 1: HTTP {r1.status_code} | cookies: {len(session.cookies)}")
+        time.sleep(2)
+
+        # Step 2 — seed option-chain page cookies (bm_sz, ak_bmsc etc.)
+        r2 = session.get("https://www.nseindia.com/option-chain", headers=_NSE_PAGE_HEADERS, timeout=15)
+        logger.debug(f"NSE warm-up step 2: HTTP {r2.status_code} | cookies: {len(session.cookies)}")
         time.sleep(1)
+
+        # Step 3 — actual API call with correct Referer + API headers
         resp = session.get(
             "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY",
-            headers=HEADERS,
-            timeout=15
+            headers=_NSE_API_HEADERS,
+            timeout=20,
         )
+        logger.debug(f"NSE PCR API: HTTP {resp.status_code}")
+
         if resp.status_code != 200:
-            logger.debug(f"NSE PCR API returned HTTP {resp.status_code}")
+            logger.warning(f"NSE PCR API: HTTP {resp.status_code} — falling back to last stored value")
             return _load_last_pcr(sb)
 
-        data     = resp.json()
-        filtered = data.get("filtered", {})
+        # Validate it's actually JSON before parsing (NSE sometimes returns HTML on auth fail)
+        content_type = resp.headers.get("Content-Type", "")
+        if "application/json" not in content_type and "text/json" not in content_type:
+            logger.warning(f"NSE PCR: unexpected Content-Type '{content_type}' — likely auth redirect")
+            return _load_last_pcr(sb)
+
+        payload  = resp.json()
+        filtered = payload.get("filtered", {})
         put_oi   = filtered.get("PE", {}).get("totOI", 0)
         call_oi  = filtered.get("CE", {}).get("totOI", 0)
-        logger.debug(f"raw OI → put={put_oi} call={call_oi}")
+        logger.debug(f"NSE PCR raw OI — put={put_oi:,}  call={call_oi:,}")
 
-        # Zero OI = market closed or no data — don't store, use last value
-        if call_oi == 0 or put_oi == 0:
-            logger.info("  Nifty PCR: zero OI detected (market closed) — using last stored value")
+        if call_oi == 0:
+            logger.info("Nifty PCR: zero call OI (market closed) — using last stored value")
             return _load_last_pcr(sb)
 
-        # Sanity check — PCR outside 0.3–3.0 is almost certainly bad data
         pcr = round(put_oi / call_oi, 3)
         if not (0.3 <= pcr <= 3.0):
-            logger.warning(f"  Nifty PCR: value {pcr} outside valid range — using last stored value")
+            logger.warning(f"Nifty PCR {pcr} outside valid range — using last stored value")
             return _load_last_pcr(sb)
 
-        logger.debug(f"  NSE PCR: put_oi={put_oi} call_oi={call_oi} pcr={pcr}")
+        logger.info(f"Nifty PCR: {pcr}  (put_oi={put_oi:,} / call_oi={call_oi:,})")
         return {
             "indicator_name":  "NIFTY_PCR",
             "indicator_value": pcr,
@@ -232,40 +283,94 @@ def fetch_nifty_pcr(sb) -> dict | None:
         }
 
     except Exception as e:
-        logger.debug(f"NSE PCR fetch failed (non-fatal): {e}")
+        logger.warning(f"Nifty PCR fetch failed (non-fatal): {e}")
         return _load_last_pcr(sb)
+    finally:
+        session.close()
 
 
 def _load_last_pcr(sb) -> dict | None:
+    """
+    Returns the most recent non-zero PCR from Supabase, re-dated to today.
+    This covers weekends, market holidays, and API failures without storing
+    a synthetic default that would pollute the fallback chain next run.
+    Falls back to 1.0 (neutral) only if the table is genuinely empty.
+    """
     try:
-        rows = (sb.table("macro_indicators")
-                  .select("indicator_value,indicator_date")
-                  .eq("indicator_name", "NIFTY_PCR")
-                  .gt("indicator_value", 0)
-                  .order("indicator_date", desc=True)
-                  .limit(1)
-                  .execute().data)
+        rows = (
+            sb.table("macro_indicators")
+              .select("indicator_value, indicator_date")
+              .eq("indicator_name", "NIFTY_PCR")
+              .gt("indicator_value", 0)
+              .not_.in_("source", ["DEFAULT_NEUTRAL"])        # skip our own synthetics
+              .order("indicator_date", desc=True)
+              .limit(1)
+              .execute().data
+        )
         if rows:
-            val  = float(rows[0]["indicator_value"])
-            date = rows[0]["indicator_date"]
-            logger.info(f"  Nifty PCR: using last stored value {val} from {date}")
+            val       = float(rows[0]["indicator_value"])
+            from_date = rows[0]["indicator_date"]
+            logger.info(f"Nifty PCR: using cached {val} from {from_date}")
             return {
                 "indicator_name":  "NIFTY_PCR",
                 "indicator_value": val,
                 "indicator_date":  str(today_ist()),
                 "source":          "NSE_OPTION_CHAIN_CACHED",
-                "release_date":    date,
+                "release_date":    from_date,
                 "is_cached":       True,
             }
     except Exception as e:
-        logger.warning(f"  Nifty PCR DB fallback failed: {e}")
+        logger.warning(f"Nifty PCR DB fallback failed: {e}")
 
-    # ── NEW: neutral default when DB is also empty ──────────────────────────
-    default_pcr = 1.0   # neutral default — cfg_float not imported in this module
-    logger.warning(f"  Nifty PCR: no cached value found — using neutral default {default_pcr}")
+    logger.warning("Nifty PCR: no real value in DB — returning neutral default 1.0")
     return {
         "indicator_name":  "NIFTY_PCR",
-        "indicator_value": default_pcr,
+        "indicator_value": 1.0,
+        "indicator_date":  str(today_ist()),
+        "source":          "DEFAULT_NEUTRAL",
+        "release_date":    str(today_ist()),
+        "is_cached":       True,
+    }
+
+
+def _load_last_pcr(sb) -> dict | None:
+    """
+    Returns the most recent *real* PCR from Supabase, re-dated to today.
+    Excludes DEFAULT_NEUTRAL and CACHED rows so synthetic values don't
+    cascade — i.e. we always fall back to the last actual NSE reading.
+    Returns neutral 1.0 only when the table has never had a real value.
+    """
+    try:
+        rows = (
+            sb.table("macro_indicators")
+              .select("indicator_value, indicator_date")
+              .eq("indicator_name", "NIFTY_PCR")
+              .gt("indicator_value", 0)
+              .neq("source", "DEFAULT_NEUTRAL")           # not_.in_() silently fails in supabase-py
+              .neq("source", "NSE_OPTION_CHAIN_CACHED")   # don't cascade stale cached rows
+              .order("indicator_date", desc=True)
+              .limit(1)
+              .execute().data
+        )
+        if rows:
+            val       = float(rows[0]["indicator_value"])
+            from_date = rows[0]["indicator_date"]
+            logger.info(f"Nifty PCR: using last real value {val} from {from_date}")
+            return {
+                "indicator_name":  "NIFTY_PCR",
+                "indicator_value": val,
+                "indicator_date":  str(today_ist()),
+                "source":          "NSE_OPTION_CHAIN_CACHED",
+                "release_date":    from_date,
+                "is_cached":       True,
+            }
+    except Exception as e:
+        logger.warning(f"Nifty PCR DB fallback failed: {e}")
+
+    logger.warning("Nifty PCR: no real value in DB yet — returning neutral default 1.0")
+    return {
+        "indicator_name":  "NIFTY_PCR",
+        "indicator_value": 1.0,
         "indicator_date":  str(today_ist()),
         "source":          "DEFAULT_NEUTRAL",
         "release_date":    str(today_ist()),

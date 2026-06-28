@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from brain.brain_prompt import get_system_prompt
 
 VALID_TYPES = {
-    "THRESHOLD_CHANGE", "ENGINE_WEIGHT", "REGIME_WEIGHT",
+    "THRESHOLD_CHANGE", "ENGINE_WEIGHT", "REGIME_WEIGHT", "SCORE_WEIGHT_CHANGE",
     "SCRIPT_PATCH", "CODE_SUGGESTION", "INSIGHT",
 }
 
@@ -190,7 +190,7 @@ Return a single valid JSON object with exactly these keys:
 {{
   "proposals": [
     {{
-      "type": "THRESHOLD_CHANGE|ENGINE_WEIGHT|REGIME_WEIGHT|SCRIPT_PATCH|CODE_SUGGESTION|INSIGHT",
+      "type": "THRESHOLD_CHANGE|ENGINE_WEIGHT|REGIME_WEIGHT|SCORE_WEIGHT_CHANGE|SCRIPT_PATCH|CODE_SUGGESTION|INSIGHT",
       "target_key": "<system_config key, script path, or descriptive name>",
       "current_value": "<exact current value as string>",
       "proposed_value": "<exact proposed value as string or JSON>",
@@ -277,7 +277,7 @@ def _validate_proposal(p: dict, config: dict) -> Optional[dict]:
     if p.get("low_signal_risk"):
         logger.warning(f"  Proposal {p.get('target_key')} flagged LOW_SIGNAL_RISK")
 
-    return {
+    result = {
         "type":             ptype,
         "target_key":       p.get("target_key"),
         "current_value":    str(p.get("current_value", "")),
@@ -293,11 +293,94 @@ def _validate_proposal(p: dict, config: dict) -> Optional[dict]:
             "market_logic_check":    p.get("market_logic_check", ""),
             "low_signal_risk":       p.get("low_signal_risk", False),
         },
-        "backtest_result": {
-            "valid": True, "passes": True,
-            "summary": "LLM synthesis — no mechanical backtest (see reasoning_chain).",
-        },
     }
+    if ptype not in ("THRESHOLD_CHANGE", "ENGINE_WEIGHT"):
+        # Review-only types never check wr_delta/auto-apply, so this stub is
+        # harmless here — it just means "no mechanical backtest applies".
+        # THRESHOLD_CHANGE/ENGINE_WEIGHT deliberately get NO backtest_result
+        # here — prepare_for_backtest() routes them through the same real
+        # backtester quant findings use, so auto-apply only fires on actual
+        # evidence, never on an LLM's self-reported confidence alone.
+        result["backtest_result"] = {
+            "valid": True, "passes": True,
+            "summary": "No mechanical backtest applies to this proposal type.",
+        }
+    return result
+
+
+def prepare_for_backtest(llm_proposals: list, registry=None) -> tuple[list, list]:
+    """
+    Splits validated LLM proposals into:
+      - backtestable: THRESHOLD_CHANGE/ENGINE_WEIGHT proposals reshaped into the
+        raw finding format run_backtests() expects (key/field/current/proposed/
+        direction, or regime/engine/direction) — these get run through the
+        EXACT SAME backtester quant findings use, so they can only auto-apply
+        on real, measured evidence, never on the LLM's self-reported confidence.
+      - passthrough: everything else, including backtestable-type proposals
+        whose target_key couldn't be resolved to a real field/engine — those
+        get an honest "couldn't mechanically verify" backtest_result instead
+        of the old blanket "always passes" stamp, so they land PENDING with a
+        clear reason rather than silently being treated as validated.
+    """
+    backtestable, passthrough = [], []
+    threshold_map = getattr(registry, "threshold_map", {}) if registry else {}
+
+    for p in llm_proposals:
+        ptype = p.get("type", "")
+        tkey  = p.get("target_key", "") or ""
+
+        if ptype == "THRESHOLD_CHANGE":
+            mapping = threshold_map.get(tkey)
+            current = proposed = None
+            try:
+                current  = float(p.get("current_value"))
+                proposed = float(p.get("proposed_value"))
+            except (TypeError, ValueError):
+                pass
+
+            if mapping and current is not None and proposed is not None:
+                field, _group, direction = mapping
+                backtestable.append({
+                    **p, "key": tkey, "field": field,
+                    "current": current, "proposed": proposed,
+                    "direction": direction,
+                })
+            else:
+                reason = ("current/proposed value not numeric" if current is None or proposed is None
+                          else f"'{tkey}' not in registry.threshold_map")
+                p = dict(p)
+                p["backtest_result"] = {"valid": False, "passes": False,
+                                         "summary": f"Could not mechanically backtest: {reason}. "
+                                                     f"Review manually."}
+                passthrough.append(p)
+            continue
+
+        if ptype == "ENGINE_WEIGHT":
+            current = proposed = None
+            try:
+                current  = float(p.get("current_value"))
+                proposed = float(p.get("proposed_value"))
+            except (TypeError, ValueError):
+                pass
+
+            if ":" in tkey and current is not None and proposed is not None:
+                regime, engine = tkey.split(":", 1)
+                direction = "OUTPERFORMING" if proposed > current else "UNDERPERFORMING"
+                backtestable.append({
+                    **p, "regime": regime.strip(), "engine": engine.strip(),
+                    "direction": direction,
+                })
+            else:
+                p = dict(p)
+                p["backtest_result"] = {"valid": False, "passes": False,
+                                         "summary": "Could not mechanically backtest: target_key must "
+                                                     "be 'REGIME:ENGINE' with numeric values. Review manually."}
+                passthrough.append(p)
+            continue
+
+        passthrough.append(p)
+
+    return backtestable, passthrough
 
 
 def synthesize(quant_findings: dict, dataset: dict,
@@ -354,7 +437,6 @@ def synthesize(quant_findings: dict, dataset: dict,
     narrative = data.get("narrative", {})
 
     # Build SCRIPT_PATCH proposals from scanner results (only source of actual diffs).
-    # LLM script_patch_proposals provides rationale text only — never the diff.
     # Build SCRIPT_PATCH proposals from scanner results (only source of actual diffs).
     # LLM script_patch_proposals provides rationale text only — never the diff.
     llm_rationale = {

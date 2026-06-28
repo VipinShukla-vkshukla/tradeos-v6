@@ -18,11 +18,17 @@ import pandas as pd
 from loguru import logger
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import get_supabase, cfg, cfg_float
+from config import get_supabase, cfg
 
 MIN_BACKTEST = 10
 MAX_CHANGE   = 0.30   # max 30% change per cycle
 HIGH_IMPACT  = 0.50   # >50% signal reduction = HIGH_IMPACT
+
+ENGINE_WEIGHT_MIN  = 0.3   # clamp floor — README has documented this since the start,
+ENGINE_WEIGHT_MAX  = 2.0   # the clamp itself was just never implemented until now
+ENGINE_WEIGHT_STEP = 0.10  # ±10% per cycle — must match backtest_engine_weight's
+                           # simulated delta exactly, or the backtested wr_delta
+                           # doesn't correspond to the change actually deployed
 
 
 def _metrics(df: pd.DataFrame) -> dict:
@@ -44,6 +50,52 @@ def _threshold_filter(df, field, val, direction):
     elif direction == "ceiling":
         return df[col <= val]
     return df
+
+
+def backtest_score_component(signals: pd.DataFrame, finding: dict) -> dict:
+    """
+    Validates a SCORE_WEIGHT_CHANGE finding. Unlike backtest_threshold, there's
+    no independent "what if we'd filtered at the proposed value" simulation
+    possible here — a score magnitude change doesn't filter signals, it
+    reshuffles downstream ranking, and simulating that would mean re-running
+    the screener's selection logic counterfactually (out of scope). This re-
+    applies the same safety caps (max change per cycle, minimum sample floor)
+    against the win-rate-gap evidence analyze_score_component_sensitivity
+    already computed, rather than re-deriving a different number from a
+    different angle. Said plainly in the summary, not just in this docstring.
+    """
+    current  = finding.get("current")
+    proposed = finding.get("proposed")
+    wr_with, wr_without = finding.get("wr_with"), finding.get("wr_without")
+    n        = finding.get("sample_size", 0)
+
+    if current is None or proposed is None or wr_with is None or wr_without is None:
+        return {"valid": False, "reason": "missing finding fields"}
+
+    if current != 0 and abs(proposed - current) / abs(current) > MAX_CHANGE:
+        return {"valid": False, "reason": f"change exceeds {MAX_CHANGE:.0%} safety cap"}
+
+    if n < MIN_BACKTEST * 2:  # both cohorts need to individually clear MIN_BACKTEST
+        return {"valid": False, "reason": f"insufficient samples: n={n}"}
+
+    wr_delta    = round(wr_with - wr_without, 1)
+    high_impact = bool(finding.get("high_impact", False))
+
+    return {
+        "valid":       True,
+        "passes":      abs(wr_delta) >= 3.0,  # gap has to be more than noise to act on
+        "high_impact": high_impact,
+        "wr_delta":    wr_delta,
+        "with":        {"count": int(n * finding.get("condition_share_pct", 50) / 100), "win_rate": wr_with},
+        "without":     {"win_rate": wr_without},
+        "summary": (
+            f"Condition-true: {wr_with:.0f}% WR. Condition-false: {wr_without:.0f}% WR. "
+            f"Δ={wr_delta:+.1f}pp on n={n}. Validated against the same evidence used to "
+            f"generate this finding — no independent re-simulation of downstream ranking effects."
+            + (" ⚠️ HIGH_IMPACT — condition covers <5% or >95% of the signal pool." if high_impact else "")
+        ),
+    }
+
 
 
 def backtest_threshold(signals: pd.DataFrame, finding: dict) -> dict:
@@ -117,7 +169,7 @@ def backtest_engine_weight(signals: pd.DataFrame, finding: dict) -> dict:
     base_wr   = float(base_topn["outcome_win"].mean())*100 \
                 if base_topn["outcome_win"].notna().any() else None
 
-    delta = 1.2 if direction == "OUTPERFORMING" else 0.8
+    delta = 1 + ENGINE_WEIGHT_STEP if direction == "OUTPERFORMING" else 1 - ENGINE_WEIGHT_STEP
     ev["_adj"] = ev.apply(
         lambda r: r["score_adjusted"] * delta if r["_has"] else r["score_adjusted"], axis=1
     )
@@ -126,14 +178,22 @@ def backtest_engine_weight(signals: pd.DataFrame, finding: dict) -> dict:
                if adj_topn["outcome_win"].notna().any() else None
 
     wr_delta = (adj_wr - base_wr) if (adj_wr and base_wr) else None
+
+    base_set   = set(base_topn.index)
+    adj_set    = set(adj_topn.index)
+    overlap_pct = (len(base_set & adj_set) / len(base_set) * 100) if base_set else 100
+    high_impact = overlap_pct < 50  # more than half the top-N changed
+
     return {
         "valid":     True,
         "passes":    wr_delta is not None and wr_delta >= 0,
-        "high_impact": False,
+        "high_impact": high_impact,
         "before":    {"count": top_n, "win_rate": round(base_wr,1) if base_wr else None},
         "after":     {"count": top_n, "win_rate": round(adj_wr,1) if adj_wr else None},
         "wr_delta":  round(wr_delta, 1) if wr_delta else None,
-        "summary":   f"Top-{top_n}: {base_wr:.0f}% → {adj_wr:.0f}% WR ({wr_delta:+.1f}pp)"
+        "summary":   (f"Top-{top_n}: {base_wr:.0f}% → {adj_wr:.0f}% WR ({wr_delta:+.1f}pp). "
+                      f"Candidate pool overlap: {overlap_pct:.0f}%."
+                      + (" ⚠️ HIGH_IMPACT" if high_impact else ""))
                      if wr_delta else "Insufficient data.",
     }
 
@@ -145,6 +205,8 @@ def run_backtests(signals: pd.DataFrame, quant_findings: list) -> list:
         try:
             if ftype == "THRESHOLD_CHANGE":
                 bt = backtest_threshold(signals, f)
+            elif ftype == "SCORE_WEIGHT_CHANGE":
+                bt = backtest_score_component(signals, f)
             elif ftype in ("ENGINE_PERFORMANCE","ENGINE_WEIGHT"):
                 bt = backtest_engine_weight(signals, f)
             else:
@@ -168,18 +230,35 @@ def run_backtests(signals: pd.DataFrame, quant_findings: list) -> list:
 # CHANGE MANAGER
 # ═══════════════════════════════════════════════════════════════════════
 
-AUTO_APPLICABLE = {"THRESHOLD_CHANGE","ENGINE_WEIGHT","REGIME_WEIGHT"}
-REVIEW_ONLY     = {"CODE_SUGGESTION","INSIGHT","SCRIPT_PATCH"}
+AUTO_APPLICABLE = {"THRESHOLD_CHANGE","ENGINE_WEIGHT","REGIME_WEIGHT","SCORE_WEIGHT_CHANGE"}
+REVIEW_ONLY     = {"CODE_SUGGESTION","INSIGHT","SCRIPT_PATCH",
+                    "ENGINE_PERFORMANCE","CONSISTENCY_CONFLICT"}
 
 
 def save_proposals(proposals: list, run_id: str) -> list:
     sb  = get_supabase()
     ids = []
+
+    existing_pending = {
+        (r["target_key"], r["proposal_type"])
+        for r in (sb.table("brain_proposals")
+                    .select("target_key,proposal_type")
+                    .eq("status", "PENDING")
+                    .execute().data or [])
+    }
+
+    skipped = 0
     for p in proposals:
+        ptype = p.get("type", "INSIGHT")
+        tkey  = p.get("target_key")
+        if (tkey, ptype) in existing_pending:
+            skipped += 1
+            continue
+
         row = {
             "analysis_run_id": run_id,
-            "proposal_type":   p.get("type","INSIGHT"),
-            "target_key":      p.get("target_key"),
+            "proposal_type":   ptype,
+            "target_key":      tkey,
             "current_value":   str(p.get("current_value","")) or None,
             "proposed_value":  str(p.get("proposed_value","")) or None,
             "rationale":       str(p.get("rationale",""))[:1000],
@@ -197,8 +276,11 @@ def save_proposals(proposals: list, run_id: str) -> list:
             r = sb.table("brain_proposals").insert(row).execute()
             if r.data:
                 ids.append(r.data[0]["id"])
+                existing_pending.add((tkey, ptype))  # guard within this same batch too
         except Exception as e:
             logger.error(f"  Save proposal failed: {e}")
+    if skipped:
+        logger.info(f"  Skipped {skipped} duplicate(s) of already-PENDING proposals")
     logger.info(f"  Saved {len(ids)}/{len(proposals)} proposals")
     return ids
 
@@ -225,13 +307,48 @@ def _log_config_change(sb, key, old_val, new_val, proposal_id, reason, changed_b
     }).execute()
 
 
+_DEFAULT_AUTO_APPLY_POLICY = {
+    "THRESHOLD_CHANGE":     {"mode": "auto",   "min_confidence": 0.75, "min_wr_delta_pp": 5.0},
+    "ENGINE_WEIGHT":        {"mode": "review"},
+    "SCORE_WEIGHT_CHANGE":  {"mode": "review"},
+    "SCRIPT_PATCH":         {"mode": "review"},
+    "CODE_SUGGESTION":      {"mode": "review"},
+    "CONSISTENCY_CONFLICT": {"mode": "review"},
+    "ENGINE_PERFORMANCE":   {"mode": "review"},
+    "INSIGHT":              {"mode": "review"},
+}
+
+
+def _get_auto_apply_policy() -> dict:
+    """
+    Per-type auto-apply policy, editable at system_config.brain_auto_apply_policy
+    without a code change. Falls back to the conservative default above if the
+    key is missing or malformed — never crashes the run over a bad JSON edit.
+    """
+    raw = cfg("brain_auto_apply_policy", "")
+    if not raw:
+        return _DEFAULT_AUTO_APPLY_POLICY
+    try:
+        policy = json.loads(raw)
+        if not isinstance(policy, dict):
+            return _DEFAULT_AUTO_APPLY_POLICY
+        return policy
+    except Exception as e:
+        logger.warning(f"  brain_auto_apply_policy malformed ({e}) — using defaults")
+        return _DEFAULT_AUTO_APPLY_POLICY
+
+
 def evaluate_auto_apply(proposal: dict) -> tuple[bool, str]:
     ptype = proposal.get("proposal_type","")
     if ptype in REVIEW_ONLY:
         return False, "review-only type"
 
-    conf_thresh = cfg_float("brain_auto_apply_confidence", 0.90)
-    wr_thresh   = cfg_float("brain_auto_apply_backtest_min", 5.0)
+    policy = _get_auto_apply_policy().get(ptype, {"mode": "review"})
+    if policy.get("mode") != "auto":
+        return False, f"{ptype} set to review in brain_auto_apply_policy"
+
+    conf_thresh = float(policy.get("min_confidence", 0.90))
+    wr_thresh   = float(policy.get("min_wr_delta_pp", 5.0))
     conf        = float(proposal.get("confidence") or 0)
 
     if conf < conf_thresh:
@@ -254,143 +371,6 @@ def evaluate_auto_apply(proposal: dict) -> tuple[bool, str]:
     return True, f"auto-apply: conf={conf:.2f}, wr_delta={wr_delta:.1f}pp"
 
 
-def _apply_script_patch(proposal_id: int, p: dict, reviewer: str, sb) -> bool:
-    """
-    Apply a unified diff from a SCRIPT_PATCH proposal to the actual file.
-    Called only when brain_script_patching_enabled=true AND manually approved.
-    """
-    import subprocess, sys
-    from pathlib import Path
-
-    script_path = p.get("target_key", "")   # e.g. "backend/ai/post_trade_analysis.py"
-    diff_text   = p.get("script_diff", "")
-
-    if not script_path or not diff_text:
-        logger.error(f"Proposal {proposal_id}: missing script_path or diff")
-        # Mark as FAILED rather than leaving PENDING
-        sb.table("brain_proposals").update({
-            "status": "FAILED",
-            "rationale": f"{p.get('rationale','')} [AUTO: Missing diff — regenerated manually]",
-        }).eq("id", proposal_id).execute()
-        return False
-
-    # Resolve to absolute path from backend/ root
-    backend_root = Path(__file__).parent.parent
-    abs_path     = backend_root / Path(script_path).relative_to("backend") \
-                   if script_path.startswith("backend/") else backend_root / script_path
-
-    if not abs_path.exists():
-        logger.error(f"Proposal {proposal_id}: file not found — {abs_path}")
-        return False
-
-    # Backup original content before touching anything
-    original = abs_path.read_text(encoding="utf-8")
-
-    # Write diff to a temp file and apply with patch
-    import patch as patch_lib, io
-    try:
-        pset = patch_lib.PatchSet()
-        pset.parse(io.BytesIO(diff_text.encode("utf-8")))
-        ok = pset.apply(root=str(abs_path.parent))
-
-        if not ok:
-            logger.error(f"Patch failed for {script_path} — restoring original")
-            abs_path.write_text(original, encoding="utf-8")
-            return False
-
-        if not ok:
-            logger.error(f"Patch failed for {script_path} — restoring original")
-            abs_path.write_text(original, encoding="utf-8")
-            return False
-
-        # ── Inject missing cfg imports if needed ──────────────────────────
-        patched_content = abs_path.read_text(encoding="utf-8")
-        cfg_funcs_used  = {"cfg", "cfg_float", "cfg_int", "cfg_bool"}
-        cfg_funcs_needed = {
-            fn for fn in cfg_funcs_used
-            if f"{fn}(" in patched_content
-        }
-        if cfg_funcs_needed:
-            # Check what's already imported
-            already_imported = set()
-            for line in patched_content.splitlines():
-                if "from config import" in line:
-                    for fn in cfg_funcs_needed:
-                        if fn in line:
-                            already_imported.add(fn)
-            missing = cfg_funcs_needed - already_imported
-            if missing:
-                import_line = f"from config import {', '.join(sorted(missing))}"
-                # Find existing config import to extend, or add new line
-                lines = patched_content.splitlines()
-                new_lines = []
-                injected = False
-                for line in lines:
-                    if "from config import" in line and not injected:
-                        # Extend the existing import
-                        existing = line.rstrip()
-                        for fn in sorted(missing):
-                            if fn not in existing:
-                                existing = existing.rstrip() + f", {fn}"
-                        new_lines.append(existing)
-                        injected = True
-                    else:
-                        new_lines.append(line)
-                if not injected:
-                    # No existing config import — insert after last import line
-                    last_import_idx = 0
-                    for i, line in enumerate(new_lines):
-                        if line.startswith("import ") or line.startswith("from "):
-                            last_import_idx = i
-                    new_lines.insert(last_import_idx + 1, import_line)
-                abs_path.write_text("\n".join(new_lines), encoding="utf-8")
-                logger.info(f"  Injected imports: {import_line}")
-                
-        # Log to script_change_log
-        sb.table("script_change_log").insert({
-            "proposal_id":    proposal_id,
-            "script_path":    script_path,
-            "change_type":    "HARDCODE_TO_CONFIG",
-            "diff_text":      diff_text,
-            "backup_content": original,
-            "applied_by":     reviewer,
-        }).execute()
-        
-        # Seed default values into system_config for all tunable values in this script
-        hv = p.get("hardcoded_values") or []
-        if isinstance(hv, str):
-            try: hv = json.loads(hv)
-            except: hv = []
-        for h in (hv if isinstance(hv, list) else []):
-            if not h.get("tunable") or not h.get("proposed_key"):
-                continue
-            existing = sb.table("system_config").select("key") \
-                         .eq("key", h["proposed_key"]).execute()
-            if not existing.data:
-                sb.table("system_config").insert({
-                    "key":        h["proposed_key"],
-                    "value":      str(h["value"]),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }).execute()
-                logger.info(f"  Seeded system_config: {h['proposed_key']} = {h['value']}")
-
-        # Mark proposal APPLIED
-        sb.table("brain_proposals").update({
-            "status":      "APPLIED",
-            "applied_at":  datetime.now(timezone.utc).isoformat(),
-            "reviewed_by": reviewer,
-        }).eq("id", proposal_id).execute()
-
-        logger.success(f"  Patch applied: {script_path}")
-        return True
-
-    except FileNotFoundError:
-        logger.error("'patch' command not found. Install it: https://gnuwin32.sourceforge.net/packages/patch.htm")
-        return False
-    except Exception as e:
-        logger.error(f"Patch apply error: {e}")
-        return False
-
 def apply_proposal(proposal_id: int, reviewer: str = "brain_engine") -> bool:
     sb       = get_supabase()
     rows     = sb.table("brain_proposals").select("*").eq("id", proposal_id).execute().data
@@ -404,10 +384,10 @@ def apply_proposal(proposal_id: int, reviewer: str = "brain_engine") -> bool:
     new_value   = p.get("proposed_value")
 
     if ptype in REVIEW_ONLY:
-        if ptype == "SCRIPT_PATCH" and cfg("brain_script_patching_enabled", "false").strip().lower() == "true":
-            return _apply_script_patch(proposal_id, p, reviewer, sb)
-        logger.warning(f"Proposal {proposal_id} is {ptype} — not auto-applicable to system_config")
-        return False
+        logger.info(f"Proposal {proposal_id} is {ptype} — acknowledged, no automated "
+                    f"action for this type. Diff/suggestion is in the proposal record "
+                    f"for you to apply manually.")
+        return True
 
     if ptype == "ENGINE_WEIGHT":
         regime  = p.get("regime") or (target_key.split(":")[0] if target_key else None)
@@ -425,7 +405,9 @@ def apply_proposal(proposal_id: int, reviewer: str = "brain_engine") -> bool:
             weights = {}
         weights.setdefault(regime, {})
         current_w = float(weights[regime].get(engine, 1.0))
-        new_w     = round(current_w * 1.1 if direction == "BOOST" else current_w * 0.9, 3)
+        step      = 1 + ENGINE_WEIGHT_STEP if direction == "BOOST" else 1 - ENGINE_WEIGHT_STEP
+        new_w     = round(current_w * step, 3)
+        new_w     = max(ENGINE_WEIGHT_MIN, min(ENGINE_WEIGHT_MAX, new_w))
         weights[regime][engine] = new_w
         new_json = json.dumps(weights)
         sb.table("system_config").upsert({
@@ -607,9 +589,9 @@ def send_telegram_digest(proposals: list, run_id: str, auto_applied: int = 0) ->
             )
     lines += [
         "\n<b>CLI:</b>",
-        "<code>python -m brain.change_manager approve &lt;id&gt;</code>",
-        "<code>python -m brain.change_manager rollback &lt;id&gt;</code>",
-        "<code>python -m brain.change_manager list</code>",
+        "<code>python -m brain.backtester_and_change_manager approve &lt;id&gt;</code>",
+        "<code>python -m brain.backtester_and_change_manager rollback &lt;id&gt;</code>",
+        "<code>python -m brain.backtester_and_change_manager list</code>",
     ]
 
     try:

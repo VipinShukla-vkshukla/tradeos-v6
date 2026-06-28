@@ -356,10 +356,100 @@ FIELD_NAME_OVERRIDES = {
 FLOOR_SUFFIXES   = {"_min", "_min_pct", "_min_d", "_min_w", "_min_m"}
 CEILING_SUFFIXES = {"_max", "_max_pct", "_max_d", "_max_w", "_max_m"}
 
+# ─────────────────────────────────────────────────────────────────────────────
+# EXTENDED THRESHOLD KEYS — floor/ceiling gates on a real signal_log field that
+# DON'T follow the signal_threshold_{type}_{field}_{min|max} convention closely
+# enough to auto-derive (the key name doesn't embed the field name). Curated
+# by hand, same spirit as FIELD_NAME_OVERRIDES above — these require reading
+# the actual gating code to map correctly, a regex can't safely guess them.
+#
+# Format: cfg_key -> (field, signal_group, direction)
+#   signal_group ""           -> applies across all signal types, no filter
+#   signal_group "prime" etc. -> substring-matched against signal_type/subtype
+#   signal_group "regime:X"   -> grouped by regime/active_regime column instead
+#                                of signal type (exact match, not substring)
+#
+# min_rr_to_enter is a proxy: the live gate compares against an inline
+# `implied_rr` computed from entry/stop/target prices that is never itself
+# persisted to signal_log. expected_r_msl (the MSL-stage expected R, the
+# primary input to that calculation) is the closest available stand-in —
+# sensitivity findings on this family should be read as directional evidence,
+# not a literal replay of the live gate.
+EXTENDED_THRESHOLD_KEYS = {
+    "risk_block_threshold":         ("risk_score",          "",         "ceiling"),
+    "risk_penalty_threshold":       ("risk_score",          "",         "ceiling"),
+    "holding_score_exit_threshold": ("holding_score",        "",         "floor"),
+    "add_holding_min":              ("holding_score",        "",         "floor"),
+    "prime_breakout_min":           ("breakout_readiness",   "prime",    "floor"),
+    "min_rr_to_enter":              ("expected_r_msl",        "",         "floor"),
+    "min_rr_prime":                 ("expected_r_msl",        "prime",    "floor"),
+    "min_rr_breakout":              ("expected_r_msl",        "breakout", "floor"),
+    "min_rr_reentry":                ("expected_r_msl",        "reentry",  "floor"),
+    "min_rr_staged":                 ("expected_r_msl",        "staged",   "floor"),
+    "min_rr_momentum_cont":          ("expected_r_msl",        "momentum", "floor"),
+}
+
+
+def _build_regime_rr_keys(regime_names: list) -> dict:
+    """
+    min_rr_to_enter_<REGIME> overrides, built from discovered regime names
+    (DynamicRegistry.regime_names) rather than hardcoded — a new regime added
+    to regime_engine_weights gets a corresponding RR sensitivity check for
+    free, no code change.
+    """
+    out = {}
+    for r in (regime_names or []):
+        cfg_key = f"min_rr_to_enter_{str(r).replace(' ', '_')}"
+        out[cfg_key] = ("expected_r_msl", f"regime:{r}", "floor")
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SCORE COMPONENT MAP — additive score bonus/penalty magnitudes tied to a
+# boolean/categorical condition (NOT a floor/ceiling gate — these don't filter
+# which signals exist, they adjust score on signals that already exist). Same
+# hand-curated reasoning as above: the trigger condition lives in scoring code
+# that has to be read to map correctly.
+#
+# Format: cfg_key -> {"field": <column>, "op": "eq"|"gte", "value": <match
+#         value for eq, or the live cfg_key for a dynamic gte cutoff>}
+SCORE_COMPONENT_MAP = {
+    "score_bonus_momentum_high": {"field": "momentum_score",     "op": "gte", "value": 80},
+    "score_bonus_momentum_mid":  {"field": "momentum_score",     "op": "range", "value": (70, 80)},
+    "score_bonus_institutional": {"field": "institutional_score", "op": "gte", "value": 60},
+    "score_bonus_breakout_ready": {"field": "breakout_readiness", "op": "gte", "value": 65},
+    "score_bonus_psar_dual":     {"field": "psar_dual_confirmed", "op": "eq",  "value": True},
+    "score_bonus_weekly_strong": {"field": "weekly_structure",    "op": "eq",  "value": "STRONG"},
+    "score_bonus_prime_setup":   {"field": "signal_type",         "op": "eq",  "value": "PRIME_SETUP"},
+    "score_bonus_breakout_setup": {"field": "signal_type",        "op": "eq",  "value": "BREAKOUT_SETUP"},
+    "score_bonus_reentry_setup": {"field": "signal_type",         "op": "eq",  "value": "REENTRY_SETUP"},
+    "industry_bonus_top5":       {"field": "industry_top5",       "op": "eq",  "value": True},
+    "industry_bonus_strong":     {"field": "industry_state",      "op": "eq",  "value": "STRONG"},
+    # risk penalties key off risk_score against a threshold that's itself a
+    # cfg key (risk_penalty_threshold) rather than a fixed literal — handled
+    # specially in analyze_score_component_sensitivity() since "value" here
+    # needs a live cfg lookup, not a constant.
+    "score_penalty_risk_high":   {"field": "risk_score", "op": "gte_cfg", "value": "risk_penalty_threshold"},
+    "score_penalty_risk_mid":    {"field": "risk_score", "op": "range",   "value": (50, None)},  # upper bound = risk_penalty_threshold, resolved at runtime
+}
+
+
+def discover_score_component_map(config: dict, signal_columns: list = None) -> dict:
+    """Filters SCORE_COMPONENT_MAP to entries whose cfg key exists in config
+    and whose field exists in signal_log — same defensive pattern as
+    discover_threshold_field_map, so a renamed/dropped column or key just
+    quietly drops that one entry instead of crashing the run."""
+    signal_cols = set(signal_columns or [])
+    return {
+        k: v for k, v in SCORE_COMPONENT_MAP.items()
+        if k in config and (not signal_cols or v["field"] in signal_cols)
+    }
+
 
 def discover_threshold_field_map(config: dict,
                                   signal_columns: list = None,
-                                  sb=None) -> dict:
+                                  sb=None,
+                                  regime_names: list = None) -> dict:
     """
     Auto-derive THRESHOLD_FIELD_MAP from system_config keys that follow the
     naming convention: signal_threshold_{signal_type}_{field}_{min|max}
@@ -446,6 +536,24 @@ def discover_threshold_field_map(config: dict,
     if unresolved:
         logger.debug(f"  Threshold map: {len(unresolved)} keys could not be auto-resolved: {unresolved}")
     logger.debug(f"  Threshold map: auto-derived {len(derived_map)} mappings from {len(threshold_keys)} config keys")
+
+    # Merge in the hand-curated extended keys (don't follow the auto-derive
+    # naming convention) — same existence checks as above, so a missing key
+    # or renamed column just quietly drops that one entry.
+    extended_added = 0
+    for key, (field, group, direction) in EXTENDED_THRESHOLD_KEYS.items():
+        if key in config and (not signal_cols or field in signal_cols) and key not in derived_map:
+            derived_map[key] = (field, group, direction)
+            extended_added += 1
+
+    for key, (field, group, direction) in _build_regime_rr_keys(regime_names).items():
+        if key in config and (not signal_cols or field in signal_cols) and key not in derived_map:
+            derived_map[key] = (field, group, direction)
+            extended_added += 1
+
+    if extended_added:
+        logger.debug(f"  Threshold map: +{extended_added} extended (non-auto-derivable) mappings")
+
     return derived_map
 
 
@@ -510,9 +618,17 @@ class DynamicRegistry:
     def threshold_map(self) -> dict:
         if "thresh_map" not in self._cache:
             self._cache["thresh_map"] = discover_threshold_field_map(
-                self.config, self.signal_columns, self.sb
+                self.config, self.signal_columns, self.sb, self.regime_names
             )
         return self._cache["thresh_map"]
+
+    @property
+    def score_component_map(self) -> dict:
+        if "score_comp_map" not in self._cache:
+            self._cache["score_comp_map"] = discover_score_component_map(
+                self.config, self.signal_columns
+            )
+        return self._cache["score_comp_map"]
 
     def summary(self) -> str:
         return (
@@ -521,5 +637,6 @@ class DynamicRegistry:
             f"tables={len(self.tables)}, "
             f"categorical_fields={len(self.categorical_fields)}, "
             f"threshold_mappings={len(self.threshold_map)}, "
+            f"score_components={len(self.score_component_map)}, "
             f"regimes={len(self.regime_names)}"
         )

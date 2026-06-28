@@ -156,6 +156,7 @@ except Exception:
 ENTRY_TYPES = {
     "BUY_CANDIDATE", "PRIME_SETUP", "BREAKOUT_SETUP",
     "REENTRY_SETUP", "STAGED_ENTRY", "MARKET_TOP_PICK",
+    "MOMENTUM_CONTINUATION",
 }
 
 def esc(text: str) -> str:
@@ -677,16 +678,20 @@ def partial_booking_summary(partial_bookings, orig_qty, curr_qty) -> str:
 
 def load_data(sb, today: str) -> dict:
     """
-    Primary source: ai_context.__FINAL_PICKS__ (step 19 output)
+    v6: Primary source is signal_output_daily (step 20.5 immutable snapshot).
+    Replaces the former 8-table join with a single query + 6 small utility reads.
 
-    v4 FIX: Reads ranked_candidates from conviction_reason and
-    portfolio_guidance/warnings/correlations from strategy_validation,
-    then merges them back into a single final_picks_data dict.
+    Tables still read live (cannot be snapshotted per-symbol):
+      - ai_context.__FINAL_PICKS__  : portfolio sizing, bulk guidance, warnings
+      - ai_context.__MARKET_INTEL__ : market synthesis summary
+      - open_positions              : live portfolio state
+      - global_cues                 : live pre-market prices
+      - nifty_upcoming_events       : event calendar
+      - lessons / data_anomalies    : utility counts
 
-    v5 CHANGE: signal_log select gains vol_ratio, delivery_pct columns
-    (used by TOMORROW'S GTT ORDERS section).
+    Falls back to _load_data_legacy() if signal_output_daily has no rows yet.
     """
-    # ── Trading date resolution ──
+    # ── Trading date resolution ──────────────────────────────────────────────
     try:
         holidays = {
             r["date"][:10]
@@ -694,24 +699,24 @@ def load_data(sb, today: str) -> dict:
         }
     except Exception:
         holidays = set()
+
     signal_date = today
     d = today_ist()
     for _ in range(10):
         if d.weekday() < 5 and str(d) not in holidays:
             try:
                 probe = (
-                    sb.table("signal_log")
-                    .select("date")
-                    .eq("date", str(d))
-                    .limit(1)
-                    .execute().data
+                    sb.table("signal_output_daily")
+                      .select("date")
+                      .eq("date", str(d))
+                      .limit(1)
+                      .execute().data
                 )
                 if probe:
                     signal_date = str(d)
                     if str(d) != today:
                         logger.info(
-                            f"No signal_log data for {today} yet "
-                            f"— using last available: {d}"
+                            f"No signal_output_daily for {today} — using {d}"
                         )
                     break
             except Exception:
@@ -719,7 +724,77 @@ def load_data(sb, today: str) -> dict:
                 break
         d -= timedelta(days=1)
 
-    # ── __FINAL_PICKS__: merge conviction_reason + strategy_validation ──
+    # ── Primary: signal_output_daily ─────────────────────────────────────────
+    sod_rows: list[dict] = []
+    try:
+        sod_rows = (
+            sb.table("signal_output_daily")
+              .select("*")
+              .eq("date", signal_date)
+              .execute().data
+        ) or []
+    except Exception as e:
+        logger.warning(f"signal_output_daily read failed: {e}")
+
+    if not sod_rows:
+        logger.warning(
+            "signal_output_daily empty for %s — no data to send alerts", today
+        )
+        return {
+            "signal_date": today, "display_date": today,
+            "final_picks": None, "market_intel": {}, "signals": [],
+            "open_pos": [], "entry_thesis_map": {}, "regime": {},
+            "fii": {}, "cues": {}, "msl_map": {}, "upcoming_events": [],
+            "lessons_ai": 0, "lessons_rb": 0, "anomalies": [],
+            "portfolio_summary": {},
+        }
+
+    sod_map: dict[str, dict] = {r["symbol"]: r for r in sod_rows}
+
+    # signals list: sod_rows already has every field send_alerts reads from signal_log
+    # (symbol, sector, signal_type, signal_subtype, strategy, score, score_adjusted,
+    #  filter_reason, ai_conviction, ai_conviction_reason, ai_note, ai_suggested_action,
+    #  holding_score, momentum_state, lifecycle, fii_flag, sector_rank_at_entry,
+    #  days_to_trigger_est, near_miss_data, eap_action, vol_ratio, delivery_pct)
+    signals = sod_rows
+
+    # msl_map: built from sod_rows — contains entry_zone_low/high, current_price,
+    # lifecycle, dist_entry_pct, expected_r, validity_score
+    msl_map: dict[str, dict] = sod_map
+
+    # regime: market-wide context — extract once from any row that has it
+    regime: dict = {}
+    for r in sod_rows:
+        if r.get("regime"):
+            regime = {
+                "regime":                r.get("regime"),
+                "predicted_regime":      r.get("predicted_regime"),
+                "regime_confidence":     r.get("regime_confidence"),
+                "nifty_price":           r.get("nifty_price"),
+                "india_vix":             r.get("india_vix"),
+                "avg_sector_breadth":    r.get("avg_sector_breadth"),
+                "nifty_1d_chg_pct":      r.get("nifty_1d_chg_pct"),
+                "above_200dma_pct":      r.get("above_200dma_pct"),
+                "advance_decline_ratio": r.get("advance_decline_ratio"),
+                "nifty_pcr":             r.get("nifty_pcr"),
+            }
+            break
+
+    # fii: extract once from any row that has it
+    fii: dict = {}
+    for r in sod_rows:
+        if r.get("fii_flag") or r.get("fii_net_20d") is not None:
+            fii = {
+                "fii_net":    r.get("fii_net"),
+                "fii_net_5d": r.get("fii_net_5d"),
+                "fii_net_20d":r.get("fii_net_20d"),
+                "fii_flag":   r.get("fii_flag"),
+                "dii_net":    r.get("dii_net"),
+                "dii_flag":   r.get("dii_flag"),
+            }
+            break
+
+    # ── __FINAL_PICKS__: portfolio guidance + ranked_candidates ──────────────
     final_picks_data = None
     try:
         fp_rows = (
@@ -746,7 +821,7 @@ def load_data(sb, today: str) -> dict:
     except Exception as e:
         logger.warning(f"__FINAL_PICKS__ load failed: {e}")
 
-    # ── __MARKET_INTEL__ (step 18 summary) ──
+    # ── __MARKET_INTEL__ ─────────────────────────────────────────────────────
     market_intel = {}
     try:
         mi_rows = (
@@ -774,22 +849,7 @@ def load_data(sb, today: str) -> dict:
     except Exception as e:
         logger.warning(f"__MARKET_INTEL__ load failed: {e}")
 
-    # ── Signal log — all types for signal_date ──
-    signals = (
-        sb.table("signal_log")
-          .select(
-              "symbol,sector,signal_type,signal_subtype,strategy,"
-              "score,score_adjusted,filter_reason,"
-              "ai_conviction,ai_conviction_reason,ai_note,ai_suggested_action,"
-              "holding_score,momentum_state,lifecycle,fii_flag,"
-              "sector_rank_at_entry,days_to_trigger_est,near_miss_data,eap_action,"
-              "vol_ratio,delivery_pct"
-          )
-          .eq("date", signal_date)
-          .execute().data
-    )
-
-    # ── Open positions — full schema ──
+    # ── Open positions ────────────────────────────────────────────────────────
     open_pos = (
         sb.table("open_positions")
           .select(
@@ -806,7 +866,7 @@ def load_data(sb, today: str) -> dict:
           .execute().data
     )
 
-    # ── Original entry thesis per position ──
+    # ── Entry thesis — now from signal_output_daily (same field names) ────────
     entry_thesis_map: dict[str, str] = {}
     pos_symbols = [p.get("symbol") for p in open_pos if p.get("symbol")]
     signal_dates_needed = list({
@@ -814,10 +874,11 @@ def load_data(sb, today: str) -> dict:
         for p in open_pos if p.get("signal_date")
     })
     for sd in signal_dates_needed[:5]:
-        if not sd: continue
+        if not sd:
+            continue
         try:
             rows = (
-                sb.table("signal_log")
+                sb.table("signal_output_daily")
                   .select("symbol,ai_conviction_reason")
                   .eq("date", sd)
                   .in_("symbol", pos_symbols)
@@ -831,74 +892,23 @@ def load_data(sb, today: str) -> dict:
         except Exception as e:
             logger.warning(f"Entry thesis lookup failed for {sd}: {e}")
 
-    # ── Regime ──
-    regime_rows = (
-        sb.table("market_regime")
-          .select(
-              "regime,predicted_regime,regime_confidence,nifty_price,"
-              "india_vix,avg_sector_breadth,nifty_1d_chg_pct,above_200dma_pct,"
-              "advance_decline_ratio,nifty_pcr"
-          )
-          .eq("date", signal_date).execute().data
-    )
-    if not regime_rows:
-        regime_rows = (
-            sb.table("market_regime")
+    # ── Global cues (always live — pre-market prices) ─────────────────────────
+    cues: dict = {}
+    try:
+        cues_rows = (
+            sb.table("global_cues")
               .select(
-                  "regime,predicted_regime,regime_confidence,nifty_price,"
-                  "india_vix,avg_sector_breadth,nifty_1d_chg_pct,above_200dma_pct,"
-                  "advance_decline_ratio,nifty_pcr"
+                  "gift_nifty,gift_nifty_chg_pct,gap_signal,brent_crude,brent_chg_pct,"
+                  "gold_price,usd_inr,us_dow_chg_pct,sp500_chg_pct,us_nasdaq_chg_pct"
               )
-              .order("date", desc=True).limit(1).execute().data
+              .eq("session", "EVENING").order("date", desc=True).limit(1).execute().data
         )
-    regime = regime_rows[0] if regime_rows else {}
+        cues = cues_rows[0] if cues_rows else {}
+    except Exception as e:
+        logger.warning(f"global_cues load failed: {e}")
 
-    # ── FII ──
-    fii_rows = (
-        sb.table("fii_dii_flow")
-          .select("fii_net,fii_net_5d,fii_net_20d,fii_flag,dii_net,dii_flag")
-          .order("date", desc=True).limit(1).execute().data
-    )
-    fii = fii_rows[0] if fii_rows else {}
-
-    # ── Global cues ──
-    cues_rows = (
-        sb.table("global_cues")
-          .select(
-              "gift_nifty,gift_nifty_chg_pct,gap_signal,brent_crude,brent_chg_pct,"
-              "gold_price,usd_inr,us_dow_chg_pct,sp500_chg_pct,us_nasdaq_chg_pct"
-          )
-          .eq("session", "EVENING").order("date", desc=True).limit(1).execute().data
-    )
-    cues = cues_rows[0] if cues_rows else {}
-
-    # ── Lesson counts (7-day window) ──
-    lesson_rows = (
-        sb.table("lessons")
-          .select("source")
-          .gte("date", str(today_ist() - timedelta(days=7)))
-          .execute().data
-    )
-    lessons_ai = sum(1 for r in lesson_rows if "AI:" in (r.get("source") or ""))
-    lessons_rb = sum(1 for r in lesson_rows if "RULE" in (r.get("source") or "").upper())
-
-    # ── MSL map — entry zones for new candidates ──
-    all_symbols = list({s.get("symbol") for s in signals if s.get("symbol")})
-    msl_map: dict[str, dict] = {}
-    if all_symbols:
-        msl_rows = (
-            sb.table("master_shortlist")
-              .select(
-                  "symbol,entry_zone_low,entry_zone_high,current_price,"
-                  "lifecycle,dist_entry_pct,expected_r,validity_score"
-              )
-              .eq("date", signal_date)
-              .in_("symbol", all_symbols[:100])
-              .execute().data
-        )
-        msl_map = {r["symbol"]: r for r in msl_rows}
-
-    # ── Upcoming events: positions + TIER_1/2 watchlist (next 7 days) ──
+    # ── Upcoming events ───────────────────────────────────────────────────────
+    upcoming_events: list[dict] = []
     watchlist_symbols: list[str] = []
     if final_picks_data and final_picks_data.get("ranked_candidates"):
         watchlist_symbols = [
@@ -906,7 +916,6 @@ def load_data(sb, today: str) -> dict:
             if r.get("tier") in ("TIER_1", "TIER_2") and r.get("symbol")
         ]
     all_event_symbols = list(set(pos_symbols + watchlist_symbols))
-    upcoming_events: list[dict] = []
     if all_event_symbols:
         try:
             ts = str(today_ist())
@@ -923,7 +932,21 @@ def load_data(sb, today: str) -> dict:
         except Exception as e:
             logger.warning(f"Upcoming events load failed: {e}")
 
-    # ── Data anomalies ──
+    # ── Lesson counts ─────────────────────────────────────────────────────────
+    lessons_ai = lessons_rb = 0
+    try:
+        lesson_rows = (
+            sb.table("lessons")
+              .select("source")
+              .gte("date", str(today_ist() - timedelta(days=7)))
+              .execute().data
+        )
+        lessons_ai = sum(1 for r in lesson_rows if "AI:" in (r.get("source") or ""))
+        lessons_rb = sum(1 for r in lesson_rows if "RULE" in (r.get("source") or "").upper())
+    except Exception:
+        pass
+
+    # ── Data anomalies ────────────────────────────────────────────────────────
     anomalies: list[dict] = []
     try:
         anomalies = (
@@ -936,7 +959,7 @@ def load_data(sb, today: str) -> dict:
     except Exception:
         pass
 
-    # ── Portfolio health snapshot ──
+    # ── Portfolio health snapshot ─────────────────────────────────────────────
     portfolio_summary: dict = {}
     if open_pos:
         total_invested  = sum(float(p.get("invested_value")  or 0) for p in open_pos)
@@ -981,10 +1004,31 @@ def load_data(sb, today: str) -> dict:
         "upcoming_events":   upcoming_events,
         "lessons_ai":        lessons_ai,
         "lessons_rb":        lessons_rb,
-        "portfolio_summary": portfolio_summary,
         "anomalies":         anomalies,
+        "portfolio_summary": portfolio_summary,
     }
 
+def _format_event_warning(msl: dict) -> str:
+    """
+    Returns a Telegram-formatted warning line if this stock has a corporate
+    event within 5 days (results, board meeting, AGM, dividend, bonus, split).
+    Reads pre_results_flag, upcoming_event_type, upcoming_event_days directly
+    from the signal_output_daily row (passed in as the msl dict after migration).
+    Returns empty string if no event — safe to call unconditionally.
+    """
+    if not msl.get("pre_results_flag"):
+        return ""
+    days  = msl.get("upcoming_event_days")
+    etype = msl.get("upcoming_event_type") or "Corporate Event"
+    if days == 0:
+        timing = "TODAY"
+    elif days == 1:
+        timing = "TOMORROW"
+    elif days is not None:
+        timing = f"in {days}d"
+    else:
+        timing = "soon"
+    return f"   ⚠️ <b>{esc(etype)} {timing}</b> — size smaller, widen SL or skip"
 
 # ── Regime header ──────────────────────────────────────────────────────────
 
@@ -1032,6 +1076,10 @@ def build_regime_header(regime: dict, fii: dict, cues: dict) -> list[str]:
             f"({fmt_chg(cues.get('brent_chg_pct'))})"
         )
     if cues.get("usd_inr"): global_parts.append(f"₹{float(cues['usd_inr']):.1f}/$")
+    if cues.get("us_10yr_yield"):
+        bps = cues.get("us_10yr_chg_bps")
+        bps_str = f"({float(bps):+.0f}bps)" if bps is not None else ""
+        global_parts.append(f"US10Y:{float(cues['us_10yr_yield']):.2f}%{bps_str}")
     if global_parts:
         lines.append(f"  🌐 {' · '.join(global_parts)}")
 
@@ -1278,9 +1326,11 @@ def build_evening(data: dict, sb=None) -> str:
     if exits:
         lines.append(f"🔴 <b>EXIT SIGNALS ({len(exits)})</b>")
         for s in exits:
-            reason = s.get("filter_reason") or s.get("ai_conviction_reason") or ""
+            reason  = s.get("filter_reason") or s.get("ai_conviction_reason") or ""
+            cmp_ex  = float(s.get("current_price") or msl_map.get(s.get("symbol", ""), {}).get("current_price") or 0)
+            cmp_ex_str = f"  CMP:₹{cmp_ex:,.0f}" if cmp_ex else ""
             lines.append(
-                f"  <b>{s['symbol']}</b>"
+                f"  <b>{s['symbol']}</b>{cmp_ex_str}"
                 + (f"  <i>— {esc(reason)}</i>" if reason else "")
             )
         lines.append("")
@@ -1290,8 +1340,10 @@ def build_evening(data: dict, sb=None) -> str:
     if avoid_events:
         lines.append("⚠️ <b>AVOID ENTRY — EVENT RISK</b>")
         for s in avoid_events:
+            cmp_av     = float(s.get("current_price") or msl_map.get(s.get("symbol", ""), {}).get("current_price") or 0)
+            cmp_av_str = f"  CMP:₹{cmp_av:,.0f}" if cmp_av else ""
             lines.append(
-                f"  🚫 <b>{s['symbol']}</b> [{s.get('sector','?')}]"
+                f"  🚫 <b>{s['symbol']}</b>{cmp_av_str} [{s.get('sector','?')}]"
                 + (f" — {esc(s.get('filter_reason',''))}" if s.get("filter_reason") else "")
             )
         lines.append("")
@@ -1357,8 +1409,18 @@ def build_evening(data: dict, sb=None) -> str:
                 dist_str  = f"({abs(float(dist)):.1f}%↓)" if dist is not None else ""
                 score_str = f"[{r_score}/100·{r_label}]" if r_score else ""
 
+                cmp       = float(msl.get("current_price") or 0)
+                sec_rank  = msl.get("sector_rank_at_entry")
+                ind_rank  = msl.get("industry_rank")
+                ind_state = (msl.get("industry_state") or "").upper()
+                cmp_str   = f" (CMP: ₹{cmp:,.0f})" if cmp else ""
+                rank_parts = []
+                if sec_rank: rank_parts.append(f"Sec #{sec_rank}")
+                if ind_rank: rank_parts.append(f"Ind #{ind_rank}" + (f"·{ind_state}" if ind_state else ""))
+                rank_str = "  📊 " + " · ".join(rank_parts) if rank_parts else ""
+
                 lines.append(
-                    f"\n  {r_icon} <b>{sym}</b>"
+                    f"\n  {r_icon} <b>{sym}</b>{cmp_str}"
                     + (f" [{action}·{conv}]" if action else f" [{conv}]")
                     + f"  ₹{zl:,.0f}–₹{zh:,.0f} {dist_str}  <i>[DB]</i>"
                     + (f"  <b>{alloc:.0f}%</b>" if alloc else "")
@@ -1366,6 +1428,8 @@ def build_evening(data: dict, sb=None) -> str:
                     + (f"  📎{corr}" if corr else "")
                     + f"  → T1₹{t1_p:,.0f} | SL₹{sl_p:,.0f} · RR {rr}×  {score_str}"
                 )
+                if rank_str:
+                    lines.append(rank_str)
 
                 thesis   = c.get("thesis") or c.get("ai_conviction_reason") or ""
                 catalyst = c.get("catalyst") or ""
@@ -1398,6 +1462,10 @@ def build_evening(data: dict, sb=None) -> str:
                     if ls:
                         lines.append(f"   📚 <i>{ls[:120]}</i>")
 
+                evt_warn = _format_event_warning(msl)
+                if evt_warn:
+                    lines.append(evt_warn)
+
             lines.append("")
 
         # ── PATCH 9: TIER_2 — 2-line compact ──
@@ -1412,9 +1480,19 @@ def build_evening(data: dict, sb=None) -> str:
                 dist  = msl.get("dist_entry_pct")
                 dist_str = f"({abs(float(dist)):.1f}%↓)" if dist is not None else ""
 
+                cmp_t2      = float(msl.get("current_price") or 0)
+                sec_rank_t2 = msl.get("sector_rank_at_entry")
+                ind_rank_t2 = msl.get("industry_rank")
+                cmp_str_t2  = f" (CMP: ₹{cmp_t2:,.0f})" if cmp_t2 else ""
+                rk_t2_parts = []
+                if sec_rank_t2: rk_t2_parts.append(f"Sec #{sec_rank_t2}")
+                if ind_rank_t2: rk_t2_parts.append(f"Ind #{ind_rank_t2}")
+                rk_t2_str   = "  📊 " + " · ".join(rk_t2_parts) if rk_t2_parts else ""
+
                 lines.append(
-                    f"\n  {conviction_icon(conv)} <b>{sym}</b> [{conv}]"
+                    f"\n  {conviction_icon(conv)} <b>{sym}</b>{cmp_str_t2} [{conv}]"
                     f"  ₹{zl:,.0f}–₹{zh:,.0f} {dist_str}"
+                    + (rk_t2_str)
                 )
 
                 parts2 = []
@@ -1425,16 +1503,22 @@ def build_evening(data: dict, sb=None) -> str:
                 if parts2:
                     lines.append(f"   {' · '.join(parts2)}")
 
+                evt_warn = _format_event_warning(msl)
+                if evt_warn:
+                    lines.append(evt_warn)
+
             lines.append("")
 
         # TIER_3: Monitor
         if tier3:
             lines.append(f"👁 <b>TIER 3 — MONITOR ({len(tier3)})</b>")
-            t3_str = " · ".join(
-                f"{c['symbol']}({conviction_icon(c.get('conviction'))})"
-                for c in tier3
-            )
-            lines.append(f"  {t3_str}")
+            t3_parts = []
+            for c in tier3:
+                sym_t3  = c.get("symbol", "?")
+                cmp_t3  = float(msl_map.get(sym_t3, {}).get("current_price") or 0)
+                cmp_t3_str = f"·₹{cmp_t3:,.0f}" if cmp_t3 else ""
+                t3_parts.append(f"{sym_t3}{cmp_t3_str}({conviction_icon(c.get('conviction'))})")
+            lines.append(f"  {' · '.join(t3_parts)}")
             lines.append("")
 
         # Near-miss upgrades
@@ -1451,7 +1535,9 @@ def build_evening(data: dict, sb=None) -> str:
                 flag   = note_raw[0] if note_raw else "?"
                 reason = note_raw[1].strip() if len(note_raw) > 1 else ""
                 ez     = zone_line(s["symbol"], msl_map)
-                lines.append(f"\n  💡 <b>{s['symbol']}</b> [{flag}]  {s.get('sector', '?')}")
+                cmp_nm = float(s.get("current_price") or msl_map.get(s.get("symbol", ""), {}).get("current_price") or 0)
+                cmp_nm_str = f"  CMP:₹{cmp_nm:,.0f}" if cmp_nm else ""
+                lines.append(f"\n  💡 <b>{s['symbol']}</b>{cmp_nm_str} [{flag}]  {s.get('sector', '?')}")
                 if reason: lines.append(f"  {esc(reason)}")
                 if ez:     lines.append(f"  {esc(ez)}")
             lines.append("")
@@ -1492,8 +1578,10 @@ def build_evening(data: dict, sb=None) -> str:
             lines.append(f"\n🎯 <b>RAW SIGNALS ({len(buys)})</b>")
             for s in buys:
                 c_ico = conviction_icon(s.get("ai_conviction"))
+                cmp_raw = float(s.get("current_price") or 0)
+                cmp_raw_str = f" CMP:₹{cmp_raw:,.0f}" if cmp_raw else ""
                 lines.append(
-                    f"\n  {c_ico} <b>{s['symbol']}</b> [{s.get('strategy', '?')}] "
+                    f"\n  {c_ico} <b>{s['symbol']}</b>{cmp_raw_str} [{s.get('strategy', '?')}] "
                     f"Score:<b>{float(s.get('score_adjusted') or s.get('score') or 0):.0f}</b>"
                 )
                 if s.get("ai_conviction_reason"):
@@ -1539,8 +1627,10 @@ def build_evening(data: dict, sb=None) -> str:
                 _sig  = sig_map.get(_sym, {})
                 _vref = float(_sig.get("vol_ratio")    or 0)
                 _dref = float(_sig.get("delivery_pct") or 0)
+                _cmp_gtt     = float(_msl.get("current_price") or 0)
+                _cmp_gtt_str = f"  CMP:₹{_cmp_gtt:,.0f}" if _cmp_gtt else ""
                 lines.append(
-                    f"  <b>{_sym}</b>  "
+                    f"  <b>{_sym}</b>{_cmp_gtt_str}  "
                     f"Entry₹{_zl:,.0f} | SL₹{_sl:,.0f} | T1₹{_t1:,.0f} | RR {_rr}×"
                 )
                 if _vref or _dref:
@@ -1658,9 +1748,11 @@ def build_morning(data: dict, sb=None) -> str:
     if exits:
         lines.append("🔴 <b>EXIT TODAY</b>")
         for s in exits:
-            reason = s.get("filter_reason") or s.get("ai_conviction_reason") or ""
+            reason      = s.get("filter_reason") or s.get("ai_conviction_reason") or ""
+            cmp_ex_m    = float(s.get("current_price") or msl_map.get(s.get("symbol", ""), {}).get("current_price") or 0)
+            cmp_ex_m_str = f"  CMP:₹{cmp_ex_m:,.0f}" if cmp_ex_m else ""
             lines.append(
-                f"  <b>{s['symbol']}</b>"
+                f"  <b>{s['symbol']}</b>{cmp_ex_m_str}"
                 + (f" — {esc(reason)}" if reason else "")
             )
         lines.append("")
@@ -1731,8 +1823,18 @@ def build_morning(data: dict, sb=None) -> str:
                     else:
                         z_status = "📍 Verify zone"
 
+                cmp_m      = float(msl.get("current_price") or 0)
+                sec_rank_m = msl.get("sector_rank_at_entry")
+                ind_rank_m = msl.get("industry_rank")
+                ind_state_m = (msl.get("industry_state") or "").upper()
+                cmp_str_m  = f" (CMP: ₹{cmp_m:,.0f})" if cmp_m else ""
+                rk_m_parts = []
+                if sec_rank_m: rk_m_parts.append(f"Sec #{sec_rank_m}")
+                if ind_rank_m: rk_m_parts.append(f"Ind #{ind_rank_m}" + (f"·{ind_state_m}" if ind_state_m else ""))
+                rk_m_str   = "  📊 " + " · ".join(rk_m_parts) if rk_m_parts else ""
+
                 lines.append(
-                    f"\n  {r_icon} <b>{sym}</b>"
+                    f"\n  {r_icon} <b>{sym}</b>{cmp_str_m}"
                     + (f" [{action}·{conv}]" if action else f" [{conv}]")
                     + f"  {z_status}  {score_str}"
                     + (f"  <b>{alloc:.0f}%</b>" if alloc else "")
@@ -1744,10 +1846,16 @@ def build_morning(data: dict, sb=None) -> str:
                     f" | SL₹{sl_p:,.0f} | T1₹{t1_p:,.0f} | RR {rr}×"
                     f" · <i>{timing}</i>"
                 )
+                if rk_m_str:
+                    lines.append(rk_m_str)
                 if c.get("entry_note"):
                     lines.append(f"   📍 {esc(c['entry_note'])} <i>[AI]</i>")
                 if c.get("invalidation"):
                     lines.append(f"   ❌ {esc(c['invalidation'])} <i>[AI]</i>")
+
+                evt_warn = _format_event_warning(msl)
+                if evt_warn:
+                    lines.append(evt_warn)
 
             lines.append("")
 
@@ -1762,13 +1870,19 @@ def build_morning(data: dict, sb=None) -> str:
                 zh    = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
                 dist  = msl.get("dist_entry_pct")
                 dist_str = f"({abs(float(dist)):.1f}%↓)" if dist is not None else ""
+                cmp_m2 = float(msl.get("current_price") or 0)
+                cmp_str_m2 = f" (CMP: ₹{cmp_m2:,.0f})" if cmp_m2 else ""
 
                 lines.append(
-                    f"  {conviction_icon(conv)} <b>{sym}</b> [{conv}]"
+                    f"  {conviction_icon(conv)} <b>{sym}</b>{cmp_str_m2} [{conv}]"
                     f"  ₹{zl:,.0f}–₹{zh:,.0f} {dist_str}"
                 )
                 if c.get("entry_note"):
                     lines.append(f"    📍 {esc(c['entry_note'])}")
+
+                evt_warn = _format_event_warning(msl)
+                if evt_warn:
+                    lines.append(evt_warn)
 
             lines.append("")
 
@@ -1878,10 +1992,11 @@ def build_afternoon(data: dict, sb=None) -> str:
             rr            = c.get("rr_ratio")
 
             # CMP: live price is embedded in zone_status string, e.g., "✅ IN ZONE (₹1,520)"
-            # Extract it with regex — this is the only reliable source of the live number.
+            # Extract it with regex; fall back to EOD current_price from msl_map.
             # readiness_score / readiness_icon / readiness_breakdown are NOT set by this module.
             _m  = re.search(r"₹([\d,]+)", zone_status)
-            cp  = float(_m.group(1).replace(",", "")) if _m else 0
+            cp  = float(_m.group(1).replace(",", "")) if _m else float(msl.get("current_price") or 0)
+            cmp_str_aft = f"  CMP:₹{cp:,.0f}" if cp else ""
 
             # any_actionable flag — drive from zone_status string, not CMP arithmetic
             if "IN ZONE" in zone_status.upper():
@@ -1889,7 +2004,7 @@ def build_afternoon(data: dict, sb=None) -> str:
 
             # ── Line 1: Header ──────────────────────────────────────────
             lines.append(
-                f"\n{conviction_icon(conv)} <b>{sym}</b>"
+                f"\n{conviction_icon(conv)} <b>{sym}</b>{cmp_str_aft}"
                 + (f" [{conv}·{conf:.0%}]" if conf else f" [{conv}]")
                 + (f"  <b>{alloc:.0f}% alloc</b>" if alloc else "")
             )
@@ -1981,12 +2096,12 @@ def build_afternoon(data: dict, sb=None) -> str:
             zh   = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
             cp   = float(msl.get("current_price") or 0)   # EOD only — no live for T2
             dist = msl.get("dist_entry_pct")
-            dist_str = f" ({abs(float(dist)):.1f}%↓)" if dist is not None else ""
+            dist_str     = f" ({abs(float(dist)):.1f}%↓)" if dist is not None else ""
+            cmp_str_t2aft = f" (CMP: ₹{cp:,.0f})" if cp > 0 else ""
 
             lines.append(
-                f"\n  {conviction_icon(conv)} <b>{sym}</b> [{conv}]"
+                f"\n  {conviction_icon(conv)} <b>{sym}</b>{cmp_str_t2aft} [{conv}]"
                 f"  Zone:₹{zl:,.0f}–₹{zh:,.0f}{dist_str}"
-                + (f"  EOD:₹{cp:,.0f}" if cp > 0 else "")
             )
             if c.get("entry_note"):
                 lines.append(f"    📍 {esc(c['entry_note'])}")

@@ -266,6 +266,21 @@ def load_context(sb, trade_date: str) -> dict:
     )
     msl_map = {r["symbol"]: r for r in msl_rows}
 
+    # ── Upcoming corporate events for signal candidates ──
+    try:
+        event_rows = (
+            sb.table("nifty_upcoming_events")
+              .select("symbol,purpose,days_to_event")
+              .in_("symbol", symbols)
+              .gte("days_to_event", 0)
+              .lte("days_to_event", 10)
+              .order("days_to_event")
+              .execute().data
+        )
+        event_map = {r["symbol"]: r for r in event_rows}
+    except Exception as e:
+        logger.warning(f"nifty_upcoming_events load failed (non-fatal): {e}")
+        event_map = {}
 
     candidates = []
     for sig in sig_rows:
@@ -290,8 +305,11 @@ def load_context(sb, trade_date: str) -> dict:
         merged["ret_12m"]            = msl.get("ret_12m")
         merged["low_52w"]            = msl.get("low_52w")
         merged["pct_change"]         = msl.get("pct_change")
-        merged["low_30d"]            = msl.get("low_30d")
-        merged["consol_range"]       = msl.get("consol_range")
+        merged["low_30d"]           = msl.get("low_30d")
+        merged["consol_range"]      = msl.get("consol_range")
+        ev = event_map.get(sym)
+        merged["upcoming_event_type"] = ev["purpose"]       if ev else None
+        merged["upcoming_event_days"] = ev["days_to_event"] if ev else None
         candidates.append(merged)
 
     # ── Market intel from step 18 ──
@@ -322,6 +340,8 @@ def load_context(sb, trade_date: str) -> dict:
             "macro_impacts":         full.get("macro_sector_impacts", []),
             "regulatory_alerts":     full.get("regulatory_alerts", []),
             "echo_comparison":       full.get("market_tone", {}).get("echo_comparison", ""),
+            "dii_signal":            full.get("dii_outlook", {}).get("5session_signal"),
+            "dii_absorbing":         full.get("dii_outlook", {}).get("absorbing_fii_selling"),
         }
 
     # ── Open positions — sector/strategy concentration ──
@@ -471,6 +491,7 @@ def build_prompt(ctx: dict, trade_date: str) -> str:
         f"    Buying into: {mi.get('fii_favoured_sectors',[])}",
         f"    Selling out of: {mi.get('fii_exit_sectors',[])}",
         f"    Key signal to watch: {mi.get('fii_key_signal','?')}",
+        f"    DII 5-session: {mi.get('dii_signal','?')} | Absorbing FII selling: {mi.get('dii_absorbing','?')}",
     ]
 
     if mi.get("macro_impacts"):
@@ -591,11 +612,17 @@ def build_prompt(ctx: dict, trade_date: str) -> str:
             "    5. Assign TIER_1/2/3 based on setup quality + macro alignment + 1-3wk readiness",
             "    6. Suggest capital allocation % (soft guidance, human decides final amount)",
             "    7. Rank within each tier by conviction",
+            "    8. Cap any stock with EventRisk ≤5d at TIER_2 or mandate half-size in thesis",
             "",
             _COLUMNS,
         ]
     for c in ctx["candidates"]:
         # Line 1: identity, price, position sizing context
+        _ev_days = c.get("upcoming_event_days")
+        _ev_str  = (
+            f" | ⚠️EventRisk:{c.get('upcoming_event_type','?')} in {_ev_days}d"
+            if _ev_days is not None and _ev_days <= 7 else ""
+        )
         lines.append(
             f"  {c.get('symbol','?'):<12} | {c.get('sector','?')[:16]:<16} | "
             f"{c.get('signal_type','?'):<15} | Score:{float(c.get('score_adjusted',0) or 0):.1f} | "
@@ -609,6 +636,7 @@ def build_prompt(ctx: dict, trade_date: str) -> str:
             f"Eng:{c.get('engines_count','?')} Conv:{c.get('convergence_pts','?')} | "
             f"SRk:{c.get('sector_rank_at_entry','?')} FII:{c.get('fii_flag','?')} | "
             f"MCap:₹{c.get('market_cap','?')}Cr Qual:{c.get('fundamental_quality','?')}"
+            f"{_ev_str}"
         )
         # Line 2: full technical picture
         _low52 = c.get('low_52w')

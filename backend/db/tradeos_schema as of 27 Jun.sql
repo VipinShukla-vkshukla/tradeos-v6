@@ -509,7 +509,10 @@ CREATE TABLE IF NOT EXISTS "public"."brain_script_registry" (
     "last_scanned" timestamp with time zone,
     "last_modified" timestamp with time zone,
     "notes" "text",
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "behavioral_summary" "text",
+    "assumptions" "jsonb",
+    "flagged_issues" "jsonb"
 );
 
 
@@ -1323,7 +1326,8 @@ CREATE TABLE IF NOT EXISTS "public"."nifty_total_market" (
     "industry" "text",
     "isin" "text",
     "nifty_200" boolean,
-    "nifty_500" boolean
+    "nifty_500" boolean,
+    "series" "text"
 );
 
 
@@ -1772,7 +1776,10 @@ CREATE TABLE IF NOT EXISTS "public"."signal_log" (
     "near_miss_data" "jsonb",
     "industry_rank" integer,
     "industry_state" "text",
-    "sheet_conflict_type" "text"
+    "sheet_conflict_type" "text",
+    "pre_results_flag" boolean,
+    "upcoming_event_type" "text",
+    "upcoming_event_days" integer
 );
 
 
@@ -1829,6 +1836,125 @@ ALTER SEQUENCE "public"."signal_outcomes_id_seq" OWNER TO "postgres";
 
 ALTER SEQUENCE "public"."signal_outcomes_id_seq" OWNED BY "public"."signal_outcomes"."id";
 
+
+
+CREATE TABLE IF NOT EXISTS "public"."signal_output_daily" (
+    "date" "date" NOT NULL,
+    "symbol" "text" NOT NULL,
+    "company_name" "text",
+    "sector" "text",
+    "industry" "text",
+    "strategy" "text",
+    "signal_type" "text",
+    "signal_subtype" "text",
+    "position_state" "text",
+    "filter_reason" "text",
+    "near_miss_data" "jsonb",
+    "eap_action" "text",
+    "score" numeric,
+    "score_adjusted" numeric,
+    "final_score" numeric,
+    "screener_score" numeric,
+    "ai_sentiment_delta" numeric,
+    "ai_tier" "text",
+    "ai_conviction" "text",
+    "ai_conviction_reason" "text",
+    "ai_note" "text",
+    "ai_suggested_action" "text",
+    "ai_risks" "text",
+    "entry_zone_low" numeric,
+    "entry_zone_high" numeric,
+    "current_price" numeric,
+    "entry_timing_type" "text",
+    "price_location" "text",
+    "dist_entry_pct" numeric,
+    "expected_r" numeric,
+    "validity_score" numeric,
+    "days_to_trigger_est" integer,
+    "momentum_state" "text",
+    "momentum_phase" "text",
+    "velocity_state" "text",
+    "trend_maturity" "text",
+    "lifecycle" "text",
+    "struct_edge" "text",
+    "breakout_readiness" numeric,
+    "holding_score" numeric,
+    "risk_score" numeric,
+    "momentum_score" numeric,
+    "institutional_score" numeric,
+    "persistent_phase" "text",
+    "reentry_mode" "text",
+    "rsi_daily" numeric,
+    "rsi_weekly" numeric,
+    "rsi_monthly" numeric,
+    "adx" numeric,
+    "vol_ratio" numeric,
+    "delivery_pct" numeric,
+    "atr_pct" numeric,
+    "dist_sma50" numeric,
+    "ret_6m" numeric,
+    "rs_vs_nifty" numeric,
+    "bb_context" "text",
+    "bb_squeeze" boolean,
+    "vwap_alignment" "text",
+    "volume_trend" "text",
+    "weekly_structure" "text",
+    "macd_direction" "text",
+    "psar_dual_confirmed" boolean,
+    "ha_signal" "text",
+    "stoch_context" "text",
+    "ma_alignment_score" numeric,
+    "regime" "text",
+    "predicted_regime" "text",
+    "regime_confidence" "text",
+    "nifty_price" numeric,
+    "india_vix" numeric,
+    "avg_sector_breadth" numeric,
+    "nifty_1d_chg_pct" numeric,
+    "nifty_5d_chg_pct" numeric,
+    "above_200dma_pct" numeric,
+    "advance_decline_ratio" numeric,
+    "nifty_pcr" numeric,
+    "fii_flag" "text",
+    "fii_net" numeric,
+    "fii_net_5d" numeric,
+    "fii_net_20d" numeric,
+    "dii_net" numeric,
+    "dii_flag" "text",
+    "sector_rank_at_entry" integer,
+    "industry_rank" integer,
+    "industry_state" "text",
+    "asm_flag" boolean,
+    "data_sources" "jsonb",
+    "entry_zone_source" "text",
+    "ai_tier_source" "text",
+    "expected_r_source" "text",
+    "outcome_entered" boolean,
+    "outcome_entry_price" numeric,
+    "outcome_exit_price" numeric,
+    "outcome_hold_days" integer,
+    "outcome_return_pct" numeric,
+    "outcome_category" "text",
+    "outcome_exit_reason" "text",
+    "outcome_notes" "text",
+    "pre_results_flag" boolean,
+    "upcoming_event_type" "text",
+    "upcoming_event_days" integer
+);
+
+
+ALTER TABLE "public"."signal_output_daily" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."signal_watch_reasons" (
+    "date" "date" NOT NULL,
+    "filter_reason" "text" NOT NULL,
+    "count" integer DEFAULT 0 NOT NULL,
+    "example_symbols" "text"[]
+);
+
+
+ALTER TABLE "public"."signal_watch_reasons" OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."stock_data_daily" (
@@ -1956,7 +2082,7 @@ COMMENT ON TABLE "public"."system_config" IS 'All system parameters configurable
 
 
 
-CREATE OR REPLACE VIEW "public"."v_blocked_candidates" AS
+CREATE OR REPLACE VIEW "public"."v_blocked_candidates" WITH ("security_invoker"='on') AS
  WITH "latest_msl" AS (
          SELECT DISTINCT ON ("master_shortlist"."symbol") "master_shortlist"."symbol",
             "master_shortlist"."date",
@@ -2269,7 +2395,7 @@ CREATE OR REPLACE VIEW "public"."v_live_position_context" AS
 ALTER VIEW "public"."v_live_position_context" OWNER TO "postgres";
 
 
-CREATE OR REPLACE VIEW "public"."v_signal_daily_dashboard" AS
+CREATE OR REPLACE VIEW "public"."v_signal_daily_dashboard" WITH ("security_invoker"='on') AS
  WITH "raw_counts" AS (
          SELECT "signal_log"."date",
             "count"(*) FILTER (WHERE ("signal_log"."signal_type" = ANY (ARRAY['BUY_CANDIDATE'::"text", 'PRIME_SETUP'::"text", 'BREAKOUT_SETUP'::"text", 'REENTRY_SETUP'::"text", 'STAGED_ENTRY'::"text", 'MARKET_TOP_PICK'::"text"]))) AS "buy_signals_raw",
@@ -2379,8 +2505,7 @@ CREATE OR REPLACE VIEW "public"."v_signal_performance" AS
           WHERE (("master_shortlist"."symbol" = "so"."symbol") AND ("master_shortlist"."date" = "so"."signal_date"))
          LIMIT 1) "ms" ON (true))
      LEFT JOIN "public"."regime_history" "rh" ON (("rh"."date" = "so"."signal_date")))
-     LEFT JOIN "public"."performance_metrics" "pm" ON ((("pm"."metric_date" = "so"."signal_date") AND ("pm"."grain" = 'daily'::"text"))))
-  ORDER BY "so"."signal_date" DESC, "so"."ai_tier";
+     LEFT JOIN "public"."performance_metrics" "pm" ON ((("pm"."metric_date" = "so"."signal_date") AND ("pm"."grain" = 'daily'::"text"))));
 
 
 ALTER VIEW "public"."v_signal_performance" OWNER TO "postgres";
@@ -2672,6 +2797,11 @@ ALTER TABLE ONLY "public"."screener_performance"
 
 
 
+ALTER TABLE ONLY "public"."screener_performance"
+    ADD CONSTRAINT "screener_performance_unique" UNIQUE ("symbol", "entry_date", "hold_days");
+
+
+
 ALTER TABLE ONLY "public"."script_change_log"
     ADD CONSTRAINT "script_change_log_pkey" PRIMARY KEY ("id");
 
@@ -2704,6 +2834,16 @@ ALTER TABLE ONLY "public"."signal_outcomes"
 
 ALTER TABLE ONLY "public"."signal_outcomes"
     ADD CONSTRAINT "signal_outcomes_signal_date_symbol_key" UNIQUE ("signal_date", "symbol");
+
+
+
+ALTER TABLE ONLY "public"."signal_output_daily"
+    ADD CONSTRAINT "signal_output_daily_pkey" PRIMARY KEY ("date", "symbol");
+
+
+
+ALTER TABLE ONLY "public"."signal_watch_reasons"
+    ADD CONSTRAINT "signal_watch_reasons_pkey" PRIMARY KEY ("date", "filter_reason");
 
 
 
@@ -2915,6 +3055,26 @@ CREATE INDEX "idx_signal_log_symbol" ON "public"."signal_log" USING "btree" ("sy
 
 
 CREATE INDEX "idx_signal_log_type" ON "public"."signal_log" USING "btree" ("date", "signal_type");
+
+
+
+CREATE INDEX "idx_sod_ai_tier" ON "public"."signal_output_daily" USING "btree" ("ai_tier");
+
+
+
+CREATE INDEX "idx_sod_ez_source" ON "public"."signal_output_daily" USING "btree" ("entry_zone_source");
+
+
+
+CREATE INDEX "idx_sod_outcome" ON "public"."signal_output_daily" USING "btree" ("outcome_category");
+
+
+
+CREATE INDEX "idx_sod_regime_sig" ON "public"."signal_output_daily" USING "btree" ("regime", "signal_type");
+
+
+
+CREATE INDEX "idx_sod_signal_type" ON "public"."signal_output_daily" USING "btree" ("signal_type");
 
 
 
@@ -3154,6 +3314,12 @@ ALTER TABLE "public"."signal_log" ENABLE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."signal_outcomes" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."signal_output_daily" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."signal_watch_reasons" ENABLE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."stock_data_daily" ENABLE ROW LEVEL SECURITY;
@@ -3989,6 +4155,18 @@ GRANT ALL ON TABLE "public"."signal_outcomes" TO "service_role";
 GRANT ALL ON SEQUENCE "public"."signal_outcomes_id_seq" TO "anon";
 GRANT ALL ON SEQUENCE "public"."signal_outcomes_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."signal_outcomes_id_seq" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."signal_output_daily" TO "anon";
+GRANT ALL ON TABLE "public"."signal_output_daily" TO "authenticated";
+GRANT ALL ON TABLE "public"."signal_output_daily" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."signal_watch_reasons" TO "anon";
+GRANT ALL ON TABLE "public"."signal_watch_reasons" TO "authenticated";
+GRANT ALL ON TABLE "public"."signal_watch_reasons" TO "service_role";
 
 
 

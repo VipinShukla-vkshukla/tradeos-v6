@@ -10,17 +10,18 @@ Plug-and-play script analysis. Point it at any Python file and it:
   5. Registers everything in brain_script_registry
 
 ADDING A NEW SCRIPT TO BRAIN SCOPE:
-  Zero manual steps. The scanner runs automatically on every brain cycle
-  against all .py files under backend/. New scripts are auto-discovered,
-  scanned, and registered. The brain will analyse them in the next cycle.
+  Zero manual steps. The scanner walks every path listed as active in
+  system_config.brain_scan_roots (default: just "backend"). New scripts
+  under an active root are auto-discovered, scanned, and registered on
+  the next brain cycle — no registration step.
 
-SCRIPT PATCHING (brain_script_patching_enabled = true):
-  The brain can directly apply cfg() migrations to scripts:
-  - Backs up original file content to script_change_log
-  - Applies unified diff
-  - Commits to git with a descriptive message
-  - Stores git hash for rollback
-  - Rollback: git revert + restore from script_change_log.backup_content
+SCRIPT PATCHING:
+  SCRIPT_PATCH proposals (cfg() migration diffs) are always REVIEW_ONLY.
+  There is no auto-commit path: a GitHub Actions runner is destroyed the
+  moment the job ends, and committing a file inside that runner without a
+  push doesn't persist the change anywhere — so this scanner only ever
+  generates the diff for manual review/application, never attempts to
+  write or commit it.
 """
 
 import ast
@@ -28,7 +29,6 @@ import difflib
 import json
 import os
 import re
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,25 +71,64 @@ IGNORE_PATTERNS = [
 class ScriptScanner:
 
     def __init__(self, backend_root: str = None):
-        self.backend_root = Path(backend_root or Path(__file__).parent.parent)
+        # backend_root stays as the default/fallback resolution anchor — repo root
+        # is one level up from it. Explicit backend_root param (tests, manual runs)
+        # bypasses brain_scan_roots entirely, same as before.
+        self._explicit_root = Path(backend_root) if backend_root else None
+        self.backend_root   = Path(backend_root or Path(__file__).parent.parent)
+        self.repo_root       = self.backend_root.parent
         self.sb = get_supabase()
+
+    def _scan_roots(self) -> list[dict]:
+        """
+        Active scan roots from system_config.brain_scan_roots. Falls back to
+        just "backend" (the original hardcoded behaviour) if unset — adding a
+        new root, or enabling frontend once a TS adapter exists, is then a
+        config edit, not a code change.
+        """
+        if self._explicit_root:
+            return [{"path": str(self._explicit_root), "lang": "python", "active": True}]
+        raw = cfg("brain_scan_roots", "")
+        if not raw:
+            return [{"path": "backend", "lang": "python", "active": True}]
+        try:
+            roots = json.loads(raw)
+            if isinstance(roots, list):
+                return roots
+        except Exception as e:
+            logger.warning(f"  brain_scan_roots malformed ({e}) — falling back to backend/")
+        return [{"path": "backend", "lang": "python", "active": True}]
 
     # ─────────────────────────────────────────────────────────────────────
     # FILE DISCOVERY
     # ─────────────────────────────────────────────────────────────────────
 
     def discover_scripts(self) -> list[Path]:
-        """Find all Python files under backend/, excluding test/venv/brain dirs."""
+        """Find all Python files under every active brain_scan_roots entry."""
         skip_dirs = {".venv", "venv", "__pycache__", ".git", "tests",
                      "brain", "node_modules", "migrations"}
         scripts = []
-        for path in self.backend_root.rglob("*.py"):
-            if any(p in path.parts for p in skip_dirs):
+        for root_cfg in self._scan_roots():
+            if not root_cfg.get("active", True):
                 continue
-            if path.name.startswith("test_"):
+            if root_cfg.get("lang", "python") != "python":
+                logger.warning(f"  Scan root '{root_cfg.get('path')}' has lang="
+                                f"'{root_cfg.get('lang')}' — no adapter for that "
+                                f"language yet, skipping. Python only for now.")
                 continue
-            scripts.append(path)
-        logger.info(f"Discovered {len(scripts)} Python files for scanning")
+            root_path = self.repo_root / root_cfg["path"] if self._explicit_root is None \
+                        else Path(root_cfg["path"])
+            if not root_path.exists():
+                logger.warning(f"  Scan root does not exist, skipping: {root_path}")
+                continue
+            for path in root_path.rglob("*.py"):
+                if any(p in path.parts for p in skip_dirs):
+                    continue
+                if path.name.startswith("test_"):
+                    continue
+                scripts.append(path)
+        logger.info(f"Discovered {len(scripts)} Python files for scanning "
+                    f"across {len(self._scan_roots())} configured root(s)")
         return sorted(scripts)
 
     # ─────────────────────────────────────────────────────────────────────
@@ -302,145 +341,6 @@ class ScriptScanner:
         return "".join(diff)
 
     # ─────────────────────────────────────────────────────────────────────
-    # SCRIPT PATCHING (controlled write)
-    # ─────────────────────────────────────────────────────────────────────
-
-    def apply_patch(self, script_path: Path, diff_text: str,
-                    proposal_id: int) -> bool:
-        """
-        Apply a unified diff to a script file.
-        Backs up original, applies patch, commits to git.
-        Full rollback via script_change_log.backup_content.
-        """
-        if not diff_text.strip():
-            return False
-
-        try:
-            original = script_path.read_text(encoding="utf-8")
-            rel_path = str(script_path.relative_to(self.backend_root))
-
-            # Determine change type
-            change_type = "HARDCODE_TO_CONFIG"
-
-            # Apply via patch command
-            import tempfile
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".diff",
-                                             delete=False) as tf:
-                tf.write(diff_text)
-                tf_path = tf.name
-
-            result = subprocess.run(
-                ["patch", "-p1", str(script_path), tf_path],
-                capture_output=True, text=True,
-                cwd=str(self.backend_root),
-            )
-            os.unlink(tf_path)
-
-            if result.returncode != 0:
-                logger.error(f"Patch failed for {rel_path}: {result.stderr}")
-                return False
-
-            # Git commit if enabled
-            git_hash = None
-            if cfg("brain_git_commit_patches", "true").lower() == "true":
-                git_hash = self._git_commit(rel_path, proposal_id)
-
-            # Log to script_change_log
-            self.sb.table("script_change_log").insert({
-                "proposal_id":    proposal_id,
-                "script_path":    rel_path,
-                "change_type":    change_type,
-                "diff_text":      diff_text[:10000],
-                "backup_content": original,
-                "git_commit_hash": git_hash,
-                "applied_by":     "brain_engine",
-            }).execute()
-
-            logger.success(f"  Patched {rel_path} (proposal {proposal_id}, git={git_hash})")
-            return True
-
-        except Exception as e:
-            logger.error(f"  Patch error for {script_path}: {e}")
-            return False
-
-    def rollback_patch(self, script_change_id: int, reviewer: str = "manual") -> bool:
-        """
-        Rollback a script patch using backup_content from script_change_log.
-        Also reverts git commit if available.
-        """
-        try:
-            rows = (self.sb.table("script_change_log")
-                          .select("*")
-                          .eq("id", script_change_id)
-                          .execute().data)
-            if not rows:
-                logger.error(f"script_change_log ID {script_change_id} not found")
-                return False
-
-            change   = rows[0]
-            path     = self.backend_root / change["script_path"]
-            backup   = change.get("backup_content", "")
-            git_hash = change.get("git_commit_hash")
-
-            if not backup:
-                logger.error("No backup content — cannot rollback")
-                return False
-
-            # Restore file
-            path.write_text(backup, encoding="utf-8")
-
-            # Git revert if we have the hash
-            rollback_hash = None
-            if git_hash:
-                rollback_hash = self._git_revert(git_hash)
-
-            # Mark rolled back
-            self.sb.table("script_change_log").update({
-                "rolled_back_at":  datetime.now(timezone.utc).isoformat(),
-                "rolled_back_by":  reviewer,
-                "rollback_commit": rollback_hash,
-            }).eq("id", script_change_id).execute()
-
-            logger.success(f"  Rolled back {change['script_path']}")
-            return True
-
-        except Exception as e:
-            logger.error(f"  Rollback error: {e}")
-            return False
-
-    def _git_commit(self, rel_path: str, proposal_id: int) -> Optional[str]:
-        """Stage and commit a changed file. Returns commit hash."""
-        try:
-            subprocess.run(["git", "add", rel_path], cwd=str(self.backend_root), check=True)
-            msg = f"brain[{proposal_id}]: migrate hardcoded values to cfg() in {rel_path}"
-            subprocess.run(["git", "commit", "-m", msg],
-                           cwd=str(self.backend_root), check=True)
-            result = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=str(self.backend_root), capture_output=True, text=True,
-            )
-            return result.stdout.strip()[:12]
-        except Exception as e:
-            logger.warning(f"  Git commit failed: {e}")
-            return None
-
-    def _git_revert(self, commit_hash: str) -> Optional[str]:
-        """Revert a git commit. Returns new revert commit hash."""
-        try:
-            subprocess.run(
-                ["git", "revert", "--no-edit", commit_hash],
-                cwd=str(self.backend_root), check=True,
-            )
-            result = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=str(self.backend_root), capture_output=True, text=True,
-            )
-            return result.stdout.strip()[:12]
-        except Exception as e:
-            logger.warning(f"  Git revert failed: {e}")
-            return None
-
-    # ─────────────────────────────────────────────────────────────────────
     # REGISTRY UPDATE
     # ─────────────────────────────────────────────────────────────────────
 
@@ -449,7 +349,7 @@ class ScriptScanner:
         Full scan of one script. Upserts result into brain_script_registry.
         Returns the registry entry dict.
         """
-        rel_path    = str(script_path.relative_to(self.backend_root))
+        rel_path    = str(script_path.relative_to(self.repo_root))
         hardcoded   = self.extract_hardcoded_values(script_path)
         reads, writes = self.detect_table_usage(script_path)
         config_keys = self.detect_config_keys(script_path)
@@ -532,16 +432,54 @@ class ScriptScanner:
                 lines.append(f"    ... and {len(tunable)-5} more")
 
         lines.append(f"\n{'═'*60}")
-        lines.append("To migrate a script: brain will auto-generate SCRIPT_PATCH proposals.")
-        lines.append("Enable: set brain_script_patching_enabled=true in system_config.")
+        lines.append("SCRIPT_PATCH proposals are review-only — cfg() migration diffs")
+        lines.append("are generated for you to apply manually, never auto-committed.")
         lines.append(f"{'═'*60}\n")
         return "\n".join(lines)
 
 
-def run_scan(backend_root: str = None) -> tuple[list[dict], str]:
-    """Entry point: scan all scripts, return results + report."""
+def run_scan(backend_root: str = None) -> tuple[list[dict], str, list[dict]]:
+    """
+    Entry point for the weekly scan cycle:
+      1. Hardcode/table/config scan — every script, every run (cheap, AST-based)
+      2. Behavioral profiling — only new/changed scripts (LLM-based)
+      3. Cross-script consistency check — reads what profiling just wrote
+
+    Returns (scan_results, report, new_proposals). Caller (brain_engine.py)
+    decides whether to save_proposals()/send_telegram_digest() with the third
+    element — run_scan() itself never writes to brain_proposals.
+    """
     scanner = ScriptScanner(backend_root)
+    sb      = scanner.sb
+
+    # Snapshot BEFORE scan_all() overwrites last_modified — last_profiled is
+    # tracked separately precisely so an interrupted profiling pass doesn't
+    # silently lose coverage of whichever files it didn't reach (see
+    # script_profiler.py docstring for why last_modified alone isn't safe here).
+    previous_registry = {
+        r["script_path"]: {"last_modified": r.get("last_modified"),
+                            "last_profiled": r.get("last_profiled")}
+        for r in (sb.table("brain_script_registry")
+                    .select("script_path,last_modified,last_profiled")
+                    .execute().data or [])
+    }
+
     results = scanner.scan_all()
     report  = scanner.generate_scan_report(results)
     print(report)
-    return results, report
+
+    new_proposals = []
+    try:
+        from brain.script_profiler import profile_changed_scripts
+        new_proposals += profile_changed_scripts(
+            results, previous_registry, scanner.repo_root, sb)
+    except Exception as e:
+        logger.error(f"  Profiling step failed (scan results still saved): {e}")
+
+    try:
+        from brain.consistency_checker import check_consistency
+        new_proposals += check_consistency(sb)
+    except Exception as e:
+        logger.error(f"  Consistency check failed (scan results still saved): {e}")
+
+    return results, report, new_proposals
