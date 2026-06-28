@@ -737,7 +737,7 @@ def _call_claude_websearch(prompt: str) -> str | None:
             headers={"Content-Type": "application/json", "x-api-key": api_key,
                      "anthropic-version": "2023-06-01"},
             json={
-                "model": _CLAUDE_MODEL, "max_tokens": 3000,
+                "model": _CLAUDE_MODEL, "max_tokens": 8000,
                 "system": _SYSTEM_PROMPT,
                 "tools": [{"type": "web_search_20250305", "name": "web_search"}],
                 "messages": [{"role": "user", "content": prompt}],
@@ -771,13 +771,13 @@ def call_ai(prompt: str) -> dict | None:
         full_text = _call_claude_websearch(prompt)
         if not full_text:
             try:
-                full_text = raw_completion(f"{_SYSTEM_PROMPT}\n\n{prompt}", max_tokens=3000)
+                full_text = raw_completion(f"{_SYSTEM_PROMPT}\n\n{prompt}", max_tokens=8000)
             except Exception as e:
                 logger.warning(f"Claude fallback also failed: {e}")
                 return None
     else:
         try:
-            full_text = raw_completion(f"{_SYSTEM_PROMPT}\n\n{prompt}", max_tokens=3000)
+            full_text = raw_completion(f"{_SYSTEM_PROMPT}\n\n{prompt}", max_tokens=8000)
         except Exception as e:
             logger.warning(f"AI call failed for provider={provider}: {e}")
             return None
@@ -787,12 +787,44 @@ def call_ai(prompt: str) -> dict | None:
 
     try:
         m = re.search(r"\{[\s\S]+\}", full_text)
-        return json.loads(m.group()) if m else None
+        if not m:
+            return None
+        raw = m.group()
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as e:
+            logger.warning(f"JSON parse failed: {e}")
+            fixed = _close_truncated_json(raw)
+            if fixed:
+                logger.info("JSON recovered from truncated response")
+                return json.loads(fixed)
+            return None
     except Exception as e:
-        logger.warning(f"JSON parse failed: {e}")
+        logger.warning(f"JSON parse failed (outer): {e}")
         return None
 
-
+def _close_truncated_json(s: str) -> str | None:
+    """Close unclosed brackets/braces in a truncated JSON response."""
+    in_string = esc = False
+    stack: list[str] = []
+    last_val_end = 0
+    for i, ch in enumerate(s):
+        if esc:          esc = False;            continue
+        if ch == "\\" and in_string: esc = True; continue
+        if ch == '"' and not esc:    in_string = not in_string; continue
+        if in_string:    continue
+        if ch in "{[":   stack.append(ch)
+        elif ch in "]}":
+            if stack:    stack.pop()
+            last_val_end = i + 1
+    trimmed = s[:last_val_end].rstrip().rstrip(",")
+    closing  = "".join("}" if c == "{" else "]" for c in reversed(stack))
+    try:
+        json.loads(trimmed + closing)
+        return trimmed + closing
+    except Exception:
+        return None
+    
 # ── Writes ─────────────────────────────────────────────────────────────────
 
 def apply_sentiment_modifiers(sb, result: dict, candidates: list[dict], date_str: str) -> int:
