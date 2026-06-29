@@ -753,8 +753,25 @@ def _call_claude_websearch(prompt: str) -> str | None:
         logger.warning(f"Claude web_search exception: {e}")
         return None
 
+_REQUIRED_KEYS = {
+    "market_tone", "macro_sector_impacts", "regulatory_alerts",
+    "fii_outlook", "dii_outlook", "candidate_sentiment",
+}
 
-def call_ai(prompt: str) -> dict | None:
+def _validate_ai_result(result: dict, n_candidates: int) -> list[str]:
+    """Returns list of issues. Empty = structurally complete."""
+    issues = []
+    for k in _REQUIRED_KEYS:
+        if k not in result:
+            issues.append(f"missing key '{k}'")
+    got = len(result.get("candidate_sentiment") or [])
+    if got < n_candidates:
+        issues.append(f"candidate_sentiment truncated: {got}/{n_candidates} entries")
+    if not (result.get("market_tone") or {}).get("position_sizing_guidance"):
+        issues.append("market_tone.position_sizing_guidance missing")
+    return issues
+
+def call_ai(prompt: str, n_candidates: int = 0) -> dict | None:
     try:
         from ai.ai_router import is_ai_available, raw_completion
     except ImportError:
@@ -790,15 +807,32 @@ def call_ai(prompt: str) -> dict | None:
         if not m:
             return None
         raw = m.group()
+        recovered = False
         try:
-            return json.loads(raw)
+            result = json.loads(raw)
         except json.JSONDecodeError as e:
             logger.warning(f"JSON parse failed: {e}")
             fixed = _close_truncated_json(raw)
-            if fixed:
-                logger.info("JSON recovered from truncated response")
-                return json.loads(fixed)
-            return None
+            if not fixed:
+                return None
+            result = json.loads(fixed)
+            recovered = True
+
+        issues = _validate_ai_result(result, n_candidates)
+        got = len(result.get("candidate_sentiment") or [])
+        src = "recovered" if recovered else "direct"
+
+        if issues:
+            logger.warning(f"AI result incomplete ({src}): {issues}")
+            if any("missing key" in i for i in issues):
+                return None
+        else:
+            logger.info(
+                f"AI result OK ({src}): {got}/{n_candidates} sentiment entries"
+                f" | all required keys present"
+            )
+
+        return result
     except Exception as e:
         logger.warning(f"JSON parse failed (outer): {e}")
         return None
@@ -827,7 +861,7 @@ def _close_truncated_json(s: str) -> str | None:
     
 # ── Writes ─────────────────────────────────────────────────────────────────
 
-def apply_sentiment_modifiers(sb, result: dict, candidates: list[dict], date_str: str) -> int:
+def apply_sentiment_modifiers(sb, result: dict, candidates: list[dict], date_str: str, n_candidates: int = 0) -> int:
     """
     Write sentiment_modifier back to signal_log.score_adjusted.
     This is the news-to-score feedback loop: step 19 reads the adjusted scores.
@@ -862,7 +896,14 @@ def apply_sentiment_modifiers(sb, result: dict, candidates: list[dict], date_str
         except Exception as e:
             logger.warning(f"sentiment_modifier write failed for {sym}: {e}")
 
-    logger.info(f"sentiment_modifier: {written} signal_log scores updated")
+    neutral = sum(1 for s in sentiment_list if float(s.get("sentiment_modifier") or 0) == 0.0)
+    missing = max(0, n_candidates - len(sentiment_list))          # candidates AI never mentioned
+    logger.info(
+        f"sentiment_modifier: {written} scores updated | "
+        f"{neutral} neutral/0.0 skipped | "
+        f"{missing} never returned by AI"
+        + (" ← possible truncation" if missing > 0 else "")
+    )
     return written
 
 
@@ -998,7 +1039,7 @@ def main():
                 "candidates": len(ctx["candidates"])}
 
     logger.info("Calling AI...")
-    result = call_ai(prompt)
+    result = call_ai(prompt, n_candidates=len(ctx["candidates"]))
 
     if not result:
         logger.warning("AI call returned nothing — step 18 non-fatal exit")
