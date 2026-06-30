@@ -573,6 +573,10 @@ def send_telegram_digest(proposals: list, run_id: str, auto_applied: int = 0) ->
         lines.append(f"✅ Auto-applied: <b>{auto_applied}</b> proposals\n")
     if pending:
         lines.append(f"⏳ <b>{len(pending)} proposals awaiting review:</b>\n")
+        budget = 3400  # leave generous margin under Telegram's 4096 limit for
+                       # the header/footer already in `lines` plus the footer below
+        used   = sum(len(l) for l in lines)
+        shown  = 0
         for p in pending[:8]:
             bt = p.get("backtest_result") or {}
             if isinstance(bt, str):
@@ -580,13 +584,20 @@ def send_telegram_digest(proposals: list, run_id: str, auto_applied: int = 0) ->
                 except: bt = {}
             wr_s = f"+{bt['wr_delta']:.0f}pp" if isinstance(bt.get("wr_delta"), (int, float)) else ""
             conf = float(p.get("confidence", 0))
-            lines.append(
+            block = (
                 f"• <code>ID {p['id']}</code> [{esc(p.get('proposal_type', ''))}] "
                 f"<b>{esc(str(p.get('target_key', ''))[:35])}</b>\n"
-                f"  {esc(p.get('current_value', '?'))} → {esc(p.get('proposed_value', '?'))}  "
+                f"  {esc(str(p.get('current_value', '?'))[:60])} → {esc(str(p.get('proposed_value', '?'))[:60])}  "
                 f"conf={conf:.0%}  {esc(wr_s)}\n"
                 f"  <i>{esc(str(p.get('rationale', ''))[:90])}</i>\n"
             )
+            if used + len(block) > budget:
+                break  # drop whole blocks from here, never split one mid-tag
+            lines.append(block)
+            used  += len(block)
+            shown += 1
+        if shown < len(pending[:8]):
+            lines.append(f"… +{len(pending) - shown} more, see CLI `list`\n")
     lines += [
         "\n<b>CLI:</b>",
         "<code>python -m brain.backtester_and_change_manager approve &lt;id&gt;</code>",

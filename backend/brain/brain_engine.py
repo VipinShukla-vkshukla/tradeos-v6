@@ -220,7 +220,24 @@ def run(mode: str = "full", dry_run: bool = False,
         validated = []
 
     # ── Merge and save ───────────────────────────────────────────────────
-    all_proposals = _merge_proposals(validated, llm_passthrough, max_proposals)
+    # scan_proposals (CODE_SUGGESTION/CONSISTENCY_CONFLICT from Step 1) were
+    # being computed and then silently discarded here — _merge_proposals only
+    # ever saw quant+LLM findings. They already carry a target_key (set by
+    # script_profiler.py/consistency_checker.py directly), so they pass
+    # through _merge_proposals's dedup untouched, same as llm_passthrough.
+    #
+    # Capped independently before merging: a heavy profiling week (e.g. the
+    # first run after deployment, scanning everything at once) can easily
+    # produce more scan findings alone than max_proposals — without its own
+    # cap here, _merge_proposals's single combined slice at the end would let
+    # whichever category is sorted first crowd out the other entirely.
+    scan_proposals = sorted(
+        scan_proposals,
+        key=lambda x: (int(x.get("priority", 5)), -float(x.get("confidence", 0)))
+    )[:max_proposals]
+    all_proposals = _merge_proposals(
+        validated, llm_passthrough + scan_proposals, max_total=max_proposals * 2
+    )
 
     logger.info(f"\n{'═'*60}")
     logger.info(f"BRAIN SUMMARY: {len(all_proposals)} proposals")

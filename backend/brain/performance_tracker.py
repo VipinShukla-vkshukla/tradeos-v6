@@ -49,7 +49,11 @@ def _pearson(a: pd.Series, b: pd.Series) -> Optional[float]:
     both = pd.DataFrame({"a": a, "b": b}).dropna()
     if len(both) < 10:
         return None
-    return round(float(both["a"].corr(both["b"])), 3)
+    if both["a"].nunique() < 2 or both["b"].nunique() < 2:
+        return None  # zero-variance column -> corr() routes through np.corrcoef
+                      # internally and returns nan, not None (confirmed empirically)
+    r = both["a"].corr(both["b"])
+    return round(float(r), 3) if pd.notna(r) else None
 
 
 def _win_rate(df: pd.DataFrame, outcome_col: str = "outcome_win") -> Optional[float]:
@@ -330,13 +334,6 @@ def compute_monthly_metrics(sb, month_end: date) -> dict:
     eval_end   = month_end - timedelta(days=28)
     eval_start = eval_end  - timedelta(days=30)
     signals    = _load_outcomes_for_date_range(sb, eval_start, eval_end, eval_horizon=20)
-
-    # Actual P&L from closed positions
-    cp_rows = (sb.table("closed_positions")
-                 .select("pnl_pct,strategy,exit_reason,holding_days")
-                 .gte("exit_date", str(month_end - timedelta(days=30)))
-                 .execute().data)
-    cp_df = pd.DataFrame(cp_rows) if cp_rows else pd.DataFrame()
 
     # AI provider comparison
     ai_provider_stats = {}

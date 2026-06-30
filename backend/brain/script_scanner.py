@@ -68,6 +68,20 @@ IGNORE_PATTERNS = [
 ]
 
 
+def _sanitize_module_name(stem: str) -> str:
+    """
+    A raw filename stem can contain anything the filesystem allows — spaces,
+    hyphens, mixed case (e.g. a Windows "make a copy" duplicate like
+    "ingest_sheets - Copy.py"). Config keys everywhere else in this system
+    are lowercase, underscore-separated, no spaces or punctuation — without
+    sanitizing, a stray file like that produces a key like
+    "ingest_sheets - copy_threshold", which is a different kind of broken
+    than what it's tunable-value-detection was trying to do.
+    """
+    s = re.sub(r"[^a-zA-Z0-9]+", "_", stem).strip("_").lower()
+    return s or "unnamed"
+
+
 class ScriptScanner:
 
     def __init__(self, backend_root: str = None):
@@ -193,7 +207,7 @@ class ScriptScanner:
                             continue
 
                         # Derive proposed config key
-                        module = script_path.stem
+                        module = _sanitize_module_name(script_path.stem)
                         proposed_key = f"{module}_{name.lower()}"
 
                         findings.append({
@@ -218,7 +232,7 @@ class ScriptScanner:
                         )
                         if all_numeric and len(node.value.values) >= 3:
                             line_ctx = lines[node.lineno-1].strip() if node.lineno <= len(lines) else ""
-                            module   = script_path.stem
+                            module   = _sanitize_module_name(script_path.stem)
                             findings.append({
                                 "line":         node.lineno,
                                 "name":         name,

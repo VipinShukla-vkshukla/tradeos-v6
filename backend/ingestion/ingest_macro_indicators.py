@@ -192,7 +192,7 @@ _NSE_PAGE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Encoding": "gzip, deflate",
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
     "Sec-Fetch-Dest": "document",
@@ -206,7 +206,7 @@ _NSE_API_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Encoding": "gzip, deflate",
     "Connection": "keep-alive",
     "Referer": "https://www.nseindia.com/option-chain",   # ← critical: NSE validates this
     "Sec-Fetch-Dest": "empty",
@@ -216,71 +216,110 @@ _NSE_API_HEADERS = {
 }
 
 
+def _next_nifty_weekly_expiry_candidates() -> list[str]:
+    """
+    Candidate weekly expiry dates for option-chain-v3, in order of likelihood,
+    formatted as NSE expects (DD-Mon-YYYY).
+
+    Primary: current/next Tuesday — Nifty weekly expiry day per NSE's 2025
+    circular. If today IS Tuesday, today's contract is still the live one
+    (trades until close), so today is the correct value, not next week.
+
+    The ±1/±2 day candidates exist because NSE shifts expiry to the nearest
+    prior trading day when the computed date falls on a market holiday —
+    trying a small window avoids hardcoding the full NSE holiday calendar.
+
+    NOTE: NSE has changed the weekly expiry weekday multiple times via
+    circular. If this starts failing consistently, check the current
+    weekly expiry day on nseindia.com/option-chain and update
+    WEEKLY_EXPIRY_WEEKDAY below (0=Mon … 6=Sun).
+    """
+    WEEKLY_EXPIRY_WEEKDAY = 1   # Tuesday
+    today = datetime.now().date()
+    days_ahead = (WEEKLY_EXPIRY_WEEKDAY - today.weekday()) % 7
+    base = today + timedelta(days=days_ahead)
+
+    candidates = [base, base - timedelta(days=1), base + timedelta(days=1),
+                  base - timedelta(days=2)]
+    seen, out = set(), []
+    for d in candidates:
+        s = d.strftime("%d-%b-%Y")
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
 def fetch_nifty_pcr(sb) -> dict | None:
     """
-    Nifty PCR from NSE option chain API.
+    Nifty PCR from NSE option-chain-v3 API. NSE retired the parameterless
+    option-chain-indices endpoint in 2026 — v3 requires an explicit expiry.
 
-    NSE requires a 3-step warm-up and separate header sets for pages vs API:
-      Step 1: GET nseindia.com           — seeds base cookies (_ga, nseappid etc.)
-      Step 2: GET nseindia.com/option-chain — seeds bm_*, ak_* CDN cookies
-      Step 3: GET API with Referer set   — NSE validates Referer + cookie bundle
-
-    Without the correct Referer + Sec-Fetch headers on step 3, NSE returns 404
-    even if the cookies are present.
+    Resilience layers:
+      1. Skip entirely on weekends — market closed, avoid pointless NSE hits.
+      2. 2-step session warm-up seeds Akamai bot-detection cookies.
+      3. Try a small set of candidate expiry dates (this week's Tuesday,
+         ±1-2 days) since holidays shift the actual expiry and a pure
+         weekday calculation alone will occasionally miss.
+      4. Defensive JSON parsing — NSE prefixes responses with a UTF-8 BOM;
+         scan for the first '{' or '[' rather than trusting resp.json().
+      5. Sanity-check OI and PCR range before accepting.
     """
+    if datetime.now().weekday() in (5, 6):
+        logger.info("Nifty PCR: weekend — skipping live fetch, using cached value")
+        return _load_last_pcr(sb)
+
     session = requests.Session()
     try:
-        # Step 1 — seed base cookies
         r1 = session.get("https://www.nseindia.com", headers=_NSE_PAGE_HEADERS, timeout=15)
         logger.debug(f"NSE warm-up step 1: HTTP {r1.status_code} | cookies: {len(session.cookies)}")
         time.sleep(2)
 
-        # Step 2 — seed option-chain page cookies (bm_sz, ak_bmsc etc.)
         r2 = session.get("https://www.nseindia.com/option-chain", headers=_NSE_PAGE_HEADERS, timeout=15)
         logger.debug(f"NSE warm-up step 2: HTTP {r2.status_code} | cookies: {len(session.cookies)}")
         time.sleep(1)
 
-        # Step 3 — actual API call with correct Referer + API headers
-        resp = session.get(
-            "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY",
-            headers=_NSE_API_HEADERS,
-            timeout=20,
-        )
-        logger.debug(f"NSE PCR API: HTTP {resp.status_code}")
+        for expiry in _next_nifty_weekly_expiry_candidates():
+            url = (f"https://www.nseindia.com/api/option-chain-v3"
+                   f"?type=Indices&symbol=NIFTY&expiry={expiry}")
+            resp = session.get(url, headers=_NSE_API_HEADERS, timeout=20)
+            logger.debug(f"NSE PCR API expiry={expiry}: HTTP {resp.status_code}")
 
-        if resp.status_code != 200:
-            logger.warning(f"NSE PCR API: HTTP {resp.status_code} — falling back to last stored value")
-            return _load_last_pcr(sb)
+            if resp.status_code != 200:
+                continue
 
-        # Validate it's actually JSON before parsing (NSE sometimes returns HTML on auth fail)
-        content_type = resp.headers.get("Content-Type", "")
-        if "application/json" not in content_type and "text/json" not in content_type:
-            logger.warning(f"NSE PCR: unexpected Content-Type '{content_type}' — likely auth redirect")
-            return _load_last_pcr(sb)
+            raw   = resp.content
+            start = next((i for i, b in enumerate(raw) if b in (123, 91)), -1)  # '{' or '['
+            if start == -1:
+                continue
+            try:
+                payload = json.loads(raw[start:].decode("utf-8"))
+            except json.JSONDecodeError:
+                continue
 
-        payload  = resp.json()
-        filtered = payload.get("filtered", {})
-        put_oi   = filtered.get("PE", {}).get("totOI", 0)
-        call_oi  = filtered.get("CE", {}).get("totOI", 0)
-        logger.debug(f"NSE PCR raw OI — put={put_oi:,}  call={call_oi:,}")
+            filtered = payload.get("filtered", {})
+            put_oi   = filtered.get("PE", {}).get("totOI", 0)
+            call_oi  = filtered.get("CE", {}).get("totOI", 0)
 
-        if call_oi == 0:
-            logger.info("Nifty PCR: zero call OI (market closed) — using last stored value")
-            return _load_last_pcr(sb)
+            if call_oi == 0 or put_oi == 0:
+                continue   # wrong/expired contract for this candidate date
 
-        pcr = round(put_oi / call_oi, 3)
-        if not (0.3 <= pcr <= 3.0):
-            logger.warning(f"Nifty PCR {pcr} outside valid range — using last stored value")
-            return _load_last_pcr(sb)
+            pcr = round(put_oi / call_oi, 3)
+            if not (0.3 <= pcr <= 3.0):
+                logger.warning(f"Nifty PCR {pcr} outside valid range (expiry={expiry}) — trying next candidate")
+                continue
 
-        logger.info(f"Nifty PCR: {pcr}  (put_oi={put_oi:,} / call_oi={call_oi:,})")
-        return {
-            "indicator_name":  "NIFTY_PCR",
-            "indicator_value": pcr,
-            "indicator_date":  str(today_ist()),
-            "source":          "NSE_OPTION_CHAIN",
-            "release_date":    str(today_ist()),
-        }
+            logger.info(f"Nifty PCR: {pcr}  (put_oi={put_oi:,} / call_oi={call_oi:,}, expiry={expiry})")
+            return {
+                "indicator_name":  "NIFTY_PCR",
+                "indicator_value": pcr,
+                "indicator_date":  str(today_ist()),
+                "source":          "NSE_OPTION_CHAIN",
+                "release_date":    str(today_ist()),
+            }
+
+        logger.warning("Nifty PCR: all candidate expiries failed — falling back to cached value")
+        return _load_last_pcr(sb)
 
     except Exception as e:
         logger.warning(f"Nifty PCR fetch failed (non-fatal): {e}")
@@ -291,54 +330,11 @@ def fetch_nifty_pcr(sb) -> dict | None:
 
 def _load_last_pcr(sb) -> dict | None:
     """
-    Returns the most recent non-zero PCR from Supabase, re-dated to today.
-    This covers weekends, market holidays, and API failures without storing
-    a synthetic default that would pollute the fallback chain next run.
-    Falls back to 1.0 (neutral) only if the table is genuinely empty.
-    """
-    try:
-        rows = (
-            sb.table("macro_indicators")
-              .select("indicator_value, indicator_date")
-              .eq("indicator_name", "NIFTY_PCR")
-              .gt("indicator_value", 0)
-              .not_.in_("source", ["DEFAULT_NEUTRAL"])        # skip our own synthetics
-              .order("indicator_date", desc=True)
-              .limit(1)
-              .execute().data
-        )
-        if rows:
-            val       = float(rows[0]["indicator_value"])
-            from_date = rows[0]["indicator_date"]
-            logger.info(f"Nifty PCR: using cached {val} from {from_date}")
-            return {
-                "indicator_name":  "NIFTY_PCR",
-                "indicator_value": val,
-                "indicator_date":  str(today_ist()),
-                "source":          "NSE_OPTION_CHAIN_CACHED",
-                "release_date":    from_date,
-                "is_cached":       True,
-            }
-    except Exception as e:
-        logger.warning(f"Nifty PCR DB fallback failed: {e}")
-
-    logger.warning("Nifty PCR: no real value in DB — returning neutral default 1.0")
-    return {
-        "indicator_name":  "NIFTY_PCR",
-        "indicator_value": 1.0,
-        "indicator_date":  str(today_ist()),
-        "source":          "DEFAULT_NEUTRAL",
-        "release_date":    str(today_ist()),
-        "is_cached":       True,
-    }
-
-
-def _load_last_pcr(sb) -> dict | None:
-    """
     Returns the most recent *real* PCR from Supabase, re-dated to today.
     Excludes DEFAULT_NEUTRAL and CACHED rows so synthetic values don't
-    cascade — i.e. we always fall back to the last actual NSE reading.
-    Returns neutral 1.0 only when the table has never had a real value.
+    cascade — we always fall back to the last actual NSE reading.
+    Returns neutral 1.0 only when the table has never had a real value
+    (effectively cold-start only, given the live fetch now works).
     """
     try:
         rows = (
@@ -346,8 +342,8 @@ def _load_last_pcr(sb) -> dict | None:
               .select("indicator_value, indicator_date")
               .eq("indicator_name", "NIFTY_PCR")
               .gt("indicator_value", 0)
-              .neq("source", "DEFAULT_NEUTRAL")           # not_.in_() silently fails in supabase-py
-              .neq("source", "NSE_OPTION_CHAIN_CACHED")   # don't cascade stale cached rows
+              .neq("source", "DEFAULT_NEUTRAL")
+              .neq("source", "NSE_OPTION_CHAIN_CACHED")
               .order("indicator_date", desc=True)
               .limit(1)
               .execute().data
@@ -436,7 +432,11 @@ def write_macro_indicators(sb, rows: list[dict]) -> int:
 
     written = 0
     # Deduplicate by indicator_name (keep highest-confidence source)
-    source_priority = {"RBI_DBIE": 4, "MOSPI": 3, "NSE_OPTION_CHAIN": 3, "ET_RSS": 2, "YAHOO_FINANCE": 1}
+    source_priority = {
+        "RBI_DBIE": 4, "MOSPI": 3, "NSE_OPTION_CHAIN": 3,
+        "ET_RSS": 2, "NSE_OPTION_CHAIN_CACHED": 2, "TRADING_ECONOMICS": 1,
+        "YAHOO_FINANCE": 1, "DEFAULT_NEUTRAL": 0,
+    }
     seen: dict[str, dict] = {}
     for row in rows:
         name = row["indicator_name"]
@@ -525,14 +525,16 @@ def main():
     except Exception as e:
         logger.warning(f"  India VIX: FAILED (non-fatal) — {e}")
 
-    # ADD THIS BLOCK right after ↑
     try:
-        pcr_row = fetch_nifty_pcr(sb)    # ← pass sb
-        if pcr_row:
-            all_rows.append(pcr_row)
-            logger.info(f"  Nifty PCR: {pcr_row['indicator_value']} (source={pcr_row['source']})")
+        if _already_written_today(sb, "NIFTY_PCR", _today_str):
+            logger.info("  Nifty PCR: already written today — skipping")
         else:
-            logger.warning("  Nifty PCR: no data and no cached value available")
+            pcr_row = fetch_nifty_pcr(sb)
+            if pcr_row:
+                all_rows.append(pcr_row)
+                logger.info(f"  Nifty PCR: {pcr_row['indicator_value']} (source={pcr_row['source']})")
+            else:
+                logger.warning("  Nifty PCR: no data and no cached value available")
     except Exception as e:
         logger.warning(f"  Nifty PCR: FAILED (non-fatal) — {e}")
 

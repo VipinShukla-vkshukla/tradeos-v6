@@ -112,15 +112,15 @@ WRITE_ALL_QUALIFIED  = True   # True = write all to msl_computed | False = write
 #
 _REGIME_ENGINE_WEIGHTS_DEFAULT = {
     "TRENDING":   {"CTL": 1.2, "MOM": 1.2, "SBS": 1.1, "VBD": 1.0,
-                   "IAD": 1.0, "RSB": 1.0, "TPO": 1.0, "RVS": 0.7, "SEC": 1.0},
+                   "IAD": 1.0, "RSB": 1.0, "TPO": 1.0, "RVS": 0.7, "SEC": 1.0, "EAP": 1.0},
     "RISK ON":    {"CTL": 1.1, "MOM": 1.1, "SBS": 1.1, "VBD": 1.0,
-                   "IAD": 1.0, "RSB": 1.1, "TPO": 1.0, "RVS": 0.9, "SEC": 1.1},
+                   "IAD": 1.0, "RSB": 1.1, "TPO": 1.0, "RVS": 0.9, "SEC": 1.1, "EAP": 1.0},
     "NEUTRAL":    {"CTL": 1.0, "MOM": 1.0, "SBS": 1.0, "VBD": 1.0,
-                   "IAD": 1.0, "RSB": 1.0, "TPO": 1.0, "RVS": 1.0, "SEC": 1.0},
+                   "IAD": 1.0, "RSB": 1.0, "TPO": 1.0, "RVS": 1.0, "SEC": 1.0, "EAP": 1.0},
     "RECOVERING": {"CTL": 0.8, "MOM": 0.7, "SBS": 0.9, "VBD": 0.8,
-                   "IAD": 1.3, "RSB": 1.3, "TPO": 0.9, "RVS": 1.5, "SEC": 1.2},
+                   "IAD": 1.3, "RSB": 1.3, "TPO": 0.9, "RVS": 1.5, "SEC": 1.2, "EAP": 0.8},
     "RISK OFF":   {"CTL": 0.6, "MOM": 0.5, "SBS": 0.7, "VBD": 0.6,
-                   "IAD": 1.2, "RSB": 1.2, "TPO": 0.7, "RVS": 1.4, "SEC": 1.0},
+                   "IAD": 1.2, "RSB": 1.2, "TPO": 0.7, "RVS": 1.4, "SEC": 1.0, "EAP": 0.6},
 }
 
 def get_regime_engine_weights() -> dict:

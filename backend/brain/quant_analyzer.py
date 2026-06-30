@@ -60,7 +60,11 @@ def _pearson(a: pd.Series, b: pd.Series) -> Optional[float]:
     both = pd.DataFrame({"a": a, "b": b}).dropna()
     if len(both) < MIN_SAMPLES:
         return None
-    return round(float(both["a"].corr(both["b"])), 3)
+    if both["a"].nunique() < 2 or both["b"].nunique() < 2:
+        return None  # zero-variance column -> corr() returns nan, not None;
+                      # catch it here so every caller gets this fix for free
+    r = both["a"].corr(both["b"])
+    return round(float(r), 3) if pd.notna(r) else None
 
 
 def _safe_float(val) -> Optional[float]:

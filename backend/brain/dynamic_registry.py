@@ -184,8 +184,12 @@ def discover_engines(sb=None, config: dict = None) -> list[str]:
         if engines:
             logger.debug(f"  Discovered {len(engines)} engines from regime_engine_weights: {sorted(engines)}")
             return sorted(engines)
-    except Exception:
-        pass
+        logger.warning(f"  regime_engine_weights parsed but contained no engine keys "
+                        f"(raw value: {str(raw)[:200]})")
+    except Exception as e:
+        logger.warning(f"  regime_engine_weights could not be parsed as JSON ({e}) — "
+                        f"raw value was: {str(raw)[:200]!r}. Falling back to scanner_patterns, "
+                        f"then to screen_stocks.py's local default if that also fails.")
 
     # Fallback: scan historical scanner_patterns in signal_log
     try:
@@ -249,16 +253,54 @@ def discover_regime_names(sb=None, config: dict = None) -> list[str]:
         regimes = list(weights.keys())
         if regimes:
             return sorted(regimes)
-    except Exception:
-        pass
+        logger.warning(f"  regime_engine_weights parsed but contained no regime keys "
+                        f"(raw value: {str(raw)[:200]})")
+    except Exception as e:
+        logger.warning(f"  regime_engine_weights could not be parsed as JSON ({e}) — "
+                        f"raw value was: {str(raw)[:200]!r}. Falling back to signal_log "
+                        f"column inspection.")
 
-    # Fallback: distinct values from signal_log
-    try:
-        col = next(iter(["active_regime", "regime"]), None)
-        rows = sb.table("signal_log").select(col).not_.is_(col, "null").limit(200).execute().data
-        return sorted({r.get(col,"") for r in rows if r.get(col)})
-    except Exception:
+    # Fallback: distinct values from signal_log. A regime classifier is a
+    # SMALL fixed enum (this system uses 5 states) — so unlike most
+    # discovery logic in this file, "more distinct values" is a red flag of
+    # picking the wrong column, not a better signal. An earlier version of
+    # this fallback preferred whichever column had more diversity (to avoid
+    # a sparse-but-correct column losing to an empty one) and that broke
+    # exactly this way: a column with no real regime semantics returning 28+
+    # "regimes". Fixed by (a) normalizing case/whitespace before counting —
+    # "TRENDING" vs "Trending" vs "TRENDING " would otherwise inflate the
+    # count for no real reason — and (b) capping plausibility: a column
+    # returning more than REGIME_CARDINALITY_CAP distinct values isn't a
+    # regime enum, whatever it is, and is rejected outright rather than
+    # silently "winning" by having more rows.
+    REGIME_CARDINALITY_CAP = 15
+    candidates = {}
+    for col in ["active_regime", "regime"]:
+        try:
+            rows = (sb.table("signal_log").select(col)
+                      .not_.is_(col, "null").limit(500).execute().data)
+            normalized = sorted({str(r[col]).strip().upper() for r in rows if r.get(col)})
+            if 0 < len(normalized) <= REGIME_CARDINALITY_CAP:
+                candidates[col] = (normalized, len(rows))
+        except Exception:
+            continue
+
+    if not candidates:
+        logger.warning(
+            "  Regime discovery: neither 'active_regime' nor 'regime' in "
+            "signal_log yielded a plausible small enum (checked "
+            "regime_engine_weights first — verify that key is readable in "
+            "system_config, that's the real fix if this fallback is firing "
+            "at all). Regime-aware analysis (regime×engine interactions, "
+            "regime-specific min_rr thresholds) will be skipped this run."
+        )
         return []
+
+    # Among plausible candidates, prefer the better-populated one — this
+    # preserves the original sparsity-handling intent, just no longer at
+    # the cost of accepting an implausibly noisy column.
+    best_col = max(candidates, key=lambda c: candidates[c][1])
+    return candidates[best_col][0]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

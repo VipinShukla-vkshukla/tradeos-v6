@@ -1,10 +1,10 @@
-# test_nse_pcr.py  — run standalone to verify NSE session without touching Supabase
 import requests, time, json
+from datetime import datetime, timedelta
 
 _NSE_PAGE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9", "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Language": "en-US,en;q=0.9", "Accept-Encoding": "gzip, deflate",
     "Connection": "keep-alive", "Upgrade-Insecure-Requests": "1",
     "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate",
     "Sec-Fetch-Site": "none", "Sec-Fetch-User": "?1",
@@ -12,11 +12,20 @@ _NSE_PAGE_HEADERS = {
 _NSE_API_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9", "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Language": "en-US,en;q=0.9", "Accept-Encoding": "gzip, deflate",
     "Connection": "keep-alive", "Referer": "https://www.nseindia.com/option-chain",
     "Sec-Fetch-Dest": "empty", "Sec-Fetch-Mode": "cors",
     "Sec-Fetch-Site": "same-origin", "X-Requested-With": "XMLHttpRequest",
 }
+
+def _next_weekly_expiry() -> str:
+    """NSE Nifty weekly expiry is Tuesday as of the 2025 NSE circular change."""
+    today = datetime.now().date()
+    days_ahead = (1 - today.weekday()) % 7   # Tuesday = weekday 1
+    if days_ahead == 0:
+        days_ahead = 7   # if today IS Tuesday, NSE shows next week's after expiry
+    expiry = today + timedelta(days=days_ahead)
+    return expiry.strftime("%d-%b-%Y")
 
 session = requests.Session()
 print("Step 1: Visiting homepage...")
@@ -29,11 +38,10 @@ r2 = session.get("https://www.nseindia.com/option-chain", headers=_NSE_PAGE_HEAD
 print(f"  → HTTP {r2.status_code} | cookies set: {len(session.cookies)}")
 time.sleep(1)
 
-print("Step 3: Calling API...")
-r3 = session.get(
-    "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY",
-    headers=_NSE_API_HEADERS, timeout=20,
-)
+expiry = _next_weekly_expiry()
+print(f"Step 3: Calling API with expiry={expiry}...")
+url = f"https://www.nseindia.com/api/option-chain-v3?type=Indices&symbol=NIFTY&expiry={expiry}"
+r3 = session.get(url, headers=_NSE_API_HEADERS, timeout=20)
 print(f"  → HTTP {r3.status_code} | Content-Type: {r3.headers.get('Content-Type','')}")
 
 if r3.status_code == 200:

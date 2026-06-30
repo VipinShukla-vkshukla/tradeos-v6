@@ -80,6 +80,25 @@ _SYSTEM_PROMPT = (
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
+def _pcr_label(pcr: float | None) -> str:
+    """
+    NSE Nifty PCR contrarian interpretation.
+    High PCR = heavy put buying = fear positioning = contrarian bullish.
+    Low PCR = heavy call buying = greed positioning = contrarian bearish.
+    Thresholds configurable via system_config; defaults match standard NSE convention.
+    """
+    if pcr is None:
+        return "no data"
+    extreme_high = cfg_float("pcr_extreme_high", 1.3)
+    mild_high    = cfg_float("pcr_mild_high",    1.0)
+    mild_low     = cfg_float("pcr_mild_low",     0.8)
+    if pcr > extreme_high:
+        return f"{pcr} (EXTREME FEAR — contrarian bullish)"
+    if pcr > mild_high:
+        return f"{pcr} (mild bearish positioning)"
+    if pcr >= mild_low:
+        return f"{pcr} (neutral)"
+    return f"{pcr} (EXTREME GREED — contrarian bearish, caution on new longs)"
 
 def _lesson_confidence(lesson: dict) -> float:
     applied = lesson.get("times_applied") or 0
@@ -472,7 +491,8 @@ def build_prompt(ctx: dict, stock_intel: list[dict], window_start: str, window_e
         f"Weekly RSI: {r.get('nifty_weekly_rsi','?')}",
         f"  VIX: {r.get('india_vix','?')} (5d Δ: {r.get('vix_5d_delta','?')}) | "
         f"A/D: {r.get('advance_decline_ratio','?')} | Above 200DMA: {r.get('above_200dma_pct','?')}%",
-        f"  Breadth: {r.get('avg_sector_breadth','?')}% | PCR: {r.get('nifty_pcr','?')} | "
+        f"  Breadth: {r.get('avg_sector_breadth','?')}% | "
+        f"PCR: {_pcr_label(r.get('nifty_pcr'))} | "
         f"Macro boost: {r.get('macro_boost','?')}",
         f"  BankNifty: {r.get('banknifty_price','?')} | BankNifty RSI-W: {r.get('banknifty_weekly_rsi','?')}",
         "",
@@ -578,6 +598,10 @@ def build_prompt(ctx: dict, stock_intel: list[dict], window_start: str, window_e
         "  These stocks passed 11 technical gates: ATR-normalised zone, R:R viability,\n"
         "  structural breakdown check, risk_score, liquidity, lifecycle, momentum gates.\n"
         "  Signal quality: PRIME_SETUP > MOMENTUM_CONTINUATION > BREAKOUT_SETUP > REENTRY_SETUP > BUY_CANDIDATE\n"
+        "  PCR guidance: EXTREME FEAR readings support upgrading sizing and favouring\n"
+        "  pullback/reentry setups; EXTREME GREED readings warrant MINIMAL/HALF sizing\n"
+        "  and favour setup_types_to_avoid for chase-style entries (BREAKOUT, MOMENTUM_CONTINUATION).\n"
+        "  Factor this into position_sizing_guidance and setup_types_favoured/avoid below.\n"
         "  Your task: assess each against TODAY's macro/FII/news context. Output sentiment_modifier."
     )
     lines += ["", candidates_header]

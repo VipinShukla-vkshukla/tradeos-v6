@@ -114,6 +114,9 @@ def _load_source(repo_root: Path, rel_path: str) -> str:
     except Exception as e:
         logger.warning(f"  Profiler couldn't read {rel_path}: {e}")
         return ""
+    if len(text.strip()) < 20:  # effectively empty (most __init__.py files)
+        logger.debug(f"  Profiler: {rel_path} is empty/near-empty, nothing to profile")
+        return ""
     if len(text) > MAX_SOURCE_CHARS:
         return text[:MAX_SOURCE_CHARS] + "\n# ... [truncated for profiling] ..."
     return text
