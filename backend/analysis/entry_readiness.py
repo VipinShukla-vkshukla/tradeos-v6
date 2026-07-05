@@ -21,21 +21,43 @@ PURPOSE (narrowed, 2026-06 redesign):
     - deterministic GTT order levels (entry/SL/T1/RR) — pure arithmetic,
       not a judgment call, so no scoring concern applies here
 
+AI-EXTENDED ZONE (2026-07 addition):
+  compute_msl's entry_zone_low/high is a MECHANICAL, context-free zone —
+  it has no idea whether today's conviction, momentum, or FII/sector tailwind
+  justify a stock trading a few % above it. Before this addition, ANY live
+  price above zone_high*1.015 was flatly "MISSED", even for TIER_1/HIGH-
+  conviction picks the AI would have gladly chased with fuller context —
+  which is exactly the afternoon false-MISSED problem this fixes.
+  ai_max_chase_pct / ai_zone_high_extended are NOT a new score computed here.
+  They are ai_decision_engine's OWN already-decided judgment (see its CHASE
+  GUIDANCE prompt section), written once at step 19 and simply read here —
+  the same "already decided, just display it" pattern this module already
+  uses for conviction/tier/thesis. Using that stored judgment to widen the
+  live zone-status ceiling is applying the AI's decision, not re-deriving one.
+
 Called from send_alerts.py:
-  Morning   → use_live=True   (yfinance live price, pre-market / early session)
-  Afternoon → use_live=True   (yfinance live price, mid-session)
-  Evening   → NOT called. No live price exists at 6 PM pipeline-run time;
-              dist_entry_pct from master_shortlist is already shown directly
-              in the evening message, so there is nothing live to check.
+  Morning   → use_live=True    (yfinance live price, pre-market / early session)
+  Afternoon → use_live=True    (yfinance live price, mid-session)
+  Evening   → use_live=False   (called for the deterministic GTT entry/SL/T1
+              levels in the "TOMORROW'S GTT ORDERS" section — no live price
+              exists at 6 PM pipeline-run time, so zone_status/timing_note/
+              live_vol_note all stay empty here; that part of this module is
+              a no-op for evening, only the arithmetic runs)
 
 Adds to each candidate dict:
-  zone_status     str   "✅ IN ZONE (₹X)" / "⬇️ APPROACHING" / "⚠️ ABOVE ZONE" / "❌ MISSED"
+  zone_status     str   "✅ IN ZONE (₹X)" / "⬇️ APPROACHING" / "⚠️ ABOVE ZONE" /
+                        "🟡 AI-EXTENDED (₹X)" / "❌ MISSED"
   timing_note     str   plain-English action guidance for this checkpoint
   live_vol_note   str|None   "1.6× pace vs 20d avg (live)" — informational only, never scored
-  gtt_entry       float      zone_low (exact GTT limit price)
+  gtt_entry       float      zone_low (exact GTT limit price — the original disciplined plan)
   gtt_sl          float      zone_low × (1 − stop_buffer)
   gtt_t1          float      zone_low × (1 + stop_buffer × expected_r)
   rr_ratio        float      (T1 − entry) / (entry − SL)
+  ai_max_chase_pct   float|None   AI-approved % above zone_high, from master_shortlist (0-8)
+  gtt_entry_chase    float|None  live price — only set while inside the AI-EXTENDED band
+  gtt_sl_chase       float|None  gtt_entry_chase × (1 − stop_buffer)
+  gtt_t1_chase       float|None  gtt_entry_chase × (1 + stop_buffer × expected_r)
+  rr_ratio_chase     float|None  same R:R math, re-anchored to the achievable chase entry
 """
 
 from __future__ import annotations
@@ -189,6 +211,26 @@ def compute_entry_readiness(
         zl = float(msl.get("entry_zone_low")  or 0)
         zh = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
 
+        # ── AI-approved chase ceiling — already decided by ai_decision_engine
+        # (step 19) and written to master_shortlist; read-only here, never
+        # recomputed. 0/None → AI did not approve chasing this symbol above
+        # zh today (SKIP/WAIT_FOR_TRIGGER action, or compute_msl's own
+        # entry_timing_type was already EXTENDED/WAIT — see CHASE GUIDANCE
+        # in ai_decision_engine.build_prompt for the exact decision rule).
+        ai_max_chase_pct = float(msl.get("ai_max_chase_pct") or 0)
+        ai_chase_rationale = msl.get("ai_chase_rationale") or ""
+        ai_zone_high_ext = msl.get("ai_zone_high_extended")
+        if ai_zone_high_ext is not None:
+            ai_zone_high_ext = float(ai_zone_high_ext)
+        elif zh and ai_max_chase_pct > 0:
+            # Fallback if ai_zone_high_extended wasn't populated for some reason
+            # (e.g. older row written before this field existed) but the
+            # percentage was — recompute the same deterministic arithmetic
+            # ai_decision_engine already does, so behaviour still matches.
+            ai_zone_high_ext = round(zh * (1 + ai_max_chase_pct / 100), 2)
+        else:
+            ai_zone_high_ext = zh
+
         # ── Live volume note — informational only, never scored ─────────────
         live_vol_note: Optional[str] = None
         live_vol  = live.get("volume_today")
@@ -205,6 +247,7 @@ def compute_entry_readiness(
         zone_status = ""
         timing_note = ""
         live_price  = live.get("price")
+        in_chase_band = False
 
         if live_price and zl:
             if live_price < zl * 0.995:
@@ -227,6 +270,18 @@ def compute_entry_readiness(
                     "Closed above zone · confirm at open — pullback to zone needed"
                     if _pre_market else "Watch for afternoon pullback to zone"
                 )
+            elif ai_zone_high_ext > zh and live_price <= ai_zone_high_ext:
+                pct = (live_price - zh) / zh * 100
+                zone_status = (
+                    f"🟡 AI-EXTENDED (₹{live_price:,.0f}, +{pct:.1f}% — "
+                    f"chase OK to +{ai_max_chase_pct:.1f}%)"
+                )
+                timing_note = (
+                    f"AI conviction supports chasing · {ai_chase_rationale[:80]}"
+                    if ai_chase_rationale else
+                    "AI conviction supports chasing above mechanical zone · reduce size"
+                )
+                in_chase_band = True
             else:
                 pct = (live_price - zh) / zh * 100
                 zone_status = f"❌ MISSED (₹{live_price:,.0f}, +{pct:.1f}% above zone)"
@@ -243,14 +298,37 @@ def compute_entry_readiness(
             else None
         )
 
+        # ── Chase-anchored GTT variant — only while inside the AI-EXTENDED
+        # band. zone_low is already blown through by this point, so re-anchor
+        # entry/SL/T1 to the actual achievable live price instead. Same
+        # STOP_BUFFER/expected_r discipline as the original plan above —
+        # just re-anchored, not re-derived. NOTE: STOP_BUFFER was presumably
+        # calibrated for zone_low entries; whether a chase entry should use a
+        # tighter buffer is a judgment call this module deliberately leaves
+        # alone (see docstring) — worth a look if chase R:R looks off.
+        gtt_entry_chase = gtt_sl_chase = gtt_t1_chase = rr_ratio_chase = None
+        if in_chase_band and live_price:
+            gtt_entry_chase = round(live_price, 2)
+            gtt_sl_chase    = round(gtt_entry_chase * (1.0 - STOP_BUFFER), 2)
+            gtt_t1_chase    = round(gtt_entry_chase * (1.0 + STOP_BUFFER * er), 2)
+            rr_ratio_chase  = (
+                round((gtt_t1_chase - gtt_entry_chase) / (gtt_entry_chase - gtt_sl_chase), 1)
+                if gtt_sl_chase < gtt_entry_chase else None
+            )
+
         c.update({
-            "zone_status":   zone_status,
-            "timing_note":   timing_note,
-            "live_vol_note": live_vol_note,
-            "gtt_entry":     gtt_entry,
-            "gtt_sl":        gtt_sl,
-            "gtt_t1":        gtt_t1,
-            "rr_ratio":      rr_ratio,
+            "zone_status":      zone_status,
+            "timing_note":      timing_note,
+            "live_vol_note":    live_vol_note,
+            "gtt_entry":        gtt_entry,
+            "gtt_sl":           gtt_sl,
+            "gtt_t1":           gtt_t1,
+            "rr_ratio":         rr_ratio,
+            "ai_max_chase_pct": ai_max_chase_pct if ai_max_chase_pct else None,
+            "gtt_entry_chase":  gtt_entry_chase,
+            "gtt_sl_chase":     gtt_sl_chase,
+            "gtt_t1_chase":     gtt_t1_chase,
+            "rr_ratio_chase":   rr_ratio_chase,
         })
 
     return candidates
@@ -291,34 +369,72 @@ if __name__ == "__main__":
           f"({'from config.py' if STOP_BUFFER != 0.03 else 'default — config.py not reachable from this working directory, see note above'})")
     print()
 
-    # Mock candidate + mock zone bounds (NOT from Supabase — this test never
-    # touches your database). RELIANCE is used because it's almost always
-    # tradeable on yfinance regardless of market hours, so a live price here
-    # is a meaningful proof of connectivity.
-    _mock_candidates = [{
-        "symbol": "RELIANCE", "conviction": "HIGH", "confidence": 0.87,
-        "action": "BUY", "suggested_allocation_pct": 7,
-        "correlation_group": "ENERGY",
-        "entry_note": "(mock — real entry_note comes from ai_decision_engine)",
-        "invalidation": "(mock — real invalidation comes from ai_decision_engine)",
-    }]
+    # Mock candidates + mock zone bounds (NOT from Supabase — this test never
+    # touches your database). Three different, reliably-liquid NSE blue chips
+    # are used (not three mock rows for one symbol) because msl_map is keyed
+    # by symbol — yfinance needs a real, distinct ticker per row to fetch a
+    # live price against.
+    #   RELIANCE : realistic zone around its actual price — exercises the
+    #              original IN ZONE / APPROACHING / ABOVE ZONE / MISSED logic,
+    #              unchanged from before this addition (no AI chase fields).
+    #   TCS      : zone deliberately far below its real price with NO AI chase
+    #              approval → should land on MISSED, proving the AI-EXTENDED
+    #              branch does NOT fire without an explicit AI-approved ceiling.
+    #   INFY     : same deliberately-low zone but WITH a generous AI-approved
+    #              ceiling → should land on AI-EXTENDED, proving the new
+    #              branch fires correctly when ai_decision_engine has approved it.
+    _mock_candidates = [
+        {
+            "symbol": "RELIANCE", "conviction": "HIGH", "confidence": 0.87,
+            "action": "BUY", "suggested_allocation_pct": 7,
+            "correlation_group": "ENERGY",
+            "entry_note": "(mock — real entry_note comes from ai_decision_engine)",
+            "invalidation": "(mock — real invalidation comes from ai_decision_engine)",
+        },
+        {
+            "symbol": "TCS", "conviction": "MEDIUM", "confidence": 0.6,
+            "action": "SKIP", "suggested_allocation_pct": 0,
+            "correlation_group": "IT",
+            "entry_note": "(mock)", "invalidation": "(mock)",
+        },
+        {
+            "symbol": "INFY", "conviction": "HIGH", "confidence": 0.83,
+            "action": "ENTER_NOW", "suggested_allocation_pct": 6,
+            "correlation_group": "IT",
+            "entry_note": "(mock)", "invalidation": "(mock)",
+        },
+    ]
     _mock_msl_map = {
         "RELIANCE": {"entry_zone_low": 2900, "entry_zone_high": 2950,
                      "expected_r": 2.0, "dist_entry_pct": -1.0},
+        "TCS": {"entry_zone_low": 100, "entry_zone_high": 110,
+                "expected_r": 2.0,
+                "ai_max_chase_pct": 0, "ai_chase_rationale": "SKIP — no chase approved"},
+        "INFY": {"entry_zone_low": 100, "entry_zone_high": 110,
+                 "expected_r": 2.0, "ai_max_chase_pct": 8.0,
+                 "ai_zone_high_extended": 99999,
+                 "ai_chase_rationale": "mock: HIGH conviction, ACCELERATING, struct_edge YES"},
     }
 
-    print("Calling compute_entry_readiness() with 1 mock candidate, use_live=True...")
-    print("(fetching live price for RELIANCE via yfinance — needs internet)")
+    print("Calling compute_entry_readiness() with 3 mock candidates, use_live=True...")
+    print("(fetching live prices via yfinance — needs internet)")
     print()
 
     out = compute_entry_readiness(_mock_candidates, _mock_msl_map, sb=None, use_live=True)
-    c = out[0]
 
-    print(f"  zone_status   : {c.get('zone_status') or '(empty)'}")
-    print(f"  timing_note   : {c.get('timing_note') or '(empty)'}")
-    print(f"  live_vol_note : {c.get('live_vol_note') or '(empty — needs avg_vol_20d from DB, not available in this standalone test)'}")
-    print(f"  GTT entry/SL/T1/RR : {c.get('gtt_entry')} / {c.get('gtt_sl')} / {c.get('gtt_t1')} / {c.get('rr_ratio')}")
-    print()
+    for c in out:
+        print(f"── {c.get('symbol')} " + "─" * (58 - len(c.get('symbol', ''))))
+        print(f"  zone_status        : {c.get('zone_status') or '(empty)'}")
+        print(f"  timing_note        : {c.get('timing_note') or '(empty)'}")
+        print(f"  ai_max_chase_pct   : {c.get('ai_max_chase_pct')}")
+        print(f"  GTT entry/SL/T1/RR : {c.get('gtt_entry')} / {c.get('gtt_sl')} / "
+              f"{c.get('gtt_t1')} / {c.get('rr_ratio')}")
+        if c.get("gtt_entry_chase"):
+            print(f"  CHASE entry/SL/T1/RR : {c.get('gtt_entry_chase')} / {c.get('gtt_sl_chase')} / "
+                  f"{c.get('gtt_t1_chase')} / {c.get('rr_ratio_chase')}")
+        print()
+
+    c = out[0]  # RELIANCE — used for the original connectivity checks below
 
     gtt_ok = c.get("gtt_entry") == 2900 and c.get("gtt_sl") and c.get("gtt_t1")
     live_ok = bool(c.get("zone_status"))

@@ -46,6 +46,26 @@ PATCH 18 — main(): channel-aware startup + subject routing
   Mode-specific subject_suffix passed to send_message() (Evening / Morning…).
   Backward-compat: 'telegram_alerts_enabled' key still gates the whole system.
 
+PATCH 19 — AI-EXTENDED chase-zone rendering (2026-07)
+  ai_decision_engine.py (step 19) now writes ai_max_chase_pct /
+  ai_chase_rationale / ai_zone_high_extended to signal_output_daily, and
+  entry_readiness.py now uses them to add a new zone_status tier —
+  "🟡 AI-EXTENDED" — for live prices above compute_msl's mechanical zone
+  but within the AI's approved chase ceiling. entry_readiness.py also now
+  returns a second, chase-anchored GTT set (gtt_entry_chase/sl_chase/
+  t1_chase/rr_ratio_chase) alongside the original zone_low-anchored one.
+  No new query needed here — msl_map already gets these via the existing
+  signal_output_daily .select("*") in load_data(). This patch only updates
+  the two places that render TIER_1 candidate dicts:
+    build_afternoon(): any_actionable now also true for AI-EXTENDED (was
+      only "IN ZONE" — a TIER_1 pick the AI approved chasing on was being
+      reported as "no picks in zone" like the mechanical-only setup this
+      is fixing); chase-alt GTT line added alongside the original.
+    build_morning(): same chase-alt GTT line added.
+  build_evening() untouched — it runs with use_live=False (no live price
+  at 6 PM pipeline-run time), so zone_status is always empty there and
+  this tier structurally cannot fire.
+
 UNCHANGED from v5:
   PATCH 1–15 — all behaviours identical.
   All build_*() functions and formatters — zero formatting change.
@@ -860,7 +880,9 @@ def load_data(sb, today: str) -> dict:
               "exit_signal,action_required,event_risk,upcoming_news,"
               "target_1,target_2,target_3,target_price,target_hit,"
               "trailing_sl_pct,signal_date,"
-              "original_qty,current_qty,partial_bookings,status"
+              "original_qty,current_qty,partial_bookings,status,"
+              "ai_recommended_action,ai_action_reason,ai_action_confidence,"
+              "ai_action_urgency,ai_action_updated_at"
           )
           .eq("status", "ACTIVE")
           .execute().data
@@ -1182,7 +1204,7 @@ def build_position_block(
     if tp:
         lines.append(f"  Targets: {tp}")
 
-    # ── Action required ──
+    # ── Action required (pre-existing, mechanical/price-based — untouched) ──
     a_ico = action_icon(action_req)
     action_line = f"  {a_ico} Action: <b>{action_req}</b>"
     if exit_sig:
@@ -1190,6 +1212,19 @@ def build_position_block(
     elif today_type not in ("—", ""):
         action_line += f"  Signal: {today_type}"
     lines.append(action_line)
+
+    # ── AI advisory (2026-07, news/event-aware — separate from the line above
+    # on purpose, written to its own ai_-prefixed columns so it can never
+    # collide with whatever populates action_required/exit_signal/event_risk).
+    # Only ever present when the AI found something specific worth flagging —
+    # sparse by design, most positions on most days will have none of this.
+    ai_action = p.get("ai_recommended_action")
+    if ai_action and ai_action not in ("NO_ACTION", "HOLD"):
+        _urg_ico = {"IMMEDIATE": "🚨", "THIS_WEEK": "⚠️"}.get(p.get("ai_action_urgency"), "🤖")
+        lines.append(
+            f"  {_urg_ico} <b>AI Advisory: {ai_action}</b>"
+            + (f" — {esc(p.get('ai_action_reason',''))}" if p.get("ai_action_reason") else "")
+        )
 
     if brief:
         event_risk = p.get("event_risk") or ""
@@ -1422,11 +1457,13 @@ def build_evening(data: dict, sb=None) -> str:
                 lines.append(
                     f"\n  {r_icon} <b>{sym}</b>{cmp_str}"
                     + (f" [{action}·{conv}]" if action else f" [{conv}]")
-                    + f"  ₹{zl:,.0f}–₹{zh:,.0f} {dist_str}  <i>[DB]</i>"
+                    + (f"  ₹{zl:,.0f}–₹{zh:,.0f} {dist_str}  <i>[DB]</i>"
+                       if zl else "  ⚠️ <i>Zone data unavailable</i>")
                     + (f"  <b>{alloc:.0f}%</b>" if alloc else "")
                     + (f"  conf:{conf:.0%}" if conf else "")
                     + (f"  📎{corr}" if corr else "")
-                    + f"  → T1₹{t1_p:,.0f} | SL₹{sl_p:,.0f} · RR {rr}×  {score_str}"
+                    + (f"  → T1₹{t1_p:,.0f} | SL₹{sl_p:,.0f} · RR {rr}×  {score_str}"
+                       if (t1_p and sl_p) else f"  {score_str}")
                 )
                 if rank_str:
                     lines.append(rank_str)
@@ -1629,10 +1666,43 @@ def build_evening(data: dict, sb=None) -> str:
                 _dref = float(_sig.get("delivery_pct") or 0)
                 _cmp_gtt     = float(_msl.get("current_price") or 0)
                 _cmp_gtt_str = f"  CMP:₹{_cmp_gtt:,.0f}" if _cmp_gtt else ""
-                lines.append(
-                    f"  <b>{_sym}</b>{_cmp_gtt_str}  "
-                    f"Entry₹{_zl:,.0f} | SL₹{_sl:,.0f} | T1₹{_t1:,.0f} | RR {_rr}×"
-                )
+                if _zl and _sl and _t1:
+                    lines.append(
+                        f"  <b>{_sym}</b>{_cmp_gtt_str}  "
+                        f"Entry₹{_zl:,.0f} | SL₹{_sl:,.0f} | T1₹{_t1:,.0f} | RR {_rr}×"
+                    )
+                else:
+                    lines.append(
+                        f"  <b>{_sym}</b>{_cmp_gtt_str}  "
+                        f"⚠️ <i>Zone data unavailable — skip GTT for this symbol</i>"
+                    )
+
+                # 2026-07: chase-anchored alternative — reuses ai_max_chase_pct /
+                # ai_zone_high_extended, already computed by step 19 this same
+                # evening (no new query, no new AI call). Only appears when the
+                # AI independently pre-approved chasing THIS stock — a stock
+                # trending well enough that the mechanical pullback zone may
+                # simply never get touched. Without this, the primary Entry
+                # above is the only order offered, and if it never fills,
+                # nothing else was ever suggested even though step 19 already
+                # had an answer for it.
+                _ai_chase_pct = float(_msl.get("ai_max_chase_pct") or 0)
+                _ai_zone_ext  = _msl.get("ai_zone_high_extended")
+                if _ai_chase_pct > 0 and _cmp_gtt:
+                    _chase_entry = round(min(_cmp_gtt, _ai_zone_ext) if _ai_zone_ext else _cmp_gtt, 0)
+                    _chase_sl    = round(_chase_entry * (1 - STOP_BUFFER), 0)
+                    _chase_t1    = round(_chase_entry * (1 + STOP_BUFFER * _er), 0)
+                    _chase_rr    = (
+                        round((_chase_t1 - _chase_entry) / (_chase_entry - _chase_sl), 1)
+                        if _chase_sl < _chase_entry else None
+                    )
+                    lines.append(
+                        f"   🟡 If no pullback — AI-cleared chase: Entry₹{_chase_entry:,.0f}"
+                        f" | SL₹{_chase_sl:,.0f} | T1₹{_chase_t1:,.0f}"
+                        + (f" | RR {_chase_rr}×" if _chase_rr else "")
+                        + f"  <i>(approved to +{_ai_chase_pct:.1f}% above mechanical zone)</i>"
+                    )
+
                 if _vref or _dref:
                     lines.append(
                         f"   <i>Ref: Vol {_vref:.1f}× · Del {_dref:.0f}%"
@@ -1841,11 +1911,35 @@ def build_morning(data: dict, sb=None) -> str:
                     + (f"  conf:{conf:.0%}" if conf else "")
                     + (f"  📎{corr}" if corr else "")
                 )
-                lines.append(
-                    f"   Entry₹{zl:,.0f}–₹{zh:,.0f}  <i>[DB]</i>"
-                    f" | SL₹{sl_p:,.0f} | T1₹{t1_p:,.0f} | RR {rr}×"
-                    f" · <i>{timing}</i>"
-                )
+                if zl:
+                    lines.append(
+                        f"   Entry₹{zl:,.0f}–₹{zh:,.0f}  <i>[DB]</i>"
+                        + (f" | SL₹{sl_p:,.0f} | T1₹{t1_p:,.0f} | RR {rr}×"
+                           if (sl_p and t1_p) else "")
+                        + f" · <i>{timing}</i>"
+                    )
+                else:
+                    lines.append(
+                        "   ⚠️ <i>Zone data unavailable</i>"
+                        + (f" · <i>{timing}</i>" if timing else "")
+                    )
+
+                # PATCH 19: AI-approved chase alternative — only set by the
+                # module while zone_status is AI-EXTENDED (live price above
+                # zone_high but within ai_decision_engine's approved ceiling).
+                gtt_entry_c = c.get("gtt_entry_chase")
+                if gtt_entry_c:
+                    gtt_sl_c = c.get("gtt_sl_chase")
+                    gtt_t1_c = c.get("gtt_t1_chase")
+                    rr_c     = c.get("rr_ratio_chase")
+                    lines.append(
+                        f"   🟡 Chase alt: Entry₹{gtt_entry_c:,.0f}"
+                        + (f" | SL₹{gtt_sl_c:,.0f}" if gtt_sl_c else "")
+                        + (f" | T1₹{gtt_t1_c:,.0f}" if gtt_t1_c else "")
+                        + (f" | RR {rr_c}×" if rr_c else "")
+                        + "  <i>· reduced size, AI-approved</i>"
+                    )
+
                 if rk_m_str:
                     lines.append(rk_m_str)
                 if c.get("entry_note"):
@@ -1979,10 +2073,15 @@ def build_afternoon(data: dict, sb=None) -> str:
 
             # ── What compute_entry_readiness actually sets ──────────────
             # zone_status  → "✅ IN ZONE (₹1,520)" / "⬇️ APPROACHING (₹X, Y% below zone)"
-            #                "⚠️ ABOVE ZONE (₹X, +Y%)" / "❌ MISSED (₹X, +Y% above zone)"
-            # timing_note  → plain-English action ("1:30–2:30 PM · limit at zone_low")
+            #                "⚠️ ABOVE ZONE (₹X, +Y%)" / "🟡 AI-EXTENDED (₹X, +Y% — chase OK to +Z%)"
+            #                "❌ MISSED (₹X, +Y% above zone)"
+            # timing_note  → plain-English action ("1:30–2:30 PM · limit at zone_low",
+            #                or the AI's chase_rationale when AI-EXTENDED)
             # live_vol_note→ "1.6× pace vs 20d avg (live)"  — None if unavailable
-            # gtt_entry/sl/t1/rr_ratio → pre-computed GTT levels (use these, not manual calc)
+            # gtt_entry/sl/t1/rr_ratio → original zone_low-anchored GTT (PATCH 19: unchanged)
+            # gtt_entry_chase/sl_chase/t1_chase/rr_ratio_chase → PATCH 19 NEW: only set
+            #   while zone_status is AI-EXTENDED — entry re-anchored to live price since
+            #   zone_low is already blown through; use these for the chase alternative.
             zone_status   = c.get("zone_status", "")
             timing_note   = c.get("timing_note", "")
             live_vol_note = c.get("live_vol_note")
@@ -1999,7 +2098,10 @@ def build_afternoon(data: dict, sb=None) -> str:
             cmp_str_aft = f"  CMP:₹{cp:,.0f}" if cp else ""
 
             # any_actionable flag — drive from zone_status string, not CMP arithmetic
-            if "IN ZONE" in zone_status.upper():
+            # PATCH 19: AI-EXTENDED counts too — it IS an approved entry, just via
+            # chase instead of the disciplined zone; leaving it out here would put
+            # exactly the picks this fix targets back into "no picks in zone".
+            if "IN ZONE" in zone_status.upper() or "AI-EXTENDED" in zone_status.upper():
                 any_actionable = True
 
             # ── Line 1: Header ──────────────────────────────────────────
@@ -2041,6 +2143,25 @@ def build_afternoon(data: dict, sb=None) -> str:
                     f"  Entry:₹{zl:,.0f} | SL:₹{f_sl:,.0f} | T1:₹{f_t1:,.0f}"
                     + (f" | RR <b>{f_rr}×</b>" if f_rr else "")
                     + "  <i>[EOD calc — live data unavailable]</i>"
+                )
+
+            # ── Line 3b: AI-approved chase alternative (PATCH 19) ────────
+            # Only set by the module while zone_status is AI-EXTENDED — price
+            # is above zone_high but within ai_decision_engine's approved
+            # ceiling for this symbol today. zone_low is already blown
+            # through, so this is entry re-anchored to the live price, not
+            # a second read of the same zone.
+            gtt_entry_c = c.get("gtt_entry_chase")
+            if gtt_entry_c:
+                gtt_sl_c = c.get("gtt_sl_chase")
+                gtt_t1_c = c.get("gtt_t1_chase")
+                rr_c     = c.get("rr_ratio_chase")
+                lines.append(
+                    f"  🟡 Chase alt: Entry:₹{gtt_entry_c:,.0f}"
+                    + (f" | SL:₹{gtt_sl_c:,.0f}" if gtt_sl_c else "")
+                    + (f" | T1:₹{gtt_t1_c:,.0f}" if gtt_t1_c else "")
+                    + (f" | RR <b>{rr_c}×</b>" if rr_c else "")
+                    + "  <i>· reduced size, AI-approved</i>"
                 )
 
             # ── Line 4: Timing / action directive from module ───────────

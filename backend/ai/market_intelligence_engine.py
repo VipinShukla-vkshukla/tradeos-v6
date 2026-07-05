@@ -514,6 +514,24 @@ def build_prompt(ctx: dict, stock_intel: list[dict], window_start: str, window_e
     if ctx["sector_impacts"]:
         lines.append(f"  Sector impacts (from global): {json.dumps(ctx['sector_impacts'])}")
 
+    # Prior sessions in this data window (e.g. Fri+Sat+Sun global cues all
+    # loaded ahead of a Monday run) — previously loaded into ctx and then
+    # silently dropped before build_prompt ever ran; the AI only ever saw
+    # the single latest row, missing any reversal/continuation across the gap.
+    if ctx.get("cues_history"):
+        lines += ["", "═══ PRIOR SESSIONS IN WINDOW (oldest global_cues rows this run) ═══"]
+        for ch in ctx["cues_history"][:4]:
+            lines.append(
+                f"  {ch.get('date','?')} | Gift Nifty: {float(ch.get('gift_nifty_chg_pct',0) or 0):+.2f}% "
+                f"({ch.get('gap_signal','?')}) | DOW: {float(ch.get('us_dow_chg_pct',0) or 0):+.2f}% | "
+                f"S&P: {float(ch.get('sp500_chg_pct',0) or 0):+.2f}% | "
+                f"Brent: {float(ch.get('brent_chg_pct',0) or 0):+.2f}%"
+            )
+        lines.append(
+            "  → Read alongside GLOBAL MACRO above: a reversal across these sessions "
+            "(e.g. Friday risk-off unwound by Monday) matters more than either day alone."
+        )
+
     if ctx["macro"]:
         lines += ["", "═══ MACRO INDICATORS (recent) ═══"]
         for m in ctx["macro"]:
@@ -631,12 +649,14 @@ def build_prompt(ctx: dict, stock_intel: list[dict], window_start: str, window_e
         lines.append(
             f"    → Mom:{m.get('momentum_state','?')}/{m.get('momentum_phase','?')}"
             f"/{m.get('velocity_state','?')} "
-            f"Struct:{m.get('struct_edge','?')} Entry:{m.get('entry_timing_type','?')} | "
+            f"Struct:{m.get('struct_edge','?')} Entry:{m.get('entry_timing_type','?')} "
+            f"Maturity:{m.get('trend_maturity','?')} | "
             f"RSI-D:{m.get('rsi_daily','?')} RSI-W:{m.get('rsi_weekly','?')} "
             f"ADX:{m.get('adx','?')} RSvN:{m.get('rs_vs_nifty','?')} "
             f"Ret3M:{m.get('ret_3m','?')}% Ret6M:{m.get('ret_6m','?')}% "
             f"Ret12M:{m.get('ret_12m','?')}% Vol:{m.get('vol_ratio','?')}x | "
-            f"HoldSc:{m.get('holding_score','?')} BrkRdy:{m.get('breakout_readiness','?')} "
+            f"HoldSc:{m.get('holding_score','?')} Risk:{m.get('risk_score','?')} "
+            f"BrkRdy:{m.get('breakout_readiness','?')} "
             f"MomSc:{m.get('momentum_score','?')} InstSc:{m.get('institutional_score','?')} | "
             f"ST:{m.get('st_cushion_pct','?')}% MACD:{m.get('macd_direction','?')} "
             f"BB:{m.get('bb_context','?')} WkStr:{m.get('weekly_structure','?')} "

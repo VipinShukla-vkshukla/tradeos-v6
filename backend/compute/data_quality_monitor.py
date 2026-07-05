@@ -273,7 +273,10 @@ def c07_pipeline_completeness(sb, td):
         ("stock_data_daily",      "date",           "05_ingest_bhavcopy",    "ERROR", False),
         ("master_shortlist",      "date",           "06_ingest_sheets",      "ERROR", False),
         ("fii_dii_flow",          "date",           "07_fii_dii",            "WARN",  False),
-        ("nifty_upcoming_events", "event_date",     "08_nse_events",         "WARN",  False),
+        # 08 checked separately below — event_date is the future event's own
+        # date (results/AGM/dividend), not an ingestion timestamp, and the
+        # table is REPLACE-purged of past events every run. eq(td) was a
+        # false-positive generator; use forward-looking existence instead.
         ("safety_lists",          "listed_date",    "09_asm_gsm",            "WARN",  False),
         ("stock_data_daily",      "date",           "10_compute_indicators", "ERROR", False),
         ("market_regime",         "date",           "11_compute_regime",     "WARN",  False),
@@ -285,6 +288,24 @@ def c07_pipeline_completeness(sb, td):
     ]
 
     missing = []
+
+    # 08_nse_events: event_date is a future event date, not an ingestion
+    # timestamp, and the table is purged of past events on every run.
+    # A healthy run leaves behind rows with event_date >= td.
+    try:
+        nse_cnt = (
+            sb.table("nifty_upcoming_events")
+              .select("*", count="exact")
+              .gte("event_date", td)
+              .limit(1)
+              .execute().count or 0
+        )
+        if nse_cnt == 0:
+            missing.append({"step": "08_nse_events", "table": "nifty_upcoming_events", "severity": "WARN"})
+    except Exception as e:
+        missing.append({"step": "08_nse_events", "table": "nifty_upcoming_events", "severity": "WARN",
+                        "reason": str(e)[:80]})
+
     for table, date_col, label, sev, use_window in steps:
         try:
             cnt = 0

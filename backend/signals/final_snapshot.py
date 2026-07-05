@@ -162,7 +162,9 @@ def main():
             sb.table("master_shortlist")
             .select("symbol,entry_zone_low,entry_zone_high,expected_r,"
                     "dist_entry_pct,days_to_trigger_est,composite_score,"
-                    "current_price,entry_timing_type,price_location")
+                    "current_price,entry_timing_type,price_location,"
+                    "zone_hot_adjusted,ai_max_chase_pct,ai_chase_rationale,"
+                    "ai_zone_high_extended")
             .eq("date", today)
             .execute().data
         )
@@ -375,16 +377,38 @@ def main():
             # Read ai_conviction, ai_note, ai_suggested_action directly from signal_log
             # — step 18/19 already writes these back to signal_log
             "ai_conviction":         sl.get("ai_conviction") or ai_pick.get("conviction"),
+            "ai_conviction_reason":  ai_conv_reason,
             "ai_note":               sl.get("ai_note"),
             # "action" in ranked_candidates = "ENTER_NOW", "SKIP", "WAIT_FOR_TRIGGER" etc.
             "ai_suggested_action":   (sl.get("ai_suggested_action")
                                       or ai_pick.get("action")
                                       or ai_pick.get("suggested_action")),
             "ai_risks":              ai_risks,
+            # Chase-zone fields (step 19 CHASE GUIDANCE) — signal_log primary,
+            # master_shortlist fallback. Explicit is-not-None check (not "or")
+            # because 0.0 is the common, legitimate "no chase approved" value
+            # for ai_max_chase_pct and must not be treated as missing.
+            "ai_max_chase_pct":      (sl.get("ai_max_chase_pct")
+                                       if sl.get("ai_max_chase_pct") is not None
+                                       else msl.get("ai_max_chase_pct")),
+            "ai_chase_rationale":    sl.get("ai_chase_rationale") or msl.get("ai_chase_rationale"),
+            "ai_zone_high_extended": (sl.get("ai_zone_high_extended")
+                                       if sl.get("ai_zone_high_extended") is not None
+                                       else msl.get("ai_zone_high_extended")),
+            # 2026-07: event_calendar sector-join audit trail (ai_decision_engine
+            # only writes these to signal_log, no master_shortlist fallback exists)
+            "sector_event_name":      sl.get("sector_event_name"),
+            "sector_event_bias":      sl.get("sector_event_bias"),
+            "sector_event_intensity": sl.get("sector_event_intensity"),
+            "regulatory_alert_action": sl.get("regulatory_alert_action"),
+            "regulatory_alert_note":   sl.get("regulatory_alert_note"),
 
             # Entry parameters
             "entry_zone_low":     entry_zone_low,
             "entry_zone_high":    entry_zone_high,
+            "zone_hot_adjusted":  (sl.get("zone_hot_adjusted")
+                                    if sl.get("zone_hot_adjusted") is not None
+                                    else msl.get("zone_hot_adjusted")),
             "current_price":      sl.get("current_price")    or msl.get("current_price"),
             "entry_timing_type":  sl.get("entry_timing_type") or msl.get("entry_timing_type"),
             "price_location":     sl.get("price_location")   or msl.get("price_location"),

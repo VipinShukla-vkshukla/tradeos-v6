@@ -94,6 +94,12 @@ PRESERVE_FIELDS = frozenset({
     "event_bias", "event_sectors", "upcoming_news",
     "entry_ready", "exec_eligibility", "entry_action", "opp_type",
     "base_rank", "entry_mode",
+    # AI chase-zone fields written by ai_decision_engine (step 19), which
+    # runs AFTER compute_msl (step 14). Same defensive pattern as the other
+    # ai_* fields above: compute_msl never outputs these keys itself, but if
+    # this step is ever manually re-run same-day post-step-19, this ensures
+    # a stale/absent compute_msl value can't silently clobber the AI's write.
+    "ai_max_chase_pct", "ai_chase_rationale", "ai_zone_high_extended",
 })
 
 # Fields that compute_msl produces and feeds directly to AI steps 18-20.
@@ -1566,7 +1572,9 @@ def compute_entry_zones(s: dict, strategy: str, regime_ctx: dict,
     high_30d = float(s.get("high_30d") or 0)
 
     if not close or not atr_14:
-        return None, None
+        return None, None, False
+
+    hot_adjusted = False
 
     regime_factor = (1.12 if regime_ctx["is_bear"]
                  else 1.06 if regime_ctx.get("is_recovering")  # slightly wider zone required
@@ -1622,7 +1630,7 @@ def compute_entry_zones(s: dict, strategy: str, regime_ctx: dict,
         if hot_adjust_signals >= 3:
             ez_low  = round(close - atr_14 * 1.0, 2)
             ez_high = round(close + atr_14 * 0.3, 2)
-            hot_adjusted = True
+            hot_adjusted = True  # now actually returned + persisted (was previously dropped)
 
     # Ensure zone width ≥ 1.2× ATR — prevents zones too narrow to be tradeable
     if ez_low and ez_high and atr_14 and (ez_high - ez_low) < atr_14 * 1.2:
@@ -1630,7 +1638,7 @@ def compute_entry_zones(s: dict, strategy: str, regime_ctx: dict,
         ez_low  = round(midpoint - atr_14 * 0.6, 2)
         ez_high = round(midpoint + atr_14 * 0.6, 2)
 
-    return ez_low, ez_high
+    return ez_low, ez_high, hot_adjusted
 
 
 def compute_entry_timing_type(s: dict, ez_low: float, ez_high: float,
@@ -2330,7 +2338,7 @@ def compute_all(sb, data: dict, today: str) -> list:
             reentry_mode = compute_reentry_mode(s)
 
             # ── STEP 4: Entry zone + timing ────────────────────────────────
-            ez_low, ez_high = compute_entry_zones(
+            ez_low, ez_high, zone_hot_adjusted = compute_entry_zones(
                 s, strategy, regime_ctx,
                 momentum_state=momentum_state,
                 momentum_phase=momentum_phase,
@@ -2398,6 +2406,7 @@ def compute_all(sb, data: dict, today: str) -> list:
                 # ── Entry zone + timing ──
                 "entry_zone_low":       ez_low,
                 "entry_zone_high":      ez_high,
+                "zone_hot_adjusted":    zone_hot_adjusted,
                 "entry_timing_type":    entry_timing,
                 "price_location":       price_loc,
                 "dist_fv_pct":          dist_fv,
