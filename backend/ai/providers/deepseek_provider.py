@@ -15,7 +15,7 @@ class DeepSeekProvider(BaseProvider):
             from openai import OpenAI
             client = OpenAI(api_key=self.api_key, base_url="https://api.deepseek.com")
             resp = client.chat.completions.create(
-                model="deepseek-reasoner", #"deepseek-v4-pro", #"deepseek-chat",
+                model="deepseek-v4-flash", #"deepseek-v4-pro"
                 max_tokens=500,
                 messages=[{"role": "user", "content": self.build_prompt(stock_data, context)}]
             )

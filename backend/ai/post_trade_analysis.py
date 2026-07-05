@@ -973,7 +973,7 @@ def _call_provider(provider_name: str, keys: dict, prompt: str) -> str:
         from openai import OpenAI
         client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
         resp = client.chat.completions.create(
-            model="deepseek-chat", max_tokens=800,
+            model="deepseek-v4-flash", max_tokens=800,
             messages=[{"role": "user", "content": prompt}]
         )
         return resp.choices[0].message.content.strip()

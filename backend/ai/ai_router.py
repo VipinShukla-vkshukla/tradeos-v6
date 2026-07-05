@@ -139,7 +139,7 @@ def raw_completion(prompt: str, max_tokens: int = 1500) -> str:
         }
         _models = {
             "openai":   "gpt-4o-mini",
-            "deepseek": "deepseek-chat",
+            "deepseek": "deepseek-v4-flash",
             "grok":     "grok-2-latest",
             "copilot":  "gpt-4o",
         }
