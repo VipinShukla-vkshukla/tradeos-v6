@@ -1095,21 +1095,193 @@ def call_ai(prompt: str) -> dict | None:
     full_prompt = f"{_SYSTEM_PROMPT}\n\n{prompt}"
 
     logger.info(f"Step 19 AI call via provider: {provider}")
-    try:
-        full_text = raw_completion(full_prompt, max_tokens=12000)
-    except Exception as e:
-        logger.warning(f"AI call failed: {e}")
-        return None
+    # 21 fully-reasoned candidates plus position_actions, portfolio_guidance,
+    # self_improvement_notes, and summary can exceed 12k tokens on a busy
+    # day (confirmed truncation at rank 16/21 in production). 20000 gives
+    # real headroom; if it's still truncated, retry once at 28000 before
+    # giving up rather than failing the whole step.
+    token_budgets = [20000, 28000]
+    full_text = None
+    for attempt, max_tokens in enumerate(token_budgets, start=1):
+        try:
+            full_text = raw_completion(full_prompt, max_tokens=max_tokens)
+        except Exception as e:
+            logger.warning(f"AI call failed: {e}")
+            return None
 
-    if not full_text:
-        return None
+        if not full_text:
+            return None
 
+        if _looks_truncated(full_text):
+            if attempt < len(token_budgets):
+                logger.warning(
+                    f"Response truncated at max_tokens={max_tokens} "
+                    f"({len(full_text)} chars) — retrying at {token_budgets[attempt]}"
+                )
+                continue
+            logger.warning(
+                f"Response still truncated at max_tokens={max_tokens} after retry — "
+                f"candidate count may need batching instead of a single call"
+            )
+        break
+
+    return _parse_ai_json(full_text)
+
+
+def _looks_truncated(full_text: str) -> bool:
+    """Cheap pre-parse check: does the response end without closing its
+    outermost JSON structure? Used to decide whether a retry at a higher
+    token budget is worth it before spending time on full JSON repair."""
+    tail = full_text.rstrip()
+    return not tail or tail[-1] not in "}]"
+
+
+def _parse_ai_json(full_text: str) -> dict | None:
+    """
+    Parse the AI's JSON response defensively.
+
+    LLMs routinely emit multi-sentence string fields (reason/summary/etc.)
+    with a literal newline instead of an escaped "\\n". Strict JSON forbids
+    raw control characters inside strings, which is exactly what produces
+    errors like "Expecting ',' delimiter: line N column M" — the parser
+    hits the line break, the string token ends early, and the following
+    text looks like a stray token instead of a comma-separated value.
+
+    Strategy, cheapest first:
+      1. json.loads(strict=False) — allows raw control chars in strings.
+         This alone fixes the vast majority of these failures.
+      2. If that still fails, escape stray control chars that appear
+         *inside* string literals (tracked via a quote/escape scan) and
+         retry with strict=False.
+      3. On total failure, dump the raw text to disk for debugging and
+         log the first parse error (not the last, which is usually noise
+         from the repair attempt) so root cause is easy to find.
+    """
+    m = re.search(r"\{[\s\S]+\}", full_text)
+    if m:
+        candidate = m.group()
+    else:
+        # No matching closing brace at all is itself a truncation signal —
+        # fall through to the first '{' so _log_parse_failure's truncation
+        # heuristic gets a chance to run instead of just giving up here.
+        first_brace = full_text.find("{")
+        if first_brace == -1:
+            logger.warning("AI response contained no JSON object")
+            return None
+        candidate = full_text[first_brace:]
+
+    first_error = None
+
+    # Attempt 1: direct parse, tolerant of raw control chars in strings
     try:
-        m = re.search(r"\{[\s\S]+\}", full_text)
-        return json.loads(m.group()) if m else None
+        return json.loads(candidate, strict=False)
     except Exception as e:
-        logger.warning(f"JSON parse failed: {e}")
-        return None
+        first_error = e
+
+    # Attempt 2: escape any raw control characters found inside string
+    # literals (outside strings they're just whitespace and left alone).
+    try:
+        repaired = _escape_control_chars_in_strings(candidate)
+        return json.loads(repaired, strict=False)
+    except Exception:
+        pass
+
+    # Attempt 3: hand off to json_repair if it's installed. It's a
+    # purpose-built library for exactly this problem (unescaped quotes,
+    # trailing commas, missing brackets, etc.) and covers cases our
+    # hand-rolled repair above doesn't. Soft dependency — skipped cleanly
+    # if not installed.
+    try:
+        from json_repair import repair_json
+        parsed = repair_json(candidate, return_objects=True)
+        if isinstance(parsed, dict) and parsed:
+            return parsed
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    _log_parse_failure(full_text, candidate, first_error)
+    return None
+
+
+def _log_parse_failure(full_text: str, candidate: str, error: Exception) -> None:
+    """Log everything needed to diagnose a JSON parse failure without
+    having to go find a dumped file: the error, the exact text around it,
+    and a heuristic check for whether this looks like max_tokens truncation."""
+    logger.warning(f"JSON parse failed: {error}")
+
+    pos = getattr(error, "pos", None)
+    if pos is not None:
+        start = max(0, pos - 120)
+        end = min(len(candidate), pos + 60)
+        snippet = candidate[start:end].replace("\n", "\\n")
+        logger.warning(f"Text around failure point: ...{snippet}...")
+
+    tail = full_text.rstrip()
+    if not tail or tail[-1] not in "}]":
+        logger.warning(
+            f"Response does NOT end with a closing brace/bracket "
+            f"(ends with: {tail[-60:]!r}) — likely truncated by max_tokens, consider raising it"
+        )
+    else:
+        logger.warning(
+            "Response ends with a proper closing brace — not a truncation signature, "
+            "likely a formatting slip mid-response instead"
+        )
+
+    import tempfile
+    try:
+        script_dir = Path(__file__).parent
+    except NameError:
+        script_dir = Path.cwd()
+    for d in (Path(tempfile.gettempdir()), script_dir):
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            dump_path = d / "step19_ai_response_failed.json"
+            dump_path.write_text(full_text, encoding="utf-8")
+            logger.warning(f"Raw AI response saved to {dump_path} for inspection")
+            break
+        except Exception:
+            continue
+    else:
+        logger.warning("Could not save raw AI response to disk (all candidate paths failed)")
+
+
+def _escape_control_chars_in_strings(s: str) -> str:
+    """Escape raw \\n, \\r, \\t that appear inside JSON string literals."""
+    out = []
+    in_string = False
+    escaped = False
+    for ch in s:
+        if in_string:
+            if escaped:
+                out.append(ch)
+                escaped = False
+                continue
+            if ch == "\\":
+                out.append(ch)
+                escaped = True
+                continue
+            if ch == '"':
+                in_string = False
+                out.append(ch)
+                continue
+            if ch == "\n":
+                out.append("\\n")
+                continue
+            if ch == "\r":
+                out.append("\\r")
+                continue
+            if ch == "\t":
+                out.append("\\t")
+                continue
+            out.append(ch)
+        else:
+            if ch == '"':
+                in_string = True
+            out.append(ch)
+    return "".join(out)
 
 
 # ── Writes ─────────────────────────────────────────────────────────────────
