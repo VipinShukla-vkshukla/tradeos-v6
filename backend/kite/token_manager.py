@@ -86,6 +86,25 @@ def get_login_url() -> str:
     return f"https://kite.zerodha.com/connect/login?api_key={KITE_API_KEY}&v=3"
 
 
+def _extract_request_token(raw: str) -> str:
+    """
+    Accept either a bare request_token or the whole redirect URL.
+
+    After login Zerodha redirects to something like
+        https://your-redirect/?action=login&status=success&request_token=AbC123...
+    Selecting just the token out of that is fiddly, so pasting the entire URL
+    works too.
+    """
+    raw = (raw or "").strip().strip('"').strip("'")
+    if "request_token=" in raw:
+        from urllib.parse import urlparse, parse_qs
+        qs = parse_qs(urlparse(raw).query)
+        token = (qs.get("request_token") or [""])[0]
+        if token:
+            return token.strip()
+    return raw
+
+
 def exchange_request_token(request_token: str) -> str:
     """
     Swap a one-shot request_token for an access_token and persist it.
@@ -94,9 +113,44 @@ def exchange_request_token(request_token: str) -> str:
     if not KITE_API_KEY or not KITE_API_SECRET:
         raise RuntimeError("KITE_API_KEY and KITE_API_SECRET must both be set in .env")
 
+    request_token = _extract_request_token(request_token)
+
+    # Validate locally rather than letting Kite reject it. The common mistake is
+    # pasting the literal placeholder from the instructions, which produces
+    # "InputException: `request_token` should be minimum 10 characters" - an
+    # error that says nothing about what to do next.
+    if request_token.upper() in {"XXXX", "REQUEST_TOKEN", "<REQUEST_TOKEN>", "YOUR_TOKEN"}:
+        raise SystemExit(
+            f"\n  '{request_token}' is the placeholder from the instructions, not a real token.\n\n"
+            f"  1. Open:  {get_login_url()}\n"
+            f"  2. Log in. Your browser lands on your redirect URL, which contains\n"
+            f"     ?request_token=... in the address bar.\n"
+            f"  3. Paste the whole URL (or just the token):\n"
+            f"     python -m kite.token_manager --exchange \"<paste here>\"\n"
+        )
+    if len(request_token) < 10:
+        raise SystemExit(
+            f"\n  request_token '{request_token}' is only {len(request_token)} characters; "
+            f"Kite requires at least 10.\n"
+            f"  Copy it from the redirect URL after logging in at:\n    {get_login_url()}\n"
+            f"  You can paste the entire redirect URL - the token is extracted automatically.\n"
+        )
+
     from kiteconnect import KiteConnect
     kite = KiteConnect(api_key=KITE_API_KEY)
-    data = kite.generate_session(request_token, api_secret=KITE_API_SECRET)
+    try:
+        data = kite.generate_session(request_token, api_secret=KITE_API_SECRET)
+    except Exception as e:
+        msg = str(e)
+        hint = ""
+        if "token" in msg.lower() and ("invalid" in msg.lower() or "expired" in msg.lower()):
+            # request_tokens are single-use and short-lived; reusing one that
+            # already succeeded, or one from a browser tab left open, is the
+            # usual cause.
+            hint = ("\n  request_tokens are SINGLE-USE and expire within minutes. "
+                    "Log in again for a fresh one:\n"
+                    f"    {get_login_url()}")
+        raise SystemExit(f"\n  Kite rejected the token: {msg}{hint}\n")
     access_token = data["access_token"]
 
     now = datetime.now(IST)
@@ -180,12 +234,23 @@ if __name__ == "__main__":
     args = ap.parse_args()
 
     if args.login_url:
-        print("\n1. Open this URL and log in:\n")
-        print(f"   {get_login_url()}\n")
-        print("2. After login you are redirected to your registered redirect URL")
-        print("   carrying ?request_token=XXXX in the query string.\n")
-        print("3. Then run:\n")
-        print("   python -m kite.token_manager --exchange XXXX\n")
+        print("\n" + "=" * 72)
+        print("  STEP 1  Open this URL and log in to Zerodha")
+        print("=" * 72)
+        print(f"\n  {get_login_url()}\n")
+        print("=" * 72)
+        print("  STEP 2  Copy the URL you land on")
+        print("=" * 72)
+        print("\n  After login your browser is redirected to your registered")
+        print("  redirect URL, and the address bar will look like:\n")
+        print("    https://your-redirect/?action=login&status=success"
+              "&request_token=Xy7Kp2mNq...\n")
+        print("=" * 72)
+        print("  STEP 3  Paste that WHOLE URL back here (quoted)")
+        print("=" * 72)
+        print("\n  python -m kite.token_manager --exchange \"<paste the full URL>\"\n")
+        print("  The token is extracted for you. Pasting just the token works too.")
+        print("  It is single-use and expires within minutes, so do this promptly.\n")
     elif args.exchange:
         exchange_request_token(args.exchange)
     elif args.status:
