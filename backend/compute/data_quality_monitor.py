@@ -269,22 +269,28 @@ def c07_pipeline_completeness(sb, td):
         ("market_news",           "news_date",      "01_market_news",        "WARN",  False),
         ("macro_indicators",      "indicator_date", "02_macro_indicators",   "WARN",  False),  # ← fixed column
         ("global_cues",           "date",           "03_global_cues",        "WARN",  False),
-        ("chartink_raw_data",     "date",           "04_fetch_chartink",     "ERROR", False),
-        ("stock_data_daily",      "date",           "05_ingest_bhavcopy",    "ERROR", False),
-        ("master_shortlist",      "date",           "06_ingest_sheets",      "ERROR", False),
-        ("fii_dii_flow",          "date",           "07_fii_dii",            "WARN",  False),
+        # Step labels renumbered 2026-07 when sector_strength moved after
+        # compute_indicators and the quality check was split into a pre-signal
+        # gate and a post-alert audit. These are display labels only — the
+        # check keys off the TABLE — but a stale label sends you looking for a
+        # step that no longer exists ("21_quality_check missing" when the step
+        # is now 27_quality_audit).
+        ("chartink_raw_data",     "date",           "07_fetch_chartink",     "ERROR", False),
+        ("stock_data_daily",      "date",           "08_ingest_bhavcopy",    "ERROR", False),
+        ("master_shortlist",      "date",           "17_screen_stocks",      "ERROR", False),
+        ("fii_dii_flow",          "date",           "09_fii_dii",            "WARN",  False),
         # 08 checked separately below — event_date is the future event's own
         # date (results/AGM/dividend), not an ingestion timestamp, and the
         # table is REPLACE-purged of past events every run. eq(td) was a
         # false-positive generator; use forward-looking existence instead.
-        ("safety_lists",          "listed_date",    "09_asm_gsm",            "WARN",  False),
-        ("stock_data_daily",      "date",           "10_compute_indicators", "ERROR", False),
-        ("market_regime",         "date",           "11_compute_regime",     "WARN",  False),
-        ("signal_log",            "date",           "15_signals",            "ERROR", False),
-        ("msl_history",           "snapshot_date",           "16_history",            "WARN",  True),   # ← uses today_ist()
-        ("ai_context",            "date",           "18_ai_market_intel",    "WARN",  False),
-        ("ai_context",            "date",           "19_ai_decision_engine", "WARN",  False),
-        ("data_anomalies",        "date",           "21_quality_check",      "WARN",  True),   # ← self, writes today
+        ("safety_lists",          "listed_date",    "11_asm_gsm",            "WARN",  False),
+        ("stock_data_daily",      "date",           "12_compute_indicators", "ERROR", False),
+        ("market_regime",         "date",           "14_compute_regime",     "WARN",  False),
+        ("signal_log",            "date",           "20_signals",            "ERROR", False),
+        ("msl_history",           "snapshot_date",           "21_history",            "WARN",  True),   # ← uses today_ist()
+        ("ai_context",            "date",           "23_ai_market_intel",    "WARN",  False),
+        ("ai_context",            "date",           "24_ai_decision_engine", "WARN",  False),
+        ("data_anomalies",        "date",           "27_quality_audit",      "WARN",  True),   # ← self, writes today
     ]
 
     missing = []
