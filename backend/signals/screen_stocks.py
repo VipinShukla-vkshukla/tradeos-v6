@@ -76,7 +76,7 @@ TRANSITION MODES (system_config: screener_mode):
 import sys, os, json
 from pathlib import Path
 from datetime import datetime, timedelta
-from collections import defaultdict
+from collections import defaultdict, Counter
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -122,6 +122,58 @@ _REGIME_ENGINE_WEIGHTS_DEFAULT = {
     "RISK OFF":   {"CTL": 0.6, "MOM": 0.5, "SBS": 0.7, "VBD": 0.6,
                    "IAD": 1.2, "RSB": 1.2, "TPO": 0.7, "RVS": 1.4, "SEC": 1.0, "EAP": 0.6},
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTOR INFLUENCE — SINGLE POINT OF APPLICATION
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Sector rank was applied FIVE times to the same stock, compounding:
+#
+#   1. Engine hard gates      CTL <=4, SBS <=7, RVS <=9, VBD/RSB/MOM <=10, IAD <=12
+#   2. In-engine linear bonus max(0, 5-rank)*6 in CTL (up to +24 on a ~120 scale),
+#                             max(0, 8-rank)*4 in SBS (+28), *3 in MOM, *2 elsewhere
+#   3. compute_msl final_score sector_score band 100/82/64/46/25 at 8% weight
+#   4. compute_msl validity_score — sector_rank again
+#   5. generate_signals        industry_bonus_top5 +10, industry_bonus_strong +5
+#
+# A rank-3 stock had to beat a rank-1 stock by roughly 30 composite points to
+# appear at all. The observable result on 2026-07-24: master_shortlist was
+# healthcare 33 + industrials 24 out of 75 (76% in two sectors) and every one
+# of the 11 entry signals came from those same two sectors.
+#
+# Layer 2 is pure double-counting: the gate has ALREADY established that this
+# sector is acceptable. Applying a second, steeper reward for being near the
+# top of an already-filtered list is what produced the concentration.
+#
+# Replaced by one bounded, config-tunable function used by every engine except
+# SEC — whose entire thesis IS sector rotation, so rank is its signal, not a
+# tiebreaker.
+
+def sector_bonus(s_rank: int | None, max_pts: float | None = None) -> float:
+    """
+    Bounded sector-leadership credit. Default ceiling 8 points against engine
+    scores that top out near 120 — a nudge, not a verdict.
+    """
+    if not s_rank:
+        return 0.0
+    cap = max_pts if max_pts is not None else float(cfg("screener_sector_bonus_max", "8"))
+    # Linear decay across the top 8 ranks, zero beyond.
+    return round(max(0.0, (8 - s_rank) / 7.0) * cap, 2)
+
+
+def get_sector_gate(engine: str, default: int) -> int:
+    """
+    Per-engine sector-rank ceiling, tunable from system_config.
+
+    Defaults are WIDER than the original hardcoded values. With the v2 ranking
+    (migration 001) small sectors are already pushed below the qualified set,
+    so a rank <=4 gate now excludes roughly 80% of a legitimately-ranked market
+    rather than filtering out noise as originally intended. Diversification is
+    handled deliberately in aggregate_and_rank instead of as a side effect of
+    aggressive gating.
+    """
+    return int(cfg(f"screener_sector_gate_{engine.lower()}", str(default)))
+
 
 def get_regime_engine_weights() -> dict:
     """
@@ -192,11 +244,37 @@ def load_data(sb, today: str) -> dict:
             logger.warning(f"stock_data_daily: falling back to {fb}")
     stock_map = {r["symbol"]: r for r in (stock_rows or [])}
 
-    # sector_strength
-    sector_rows = sb.table("sector_strength").select("sector,rank").eq("date", today).execute().data
+    # ── sector_strength ───────────────────────────────────────────────────────
+    # The old fallback was `.order("date", desc=True).limit(50)` with no date
+    # filter. With 23 sectors per day, 50 rows spans ~2.2 dates, and the dict
+    # comprehension below lets the LAST row per sector win — i.e. the OLDEST
+    # date in the grab. On 2026-07-24 that produced a sector_rank map built
+    # from a mix of 2026-06-22 and 2026-06-23. Resolve one concrete date first,
+    # then fetch only that date's rows.
+    sector_rows = (sb.table("sector_strength")
+                     .select("sector,rank").eq("date", today).execute().data)
+    sector_rank_date = today
+
     if not sector_rows:
-        sector_rows = sb.table("sector_strength").select("sector,rank").order("date", desc=True).limit(50).execute().data
+        latest = (sb.table("sector_strength").select("date")
+                    .order("date", desc=True).limit(1).execute().data)
+        if latest:
+            sector_rank_date = latest[0]["date"]
+            sector_rows = (sb.table("sector_strength")
+                             .select("sector,rank")
+                             .eq("date", sector_rank_date)
+                             .execute().data)
+            logger.warning(
+                f"  sector_strength missing for {today} — using {sector_rank_date} "
+                f"(single date, not a mixed grab)"
+            )
+
     sector_rank = {r["sector"]: r["rank"] for r in sector_rows if r.get("rank")}
+    if not sector_rank:
+        logger.error(
+            "  sector_strength is EMPTY — all 9 engines gate on sector_rank and "
+            "will return near-zero candidates. Run step 11_sector_strength."
+        )
 
     # market_regime
     regime_rows = sb.table("market_regime").select("*").order("date", desc=True).limit(1).execute().data
@@ -305,7 +383,7 @@ def get_event_action(symbol: str, sector: str, events: list, buffer_days: int = 
 
 def run_ctl(stock_map, sector_rank, cfg_ctl):
     results = {}
-    max_sector_rank = cfg_ctl.get("max_sector_rank", 4)
+    max_sector_rank = cfg_ctl.get("max_sector_rank", get_sector_gate("CTL", 8))
     min_monthly_rsi = cfg_ctl.get("min_monthly_rsi", 58)
     min_weekly_rsi  = cfg_ctl.get("min_weekly_rsi", 58)
     min_6m_return   = cfg_ctl.get("min_6m_return", 0)
@@ -337,7 +415,7 @@ def run_ctl(stock_map, sector_rank, cfg_ctl):
         macd_h = float(s.get("macd_hist") or 0)
         sma_cross = bool(s.get("sma50_gt_200"))
 
-        score += max(0, (5 - s_rank)) * 6
+        score += sector_bonus(s_rank)
 
         if 60 <= rsi_m <= 72:   score += 20
         elif rsi_m > 72:         score += 10
@@ -378,7 +456,7 @@ def run_sbs(stock_map: dict, sector_rank: dict, cfg_sbs: dict) -> dict:
            PSAR confirmation, proximity to 30d high (approach to resistance).
     """
     results = {}
-    max_sector_rank = cfg_sbs.get("max_sector_rank", 7)
+    max_sector_rank = cfg_sbs.get("max_sector_rank", get_sector_gate("SBS", 10))
     min_daily_rsi   = cfg_sbs.get("min_daily_rsi", 52)
     min_weekly_rsi  = cfg_sbs.get("min_weekly_rsi", 54)
     max_atr_pct     = cfg_sbs.get("max_atr_pct", 5.5)
@@ -421,7 +499,7 @@ def run_sbs(stock_map: dict, sector_rank: dict, cfg_sbs: dict) -> dict:
         s_rank   = sector_rank.get(sector, 10)
         adx      = float(s.get("adx") or 0)
 
-        score += max(0, (8 - s_rank)) * 4
+        score += sector_bonus(s_rank)
         if 55 <= rsi_d <= 68:    score += 18
         elif 52 <= rsi_d < 55:   score += 12
         elif rsi_d > 68:         score += 6
@@ -583,7 +661,7 @@ def run_vbd(stock_map: dict, sector_rank: dict) -> dict:
         if delivery < 35:             continue
         if market_cap < MIN_MARKET_CAP: continue
         if not above_50:              continue
-        if s_rank > 10:               continue
+        if s_rank > get_sector_gate("VBD", 12):  continue
 
         score = 0.0
         if 4 <= pct_chg <= 7:         score += 25
@@ -599,7 +677,7 @@ def run_vbd(stock_map: dict, sector_rank: dict) -> dict:
         elif consol < 10:            score += 8
         if adx >= 25:                 score += 10
         elif adx >= 18:               score += 5
-        score += max(0, (6 - s_rank)) * 2
+        score += sector_bonus(s_rank)
 
         if score >= 55:
             results[sym] = round(score, 1)
@@ -635,7 +713,7 @@ def run_iad(stock_map: dict, sector_rank: dict) -> dict:
         if market_cap < MIN_MARKET_CAP:           continue
         if not above_50:                          continue
         if consol > 20:                           continue
-        if s_rank > 12:                           continue
+        if s_rank > get_sector_gate("IAD", 14):   continue
 
         score = 0.0
 
@@ -662,7 +740,7 @@ def run_iad(stock_map: dict, sector_rank: dict) -> dict:
         if 50 <= rsi_d <= 65:                    score += 10
         elif rsi_d > 65:                         score += 4
 
-        score += max(0, (6 - s_rank)) * 2
+        score += sector_bonus(s_rank)
 
         min_score = 55 if delivery >= 50 else 68
 
@@ -699,7 +777,7 @@ def run_rsb(stock_map: dict, sector_rank: dict) -> dict:
         if not above_50:                          continue
         if market_cap < MIN_MARKET_CAP:           continue
         if rsi_d < 48:                            continue
-        if s_rank > 10:                           continue
+        if s_rank > get_sector_gate("RSB", 12):   continue
 
         score = 0.0
         if rs > 20:                              score += 28
@@ -718,7 +796,7 @@ def run_rsb(stock_map: dict, sector_rank: dict) -> dict:
             elif pct_away < 6:                   score += 6
         if 52 <= rsi_d <= 68:                   score += 12
         elif rsi_d > 68:                         score += 5
-        score += max(0, (6 - s_rank)) * 2
+        score += sector_bonus(s_rank)
 
         if score >= 55:
             results[sym] = round(score, 1)
@@ -782,7 +860,7 @@ def run_mom_continuation(stock_map: dict, sector_rank: dict, regime_name: str) -
         if macd_h <= 0:                              continue
         if not (wk_hh or wk_hl):                     continue
         if market_cap < MIN_MARKET_CAP:               continue
-        if s_rank > 10:                               continue
+        if s_rank > get_sector_gate("MOM", 12):       continue
         # RECOVERING: require delivery — random bounce without institutional conviction
         if recovering_mode and delivery < delivery_min: continue   # NEW v1.1
 
@@ -812,7 +890,7 @@ def run_mom_continuation(stock_map: dict, sector_rank: dict, regime_name: str) -
         if dist_50 < 5:          score += 8
         elif dist_50 < 10:       score += 4
 
-        score += max(0, (6 - s_rank)) * 3
+        score += sector_bonus(s_rank)
 
         if sma200:               score += 12
         if above_st:             score += 8
@@ -882,17 +960,13 @@ def run_reversal_setup(stock_map, sector_rank, regime_name):
         if dist_50 < -10:                        continue
         if market_cap < MIN_MARKET_CAP:          continue
 
-        # ── Regime-aware sector gate — NEW v1.1 ──────────────────────────
-        # RECOVERING: relax to 10 — pharma, FMCG, IT (ranked 6-9) are exactly
-        #             where RVS bounces are most reliable during recovery.
-        # RISK OFF:   relax to 10 — same logic, slightly more selective.
-        # Standard:   9 — balanced quality filter.
-        if recovering_mode:
-            max_sector = 10
-        elif risk_off_mode:
-            max_sector = 10
-        else:
-            max_sector = 9
+        # ── Regime-aware sector gate ─────────────────────────────────────
+        # RECOVERING / RISK OFF relax the ceiling: pharma, FMCG and IT are
+        # exactly where reversal bounces are most reliable coming out of a
+        # drawdown, and those sit mid-table on a momentum ranking by
+        # construction. Base value now config-driven (see get_sector_gate).
+        base_gate  = get_sector_gate("RVS", 12)
+        max_sector = base_gate + 2 if (recovering_mode or risk_off_mode) else base_gate
 
         if s_rank > max_sector:                  continue
 
@@ -925,7 +999,7 @@ def run_reversal_setup(stock_map, sector_rank, regime_name):
 
         if rsi_w >= 48:                          score += 8
 
-        score += max(0, (5 - s_rank)) * 4
+        score += sector_bonus(s_rank)
 
         # ── Score threshold by regime — NEW v1.1 ─────────────────────────
         # RECOVERING: lower threshold — macro tailwind makes reversals more reliable.
@@ -1040,6 +1114,7 @@ def aggregate_and_rank(
     max_symbols: int = 30,
     max_per_sector: int = 5,
     allow_risk_off: bool = False,
+    shadow_engines: set | None = None,
 ) -> tuple:
 
     """
@@ -1072,7 +1147,13 @@ def aggregate_and_rank(
     )
 
     # ── Collect all symbols with regime-weighted scores ───────────────────────
-    all_syms: dict = defaultdict(lambda: {"engines": [], "scores": [], "raw": 0})
+    # SHADOW engines are tracked separately: their names still appear in
+    # engines_list (so screener_performance attributes forward returns to them
+    # and v_engine_performance can measure whether they deserve promotion), but
+    # their scores never enter base_score or the convergence bonus.
+    shadow_engines = shadow_engines or set()
+    all_syms: dict = defaultdict(lambda: {"engines": [], "scores": [],
+                                          "shadow_engines": [], "raw": 0})
     for engine, results in engine_results.items():
         # ── INGEST_SHEETS MERGE (remove this block when ingest_sheets is retired) ──
         for sym in force_include:
@@ -1080,7 +1161,11 @@ def aggregate_and_rank(
                 all_syms[sym]  # defaultdict seeds empty engines/scores; composite=0, force_include sorts first
         # ── END INGEST_SHEETS MERGE ─────────────────────────────────────────────────
         engine_weight = weights.get(engine, 1.0)
+        is_shadow     = engine in shadow_engines
         for sym, score in results.items():
+            if is_shadow:
+                all_syms[sym]["shadow_engines"].append(engine)
+                continue
             weighted_score = round(score * engine_weight, 1)
             all_syms[sym]["engines"].append(engine)
             all_syms[sym]["scores"].append(weighted_score)
@@ -1128,7 +1213,7 @@ def aggregate_and_rank(
             "symbol":          sym,
             "company_name":    s.get("company_name"),
             "sector":          s.get("sector", ""),
-            "strategy_source": "+".join(sorted(data["engines"])),
+            "strategy_source": "+".join(sorted(data["engines"])) or "SHADOW_ONLY",
             "current_price":   s.get("close") or s.get("current_price"),
             "market_cap":      s.get("market_cap"),
             "composite_score": round(composite, 1),
@@ -1136,7 +1221,14 @@ def aggregate_and_rank(
             "convergence_pts": convergence,
             "eap_adjustment":  eap_adj,
             "engines_count":   n_engines,
-            "engines_list":    ",".join(sorted(data["engines"])),
+            # engines_list carries SHADOW engines too, suffixed, so
+            # screener_performance attributes forward returns to them and
+            # v_engine_performance can measure them — without their score ever
+            # having touched composite_score.
+            "engines_list":    ",".join(
+                sorted(data["engines"])
+                + sorted(f"{e}:SHADOW" for e in data.get("shadow_engines", []))
+            ),
             "sector_rank":     s_rank,
             "in_position":     in_pos,
             "force_include":   forced,
@@ -1149,12 +1241,32 @@ def aggregate_and_rank(
 
     candidates.sort(key=lambda x: (x["force_include"], x["composite_score"]), reverse=True)
 
+    # ═══ DIVERSIFICATION ═════════════════════════════════════════════════════
+    #
+    # The old logic had a per-sector CEILING and nothing else. A ceiling only
+    # binds once a sector is already over-represented — it cannot pull a
+    # seventh-ranked sector into a list that leadership has already filled.
+    # Observed on 2026-07-24: master_shortlist was 76% healthcare + industrials.
+    #
+    # A ceiling is also the wrong instrument on its own for a 1-3 week momentum
+    # system, because riding a genuinely leading sector IS the edge. So:
+    #
+    #   FLOOR   guarantee at least `min_sectors` distinct sectors appear, by
+    #           reserving one slot for the best candidate from each of the top
+    #           sectors not otherwise represented. Costs almost nothing — the
+    #           shortlist is a research list, and looking wider is free.
+    #   CEILING keep a per-sector cap so one sector cannot take every slot.
+    #
+    # Real position concentration is controlled later, at the portfolio level,
+    # by capital-weighted caps in analysis/portfolio_constraints.py. That is the
+    # right place for it: risk is rupees at risk, not a count of tickers.
+    min_sectors = int(cfg("screener_min_sectors", "5"))
+
     sector_counts: dict = defaultdict(int)
-    selected = []
-    overflow = []
+    selected, overflow = [], []
 
     for c in candidates:
-        sector = c["sector"].lower()
+        sector = (c["sector"] or "").lower()
         if c["force_include"]:
             selected.append(c)
         elif sector_counts[sector] < max_per_sector:
@@ -1168,15 +1280,60 @@ def aggregate_and_rank(
         selected.extend(overflow[:remaining])
         selected.sort(key=lambda x: x["composite_score"], reverse=True)
 
-    def find_natural_cutoff(candidates, hard_max=30, min_gap=10):
-        for i in range(min(hard_max, len(candidates) - 1)):
-            gap = candidates[i]["composite_score"] - candidates[i+1]["composite_score"]
+    def find_natural_cutoff(cands, hard_max=30, min_gap=10):
+        for i in range(min(hard_max, len(cands) - 1)):
+            gap = cands[i]["composite_score"] - cands[i + 1]["composite_score"]
             if gap >= min_gap and i >= 20:
                 return i + 1
         return hard_max
 
     cutoff = find_natural_cutoff(selected, hard_max=max_symbols)
-    final = selected[:cutoff]
+    final  = selected[:cutoff]
+
+    # ── Apply the FLOOR ──────────────────────────────────────────────────────
+    # Promote the single best candidate from each missing sector, in sector-rank
+    # order, displacing the weakest members of the most over-represented sector.
+    present = {(c["sector"] or "").lower() for c in final}
+    if len(present) < min_sectors:
+        by_sector: dict = defaultdict(list)
+        for c in candidates:
+            by_sector[(c["sector"] or "").lower()].append(c)
+
+        # Candidate sectors to add, best-ranked sector first.
+        missing = sorted(
+            (s for s in by_sector if s and s not in present),
+            key=lambda s: (by_sector[s][0].get("sector_rank") or 99,
+                           -by_sector[s][0]["composite_score"]),
+        )
+        promoted = []
+        for s in missing:
+            if len(present) >= min_sectors:
+                break
+            best = by_sector[s][0]                      # already composite-sorted
+            # Displace the lowest-scoring member of the largest sector block,
+            # never a force_include and never the last representative of a sector.
+            counts = Counter((c["sector"] or "").lower() for c in final)
+            droppable = [
+                c for c in sorted(final, key=lambda x: x["composite_score"])
+                if not c["force_include"] and counts[(c["sector"] or "").lower()] > 1
+            ]
+            if not droppable:
+                break
+            drop = droppable[0]
+            final.remove(drop)
+            final.append(best)
+            present.add(s)
+            promoted.append((best["symbol"], s, drop["symbol"],
+                             (drop["sector"] or "").lower()))
+
+        if promoted:
+            final.sort(key=lambda x: x["composite_score"], reverse=True)
+            logger.info(
+                f"  Sector floor: promoted {len(promoted)} to reach "
+                f"{len(present)} sectors (min={min_sectors})"
+            )
+            for sym, sec, dsym, dsec in promoted:
+                logger.info(f"    + {sym} ({sec})  displaced  - {dsym} ({dsec})")
 
     if blocked_by_regime:
         logger.warning(f"  {len(blocked_by_regime)} symbols blocked by RISK OFF regime")
@@ -1294,7 +1451,13 @@ def check_eap_revival(sb, stock_map: dict, today: str):
     but are showing strong post-event price action today.
     """
     from datetime import date, timedelta
-    yesterday = str(date.fromisoformat(today) - timedelta(days=1))
+    # Previous TRADING day, not `today - 1 calendar day`. The calendar version
+    # looked at Sunday on every Monday run, found nothing, and skipped — so the
+    # EAP revival check effectively never ran on a Monday.
+    yesterday = _sessions_back(sb, today, 1)
+    if not yesterday:
+        logger.info("  EAP revival: no prior trading day available — skipping")
+        return
 
     try:
         penalized = (
@@ -1360,10 +1523,40 @@ def check_eap_revival(sb, stock_map: dict, today: str):
     logger.success(f"  EAP revival: tagged {tagged}/{len(revivals)} stocks in msl_computed")
 
 
+def _sessions_back(sb, today: str, n: int) -> str | None:
+    """
+    The trading date n SESSIONS before `today`.
+
+    log_screener_outcomes used `date.fromisoformat(today) - timedelta(days=n)`
+    — CALENDAR days. For hold_days=5 that lands on a weekend most weeks, and on
+    a Saturday/Sunday there is no master_shortlist row, so the function logged
+    "no data for {past_date} — skipping" and recorded nothing. That is why
+    screener_performance has sparse coverage despite running daily, and why
+    engine attribution has never accumulated enough history to be useful.
+
+    market_regime holds exactly one row per trading day, so it is the cleanest
+    trading calendar available.
+    """
+    try:
+        rows = (sb.table("market_regime").select("date")
+                  .lt("date", today).order("date", desc=True)
+                  .limit(n).execute().data)
+        return rows[-1]["date"] if len(rows) >= n else None
+    except Exception as e:
+        logger.warning(f"  session lookup failed: {e}")
+        return None
+
+
 def log_screener_outcomes(sb, today: str, hold_days_list: list = None):
     """
-    Runs daily at end of pipeline. Computes returns for hold periods
-    and writes to screener_performance for engine attribution analysis.
+    Runs daily at end of pipeline. Computes forward returns for each hold
+    period and writes to screener_performance for engine attribution.
+
+    This is the primary VALIDATION instrument for the screener: it measures
+    what the shortlist would have returned regardless of whether anything was
+    actually traded. With only one attributable closed trade in the system's
+    history, this is the only way to build a performance baseline without
+    risking capital.
     """
     from datetime import date, timedelta
 
@@ -1390,7 +1583,11 @@ def log_screener_outcomes(sb, today: str, hold_days_list: list = None):
     all_outcomes = []
 
     for hold_days in hold_days_list:
-        past_date = str(date.fromisoformat(today) - timedelta(days=hold_days))
+        # TRADING sessions back, not calendar days — see _sessions_back.
+        past_date = _sessions_back(sb, today, hold_days)
+        if not past_date:
+            logger.info(f"  Outcomes: fewer than {hold_days} sessions of history — skipping")
+            continue
 
         try:
             past_rows = (
@@ -1598,14 +1795,15 @@ def main():
     except Exception:
         pass
 
-    def _parse(key): return (
-        json.loads(strat_cfg[key]) if isinstance(strat_cfg.get(key), str)
-        else strat_cfg.get(key, {})
-    )
-    cfg_ctl = _parse("CTL")
-    cfg_sbs = _parse("SBS")
-    cfg_tpo = _parse("TPO")
-    cfg_eap = _parse("EAP")
+    # config.get_strategy_config now normalises every row to a plain dict
+    # (see _coerce_params). The local json.loads/isinstance shim that used to
+    # live here handled only the string form, so when migration 004 turned
+    # params into an ARRAY it passed the list straight through and
+    # cfg_ctl.get(...) raised AttributeError inside run_ctl — a fatal step.
+    cfg_ctl = strat_cfg.get("CTL", {})
+    cfg_sbs = strat_cfg.get("SBS", {})
+    cfg_tpo = strat_cfg.get("TPO", {})
+    cfg_eap = strat_cfg.get("EAP", {})
 
     # ── Run engines ───────────────────────────────────────────────────────────
     logger.info(f"Pass 2: running engines (regime={regime_name})...")
@@ -1637,6 +1835,30 @@ def main():
         "MOM": mom_results, "RVS": rvs_results, "SEC": sec_results,
     }
 
+    # ── Engine lifecycle (migration 006) ─────────────────────────────────────
+    # RETIRED  -> dropped before aggregation; contributes nothing.
+    # SHADOW   -> still recorded in engines_list and screener_performance so it
+    #             accumulates a measurable track record, but excluded from
+    #             composite_score so it cannot influence a live decision.
+    # This is what makes adding a new engine safe: run it in SHADOW for a few
+    # weeks, read v_engine_performance, promote only if the hit rate earns it.
+    from signals.engine_registry import load_registry, LIFECYCLE_ACTIVE, LIFECYCLE_RETIRED
+    registry = load_registry(refresh=True)
+    lifecycles = {e: registry.get(e, {}).get("lifecycle", LIFECYCLE_ACTIVE)
+                  for e in engine_results}
+
+    retired = [e for e, lc in lifecycles.items() if lc == LIFECYCLE_RETIRED]
+    shadow  = [e for e, lc in lifecycles.items() if lc == "SHADOW"]
+    for e in retired:
+        engine_results[e] = {}
+    if retired:
+        logger.info(f"  Lifecycle: RETIRED (not run) — {', '.join(retired)}")
+    if shadow:
+        logger.info(
+            f"  Lifecycle: SHADOW (logged, excluded from composite) — "
+            f"{', '.join(f'{e}={len(engine_results[e])}' for e in shadow)}"
+        )
+
     logger.info(
         f"  Engine totals: CTL={len(ctl_results)} SBS={len(sbs_results)} "
         f"TPO={len(tpo_results)} VBD={len(vbd_results)} IAD={len(iad_results)} "
@@ -1652,6 +1874,7 @@ def main():
         regime_name, open_syms, force_include, today,
         max_symbols=max_symbols, max_per_sector=max_sector,
         allow_risk_off=allow_risk_off,
+        shadow_engines=set(shadow),
     )
 
     if not final:

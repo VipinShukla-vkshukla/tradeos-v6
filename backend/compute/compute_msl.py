@@ -2141,17 +2141,57 @@ def compute_holding_score(s: dict, regime_ctx: dict, lifecycle: str,
     return round(min(max(score, 0.0), 100.0), 1)
 
 
-def compute_expected_r(s: dict, ez_low: float, ez_high: float) -> float | None:
-    """R multiple from ATR-anchored target/SL. Swing target = 3×ATR, SL = 1.5×ATR."""
+def compute_trade_plan(s: dict, ez_low: float, ez_high: float,
+                       regime_ctx: dict) -> dict:
+    """
+    Build the full trade plan (stop, target, R:R) via the shared risk model and
+    return it for persistence.
+
+    REPLACES compute_expected_r(), which returned ONLY an R-multiple and threw
+    the price levels away. generate_signals then rebuilt those levels from a
+    flat 3% stop — a completely different model — which collapsed the target to
+    roughly 40% of its intended distance and caused 17 of 27 WATCH signals on
+    2026-07-24 to be blocked with implied R:R between 0.05x and 0.47x.
+    See analysis/risk_model.py for the full write-up.
+
+    Persisting planned_stop / planned_target means every consumer
+    (generate_signals, position sizing, the lifecycle manager that writes
+    open_positions.active_sl and target_price) works off identical numbers.
+    """
+    from analysis.risk_model import compute_trade_levels
+
     atr_14 = float(s.get("atr_14") or 0)
     if not ez_low or not atr_14:
-        return None
-    ez_mid = (ez_low + (ez_high or ez_low * 1.02)) / 2.0
-    target = ez_mid + 3.0 * atr_14
-    sl     = ez_low - 1.5 * atr_14
-    if sl <= 0 or ez_mid <= sl:
-        return None
-    return round((target - ez_mid) / (ez_mid - sl), 2)
+        return {"expected_r": None, "planned_entry": None, "planned_stop": None,
+                "planned_target": None, "planned_risk_pct": None,
+                "planned_stop_source": None}
+
+    # Structural stop candidate: supertrend sits where the trend thesis breaks.
+    # The risk model only adopts it when it is TIGHTER than the ATR stop and
+    # still outside daily noise.
+    supertrend = float(s.get("supertrend") or 0) or None
+
+    levels = compute_trade_levels(
+        entry_price    = ez_low,
+        atr_abs        = atr_14,
+        anchor_price   = ez_low,
+        structure_stop = supertrend,
+        regime         = regime_ctx.get("regime", "NEUTRAL"),
+    )
+
+    if not levels.valid:
+        return {"expected_r": None, "planned_entry": None, "planned_stop": None,
+                "planned_target": None, "planned_risk_pct": None,
+                "planned_stop_source": levels.reject_reason}
+
+    return {
+        "expected_r":          levels.rr,
+        "planned_entry":       levels.entry,
+        "planned_stop":        levels.stop,
+        "planned_target":      levels.target,
+        "planned_risk_pct":    levels.risk_pct,
+        "planned_stop_source": levels.stop_source,
+    }
 
 
 def compute_days_to_trigger(s: dict, ez_low: float) -> int | None:
@@ -2369,7 +2409,8 @@ def compute_all(sb, data: dict, today: str) -> list:
             institutional_score = compute_institutional_score(s, vwap_ctx, vol_trend, fii_data)
             breakout_readiness  = compute_breakout_readiness(s, bb_ctx, psar_ctx)
             risk_score          = compute_risk_score(s, regime_ctx, fund_ctx, msl_row)
-            expected_r          = compute_expected_r(s, ez_low, ez_high)
+            trade_plan          = compute_trade_plan(s, ez_low, ez_high, regime_ctx)
+            expected_r          = trade_plan["expected_r"]
             days_trigger        = compute_days_to_trigger(s, ez_low)
 
             holding_score = compute_holding_score(
@@ -2416,6 +2457,15 @@ def compute_all(sb, data: dict, today: str) -> list:
                 "base_score":           base_score,
                 "validity_score":       validity_score,
                 "expected_r":           expected_r,
+                # ── Trade plan (shared risk model — see analysis/risk_model.py) ──
+                # Persisted as PRICES, not just an R-multiple. generate_signals,
+                # position sizing and the lifecycle manager all read these exact
+                # numbers, so they can no longer disagree about where the stop is.
+                "planned_entry":        trade_plan["planned_entry"],
+                "planned_stop":         trade_plan["planned_stop"],
+                "planned_target":       trade_plan["planned_target"],
+                "planned_risk_pct":     trade_plan["planned_risk_pct"],
+                "planned_stop_source":  trade_plan["planned_stop_source"],
                 "in_position":          in_pos,
                 "trade_allowed":        trade_allowed,
                 "low_liquidity":        low_liq,

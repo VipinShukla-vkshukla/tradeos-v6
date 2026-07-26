@@ -33,3 +33,6 @@ backend/models/
 
 # Node
 node_modules/
+
+# TypeScript incremental build cache
+*.tsbuildinfo

@@ -872,43 +872,83 @@ def _already_logged_today(sb, td):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main():
+# ─────────────────────────────────────────────────────────────────────────────
+# CHECK PHASES
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The 20 checks answer two different questions at two different times, and
+# running them all at the very end of the pipeline (as step 23, AFTER alerts)
+# meant an input-data failure was reported only after you had already been told
+# what to buy. Splitting them:
+#
+#   INPUT  — validates the raw + computed data that signals are about to be
+#            derived from. Runs BEFORE generate_signals. An ERROR here means
+#            any signal produced would be built on bad data, so the pipeline
+#            stops rather than emitting a recommendation.
+#
+#   OUTPUT — validates what the pipeline produced (signal scores, AI tiering,
+#            entry zones, price coverage, alignment). Cannot run before the
+#            artefacts exist, so it stays at the end and is advisory.
+#
+INPUT_CHECKS = {
+    "C01": ("chartink row count",     c01_chartink_row_count),
+    "C02": ("RSI range",              c02_rsi_range),
+    "C03": ("vol_ratio cap",          c03_vol_ratio_cap),
+    "C04": ("delivery_pct bounds",    c04_delivery_pct_bounds),
+    "C06": ("MSL completeness",       c06_msl_completeness),
+    "C20": ("trade date integrity",   c20_trade_date_integrity),
+}
+
+OUTPUT_CHECKS = {
+    "C05": ("signal score range",     c05_signal_score_range),
+    "C07": ("pipeline completeness",  c07_pipeline_completeness),
+    "C08": ("market intel validity",  c08_market_intel_validity),
+    "C09": ("final picks validity",   c09_final_picks_validity),
+    "C10": ("candidate price cover",  c10_candidate_price_coverage),
+    "C11": ("regime ML vs manual",    c11_regime_ml_vs_manual),
+    "C12": ("positions vs cap",       c12_positions_vs_regime_cap),
+    "C13": ("FII/regime sizing",      c13_fii_regime_sizing_consistency),
+    "C14": ("signal enrichment",      c14_signal_enrichment_coverage),
+    "C15": ("lesson freshness",       c15_lesson_freshness),
+    "C16": ("near-miss coverage",     c16_near_miss_coverage),
+    "C17": ("entry zone validity",    c17_entry_zone_validity),
+    "C18": ("tier distribution",      c18_tier_distribution),
+    "C19": ("signal date alignment",  c19_signal_date_alignment),
+}
+
+
+def main(phase: str = "all"):
+    """
+    phase="input"  → pre-signal gate. Raises on ERROR so run_pipeline halts.
+    phase="output" → post-alert audit. Advisory, never raises.
+    phase="all"    → every check, advisory (original behaviour, for manual runs).
+    """
     if is_kill_switch_active():
         logger.warning("Kill switch active — data_quality_monitor skipped")
         return {"status": "skipped", "reason": "kill_switch"}
 
     sb = get_supabase()
 
-    # ── Resolve trade date (same probe as step 15 — stock_data_daily) ──
-    td    = get_trade_date(sb, mode="auto", caller="21_quality_check")
+    # ── Resolve trade date (same probe as generate_signals — stock_data_daily) ──
+    td    = get_trade_date(sb, mode="auto", caller=f"quality_check[{phase}]")
     today = str(today_ist())
     stale = td != today
+
+    if phase == "input":
+        selected = INPUT_CHECKS
+    elif phase == "output":
+        selected = OUTPUT_CHECKS
+    else:
+        selected = {**INPUT_CHECKS, **OUTPUT_CHECKS}
+
     logger.info(
-        f"data_quality_monitor v4: 19 checks | trade_date={td}"
+        f"data_quality_monitor v5 [{phase}]: {len(selected)} checks | trade_date={td}"
         + (f" (calendar={today} — bhavcopy not yet written)" if stale else " — bhavcopy ✅")
     )
 
     all_checks = [
-        ("C01", lambda: c01_chartink_row_count(sb, td)),
-        ("C02", lambda: c02_rsi_range(sb, td)),
-        ("C03", lambda: c03_vol_ratio_cap(sb, td)),
-        ("C04", lambda: c04_delivery_pct_bounds(sb, td)),
-        ("C05", lambda: c05_signal_score_range(sb, td)),
-        ("C06", lambda: c06_msl_completeness(sb, td)),
-        ("C07", lambda: c07_pipeline_completeness(sb, td)),
-        ("C08", lambda: c08_market_intel_validity(sb, td)),
-        ("C09", lambda: c09_final_picks_validity(sb, td)),
-        ("C10", lambda: c10_candidate_price_coverage(sb, td)),
-        ("C11", lambda: c11_regime_ml_vs_manual(sb, td)),
-        ("C12", lambda: c12_positions_vs_regime_cap(sb, td)),
-        ("C13", lambda: c13_fii_regime_sizing_consistency(sb, td)),
-        ("C14", lambda: c14_signal_enrichment_coverage(sb, td)),
-        ("C15", lambda: c15_lesson_freshness(sb, td)),
-        ("C16", lambda: c16_near_miss_coverage(sb, td)),
-        ("C17", lambda: c17_entry_zone_validity(sb, td)),
-        ("C18", lambda: c18_tier_distribution(sb, td)),
-        ("C19", lambda: c19_signal_date_alignment(sb, td)),
-        ("C20", lambda: c20_trade_date_integrity(sb, td)),
+        (label, (lambda f=fn: f(sb, td)))
+        for label, (_desc, fn) in sorted(selected.items())
     ]
 
     results = []
@@ -950,20 +990,55 @@ def main():
         _send_error_alert(errors, warnings)
 
     logger.success(
-        f"Quality v4: ✅{ok_n} OK | ⚠️{warn_n} WARN | 🔴{err_n} ERROR | "
-        f"20 checks | trade_date={td}"
+        f"Quality v5 [{phase}]: ✅{ok_n} OK | ⚠️{warn_n} WARN | 🔴{err_n} ERROR | "
+        f"{len(selected)} checks | trade_date={td}"
     )
-    return {
+
+    summary = {
         "date":    td,
+        "phase":   phase,
         "ok":      ok_n,
         "warn":    warn_n,
         "error":   err_n,
         "results": results,
     }
 
+    # ── Input phase is a GATE, not a report ───────────────────────────────────
+    # Everything downstream (screener, MSL, signals, AI tiering, alerts) derives
+    # from the data these checks validate. Emitting a buy recommendation off
+    # data we have just proven bad is strictly worse than emitting nothing, so
+    # raise and let run_pipeline halt. Override with quality_gate_enabled=false
+    # in system_config if a check ever becomes noisy enough to block a good run.
+    if phase == "input" and err_n > 0:
+        from config import cfg_bool
+        failed = ", ".join(f"{r['check']}({r['message'][:60]})" for r in errors)
+        if cfg_bool("quality_gate_enabled", True):
+            raise RuntimeError(
+                f"Input data quality gate FAILED for {td}: {err_n} ERROR check(s) — {failed}. "
+                f"Pipeline halted before signal generation. "
+                f"Set quality_gate_enabled=false in system_config to downgrade to a warning."
+            )
+        logger.error(f"Input quality gate would have blocked ({failed}) — disabled by config, continuing")
+
+    return summary
+
+
+def main_input():
+    """Pre-signal gate. Wired as a fatal step in run_pipeline."""
+    return main(phase="input")
+
+
+def main_output():
+    """Post-alert audit. Wired as a non-fatal step in run_pipeline."""
+    return main(phase="output")
+
 
 if __name__ == "__main__":
-    result = main()
+    import argparse
+    ap = argparse.ArgumentParser(description="TradeOS v6 — data quality monitor")
+    ap.add_argument("--phase", choices=["input", "output", "all"], default="all")
+    args = ap.parse_args()
+    result = main(phase=args.phase)
     icons = {"OK": "✅", "WARN": "⚠️", "ERROR": "🔴"}
     for r in result.get("results", []):
         print(f"{icons.get(r['severity'], '?')} {r['check']}: {r['message']}")

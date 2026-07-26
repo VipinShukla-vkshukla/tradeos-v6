@@ -119,14 +119,65 @@ def cfg_float(key: str, default: float = 0.0) -> float:
 # ── Strategy config ───────────────────────────────────────────
 _strategy_config: dict | None = None
 
+def _coerce_params(strategy: str, raw) -> dict:
+    """
+    Normalise a strategy_config.params value to a plain dict.
+
+    The column is jsonb but rows were historically written as a DOUBLE-ENCODED
+    string ("{\\"max_sector_rank\\": 4.0, ...}"), so consumers each carried
+    their own `json.loads(v) if isinstance(v, str)` shim. Migration 004 then
+    ran `params || patch` against that string, and Postgres built an ARRAY
+    rather than merging — which turned params into a list and made
+    `cfg_ctl.get(...)` raise AttributeError inside run_ctl/run_sbs, both of
+    which are fatal pipeline steps.
+
+    Normalising centrally means every caller gets a dict, and a malformed row
+    degrades that ONE strategy to its defaults instead of taking the pipeline
+    down. Migration 005 repairs the stored shape and adds a CHECK constraint;
+    this function is the belt to that braces.
+    """
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            logger.warning(f"strategy_config[{strategy}]: unparseable string — using defaults")
+            return dict(DEFAULT_STRATEGY_PARAMS.get(strategy, {}))
+    if isinstance(raw, list):
+        # Array form produced by `jsonb_string || jsonb_object`. Merge left to
+        # right so a later patch element still wins.
+        merged: dict = {}
+        for el in raw:
+            part = _coerce_params(strategy, el)
+            if part:
+                merged.update(part)
+        if merged:
+            logger.warning(
+                f"strategy_config[{strategy}]: params stored as an array "
+                f"(see migration 005) — merged {len(raw)} elements in memory. "
+                f"Run 005_fix_strategy_config_shape.sql to repair the row."
+            )
+            return merged
+    logger.warning(f"strategy_config[{strategy}]: unusable params — using defaults")
+    return dict(DEFAULT_STRATEGY_PARAMS.get(strategy, {}))
+
+
 def get_strategy_config(refresh: bool = False) -> dict:
-    """Load strategy_config table from Supabase."""
+    """
+    Load strategy_config from Supabase as {strategy: dict}.
+
+    Always returns plain dicts — callers must not need to json.loads() or
+    type-check the result.
+    """
     global _strategy_config
     if _strategy_config is None or refresh:
         try:
             sb = get_supabase()
             rows = sb.table("strategy_config").select("*").eq("enabled", True).execute().data
-            _strategy_config = {r["strategy"]: r["params"] for r in rows}
+            _strategy_config = {r["strategy"]: _coerce_params(r["strategy"], r["params"])
+                                for r in rows}
         except Exception as e:
             logger.warning(f"Could not load strategy_config: {e} — using hardcoded defaults")
             _strategy_config = DEFAULT_STRATEGY_PARAMS

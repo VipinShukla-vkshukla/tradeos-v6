@@ -338,47 +338,190 @@ def ingest_nse_holidays(service, sb):
     return len(rows)
 
 def step_compute_sector_strength(service=None, sb=None):
-    """Replaces ingest_sector_strength + ingest_industry_strength.
-    Must run AFTER compute_indicators — needs today's stock_data_daily."""
-    sb = sb or get_supabase()
-    today = today_ist()
-    sb.rpc("fn_compute_sector_industry_strength", {"p_date": str(today)}).execute()
-    logger.info(f"✓ sector/industry strength computed for {today}")
-    return None
+    """
+    Compute sector_strength + industry_strength for the last completed
+    trading day. Replaces ingest_sector_strength + ingest_industry_strength.
+
+    MUST RUN AFTER compute_indicators. The SQL aggregates sector, market_cap,
+    rsi_*, ret_1m, rs_vs_nifty and above_sma50 out of stock_data_daily — every
+    one of which is written by compute_indicators. ingest_bhavcopy creates
+    today's stock_data_daily rows earlier in the pipeline but populates only
+    value_cr / delivery_pct / delivery_qty, so running before compute_indicators
+    means `coalesce(market_cap,0) > 0` matches nothing and the function writes
+    ZERO rows.
+
+    That is exactly what happened in production: run_pipeline Phase 2 called
+    this at step 06 while compute_indicators ran at step 10, so sector_strength
+    silently stopped updating on 2026-07-02 while stock_data_daily stayed
+    current. Every sector_rank gate downstream (CTL <=4, SBS <=7, RVS <=9,
+    VBD/RSB/MOM <=10, IAD <=12) was reading three-week-old ranks, and
+    generate_signals — which has no fallback — read an empty dict and silently
+    disabled CTL/SBS/TPO entirely.
+
+    Two guards now make a recurrence impossible to miss:
+      1. The date is the resolved last trading day, not today_ist(). On a
+         weekend, a holiday, or a pre-bhavcopy run, today_ist() names a date
+         with no indicator data.
+      2. The RPC returns per-scope row counts and we raise if either is zero.
+         The old signature returned void, so the caller logged success
+         unconditionally — which is why this went unnoticed for 22 days.
+    """
+    sb    = sb or get_supabase()
+    today = resolve_trading_day_for_strength(sb)
+
+    result = sb.rpc("fn_compute_sector_industry_strength", {
+        "p_date":       today,
+        "p_min_stocks": 5,
+        "p_lookback":   5,
+    }).execute()
+
+    counts = {r["scope"]: int(r["rows_written"] or 0) for r in (result.data or [])}
+    sectors, industries = counts.get("sector", 0), counts.get("industry", 0)
+
+    if sectors == 0 or industries == 0:
+        raise RuntimeError(
+            f"sector/industry strength wrote {sectors} sectors and {industries} "
+            f"industries for {today}. This means stock_data_daily has no rows "
+            f"with sector + market_cap + indicators populated for that date — "
+            f"compute_indicators has not run, or ran for a different date. "
+            f"Signals generated after this point would use stale sector ranks."
+        )
+
+    logger.info(
+        f"✓ sector/industry strength computed for {today}: "
+        f"{sectors} sectors, {industries} industries"
+    )
+    return sectors
+
+
+def resolve_trading_day_for_strength(sb, max_lookback: int = 10) -> str:
+    """
+    Most recent date in stock_data_daily that actually carries computed
+    indicator data. Probing on rsi_daily (rather than merely on the date
+    existing) is deliberate: ingest_bhavcopy creates rows for today with only
+    delivery columns, so a plain date probe would return a date whose
+    indicators are still NULL.
+    """
+    from datetime import datetime as _dt, timedelta as _td
+
+    holidays = {r["date"] for r in sb.table("nse_holidays").select("date").execute().data}
+    candidate = today_ist()
+
+    for _ in range(max_lookback):
+        ds = str(candidate)
+        if candidate.weekday() < 5 and ds not in holidays:
+            probe = (sb.table("stock_data_daily")
+                       .select("date")
+                       .eq("date", ds)
+                       .not_.is_("rsi_daily", "null")
+                       .limit(1).execute().data)
+            if probe:
+                if ds != str(today_ist()):
+                    logger.info(f"  sector strength date resolved: {today_ist()} → {ds}")
+                return ds
+        candidate -= _td(days=1)
+
+    raise RuntimeError(
+        f"No stock_data_daily date with computed indicators found within "
+        f"{max_lookback} days of {today_ist()} — compute_indicators has not run."
+    )
 
 
 # ── Main ─────────────────────────────────────────────────────
+#
+# SPLIT INTO TWO PIPELINE STEPS (see run_pipeline.py Phase 2)
+#
+#   main()          — calendar prep. Holidays and event rollover. Depends on
+#                     nothing, so it runs EARLY: every downstream step resolves
+#                     trading days against nse_holidays, and the event rollover
+#                     must land before anything reads event_calendar.
+#
+#   main_strength() — sector/industry strength. Depends on compute_indicators
+#                     having populated stock_data_daily, so it runs LATE.
+#
+# These used to be one step running early, which meant sector strength was
+# computed against a stock_data_daily that only ingest_bhavcopy had touched.
+# See step_compute_sector_strength's docstring for the full failure mode.
+# ─────────────────────────────────────────────────────────────
+
+def _maybe_sheets_service():
+    """
+    Google Sheets is being retired. Only ingest_nse_holidays still needs it,
+    and only as a fallback when the live NSE API is unreachable. Returning
+    None instead of raising keeps the pipeline running once credentials are
+    removed.
+    """
+    try:
+        return get_sheets_service()
+    except Exception as e:
+        logger.warning(f"Google Sheets unavailable ({e}) — Sheet-based fallbacks disabled")
+        return None
+
+
 def main():
+    """Calendar prep — runs EARLY in the pipeline. No data dependencies."""
     from config import is_kill_switch_active
     if is_kill_switch_active():
         logger.error("KILL SWITCH ACTIVE — aborting ingestion")
         return {}
 
     logger.info("=" * 60)
-    logger.info("STEP 1: Google Sheets Ingestion")
+    logger.info("Calendar prep — NSE holidays + event_calendar rollover")
     logger.info("=" * 60)
 
     sb      = get_supabase()
-    service = get_sheets_service()
-
+    service = _maybe_sheets_service()
     results = {}
-    steps = [
-        ("sector_industry_strength",     step_compute_sector_strength),
-        ("nse_holidays",        ingest_nse_holidays),
-        ("event_calendar",      roll_event_calendar),
-    ]
 
-    for name, fn in steps:
-        try:
-            results[name] = fn(service, sb)
-        except Exception as e:
-            logger.error(f"✗ {name} failed: {e}")
-            results[name] = 0
+    # Holidays: live NSE API first, Sheet tab only as fallback. The live
+    # endpoint is authoritative and removes a Sheets dependency; the Sheet
+    # path stays until Sheets is fully decommissioned.
+    try:
+        n = fetch_nse_holidays(service, sb)
+        if not n and service is not None:
+            logger.warning("Live NSE holiday fetch returned 0 — falling back to Sheet tab")
+            n = ingest_nse_holidays(service, sb)
+        results["nse_holidays"] = n
+    except Exception as e:
+        logger.error(f"✗ nse_holidays failed: {e}")
+        results["nse_holidays"] = 0
 
-    total = sum(v for v in results.values() if v is not None)
-    logger.info(f"\n✓ Ingestion complete: {total} total rows across {len(results)} tables")
+    try:
+        results["event_calendar"] = roll_event_calendar(service, sb)
+    except Exception as e:
+        logger.error(f"✗ event_calendar failed: {e}")
+        results["event_calendar"] = 0
+
+    logger.info(f"✓ Calendar prep complete: {results}")
     return results
 
 
+def main_strength():
+    """
+    Sector + industry strength — runs LATE, after compute_indicators.
+
+    Deliberately NOT wrapped in try/except. Every sector_rank gate in
+    screen_stocks and generate_signals depends on this output, and
+    generate_signals has no fallback at all — an empty sector_rank dict
+    silently disables CTL/SBS/TPO rather than erroring. Failing loudly here
+    is far better than producing a day of signals from stale ranks.
+    """
+    from config import is_kill_switch_active
+    if is_kill_switch_active():
+        logger.error("KILL SWITCH ACTIVE — aborting sector strength")
+        return {}
+
+    logger.info("=" * 60)
+    logger.info("Sector + industry strength")
+    logger.info("=" * 60)
+    sb = get_supabase()
+    return {"sector_industry_strength": step_compute_sector_strength(None, sb)}
+
+
 if __name__ == "__main__":
-    main()
+    import argparse
+    ap = argparse.ArgumentParser(description="TradeOS v6 — calendar prep / sector strength")
+    ap.add_argument("--strength", action="store_true",
+                    help="Run sector/industry strength only (requires compute_indicators to have run)")
+    args = ap.parse_args()
+    print(main_strength() if args.strength else main())

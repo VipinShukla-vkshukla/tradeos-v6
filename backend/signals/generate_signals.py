@@ -66,6 +66,80 @@ from config import (
     is_kill_switch_active,
 )
 
+def _num(d: dict, key: str) -> float | None:
+    """
+    Null-preserving numeric read.
+
+    `float(d.get(k) or 0)` maps None, "", AND a genuine 0.0 to the same value.
+    For an indicator, "not computed" and "computed as zero" are different facts
+    and must not collapse — see the note in classify_entry_signal.
+    """
+    v = d.get(key)
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _chk(value: float | None, lo: float | None = None,
+         hi: float | None = None) -> bool | None:
+    """
+    Three-valued range check: True (passes), False (fails), None (unknown).
+
+    None must never be coerced to True by the caller. Callers use _tech() so
+    unknowns are counted rather than silently waved through.
+    """
+    if value is None:
+        return None
+    if lo is not None and value < lo:
+        return False
+    if hi is not None and value > hi:
+        return False
+    return True
+
+
+def _tech(checks: list[bool | None], max_unknown: int = 2) -> tuple[bool, int]:
+    """
+    Combine three-valued checks into a verdict.
+
+    Returns (passed, n_unknown). A signal passes only when no check FAILED and
+    at most `max_unknown` could not be evaluated. Missing data therefore
+    weakens a setup toward WATCH instead of strengthening it toward BUY, which
+    is the correct direction for a system whose upstream feeds can degrade
+    partially without failing loudly.
+    """
+    n_unknown = sum(1 for c in checks if c is None)
+    failed    = any(c is False for c in checks)
+    return ((not failed) and n_unknown <= max_unknown), n_unknown
+
+
+def _implied_rr(msl_row: dict) -> float | None:
+    """
+    Reward:risk available at the CURRENT price, using the persisted trade plan.
+
+    Recorded on every signal — including WATCH — so post-trade analysis can ask
+    "what R:R did we actually accept on winners vs losers?" and the Brain can
+    calibrate min_rr from evidence instead of the seeded guess. It is also the
+    number the R:R gate rejects on, so storing it makes those rejections
+    auditable rather than only appearing inside a filter_reason string.
+    """
+    stop   = msl_row.get("planned_stop")
+    target = msl_row.get("planned_target")
+    cp     = msl_row.get("current_price")
+    if not (stop and target and cp):
+        return None
+    try:
+        stop_f, target_f, cp_f = float(stop), float(target), float(cp)
+    except (TypeError, ValueError):
+        return None
+    risk = cp_f - stop_f
+    if risk <= 0:
+        return None
+    return round((target_f - cp_f) / risk, 3)
+
+
 def _build_event_context(symbol: str, event_map: dict) -> dict:
     """
     Returns pre_results_flag, upcoming_event_type, upcoming_event_days
@@ -584,16 +658,31 @@ def classify_entry_signal(msl_row: dict, open_map: dict,
     atr_pct     = float(stock_data.get("atr_pct") or T["atr_fallback"])
     above_sma50 = bool(stock_data.get("above_sma50"))
 
-    # Indicators used in Gate 5 threshold checks (from stock_data_daily)
-    rsi_d        = float(stock_data.get("rsi_daily")   or 0)
-    rsi_w        = float(stock_data.get("rsi_weekly")  or 0)
-    rsi_m        = float(stock_data.get("rsi_monthly") or 0)
-    adx          = float(stock_data.get("adx")         or 0)
-    vol_ratio    = float(stock_data.get("vol_ratio")   or 0)
-    delivery_pct = float(stock_data.get("delivery_pct") or 0)
-    dist_sma50   = float(stock_data.get("dist_sma50")  or 0)
-    consol_range = float(stock_data.get("consol_range") or 0)
-    ret_6m       = float(stock_data.get("ret_6m")       or 0)
+    # ── Indicators for Gate 5 — NULL-PRESERVING (fixed 2026-07) ──────────────
+    # These were read as `float(stock_data.get("rsi_daily") or 0)`, collapsing
+    # a missing value to 0.0. Every Gate 5 check was then written as
+    #     (rsi_d == 0 or LOW <= rsi_d <= HIGH)
+    # so a field that FAILED TO COMPUTE short-circuited the check to True.
+    # The practical effect was inverted risk: on a day where ingest_bhavcopy
+    # partially failed and delivery_pct came back NULL, the delivery gate
+    # vanished for the affected stocks and the system emitted MORE entry
+    # signals, not fewer — with no indication in the logs that quality checks
+    # had been skipped.
+    #
+    # _num() preserves None. _chk() returns True / False / None, where None
+    # means "cannot evaluate", and _tech() counts the Nones so a signal can be
+    # required to carry a minimum amount of real evidence.
+    rsi_d        = _num(stock_data, "rsi_daily")
+    rsi_w        = _num(stock_data, "rsi_weekly")
+    rsi_m        = _num(stock_data, "rsi_monthly")
+    adx          = _num(stock_data, "adx")
+    vol_ratio    = _num(stock_data, "vol_ratio")
+    delivery_pct = _num(stock_data, "delivery_pct")
+    dist_sma50   = _num(stock_data, "dist_sma50")
+    consol_range = _num(stock_data, "consol_range")
+    ret_6m       = _num(stock_data, "ret_6m")
+
+    max_unknown = cfg_int("signal_max_unknown_indicators", 2)
 
     # ── GATE 3: Hard blocks ───────────────────────────────────────────────────
     if not ep or not cp or ep <= 0:
@@ -669,72 +758,127 @@ def classify_entry_signal(msl_row: dict, open_map: dict,
                 return False, None, f"chase_{dist_in_atrs:.1f}atrs_limit_{max_atrs:.1f}", near_miss
 
     # ── GATE 4C: R:R viability ─────────────────────────────────────────────────
-    if expected_r > 0 and ep > 0:
-        stop_price   = ep * (1 - T["stop_buffer_pct"])
-        ideal_risk   = ep - stop_price
-        ideal_target = ep + (ideal_risk * expected_r)
-        chase_stop_mult = cfg_float("chase_stop_atr_multiplier", 1.5)
+    #
+    # REWRITTEN 2026-07. The old version reconstructed the trade levels here
+    # using a flat 3% stop (`ep * (1 - stop_buffer_pct)`) and then expanded the
+    # target as `ep + (ep*0.03) * expected_r`. But expected_r had been computed
+    # in compute_msl against a 1.5xATR stop and a 3xATR target. The two models
+    # disagreed by ~2.5x on target distance, so the gate measured remaining
+    # upside against a target far closer than the one the setup was designed
+    # around. Any stock more than ~2% above the zone low scored an implied R:R
+    # under 0.5 and was demoted to WATCH.
+    #
+    # Evidence (2026-07-24): 17 of 27 WATCH signals were `insufficient_rr_*`
+    # at 0.05x-0.47x, and all 11 passing signals had subtype `in_zone` — the
+    # gate could only ever pass a stock sitting exactly inside its zone.
+    #
+    # Now: read the levels compute_msl persisted, and re-anchor to the live
+    # price. The stop stays where the SETUP puts it, so chasing costs R:R
+    # rather than silently dragging the stop upward.
+    planned_stop   = msl_row.get("planned_stop")
+    planned_target = msl_row.get("planned_target")
 
-        if ideal_target <= cp:
-            # Stock has moved past original target. If ATR data is available,
-            # re-anchor stop/target to current price — the original ep-based
-            # stop would be unrealistically wide at current price.
-            if atr_pct > 0:
-                atr_abs  = cp * (atr_pct / 100)
-                new_stop = cp - (chase_stop_mult * atr_abs)
-                new_risk = cp - new_stop
-                if new_risk > 0:
-                    new_target       = cp + (new_risk * expected_r)
-                    remaining_upside = new_target - cp
-                    implied_rr       = remaining_upside / new_risk  # = expected_r by definition
-                    effective_min_rr = T.get(f"min_rr_{regime_name}", T["min_rr"])
-                    if implied_rr < effective_min_rr:
-                        near_miss = {"blocked_by": "rr_reanchored",
-                                    "implied_rr": round(implied_rr, 2),
-                                    "min_rr": effective_min_rr}
-                        return False, None, f"insufficient_rr_{implied_rr:.2f}x", near_miss
-                    # Fall through to Gate 5 with re-anchored evaluation
-                else:
-                    near_miss = {"blocked_by": "target_reached", "target": ideal_target, "cp": cp}
-                    return False, None, "target_already_reached", near_miss
-            else:
-                near_miss = {"blocked_by": "target_reached_no_atr", "target": ideal_target, "cp": cp}
-                return False, None, "target_already_reached_no_atr", near_miss
+    if planned_stop and planned_target and cp > 0:
+        stop_price = float(planned_stop)
+        target     = float(planned_target)
 
-        elif cp > stop_price:
-            remaining_upside = ideal_target - cp
-            current_risk     = cp - stop_price
-            implied_rr       = remaining_upside / current_risk
-            effective_min_rr = T.get(f"min_rr_{regime_name}", T["min_rr"])
-            if implied_rr < effective_min_rr:
-                near_miss = {"blocked_by": "rr",
-                            "implied_rr": round(implied_rr, 2),
-                            "min_rr": effective_min_rr}
-                return False, None, f"insufficient_rr_{implied_rr:.2f}x", near_miss
+        if cp <= stop_price:
+            near_miss = {"blocked_by": "price_below_stop",
+                         "cp": cp, "stop": stop_price}
+            return False, None, "price_at_or_below_planned_stop", near_miss
+
+        if target <= cp:
+            near_miss = {"blocked_by": "target_reached",
+                         "target": target, "cp": cp}
+            return False, None, "target_already_reached", near_miss
+
+        current_risk     = cp - stop_price
+        remaining_upside = target - cp
+        implied_rr       = remaining_upside / current_risk
+        effective_min_rr = T.get(f"min_rr_{regime_name}", T["min_rr"])
+
+        if implied_rr < effective_min_rr:
+            near_miss = {
+                "blocked_by": "rr",
+                "implied_rr": round(implied_rr, 2),
+                "min_rr":     effective_min_rr,
+                "cp":         cp,
+                "stop":       stop_price,
+                "target":     target,
+                "risk_pct":   round(current_risk / cp * 100, 2),
+            }
+            return False, None, f"insufficient_rr_{implied_rr:.2f}x", near_miss
+
+    elif expected_r > 0 and ep > 0 and atr_pct > 0:
+        # Fallback for rows written before migration 002 backfilled the planned_*
+        # columns. Uses the SAME risk model rather than the old flat-3% stop, so
+        # the two paths cannot diverge again.
+        from analysis.risk_model import compute_trade_levels
+        lv = compute_trade_levels(
+            entry_price  = cp,
+            atr_abs      = cp * (atr_pct / 100.0),
+            anchor_price = ep,
+            regime       = regime_name,
+        )
+        if not lv.valid:
+            near_miss = {"blocked_by": "risk_model_invalid", "reason": lv.reject_reason}
+            return False, None, f"rr_unavailable_{lv.reject_reason}", near_miss
+        effective_min_rr = T.get(f"min_rr_{regime_name}", T["min_rr"])
+        if lv.rr < effective_min_rr:
+            near_miss = {"blocked_by": "rr_fallback",
+                         "implied_rr": lv.rr, "min_rr": effective_min_rr}
+            return False, None, f"insufficient_rr_{lv.rr:.2f}x", near_miss
 
     # ── GATE 5: Signal subtype + threshold validation (v5 ADDITION) ───────────
     # Now checks system_config signal_threshold_* keys for each signal type.
     # A stock that passes gates 3-4 is validated; gate 5 determines quality tier.
 
     # PRIME_SETUP — all momentum conditions + system_config RSI/ADX/vol thresholds
+    #
+    # BUG FIX 2026-07 (operator precedence). This was:
+    #     momentum_state == "HOT"                  * 3,
+    #     momentum_phase in ("EXPANSION","EARLY")  * 2,
+    #     velocity_state == "ACCELERATING"         * 2,
+    #     struct_edge == "YES"                     * 2,
+    # `*` binds tighter than `==`/`in`, so Python evaluated these as:
+    #     momentum_state == "HOTHOTHOT"                                -> always False
+    #     momentum_phase in ("EXPANSION","EARLY","EXPANSION","EARLY")  -> 1, never 2
+    #     velocity_state == "ACCELERATINGACCELERATING"                 -> always False
+    #     struct_edge    == "YESYES"                                   -> always False
+    # Maximum achievable prime_score was therefore 3, against a threshold of 8.
+    # PRIME_SETUP could never fire — confirmed against production: zero
+    # PRIME_SETUP rows in signal_log across the last five trading days, and the
+    # "★ PRIME SETUPS" log line has always been empty. It also meant
+    # final_snapshot's TIER_1 inference (which keys off signal_type ==
+    # "PRIME_SETUP") never triggered either.
     prime_score = sum([
-    momentum_state == "HOT"                                * 3,
-    momentum_phase in ("EXPANSION", "EARLY")               * 2,
-    velocity_state == "ACCELERATING"                       * 2,
-    struct_edge == "YES"                                   * 2,
-    breakout_readiness >= T["prime_breakout_min"],
-    trend_maturity not in LATE_MATURITY,
+        3 if momentum_state == "HOT"                        else 0,
+        2 if momentum_phase in ("EXPANSION", "EARLY")       else 0,
+        2 if velocity_state == "ACCELERATING"               else 0,
+        2 if struct_edge == "YES"                           else 0,
+        1 if breakout_readiness >= T["prime_breakout_min"]  else 0,
+        1 if trend_maturity not in LATE_MATURITY            else 0,
     ])
-    prime_min_score = cfg_int("prime_gate5_min_score", 8)   # 8/10 default = still strict
-    prime_momentum_ok = prime_score >= prime_min_score
-    prime_technical_ok = (
-        (rsi_d == 0 or T["prime_rsi_d_min"] <= rsi_d <= T["prime_rsi_d_max"])
-        and (rsi_w == 0 or T["prime_rsi_w_min"] <= rsi_w <= T["prime_rsi_w_max"])
-        and (adx == 0 or adx >= T["prime_adx_min"])
-        and (vol_ratio == 0 or vol_ratio >= T["prime_vol_min"])
-        and (delivery_pct == 0 or delivery_pct >= T["prime_del_min"])
-        and (dist_sma50 == 0 or abs(dist_sma50) <= T["prime_sma50_max"])
-    )
+    prime_min_score = cfg_int("prime_gate5_min_score", 8)   # 8 of a possible 11
+
+    # PRIME means "highest conviction, act now". A trend already classified LATE
+    # or EXHAUSTED cannot be that, however strong its momentum reads — for a
+    # 1-3 week hold you are buying the last leg. Previously maturity was only
+    # worth one score point, so a LATE stock could still reach 9/11 and be
+    # promoted. Such setups now fall through to MOMENTUM_CONTINUATION, which is
+    # the honest label for them.
+    prime_momentum_ok = (prime_score >= prime_min_score
+                         and trend_maturity not in LATE_MATURITY)
+    # PRIME is the highest-conviction label, so it tolerates the least missing
+    # evidence: max_unknown-1 (default 1 of 6 checks).
+    prime_technical_ok, prime_unknown = _tech([
+        _chk(rsi_d,        T["prime_rsi_d_min"], T["prime_rsi_d_max"]),
+        _chk(rsi_w,        T["prime_rsi_w_min"], T["prime_rsi_w_max"]),
+        _chk(adx,          T["prime_adx_min"]),
+        _chk(vol_ratio,    T["prime_vol_min"]),
+        _chk(delivery_pct, T["prime_del_min"]),
+        _chk(None if dist_sma50 is None else abs(dist_sma50), None, T["prime_sma50_max"]),
+    ], max_unknown=max(0, max_unknown - 1))
     if prime_momentum_ok and prime_technical_ok:
         return True, "PRIME_SETUP", "prime_all_aligned", {}
 
@@ -745,21 +889,41 @@ def classify_entry_signal(msl_row: dict, open_map: dict,
 
     # BREAKOUT_SETUP — with trend_maturity guard + prebreak thresholds
     if trend_maturity not in LATE_MATURITY:
-        prebreak_tech_ok = (
-            (rsi_d == 0 or T["prebreak_rsi_d_min"] <= rsi_d)
-            and (rsi_w == 0 or rsi_w >= T["prebreak_rsi_w_min"])
-            and (adx == 0 or T["prebreak_adx_min"] <= adx <= T["prebreak_adx_max"])
-            and (vol_ratio == 0 or vol_ratio <= T["prebreak_vol_max"])
-            and (consol_range == 0 or consol_range <= T["prebreak_consol_max"])
-        )
+        prebreak_tech_ok, _ = _tech([
+            _chk(rsi_d,        T["prebreak_rsi_d_min"]),
+            _chk(rsi_w,        T["prebreak_rsi_w_min"]),
+            _chk(adx,          T["prebreak_adx_min"], T["prebreak_adx_max"]),
+            _chk(vol_ratio,    None, T["prebreak_vol_max"]),
+            _chk(consol_range, None, T["prebreak_consol_max"]),
+        ], max_unknown=max_unknown)
+        # ── Breakout thresholds, recalibrated 2026-07 ────────────────────────
+        # These were hardcoded at 70 / 60 / 75. Measured against the real
+        # distribution on 2026-07-24 (all 75 master_shortlist rows):
+        #     <20: 32 | 20-40: 37 | 40-60: 4 | 60-70: 2 | >=70: 0   max = 68
+        # No stock has ever reached 70, so the primary branch could only fire
+        # via bb_squeeze (true for 7/75), and the >=60 branch admitted 2 rows.
+        # compute_breakout_readiness has a theoretical max of 105, but its two
+        # largest components — tight consolidation (22 pts) and BB squeeze
+        # (23 pts) — are by construction near-zero for trending stocks, which
+        # is most of the shortlist. The scale is real; the thresholds were set
+        # against an imagined one.
+        #
+        # Deliberately NOT lowered far. A low breakout_readiness on a reversal
+        # or momentum candidate is CORRECT — those are not breakout setups, and
+        # dropping the gate to manufacture BREAKOUT_SETUP volume would just
+        # mislabel them. These values track the genuine top of the distribution.
+        br_high = cfg_float("signal_breakout_readiness_high", 58.0)   # was 70
+        br_mid  = cfg_float("signal_breakout_readiness_mid",  45.0)   # was 60
+        br_vol  = cfg_float("signal_breakout_readiness_vol",  62.0)   # was 75
+
         # For volume_trend NULL → also accept STABLE with strong readiness:
         volume_ok = (
             volume_trend == "EXPANDING"
-            or (volume_trend in ("STABLE", "UNKNOWN") and breakout_readiness >= 75)
+            or (volume_trend in ("STABLE", "UNKNOWN") and breakout_readiness >= br_vol)
         )
-        if (bb_squeeze or breakout_readiness >= 70) and volume_ok and prebreak_tech_ok:
+        if (bb_squeeze or breakout_readiness >= br_high) and volume_ok and prebreak_tech_ok:
             return True, "BREAKOUT_SETUP", "breakout_squeeze_volume", {}
-        if breakout_readiness >= 60 and momentum_state in ("HOT", "BUILDING") and prebreak_tech_ok:
+        if breakout_readiness >= br_mid and momentum_state in ("HOT", "BUILDING") and prebreak_tech_ok:
             return True, "BREAKOUT_SETUP", "breakout_readiness_high", {}
 
     # MOMENTUM_CONTINUATION — HOT/BUILDING stock above zone, trend intact
@@ -772,27 +936,27 @@ def classify_entry_signal(msl_row: dict, open_map: dict,
             and trend_maturity not in LATE_MATURITY
             and struct_edge == "YES"
             and entry_timing_type in ("OPTIMAL", "CHASING", "REENTRY")):
-        mom_cont_tech_ok = (
-            (rsi_d == 0 or 52 <= rsi_d <= T.get("prime_rsi_d_max", 82))
-            and (rsi_w == 0 or rsi_w >= 54)
-            and (adx == 0 or adx >= 20)
-            and (vol_ratio == 0 or vol_ratio >= 1.0)
-            and (delivery_pct == 0 or delivery_pct >= 40)
-        )
+        mom_cont_tech_ok, _ = _tech([
+            _chk(rsi_d,        52, T.get("prime_rsi_d_max", 82)),
+            _chk(rsi_w,        54),
+            _chk(adx,          20),
+            _chk(vol_ratio,    1.0),
+            _chk(delivery_pct, 40),
+        ], max_unknown=max_unknown)
         if mom_cont_tech_ok:
             return True, "MOMENTUM_CONTINUATION", "trend_continuation", {}
 
     # REENTRY_SETUP — with reentry thresholds
     reentry_flag = entry_timing_type == "REENTRY" or reentry_mode == "ELIGIBLE"
     if reentry_flag or below_zone:
-        reentry_tech_ok = (
-            (rsi_d == 0 or T["reentry_rsi_d_min"] <= rsi_d <= T["reentry_rsi_d_max"])
-            and (rsi_w == 0 or T["reentry_rsi_w_min"] <= rsi_w <= T["reentry_rsi_w_max"])
-            and (adx == 0 or adx >= T["reentry_adx_min"])
-            and (vol_ratio == 0 or vol_ratio >= T["reentry_vol_min"])
-            and (delivery_pct == 0 or delivery_pct >= T["reentry_del_min"])
-            and (ret_6m == 0 or ret_6m >= T["reentry_ret6m_min"])
-        )
+        reentry_tech_ok, _ = _tech([
+            _chk(rsi_d,        T["reentry_rsi_d_min"], T["reentry_rsi_d_max"]),
+            _chk(rsi_w,        T["reentry_rsi_w_min"], T["reentry_rsi_w_max"]),
+            _chk(adx,          T["reentry_adx_min"]),
+            _chk(vol_ratio,    T["reentry_vol_min"]),
+            _chk(delivery_pct, T["reentry_del_min"]),
+            _chk(ret_6m,       T["reentry_ret6m_min"]),
+        ], max_unknown=max_unknown)
         if reentry_tech_ok:
             reason = "pullback_to_zone" if below_zone else "reentry_pullback"
             return True, "REENTRY_SETUP", reason, {}
@@ -803,17 +967,41 @@ def classify_entry_signal(msl_row: dict, open_map: dict,
 
     # STAGED_ENTRY — approaching zone with building momentum
     if entry_timing_type == "APPROACHING" and momentum_state in ("HOT", "BUILDING", "STABLE"):
-        staged_tech_ok = (
-            (rsi_d == 0 or T["staged_rsi_d_min"] <= rsi_d <= T["staged_rsi_d_max"])
-            and (rsi_w == 0 or rsi_w >= T["staged_rsi_w_min"])
-            and (adx == 0 or adx >= T["staged_adx_min"])
-            and (vol_ratio == 0 or vol_ratio >= T["staged_vol_min"])
-            and (delivery_pct == 0 or delivery_pct >= T["staged_del_min"])
-        )
+        staged_tech_ok, _ = _tech([
+            _chk(rsi_d,        T["staged_rsi_d_min"], T["staged_rsi_d_max"]),
+            _chk(rsi_w,        T["staged_rsi_w_min"]),
+            _chk(adx,          T["staged_adx_min"]),
+            _chk(vol_ratio,    T["staged_vol_min"]),
+            _chk(delivery_pct, T["staged_del_min"]),
+        ], max_unknown=max_unknown)
         if staged_tech_ok:
             return True, "STAGED_ENTRY", "approaching_zone_building", {}
 
-    # BUY_CANDIDATE — standard in/near zone entry (no additional thresholds beyond gates 3-4)
+    # ── BUY_CANDIDATE — the fall-through label ────────────────────────────────
+    # Applies no thresholds of its own beyond gates 3-4, which makes it the
+    # weakest signal type AND, before this guard, the one most exposed to the
+    # null-as-pass defect: a stock whose indicators were entirely missing sailed
+    # past every typed branch (each needing real values) and landed here as a
+    # tradeable BUY. It is also by far the most common label in production —
+    # all 11 entry signals on 2026-07-24 were BUY_CANDIDATE/in_zone.
+    #
+    # Require a minimum of real evidence. A stock we know almost nothing about
+    # belongs on the watchlist, not in the buy list.
+    core = [rsi_d, rsi_w, adx, vol_ratio, delivery_pct]
+    known = sum(1 for v in core if v is not None)
+    min_known = cfg_int("signal_buy_candidate_min_known", 3)
+    if known < min_known:
+        near_miss = {
+            "blocked_by":  "insufficient_indicator_data",
+            "would_be":    "BUY_CANDIDATE",
+            "known":       known,
+            "required":    min_known,
+            "missing":     [n for n, v in zip(
+                ("rsi_daily", "rsi_weekly", "adx", "vol_ratio", "delivery_pct"), core)
+                if v is None],
+        }
+        return False, None, f"insufficient_data_{known}of{len(core)}", near_miss
+
     return True, "BUY_CANDIDATE", "in_zone", near_miss
 
 
@@ -921,8 +1109,57 @@ def generate(run_date: date | None = None) -> list:
     above_200dma_ctx = regime.get("above_200dma_pct")
 
     sb = get_supabase()
-    sectors    = sb.table("sector_strength").select("sector,rank").eq("date", str(run_date)).execute().data
+
+    # ── Sector ranks ─────────────────────────────────────────────────────────
+    # This query had no fallback and no assertion. When sector_strength went
+    # stale (it was frozen from 2026-07-02 to 2026-07-24 because the pipeline
+    # computed it before compute_indicators had run), this returned [] and
+    # sector_rank became {}. Every lookup then defaulted to 99, so run_ctl
+    # (max_sector_rank 4), run_sbs (7) and run_tpo all returned empty sets —
+    # in_rule_engine was False for 38/38 signals and sector_rank_at_entry was
+    # NULL for all of them. Nothing failed; the engines just quietly stopped
+    # contributing. Now: fall back to the most recent single date, and refuse
+    # to run on ranks too old to be meaningful.
+    sectors = (sb.table("sector_strength")
+                 .select("sector,rank")
+                 .eq("date", str(run_date))
+                 .execute().data)
+    sector_rank_date = str(run_date)
+
+    if not sectors:
+        latest = (sb.table("sector_strength").select("date")
+                    .order("date", desc=True).limit(1).execute().data)
+        if latest:
+            sector_rank_date = latest[0]["date"]
+            sectors = (sb.table("sector_strength")
+                         .select("sector,rank")
+                         .eq("date", sector_rank_date)   # single date, never a mixed grab
+                         .execute().data)
+            logger.warning(
+                f"  sector_strength missing for {run_date} — falling back to {sector_rank_date}"
+            )
+
     sector_rank = {s["sector"]: s["rank"] for s in sectors if s.get("rank")}
+
+    max_stale = cfg_int("sector_rank_max_stale_days", 5)
+    stale_days = (run_date - date.fromisoformat(sector_rank_date)).days
+    if not sector_rank:
+        raise RuntimeError(
+            "sector_strength is empty — every engine gates on sector_rank, so "
+            "signals generated now would silently exclude CTL/SBS/TPO and "
+            "misrank everything else. Run step 11_sector_strength first."
+        )
+    if stale_days > max_stale:
+        raise RuntimeError(
+            f"sector_strength is {stale_days} days stale (latest={sector_rank_date}, "
+            f"run_date={run_date}, max={max_stale}). Sector leadership rotates far "
+            f"faster than that — signals would be built on dead ranks. "
+            f"Run step 11_sector_strength, or raise sector_rank_max_stale_days."
+        )
+    logger.info(
+        f"  Sector ranks: {len(sector_rank)} sectors from {sector_rank_date}"
+        + (f" ({stale_days}d stale)" if stale_days else " (current)")
+    )
 
     # ── Event map: pre-results / corporate action flag ────────────────────
     # Built here — after load_today_data() so msl list is available,
@@ -947,17 +1184,10 @@ def generate(run_date: date | None = None) -> list:
     except Exception as e:
         logger.warning(f"  Event map load failed (non-fatal): {e}")
 
-    cfg_ctl = strat_cfg.get("CTL", {})
-    cfg_sbs = strat_cfg.get("SBS", {})
-    cfg_tpo = strat_cfg.get("TPO", {})
-    cfg_eap = strat_cfg.get("EAP", {})
-    for k in ("CTL", "SBS", "TPO", "EAP"):
-        v = strat_cfg.get(k)
-        if isinstance(v, str):
-            try:
-                strat_cfg[k] = json.loads(v)
-            except Exception:
-                strat_cfg[k] = {}
+    # config.get_strategy_config normalises params to plain dicts, so the
+    # local str-only json.loads pass that used to sit here (and ran AFTER the
+    # first four assignments, making them dead) is gone. That shim handled only
+    # the string form and let migration 004's array form through untouched.
     cfg_ctl = strat_cfg.get("CTL", {})
     cfg_sbs = strat_cfg.get("SBS", {})
     cfg_tpo = strat_cfg.get("TPO", {})
@@ -1027,20 +1257,20 @@ def generate(run_date: date | None = None) -> list:
         # AFTER:
         if is_entry:
             # Signal-type specific min_rr check — AFTER type is known, BEFORE committing.
-            # Computes implied_rr directly (not from near_miss_data which is empty for passing signals).
+            # Uses the SAME persisted levels as Gate 4C. This block previously
+            # rebuilt stop/target from the flat 3% buffer, so it applied a
+            # different (much harsher) R:R than the gate that had just passed
+            # the stock — a second instance of the model-divergence bug.
             if signal_type_candidate in ENTRY_SIGNAL_TYPES:
                 sig_min_rr = T.get(f"min_rr_{signal_type_candidate}")
                 if sig_min_rr:
-                    ep_  = msl_row.get("entry_zone_low")
-                    cp_  = msl_row.get("current_price")
-                    er_  = float(msl_row.get("expected_r") or 0)
-                    if ep_ and cp_ and er_ > 0:
-                        stop_   = float(ep_) * (1 - T["stop_buffer_pct"])
-                        risk_   = float(ep_) - stop_
-                        target_ = float(ep_) + risk_ * er_
-                        cp_f_   = float(cp_)
-                        if cp_f_ > stop_ and (cp_f_ - stop_) > 0:
-                            impl_rr = (target_ - cp_f_) / (cp_f_ - stop_)
+                    stop_   = msl_row.get("planned_stop")
+                    target_ = msl_row.get("planned_target")
+                    cp_     = msl_row.get("current_price")
+                    if stop_ and target_ and cp_:
+                        stop_f, target_f, cp_f_ = float(stop_), float(target_), float(cp_)
+                        if cp_f_ > stop_f:
+                            impl_rr = (target_f - cp_f_) / (cp_f_ - stop_f)
                             if impl_rr < sig_min_rr:
                                 is_entry = False
                                 near_miss_data = {
@@ -1160,6 +1390,22 @@ def generate(run_date: date | None = None) -> list:
             "ret_3m":          stock_map.get(sym, {}).get("ret_3m"),
             "above_sma50":     stock_map.get(sym, {}).get("above_sma50"),
             "breakout_setup":  stock_map.get(sym, {}).get("breakout_setup"),
+            # ── Trade plan (migration 002) ────────────────────────────────
+            # Carried onto the signal so signal_log is a self-contained decision
+            # record. Before this, signal_log had no price columns at all, so
+            # final_snapshot's `sl.get("entry_zone_low")` always fell through to
+            # master_shortlist — every signal_output_daily row on 2026-07-24 had
+            # entry_zone_source='master_shortlist'. It also gives the position
+            # lifecycle manager the exact stop the signal was validated against.
+            "current_price":        msl_row.get("current_price"),
+            "entry_zone_low":       msl_row.get("entry_zone_low"),
+            "entry_zone_high":      msl_row.get("entry_zone_high"),
+            "planned_entry":        msl_row.get("planned_entry"),
+            "planned_stop":         msl_row.get("planned_stop"),
+            "planned_target":       msl_row.get("planned_target"),
+            "planned_risk_pct":     msl_row.get("planned_risk_pct"),
+            "planned_stop_source":  msl_row.get("planned_stop_source"),
+            "implied_rr":           _implied_rr(msl_row),
             # MSL fields
             "days_in_list":         msl_row.get("days_in_list"),
             "validity_score":       msl_row.get("validity_score"),
