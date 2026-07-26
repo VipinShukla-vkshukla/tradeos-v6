@@ -14,9 +14,30 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import get_supabase, get_config, get_config_int, today_ist, check_kill_switch, logger
+
+# IMPORT FIX 2026-07. This module previously failed at import time:
+#   from config import get_config, get_config_int, check_kill_switch
+# None of those three names exist in config.py — the real ones are cfg,
+# cfg_int and is_kill_switch_active. It also imported `kite.kite_client`,
+# which did not exist in the repo at all. So execution_engine could never be
+# loaded, and telegram_bot's `from control.execution_engine import place_order`
+# (control/telegram_bot.py:166) raised on every approval attempt.
+from config import get_supabase, cfg_int, today_ist, is_kill_switch_active, logger
 from control.risk_manager import check_portfolio_risk, calculate_position_size
 from kite.kite_client import get_kite
+
+
+def check_kill_switch():
+    """Raise if the master kill switch is engaged. Order placement must abort,
+    not merely log — this is the last gate before real money moves."""
+    if is_kill_switch_active():
+        raise RuntimeError("KILL SWITCH ACTIVE — order placement refused")
+
+
+def get_config_int(key: str, default: int = 0) -> int:
+    """Back-compat alias for cfg_int, kept so the call sites below read the
+    same as they always have."""
+    return cfg_int(key, default)
 
 
 def place_order(signal: dict, approved_by: str = "TELEGRAM") -> dict:

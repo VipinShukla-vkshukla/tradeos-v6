@@ -1,0 +1,115 @@
+name: TradeOS v6 — Intraday Position Monitor
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THIS WORKFLOW DID NOT EXIST.
+#
+# Four files referenced it by name as though it did:
+#   control/sl_monitor.py               "Wire: pipeline_intraday.yml — every 30 min"
+#   control/position_target_monitor.py  "Runs every 30 min alongside sl_monitor"
+#   ingestion/position_event_monitor.py "Wire in pipeline_morning.yml"
+#   .github/workflows/pipeline_morning.yml
+#       "sl_monitor.py runs separately every 30 min via pipeline_intraday.yml"
+#
+# Nothing scheduled any of them. Combined with sl_monitor importing a
+# kite.kite_client module that was never in the repo, the practical result was
+# that no stop-loss, target or trailing-stop check has ever executed. A
+# position could breach its stop by any amount and the first notice would come
+# from the evening pipeline, after the close.
+#
+# WHAT RUNS HERE
+#   control/position_lifecycle.py --manage-only
+#     Live LTP for every ACTIVE position, then the exit policy: stop breach,
+#     hard target, partial booking at 1.5R, breakeven shift, R-based trailing,
+#     and the time stop. Records state and alerts; never places an order.
+#   control/telegram_position_journal.py
+#     Drains Telegram button/reply actions so a manual fill recorded on the
+#     phone lands in open_positions within the next cycle.
+#
+# TRIGGERING
+#   Cron in GitHub Actions is best-effort and was observed running 4-5 hours
+#   late, which is useless for intraday stop monitoring. Driven from
+#   cron-job.org via repository_dispatch instead, same as the other pipelines.
+#
+#   Add ONE cron-job.org job:
+#     URL     POST https://api.github.com/repos/<owner>/<repo>/dispatches
+#     Headers Accept: application/vnd.github+json
+#             Authorization: Bearer <PAT with repo scope>
+#     Body    {"event_type":"intraday_monitor_dispatch"}
+#     Sched   every 30 min, 09:30-15:30 IST, Mon-Fri
+#
+#   The job self-guards: position_lifecycle exits immediately outside
+#   09:15-15:30 IST, so an out-of-hours trigger costs a few seconds.
+#
+# KITE TOKEN
+#   Zerodha access tokens expire ~07:30 IST daily and cannot be refreshed
+#   non-interactively. Without a valid token this workflow falls back to the
+#   latest EOD close, which still drives the time stop and records state but
+#   cannot detect an intraday stop breach. Refresh with:
+#       python -m kite.token_manager --login-url
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [intraday_monitor_dispatch]
+
+concurrency:
+  # Two overlapping runs would both read open_positions, both compute a trail,
+  # and race on the write. Never run this workflow concurrently.
+  group: tradeos-intraday
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      TZ: Asia/Kolkata
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Manage open positions (stops, targets, partials, time stop)
+        working-directory: backend
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          KITE_API_KEY:         ${{ secrets.KITE_API_KEY }}
+          KITE_API_SECRET:      ${{ secrets.KITE_API_SECRET }}
+          TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
+          TOTAL_CAPITAL:        ${{ secrets.TOTAL_CAPITAL }}
+        # --require-live: refuse to act on stale prices. Without a valid Kite
+        # session the EOD fallback would read the PREVIOUS session's closes
+        # (bhavcopy is not written until ~18:00 IST), so an 11:00 run would
+        # evaluate stops against yesterday and re-fire the same alerts every
+        # 30 minutes. Skipping is the correct degradation intraday.
+        run: python -m control.position_lifecycle --manage-only --require-live
+
+      - name: Drain Telegram position actions
+        if: always()
+        working-directory: backend
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m control.telegram_position_journal
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: intraday-logs-${{ github.run_id }}
+          path: backend/logs/
+          retention-days: 3

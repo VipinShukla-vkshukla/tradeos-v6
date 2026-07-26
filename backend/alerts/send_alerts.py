@@ -2328,9 +2328,13 @@ def send_signal_with_keyboard(signal: dict) -> bool:
     Telegram-specific — only call when channel includes 'telegram'.
     """
     try:
-        from brain.position_manager import build_signal_keyboard, _tg_api
+        # Was brain.position_manager, which was deleted — it wrote columns that
+        # did not exist, used status='OPEN' while every reader filters 'ACTIVE',
+        # and its buttons had no receiver. control.telegram_position_journal is
+        # the working replacement: getUpdates polling, no webhook required.
+        from control.telegram_position_journal import build_signal_keyboard, _tg_api
     except ImportError:
-        logger.debug("position_manager not available — skipping keyboard send")
+        logger.debug("telegram_position_journal not available — skipping keyboard send")
         return False
 
     try:
