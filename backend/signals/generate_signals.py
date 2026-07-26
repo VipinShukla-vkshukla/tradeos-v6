@@ -1474,12 +1474,54 @@ def generate(run_date: date | None = None) -> list:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def save_signals(signals):
+    """
+    Write this run's signals and REMOVE orphans for the same date.
+
+    The upsert alone is not enough. It merges on (date, symbol) but leaves
+    behind any row whose symbol was in a PREVIOUS run's shortlist and is not in
+    this one. Those orphans are indistinguishable from live signals to
+    everything downstream: final_snapshot copies all rows for the date into
+    signal_output_daily, ai_decision_engine tiers them, and send_alerts can
+    surface a stale BUY_CANDIDATE the current run has already rejected.
+
+    Observed on a same-day re-run of 2026-07-24: signal_log held 59 rows where
+    the run had produced 43 — 16 orphans, 9 of them BUY_CANDIDATE, pointing at
+    symbols the fresh shortlist no longer contained.
+
+    Mirrors the stale-symbol cleanup screen_stocks already performs on
+    master_shortlist in `full` mode.
+    """
     if DRY_RUN:
         logger.info(f"[DRY RUN] Would write {len(signals)} signals")
         return
+    if not signals:
+        logger.warning("No signals to write — leaving signal_log untouched")
+        return
+
     sb = get_supabase()
-    if signals:
-        sb.table("signal_log").upsert(signals, on_conflict="date,symbol").execute()
+    run_date = signals[0]["date"]
+    sb.table("signal_log").upsert(signals, on_conflict="date,symbol").execute()
+
+    current = {s["symbol"] for s in signals}
+    try:
+        existing = (sb.table("signal_log").select("symbol")
+                      .eq("date", run_date).execute().data) or []
+        orphans = sorted({r["symbol"] for r in existing} - current)
+        if orphans:
+            for i in range(0, len(orphans), 100):
+                (sb.table("signal_log").delete()
+                   .eq("date", run_date)
+                   .in_("symbol", orphans[i:i + 100]).execute())
+            logger.info(
+                f"  Removed {len(orphans)} stale signal(s) for {run_date} "
+                f"(symbols no longer in the shortlist): "
+                f"{', '.join(orphans[:8])}{' …' if len(orphans) > 8 else ''}"
+            )
+    except Exception as e:
+        # Never fail the run over cleanup — a stale row is a reporting problem,
+        # a lost run is an operational one.
+        logger.warning(f"  Stale signal cleanup failed (non-fatal): {e}")
+
     logger.info(f"✓ {len(signals)} signals written to signal_log")
 
 

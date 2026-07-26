@@ -528,6 +528,73 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
                                   detail, trade_date):
                     closed += 1
 
+    # ── Backfill the trade plan on pre-existing positions ────────────────────
+    # A position that already existed in open_positions (entered manually, or
+    # created before migration 003) never passes through
+    # open_position_from_holding, so planned_stop / planned_target stay NULL.
+    # evaluate_exit then falls back to a generic 5%-of-entry risk assumption:
+    # the position is nominally managed but every R multiple, the partial-book
+    # trigger and the trail are computed off a number nobody chose.
+    # Observed live: both open positions had sl/tgt/R/signal_id all NULL after
+    # a successful reconcile.
+    for sym, pos in db_map.items():
+        if pos.get("planned_stop"):
+            continue
+        h = hold_map.get(sym)
+        entry = float(pos.get("entry_price") or (h or {}).get("average_price") or 0)
+        if not entry:
+            continue
+        sig = find_originating_signal(sb, sym, str(pos.get("entry_date") or trade_date))
+        stop, target = sig.get("planned_stop"), sig.get("planned_target")
+        if not stop:
+            try:
+                from analysis.risk_model import compute_trade_levels
+                sd = (sb.table("stock_data_daily")
+                        .select("atr_14,supertrend").eq("symbol", sym)
+                        .order("date", desc=True).limit(1).execute().data)
+                atr = float(sd[0].get("atr_14") or 0) if sd else 0
+                if atr > 0:
+                    lv = compute_trade_levels(
+                        entry_price=entry, atr_abs=atr, anchor_price=entry,
+                        structure_stop=float(sd[0].get("supertrend") or 0) or None,
+                        regime=sig.get("regime") or "NEUTRAL")
+                    if lv.valid:
+                        stop, target = lv.stop, lv.target
+            except Exception as e:
+                logger.warning(f"  {sym}: trade-plan backfill failed: {e}")
+        if not stop:
+            continue
+
+        patch = {
+            "planned_stop":   stop,
+            "planned_target": target,
+            "target_price":   pos.get("target_price") or target,
+            "sl_type":        pos.get("sl_type") or "ATR_BACKFILLED",
+            # Only seed active_sl if nothing is protecting the position yet —
+            # never loosen a stop the operator has already tightened.
+            "active_sl":      pos.get("active_sl") or stop,
+            "signal_id":      pos.get("signal_id")   or sig.get("id"),
+            "signal_date":    pos.get("signal_date") or sig.get("date"),
+            "entry_signal_type":  pos.get("entry_signal_type")  or sig.get("signal_type"),
+            "regime_at_entry":    pos.get("regime_at_entry")    or sig.get("regime"),
+            "high_water_mark":    pos.get("high_water_mark")    or entry,
+        }
+        if DRY_RUN:
+            logger.info(f"[DRY RUN] would backfill plan for {sym}: sl={stop} tgt={target}")
+        else:
+            try:
+                sb.table("open_positions").update(patch).eq("symbol", sym).execute()
+                logger.success(
+                    f"  PLAN BACKFILLED {sym:<12} entry={entry:.2f} "
+                    f"sl={stop} tgt={target} "
+                    f"signal={'#' + str(sig.get('id')) if sig.get('id') else 'none'}"
+                )
+                _log_reconcile(sb, trade_date, sym, "PLAN_BACKFILL",
+                               db_price=entry,
+                               detail=f"stop={stop} target={target}")
+            except Exception as e:
+                logger.warning(f"  {sym}: plan backfill write failed: {e}")
+
     # ── Quantity drift ───────────────────────────────────────────────────────
     for sym, pos in db_map.items():
         h = hold_map.get(sym)
