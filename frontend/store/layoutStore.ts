@@ -5,10 +5,23 @@ import { CORE_TABS, type TabConfig } from '@/types/registry';
 // Re-export TabConfig as Tab for backward compat with TabBar imports
 export type Tab = TabConfig;
 
+/**
+ * Which strategy the console is showing.
+ *
+ * Swing and intraday run on the same Kite/yfinance data and the same Supabase,
+ * but answer different questions — "what should I hold for 1-3 weeks" versus
+ * "what is happening right now". Mixing them into one tab strip meant the
+ * intraday panels sat unread behind swing tabs during the session, which is
+ * exactly when they matter. A top-level switch keeps each view whole.
+ */
+export type StrategyMode = 'swing' | 'intraday';
+
 interface LayoutState {
   tabs: TabConfig[];
   activeTabId: string;
   chartBuilderOpen: boolean;
+  strategyMode: StrategyMode;
+  setStrategyMode: (m: StrategyMode) => void;
 
   setActiveTab: (id: string) => void;
   addTab: (tab: TabConfig) => void;
@@ -27,6 +40,9 @@ export const useLayoutStore = create<LayoutState>()(
       tabs: CORE_TABS,
       activeTabId: 'performance',
       chartBuilderOpen: false,
+      strategyMode: 'swing',
+
+      setStrategyMode: (m) => set({ strategyMode: m }),
 
       setActiveTab: (id) => set({ activeTabId: id }),
 
@@ -101,7 +117,8 @@ export const useLayoutStore = create<LayoutState>()(
             ? (p.activeTabId ?? current.activeTabId)
             : (tabs[0]?.id ?? 'performance');
 
-        return { ...current, ...p, tabs, activeTabId };
+        return { ...current, ...p, tabs, activeTabId,
+                 strategyMode: p.strategyMode ?? current.strategyMode ?? 'swing' };
       },
     }
   )

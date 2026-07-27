@@ -23,6 +23,8 @@ import type { RegimeState } from '@/types/database';
 import { PerformanceTab } from '@/components/tabs/PerformanceTab';
 import { PositionsTab } from '@/components/tabs/PositionsTab';
 import { AIIntelTab } from '@/components/tabs/AIIntelTab';
+import { IntradayTab } from '@/components/tabs/IntradayTab';
+import { StrategyModeSwitch } from '@/components/core/StrategyModeSwitch';
 import { BrainEngineTab } from '@/components/tabs/BrainEngineTab';
 import { DataManagementTab } from '@/components/tabs/DataManagementTab';
 
@@ -35,6 +37,27 @@ export default function Dashboard() {
   const [pipelineLastRun, setPipelineLastRun] = useState<string>('Unknown');
 
   const { activeTabId, tabs, chartBuilderOpen, setChartBuilderOpen } = useLayoutStore();
+  const strategyMode = useLayoutStore((s) => s.strategyMode);
+
+  // Drives the live dot on the Intraday switch. Read here rather than inside
+  // the switch so the indicator is truthful even while sitting in swing mode —
+  // knowing the monitor died is most useful when you are not looking at it.
+  const [intradayLive, setIntradayLive] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const { data } = await queries.getIntradayHeartbeat();
+        const ts = data?.[0]?.ts;
+        if (!cancelled) {
+          setIntradayLive(!!ts && Date.now() - new Date(ts).getTime() < 20 * 60_000);
+        }
+      } catch { if (!cancelled) setIntradayLive(false); }
+    };
+    check();
+    const t = setInterval(check, 60_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, []);
   const { setViews } = useViewStore();
 
   // ── Track which custom tabs have been mounted at least once ────────────────
@@ -149,18 +172,29 @@ export default function Dashboard() {
           notificationCount={0}
         />
 
-        {/* Tab bar */}
+        {/* Mode switch + tab bar.
+            The swing tab strip is hidden in intraday mode rather than disabled:
+            intraday is a single coherent view, and leaving five inert swing tabs
+            on screen would imply they still apply to what is being shown. */}
         <div className="flex items-stretch bg-header border-b border-border">
-          <div className="flex-1 min-w-0 overflow-hidden">
-            <TabBar />
+          <div className="flex items-center px-3 shrink-0">
+            <StrategyModeSwitch liveDot={intradayLive} />
           </div>
+          {strategyMode === 'swing' && (
+            <div className="flex-1 min-w-0 overflow-hidden">
+              <TabBar />
+            </div>
+          )}
         </div>
 
         <main className="flex-1 overflow-auto p-4 pb-20 md:pb-4">
           {supabaseWarning && <DevelopmentBanner message={supabaseWarning} />}
 
+          {/* ── Intraday mode: one view, no tabs ─────────────────────────── */}
+          {strategyMode === 'intraday' && <IntradayTab />}
+
           {/* ── Core tabs: normal switch (fast, direct Supabase queries) ─── */}
-          {!isCustomTabActive && renderCoreTab()}
+          {strategyMode === 'swing' && !isCustomTabActive && renderCoreTab()}
 
           {/* ── Custom tabs: keep-alive mount strategy ───────────────────────
             Once a custom tab is visited it stays in the DOM, hidden with
@@ -173,7 +207,7 @@ export default function Dashboard() {
             We use `display` style (not conditional rendering) so React
             doesn't unmount the component or fire cleanup effects.
           ─────────────────────────────────────────────────────────────── */}
-          {[...visitedCustomTabIds].map((tabId) => (
+          {strategyMode === 'swing' && [...visitedCustomTabIds].map((tabId) => (
             <div
               key={tabId}
               style={{

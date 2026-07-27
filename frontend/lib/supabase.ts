@@ -134,6 +134,51 @@ export const queries = {
       order: { column: 'entry_date', ascending: false },
     }),
 
+  // ── Intraday subsystem ───────────────────────────────────────────────────
+  // Reads the same three tables backend/intraday writes. Deliberately narrow:
+  // the subsystem stores decisions rather than observations (no ticks, no
+  // per-cycle evaluations), so these are the only rows that exist.
+
+  /** Alerts actually sent — one row per state change, newest first. */
+  getIntradayAlerts: (limit = 60) =>
+    queryTable<{
+      id: number; ts: string; symbol: string; kind: string; urgency: string | null;
+      headline: string; detail: string | null; ltp: number | null;
+      r_multiple: number | null; acknowledged: boolean;
+    }>('intraday_alerts', { order: { column: 'ts', ascending: false }, limit }),
+
+  /** Every attempted broker write, including the blocked and failed ones. */
+  getIntradayBrokerLog: (limit = 40) =>
+    queryTable<{
+      id: number; ts: string; symbol: string; channel: string; action: string;
+      side: string | null; ref_id: string | null; price: number | null;
+      quantity: number | null; detail: string | null;
+    }>('intraday_broker_log', { order: { column: 'ts', ascending: false }, limit }),
+
+  /**
+   * Daemon liveness.
+   *
+   * Without this, "no alerts today" is ambiguous — a daemon working correctly
+   * on a quiet session and one that died at 09:20 produce identical silence.
+   * The single row is overwritten, never appended.
+   */
+  getIntradayHeartbeat: () =>
+    queryTable<{ id: number; ts: string; summary: string | null; alerts_sent: number }>(
+      'intraday_heartbeat', { limit: 1 },
+    ),
+
+  /** The intraday_* gates from system_config, so the UI shows the live phase. */
+  getIntradayGates: async () => {
+    const { data } = await queryTable<{ key: string; value: string }>(
+      'system_config', { select: 'key,value', limit: 500 },
+    );
+    const g: Record<string, string> = {};
+    for (const r of data ?? []) {
+      if (r.key.startsWith('intraday_') || r.key.startsWith('gtt_')) g[r.key] = r.value;
+    }
+    return g;
+  },
+
   /**
    * The live exit policy, read from the same system_config rows the backend
    * reads through cfg_float().
