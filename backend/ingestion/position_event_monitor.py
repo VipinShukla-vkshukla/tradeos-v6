@@ -66,15 +66,26 @@ def fetch_upcoming_events(sb, symbols: list[str], today: date, lookahead_days: i
     today_str = today.isoformat()
 
     # Primary source: nifty_upcoming_events (auto-refreshed by ingest_nse_events)
+    #
+    # `sector` was in this list and does not exist on the table — the columns
+    # are symbol, company_name, purpose, details, event_date, days_to_event,
+    # source. PostgREST fails the WHOLE query for one unknown column, so this
+    # returned nothing for every position, every day: a per-position earnings
+    # warning that has never once fired.
     primary = sb.table("nifty_upcoming_events").select(
-        "symbol,purpose,event_date,sector"
+        "symbol,purpose,details,event_date,company_name"
     ).in_("symbol", symbols).gte("event_date", today_str).lte("event_date", cutoff).execute().data or []
 
-    # Secondary source: event_calendar (manual + AI entries)
-    secondary = sb.table("event_calendar").select(
-        "symbol,event_type,event_date,detail,is_active"
-    ).in_("symbol", symbols).eq("is_active", True) \
-     .gte("event_date", today_str).lte("event_date", cutoff).execute().data or []
+    # There is deliberately no secondary source.
+    #
+    # This used to query event_calendar for symbol/event_date/detail. That table
+    # is SECTOR-level, not symbol-level: its columns are event_name,
+    # affected_sectors, event_bias, start_date, end_date. It has no `symbol`
+    # column at all, so the lookup was not merely broken, it was categorically
+    # wrong — no row in it could ever have matched a position's symbol.
+    # Sector-level events reach signals through sector_event_bias on
+    # signal_output_daily, which is where they belong.
+    secondary: list[dict] = []
 
     # Merge and deduplicate by (symbol, event_date)
     seen = set()
@@ -88,7 +99,11 @@ def fetch_upcoming_events(sb, symbols: list[str], today: date, lookahead_days: i
                 "symbol":     e["symbol"],
                 "event_type": e.get("purpose", ""),
                 "event_date": e["event_date"],
-                "detail":     e.get("purpose", ""),
+                # `details` carries the full text ("To consider and approve the
+                # financial results for the period ended..."); purpose is the
+                # short label. Using purpose for both made the detail line a
+                # duplicate of the type.
+                "detail":     e.get("details") or e.get("purpose", ""),
                 "source":     "nifty_upcoming_events",
             })
 

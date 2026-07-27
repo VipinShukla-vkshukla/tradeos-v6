@@ -259,7 +259,11 @@ def build_market_context(sb, window_start, window_end_trade, window_end_calendar
                               "fundamental_quality,market_cap,st_cushion_pct,"
                               "bb_width_pct,bb_position_pct,dist_vwap_20d_pct,"
                               "ma_alignment_score,stoch_context,persistent_phase,"
-                              "reentry_mode,position_state,suggested,"
+                              # `suggested` dropped in migration 008 — a Sheet-era
+                              # column with no writer since ingest_sheets was
+                              # retired. One unknown column fails the entire
+                              # PostgREST query, which took step 18 down with it.
+                              "reentry_mode,position_state,"
                               "dist_sma50,ret_3m,ret_12m,low_52w,pct_change,"
                               "low_30d,consol_range")
                       .eq("date", last_td)

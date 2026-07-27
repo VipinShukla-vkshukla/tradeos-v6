@@ -191,25 +191,13 @@ def discover_engines(sb=None, config: dict = None) -> list[str]:
                         f"raw value was: {str(raw)[:200]!r}. Falling back to scanner_patterns, "
                         f"then to screen_stocks.py's local default if that also fails.")
 
-    # Fallback: scan historical scanner_patterns in signal_log
-    try:
-        rows = (sb.table("signal_log")
-                  .select("scanner_patterns")
-                  .not_.is_("scanner_patterns", "null")
-                  .limit(500)
-                  .execute().data)
-        engines = set()
-        pattern = re.compile(r'\b([A-Z]{2,6})\b')  # 2-6 uppercase letter codes
-        for row in rows:
-            val = row.get("scanner_patterns", "") or ""
-            engines.update(pattern.findall(val))
-        # Filter to plausible engine names (2-6 chars, all caps)
-        engines = {e for e in engines if 2 <= len(e) <= 6}
-        if engines:
-            logger.debug(f"  Discovered {len(engines)} engines from scanner_patterns: {sorted(engines)}")
-            return sorted(engines)
-    except Exception:
-        pass
+    # The scanner_patterns fallback that used to sit here is gone. The column
+    # was dropped in migration 008 — generate_signals hardcoded it to None and
+    # nothing ever wrote a pattern — so the query could only ever raise, be
+    # swallowed by its own except, and fall through to the step below. A
+    # fallback that cannot succeed is worse than no fallback: it reads like
+    # coverage while providing none, and hides how much weight the next one
+    # actually carries.
 
     # Fallback: import directly from screen_stocks (always in sync with actual engines)
     try:

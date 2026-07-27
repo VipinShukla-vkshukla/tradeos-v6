@@ -71,7 +71,7 @@ WHAT CHANGED FROM v1 → v2
 
 8. REGIME HISTORY ENRICHMENT
    v1 fetched only nifty_price + india_vix from regime_history.
-   v2 also fetches predicted_regime, nifty_5d_chg_pct, above_200dma_pct
+   v2 also fetches computed_regime, nifty_5d_chg_pct, above_200dma_pct
    from regime_history so AI sees the full market picture at entry,
    not just a regime label.
 
@@ -228,13 +228,18 @@ def load_msl_trajectory(sb, symbol: str,
 def load_regime_at_entry(sb, entry_date: str) -> dict:
     """
     Fetch rich regime context from regime_history at entry_date.
-    v2: pulls predicted_regime, nifty_5d_chg_pct, above_200dma_pct
+    v2: pulls computed_regime, nifty_5d_chg_pct, above_200dma_pct
     in addition to v1's regime/nifty_price/india_vix.
     """
     try:
         rows = (sb.table("regime_history")
+                  # predicted_regime is a stock_data_daily column and has never
+                  # existed on regime_history, whose ML-side equivalent is
+                  # computed_regime. One unknown column fails the whole query,
+                  # so this returned nothing and every post-trade analysis ran
+                  # without any regime context at all.
                   .select(
-                      "regime,predicted_regime,nifty_price,india_vix,"
+                      "regime,computed_regime,nifty_price,india_vix,"
                       "nifty_5d_chg_pct,above_200dma_pct"
                   )
                   .eq("date", entry_date)

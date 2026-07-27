@@ -271,7 +271,12 @@ def load_context(sb, trade_date: str) -> dict:
               "dist_entry_pct,convergence_pts,engines_count,"
               "fundamental_quality,market_cap,st_cushion_pct,"
               "bb_width_pct,bb_position_pct,ma_alignment_score,"
-              "stoch_context,persistent_phase,suggested,notes,"
+              # `suggested` was dropped in migration 008. It was a Google Sheet
+              # column, 100% NULL on every row since ingest_sheets was retired,
+              # so selecting it contributed nothing — but PostgREST rejects the
+              # WHOLE query for one unknown column, which took step 19 down
+              # entirely the first evening after the migration ran.
+              "stoch_context,persistent_phase,notes,"
               "days_in_list,rank_vel_3d,score_vel_5d,"
               "dist_sma50,ret_3m,ret_12m,low_52w,pct_change,"
               "low_30d,consol_range,zone_hot_adjusted"
@@ -573,9 +578,16 @@ def load_context(sb, trade_date: str) -> dict:
             pick_symbols = [p["symbol"] for p in picks[:5] if p.get("symbol")]
             outcomes = {}
             if pick_symbols:
+                # signal_log has NO outcome columns — it never has. The
+                # outcome_* family lives on signal_output_daily
+                # (outcome_entered, outcome_category, outcome_return_pct).
+                # Selecting them from signal_log failed the whole query, so
+                # this self-reflection block silently fed the model picks with
+                # no outcomes attached: the LLM was asked to learn from its
+                # past calls while being shown none of the results.
                 out_rows = (
-                    sb.table("signal_log")
-                      .select("symbol,outcome,outcome_pnl_pct")
+                    sb.table("signal_output_daily")
+                      .select("symbol,outcome_category,outcome_return_pct,outcome_entered")
                       .eq("date", row["date"])
                       .in_("symbol", pick_symbols)
                       .execute().data
@@ -590,8 +602,8 @@ def load_context(sb, trade_date: str) -> dict:
                         "symbol":   p.get("symbol"),
                         "tier":     p.get("tier"),
                         "action":   p.get("action"),
-                        "outcome":  outcomes.get(p.get("symbol"), {}).get("outcome"),
-                        "pnl_pct":  outcomes.get(p.get("symbol"), {}).get("outcome_pnl_pct"),
+                        "outcome":  outcomes.get(p.get("symbol"), {}).get("outcome_category"),
+                        "pnl_pct":  outcomes.get(p.get("symbol"), {}).get("outcome_return_pct"),
                     }
                     for p in picks[:5]
                 ],
