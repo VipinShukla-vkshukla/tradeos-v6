@@ -143,6 +143,8 @@ export interface Signal {
   position_state?: string;
   score?: number;
   score_adjusted?: number;
+  final_score?: number;              // post-AI ranking score on signal_output_daily
+  screener_score?: number;
   regime: string;
   regime_warning?: boolean;
   asm_flag?: boolean;
@@ -182,6 +184,25 @@ export interface Signal {
   industry?: string;
   industry_top5?: boolean;
   created_at: string;
+
+  // ── Trade plan (written by compute_msl → generate_signals → final_snapshot) ─
+  // These were the break in the chain: final_snapshot never copied them into
+  // signal_output_daily, so send_alerts had no levels to quote and every alert
+  // read as a static watchlist entry. They are the difference between "BHEL
+  // looks good" and "buy BHEL at 407, stop 384, target 452".
+  planned_stop?: number | null;
+  planned_target?: number | null;
+  planned_risk_pct?: number | null;
+  implied_rr?: number | null;
+  planned_stop_source?: string | null;   // why a plan is missing, when it is
+  entry_zone_low?: number | null;
+  entry_zone_high?: number | null;
+  current_price?: number | null;
+  dist_entry_pct?: number | null;        // how far price is from the zone
+  expected_r?: number | null;
+  ai_tier?: string | null;               // TIER_1 | TIER_2 | TIER_3
+  ai_max_chase_pct?: number | null;
+  sector_rank_at_entry?: number | null;
 }
 
 // ---------------------------------------------------------------------------

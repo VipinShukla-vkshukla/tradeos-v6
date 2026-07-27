@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { formatDate, formatPercent } from '@/lib/formatters';
 import { queries } from '@/lib/supabase';
+import { TradePlanTable } from '@/components/signals/TradePlanTable';
 import type { Signal, AIModelPerformance, Lesson } from '@/types/database';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -184,20 +185,25 @@ export function AIIntelTab() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [convFilter, setConvFilter] = useState<string | null>(null);
+  const [plans, setPlans] = useState<Signal[]>([]);
+  const [planDate, setPlanDate] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
       setLoading(true);
       try {
-        const [s, a, l] = await Promise.all([
+        const [s, a, l, p] = await Promise.all([
           queries.getSignals(undefined, 200),
           queries.getAIModelPerformance(),
           queries.getLessons(),
+          queries.getTradePlans(60),
         ]);
         if (s.error) throw s.error;
         setSignals(s.data ?? []);
         setAiPerf(a.data ?? []);
         setLessons(l.data ?? []);
+        setPlans(p.data ?? []);
+        setPlanDate(p.date);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed');
       } finally {
@@ -220,6 +226,20 @@ export function AIIntelTab() {
 
   return (
     <div className="space-y-4">
+      {/* Trade plans first — this is the only panel on the tab that answers
+          "what do I do today". Conviction distributions and provider stats
+          describe the run; they do not tell you whether anything is buyable. */}
+      <Panel title="Today's Trade Plans"
+        description="Executable levels from signal_output_daily — the same rows the Telegram alert reads"
+        dataSource="supabase" tableName="signal_output_daily" isLoading={loading}>
+        <DataGuard data={plans} isLoading={loading} error={errObj}
+          loadingContent={<SkeletonTable rows={5} cols={9} />}
+          emptyTitle="No trade plans yet"
+          emptyDescription="Plans appear after the pipeline runs final_snapshot.">
+          {(data) => <TradePlanTable rows={data} date={planDate} />}
+        </DataGuard>
+      </Panel>
+
       {/* KPIs */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {loading ? (

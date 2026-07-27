@@ -189,6 +189,35 @@ export const queries = {
       limit,
     }),
 
+  /**
+   * The ranked, tiered output for the latest pipeline run.
+   *
+   * signal_output_daily rather than signal_log: it is the FINAL artefact of the
+   * run — the only table carrying ai_tier, expected_r and dist_entry_pct — and
+   * it is the table alerts/send_alerts.py reads. Showing the dashboard anything
+   * else guarantees it can disagree with the Telegram message for the same
+   * symbol on the same day.
+   */
+  getTradePlans: async (limit = 40) => {
+    const latest = await queryTable<{ date: string }>('signal_output_daily', {
+      select: 'date', order: { column: 'date', ascending: false }, limit: 1,
+    });
+    const day = latest.data?.[0]?.date;
+    if (!day) return { data: [] as Signal[], date: null, error: latest.error };
+    const { data, error } = await queryTable<Signal>('signal_output_daily', {
+      select: 'date,symbol,company_name,sector,industry,strategy,signal_type,'
+            + 'ai_tier,ai_conviction,ai_conviction_reason,ai_suggested_action,'
+            + 'score,final_score,expected_r,entry_zone_low,entry_zone_high,'
+            + 'current_price,dist_entry_pct,planned_stop,planned_target,'
+            + 'planned_risk_pct,implied_rr,ai_max_chase_pct,regime,'
+            + 'sector_rank_at_entry,position_state,filter_reason',
+      filter: { date: day },
+      order: { column: 'final_score', ascending: false },
+      limit,
+    });
+    return { data: data ?? [], date: day, error };
+  },
+
   // AI provider stats.
   //
   // This used to query `ai_model_performance` (the comment here even claimed
