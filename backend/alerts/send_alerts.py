@@ -179,6 +179,51 @@ ENTRY_TYPES = {
     "MOMENTUM_CONTINUATION",
 }
 
+def _num(v):
+    """Float or None. Never coerces a missing value to 0 — a stop of 0.00 in an
+    alert reads as 'no risk' rather than 'unknown', which is the more dangerous
+    of the two misreadings."""
+    if v is None or v == "":
+        return None
+    try:
+        f = float(v)
+        return f if f > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def decision_line(row: dict, live_price: float | None,
+                  open_pos: list | None = None, regime: str = "NEUTRAL") -> str:
+    """
+    One line telling the reader what to DO at the current price.
+
+    The digest previously rendered score, conviction and an entry zone and left
+    the decision entirely to the reader — every alert looked identical whether
+    the setup was live or already dead. This evaluates the persisted plan
+    against the price and states the action, the size, and the reason.
+    """
+    try:
+        from analysis.trade_decision import decide
+        from config import TOTAL_CAPITAL
+        d = decide(row, live_price, total_capital=TOTAL_CAPITAL,
+                   open_positions=open_pos or [], regime=regime,
+                   max_chase_pct=row.get("ai_max_chase_pct"))
+        icon = {"BUY_NOW": "🟢", "CHASE_LIMIT": "🟡", "WAIT": "⏳",
+                "SKIP": "🔴", "NO_DATA": "⚪"}.get(d.action, "•")
+        out = f"  {icon} <b>{d.action.replace('_', ' ')}</b> — {d.reason}"
+        # Size only on actions you would actually execute. Printing "18 sh ≈
+        # ₹25,717" under a SKIP invites the reader to take the trade the line
+        # above just told them not to.
+        if d.qty and d.action in ("BUY_NOW", "CHASE_LIMIT"):
+            out += f"\n     <code>{d.qty} sh ≈ ₹{d.invested:,.0f} · risk ₹{d.risk_amount:,.0f}</code>"
+        if d.stale_price:
+            out += "\n     <i>(evaluated at last close — no live feed)</i>"
+        return out
+    except Exception as e:
+        logger.debug(f"decision_line failed for {row.get('symbol')}: {e}")
+        return ""
+
+
 def esc(text: str) -> str:
     """
     Escape HTML special characters in AI-generated free text.
@@ -1433,10 +1478,23 @@ def build_evening(data: dict, sb=None) -> str:
                 zl     = float(msl.get("entry_zone_low")  or 0)
                 zh     = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
                 er     = float(msl.get("expected_r")      or 2.0)
-                sl_p   = round(zl * (1 - STOP_BUFFER), 0) if zl else None
-                t1_p   = round(zl * (1 + STOP_BUFFER * er), 0) if zl else None
-                rr     = (round((t1_p - zl) / (zl - sl_p), 1)
-                          if t1_p and sl_p and zl and sl_p < zl else None)
+                # ── Use the PERSISTED trade plan, do not re-derive it ─────
+                # This used to be:
+                #     sl_p = zl * (1 - STOP_BUFFER)
+                #     t1_p = zl * (1 + STOP_BUFFER * er)
+                # a THIRD copy of the risk model — the same flat-percent
+                # version already removed from generate_signals, where it
+                # collapsed the target to roughly 40% of its intended distance.
+                # compute_msl anchors the plan at 1.5xATR / 3xATR and
+                # final_snapshot now carries it through, so the alert must SHOW
+                # that plan rather than invent a competing one. An alert whose
+                # stop disagrees with the stop the signal was validated against
+                # is worse than no alert at all.
+                sl_p   = _num(msl.get("planned_stop"))
+                t1_p   = _num(msl.get("planned_target"))
+                rr     = _num(msl.get("implied_rr"))
+                if rr is None and sl_p and t1_p and zl and sl_p < zl:
+                    rr = round((t1_p - zl) / (zl - sl_p), 2)
                 r_icon    = c.get("readiness_icon") or conviction_icon(conv)
                 r_score   = c.get("readiness_score")
                 r_label   = c.get("readiness_label", "")
@@ -1870,10 +1928,23 @@ def build_morning(data: dict, sb=None) -> str:
                 zl     = float(msl.get("entry_zone_low")  or 0)
                 zh     = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
                 er     = float(msl.get("expected_r")      or 2.0)
-                sl_p   = round(zl * (1 - STOP_BUFFER), 0) if zl else None
-                t1_p   = round(zl * (1 + STOP_BUFFER * er), 0) if zl else None
-                rr     = (round((t1_p - zl) / (zl - sl_p), 1)
-                          if t1_p and sl_p and zl and sl_p < zl else None)
+                # ── Use the PERSISTED trade plan, do not re-derive it ─────
+                # This used to be:
+                #     sl_p = zl * (1 - STOP_BUFFER)
+                #     t1_p = zl * (1 + STOP_BUFFER * er)
+                # a THIRD copy of the risk model — the same flat-percent
+                # version already removed from generate_signals, where it
+                # collapsed the target to roughly 40% of its intended distance.
+                # compute_msl anchors the plan at 1.5xATR / 3xATR and
+                # final_snapshot now carries it through, so the alert must SHOW
+                # that plan rather than invent a competing one. An alert whose
+                # stop disagrees with the stop the signal was validated against
+                # is worse than no alert at all.
+                sl_p   = _num(msl.get("planned_stop"))
+                t1_p   = _num(msl.get("planned_target"))
+                rr     = _num(msl.get("implied_rr"))
+                if rr is None and sl_p and t1_p and zl and sl_p < zl:
+                    rr = round((t1_p - zl) / (zl - sl_p), 2)
                 r_icon    = c.get("readiness_icon") or conviction_icon(conv)
                 r_score   = c.get("readiness_score")
                 score_str = f"[{r_score}/100]" if r_score else ""

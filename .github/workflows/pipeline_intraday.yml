@@ -25,6 +25,12 @@ name: TradeOS v6 — Intraday Position Monitor
 #     Drains Telegram button/reply actions so a manual fill recorded on the
 #     phone lands in open_positions within the next cycle.
 #
+# REPLACES THE AFTERNOON ALERT
+#   pipeline_afternoon.yml ran one conviction check at 13:00 against snapshot
+#   data. This workflow evaluates the same candidates against live prices every
+#   30 minutes, so the afternoon job was a strictly worse subset of it and has
+#   been deleted.
+#
 # TRIGGERING
 #   Cron in GitHub Actions is best-effort and was observed running 4-5 hours
 #   late, which is useless for intraday stop monitoring. Driven from
@@ -95,6 +101,24 @@ jobs:
         # evaluate stops against yesterday and re-fire the same alerts every
         # 30 minutes. Skipping is the correct degradation intraday.
         run: python -m control.position_lifecycle --manage-only --require-live
+
+      - name: Watch ranked candidates for entry-zone touches
+        # The monitor previously covered open positions ONLY. A TIER_1 that
+        # traded into its entry zone at 11:15 produced no alert — the morning
+        # brief was the only candidate-facing message of the day, describing a
+        # price ~18 hours old. Alerts fire on a CHANGE of decision, not on
+        # state, so 13 cycles a day do not become 13 identical messages.
+        if: always()
+        working-directory: backend
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          KITE_API_KEY:         ${{ secrets.KITE_API_KEY }}
+          KITE_API_SECRET:      ${{ secrets.KITE_API_SECRET }}
+          TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
+          TOTAL_CAPITAL:        ${{ secrets.TOTAL_CAPITAL }}
+        run: python -m control.candidate_monitor
 
       - name: Drain Telegram position actions
         if: always()

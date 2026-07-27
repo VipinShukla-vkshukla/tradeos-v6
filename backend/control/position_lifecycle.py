@@ -662,7 +662,17 @@ def manage_open_positions(sb, trade_date: str, require_live: bool = False) -> di
     The fallback is correct for the evening pipeline, where trade_date IS the
     session that just closed. It is never correct intraday.
     """
-    from kite.kite_client import fetch_ltp, is_available
+    # Kite market-data endpoints (ltp/quote/ohlc) require a PAID Kite Connect
+    # subscription that this account does not have — verified directly:
+    # profile/holdings/positions/margins all succeed, ltp/quote/ohlc return
+    # "Insufficient permission for that call."
+    #
+    # Using fetch_ltp alone therefore returned {} on every cycle, and with
+    # require_live=True the monitor skipped every single run — stop monitoring
+    # would have stayed silently dead. The shared helper falls back to
+    # yfinance (~15 min delayed) and reports which source it used, so a
+    # delayed price is never presented as real-time.
+    from analysis.trade_decision import fetch_live_prices
 
     policy = load_exit_policy()
     rows = (sb.table("open_positions").select("*")
@@ -671,7 +681,10 @@ def manage_open_positions(sb, trade_date: str, require_live: bool = False) -> di
         return {"status": "ok", "managed": 0, "actions": []}
 
     symbols = [r["symbol"] for r in rows if r.get("symbol")]
-    prices  = fetch_ltp(symbols) if is_available() else {}
+    prices, price_source = fetch_live_prices(symbols)
+    if prices:
+        logger.info(f"  Live prices for {len(prices)}/{len(symbols)} via {price_source}"
+                    + ("  ⚠️ ~15 min delayed" if price_source == "yfinance" else ""))
 
     if not prices and require_live:
         logger.warning(
