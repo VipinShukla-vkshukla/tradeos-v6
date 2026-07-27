@@ -28,22 +28,65 @@ env_file = BASE_DIR / ".env"
 # "Incorrect `api_key` or `access_token`", which reads like an expiry problem
 # and is not.
 #
-# Semantics are unchanged (flipping to override=True would break the
-# `DRY_RUN=True python …` idiom, since .env sets DRY_RUN=False). Instead the
-# divergence is reported, once, at import.
-_shadowed: list[str] = []
+# Blanket override=True would break the `DRY_RUN=True python …` idiom, since
+# .env sets DRY_RUN=False. So resolve the conflict by ASKING WHERE THE VARIABLE
+# CAME FROM, which on Windows is knowable: a persisted User/Machine variable
+# lives in the registry, while a per-invocation override set in the shell does
+# not. If the live value matches what is persisted, it is stale configuration
+# and .env — the file the user just edited — wins. If it differs, the user
+# typed it deliberately this session and it keeps winning.
+def _persisted_os_vars() -> dict:
+    """
+    User- and Machine-scope environment variables as PERSISTED, read straight
+    from the registry rather than from os.environ.
+
+    This is the only way to tell "stale variable someone set in the System
+    Properties dialog two months ago" apart from "value the user exported for
+    this one command". os.environ shows both identically.
+
+    Read-only: nothing here modifies the registry or system settings.
+    """
+    if os.name != "nt":
+        return {}
+    out = {}
+    try:
+        import winreg
+        for root, path in (
+            (winreg.HKEY_CURRENT_USER, r"Environment"),
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+        ):
+            try:
+                with winreg.OpenKey(root, path) as k:
+                    for i in range(winreg.QueryInfoKey(k)[1]):
+                        n, v, _ = winreg.EnumValue(k, i)
+                        out.setdefault(n, v)
+            except OSError:
+                continue
+    except Exception:
+        return {}
+    return out
+
+
+_shadowed: list[str] = []    # .env ignored — deliberate session override, left alone
+_unshadowed: list[str] = []  # .env restored over a stale persisted OS variable
 if env_file.exists():
     try:
         from dotenv import dotenv_values
         _file_vals = dotenv_values(env_file)
+        _persisted = _persisted_os_vars()
         for _k, _v in _file_vals.items():
-            if _v is None or _k not in os.environ:
+            if _v is None or _k not in os.environ or os.environ[_k] == _v:
                 continue
-            if os.environ[_k] != _v:
-                _shadowed.append(_k)
+            if _persisted.get(_k) == os.environ[_k]:
+                _unshadowed.append(_k)   # stale persisted var — .env wins
+            else:
+                _shadowed.append(_k)     # set for this run — environment wins
     except Exception:
-        pass
+        _file_vals = {}
     load_dotenv(env_file, override=False)
+    for _k in _unshadowed:
+        os.environ[_k] = _file_vals[_k]
 
 # ── Paths ────────────────────────────────────────────────────
 DATA      = BASE_DIR / "data"
@@ -67,7 +110,24 @@ logger.add(lambda msg: print(msg, end=""), level="INFO",
 # ── Core settings ─────────────────────────────────────────────
 IST          = pytz.timezone("Asia/Kolkata")
 DRY_RUN      = os.getenv("DRY_RUN", "False").lower() == "true"
-TOTAL_CAPITAL = float(os.getenv("TOTAL_CAPITAL") or "200000")
+# A MISSING value and a DELIBERATE value must not look the same. In GitHub
+# Actions `${{ secrets.TOTAL_CAPITAL }}` expands to an empty string when the
+# secret does not exist, which `or "200000"` silently turned into two lakh —
+# so every scheduled run sized positions for 10x the real account while the
+# local runs (which read .env) sized them correctly. Nothing in the output
+# distinguished the two. Position size is the single number that decides how
+# much money a bad signal costs, so it defaults LOW and says so loudly.
+_capital_raw = (os.getenv("TOTAL_CAPITAL") or "").strip()
+CAPITAL_IS_FALLBACK = not _capital_raw
+TOTAL_CAPITAL_FALLBACK = 20000.0
+try:
+    TOTAL_CAPITAL = float(_capital_raw) if _capital_raw else TOTAL_CAPITAL_FALLBACK
+    if TOTAL_CAPITAL <= 0:
+        raise ValueError("must be positive")
+except ValueError:
+    logger.error(f"TOTAL_CAPITAL={_capital_raw!r} is not a usable number — "
+                 f"falling back to ₹{TOTAL_CAPITAL_FALLBACK:,.0f}")
+    TOTAL_CAPITAL, CAPITAL_IS_FALLBACK = TOTAL_CAPITAL_FALLBACK, True
 
 # ── Supabase ─────────────────────────────────────────────────
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
@@ -269,17 +329,30 @@ logger.info(
     f"Today's date={today_ist()}"
 )
 
+if CAPITAL_IS_FALLBACK:
+    logger.warning(
+        f"⚠ TOTAL_CAPITAL is not set — every position size in this run is "
+        f"computed against the ₹{TOTAL_CAPITAL:,.0f} fallback, not your real "
+        f"account. In GitHub Actions this means the TOTAL_CAPITAL repo secret "
+        f"is missing (an absent secret expands to an empty string, not an error)."
+    )
+
+if _unshadowed:
+    logger.info(
+        f"  .env took precedence for {', '.join(sorted(_unshadowed))} over a "
+        f"stale persisted Windows variable of the same name. Remove it with: "
+        f"[Environment]::SetEnvironmentVariable('<NAME>',$null,'User')"
+    )
+
 if _shadowed:
     logger.warning(
-        f"⚠ {len(_shadowed)} value(s) in .env are being IGNORED because an "
-        f"environment variable of the same name already exists: "
-        f"{', '.join(sorted(_shadowed))}"
+        f"⚠ {len(_shadowed)} value(s) in .env are being IGNORED because the "
+        f"environment sets them for this run: {', '.join(sorted(_shadowed))}"
     )
     logger.warning(
-        "  The environment wins by design (GitHub Actions supplies secrets that "
-        "way). Locally this usually means a stale OS variable. On Windows check: "
-        "[Environment]::GetEnvironmentVariable('<NAME>','User') and remove it, "
-        "then open a NEW terminal."
+        "  These are NOT persisted OS variables, so they look deliberate "
+        "(`$env:X='…'` in this shell, or GitHub Actions secrets) and the "
+        "environment wins. Unset them if that was not intended."
     )
 
 def yf_fetch_with_cache(

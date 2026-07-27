@@ -208,6 +208,23 @@ def get_access_token() -> str | None:
         )
         return None
 
+    # No recorded issuer means the token predates that bookkeeping, so the
+    # identity check above proves nothing and the date check will happily call
+    # it valid. That is how a token from a retired app kept reporting valid=True
+    # while every single API call returned TokenException. When we cannot prove
+    # ownership from stored state, ask the broker once and cache the answer.
+    if not issuer and token:
+        if _probe_token(token):
+            _set_config(TOKEN_APIKEY_KEY, KITE_API_KEY)   # proven; skip next time
+        else:
+            logger.warning(
+                "  Stored Kite token is not accepted by the current app "
+                f"({KITE_API_KEY[:8]}…) — it was minted before issuer tracking "
+                "existed and belongs to a different Kite Connect app. "
+                "Re-authenticate: python -m kite.token_manager --login-url"
+            )
+            return None
+
     try:
         issued = datetime.fromisoformat(issued_s)
         if issued.tzinfo is None:
@@ -227,6 +244,37 @@ def get_access_token() -> str | None:
         return None
 
     return token
+
+
+def _probe_token(token: str) -> bool:
+    """
+    Does the broker actually accept this token for the CURRENT api_key?
+
+    /user/profile is the cheapest authenticated endpoint and, unlike /quote, it
+    needs no market-data subscription — so a False here means the session is
+    genuinely bad rather than the plan lacking an add-on.
+
+    Network failures return True: an unreachable broker is not evidence that a
+    token is invalid, and discarding a good session because the wifi dropped
+    would force a pointless manual re-login.
+    """
+    import urllib.request, urllib.error, json
+    req = urllib.request.Request(
+        "https://api.kite.trade/user/profile",
+        headers={"X-Kite-Version": "3",
+                 "Authorization": f"token {KITE_API_KEY}:{token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status == 200
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read().decode())
+        except Exception:
+            return e.code not in (400, 403)
+        return body.get("error_type") != "TokenException"
+    except Exception:
+        return True
 
 
 def is_token_valid() -> bool:

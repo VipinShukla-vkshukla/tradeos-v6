@@ -27,15 +27,50 @@
 -- ═══════════════════════════════════════════════════════════════════════════
 
 -- ── 1. Backup ──────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS public._backup_msl_sheet_era_20260727 AS
-SELECT date, symbol,
-       fv_low, fv_high, price_location, opp_type, pos_type, is_ipo,
-       suggested, notes, entry_ready, entry_action, entry_mode,
-       exec_eligibility, event_bias, event_sectors, upcoming_news
-  FROM public.master_shortlist;
+-- Built with dynamic SQL against information_schema rather than a hardcoded
+-- column list. A fixed SELECT fails outright the moment ONE of the columns is
+-- already gone — "ERROR: column fv_low does not exist" — which makes the whole
+-- migration un-runnable on a database that is partially migrated, and forces
+-- hand-editing exactly when you least want to be hand-editing schema DDL.
+-- Backing up whatever still exists is both safe and re-runnable.
+DO $$
+DECLARE
+  cols text;
+BEGIN
+  SELECT string_agg(quote_ident(column_name), ', ')
+    INTO cols
+    FROM information_schema.columns
+   WHERE table_schema = 'public'
+     AND table_name   = 'master_shortlist'
+     AND column_name IN ('date','symbol','fv_low','fv_high','opp_type','pos_type',
+                         'is_ipo','suggested','notes','entry_ready','entry_action',
+                         'entry_mode','exec_eligibility','event_bias','event_sectors',
+                         'upcoming_news');
 
-CREATE TABLE IF NOT EXISTS public._backup_msl_computed_20260727 AS
-SELECT * FROM public.msl_computed;
+  IF cols IS NULL THEN
+    RAISE NOTICE 'master_shortlist: no Sheet-era columns remain — backup skipped';
+  ELSIF to_regclass('public._backup_msl_sheet_era_20260727') IS NOT NULL THEN
+    RAISE NOTICE 'backup table already exists — skipping';
+  ELSE
+    EXECUTE format(
+      'CREATE TABLE public._backup_msl_sheet_era_20260727 AS SELECT %s FROM public.master_shortlist',
+      cols);
+    RAISE NOTICE 'backed up: %', cols;
+  END IF;
+END $$;
+
+-- msl_computed may already be renamed by a previous partial run.
+DO $$
+BEGIN
+  IF to_regclass('public.msl_computed') IS NOT NULL
+     AND to_regclass('public._backup_msl_computed_20260727') IS NULL THEN
+    CREATE TABLE public._backup_msl_computed_20260727 AS
+      SELECT * FROM public.msl_computed;
+    RAISE NOTICE 'msl_computed backed up';
+  ELSE
+    RAISE NOTICE 'msl_computed backup skipped (already backed up or table gone)';
+  END IF;
+END $$;
 
 COMMENT ON TABLE public._backup_msl_sheet_era_20260727 IS
   'Pre-drop snapshot for migration 008. Safe to delete once a few weeks of '
