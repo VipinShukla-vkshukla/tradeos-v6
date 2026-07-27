@@ -242,8 +242,60 @@ export async function GET() {
           fix: tokenValid ? undefined : 'python -m kite.token_manager --login-url' });
 
     // ═══ GROUP: CONFIG ══════════════════════════════════════════════════════
-    const { data: cfgRows } = await sb.from('system_config').select('key,value');
+    const { data: cfgRows } = await sb.from('system_config').select('key,value,updated_at');
     const C = Object.fromEntries((cfgRows ?? []).map((r) => [r.key, r.value]));
+
+    // Capital reconciliation — configured TOTAL_CAPITAL vs the actual account.
+    //
+    // Written by backend/control/capital_check.py, which runs inside
+    // position_lifecycle where a broker session already exists. Read from the
+    // snapshot rather than re-queried here so the dashboard and the pipeline
+    // never disagree about how much money there is.
+    //
+    // This is the sizing input for every new entry, and it had no check at all:
+    // TOTAL_CAPITAL said Rs 20,000 while the account held Rs 10,161, so entries
+    // were sized against Rs 10k of headroom that did not exist. Nothing fails
+    // until an order is rejected at the broker, mid-session, on a signal the
+    // system already told you to take.
+    try {
+      const snapRaw = C['capital_snapshot'];
+      const snapAt = (cfgRows ?? []).find((r) => r.key === 'capital_snapshot')?.updated_at;
+      if (snapRaw) {
+        const s = JSON.parse(snapRaw) as {
+          configured: number; broker_total: number | null; broker_cash: number | null;
+          broker_invested: number | null; gap: number | null; gap_pct: number | null;
+          severity: Sev | 'UNKNOWN'; message: string; is_fallback?: boolean;
+        };
+        const inr = (n: number | null | undefined) =>
+          n == null ? '—' : `₹${Math.round(n).toLocaleString('en-IN')}`;
+        const stale = snapAt ? dayDiff(String(snapAt).slice(0, 10), todayIST) > 1 : false;
+        add({
+          id: 'cap_reconcile', group: 'Capital', label: 'Sizing capital vs broker',
+          severity: stale ? 'WARN' : (s.severity === 'UNKNOWN' ? 'WARN' : s.severity),
+          value: s.broker_total == null
+            ? `configured ${inr(s.configured)}, broker unknown`
+            : `configured ${inr(s.configured)} vs broker ${inr(s.broker_total)}`
+              + (s.gap_pct != null ? ` (${s.gap_pct > 0 ? '+' : ''}${s.gap_pct.toFixed(0)}%)` : ''),
+          expected: 'within 10% of the account',
+          detail: stale
+            ? `Snapshot is from ${String(snapAt).slice(0, 10)} — run the position lifecycle to refresh it. ${s.message}`
+            : s.message + (s.broker_total != null
+                ? ` Cash ${inr(s.broker_cash)} + holdings ${inr(s.broker_invested)}.` : ''),
+          fix: (s.gap ?? 0) < 0
+            ? 'Set TOTAL_CAPITAL in backend/.env (and the GitHub secret) to the real figure, or fund the account.'
+            : undefined,
+        });
+      } else {
+        add({
+          id: 'cap_reconcile', group: 'Capital', label: 'Sizing capital vs broker',
+          severity: 'INFO', value: 'not yet checked', expected: 'within 10% of the account',
+          detail: 'Runs inside position_lifecycle, which needs a Kite session.',
+          fix: 'python -m control.capital_check',
+        });
+      }
+    } catch {
+      /* a malformed snapshot must not take the whole health page down */
+    }
 
     add({ id: 'cfg_kill', group: 'Configuration', label: 'Kill switch',
           severity: String(C['master_kill_switch']).toLowerCase() === 'true' ? 'BLOCK' : 'OK',

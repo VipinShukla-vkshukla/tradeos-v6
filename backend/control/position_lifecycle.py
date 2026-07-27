@@ -835,6 +835,16 @@ def main(reconcile: bool = True, manage: bool = True,
     if reconcile and cfg_bool("position_reconcile_enabled", True):
         result["reconcile"] = reconcile_with_broker(sb, trade_date)
 
+    # Capital is checked here because this is the one component that runs
+    # several times a day AND already holds a broker session. Sizing errors are
+    # silent until an order is rejected mid-session, so the comparison wants to
+    # be in front of you before the next entry, not after.
+    try:
+        from control.capital_check import log_capital_status
+        result["capital"] = log_capital_status(sb)
+    except Exception as e:
+        logger.debug(f"  capital check skipped: {e}")
+
     if manage:
         managed = manage_open_positions(sb, trade_date, require_live=require_live)
         result["manage"] = managed
