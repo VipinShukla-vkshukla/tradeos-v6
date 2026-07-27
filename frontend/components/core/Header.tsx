@@ -12,6 +12,7 @@ import {
   Cpu
 } from 'lucide-react';
 import type { RegimeState } from '@/types/database';
+import { SystemNav } from '@/components/core/SystemNav';
 import { Button } from '@/components/ui/button';
 import {
   Tooltip,
@@ -149,6 +150,9 @@ export function Header({
           <RegimeBadge regime={marketRegime} />
           <PipelineIndicator lastRun={pipelineLastRun} />
           <AIProviderBadge status={aiProviderStatus} />
+          {/* Preflight verdict + Control Room. Header rather than a tab so it
+              is visible regardless of persisted layout state — see SystemNav. */}
+          <SystemNav />
         </div>
       </div>
 

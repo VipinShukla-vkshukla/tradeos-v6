@@ -69,17 +69,39 @@ export const useLayoutStore = create<LayoutState>()(
     }),
     {
       name: 'tradeos-layout',
-      // Merge: always restore core tab names from CORE_TABS even if localStorage is stale
+      // Reconcile the persisted layout against CORE_TABS on every load.
+      //
+      // BUG FIX: this previously mapped over the PERSISTED list only. It
+      // restored canonical names for tabs it recognised, but a core tab added
+      // to CORE_TABS after a user's localStorage was written simply never
+      // appeared — no error, nothing to click, and clearing site data was the
+      // only cure. Anyone who had opened the console once could never see a
+      // newly shipped tab.
+      //
+      // Now: keep the user's order and their custom tabs, refresh the metadata
+      // of core tabs, and APPEND any core tab that is missing.
       merge: (persisted: unknown, current) => {
         const p = persisted as Partial<LayoutState>;
         const coreMap = new Map(CORE_TABS.map((t) => [t.id, t]));
-        const mergedTabs = (p.tabs ?? current.tabs).map((t: TabConfig) => {
+        const persistedTabs = p.tabs ?? current.tabs;
+
+        const reconciled = persistedTabs.map((t: TabConfig) => {
           const core = coreMap.get(t.id);
-          // For core tabs: always use the canonical name from CORE_TABS
-          if (core) return { ...t, name: core.name, icon: core.icon, isCore: true };
-          return t;
+          return core ? { ...t, name: core.name, icon: core.icon, isCore: true } : t;
         });
-        return { ...current, ...p, tabs: mergedTabs };
+
+        const seen = new Set(reconciled.map((t: TabConfig) => t.id));
+        const added = CORE_TABS.filter((t) => !seen.has(t.id));
+
+        // Guard against a persisted activeTabId pointing at a tab the user has
+        // since deleted, which would render an empty console.
+        const tabs = [...reconciled, ...added];
+        const activeTabId =
+          tabs.some((t) => t.id === (p.activeTabId ?? current.activeTabId))
+            ? (p.activeTabId ?? current.activeTabId)
+            : (tabs[0]?.id ?? 'performance');
+
+        return { ...current, ...p, tabs, activeTabId };
       },
     }
   )

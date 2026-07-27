@@ -6,6 +6,7 @@ import { TabBar, MobileTabBar } from '@/components/core/TabBar';
 import { ThemeEditor } from '@/components/core/ThemeEditor';
 import { DevelopmentBanner } from '@/components/core/DataSourceBadge';
 import { CommandPalette } from '@/components/core/CommandPalette';
+import { AlertRail } from '@/components/core/AlertRail';
 import { ViewWizard } from '@/components/views/ViewWizard';
 import { ChartBuilder } from '@/components/charts/ChartBuilder';
 import { CustomTabView } from '@/components/views/CustomTabView';
@@ -186,6 +187,9 @@ export default function Dashboard() {
 
         <MobileTabBar />
         <CommandPalette />
+        {/* Live position alerts, mounted globally so an EXIT_STOP does not depend
+            on which tab happens to be open. Complements Telegram/Discord. */}
+        <AlertRail />
         <ViewWizard />
         <ChartBuilder open={chartBuilderOpen} onClose={() => setChartBuilderOpen(false)} />
         <ThemeEditor open={themeEditorOpen} onOpenChange={setThemeEditorOpen} />

@@ -15,6 +15,8 @@
 // Auto-refreshes every 60s so it can be left open on a second screen.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { KiteConnect } from '@/components/core/KiteConnect';
+import { AlertRail } from '@/components/core/AlertRail';
 
 type Sev = 'OK' | 'WARN' | 'BLOCK' | 'INFO';
 interface Check {
@@ -151,6 +153,16 @@ export default function Preflight() {
           </div>
         ) : null}
 
+        {/* ── Step one of the morning: the broker session ──────────────── */}
+        {/* Placed above the check list because it is the only item that is
+            both required daily and impossible for the system to do itself.
+            Re-runs the health check on success so the Broker row updates
+            without a manual refresh. */}
+        <section className="mt-5">
+          <h2 className="mb-2 text-[11px] uppercase tracking-wide text-zinc-500">broker session</h2>
+          <KiteConnect onChange={() => void run()} />
+        </section>
+
         {/* ── What to do ──────────────────────────────────────────────── */}
         {actions.length > 0 && (
           <section className="mt-5">
@@ -225,6 +237,8 @@ export default function Preflight() {
           code never read. A check that cannot fail is not a check.
         </p>
       </main>
+
+      <AlertRail />
     </div>
   );
 }

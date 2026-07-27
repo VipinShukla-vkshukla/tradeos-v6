@@ -150,12 +150,60 @@ export const queries = {
       limit,
     }),
 
-  // ai_model_performance  ← table exists
-  getAIModelPerformance: () =>
-    queryTable<AIModelPerformance>('ai_model_performance', {
+  // AI provider stats.
+  //
+  // This used to query `ai_model_performance` (the comment here even claimed
+  // "table exists"). It does not exist in the project — the request 404s, so
+  // the AI Provider Stats panel has always rendered empty.
+  //
+  // ai_context is the table that actually records which provider answered:
+  // one row per symbol per day carrying provider, fallback_used and
+  // confidence. Aggregate it into the shape the panel already expects rather
+  // than inventing a new table for data we are already writing.
+  getAIModelPerformance: async () => {
+    const { data, error } = await queryTable<{
+      date: string; symbol: string; provider: string | null;
+      fallback_used: boolean | null; confidence: number | null;
+    }>('ai_context', {
+      select: 'date,symbol,provider,fallback_used,confidence',
       order: { column: 'date', ascending: false },
-      limit: 30,
-    }),
+      limit: 1000,
+    });
+    if (error || !data) return { data: null, error, count: null };
+
+    // Latest row per provider, plus that provider's call count and mean
+    // confidence for the most recent date it appears on.
+    const byProvider = new Map<string, AIModelPerformance>();
+    const tally = new Map<string, { calls: number; conf: number[]; date: string }>();
+
+    for (const r of data) {
+      const p = r.provider || 'unknown';
+      const t = tally.get(p);
+      if (!t) {
+        tally.set(p, { calls: 1, conf: r.confidence != null ? [r.confidence] : [], date: r.date });
+      } else if (t.date === r.date) {
+        t.calls += 1;
+        if (r.confidence != null) t.conf.push(r.confidence);
+      }
+    }
+
+    let i = 0;
+    for (const [provider, t] of tally) {
+      byProvider.set(provider, {
+        id: ++i,
+        date: t.date,
+        provider,
+        model: provider,
+        calls_today: t.calls,
+        avg_confidence: t.conf.length
+          ? Number((t.conf.reduce((a, b) => a + b, 0) / t.conf.length).toFixed(3))
+          : undefined,
+        fallback_used: data.some((r) => (r.provider || 'unknown') === provider && r.fallback_used),
+        created_at: t.date,
+      });
+    }
+    return { data: [...byProvider.values()], error: null, count: byProvider.size };
+  },
 
   // brain_proposals  ← NOT 'proposals'
   getBrainProposals: (status?: string) =>
