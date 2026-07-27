@@ -32,6 +32,20 @@ export interface PriceVerdict {
   riskPct: number | null;
   upPct: number | null;
   distZonePct: number | null;
+  /** highest price at which R:R still meets minRR — the limit worth resting */
+  maxEntry: number | null;
+  /** R:R if filled at the entry zone low, i.e. the plan at its best price */
+  rrAtZoneLow: number | null;
+}
+
+/**
+ * Highest entry price at which reward:risk still meets minRR.
+ *   (tgt - px) / (px - stop) >= minRR  =>  px <= (tgt + minRR*stop) / (1 + minRR)
+ * Mirrors max_entry_for_rr() in analysis/trade_decision.py.
+ */
+export function maxEntryForRR(stop: number, target: number, minRR: number): number | null {
+  if (!stop || !target || target <= stop || minRR <= 0) return null;
+  return (target + minRR * stop) / (1 + minRR);
 }
 
 const num = (v: unknown): number | null => {
@@ -49,7 +63,8 @@ export function priceVerdict(row: Signal, minRR = 1.0): PriceVerdict {
   const maxChase = row.ai_max_chase_pct != null && row.ai_max_chase_pct > 0
     ? row.ai_max_chase_pct : null;
 
-  const none = { rr: null, riskPct: null, upPct: null, distZonePct: null };
+  const none = { rr: null, riskPct: null, upPct: null, distZonePct: null,
+                 maxEntry: null, rrAtZoneLow: null };
 
   if (!px || !stop || !tgt) {
     // A missing plan is not always missing data. compute_trade_levels records
@@ -83,11 +98,25 @@ export function priceVerdict(row: Signal, minRR = 1.0): PriceVerdict {
   const upPct = (reward / px) * 100;
   const anchor = zhi && px > zhi ? zhi : zlo;
   const distZonePct = anchor ? ((px - anchor) / anchor) * 100 : null;
+  const maxEntry = maxEntryForRR(stop, tgt, minRR);
+  const rrZlo = zlo && zlo > stop ? (tgt - zlo) / (zlo - stop) : null;
   const base = { rr: +rr.toFixed(2), riskPct: +riskPct.toFixed(2),
                  upPct: +upPct.toFixed(2),
-                 distZonePct: distZonePct != null ? +distZonePct.toFixed(2) : null };
+                 distZonePct: distZonePct != null ? +distZonePct.toFixed(2) : null,
+                 maxEntry: maxEntry != null ? +maxEntry.toFixed(2) : null,
+                 rrAtZoneLow: rrZlo != null ? +rrZlo.toFixed(2) : null };
 
   if (rr < minRR) {
+    // Not "no", but "not here". The price that makes it work is knowable, so
+    // quote it and let a resting limit do the waiting. On 24 Jul this turned 20
+    // of 32 dead SKIPs into actionable limit orders.
+    if (maxEntry != null && maxEntry < px) {
+      const gap = ((px - maxEntry) / px) * 100;
+      return { action: 'WAIT',
+               headline: `WAIT — R:R ${rr.toFixed(2)} here; buy at or below ${maxEntry.toFixed(2)} (${gap.toFixed(1)}% lower)`,
+               reason: `Rest a limit at ₹${maxEntry.toFixed(2)} · stop ${stop.toFixed(2)} · target ${tgt.toFixed(2)}`,
+               ...base };
+    }
     return { action: 'SKIP',
              headline: `SKIP — R:R ${rr.toFixed(2)} below ${minRR} at ${px.toFixed(2)}`,
              reason: `reward ${upPct.toFixed(1)}% vs risk ${riskPct.toFixed(1)}% no longer justifies the trade`,

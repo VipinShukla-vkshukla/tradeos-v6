@@ -63,8 +63,39 @@ class Decision:
     risk_amount:   float | None
     stale_price:   bool = False   # true when we fell back to the EOD close
 
+    # ── The price at which this trade becomes worth taking ──────────────────
+    # rr_live answers "is this good HERE", which on most days is "no" and ends
+    # the conversation. It does not answer the question that follows, which is
+    # the one worth money: "at what price WOULD it be good?"
+    #
+    # On 2026-07-24, 27 of 43 candidates sat inside their entry zone and 32 were
+    # skipped — almost all for rr < 1. The zone spans ~3% while the stop sits
+    # ~5% below it, so entering near the zone HIGH collapses R:R even though the
+    # identical plan at the zone LOW is perfectly sound. Reporting only rr_live
+    # discards every one of those setups instead of turning it into a limit
+    # order.
+    #
+    # max_entry is the exact solution of rr >= min_rr:
+    #     (tgt - px) / (px - stop) >= min_rr
+    #  => px <= (tgt + min_rr * stop) / (1 + min_rr)
+    max_entry:     float | None = None   # buy at or below this for min_rr
+    rr_at_zone_low: float | None = None  # R:R if filled at the zone low
+    min_rr_used:   float | None = None
+
     def as_dict(self) -> dict:
         return asdict(self)
+
+
+def max_entry_for_rr(stop: float, target: float, min_rr: float) -> float | None:
+    """
+    Highest entry price at which reward:risk still meets min_rr.
+
+    Pure arithmetic, no opinions — the caller decides what to do with it. Returns
+    None when the levels cannot produce a valid answer (target at or below stop).
+    """
+    if not stop or not target or target <= stop or min_rr <= 0:
+        return None
+    return (target + min_rr * stop) / (1.0 + min_rr)
 
 
 def decide(
@@ -76,6 +107,7 @@ def decide(
     regime: str = "NEUTRAL",
     min_rr: float = 1.0,
     max_chase_pct: float | None = None,
+    available_cash: float | None = None,
 ) -> Decision:
     """
     row: a signal_output_daily / master_shortlist row carrying planned_stop,
@@ -141,10 +173,16 @@ def decide(
     qty = invested = risk_amt = None
     try:
         from analysis.portfolio_constraints import check_new_entry
+        # available_cash matters as much as total_capital and was never passed.
+        # TOTAL_CAPITAL is the size of the STRATEGY; cash is what can actually
+        # be spent this minute. On 2026-07-27 those were Rs 20,000 and Rs 5,200
+        # — sizing on the former proposes positions the broker will reject.
+        # Holdings are capital, but they are not purchasing power.
         v = check_new_entry(
             sym, row.get("sector") or "", row.get("industry") or "",
             px, risk, open_positions or [],
-            regime=regime, total_capital=total_capital)
+            regime=regime, total_capital=total_capital,
+            available_cash=available_cash)
         if v.allowed:
             qty, invested, risk_amt = v.max_qty, v.max_value, round(v.max_qty * risk, 2)
         else:
@@ -164,15 +202,32 @@ def decide(
         anchor    = zhi if (zhi and px > zhi) else zlo
         dist_zone = (px - anchor) / anchor * 100
 
+    # The actionable levels, computed once for every branch below.
+    max_entry = max_entry_for_rr(stop, tgt, min_rr)
+    rr_zlo = ((tgt - zlo) / (zlo - stop)) if (zlo and zlo > stop) else None
+
     def _mk(action, headline, reason):
         return Decision(sym, action, headline, reason, px, zlo, stop, tgt,
                         round(rr, 2), round(risk_pct, 2), round(up_pct, 2),
                         round(dist_zone, 2) if dist_zone is not None else None,
-                        qty, invested, risk_amt, stale_price=stale)
+                        qty, invested, risk_amt, stale_price=stale,
+                        max_entry=round(max_entry, 2) if max_entry else None,
+                        rr_at_zone_low=round(rr_zlo, 2) if rr_zlo else None,
+                        min_rr_used=min_rr)
 
     size_note = f" · {qty} sh ≈ ₹{invested:,.0f}, risk ₹{risk_amt:,.0f}" if qty else ""
 
     if rr < min_rr:
+        # Not "no", but "not here". A setup whose R:R fails at the current price
+        # usually still works a little lower, and the exact price is knowable —
+        # so quote it and let a resting limit order do the waiting.
+        if max_entry and max_entry < px:
+            gap = (px - max_entry) / px * 100
+            return _mk(ACT_WAIT,
+                       f"{sym}: WAIT — R:R {rr:.2f} here; buy at or below "
+                       f"{max_entry:.2f} ({gap:.1f}% lower) for {min_rr:g}R:R",
+                       f"reward {up_pct:.1f}% vs risk {risk_pct:.1f}% does not justify entry at "
+                       f"{px:.2f}. Rest a limit at {max_entry:.2f}; stop {stop:.2f}, target {tgt:.2f}")
         return _mk(ACT_SKIP,
                    f"{sym}: SKIP — R:R {rr:.2f} below {min_rr:g} at {px:.2f}",
                    f"reward {up_pct:.1f}% vs risk {risk_pct:.1f}% no longer justifies the trade")

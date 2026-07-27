@@ -82,7 +82,7 @@ export function TradePlanTable({ rows, date }: { rows: Signal[]; date: string | 
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-border/30 bg-panel-hover/50">
-              {['Symbol', 'Tier', 'Verdict', 'Price vs entry zone', 'CMP', 'Stop', 'Target', 'Risk', 'R:R here'].map((h) => (
+              {['Symbol', 'Tier', 'Verdict', 'Price vs entry zone', 'CMP', 'Buy below', 'Stop', 'Target', 'Risk', 'R:R here'].map((h) => (
                 <th key={h} className={`py-2 px-3 font-medium text-muted-foreground whitespace-nowrap ${
                   ['Symbol', 'Tier', 'Verdict', 'Price vs entry zone'].includes(h) ? 'text-left' : 'text-right'}`}>
                   {h}
@@ -125,6 +125,26 @@ export function TradePlanTable({ rows, date }: { rows: Signal[]; date: string | 
                     </div>
                   </td>
                   <td className="text-right py-2 px-3 font-mono">₹{s.current_price?.toFixed(2) ?? '—'}</td>
+                  {/* The limit price that makes this trade worth taking. Without
+                      it a failing R:R just reads as "no", when the real answer
+                      is almost always "not at this price". */}
+                  <td className="text-right py-2 px-3 font-mono">
+                    {v.maxEntry == null ? <span className="text-muted-foreground">—</span> : (
+                      <span
+                        className={s.current_price != null && s.current_price <= v.maxEntry
+                          ? 'text-profit' : 'text-yellow-400'}
+                        title={v.rrAtZoneLow != null
+                          ? `At the zone low this plan is ${v.rrAtZoneLow.toFixed(2)}R:R`
+                          : undefined}>
+                        ₹{v.maxEntry.toFixed(2)}
+                        {s.current_price != null && s.current_price > v.maxEntry && (
+                          <span className="text-muted-foreground ml-1">
+                            ({(((s.current_price - v.maxEntry) / s.current_price) * 100).toFixed(1)}%↓)
+                          </span>
+                        )}
+                      </span>
+                    )}
+                  </td>
                   <td className="text-right py-2 px-3 font-mono text-loss">₹{s.planned_stop?.toFixed(2) ?? '—'}</td>
                   <td className="text-right py-2 px-3 font-mono text-profit">₹{s.planned_target?.toFixed(2) ?? '—'}</td>
                   <td className="text-right py-2 px-3 font-mono text-muted-foreground">
@@ -143,7 +163,7 @@ export function TradePlanTable({ rows, date }: { rows: Signal[]; date: string | 
             })}
             {shown.length === 0 && (
               <tr>
-                <td colSpan={9} className="py-6 text-center text-muted-foreground">
+                <td colSpan={10} className="py-6 text-center text-muted-foreground">
                   Every candidate screened out at current prices — nothing to act on.
                 </td>
               </tr>
