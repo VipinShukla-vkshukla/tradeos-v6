@@ -208,6 +208,10 @@ def fetch_live_prices(symbols: list[str]) -> tuple[dict[str, float], str]:
     if not symbols:
         return {}, "none"
 
+    # KITE IS PRIMARY. yfinance is only ever a fallback — it is ~15 minutes
+    # delayed, which is tolerable for a zone-proximity nudge and NOT tolerable
+    # for a stop decision. The moment Kite quotes start working this path takes
+    # over automatically with no config change.
     try:
         from kite.kite_client import fetch_ltp, is_available
         if is_available():
@@ -215,8 +219,15 @@ def fetch_live_prices(symbols: list[str]) -> tuple[dict[str, float], str]:
             live = {k: v for k, v in px.items() if v}
             if live:
                 return live, "kite"
+            logger.warning(
+                "  Kite session is valid but returned no quotes. If this says "
+                "'Insufficient permission', the Kite Connect app tied to "
+                "KITE_API_KEY does not have an active market-data subscription "
+                "— billing is PER APP at developers.kite.trade, so confirm the "
+                "subscription is on this exact api_key. Falling back to yfinance."
+            )
     except Exception as e:
-        logger.debug(f"  live price via Kite unavailable: {e}")
+        logger.warning(f"  Kite quote path failed ({e}) — falling back to yfinance")
 
     try:
         import yfinance as yf
