@@ -195,7 +195,7 @@ def main():
                     # Trade plan — the fallback source when signal_log predates
                     # migration 002. Without these in the SELECT the fallback
                     # silently resolves to None and the snapshot stays NULL.
-                    "planned_stop,planned_target,planned_risk_pct,planned_entry")
+                    "planned_stop,planned_target,planned_risk_pct,planned_entry,planned_stop_source")
             .eq("date", today)
             .execute().data
         )
@@ -459,6 +459,10 @@ def main():
             "planned_stop":     sl.get("planned_stop")     or msl.get("planned_stop"),
             "planned_target":   sl.get("planned_target")   or msl.get("planned_target"),
             "planned_risk_pct": sl.get("planned_risk_pct") or msl.get("planned_risk_pct"),
+            # Carries the REASON a plan is absent (e.g. risk_too_wide_8.2pct)
+            # so the alert can say "stop too wide to size" instead of the
+            # much less useful "missing stop, target".
+            "planned_stop_source": sl.get("planned_stop_source") or msl.get("planned_stop_source"),
             # implied_rr is reward:risk AT THE SNAPSHOT PRICE, so it is the
             # number that decides whether the trade is still worth taking when
             # you read the alert. Recomputed here when absent rather than left

@@ -16,7 +16,33 @@ from datetime import datetime, timedelta
 # ── Load .env ────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
 env_file = BASE_DIR / ".env"
+
+# override=False is deliberate: on GitHub Actions there is no .env file and the
+# real values arrive as environment variables from repo secrets, so the process
+# environment must win there.
+#
+# Locally that same rule is a trap. A stale OS-level variable silently shadows
+# .env with no indication anywhere — we lost real time to exactly this: a
+# Windows *User* variable pinned KITE_API_KEY to a retired Kite Connect app, so
+# updating .env changed nothing and every API call returned
+# "Incorrect `api_key` or `access_token`", which reads like an expiry problem
+# and is not.
+#
+# Semantics are unchanged (flipping to override=True would break the
+# `DRY_RUN=True python …` idiom, since .env sets DRY_RUN=False). Instead the
+# divergence is reported, once, at import.
+_shadowed: list[str] = []
 if env_file.exists():
+    try:
+        from dotenv import dotenv_values
+        _file_vals = dotenv_values(env_file)
+        for _k, _v in _file_vals.items():
+            if _v is None or _k not in os.environ:
+                continue
+            if os.environ[_k] != _v:
+                _shadowed.append(_k)
+    except Exception:
+        pass
     load_dotenv(env_file, override=False)
 
 # ── Paths ────────────────────────────────────────────────────
@@ -242,6 +268,19 @@ logger.info(
     f"DRY_RUN={DRY_RUN} | Phase={cfg('autonomy_phase', '0')} | "
     f"Today's date={today_ist()}"
 )
+
+if _shadowed:
+    logger.warning(
+        f"⚠ {len(_shadowed)} value(s) in .env are being IGNORED because an "
+        f"environment variable of the same name already exists: "
+        f"{', '.join(sorted(_shadowed))}"
+    )
+    logger.warning(
+        "  The environment wins by design (GitHub Actions supplies secrets that "
+        "way). Locally this usually means a stale OS variable. On Windows check: "
+        "[Environment]::GetEnvironmentVariable('<NAME>','User') and remove it, "
+        "then open a NEW terminal."
+    )
 
 def yf_fetch_with_cache(
     sb,

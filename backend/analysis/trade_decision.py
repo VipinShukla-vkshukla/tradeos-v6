@@ -94,6 +94,24 @@ def decide(
     px    = live_price if live_price else _f(row.get("current_price"))
 
     if not px or not stop or not tgt:
+        # A plan can be absent for two very different reasons, and collapsing
+        # them into "no data" hides a real decision behind a data-quality
+        # message. compute_trade_levels records WHY it declined in
+        # planned_stop_source — e.g. risk_too_wide_8.2pct means the ATR-based
+        # stop exceeded the risk cap, which is the model working, not failing.
+        src = (row.get("planned_stop_source") or "").strip()
+        if src and src not in ("atr", "structure", "atr_capped"):
+            pretty = src.replace("_", " ")
+            if src.startswith("risk_too_wide"):
+                pct = src.rsplit("_", 1)[-1].replace("pct", "")
+                pretty = (f"stop would sit {pct}% below entry, past the risk cap — "
+                          f"too volatile to size sensibly")
+            return Decision(sym, ACT_SKIP,
+                            f"{sym}: SKIP — {pretty}",
+                            pretty, px, zlo, stop, tgt,
+                            None, None, None, None, None, None, None,
+                            stale_price=stale)
+
         missing = [n for n, v in (("price", px), ("stop", stop), ("target", tgt)) if not v]
         return Decision(sym, ACT_UNKNOWN,
                         f"{sym}: no decision — missing {', '.join(missing)}",

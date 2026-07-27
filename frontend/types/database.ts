@@ -72,7 +72,21 @@ export interface ClosedPosition {
   reentry_mode?: string;
   expected_r_at_entry?: number;
   exit_reason?: string;
-  signal_date?: string;
+  // ── Attribution (migration 003/004) ──────────────────────────────────────
+  // signal_id/signal_date link a closed trade back to the signal that produced
+  // it. NULL means the trade was taken outside the system — which is true of
+  // 69 of the first 70 rows, all of which predate signal_log entirely. The
+  // Performance tab splits on this so a pre-automation record is never
+  // presented as the current system's.
+  signal_id?: number | null;
+  signal_date?: string | null;
+  entry_signal_type?: string | null;
+  regime_at_entry?: string | null;
+  hold_days?: number | null;
+  r_multiple?: number | null;
+  max_adverse_excursion?: number | null;
+  exit_reason_detail?: string | null;
+  source?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +320,43 @@ export interface MasterStock {
 // ---------------------------------------------------------------------------
 // performance_metrics  (engine_stats lives as JSONB column here, no standalone table)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// View-model shapes for the performance charts.
+//
+// WinRateTrendChart, EngineLeaderboard, SignalTypeBreakdown and PerformanceTab
+// all import these from '@/types/database' — but they were never defined here
+// or anywhere else, so every one of those imports resolved to nothing. TypeScript
+// erases types at runtime and next.config sets ignoreBuildErrors, so the charts
+// still rendered; the props were simply unchecked.
+//
+// These are not table rows. They are what PerformanceTab's toWeeklyPerformance
+// and toEngineStats produce from performance_metrics, which is why they belong
+// beside the row types rather than in them.
+// ---------------------------------------------------------------------------
+export interface WeeklyPerformance {
+  week_start: string;
+  win_rate: number;        // 0–1, not a percentage
+  total_trades: number;
+  pnl: number;
+  pnl_percent: number;
+}
+
+export interface EngineStats {
+  engine_name: string;
+  total_signals: number;
+  executed_signals: number;
+  win_count: number;
+  loss_count: number;
+  win_rate: number;        // 0–1, not a percentage
+  avg_pnl_percent: number;
+  total_pnl: number;
+  last_signal_date: string;
+  // Rendered by EngineLeaderboard but not produced by toEngineStats — the
+  // pipeline's engine_stats JSONB does not carry it today. Optional so the
+  // column degrades to a dash rather than the type lying about what exists.
+  sharpe_ratio?: number;
+}
+
 export interface EngineStatsEntry {
   engine_name: string;
   total_signals: number;

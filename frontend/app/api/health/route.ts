@@ -295,6 +295,61 @@ export async function GET() {
           detail: 'An array here crashes run_ctl/run_sbs with AttributeError.',
           fix: badShape.length ? 'Run migration 005_fix_strategy_config_shape.sql.' : undefined });
 
+    // ═══ GROUP: AI / ML ═════════════════════════════════════════════════════
+    if (tradeDate) {
+      const { data: aiRows } = await sb
+        .from('ai_context').select('symbol,provider,fallback_used').eq('date', tradeDate);
+      const A = aiRows ?? [];
+      const perSymbol = A.filter((r) => !String(r.symbol).startsWith('__'));
+      const hasIntel  = A.some((r) => r.symbol === '__MARKET_INTEL__');
+      const hasPicks  = A.some((r) => r.symbol === '__FINAL_PICKS__');
+
+      add({ id: 'ai_ran', group: 'AI / ML', label: 'AI decision engine',
+            severity: hasPicks ? 'OK' : 'WARN',
+            value: hasPicks ? `ranked ${perSymbol.length} symbols` : 'no __FINAL_PICKS__',
+            expected: 'ranked candidates present',
+            fix: hasPicks ? undefined
+                 : 'Step 24 produced no tiering. Without it nothing is prioritised for the day.' });
+
+      add({ id: 'ai_intel', group: 'AI / ML', label: 'Market intelligence',
+            severity: hasIntel ? 'OK' : 'WARN',
+            value: hasIntel ? 'present' : 'missing',
+            expected: '__MARKET_INTEL__ written' });
+
+      const fellBack = A.some((r) => r.fallback_used);
+      add({ id: 'ai_fallback', group: 'AI / ML', label: 'Primary AI provider',
+            severity: fellBack ? 'WARN' : 'OK',
+            value: fellBack ? 'a fallback provider answered' : 'primary answered',
+            expected: 'primary',
+            detail: 'Repeated fallbacks usually mean an expired key or exhausted credits.' });
+    }
+
+    // The conviction model is only reachable if its input width matches the
+    // feature list the code assembles. A stale .pkl cannot make a single
+    // prediction, and until this check existed it failed silently inside the
+    // provider and returned UNKNOWN for every candidate.
+    const { data: mlLog } = await sb
+      .from('ml_training_log')
+      .select('trained_at,model_type,training_samples,accuracy,feature_names')
+      .order('trained_at', { ascending: false }).limit(1);
+    const lastTrain = mlLog?.[0];
+    const { data: attrRows } = await sb
+      .from('closed_positions').select('id').not('signal_date', 'is', null);
+    const attributed = (attrRows ?? []).length;
+
+    add({ id: 'ml_conviction', group: 'AI / ML', label: 'ML conviction model',
+          severity: attributed >= 30 ? 'WARN' : 'INFO',
+          value: lastTrain ? `last trained ${String(lastTrain.trained_at).slice(0, 10)}` : 'never trained',
+          expected: 'input width matching the code',
+          detail: `${attributed} signal-attributed closed trades available for training.`,
+          fix: attributed >= 30
+            ? 'Enough attributed trades now exist — retrain: python -c "from ai.providers.ml_provider import train_model; train_model()"'
+            : undefined });
+
+    add({ id: 'ml_regime', group: 'AI / ML', label: 'ML regime overlay',
+          severity: 'INFO', value: '—', expected: 'predicted_regime on market_regime',
+          detail: 'Advisory only; the rule-based regime remains authoritative.' });
+
     // ═══ GROUP: PIPELINE ════════════════════════════════════════════════════
     if (tradeDate) {
       const { data: anom } = await sb.from('data_anomalies')

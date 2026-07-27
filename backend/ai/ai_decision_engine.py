@@ -1088,7 +1088,13 @@ def call_ai(prompt: str) -> dict | None:
         from ai_router import is_ai_available, raw_completion
 
     if not is_ai_available():
-        logger.warning("No AI provider — step 19 skipped")
+        # Previously: return None, log "step 19 skipped", produce nothing.
+        # A day with no AI provider therefore generated signals, scored and
+        # ranked them, and then emitted no tiering at all — because the only
+        # component that could tier them was unavailable and had no substitute.
+        # models/ml_conviction.pkl existed the whole time and was unreachable,
+        # since its only entry point (ai_router.analyze) is called by nothing.
+        logger.warning("No AI provider — falling back to the ML conviction model")
         return None
 
     provider = cfg("ai_provider", "disabled").lower()
@@ -1714,6 +1720,26 @@ def main():
     # Build prompt
     prompt = build_prompt(ctx, trade_date)
 
+    # ── ML AS SUPPORT, NOT JUST BACKUP ───────────────────────────────────────
+    # Score every candidate with the trained conviction model and hand the
+    # result to the LLM. Without this the LLM reasons purely from the narrative
+    # in front of it, while a model fitted on realised outcomes sits unused on
+    # disk. Where the two disagree, the disagreement is itself information —
+    # the prompt block asks the model to explain it rather than defer to it.
+    #
+    # The block states the model's own trustworthiness. Right now only one
+    # closed trade is signal-attributed, so it is presented as a weak prior;
+    # a confident-looking 0.73 must not imply evidence that does not exist.
+    try:
+        from ai.ml_support import ml_win_probability, is_ml_trustworthy, format_for_prompt
+        ml_scores = ml_win_probability(candidates)
+        if ml_scores:
+            ok, why = is_ml_trustworthy(sb)
+            prompt += format_for_prompt(ml_scores, ok, why)
+            logger.info(f"  ML second opinion attached ({'usable' if ok else 'weak prior'}: {why})")
+    except Exception as e:
+        logger.debug(f"  ML second opinion unavailable: {e}")
+
     if DRY_RUN:
         logger.info(f"[DRY RUN] Prompt: {len(prompt)} chars")
         logger.info(f"[DRY RUN] Candidates: {[c.get('symbol') for c in candidates]}")
@@ -1727,8 +1753,22 @@ def main():
     elapsed = time.time() - t0
 
     if not result:
-        logger.warning("AI call returned nothing — step 19 non-fatal exit")
-        return {"status": "ai_failed"}
+        # ML FALLBACK. Rather than exiting with nothing, rank on the trained
+        # conviction model. Tiering degrades from reasoned to scored — no news,
+        # event or correlation context — which is a large drop in nuance and a
+        # small one in usefulness compared with emitting no tiering at all.
+        # The output carries source='ml_fallback' so nothing downstream, and no
+        # later post-mortem, mistakes it for an LLM decision.
+        logger.warning("AI call returned nothing — trying the ML conviction model")
+        try:
+            from ai.ml_support import rank_by_ml
+            result = rank_by_ml(candidates)
+        except Exception as e:
+            logger.warning(f"  ML fallback unavailable: {e}")
+            result = None
+        if not result:
+            logger.warning("AI unavailable and ML fallback produced nothing — step 19 non-fatal exit")
+            return {"status": "ai_failed"}
 
     logger.info(f"AI responded in {elapsed:.1f}s")
     _validate_ai_prices(result, candidates)

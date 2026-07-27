@@ -140,10 +140,93 @@ function StrategyBreakdown({ data }: { data: ClosedPosition[] }) {
   );
 }
 
+// ─── Trading era ──────────────────────────────────────────────────────────
+//
+// WHY THIS EXISTS
+//   The KPI row used to compute over every row in closed_positions and label
+//   the result "Win Rate" and "Current Streak" — implying it described the
+//   system. It did not. Of the first 70 closed trades, 69 were entered before
+//   signal_log held a single row, so they measure manual trading from an era
+//   that predates the signal engine entirely. Reading 38.6% / -₹9.8K as this
+//   system's record would be wrong in both directions: unfair to the engine,
+//   and a false comfort if it ever looked good.
+//
+//   The honest split is attribution, not a date: a trade belongs to the system
+//   only if it can be traced to the signal that produced it. That is exactly
+//   what signal_date records, and it is what post_trade_analysis and the Brain
+//   learn from.
+type Era = 'system' | 'legacy' | 'all';
+
+// Below this many trades, a win rate is noise. Showing "0%" off one sample is
+// as misleading as showing the legacy number — so we show the count instead.
+const MIN_MEANINGFUL_SAMPLE = 20;
+
+const ERA_META: Record<Era, { label: string; blurb: string }> = {
+  system: { label: 'Since automation', blurb: 'Trades traceable to a signal the engine produced.' },
+  legacy: { label: 'Legacy / manual',  blurb: 'Entered before the signal engine existed. Kept for reference.' },
+  all:    { label: 'All time',         blurb: 'Both eras combined — mixes two different systems.' },
+};
+
+function inEra(p: ClosedPosition, era: Era): boolean {
+  if (era === 'all') return true;
+  const attributed = p.signal_date != null || p.signal_id != null;
+  return era === 'system' ? attributed : !attributed;
+}
+
+function EraToggle({ era, setEra, counts }: {
+  era: Era; setEra: (e: Era) => void; counts: Record<Era, number>;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <div className="inline-flex rounded-lg border border-border p-0.5">
+        {(['system', 'legacy', 'all'] as Era[]).map((e) => (
+          <button
+            key={e}
+            onClick={() => setEra(e)}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              era === e ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {ERA_META[e].label}
+            <span className="ml-1.5 font-mono opacity-60">{counts[e]}</span>
+          </button>
+        ))}
+      </div>
+      <p className="text-xs text-muted-foreground">{ERA_META[era].blurb}</p>
+    </div>
+  );
+}
+
+/** Shown instead of KPIs when the selected era has too few trades to mean anything. */
+function BuildingRecord({ n }: { n: number }) {
+  return (
+    <div className="rounded-lg border border-warning/30 bg-warning/5 p-5">
+      <h3 className="text-sm font-medium text-foreground">
+        {n === 0 ? 'No system trades closed yet' : `${n} system trade${n === 1 ? '' : 's'} closed so far`}
+      </h3>
+      <p className="mt-1.5 max-w-2xl text-xs leading-relaxed text-muted-foreground">
+        A win rate needs roughly {MIN_MEANINGFUL_SAMPLE} closed trades before it says
+        anything about edge rather than luck. Showing one now would be noise dressed
+        as a metric, so the numbers stay hidden until the sample supports them.
+      </p>
+      <p className="mt-2 max-w-2xl text-xs leading-relaxed text-muted-foreground">
+        Meanwhile <strong className="text-foreground">screener_performance</strong> is
+        accumulating forward returns on every shortlisted stock — a read on signal
+        quality that costs nothing and needs no trades. The Control Room shows it
+        per engine.
+      </p>
+      <p className="mt-2 text-xs text-muted-foreground">
+        Switch to <em>Legacy</em> to see the pre-automation record.
+      </p>
+    </div>
+  );
+}
+
 // ─── Main Tab ─────────────────────────────────────────────────────────────
 export function PerformanceTab() {
   const [metrics, setMetrics] = useState<PerformanceMetricsRow[]>([]);
-  const [closed, setClosed] = useState<ClosedPosition[]>([]);
+  const [closedAll, setClosedAll] = useState<ClosedPosition[]>([]);
+  const [era, setEra] = useState<Era>('system');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -158,7 +241,7 @@ export function PerformanceTab() {
         if (m.error) throw m.error;
         if (c.error) throw c.error;
         setMetrics(m.data ?? []);
-        setClosed(c.data ?? []);
+        setClosedAll(c.data ?? []);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to load');
       } finally {
@@ -167,6 +250,17 @@ export function PerformanceTab() {
     }
     load();
   }, []);
+
+  // Every KPI and chart below is scoped to the selected era. Mixing a
+  // pre-automation record into a metric labelled "Win Rate" is what this whole
+  // section exists to prevent.
+  const closed = closedAll.filter((p) => inEra(p, era));
+  const eraCounts: Record<Era, number> = {
+    system: closedAll.filter((p) => inEra(p, 'system')).length,
+    legacy: closedAll.filter((p) => inEra(p, 'legacy')).length,
+    all:    closedAll.length,
+  };
+  const tooFewToJudge = era === 'system' && closed.length < MIN_MEANINGFUL_SAMPLE;
 
   // Derived stats from closed_positions (source of truth for real trades)
   const wins = closed.filter((p) => (p.realized_pnl ?? 0) > 0);
@@ -193,7 +287,13 @@ export function PerformanceTab() {
 
   return (
     <div className="space-y-4">
-      {/* KPI Row */}
+      {!loading && <EraToggle era={era} setEra={setEra} counts={eraCounts} />}
+
+      {/* KPI Row — replaced by an honest empty state when the sample is too
+          small to support a win rate. */}
+      {!loading && tooFewToJudge ? (
+        <BuildingRecord n={closed.length} />
+      ) : (
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {loading ? (
           <><SkeletonKPI /><SkeletonKPI /><SkeletonKPI /><SkeletonKPI /></>
@@ -216,14 +316,16 @@ export function PerformanceTab() {
           </>
         )}
       </div>
+      )}
 
       {/* Monthly P&L + Win Rate Trend */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Panel title="Monthly Realized P&L" description="12-month bar chart from closed_positions"
+        <Panel title="Monthly Realized P&L" description={`12-month realised P&L — ${ERA_META[era].label.toLowerCase()}`}
           dataSource="supabase" tableName="closed_positions" isLoading={loading}>
           <DataGuard data={closed} isLoading={loading} error={errObj}
             loadingContent={<SkeletonChart className="h-48" />}
-            emptyTitle="No closed trades" emptyDescription="Closes your first trade to see monthly P&L">
+            emptyTitle={era === 'system' ? 'No system trades yet' : 'No closed trades'}
+            emptyDescription={era === 'system' ? 'Appears once a signal-linked trade closes.' : 'Close a trade to see monthly P&L.'}>
             {(data) => <MonthlyPnLChart data={data} />}
           </DataGuard>
         </Panel>
@@ -240,11 +342,12 @@ export function PerformanceTab() {
 
       {/* Strategy Breakdown + Engine Leaderboard */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Panel title="Strategy P&L Breakdown" description="Realized P&L and win rate by strategy"
+        <Panel title="Strategy P&L Breakdown" description={`Realised P&L and win rate by strategy — ${ERA_META[era].label.toLowerCase()}`}
           dataSource="supabase" tableName="closed_positions" isLoading={loading}>
           <DataGuard data={closed} isLoading={loading} error={errObj}
             loadingContent={<SkeletonTable rows={4} cols={1} />}
-            emptyTitle="No closed trades" emptyDescription="Strategy breakdown appears after your first closed trade">
+            emptyTitle={era === 'system' ? 'No system trades yet' : 'No closed trades'}
+            emptyDescription={era === 'system' ? 'Appears once a signal-linked trade closes.' : 'Appears after your first closed trade.'}>
             {(data) => <StrategyBreakdown data={data} />}
           </DataGuard>
         </Panel>

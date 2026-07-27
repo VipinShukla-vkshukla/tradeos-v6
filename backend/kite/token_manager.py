@@ -44,6 +44,16 @@ from config import KITE_API_KEY, KITE_API_SECRET, IST, get_supabase
 
 TOKEN_KEY      = "kite_access_token"
 TOKEN_DATE_KEY = "kite_access_token_date"
+# The api_key the stored token was minted under.
+#
+# Without this, swapping the Kite Connect app (new api_key in .env) leaves a
+# token from the OLD app in system_config, and every freshness check reports
+# valid=True because it only looks at the date. Every subsequent call then
+# fails with "Incorrect `api_key` or `access_token`" — a TokenException that
+# reads like an expiry problem but is actually an identity mismatch, and no
+# amount of waiting fixes it. Recording the issuer lets us detect the swap and
+# say so.
+TOKEN_APIKEY_KEY = "kite_access_token_api_key"
 
 # Zerodha invalidates tokens daily at ~07:30 IST. Treat anything issued before
 # today's 07:30 boundary as expired rather than trusting a bare date match,
@@ -156,6 +166,7 @@ def exchange_request_token(request_token: str) -> str:
     now = datetime.now(IST)
     _set_config(TOKEN_KEY, access_token)
     _set_config(TOKEN_DATE_KEY, now.isoformat())
+    _set_config(TOKEN_APIKEY_KEY, KITE_API_KEY)
     logger.success(
         f"✓ Kite access token stored for user {data.get('user_id', '?')} "
         f"— valid until ~07:30 IST tomorrow"
@@ -182,6 +193,18 @@ def get_access_token() -> str | None:
     if not token or not issued_s:
         logger.warning(
             "  Kite access token not set. Run: python -m kite.token_manager --login-url"
+        )
+        return None
+
+    # Identity check before freshness. A token minted under a different app is
+    # not stale, it is wrong — and re-running the login is the only fix, so
+    # say that instead of letting the caller discover a TokenException.
+    issuer = _get_config(TOKEN_APIKEY_KEY)
+    if issuer and KITE_API_KEY and issuer != KITE_API_KEY:
+        logger.warning(
+            f"  Kite token was issued for a DIFFERENT app (api_key {issuer[:8]}…) "
+            f"but .env now uses {KITE_API_KEY[:8]}…. Re-authenticate: "
+            f"python -m kite.token_manager --login-url"
         )
         return None
 
