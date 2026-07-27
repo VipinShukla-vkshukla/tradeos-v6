@@ -13,10 +13,14 @@
 // so RLS hides it from the anon key that ships in the dashboard bundle.
 
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import { createClient } from '@supabase/supabase-js';
 
 export const TOKEN_KEY = 'kite_access_token';
 export const TOKEN_DATE_KEY = 'kite_access_token_date';
+/** The api_key a stored token was minted under. See storeToken(). */
+export const TOKEN_APIKEY_KEY = 'kite_access_token_api_key';
 
 export function svcClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -25,14 +29,43 @@ export function svcClient() {
   return createClient(url, key);
 }
 
+/**
+ * Read a value from .env.local directly, bypassing process.env.
+ *
+ * Next.js gives real environment variables precedence over .env.local, which is
+ * correct for deployments and wrong here. A stale Windows OS variable pinned
+ * KITE_API_KEY to a retired Kite Connect app; the dev server inherited it at
+ * launch and every "Connect" ran the ENTIRE login flow under the old app —
+ * login URL, request_token, exchange, all consistent, all successful. The
+ * dashboard reported "Broker session active" and the Python pipeline, reading
+ * the correct key from backend/.env, rejected every call.
+ *
+ * .env.local is safe to prefer: it is gitignored and never exists in CI, so
+ * there is no deployment where this rule can shadow a real secret.
+ */
+function fromEnvLocal(name: string): string | undefined {
+  try {
+    const file = path.join(process.cwd(), '.env.local');
+    if (!fs.existsSync(file)) return undefined;
+    for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+      const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
+      if (!m || m[1] !== name) continue;
+      return m[2].trim().replace(/^["']|["']$/g, '');
+    }
+  } catch {
+    /* fall through to process.env */
+  }
+  return undefined;
+}
+
 export function apiKey(): string {
-  const k = process.env.KITE_API_KEY;
+  const k = fromEnvLocal('KITE_API_KEY') ?? process.env.KITE_API_KEY;
   if (!k) throw new Error('KITE_API_KEY not set in .env.local');
   return k;
 }
 
 function apiSecret(): string {
-  const s = process.env.KITE_API_SECRET;
+  const s = fromEnvLocal('KITE_API_SECRET') ?? process.env.KITE_API_SECRET;
   if (!s) throw new Error('KITE_API_SECRET not set in .env.local');
   return s;
 }
@@ -91,6 +124,11 @@ export async function storeToken(accessToken: string): Promise<void> {
   const rows = [
     { key: TOKEN_KEY, value: accessToken },
     { key: TOKEN_DATE_KEY, value: nowIso },
+    // Record WHICH app minted this token. Without it, a token from a retired
+    // Kite Connect app passes every freshness check — it is not stale, it is
+    // wrong — and the only symptom is TokenException on calls the dashboard
+    // never makes. backend/kite/token_manager.py reads this same row.
+    { key: TOKEN_APIKEY_KEY, value: apiKey() },
   ];
   for (const r of rows) {
     const { data } = await sb.from('system_config').select('key').eq('key', r.key);
@@ -124,20 +162,43 @@ export function expiryBoundary(): Date {
 }
 
 export async function sessionStatus(): Promise<{
-  configured: boolean; valid: boolean; issued_at: string | null; expires_hint: string;
+  configured: boolean; valid: boolean; issued_at: string | null;
+  expires_hint: string; issue?: string;
 }> {
-  const configured = !!(process.env.KITE_API_KEY && process.env.KITE_API_SECRET);
+  let configured = false;
+  try { configured = !!(apiKey() && apiSecret()); } catch { configured = false; }
   let issued: string | null = null;
+  const hint = 'about 07:30 IST tomorrow';
   try {
     const sb = svcClient();
     const { data } = await sb.from('system_config').select('key,value')
-      .in('key', [TOKEN_KEY, TOKEN_DATE_KEY]);
+      .in('key', [TOKEN_KEY, TOKEN_DATE_KEY, TOKEN_APIKEY_KEY]);
     const map = Object.fromEntries((data ?? []).map((r) => [r.key, r.value]));
     issued = map[TOKEN_DATE_KEY] ?? null;
-    const valid = !!(map[TOKEN_KEY] && issued && new Date(issued) >= expiryBoundary());
-    return { configured, valid, issued_at: issued, expires_hint: 'about 07:30 IST tomorrow' };
+    const fresh = !!(map[TOKEN_KEY] && issued && new Date(issued) >= expiryBoundary());
+
+    // Freshness is not enough. A token minted by a DIFFERENT Kite Connect app
+    // is perfectly fresh and completely unusable, and reporting it as "Broker
+    // session active" is worse than reporting nothing — it sends you looking
+    // for the problem everywhere except where it is.
+    const issuer = map[TOKEN_APIKEY_KEY];
+    let current: string | null = null;
+    try { current = apiKey(); } catch { /* not configured */ }
+    if (fresh && issuer && current && issuer !== current) {
+      return {
+        configured, valid: false, issued_at: issued, expires_hint: hint,
+        issue: `This session was created by a different Kite app (${issuer.slice(0, 8)}…) `
+             + `but the dashboard now uses ${current.slice(0, 8)}…. Reconnect to mint a new one.`,
+      };
+    }
+    // A token with no recorded issuer predates that bookkeeping. It may be from
+    // the old app, so say the check is inconclusive rather than implying it passed.
+    const issue = fresh && !issuer
+      ? 'This session predates issuer tracking — if broker calls fail, reconnect once to re-mint it.'
+      : undefined;
+    return { configured, valid: fresh, issued_at: issued, expires_hint: hint, issue };
   } catch {
-    return { configured, valid: false, issued_at: issued, expires_hint: 'about 07:30 IST tomorrow' };
+    return { configured, valid: false, issued_at: issued, expires_hint: hint };
   }
 }
 

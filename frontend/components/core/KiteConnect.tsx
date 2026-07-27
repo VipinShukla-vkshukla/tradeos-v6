@@ -24,6 +24,8 @@ interface Status {
   issued_at: string | null;
   login_url: string | null;
   expires_hint: string;
+  /** Set when the session looks fresh but may not work — see sessionStatus(). */
+  issue?: string;
 }
 
 export function KiteConnect({ onChange }: { onChange?: () => void }) {
@@ -105,6 +107,12 @@ export function KiteConnect({ onChange }: { onChange?: () => void }) {
               ? <>Connected {issued ? `at ${issued.toLocaleTimeString()}` : ''} · expires {st.expires_hint}. Intraday stop monitoring is live.</>
               : <>Zerodha invalidates the session every morning around 07:30 IST. Until you reconnect, stop-loss monitoring skips rather than acting on the previous session&apos;s closes.</>}
           </p>
+          {/* A caveat on an otherwise-green session. "Broker session active" was
+              displayed for a token minted by a retired Kite app — fresh, stored,
+              and rejected by every API call the pipeline made. */}
+          {st.issue && (
+            <p className="mt-1 text-[11px] leading-relaxed text-amber-400">{st.issue}</p>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
