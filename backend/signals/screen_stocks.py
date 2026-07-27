@@ -39,8 +39,7 @@ PURPOSE
   This script REPLACES the role of ingest_sheets.py for MASTER_SHORTLIST
   population (over time, via transition modes). It screens all 500 stocks
   in stock_data_daily through multiple strategy engines and proprietary
-  scanners, then writes the top 30 or all qualified symbols to msl_computed
-  (shadow mode) or master_shortlist (hybrid/full mode).
+  scanners, then writes the qualified symbols to master_shortlist.
 
   The Google Sheet MSL tab becomes a manual override layer only —
   any symbol the user manually adds with force_include=True will be kept
@@ -67,10 +66,8 @@ SELECTION LOGIC:
   Top 30 by composite_score after sector diversification are selected.
   Hard blocks: ASM/GSM/FO_BAN excluded. Regime filter applied.
 
-TRANSITION MODES (system_config: screener_mode):
-  shadow  → writes to msl_computed only (master_shortlist untouched)
-  hybrid  → writes to msl_computed AND updates master_shortlist (merged with Sheet)
-  full    → writes only to master_shortlist (Sheet MSL tab is manual override only)
+DESTINATION: master_shortlist. The shadow/hybrid modes that wrote to
+msl_computed were retired in migration 008.
 """
 
 import sys, os, json
@@ -1351,9 +1348,8 @@ def aggregate_and_rank(
 
 def write_screener_results(sb, candidates: list, all_qualified: list, mode: str, today: str, write_all: bool = True):
     """
-    shadow  → msl_computed only (master_shortlist untouched)
-    hybrid  → msl_computed + update master_shortlist (merge with Sheet)
-    full    → master_shortlist only (screener is the source of truth)
+    Writes to master_shortlist. mode is retained only to keep the
+    stale-symbol cleanup opt-in via 'full'.
     """
     to_write = all_qualified if write_all else candidates
 
@@ -1369,31 +1365,12 @@ def write_screener_results(sb, candidates: list, all_qualified: list, mode: str,
                 f"sector={c['sector']}"
             )
         return
-    if mode in ("shadow", "hybrid"):
-        rows = []
-        for rank, c in enumerate(to_write, 1):
-            rows.append({
-                "date":               today,
-                "symbol":             c["symbol"],
-                "company_name":       c.get("company_name"),
-                "sector":             c.get("sector"),
-                "strategy_source":    c.get("strategy_source"),
-                "current_price":      c.get("current_price"),
-                "composite_score":    c.get("composite_score"),
-                "base_score":         c.get("base_score"),
-                "priority_rank":      rank,
-                "engines_list":       c.get("engines_list"),
-                "convergence_pts":    c.get("convergence_pts"),
-                "eap_adjustment":     c.get("eap_adjustment"),
-                "sector_rank":        c.get("sector_rank"),
-                "in_position":        c.get("in_position"),
-                "engine_scores_json": c.get("engine_scores_json"),
-                "screener_source":    "screen_stocks_v1",
-                "computed_at":        datetime.now(IST).isoformat(),
-            })
-        for i in range(0, len(rows), 50):
-            sb.table("msl_computed").upsert(rows[i:i+50], on_conflict="date,symbol").execute()
-        logger.success(f"✓ {len(rows)} symbols → msl_computed")
+    # The msl_computed write branch is gone. That table was the shadow-mode
+    # target during the transition off the Google Sheet; with screener_mode
+    # 'full' it has not been written since 2026-04-29 and carried 53 of 74
+    # columns NULL. Retired in migration 008 — master_shortlist is the single
+    # destination now, which also removes a whole class of "which table is the
+    # source of truth today" bugs.
 
     if mode in ("hybrid", "full"):
         msl_rows = []
@@ -1461,7 +1438,7 @@ def check_eap_revival(sb, stock_map: dict, today: str):
 
     try:
         penalized = (
-            sb.table("msl_computed")
+            sb.table("master_shortlist")
             .select("symbol,eap_adjustment,composite_score,priority_rank")
             .eq("date", yesterday)
             .lt("eap_adjustment", -10)
@@ -1504,7 +1481,7 @@ def check_eap_revival(sb, stock_map: dict, today: str):
 
     tagged = 0
 
-    target_tables = ["msl_computed", "master_shortlist"]
+    target_tables = ["master_shortlist"]
 
     for sym in revivals:
         for tbl in target_tables:
@@ -1520,7 +1497,7 @@ def check_eap_revival(sb, stock_map: dict, today: str):
 
         tagged += 1
 
-    logger.success(f"  EAP revival: tagged {tagged}/{len(revivals)} stocks in msl_computed")
+    logger.success(f"  EAP revival: tagged {tagged}/{len(revivals)} stocks in master_shortlist")
 
 
 def _sessions_back(sb, today: str, n: int) -> str | None:
@@ -1602,7 +1579,7 @@ def log_screener_outcomes(sb, today: str, hold_days_list: list = None):
             continue
 
         if not past_rows:
-            logger.info(f"  Outcomes: no msl_computed data for {past_date} — skipping {hold_days}d")
+            logger.info(f"  Outcomes: no master_shortlist data for {past_date} — skipping {hold_days}d")
             continue
 
         period_count = 0

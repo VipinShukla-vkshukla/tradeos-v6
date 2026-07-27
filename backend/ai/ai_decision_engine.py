@@ -209,7 +209,7 @@ def load_context(sb, trade_date: str) -> dict:
               # Context fields
               "validity_score,expected_r_msl,days_to_trigger_est,"
               "fii_flag,sector_rank_at_entry,industry_rank,industry_top5,"
-              "eap_action,in_rule_engine,in_scanner,"
+              "eap_action,in_rule_engine,"
               "india_vix,nifty_5d_chg_pct,fii_net_20d_ctx,"
               "filter_reason,ai_note"
           )
@@ -244,7 +244,7 @@ def load_context(sb, trade_date: str) -> dict:
                 "weekly_structure,psar_dual_confirmed,ha_signal,st_cushion_pct,"
                 "validity_score,expected_r_msl,days_to_trigger_est,"
                 "fii_flag,sector_rank_at_entry,industry_rank,industry_top5,"
-                "eap_action,in_rule_engine,in_scanner,near_miss_data,filter_reason"
+                "eap_action,in_rule_engine,near_miss_data,filter_reason"
             )
             .eq("date", trade_date)
             .eq("signal_type", "WATCH")

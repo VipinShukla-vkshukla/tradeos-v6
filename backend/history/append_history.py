@@ -120,28 +120,19 @@ def main():
         logger.info(f"History snapshot already exists for {today} — skipping")
         return {"skipped": True}
 
-    # Read today's MSL
-    msl_mode   = cfg("compute_msl_mode", "shadow")
-    source_tbl = "msl_computed" if msl_mode == "shadow" else "master_shortlist"
-
-    rows = sb.table(source_tbl).select(
+    # Read today's MSL.
+    #
+    # msl_computed was the shadow-mode target for screen_stocks and has not
+    # been written since 2026-04-29 (screener_mode moved to 'full', so both
+    # screen_stocks and compute_msl write straight to master_shortlist).
+    # Retired in migration 008; master_shortlist is now the only source.
+    rows = sb.table("master_shortlist").select(
         "date,symbol,company_name,base_rank,priority_rank,sector,strategy_source,"
         "current_price,price_location,dist_fv_pct,entry_timing_type,momentum_phase,"
         "velocity_state,trend_maturity,struct_edge,in_position,reentry_mode,lifecycle,"
         "expected_r,validity_score,final_score,momentum_state,holding_score,risk_score,"
         "breakout_readiness,persistent_phase"
     ).eq("date", today).execute().data
-
-    if not rows and source_tbl == "msl_computed":
-        # Fallback: msl_computed empty (screen_stocks not in shadow mode?) → use master_shortlist
-        rows = sb.table("master_shortlist").select(
-            "date,symbol,company_name,base_rank,sector,strategy_source,current_price,"
-            "price_location,dist_fv_pct,entry_timing_type,momentum_phase,velocity_state,"
-            "trend_maturity,struct_edge,in_position,reentry_mode,lifecycle,expected_r,"
-            "validity_score,final_score"
-        ).eq("date", today).execute().data
-        if rows:
-            logger.warning(f"  msl_computed empty — falling back to master_shortlist for history")
 
     if not rows:
         logger.warning("No MSL rows for today — skipping history")

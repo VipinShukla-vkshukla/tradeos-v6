@@ -28,7 +28,6 @@ NEW FEATURES in v2 (26 total vs 19 in v1):
   + above_200dma_pct       — Market breadth at signal time. <40% breadth = avoid entries
   + fii_net_20d_ctx        — FII 20-day trend at signal time. Sustained selling → bad timing
   + score_adjusted         — Rule engine's own conviction AFTER all adjustments (+scanner, -caution)
-  + in_scanner             — Did independent_scanner also flag this? Dual confirmation
   + breakout_setup         — Is stock in tight base approaching breakout?
 
 FIX: regime_encoded now uses 4-class encoding:
@@ -73,10 +72,14 @@ FEATURES = [
     "consol_range",   # base tightness % (CC5) — lower = tighter coil
     "breakout_setup", # Boolean: tight base + volume expanding (NEW v2)
 
-    # ── Signal quality (4) ───────────────────────────────────────────────
+    # ── Signal quality (3) ─────────────────────────────────────────
+    # in_scanner removed: generate_signals hardcoded it to False on every
+    # row, so as a feature it was constant across every training sample —
+    # zero information, while still consuming a slot and diluting the
+    # feature-importance ranking the Brain reads. Column dropped in
+    # migration 008.──────
     "score_adjusted",  # Final score after all adjustments — rule engine conviction (NEW v2)
     "days_in_list",    # Days on master_shortlist — setup maturity
-    "in_scanner",      # Also flagged by independent_scanner (dual confirmation) (NEW v2)
     "validity_score",  # Sheet's 0-100 entry quality gate (CC5)
 
     # ── Setup context (4) ────────────────────────────────────────────────
@@ -157,7 +160,6 @@ class MLProvider(BaseProvider):
                 # Signal quality (4)
                 float(stock_data.get("score_adjusted") or stock_data.get("score") or 50),
                 float(stock_data.get("days_in_list") or 0),
-                float(1 if stock_data.get("in_scanner") else 0),
                 float(stock_data.get("validity_score") or 60),
                 # Setup context (4)
                 float(stock_data.get("expected_r_msl") or 1.5),
@@ -204,7 +206,6 @@ class MLProvider(BaseProvider):
                 conflicts="NONE",
                 ai_note=(
                     f"Win prob: {prob:.1%} | 26 features | "
-                    f"scanner={'YES' if stock_data.get('in_scanner') else 'no'} | "
                     f"score_adj={stock_data.get('score_adjusted','?')}"
                 ),
                 provider="ml_model_v2",
@@ -281,7 +282,6 @@ def train_model():
                 # Signal quality
                 "score_adjusted": float(s.get("score_adjusted") or s.get("score") or 50),
                 "days_in_list":   float(s.get("days_in_list") or 0),
-                "in_scanner":     float(1 if s.get("in_scanner") else 0),
                 "validity_score": float(s.get("validity_score") or 60),
                 # Setup context
                 "expected_r_msl":     float(s.get("expected_r_msl") or 1.5),

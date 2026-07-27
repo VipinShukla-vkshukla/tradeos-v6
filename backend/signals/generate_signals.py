@@ -1358,8 +1358,10 @@ def generate(run_date: date | None = None) -> list:
             "score_adjusted":  score_adjusted,
             # Rule engine + scanner
             "in_rule_engine":  in_engine,
-            "in_scanner":      False,
-            "scanner_patterns": None,
+            # in_scanner / scanner_patterns described an external pattern
+            # scanner that was never wired — this dict hardcoded False and
+            # None on every row since the field existed. Columns dropped in
+            # migration 008; writing them here would now fail the upsert.
             "eap_action":      eap_action,
             # Regime
             "regime":          regime_name,
@@ -1410,8 +1412,10 @@ def generate(run_date: date | None = None) -> list:
             "days_in_list":         msl_row.get("days_in_list"),
             "validity_score":       msl_row.get("validity_score"),
             "expected_r_msl":       msl_row.get("expected_r"),
-            "sheet_conflict":       False,
-            "sheet_conflict_type":  None,
+            # sheet_conflict / sheet_conflict_type flagged divergence between
+            # the Google Sheet MSL and the computed one. There is no Sheet left
+            # to diverge from, so both were hardcoded False/None. Dropped in
+            # migration 008.
             "days_to_trigger_est":  msl_row.get("days_to_trigger_est"),
             "filter_reason":        filter_reason,
             "sector_rank_at_entry": sector_rank.get(sector) if sector else None,

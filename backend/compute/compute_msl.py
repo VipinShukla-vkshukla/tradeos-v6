@@ -65,10 +65,8 @@ DATA COVERAGE ASSESSMENT (what we have vs what we need):
   ⚠️  Sector rotation:   FII sector-level flow — NOT yet in pipeline
                          (sector_strength is rank-based not flow-based)
 
-TRANSITION MODES (system_config: compute_msl_mode):
-  shadow → writes to msl_computed only (safe, default)
-  hybrid → writes computed fields to master_shortlist
-  full   → master_shortlist computed entirely here (Sheet = symbol list only)
+SOURCE OF TRUTH: master_shortlist, read and written. The shadow/hybrid
+transition modes and their msl_computed target were retired in migration 008.
 """
 
 import sys, os
@@ -85,15 +83,27 @@ from config import get_supabase, today_ist, IST, cfg, cfg_bool, is_kill_switch_a
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Fields compute_msl must NOT overwrite when merging into master_shortlist.
+#
+# Two classes live here, and conflating them created a bug:
+#   (a) fields another STEP owns and writes later (the ai_* group) — correct
+#       to preserve, otherwise a same-day re-run clobbers the AI's output
+#   (b) fields the retired Google Sheet used to own — preserving these means
+#       preserving NULL forever, because nothing writes them any more
+#
+# `trade_allowed` was in class (b) by accident. compute_msl COMPUTES it (safety
+# lists, ASM/GSM gating) and then this set discarded the computed value in
+# favour of a Sheet value that has not existed since ingest_sheets was retired.
+# Result: 100% NULL on all 100 rows despite a working writer. Moved out.
+#
+# The remaining Sheet-era names are dropped from the schema in migration 008,
+# so they are removed from here too rather than left as dead guards.
 PRESERVE_FIELDS = frozenset({
     "symbol", "company_name", "sector", "industry", "strategy_source",
-    "notes", "is_ipo", "trade_allowed", "pos_type", "suggested",
+    "created_at", "base_rank",
     "ai_conviction", "ai_conviction_reason", "ai_risks", "ai_suggested_action",
     "ai_note", "ai_provider", "ai_fallback_used", "ai_shortlist_rank",
-    "ai_shortlist_reason", "created_at",
-    "event_bias", "event_sectors", "upcoming_news",
-    "entry_ready", "exec_eligibility", "entry_action", "opp_type",
-    "base_rank", "entry_mode",
+    "ai_shortlist_reason",
     # AI chase-zone fields written by ai_decision_engine (step 19), which
     # runs AFTER compute_msl (step 14). Same defensive pattern as the other
     # ai_* fields above: compute_msl never outputs these keys itself, but if
@@ -340,33 +350,21 @@ def load_data(sb, today: str, mode: str) -> dict:
     BUG #3 FIX: sector_strength fallback fetches latest DATE's rows only.
 
     Symbol source priority:
-      shadow mode  → msl_computed (screen_stocks output), falls back to master_shortlist
-      hybrid/full  → master_shortlist (screen_stocks already wrote here), no secondary query needed
+      master_shortlist is the sole source and destination (migration 008).
     """
 
     # ── 1. Determine symbol source ────────────────────────────────────────────
-    # BUG #4 FIX: In hybrid/full, screen_stocks writes to master_shortlist, NOT msl_computed.
-    #             In shadow, screen_stocks writes to msl_computed.
-    screener_rows = []
-
-    if mode == "shadow":
-        # Shadow: screen_stocks output is in msl_computed
-        screener_rows = (
-            sb.table("msl_computed")
-              .select("symbol,sector,strategy_source,current_price,final_score,composite_score")
-              .eq("date", today)
-              .execute().data
-        )
-        if screener_rows:
-            logger.info(f"  Symbol source: msl_computed (screen_stocks shadow) — {len(screener_rows)} symbols")
-        else:
-            logger.warning("  msl_computed empty for today — falling back to master_shortlist for symbols")
-
-    # Determine primary source table
-    if mode == "shadow" and screener_rows:
-        source_table = "msl_computed"
-    else:
-        source_table = "master_shortlist"
+    # SINGLE SOURCE OF TRUTH.
+    #
+    # This used to branch on compute_msl_mode: 'shadow' read screen_stocks'
+    # output from msl_computed, everything else from master_shortlist. That
+    # table has not been written since 2026-04-29 (both writers moved to
+    # master_shortlist when screener_mode went to 'full') and carried 53 of 74
+    # columns NULL. Retired in migration 008.
+    #
+    # Collapsing the branch removes the "which table is authoritative today"
+    # question entirely — the same ambiguity that produced BUG #4 in this file.
+    source_table = "master_shortlist"
 
     msl_rows = sb.table(source_table).select("*").eq("date", today).execute().data
     if not msl_rows:
@@ -2550,40 +2548,7 @@ def write_results(sb, results: list, mode: str, today: str):
             )
         return
 
-    if mode == "shadow":
-        # BUG #12 FIX: Merge over existing msl_computed rows to preserve screen_stocks fields
-        symbols    = [r["symbol"] for r in results]
-        existing   = (
-            sb.table("msl_computed")
-              .select("*")
-              .eq("date", today)
-              .in_("symbol", symbols)
-              .execute().data
-        )
-        existing_map = {r["symbol"]: r for r in (existing or [])}
-
-        merged = []
-        for r in results:
-            base = dict(existing_map.get(r["symbol"], {}))
-            base.update(r)   # compute_msl fields win on conflict
-            base.pop("compute_source", None)   # don't overwrite in existing record
-            merged.append(base)
-
-        # Re-add compute_source for new rows only
-        for r in merged:
-            r["compute_source"] = "compute_msl_v3"
-
-        write_rows = []
-        for r in merged:
-            row = {k: v for k, v in r.items() if k != "base_rank"}
-            if r.get("base_rank") is not None:
-                row["priority_rank"] = r["base_rank"]
-            write_rows.append(row)
-        for i in range(0, len(write_rows), 50):
-            sb.table("msl_computed").upsert(write_rows[i:i+50], on_conflict="date,symbol").execute()
-        logger.success(f"✓ shadow: {len(results)} → msl_computed (merged)")
-
-    elif mode in ("hybrid", "full"):
+    if True:  # master_shortlist is the only destination (migration 008)
         current_rows = (
             sb.table("master_shortlist")
               .select("*")
@@ -2596,7 +2561,13 @@ def write_results(sb, results: list, mode: str, today: str):
             sym  = r["symbol"]
             base = dict(current_map.get(sym, {}))
             for field, val in r.items():
-                if field not in PRESERVE_FIELDS and field != "ma_levels":
+                # `field != "ma_levels"` used to sit here, silently discarding a
+                # value compute_ma_alignment builds on every row. It was the
+                # only column excluded by name rather than by PRESERVE_FIELDS,
+                # with no comment explaining why — and the effect was 100% NULL
+                # on all 100 rows. Removed; ma_levels now persists like every
+                # other computed field.
+                if field not in PRESERVE_FIELDS:
                     base[field] = val
             base["date"]   = today
             base["symbol"] = sym
@@ -2797,7 +2768,7 @@ def main():
         logger.warning(
             f"  Sheet comparison skipped — master_shortlist empty for today "
             f"(mode={mode}, source for this run was "
-            f"{'msl_computed' if mode == 'shadow' else 'master_shortlist'})"
+            f"master_shortlist)"
         )
 
     # Sort and assign ranks

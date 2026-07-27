@@ -79,6 +79,33 @@ def resolve_last_trading_day(sb, reference_date: str, max_lookback: int = 10) ->
     )
 
 
+def _resolve_implied_rr(sl: dict, msl: dict) -> float | None:
+    """
+    Reward:risk available at the snapshot price.
+
+    Prefers the value generate_signals already computed. Falls back to deriving
+    it from whichever stop/target/price are available, so a row is never left
+    with a NULL R:R that the alert layer would then have to render as a blank —
+    the blank is what made the digest look like static data.
+    """
+    v = sl.get("implied_rr")
+    if v is not None:
+        return v
+    stop   = sl.get("planned_stop")   or msl.get("planned_stop")
+    target = sl.get("planned_target") or msl.get("planned_target")
+    cp     = sl.get("current_price")  or msl.get("current_price")
+    if not (stop and target and cp):
+        return None
+    try:
+        stop_f, target_f, cp_f = float(stop), float(target), float(cp)
+    except (TypeError, ValueError):
+        return None
+    risk = cp_f - stop_f
+    if risk <= 0:
+        return None
+    return round((target_f - cp_f) / risk, 3)
+
+
 def main():
     if is_kill_switch_active():
         return {}
@@ -164,7 +191,11 @@ def main():
                     "dist_entry_pct,days_to_trigger_est,composite_score,"
                     "current_price,entry_timing_type,price_location,"
                     "zone_hot_adjusted,ai_max_chase_pct,ai_chase_rationale,"
-                    "ai_zone_high_extended")
+                    "ai_zone_high_extended,"
+                    # Trade plan — the fallback source when signal_log predates
+                    # migration 002. Without these in the SELECT the fallback
+                    # silently resolves to None and the snapshot stays NULL.
+                    "planned_stop,planned_target,planned_risk_pct,planned_entry")
             .eq("date", today)
             .execute().data
         )
@@ -414,6 +445,25 @@ def main():
             "price_location":     sl.get("price_location")   or msl.get("price_location"),
             "dist_entry_pct":     sl.get("dist_entry_pct") or msl.get("dist_entry_pct"),
             "expected_r":         expected_r,
+            # ── Trade plan (migration 002) ────────────────────────────────
+            # THE CHAIN USED TO BREAK HERE. compute_msl writes planned_stop /
+            # planned_target to master_shortlist and generate_signals copies
+            # them onto signal_log, but this snapshot never carried them
+            # forward — so all 38 rows of signal_output_daily had them NULL.
+            # send_alerts reads ONLY signal_output_daily, which is why the
+            # digest could show a candidate but never its stop, target or R:R,
+            # and therefore never an actionable decision point.
+            #
+            # signal_log first, master_shortlist as fallback for rows written
+            # before the columns existed.
+            "planned_stop":     sl.get("planned_stop")     or msl.get("planned_stop"),
+            "planned_target":   sl.get("planned_target")   or msl.get("planned_target"),
+            "planned_risk_pct": sl.get("planned_risk_pct") or msl.get("planned_risk_pct"),
+            # implied_rr is reward:risk AT THE SNAPSHOT PRICE, so it is the
+            # number that decides whether the trade is still worth taking when
+            # you read the alert. Recomputed here when absent rather than left
+            # NULL, because a stale ratio is worse than a fresh one.
+            "implied_rr":       _resolve_implied_rr(sl, msl),
             "validity_score":     sl.get("validity_score"),
             "days_to_trigger_est": (sl.get("days_to_trigger_est")
                                     or msl.get("days_to_trigger_est")),

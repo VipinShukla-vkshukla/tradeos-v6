@@ -216,7 +216,7 @@ def build_market_context(sb, window_start, window_end_trade, window_end_calendar
                           "rsi_daily,rsi_weekly,vol_ratio,atr_pct,ret_6m,rs_vs_nifty,"
                           "validity_score,expected_r_msl,days_to_trigger_est,"
                           "fii_flag,sector_rank_at_entry,industry_rank,industry_top5,"
-                          "eap_action,in_rule_engine,in_scanner")
+                          "eap_action,in_rule_engine")
                   .eq("date", last_td)
                   .in_("signal_type", ["PRIME_SETUP","BREAKOUT_SETUP","REENTRY_SETUP",
                                        "BUY_CANDIDATE","STAGED_ENTRY","MOMENTUM_CONTINUATION"])
@@ -239,7 +239,7 @@ def build_market_context(sb, window_start, window_end_trade, window_end_calendar
                     "rsi_daily,rsi_weekly,vol_ratio,atr_pct,ret_6m,rs_vs_nifty,"
                     "validity_score,expected_r_msl,days_to_trigger_est,"
                     "fii_flag,sector_rank_at_entry,industry_rank,industry_top5,"
-                    "eap_action,in_rule_engine,in_scanner,near_miss_data,filter_reason")
+                    "eap_action,in_rule_engine,near_miss_data,filter_reason")
             .eq("date", last_td)
             .eq("signal_type", "WATCH")
             .not_.is_("near_miss_data", "null")

@@ -896,8 +896,11 @@ def compute_from_raw(raw: dict, sym_history: list, events: dict,
     out["index_membership"]    = index_map.get(sym, "")
     out["company_name"]        = (company_map or {}).get(sym)
 
-    # ── NOT_COMPUTABLE — explicit NULL ────────────────────────────────────
-    out["fii_sector_flow"] = None
+    # fii_sector_flow used to be written here as an explicit NULL. The column
+    # is dropped in migration 008 — sector-level FII needs paid data that this
+    # system does not have, and what sector flow we DO derive lives on
+    # sector_strength. Writing a column that is guaranteed NULL forever only
+    # made every stock_data_daily upsert carry a dead key.
 
     # ── RENAME_MAP pass-throughs ──────────────────────────────────────────
     for chartink_col, canonical_col in RENAME_MAP.items():
