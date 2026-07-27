@@ -94,8 +94,12 @@ DATA SOURCES (all bound to confirmed schema):
   ai_context         → __FINAL_PICKS__ (conviction_reason + strategy_validation)
                         __MARKET_INTEL__ (conviction_reason + ai_note)
   signal_log         → all signals for signal_date
-  open_positions     → full schema including target_1/2/3, high_water_mark,
-                        locked_profit, partial_bookings, original_qty, current_qty
+  open_positions     → the risk model: planned_stop, active_sl, planned_target,
+                        r_multiple_current, MFE/MAE, breakeven_moved,
+                        trail_activated, partial_booked_qty, attribution
+                        (NOT target_1/2/3, locked_profit, event_risk,
+                         upcoming_news, lifecycle or trailing_sl_pct — none of
+                         those has a writer; see tools/audit_alert_reads.py)
   master_shortlist   → entry zones, expected_r, dist_entry_pct
   market_regime      → regime, nifty, vix, breadth, A/D, PCR
   fii_dii_flow       → fii_net, fii_net_5d, fii_net_20d, fii_flag
@@ -920,12 +924,24 @@ def load_data(sb, today: str) -> dict:
           .select(
               "symbol,company_name,sector,strategy,"
               "entry_date,entry_price,current_price,current_value,"
-              "invested_value,unrealized_pnl,pnl_pct,locked_profit,"
-              "lifecycle,sl_type,initial_sl_atr,high_water_mark,active_sl,"
-              "exit_signal,action_required,event_risk,upcoming_news,"
-              "target_1,target_2,target_3,target_price,target_hit,"
-              "trailing_sl_pct,signal_date,"
+              # locked_profit, target_1/2/3, trailing_sl_pct, event_risk,
+              # upcoming_news and lifecycle were all read here and are NULL on
+              # every row — no module writes any of them to open_positions.
+              # They render as blanks, which reads as "nothing to report" rather
+              # than "never populated", so the digest quietly under-reported.
+              # Replaced with the columns the risk model actually maintains.
+              "invested_value,unrealized_pnl,pnl_pct,"
+              "sl_type,high_water_mark,active_sl,"
+              "exit_signal,action_required,target_price,target_hit,"
+              "signal_date,signal_id,strategy,signal_subtype,"
               "original_qty,current_qty,partial_bookings,status,"
+              # The live risk model. planned_stop is what the position was
+              # SIZED on and never moves; active_sl is where the stop is now.
+              # r_multiple_current is the unit every exit rule is written in.
+              "planned_stop,planned_target,planned_risk_pct,r_multiple_current,"
+              "max_favorable_excursion,max_adverse_excursion,"
+              "breakeven_moved,trail_activated,partial_booked_qty,"
+              "entry_signal_type,regime_at_entry,reconcile_status,kite_qty,"
               "ai_recommended_action,ai_action_reason,ai_action_confidence,"
               "ai_action_urgency,ai_action_updated_at"
           )
@@ -1044,7 +1060,11 @@ def load_data(sb, today: str) -> dict:
     if open_pos:
         total_invested  = sum(float(p.get("invested_value")  or 0) for p in open_pos)
         total_pnl       = sum(float(p.get("unrealized_pnl")  or 0) for p in open_pos)
-        total_locked    = sum(float(p.get("locked_profit")   or 0) for p in open_pos)
+        total_locked    = sum(
+            (float(p.get("partial_booked_qty") or 0)
+             * (float(p.get("partial_booked_price") or 0) - float(p.get("entry_price") or 0)))
+            if (p.get("partial_booked_qty") and p.get("partial_booked_price")) else 0.0
+            for p in open_pos)
         pnl_pct_overall = (total_pnl / total_invested * 100) if total_invested > 0 else 0
         winners         = sum(1 for p in open_pos if float(p.get("pnl_pct") or 0) > 0)
         losers          = sum(1 for p in open_pos if float(p.get("pnl_pct") or 0) < 0)
@@ -1213,7 +1233,11 @@ def build_position_block(
     sl     = float(p.get("active_sl")      or 0)
     hwm    = float(p.get("high_water_mark") or 0)
     entry  = float(p.get("entry_price")    or 0)
-    locked = float(p.get("locked_profit")  or 0)
+    # locked_profit has no writer. Derive realised profit from the partial the
+    # exit engine actually booked, which IS recorded.
+    _pb_qty   = float(p.get("partial_booked_qty")   or 0)
+    _pb_price = float(p.get("partial_booked_price") or 0)
+    locked = (_pb_qty * (_pb_price - entry)) if (_pb_qty and _pb_price and entry) else 0.0
     ico    = "📈" if pnl >= 0 else "📉"
     prox   = sl_proximity_pct(cp, sl)
     sl_w   = "  🚨<b>Near SL!</b>" if prox is not None and prox <= 3.0 else ""
@@ -1258,7 +1282,9 @@ def build_position_block(
             )
 
     # ── Targets ──
-    tp = target_progress(cp, p.get("target_1"), p.get("target_2"), p.get("target_3"))
+    # target_1/2/3 have no writer — the risk model keeps ONE target, at 3R.
+    # Passing the live one into the same renderer keeps the T1 formatting.
+    tp = target_progress(cp, p.get("planned_target") or p.get("target_price"), None, None)
     if tp:
         lines.append(f"  Targets: {tp}")
 
@@ -1313,9 +1339,9 @@ def build_position_block(
         )
 
     if brief:
-        event_risk = p.get("event_risk") or ""
-        if event_risk:
-            lines.append(f"  ⚠️ Event: {event_risk}")
+        # event_risk had no writer on open_positions and always rendered blank.
+        # Per-position event risk reaches the digest through the UPCOMING EVENTS
+        # section, which reads nifty_upcoming_events directly.
         return lines
 
     # ── Partial bookings (evening only) ──
@@ -1327,13 +1353,10 @@ def build_position_block(
     if pb:
         lines.append(f"  📊 Partial: {pb}")
 
-    # ── Event risk / upcoming news (evening) ──
-    event_risk    = p.get("event_risk") or ""
-    upcoming_news = p.get("upcoming_news") or ""
-    if event_risk:
-        lines.append(f"  ⚠️ Event: {event_risk}")
-    elif upcoming_news:
-        lines.append(f"  📅 News: {upcoming_news[:80]}")
+    # Event risk / upcoming news are NOT read from open_positions: neither
+    # column has ever had a writer there. The UPCOMING EVENTS section below the
+    # positions block carries the same information from nifty_upcoming_events,
+    # which ingest_nse_events actually maintains.
 
     # ── PATCH 3: Compressed rationale (evening only, max 85 chars) ──
     thesis_raw = (entry_thesis_map.get(sym, "")

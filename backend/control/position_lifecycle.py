@@ -110,6 +110,41 @@ def load_exit_policy() -> dict:
     }
 
 
+def _sell_price_today(symbol: str) -> float | None:
+    """
+    Average price of today's SELL trades for a symbol, from the broker.
+
+    The realised price of a partial is a fact the broker knows and we should
+    never guess: using the current LTP instead would record a profit that was
+    never earned, on the exact trades the exit policy is judged by. LTP is only
+    a last resort, and the caller logs when it falls back.
+
+    Returns None when the broker is unreachable or has no matching fill.
+    """
+    try:
+        from kite import kite_client
+        trades = kite_client.fetch_trades() or []
+    except Exception:
+        return None
+
+    today = datetime.now(IST).date().isoformat()
+    qty = value = 0.0
+    for t in trades:
+        if (t.get("symbol") or t.get("tradingsymbol")) != symbol:
+            continue
+        if (t.get("transaction_type") or "").upper() != "SELL":
+            continue
+        ts = str(t.get("timestamp") or t.get("fill_timestamp") or "")
+        if ts and not ts.startswith(today):
+            continue
+        q = float(t.get("quantity") or 0)
+        p = float(t.get("average_price") or t.get("price") or 0)
+        if q and p:
+            qty += q
+            value += q * p
+    return round(value / qty, 2) if qty else None
+
+
 def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> dict:
     """
     Decide what should happen to one open position at the current price.
@@ -659,17 +694,52 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
                     logger.warning(f"  {sym}: reconcile clear failed: {e}")
             continue
         action = "QTY_REDUCED" if br_qty < db_qty else "QTY_INCREASED"
+
+        patch = {
+            "current_qty":    br_qty,
+            "kite_qty":       br_qty,
+            "actual_qty":     br_qty,
+            "kite_avg_price": h["average_price"],
+            "invested_value": round(br_qty * h["average_price"], 2),
+            "reconcile_status": action,
+            "last_reconciled_at": datetime.now(IST).isoformat(),
+        }
+
+        # A reduction IS the partial the exit engine asked for, arriving after
+        # you executed it. Nothing recorded it: BOOK_PARTIAL wrote only the
+        # instruction, and this branch only shrank the quantity. But
+        # close_position READS partial_booked_qty/price to fold realised partial
+        # profit into the final outcome — so booking 7 of 15 into a winner and
+        # closing the rest recorded the P&L of 8 shares and silently discarded
+        # the profit on the 7. The learning loop then studied a smaller win than
+        # actually happened, on the trades the policy is designed to produce.
+        if action == "QTY_REDUCED":
+            sold = db_qty - br_qty
+            prior_qty = int(pos.get("partial_booked_qty") or 0)
+            # Broker fill first; the holding's last_price only as a fallback,
+            # which the else-branch below reports rather than hides.
+            price = _sell_price_today(sym) or float(h.get("last_price") or 0) or None
+            if price:
+                prior_price = float(pos.get("partial_booked_price") or 0)
+                # Weighted average across multiple partials, so a second
+                # reduction does not overwrite the first one's price.
+                total_qty = prior_qty + sold
+                patch["partial_booked_qty"] = total_qty
+                patch["partial_booked_price"] = round(
+                    ((prior_price * prior_qty) + (price * sold)) / total_qty, 2)
+                patch["partial_booked_at"] = datetime.now(IST).isoformat()
+                logger.info(f"  PARTIAL RECORDED {sym}: {sold} sh @ ~{price:.2f} "
+                            f"(cumulative {total_qty})")
+            else:
+                logger.warning(
+                    f"  {sym}: {sold} sh left the account but no sell price could be "
+                    f"determined — partial profit will be missing from the closed "
+                    f"outcome. Check Kite trades for today."
+                )
+
         if not DRY_RUN:
             try:
-                sb.table("open_positions").update({
-                    "current_qty":    br_qty,
-                    "kite_qty":       br_qty,
-                    "actual_qty":     br_qty,
-                    "kite_avg_price": h["average_price"],
-                    "invested_value": round(br_qty * h["average_price"], 2),
-                    "reconcile_status": action,
-                    "last_reconciled_at": datetime.now(IST).isoformat(),
-                }).eq("symbol", sym).execute()
+                sb.table("open_positions").update(patch).eq("symbol", sym).execute()
             except Exception as e:
                 logger.warning(f"  {sym}: qty sync failed: {e}")
                 continue
