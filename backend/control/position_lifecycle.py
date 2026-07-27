@@ -595,6 +595,47 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
             except Exception as e:
                 logger.warning(f"  {sym}: plan backfill write failed: {e}")
 
+    # ── Backfill identity fields from the originating signal ─────────────────
+    # Deliberately a SEPARATE pass, not part of the block above. That one exits
+    # early on `if pos.get("planned_stop"): continue`, so the moment a position
+    # has a stop it can never gain anything else — PPLPHARMA carried
+    # signal_id=5038 and strategy=None indefinitely, and the digest rendered it
+    # as "PPLPHARMA [None] [None]" beside "BHEL [CTL+MOM+SEC]".
+    #
+    # Cosmetic in the alert, but not only cosmetic: strategy is what attributes
+    # a realised outcome back to the engine that produced it. A position that
+    # closes with strategy NULL cannot be credited to CTL, SBS or anything else,
+    # so the engine scoring never learns from it.
+    # Candidate fields, intersected with what open_positions ACTUALLY has.
+    # db_map rows come from select("*"), so their keys are the live schema —
+    # deriving the list from them beats hardcoding it, which is how `industry`
+    # (a signal_log column that open_positions does not have) got in here and
+    # made PostgREST reject the whole update.
+    _IDENTITY_CANDIDATES = ("strategy", "signal_subtype", "sector", "company_name")
+    _sample = next(iter(db_map.values()), {})
+    _IDENTITY = tuple(f for f in _IDENTITY_CANDIDATES if f in _sample)
+    for sym, pos in db_map.items():
+        missing = [f for f in _IDENTITY if not pos.get(f)]
+        if not missing or not pos.get("signal_id"):
+            continue
+        try:
+            sig_rows = (sb.table("signal_log").select(",".join(("id",) + _IDENTITY))
+                          .eq("id", pos["signal_id"]).limit(1).execute().data) or []
+            if not sig_rows:
+                continue
+            patch = {f: sig_rows[0].get(f) for f in missing if sig_rows[0].get(f)}
+            if not patch:
+                continue
+            if DRY_RUN:
+                logger.info(f"[DRY RUN] would backfill identity for {sym}: {patch}")
+                continue
+            sb.table("open_positions").update(patch).eq("symbol", sym).execute()
+            logger.success(f"  IDENTITY BACKFILLED {sym:<12} "
+                           + ", ".join(f"{k}={v}" for k, v in patch.items())
+                           + f" (from signal #{pos['signal_id']})")
+        except Exception as e:
+            logger.warning(f"  {sym}: identity backfill failed: {e}")
+
     # ── Quantity drift ───────────────────────────────────────────────────────
     for sym, pos in db_map.items():
         h = hold_map.get(sym)

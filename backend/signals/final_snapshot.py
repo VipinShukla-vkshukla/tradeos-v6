@@ -106,7 +106,7 @@ def _resolve_implied_rr(sl: dict, msl: dict) -> float | None:
     return round((target_f - cp_f) / risk, 3)
 
 
-def main():
+def main(force: bool = False):
     if is_kill_switch_active():
         return {}
 
@@ -128,9 +128,21 @@ def main():
           .limit(1)
           .execute().data
     )
-    if existing:
+    if existing and not force:
         logger.info(f"signal_output_daily already snapshotted for {today} — skipping")
         return {"skipped": True}
+    if existing and force:
+        # Immutability is the default for a reason — this table is the
+        # point-in-time record of what the system believed, and silently
+        # rewriting it destroys that. But an unconditional guard also makes the
+        # snapshot unrepairable: on 2026-07-27 step 19 crashed, so the snapshot
+        # was taken with no AI tiers at all, and no amount of fixing step 19
+        # afterwards could ever get them in. Explicit, logged, opt-in only.
+        logger.warning(
+            f"--force: OVERWRITING the existing snapshot for {today}. The "
+            f"previous point-in-time record for this date is lost. Only correct "
+            f"when an upstream step failed during the original run."
+        )
 
     # ── Source 1: signal_log ──────────────────────────────────────────────────
     sig_rows = (
@@ -620,4 +632,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    _ap = argparse.ArgumentParser(description="TradeOS v6 — step 20.5 snapshot")
+    _ap.add_argument("--force", action="store_true",
+                     help="overwrite an existing snapshot for today (use only to "
+                          "repair a run where an upstream step failed)")
+    main(force=_ap.parse_args().force)

@@ -1266,9 +1266,37 @@ def build_position_block(
     ai_action = p.get("ai_recommended_action")
     if ai_action and ai_action not in ("NO_ACTION", "HOLD"):
         _urg_ico = {"IMMEDIATE": "🚨", "THIS_WEEK": "⚠️"}.get(p.get("ai_action_urgency"), "🤖")
+
+        # Advisories persist on the row until step 19 overwrites them, and step
+        # 19 only writes position_actions for positions it flagged — so a
+        # position it says nothing about today keeps yesterday's advice
+        # indefinitely. That produced "protect +4.2% gain" on a position sitting
+        # at +10.4%: not wrong when written, just silently two days old and
+        # rendered as if it were today's.
+        #
+        # The advice can still be useful when stale, so it is dated rather than
+        # dropped. What must not happen is presenting it as current.
+        age_note = ""
+        upd = p.get("ai_action_updated_at")
+        if upd:
+            try:
+                from datetime import datetime as _dt
+                when = _dt.fromisoformat(str(upd).replace("Z", "+00:00"))
+                if when.tzinfo is None:
+                    when = IST.localize(when)
+                days = (datetime.now(IST).date() - when.astimezone(IST).date()).days
+                if days >= 1:
+                    age_note = (f" <i>({days}d old — from "
+                                f"{when.astimezone(IST):%d %b}, P&amp;L was different then)</i>")
+            except Exception:
+                pass
+        else:
+            age_note = " <i>(undated)</i>"
+
         lines.append(
             f"  {_urg_ico} <b>AI Advisory: {ai_action}</b>"
             + (f" — {esc(p.get('ai_action_reason',''))}" if p.get("ai_action_reason") else "")
+            + age_note
         )
 
     if brief:

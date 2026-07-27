@@ -26,7 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import IST, get_supabase, cfg_bool, cfg_int, today_ist
+from config import IST, get_supabase, cfg_bool, cfg_int, cfg_float, today_ist
 from intraday.config import (is_market_open, gtt_enabled, orders_enabled,
                              autonomy_phase)
 from intraday.notifier import Notifier, Action
@@ -142,7 +142,28 @@ class IntradayEngine:
                        max_chase_pct=c.get("ai_max_chase_pct") or None,
                        available_cash=cash)
             if d.action in ("BUY_NOW", "CHASE_LIMIT"):
-                out.append({"candidate": c, "decision": d, "ltp": float(ltp)})
+                out.append({"candidate": c, "decision": d, "ltp": float(ltp),
+                            "state": "BUYABLE"})
+                continue
+
+            # THIS is what intraday data buys the swing strategy.
+            #
+            # The evening pipeline computes max_entry — the exact price at which
+            # a setup's R:R becomes acceptable — from the CLOSE. On 24 Jul, 20 of
+            # 43 candidates were priced just above their max_entry, several by
+            # under 1%. Whether those trades ever became takeable is decided
+            # entirely by intraday movement the evening run cannot see, and a
+            # once-daily check answers the question ~18 hours late.
+            #
+            # Watching the approach rather than only the arrival is the point: an
+            # alert fired AT max_entry leaves no time to place anything, while
+            # one fired as price closes in lets a limit rest and be filled.
+            if d.action == "WAIT" and d.max_entry and float(ltp) > d.max_entry:
+                approach_pct = cfg_float("intraday_entry_approach_pct", 1.0)
+                gap = (float(ltp) - d.max_entry) / d.max_entry * 100
+                if gap <= approach_pct:
+                    out.append({"candidate": c, "decision": d, "ltp": float(ltp),
+                                "state": "APPROACHING", "gap_pct": gap})
         return out
 
     # ── acting ──────────────────────────────────────────────────────────────
@@ -214,6 +235,28 @@ class IntradayEngine:
     def act_on_candidates(self, entries: list[dict]) -> None:
         for e in entries:
             c, d, ltp = e["candidate"], e["decision"], e["ltp"]
+            approaching = e.get("state") == "APPROACHING"
+
+            if approaching:
+                # Distinct kind so the notifier's de-duplication treats
+                # "closing in" and "now buyable" as separate states. Sharing a
+                # kind would suppress the far more important second alert as a
+                # restatement of the first.
+                self.notifier.send(Action(
+                    symbol=c["symbol"], kind="ENTRY_APPROACHING",
+                    headline=(f"{e['gap_pct']:.1f}% above the buy limit "
+                              f"₹{d.max_entry:.2f} — rest a limit now"),
+                    detail=(f"Below ₹{d.max_entry:.2f} this is {d.min_rr_used:g}R:R or better "
+                            f"(currently {d.rr_live:.2f}).\n"
+                            f"Stop ₹{d.stop} · target ₹{d.target}"
+                            + (f" · at the zone low it is {d.rr_at_zone_low:.2f}R:R"
+                               if d.rr_at_zone_low else "")),
+                    ltp=ltp, urgency="INFO",
+                    meta={"tier": c.get("ai_tier"), "max_entry": d.max_entry,
+                          "state": "APPROACHING"},
+                ))
+                continue
+
             self.notifier.send(Action(
                 symbol=c["symbol"], kind="ENTRY",
                 headline=d.headline,
