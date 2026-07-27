@@ -19,31 +19,65 @@ export interface OpenPosition {
   current_value: number;
   unrealized_pnl: number;
   pnl_pct: number;
-  locked_profit: number;
-  lifecycle: string;                 // HOLD | ADD | REDUCE | EXIT | DEVELOPING
   sl_type: string;
-  initial_sl_atr: number;
   high_water_mark: number;
-  active_sl: number;
-  exit_signal?: string;
-  action_required?: string;
-  event_risk?: string;
-  upcoming_news?: string;
-  target_1?: number;
-  target_2?: number;
-  target_3?: number;
-  target_price?: number;
-  target_pct?: number;
+  active_sl: number;                 // CURRENT stop — moves to breakeven, then trails
+  exit_signal?: string | null;
+  action_required?: string | null;   // set by position_lifecycle: "BOOK 7 — 1.55R >= 1.5R…"
+  target_price?: number | null;
   target_hit?: boolean;
   status: string;
   synced_at: string;
-  kite_qty?: number;
-  signal_id?: number;
-  signal_date?: string;
-  signal_subtype?: string;
-  original_qty?: number;
-  current_qty?: number;
+  kite_qty?: number | null;
+  signal_id?: number | null;
+  signal_date?: string | null;
+  original_qty?: number | null;
+  current_qty?: number | null;
   partial_bookings?: unknown;
+
+  // ── Risk model (migration 006, written by control/position_lifecycle) ─────
+  // planned_stop is the stop the trade was SIZED on and never changes; active_sl
+  // is where the stop is now. Showing only one of them hides the single most
+  // important thing about a live trade — whether risk has been taken off.
+  planned_stop?: number | null;
+  planned_target?: number | null;
+  planned_risk_pct?: number | null;
+  expected_r_at_entry?: number | null;
+
+  // Progress in R. This is the unit the exit rules are written in — the partial
+  // book fires at 1.5R, not at a percentage — so it is the honest way to show
+  // where a position stands.
+  r_multiple_current?: number | null;
+  max_favorable_excursion?: number | null;  // best % move seen while open
+  max_adverse_excursion?: number | null;    // worst % move seen while open
+
+  // Exit-state machine flags. Together they say which rung of the ladder the
+  // trade has climbed, which no price column can express.
+  breakeven_moved?: boolean | null;
+  trail_activated?: boolean | null;
+  partial_booked_qty?: number | null;
+  partial_booked_price?: number | null;
+  partial_booked_at?: string | null;
+  time_stop_date?: string | null;
+
+  sl_breach_alerted?: boolean | null;
+  sl_proximity_alerted?: boolean | null;
+
+  // Entry context — what the system believed when it committed capital.
+  entry_signal_type?: string | null;
+  regime_at_entry?: string | null;
+  sector_rank_at_entry?: number | null;
+
+  reconcile_status?: string | null;
+  last_reconciled_at?: string | null;
+  kite_avg_price?: number | null;
+  source?: string | null;
+
+  ai_recommended_action?: string | null;
+  ai_action_reason?: string | null;
+  ai_action_confidence?: number | null;
+  ai_action_urgency?: string | null;
+  ai_action_updated_at?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +121,11 @@ export interface ClosedPosition {
   max_adverse_excursion?: number | null;
   exit_reason_detail?: string | null;
   source?: string | null;
+  planned_stop_at_entry?: number | null;
+  planned_target_at_entry?: number | null;
+  sector_rank_at_entry?: number | null;
+  closed_at?: string | null;
+  partial_bookings?: unknown;
 }
 
 // ---------------------------------------------------------------------------

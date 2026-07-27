@@ -602,6 +602,20 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
             continue
         db_qty, br_qty = int(pos.get("current_qty") or 0), h["total_quantity"]
         if db_qty == br_qty:
+            # Agreement is a RESULT and has to be recorded as one. Skipping the
+            # write left whatever drift status was set on the last mismatch
+            # sitting on the row forever, so a position that reconciled cleanly
+            # weeks ago still reported "QTY_INCREASED — Kite shows 15, book
+            # shows 15" on the dashboard: a broker alarm contradicted by the
+            # very numbers printed next to it.
+            if pos.get("reconcile_status") != "MATCHED" and not DRY_RUN:
+                try:
+                    sb.table("open_positions").update({
+                        "reconcile_status":   "MATCHED",
+                        "last_reconciled_at": datetime.now(IST).isoformat(),
+                    }).eq("symbol", sym).execute()
+                except Exception as e:
+                    logger.warning(f"  {sym}: reconcile clear failed: {e}")
             continue
         action = "QTY_REDUCED" if br_qty < db_qty else "QTY_INCREASED"
         if not DRY_RUN:

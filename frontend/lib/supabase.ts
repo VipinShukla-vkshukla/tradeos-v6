@@ -134,6 +134,45 @@ export const queries = {
       order: { column: 'entry_date', ascending: false },
     }),
 
+  /**
+   * The live exit policy, read from the same system_config rows the backend
+   * reads through cfg_float().
+   *
+   * The R thresholds are drawn on every position card, so a hardcoded copy here
+   * would quietly start lying the moment a value is tuned in the Control Room —
+   * the dashboard would show a rung at 1.5R while the pipeline booked at 2.0R.
+   * Defaults mirror control/position_lifecycle.load_exit_policy() and apply only
+   * when a key is genuinely absent.
+   */
+  getExitPolicy: async () => {
+    const keys = [
+      'exit_partial_book_r', 'exit_partial_book_pct', 'exit_trail_r',
+      'exit_trail_after_r', 'exit_target_r', 'exit_time_stop_days',
+      'exit_time_stop_min_r', 'exit_move_to_breakeven',
+    ];
+    const defaults: Record<string, number> = {
+      exit_partial_book_r: 1.5, exit_partial_book_pct: 50, exit_trail_r: 1.5,
+      exit_trail_after_r: 2.0, exit_target_r: 3.0, exit_time_stop_days: 15,
+      exit_time_stop_min_r: 0.5,
+    };
+    const { data, error } = await queryTable<{ key: string; value: string }>(
+      'system_config', { select: 'key,value', limit: 500 },
+    );
+    const values: Record<string, number> = { ...defaults };
+    let source: 'defaults' | 'system_config' = 'defaults';
+    if (!error && data) {
+      let hit = 0;
+      for (const row of data) {
+        if (!keys.includes(row.key)) continue;
+        const n = parseFloat(row.value);
+        if (Number.isFinite(n)) { values[row.key] = n; hit++; }
+      }
+      if (hit) source = 'system_config';
+    }
+    return { ...values, source } as Record<string, number> &
+      { source: 'defaults' | 'system_config' };
+  },
+
   // closed_positions  ← NOT 'positions'
   getClosedPositions: (limit = 50, offset = 0) =>
     queryTable<ClosedPosition>('closed_positions', {
