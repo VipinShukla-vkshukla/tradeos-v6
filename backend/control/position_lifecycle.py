@@ -858,7 +858,19 @@ def send_action_alerts(actions: list[dict]):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main(reconcile: bool = True, manage: bool = True,
-         require_live: bool = False) -> dict:
+         require_live: bool = False, alert: bool = True) -> dict:
+    """
+    alert=False suppresses the standalone "Position Actions Required" message.
+
+    Set by run_pipeline for the evening run, where send_alerts renders the very
+    same instruction inside the digest's OPEN POSITIONS block a few steps later
+    — so one BOOK_PARTIAL on one position produced two notifications describing
+    it in different words. Duplicate alerts for a single fact are worse than one
+    alert: they make you check whether something happened twice.
+
+    It stays True for the intraday and ad-hoc paths, which have no digest
+    following them and would otherwise report nothing at all.
+    """
     if is_kill_switch_active():
         logger.warning("Kill switch active — position_lifecycle skipped")
         return {"status": "skipped", "reason": "kill_switch"}
@@ -889,7 +901,11 @@ def main(reconcile: bool = True, manage: bool = True,
     if manage:
         managed = manage_open_positions(sb, trade_date, require_live=require_live)
         result["manage"] = managed
-        send_action_alerts(managed.get("actions", []))
+        if alert:
+            send_action_alerts(managed.get("actions", []))
+        elif managed.get("actions"):
+            logger.info(f"  {len(managed['actions'])} action(s) — alerting suppressed; "
+                        f"the evening digest carries them")
 
     logger.success(f"Position lifecycle complete: {result}")
     return result

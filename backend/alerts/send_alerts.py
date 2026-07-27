@@ -1016,13 +1016,26 @@ def load_data(sb, today: str) -> dict:
     # ── Data anomalies ────────────────────────────────────────────────────────
     anomalies: list[dict] = []
     try:
-        anomalies = (
+        _raw = (
             sb.table("data_anomalies")
-              .select("check_name,message,severity")
+              .select("check_name,message,severity,created_at")
               .eq("date", today)
               .eq("severity", "ERROR")
+              .order("created_at", desc=True)
               .execute().data or []
         )
+        # Keep only the newest verdict per check. data_quality_monitor now
+        # supersedes the day's rows on every run, so duplicates should not
+        # occur — but the digest is the one place a stale ERROR is most
+        # expensive, because it is read as today's state and it contradicted a
+        # populated section two lines below it. Cheap insurance.
+        _seen: set[str] = set()
+        for _a in _raw:
+            _name = _a.get("check_name") or ""
+            if _name in _seen:
+                continue
+            _seen.add(_name)
+            anomalies.append(_a)
     except Exception:
         pass
 

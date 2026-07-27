@@ -182,7 +182,10 @@ def main():
         before post_trade, so a position closed today feeds tonight's lessons.
         """
         from control.position_lifecycle import main as fn
-        return fn(reconcile=False, manage=True)
+        # alert=False: send_alerts renders these same actions inside the
+        # digest's OPEN POSITIONS block, so alerting here too sent the
+        # identical BOOK_PARTIAL twice in one run, worded differently.
+        return fn(reconcile=False, manage=True, alert=False)
 
     def step_telegram_journal():
         """Drain Telegram entry/exit confirmations into open_positions."""

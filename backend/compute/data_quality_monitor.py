@@ -973,10 +973,28 @@ def main(phase: str = "all"):
     warn_n = sum(1 for r in results if r["severity"] == "WARN")
     err_n  = sum(1 for r in results if r["severity"] == "ERROR")
 
-    # Write to data_anomalies (skip if already logged for this trade_date)
+    # ── Write to data_anomalies, SUPERSEDING the day's previous results ──────
+    #
+    # This used to insert only when nothing had been logged for the trade_date
+    # yet, so the FIRST run of the day won and every later run was a no-op. The
+    # table then froze at whatever was true the first time, while send_alerts
+    # reads it as the CURRENT state.
+    #
+    # Observed on 2026-07-27: steps 18/19 crashed during the 22:00 run, so C08
+    # and C09 were logged as ERROR at 22:08. Both steps were fixed and re-run,
+    # writing __MARKET_INTEL__ and __FINAL_PICKS__ at 23:10 and 23:31. The
+    # digest still carried "No __MARKET_INTEL__ in ai_context for 2026-07-27"
+    # directly above a fully populated MARKET INTELLIGENCE section quoting that
+    # very row — the alert contradicting itself two lines apart.
+    #
+    # Delete-then-insert makes the table mean "the latest verdict", which is
+    # what every reader already assumes. The deletion also matters when a re-run
+    # produces NO anomalies: without it, a resolved problem stays on the board
+    # forever, and a board that shows resolved problems stops being read.
     anomalies = [r for r in results if r["severity"] in ("WARN", "ERROR")]
-    if anomalies and not _already_logged_today(sb, td):
-        try:
+    try:
+        sb.table("data_anomalies").delete().eq("date", td).execute()
+        if anomalies:
             sb.table("data_anomalies").insert([{
                 "date":       td,
                 "check_name": a["check"],
@@ -986,8 +1004,10 @@ def main(phase: str = "all"):
                 "affected":   str(a.get("affected", [])),
                 "created_at": datetime.now(IST).isoformat(),
             } for a in anomalies]).execute()
-        except Exception as e:
-            logger.warning(f"data_anomalies insert failed: {e}")
+        logger.info(f"  data_anomalies: {len(anomalies)} row(s) recorded for {td} "
+                    f"(superseding any earlier run)")
+    except Exception as e:
+        logger.warning(f"data_anomalies write failed: {e}")
 
     # Telegram: fire on any ERROR; include WARN summary
     errors   = [r for r in results if r["severity"] == "ERROR"]
