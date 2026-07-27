@@ -511,7 +511,19 @@ def get_trade_date(sb=None, mode: str = "auto", caller: str = "") -> str:
                     holidays   = set()
                     is_holiday = False
 
-                bhavcopy_eta = now_ist.replace(hour=18, minute=0, second=0, microsecond=0)
+                # WHEN OUR INGEST IS EXPECTED, not when NSE publishes.
+                #
+                # NSE puts the bhavcopy out around 18:00 IST, but step 05 only
+                # runs when the evening pipeline runs — 22:00 IST via
+                # cron-job.org (the GitHub cron in pipeline_evening.yml is
+                # commented out). Comparing against 18:00 therefore declared
+                # "❌ MISSING — step 05 may have failed" for four hours every
+                # single trading day, when nothing had failed and the run was
+                # simply still ahead. A warning that fires daily on a healthy
+                # system trains you to ignore the one that matters.
+                eta_hour = cfg_int("pipeline_evening_hour", 22)
+                bhavcopy_eta = now_ist.replace(hour=eta_hour, minute=0,
+                                               second=0, microsecond=0)
                 is_trading_day = is_weekday and not is_holiday
 
                 if not is_trading_day:
@@ -523,19 +535,20 @@ def get_trade_date(sb=None, mode: str = "auto", caller: str = "") -> str:
                         f"({reason} — previous trading day correct | calendar={calendar_today})"
                     )
                 elif now_ist < bhavcopy_eta:
-                    # Trading day but before 6pm — bhavcopy not yet written
+                    # Trading day, evening run still ahead — nothing is wrong.
                     logger.info(
                         f"  {tag}trade_date={td} | mode={mode} | "
                         f"source=stock_data_daily | bhavcopy=⏳ not yet "
-                        f"(pre-6pm on trading day | calendar={calendar_today})"
+                        f"(evening pipeline runs at {eta_hour:02d}:00 IST | "
+                        f"calendar={calendar_today})"
                     )
                 else:
-                    # Trading day, post 6pm, bhavcopy missing — REAL problem
+                    # Trading day, the run should have happened — REAL problem.
                     logger.warning(
                         f"  {tag}trade_date={td} | mode={mode} | "
                         f"source=stock_data_daily | bhavcopy=❌ MISSING "
-                        f"(post-6pm on trading day — step 05 may have failed | "
-                        f"calendar={calendar_today})"
+                        f"(evening pipeline was due at {eta_hour:02d}:00 IST — "
+                        f"step 05 may have failed | calendar={calendar_today})"
                     )
 
             return td
