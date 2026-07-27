@@ -553,6 +553,33 @@ def main():
         logger.warning("No rows to write — snapshot skipped")
         return {"skipped": True}
 
+    # ── Schema check BEFORE the write ────────────────────────────────────────
+    # One key in this payload that is not a real column fails the upsert with
+    # PGRST 42703, and step 20.5 is fatal — the evening pipeline stops before
+    # alerts are built. The raw error names a single column and gives no hint
+    # that a migration is missing, so check up front and say exactly what to do.
+    #
+    # This costs one SELECT ... LIMIT 1 per run. planned_stop_source shipped in
+    # the payload before its column existed and would have taken the pipeline
+    # down on the next run.
+    try:
+        probe = (sb.table("signal_output_daily").select("*").limit(1)
+                   .execute().data or [{}])
+        if probe and probe[0]:
+            unknown = sorted(set(output_rows[0]) - set(probe[0]))
+            if unknown:
+                raise SystemExit(
+                    f"\n  signal_output_daily is missing {len(unknown)} column(s) "
+                    f"the snapshot writes: {', '.join(unknown)}\n"
+                    f"  Apply the pending migration in backend/db/migrations/ "
+                    f"before running the pipeline.\n"
+                )
+    except SystemExit:
+        raise
+    except Exception as e:
+        # A probe failure must not itself break the run.
+        logger.debug(f"  schema probe skipped: {e}")
+
     # ── Write ─────────────────────────────────────────────────────────────────
     if not DRY_RUN:
         written = 0
