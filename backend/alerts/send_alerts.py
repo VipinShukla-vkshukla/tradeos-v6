@@ -2502,8 +2502,35 @@ def send_signal_with_keyboard(signal: dict) -> bool:
 
 # ── Main ───────────────────────────────────────────────────────────────────
 
+_KNOWN_FLAGS = {
+    "--morning", "--afternoon", "--evening", "--position-risk",
+    "--dry-run", "--dry", "--test",
+}
+
+
 def main():
     logger.info(f"send_alerts v6 | argv={sys.argv}")
+
+    # --dry-run was accepted silently and did NOTHING. The env var DRY_RUN is
+    # honoured by send_message, but nothing mapped the flag to it, so a command
+    # that read as a rehearsal sent real Telegram, Discord and email messages.
+    # A safety flag that silently does nothing is worse than no flag at all,
+    # because it is used precisely when the sender does not want to send.
+    global DRY_RUN
+    if {"--dry-run", "--dry", "--test"} & set(sys.argv):
+        DRY_RUN = True
+        logger.warning("DRY RUN — messages will be previewed to the log, not sent")
+
+    # An unrecognised flag is not harmless here: `--dryrun` or `--dry_run` would
+    # have fallen through to a live send. Refuse rather than guess.
+    unknown = [a for a in sys.argv[1:] if a.startswith("-") and a not in _KNOWN_FLAGS]
+    if unknown:
+        raise SystemExit(
+            f"\n  Unrecognised flag(s): {', '.join(unknown)}\n"
+            f"  Known: {', '.join(sorted(_KNOWN_FLAGS))}\n"
+            f"  Refusing to run — an unknown flag on this command sends real alerts.\n"
+        )
+
     if is_kill_switch_active():
         logger.warning("Kill switch — send_alerts skipped")
         return {"status": "skipped"}

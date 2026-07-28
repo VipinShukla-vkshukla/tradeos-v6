@@ -47,6 +47,13 @@ class IntradayEngine:
         # engines disagree about the same bar.
         self._contexts: dict = {}
         self._index_ctx = None
+        # The intraday universe, selected on its OWN criteria. Until this
+        # existed the engines only saw swing shortlist names — stocks chosen for
+        # a one-to-three-week thesis, which predicts almost nothing about
+        # whether a name moves enough today to pay for a round trip.
+        self._universe: list[str] = []
+        # symbol:strategy -> (entry, verdict) already recorded this session.
+        self._recorded: dict[str, tuple[float, str]] = {}
 
     # ── state ───────────────────────────────────────────────────────────────
     def load_state(self) -> None:
@@ -199,8 +206,30 @@ class IntradayEngine:
         return len(built)
 
     def watch_symbols(self) -> list[str]:
+        """
+        Everything the feed must carry: open positions, swing candidates near
+        their entry limit, and the intraday universe.
+
+        Positions are non-negotiable — an unwatched position is an unmanaged
+        stop. The other two are opportunity, and the cap in the scanner keeps
+        the total inside the websocket and historical-data budget.
+        """
         return sorted({p["symbol"] for p in self.positions if p.get("symbol")} |
-                      {c["symbol"] for c in self.candidates if c.get("symbol")})
+                      {c["symbol"] for c in self.candidates if c.get("symbol")} |
+                      set(self._universe))
+
+    def refresh_universe(self) -> int:
+        """Rebuild the intraday universe. Daily input, so refreshed on the slow timer."""
+        if not cfg_bool("intraday_strategies_enabled", True):
+            self._universe = []
+            return 0
+        try:
+            from intraday import scanner
+            self._universe = scanner.symbols(self.sb)
+        except Exception as e:
+            logger.warning(f"  universe refresh failed: {e}")
+            self._universe = []
+        return len(self._universe)
 
     # ── evaluation ──────────────────────────────────────────────────────────
     def evaluate_positions(self, prices: dict[str, float]) -> list[dict]:
@@ -472,6 +501,34 @@ class IntradayEngine:
                 meta={"strategy": st.strategy, "qty": qty, "rr": round(st.rr, 2)},
             ))
 
+    def _setup_is_new(self, s, verdict: str) -> bool:
+        """
+        Has this setup already been recorded this session?
+
+        The decision loop runs every 15 seconds, and a setup that is valid at
+        11:00 is usually still valid at 11:00:15 — so recording on every cycle
+        wrote CONCOR/PDL four times in two minutes and would have produced
+        thousands of near-identical rows a day. That breaks two things at once:
+        the storage budget this package was designed around, and the scorecard,
+        because a hit rate computed over duplicates counts one setup fifty
+        times and buries every other engine.
+
+        A setup is NEW when its symbol+engine has not been seen today, or when
+        its levels have moved materially — a genuinely different trade at a
+        different price, rather than the same one restated.
+        """
+        key = f"{s.symbol}:{s.strategy}"
+        prev = self._recorded.get(key)
+        if prev is None:
+            return True
+        prev_entry, prev_verdict = prev
+        # A cost verdict flipping is worth recording: the same setup becoming
+        # takeable (or ceasing to be) is a real change.
+        if prev_verdict != verdict:
+            return True
+        drift = cfg_float("intraday_setup_dedup_pct", 0.35) / 100.0
+        return bool(prev_entry and abs(s.entry - prev_entry) / prev_entry > drift)
+
     def _record_setup(self, s, phase: str, cost_pct: float, verdict: str, qty: int) -> None:
         """
         Persist every setup DETECTED, including cost rejections.
@@ -480,6 +537,8 @@ class IntradayEngine:
         only taken trades are stored — and that question is the only way an
         engine's lifecycle state can ever be justified rather than guessed.
         """
+        if not self._setup_is_new(s, verdict):
+            return
         try:
             self.sb.table("intraday_setups").insert({
                 "trade_date": today_ist().isoformat(),
@@ -493,6 +552,7 @@ class IntradayEngine:
                 "corroborated_by": ",".join(s.meta.get("corroborated_by") or []) or None,
                 "meta": json.dumps({**s.meta, "qty": qty}, default=str),
             }).execute()
+            self._recorded[f"{s.symbol}:{s.strategy}"] = (s.entry, verdict)
         except Exception as e:
             logger.debug(f"  setup record failed for {s.symbol}: {e}")
 

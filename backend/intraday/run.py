@@ -66,6 +66,7 @@ def status() -> dict:
         "market_open": is_market_open(),
         "positions": [p["symbol"] for p in eng.positions],
         "candidates": [c["symbol"] for c in eng.candidates],
+        "universe_size": eng.refresh_universe(),
     }
     for k, v in st.items():
         logger.info(f"  {k:<16}: {v}")
@@ -87,6 +88,7 @@ def main(once: bool = False, dry: bool = False) -> None:
         return
 
     engine.load_state()
+    engine.refresh_universe()
     symbols = engine.watch_symbols()
     if not symbols:
         logger.warning("No positions and no tiered candidates — nothing to watch")
@@ -142,6 +144,7 @@ def main(once: bool = False, dry: bool = False) -> None:
             # Telegram, or a manual exit, is picked up without a restart.
             if now - last_state >= 300:
                 engine.load_state()
+                engine.refresh_universe()
                 feed.resubscribe(engine.watch_symbols())
                 # Bars refresh on the same slow timer: minute candles change
                 # once a minute, and the historical endpoint is rate-limited far

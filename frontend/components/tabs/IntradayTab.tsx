@@ -35,6 +35,35 @@ interface BrokerRow {
   quantity: number | null; detail: string | null;
 }
 interface Beat { id: number; ts: string; summary: string | null; alerts_sent: number }
+interface SetupRow {
+  id: number; ts: string; trade_date: string; symbol: string; strategy: string;
+  phase: string | null; entry: number | null; stop: number | null; target: number | null;
+  risk_pct: number | null; reward_pct: number | null; rr: number | null;
+  confidence: number | null; rationale: string | null; invalidation: string | null;
+  cost_pct: number | null; cost_verdict: string | null; corroborated_by: string | null;
+  outcome: string | null; outcome_pct: number | null;
+}
+interface ScoreRow {
+  strategy: string; setups: number; taken: number; wins: number; losses: number;
+  scratches: number; hit_rate_pct: number | null; avg_net_pct: number | null;
+  avg_confidence: number | null; last_seen: string | null;
+}
+
+/** What each engine looks for — so the code names mean something on screen. */
+const ENGINE_LABEL: Record<string, string> = {
+  ORB: 'Opening range break',
+  GAP: 'Gap held',
+  PDL: "Prev-day high retest",
+  VCE: 'Squeeze release',
+  PBK: 'Trend pullback',
+  VWR: 'VWAP reclaim',
+  RNG: 'Range low',
+};
+const OUTCOME_TONE: Record<string, string> = {
+  TARGET: 'bg-profit/15 text-profit',
+  STOP: 'bg-loss/15 text-loss',
+  TIMEOUT: 'bg-muted text-muted-foreground',
+};
 
 const URGENCY: Record<string, string> = {
   CRITICAL: 'bg-red-500/15 text-red-400',
@@ -60,22 +89,29 @@ export function IntradayTab() {
   const [broker, setBroker] = useState<BrokerRow[]>([]);
   const [beat, setBeat] = useState<Beat | null>(null);
   const [gates, setGates] = useState<Record<string, string>>({});
+  const [setups, setSetups] = useState<SetupRow[]>([]);
+  const [scores, setScores] = useState<ScoreRow[]>([]);
+  const [showRejected, setShowRejected] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [a, b, h, g] = await Promise.all([
+      const [a, b, h, g, su, sc] = await Promise.all([
         queries.getIntradayAlerts(60),
         queries.getIntradayBrokerLog(40),
         queries.getIntradayHeartbeat(),
         queries.getIntradayGates(),
+        queries.getIntradaySetups(60),
+        queries.getIntradayScorecard(),
       ]);
       if (a.error) throw a.error;
       setAlerts((a.data ?? []) as Alert[]);
       setBroker((b.data ?? []) as BrokerRow[]);
       setBeat(((h.data ?? [])[0] ?? null) as Beat | null);
       setGates(g);
+      setSetups((su.data ?? []) as SetupRow[]);
+      setScores((sc.data ?? []) as ScoreRow[]);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load intraday data');
@@ -124,6 +160,10 @@ export function IntradayTab() {
   const todays = alerts.filter((a) => (a.ts ?? '').slice(0, 10) === today);
   const critical = todays.filter((a) => a.urgency === 'CRITICAL').length;
   const blocked = broker.filter((b) => b.action === 'BLOCKED').length;
+  const taken = setups.filter((s) => s.cost_verdict === 'TAKEN').length;
+  const rejected = setups.filter((s) => s.cost_verdict === 'REJECTED_COST').length;
+  const visibleSetups = showRejected
+    ? setups : setups.filter((s) => s.cost_verdict !== 'REJECTED_COST');
   const errObj = error ? new Error(error) : null;
 
   return (
@@ -255,6 +295,129 @@ export function IntradayTab() {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+        </DataGuard>
+      </Panel>
+
+      {/* Setups — what the seven engines found, including cost rejections */}
+      <Panel title="Intraday Setups"
+        description="Every setup the engines detected today, including the ones costs ruled out"
+        dataSource="supabase" tableName="intraday_setups" isLoading={loading}>
+        <DataGuard data={visibleSetups} isLoading={loading} error={errObj}
+          loadingContent={<SkeletonTable rows={4} cols={7} />}
+          emptyTitle="No setups today"
+          emptyDescription="Engines evaluate only during PRIME, DRIFT and AFTERNOON, and only when the index gate allows longs. Nothing found is a normal result.">
+          {(data) => (
+            <div className="space-y-3">
+              <div className="flex items-center gap-3 flex-wrap text-xs">
+                <span className={taken > 0 ? 'text-profit font-semibold' : 'text-muted-foreground font-semibold'}>
+                  {taken} of {setups.length} cleared the cost gate
+                </span>
+                {rejected > 0 && (
+                  <span className="px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                    {rejected} rejected on cost
+                  </span>
+                )}
+                {rejected > 0 && (
+                  <button className="ml-auto text-muted-foreground hover:text-foreground"
+                    onClick={() => setShowRejected((v) => !v)}>
+                    {showRejected ? 'Hide' : 'Show'} cost rejections
+                  </button>
+                )}
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-border/30 bg-panel-hover/50">
+                      {['Time', 'Symbol', 'Engine', 'Entry', 'Stop', 'Target', 'R:R', 'Cost', 'Result'].map((h) => (
+                        <th key={h} className={`py-2 px-3 font-medium text-muted-foreground whitespace-nowrap ${
+                          ['Time', 'Symbol', 'Engine'].includes(h) ? 'text-left' : 'text-right'}`}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.map((s) => (
+                      <tr key={s.id} className={`border-b border-border/20 hover:bg-panel-hover ${
+                        s.cost_verdict === 'REJECTED_COST' ? 'opacity-60' : ''}`}>
+                        <td className="py-2 px-3 font-mono text-muted-foreground">{timeIST(s.ts)}</td>
+                        <td className="py-2 px-3 font-semibold">{s.symbol}</td>
+                        <td className="py-2 px-3">
+                          <span title={s.rationale ?? ''}>{s.strategy}</span>
+                          <div className="text-[10px] text-muted-foreground">
+                            {ENGINE_LABEL[s.strategy] ?? s.phase}
+                            {s.corroborated_by && ` · +${s.corroborated_by}`}
+                          </div>
+                        </td>
+                        <td className="text-right py-2 px-3 font-mono">₹{s.entry?.toFixed(2) ?? '—'}</td>
+                        <td className="text-right py-2 px-3 font-mono text-loss">₹{s.stop?.toFixed(2) ?? '—'}</td>
+                        <td className="text-right py-2 px-3 font-mono text-profit">₹{s.target?.toFixed(2) ?? '—'}</td>
+                        <td className="text-right py-2 px-3 font-mono">{s.rr?.toFixed(1) ?? '—'}</td>
+                        <td className={`text-right py-2 px-3 font-mono ${
+                          s.cost_verdict === 'REJECTED_COST' ? 'text-loss' : 'text-muted-foreground'}`}
+                          title={s.cost_verdict === 'REJECTED_COST'
+                            ? 'Costs ate too much of the target for this to be worth taking'
+                            : undefined}>
+                          {s.cost_pct != null ? `${s.cost_pct.toFixed(2)}%` : '—'}
+                        </td>
+                        <td className="text-right py-2 px-3">
+                          {s.outcome
+                            ? <span className={`px-1.5 py-0.5 rounded ${OUTCOME_TONE[s.outcome] ?? ''}`}>
+                                {s.outcome}{s.outcome_pct != null && ` ${s.outcome_pct > 0 ? '+' : ''}${s.outcome_pct.toFixed(2)}%`}
+                              </span>
+                            : <span className="text-muted-foreground">pending</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </DataGuard>
+      </Panel>
+
+      {/* Engine scorecard — the evidence a lifecycle state should rest on */}
+      <Panel title="Engine Scorecard"
+        description="Hit rate and net expectancy per engine — counting setups detected, not trades taken"
+        dataSource="supabase" tableName="v_intraday_engine_scorecard" isLoading={loading}>
+        <DataGuard data={scores} isLoading={loading} error={errObj}
+          loadingContent={<SkeletonTable rows={4} cols={6} />}
+          emptyTitle="No resolved setups yet"
+          emptyDescription="Outcomes are resolved after the close with: python -m intraday.outcomes">
+          {(data) => (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-border/30 bg-panel-hover/50">
+                    {['Engine', 'Looks for', 'Setups', 'Taken', 'Hit rate', 'Avg net'].map((h) => (
+                      <th key={h} className={`py-2 px-3 font-medium text-muted-foreground ${
+                        ['Engine', 'Looks for'].includes(h) ? 'text-left' : 'text-right'}`}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.map((r) => (
+                    <tr key={r.strategy} className="border-b border-border/20 hover:bg-panel-hover">
+                      <td className="py-2 px-3 font-semibold">{r.strategy}</td>
+                      <td className="py-2 px-3 text-muted-foreground">{ENGINE_LABEL[r.strategy] ?? '—'}</td>
+                      <td className="text-right py-2 px-3 font-mono">{r.setups}</td>
+                      <td className="text-right py-2 px-3 font-mono text-muted-foreground">{r.taken}</td>
+                      <td className={`text-right py-2 px-3 font-mono ${
+                        (r.hit_rate_pct ?? 0) >= 50 ? 'text-profit' : 'text-muted-foreground'}`}>
+                        {r.hit_rate_pct != null ? `${r.hit_rate_pct.toFixed(0)}%` : '—'}
+                      </td>
+                      <td className={`text-right py-2 px-3 font-mono font-semibold ${
+                        r.avg_net_pct == null ? 'text-muted-foreground'
+                          : r.avg_net_pct >= 0 ? 'text-profit' : 'text-loss'}`}
+                        title="Already net of the round trip — a gross win under 0.21% is a loss">
+                        {r.avg_net_pct != null
+                          ? `${r.avg_net_pct > 0 ? '+' : ''}${r.avg_net_pct.toFixed(2)}%` : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </DataGuard>

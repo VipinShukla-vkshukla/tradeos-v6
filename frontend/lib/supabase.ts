@@ -167,6 +167,38 @@ export const queries = {
       'intraday_heartbeat', { limit: 1 },
     ),
 
+  /** Today's detected setups, including the ones rejected on cost. */
+  getIntradaySetups: (limit = 50) =>
+    queryTable<{
+      id: number; ts: string; trade_date: string; symbol: string; strategy: string;
+      phase: string | null; entry: number | null; stop: number | null;
+      target: number | null; risk_pct: number | null; reward_pct: number | null;
+      rr: number | null; confidence: number | null; rationale: string | null;
+      invalidation: string | null; cost_pct: number | null; cost_verdict: string | null;
+      corroborated_by: string | null; outcome: string | null; outcome_pct: number | null;
+    }>('intraday_setups', { order: { column: 'ts', ascending: false }, limit }),
+
+  /**
+   * Per-engine hit rate and net expectancy.
+   *
+   * Counts setups DETECTED rather than trades taken, so an engine that fires
+   * often and resolves badly is visible even when cost rejection kept you out.
+   */
+  getIntradayScorecard: () =>
+    queryTable<{
+      strategy: string; setups: number; taken: number; wins: number; losses: number;
+      scratches: number; hit_rate_pct: number | null; avg_net_pct: number | null;
+      avg_confidence: number | null; last_seen: string | null;
+    }>('v_intraday_engine_scorecard', { limit: 20 }),
+
+  /** What was watchable today, and why. */
+  getIntradayUniverse: (limit = 50) =>
+    queryTable<{
+      trade_date: string; symbol: string; close: number; value_cr: number;
+      atr_pct: number; delivery_pct: number | null; sector: string;
+      score: number; reason: string;
+    }>('intraday_universe', { order: { column: 'score', ascending: false }, limit }),
+
   /** The intraday_* gates from system_config, so the UI shows the live phase. */
   getIntradayGates: async () => {
     const { data } = await queryTable<{ key: string; value: string }>(
