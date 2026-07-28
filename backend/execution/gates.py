@@ -37,6 +37,34 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import IST, DRY_RUN, cfg_bool, cfg_float, cfg_int
 
 
+LIVE = "LIVE"
+PAPER = "PAPER"
+
+
+def trading_mode(framework: str = "SWING") -> str:
+    """
+    LIVE or PAPER, per framework.
+
+    Separate per framework because they are at genuinely different stages: the
+    swing book has been trading with real money for months, while the intraday
+    engines have never placed a single order. Forcing both into one mode would
+    mean either risking capital on untested engines or freezing a book that is
+    already working.
+
+    PAPER is the default for anything not explicitly set to LIVE. A framework
+    that reaches production by forgetting to configure it is not a framework
+    that earned it.
+    """
+    fw = (framework or "SWING").upper()
+    key = "intraday_trading_mode" if fw == "INTRADAY" else "swing_trading_mode"
+    from config import cfg
+    return PAPER if (cfg(key, PAPER) or PAPER).upper() != LIVE else LIVE
+
+
+def is_paper(framework: str = "SWING") -> bool:
+    return trading_mode(framework) == PAPER
+
+
 def autonomy_phase() -> float:
     return cfg_float("intraday_autonomy_phase", 2.0)
 

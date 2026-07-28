@@ -169,8 +169,16 @@ def preflight(req: OrderRequest, sb=None) -> OrderResult:
     return OrderResult(True, None, f"cleared: {req.side} {req.quantity} {req.symbol} @ ~₹{px:,.2f}")
 
 
-def place(req: OrderRequest, sb=None, notifier=None) -> OrderResult:
-    """Preflight, then send. Logged either way."""
+def place(req: OrderRequest, sb=None, notifier=None,
+          framework: str = "SWING") -> OrderResult:
+    """
+    Preflight, then send — to the broker or to the simulator. Logged either way.
+
+    PAPER mode routes here too, and deliberately still runs the full preflight
+    first. Simulating an order that the live rails would have refused would make
+    paper results describe a system you are not allowed to run, which is worse
+    than useless: it would build confidence in decisions that can never execute.
+    """
     sb = sb or get_supabase()
     pre = preflight(req, sb)
     if not pre.ok:
@@ -178,6 +186,33 @@ def place(req: OrderRequest, sb=None, notifier=None) -> OrderResult:
                        f"{req.symbol}: {pre.message}")
         _log(sb, req, "BLOCKED", None, pre.message)
         return pre
+
+    # ── PAPER: simulate the fill, skip the broker ───────────────────────────
+    from execution.gates import is_paper
+    if is_paper(framework):
+        from execution import paper_broker
+        px = req.price
+        if px is None:
+            try:
+                from kite import kite_client
+                px = (kite_client.fetch_ltp([req.symbol]) or {}).get(req.symbol)
+            except Exception:
+                px = None
+        if not px:
+            return OrderResult(False, None, "no price to simulate against", "NO_PRICE")
+        f = paper_broker.place(req.symbol, req.side, req.quantity, req.order_type,
+                               req.price, float(px), framework, req.reason, sb)
+        _recent[f"{req.symbol}:{req.side}"] = datetime.now(IST)
+        if notifier and f.ok:
+            from intraday.notifier import Action
+            notifier.send(Action(
+                req.symbol, f"PAPER_{req.side}",
+                f"[PAPER] {req.side} {req.quantity} @ ₹{f.fill_price:,.2f}",
+                f"{req.reason}\nSimulated — no real order was placed. "
+                f"Charges ₹{f.charges:.2f}.",
+                ltp=f.fill_price, urgency="INFO"), force=True)
+        return OrderResult(f.ok, f.order_id, f.message,
+                           None if f.ok else "PAPER_NOT_FILLED")
 
     try:
         from kite import kite_client
