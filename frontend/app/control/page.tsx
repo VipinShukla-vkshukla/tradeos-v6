@@ -27,6 +27,7 @@ import {
   gateFunnel,
   type EngineConfig, type EnginePerf, type Gates, type Lifecycle, type Stock,
 } from '@/lib/engineGates';
+import { OperatorPanel } from '@/components/core/OperatorPanel';
 
 interface SectorRow {
   sector: string;
@@ -176,6 +177,12 @@ export default function ControlRoom() {
       </header>
 
       <main className="mx-auto max-w-[1600px] px-6 py-6">
+        {/* Operator controls first. Engine tuning changes which trades are
+            proposed; these decide whether any of them can happen at all. */}
+        <div className="mb-6">
+          <OperatorPanel />
+        </div>
+
         {error && (
           <div className="mb-5 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300">
             {error}

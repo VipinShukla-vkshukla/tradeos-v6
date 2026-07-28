@@ -14,11 +14,22 @@ function getServiceClient() {
 
 export async function PATCH(
   req: NextRequest,
-  { params }: { params: { key: string } }
+  // Next.js 15+ makes route params a PROMISE. Reading params.key directly gave
+  // `undefined`, so every update ran `.eq('key', undefined)` — which PostgREST
+  // accepts, matches nothing, and reports as success. The route has been
+  // answering {"success":true} while changing nothing, for every config edit
+  // made from the dashboard.
+  { params }: { params: Promise<{ key: string }> }
 ) {
   try {
     const supabase = getServiceClient();
-    const configKey = decodeURIComponent(params.key);
+    const { key } = await params;
+    const configKey = decodeURIComponent(key ?? '');
+
+    if (!configKey) {
+      return NextResponse.json({ message: 'config key missing from the route' },
+                               { status: 400 });
+    }
 
     const body: { value: string; reason?: string } = await req.json();
     if (body.value === undefined) {
@@ -32,13 +43,23 @@ export async function PATCH(
       .eq('key', configKey)
       .single();
 
-    // Update system_config
-    const { error } = await supabase
+    // Update system_config, and REQUIRE a row back. A PATCH that matches
+    // nothing is not a success — it is the caller believing a setting changed
+    // when it did not, which for a kill switch or a live-trading toggle is the
+    // most expensive kind of wrong this API can be.
+    const { data: updated, error } = await supabase
       .from('system_config')
       .update({ value: body.value, updated_at: new Date().toISOString() })
-      .eq('key', configKey);
+      .eq('key', configKey)
+      .select('key');
 
     if (error) throw error;
+    if (!updated || updated.length === 0) {
+      return NextResponse.json(
+        { message: `no config row named '${configKey}' — nothing was changed` },
+        { status: 404 },
+      );
+    }
 
     // Write to config_change_log
     await supabase.from('config_change_log').insert({
