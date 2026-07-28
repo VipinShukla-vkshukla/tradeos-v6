@@ -68,6 +68,14 @@ export interface OpenPosition {
   regime_at_entry?: string | null;
   sector_rank_at_entry?: number | null;
 
+  // PAPER positions are managed by the same exit engine and feed the same
+  // learning loop; only the fill was simulated. Shown distinctly because a
+  // simulated P&L sitting unlabelled next to a real one is the single most
+  // misleading thing this dashboard could display.
+  mode?: string | null;              // LIVE | PAPER
+  framework?: string | null;         // SWING | INTRADAY
+  product?: string | null;
+  intraday_strategy?: string | null;
   reconcile_status?: string | null;
   last_reconciled_at?: string | null;
   kite_avg_price?: number | null;
@@ -126,6 +134,9 @@ export interface ClosedPosition {
   sector_rank_at_entry?: number | null;
   closed_at?: string | null;
   partial_bookings?: unknown;
+  mode?: string | null;
+  framework?: string | null;
+  intraday_strategy?: string | null;
 }
 
 // ---------------------------------------------------------------------------

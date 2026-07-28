@@ -125,6 +125,20 @@ function PositionCard({ p, policy }: { p: OpenPosition; policy: ExitPolicy }) {
               <span className="font-bold">{p.symbol}</span>
               <span className="text-xs text-muted-foreground">{p.company_name}</span>
               <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{p.strategy}</span>
+              {/* Mode first: everything else on this card means something
+                  different depending on whether the money is real. */}
+              {(p.mode ?? 'LIVE').toUpperCase() === 'PAPER' && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 font-medium"
+                  title="Simulated fill. Managed by the same exit engine and feeding the same learning loop — but no real money.">
+                  PAPER
+                </span>
+              )}
+              {(p.framework ?? 'SWING').toUpperCase() === 'INTRADAY' && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400"
+                  title="Managed by the intraday exit policy — setup target, minute-based time stop, invalidation check, square-off">
+                  INTRADAY{p.intraday_strategy ? ` · ${p.intraday_strategy}` : ''}
+                </span>
+              )}
               {p.regime_at_entry && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted/60 text-muted-foreground"
                   title="Market regime when this position was opened">
@@ -416,11 +430,24 @@ export function PositionsTab() {
   const critical = sortedOpen.filter((p) => getAttentionLevel(p) === 'CRITICAL');
   const warning = sortedOpen.filter((p) => getAttentionLevel(p) === 'WARNING');
   const needsAttention = critical.length + warning.length;
-  const totalUnrealized = open.reduce((s, p) => s + (p.unrealized_pnl ?? 0), 0);
-  const totalDeployed = open.reduce((s, p) => s + (p.current_value ?? 0), 0);
-  const totalRealized = closed.reduce((s, p) => s + (p.realized_pnl ?? 0), 0);
-  const closedWins = closed.filter((p) => (p.realized_pnl ?? 0) > 0).length;
-  const wr = closed.length > 0 ? closedWins / closed.length * 100 : 0;
+  // Never blend the two. A simulated gain added to a real one produces a
+  // number that describes no account that exists.
+  const isPaper = (p: OpenPosition) => (p.mode ?? 'LIVE').toUpperCase() === 'PAPER';
+  const livePos = open.filter((p) => !isPaper(p));
+  const paperPos = open.filter(isPaper);
+  const paperUnrealized = paperPos.reduce((s, p) => s + (p.unrealized_pnl ?? 0), 0);
+  const totalUnrealized = livePos.reduce((s, p) => s + (p.unrealized_pnl ?? 0), 0);
+  const totalDeployed = livePos.reduce((s, p) => s + (p.current_value ?? 0), 0);
+  const liveClosed = closed.filter((p) => (p.mode ?? 'LIVE').toUpperCase() !== 'PAPER');
+  const paperClosed = closed.filter((p) => (p.mode ?? 'LIVE').toUpperCase() === 'PAPER');
+  const totalRealized = liveClosed.reduce((s, p) => s + (p.realized_pnl ?? 0), 0);
+  const closedWins = liveClosed.filter((p) => (p.realized_pnl ?? 0) > 0).length;
+  const wr = liveClosed.length > 0 ? closedWins / liveClosed.length * 100 : 0;
+  const paperWins = paperClosed.filter((p) => (p.realized_pnl ?? 0) > 0).length;
+  const paperWr = paperClosed.length > 0 ? paperWins / paperClosed.length * 100 : 0;
+  const paperR = paperClosed.filter((p) => p.r_multiple != null);
+  const paperAvgR = paperR.length
+    ? paperR.reduce((s, p) => s + (p.r_multiple ?? 0), 0) / paperR.length : null;
   const errObj = error ? new Error(error) : null;
 
   // ── Open risk ──────────────────────────────────────────────────────────
@@ -509,6 +536,58 @@ export function PositionsTab() {
           </>
         )}
       </div>
+
+      {/* Paper book — deliberately its own row. The question paper mode exists
+          to answer is "would this have worked", and that is only readable when
+          the simulated results are shown together and apart from the real ones. */}
+      {!loading && (paperPos.length > 0 || paperClosed.length > 0) && (
+        <div className="rounded-xl border border-blue-500/30 bg-blue-500/5 p-4">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 font-medium">
+              PAPER
+            </span>
+            <span className="text-sm font-semibold">Simulated book</span>
+            <span className="text-xs text-muted-foreground">
+              same engines, same exits, no real money
+            </span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-3 text-xs">
+            <div>
+              <div className="text-muted-foreground">Open</div>
+              <div className="font-mono mt-0.5">{paperPos.length}</div>
+            </div>
+            <div>
+              <div className="text-muted-foreground">Unrealised</div>
+              <div className={`font-mono mt-0.5 ${paperUnrealized >= 0 ? 'text-profit' : 'text-loss'}`}>
+                {formatCurrency(paperUnrealized, { showSign: true })}
+              </div>
+            </div>
+            <div>
+              <div className="text-muted-foreground">Closed · win rate</div>
+              <div className="font-mono mt-0.5">
+                {paperClosed.length}{paperClosed.length > 0 && ` · ${paperWr.toFixed(0)}%`}
+              </div>
+            </div>
+            <div>
+              <div className="text-muted-foreground" title="Net of the round trip — a gross win under 0.21% is a loss">
+                Avg R
+              </div>
+              <div className={`font-mono mt-0.5 ${
+                paperAvgR == null ? 'text-muted-foreground'
+                  : paperAvgR >= 0 ? 'text-profit' : 'text-loss'}`}>
+                {paperAvgR != null ? `${paperAvgR >= 0 ? '+' : ''}${paperAvgR.toFixed(2)}R` : '—'}
+              </div>
+            </div>
+          </div>
+          {paperClosed.length < 10 && (
+            <div className="text-[10px] text-muted-foreground mt-2">
+              {paperClosed.length} closed so far. Treat any win rate under ~20 trades as
+              noise — and paper has no queue position or partial fills, so it is an upper
+              bound on what the same decisions would have returned live.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Open positions — attention priority order */}
       <Panel title="Open Positions"
