@@ -128,11 +128,68 @@ def show(sb=None) -> None:
     logger.info("           python control_panel.py --swing    paper|live|off")
 
 
+def show_ip() -> None:
+    """
+    This machine's public IP, and which allowlist slot it should occupy.
+
+    Printed rather than auto-registered because Kite exposes no API for the
+    allowlist — a human has to paste it into the developer console. What this
+    removes is the guessing about WHICH address to paste when you have a laptop
+    and a server both talking to the same broker app.
+    """
+    import urllib.request
+    ip = None
+    for url in ("https://api.ipify.org", "https://checkip.amazonaws.com"):
+        try:
+            with urllib.request.urlopen(url, timeout=6) as r:
+                ip = r.read().decode().strip()
+                break
+        except Exception:
+            continue
+    if not ip:
+        logger.error("  could not determine the public IP")
+        return
+
+    sb = get_supabase()
+    known = ""
+    try:
+        rows = (sb.table("system_config").select("value")
+                  .eq("key", "kite_allowlisted_ip").execute().data or [])
+        known = (rows[0]["value"] if rows else "") or ""
+    except Exception:
+        pass
+
+    logger.info(f"  this machine: {ip}")
+    if known and known != ip:
+        logger.warning(f"  recorded    : {known}  ← different")
+        logger.warning("  If this is the SERVER, that is expected — allowlist both.")
+        logger.warning("  If this is your laptop, the home IP has rotated: update the")
+        logger.warning("  allowlist and then:")
+        logger.warning(f"    UPDATE system_config SET value='{ip}' "
+                       f"WHERE key='kite_allowlisted_ip';")
+    elif known:
+        logger.success(f"  recorded    : {known} — matches")
+    else:
+        logger.warning("  nothing recorded yet. Add this IP at "
+                       "https://developers.kite.trade/apps, then:")
+        logger.warning(f"    UPDATE system_config SET value='{ip}' "
+                       f"WHERE key='kite_allowlisted_ip';")
+    logger.info("")
+    logger.info("  Zerodha allows TWO IPs — use one for this laptop and one for the")
+    logger.info("  daemon server. See deploy/README.md.")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Enable, disable, or switch paper/live")
     ap.add_argument("--intraday", choices=["paper", "live", "off"])
     ap.add_argument("--swing", choices=["paper", "live", "off"])
+    ap.add_argument("--ip", action="store_true",
+                    help="show this machine's public IP for the Kite allowlist")
     a = ap.parse_args()
+
+    if a.ip:
+        show_ip()
+        return 0
 
     sb = get_supabase()
     changed = False

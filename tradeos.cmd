@@ -5,6 +5,7 @@ REM
 REM    tradeos            full sequence: preflight, Kite, dashboard, monitor
 REM    tradeos check      verify readiness only, start nothing
 REM    tradeos status     what is live, what is paper, what is off
+REM    tradeos ip         this machine's public IP for the Kite allowlist
 REM    tradeos stop       set the kill switch — everything stops trading
 REM    tradeos evening    run the swing pipeline by hand
 REM
@@ -25,6 +26,7 @@ cd /d "%~dp0backend"
 
 if /i "%~1"=="check"    goto CHECK
 if /i "%~1"=="status"   goto STATUS
+if /i "%~1"=="ip"       goto IP
 if /i "%~1"=="stop"     goto STOP
 if /i "%~1"=="evening"  goto EVENING
 if /i "%~1"=="intraday" goto INTRADAY
@@ -41,6 +43,10 @@ goto END
 
 :STATUS
 python control_panel.py
+goto END
+
+:IP
+python control_panel.py --ip
 goto END
 
 :INTRADAY
