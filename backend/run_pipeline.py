@@ -85,17 +85,17 @@ def main():
 
     # ── Step definitions ──────────────────────────────────────────────────────
     def step_global_cues_evening():
-        from ingestion.ingest_global_cues import main as fn; return fn("EVENING")
+        from swing.ingestion.ingest_global_cues import main as fn; return fn("EVENING")
 
     def step_fetch_chartink():
-        from ingestion.fetch_chartink import main as fn; return fn()
+        from swing.ingestion.fetch_chartink import main as fn; return fn()
 
     def step_ingest_bhavcopy():
-        from ingestion.ingest_bhavcopy import main as fn; return fn()
+        from swing.ingestion.ingest_bhavcopy import main as fn; return fn()
 
     def step_calendar_prep():
         """NSE holidays + event_calendar rollover. No data dependencies — runs early."""
-        from ingestion.ingest_sector_holiday_fixevents import main as fn; return fn()
+        from swing.ingestion.ingest_sector_holiday_fixevents import main as fn; return fn()
 
     def step_sector_strength():
         """
@@ -105,19 +105,19 @@ def main():
         step_calendar_prep and run early, which silently produced zero rows
         every day (see ingest_sector_holiday_fixevents.step_compute_sector_strength).
         """
-        from ingestion.ingest_sector_holiday_fixevents import main_strength as fn; return fn()
+        from swing.ingestion.ingest_sector_holiday_fixevents import main_strength as fn; return fn()
 
     def step_fii_dii():
-        from ingestion.ingest_fii_dii import main as fn; return fn()
+        from swing.ingestion.ingest_fii_dii import main as fn; return fn()
 
     def step_nse_events():
-        from ingestion.ingest_nse_events import main as fn; return fn()
+        from swing.ingestion.ingest_nse_events import main as fn; return fn()
 
     def step_signals():
-        from signals.generate_signals import main as fn; return fn()
+        from swing.signals.generate_signals import main as fn; return fn()
 
     def step_history():
-        from history.append_history import main as fn; return fn()
+        from swing.history.append_history import main as fn; return fn()
 
     def step_post_trade():
         from ai.post_trade_analysis import main as fn; return fn()
@@ -130,16 +130,16 @@ def main():
 
     # Phase 2 steps
     def step_market_news():
-        from ingestion.ingest_market_news import main as fn; return fn()
+        from swing.ingestion.ingest_market_news import main as fn; return fn()
 
     def step_macro_indicators():
-        from ingestion.ingest_macro_indicators import main as fn; return fn()
+        from swing.ingestion.ingest_macro_indicators import main as fn; return fn()
 
     def step_asm_gsm():
-        from ingestion.ingest_asm_gsm import main as fn; return fn()
+        from swing.ingestion.ingest_asm_gsm import main as fn; return fn()
 
     def step_compute_indicators():
-        from compute.compute_indicators import main as fn; return fn()
+        from swing.compute.compute_indicators import main as fn; return fn()
 
     def step_regime_predict():
         """
@@ -162,7 +162,7 @@ def main():
         from ai.market_intelligence_engine import main as fn; return fn()
     
     def step_signal_snapshot():
-        from signals.final_snapshot import main as fn; return fn()
+        from swing.signals.final_snapshot import main as fn; return fn()
 
     def step_position_reconcile():
         """
@@ -197,20 +197,20 @@ def main():
         signals so a data failure stops the pipeline instead of producing a
         recommendation off data we already know is bad.
         """
-        from compute.data_quality_monitor import main_input as fn; return fn()
+        from swing.compute.data_quality_monitor import main_input as fn; return fn()
 
     def step_quality_audit():
         """Output checks (C05, C07-C19). Advisory, runs after alerts."""
-        from compute.data_quality_monitor import main_output as fn; return fn()
+        from swing.compute.data_quality_monitor import main_output as fn; return fn()
     
     def step_compute_regime():
-        from compute.compute_regime import main as fn; return fn()
+        from swing.compute.compute_regime import main as fn; return fn()
     
     def step_screen_stocks():
-        from signals.screen_stocks import main as fn; return fn()
+        from swing.signals.screen_stocks import main as fn; return fn()
     
     def step_compute_msl():
-        from compute.compute_msl import main as fn; return fn()
+        from swing.compute.compute_msl import main as fn; return fn()
     
     
 

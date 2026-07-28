@@ -77,7 +77,7 @@ jobs:
           TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python -c "from brain.performance_tracker import run_performance_tracking; run_performance_tracking()"
+          python -c "from swing.brain.performance_tracker import run_performance_tracking; run_performance_tracking()"
 
       - name: Upload logs on failure
         if: failure()
@@ -118,7 +118,7 @@ jobs:
           TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python -m brain.brain_engine --mode quant
+          python -m swing.brain.brain_engine --mode quant
 
       - name: Upload logs on failure
         if: failure()
@@ -171,7 +171,7 @@ jobs:
           TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python -m brain.brain_engine --mode scan
+          python -m swing.brain.brain_engine --mode scan
 
       - name: Upload logs on failure
         if: failure()
@@ -221,7 +221,7 @@ jobs:
           TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python -m brain.brain_engine --mode full
+          python -m swing.brain.brain_engine --mode full
 
       - name: Upload logs on failure
         if: failure()

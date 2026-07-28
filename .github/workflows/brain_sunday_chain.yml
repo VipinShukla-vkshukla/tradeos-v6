@@ -67,7 +67,7 @@ jobs:
           TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python -c "from brain.performance_tracker import send_weekly_telegram_summary; send_weekly_telegram_summary()"
+          python -c "from swing.brain.performance_tracker import send_weekly_telegram_summary; send_weekly_telegram_summary()"
 
       - name: Upload logs on failure
         if: failure()
