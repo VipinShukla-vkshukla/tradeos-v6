@@ -478,6 +478,14 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
         "company_name":     pos.get("company_name"),
         "sector":           pos.get("sector"),
         "strategy":         pos.get("strategy"),
+        # Carry mode and framework through. Both columns DEFAULT to LIVE/SWING,
+        # so omitting them silently recorded every paper intraday trade as a
+        # live swing one — contaminating the real performance record with
+        # simulated results, which is the one thing paper mode must never do.
+        "mode":             pos.get("mode") or "LIVE",
+        "framework":        pos.get("framework") or "SWING",
+        "product":          pos.get("product") or "CNC",
+        "intraday_strategy": pos.get("intraday_strategy"),
         "entry_date":       pos.get("entry_date"),
         "entry_price":      entry,
         "actual_qty":       total_qty,

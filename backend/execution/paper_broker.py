@@ -44,7 +44,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import IST, get_supabase, cfg_float, today_ist
+from config import IST, get_supabase, cfg_float, cfg_int, today_ist
 
 
 @dataclass
@@ -137,6 +137,68 @@ def place(symbol: str, side: str, qty: int, order_type: str,
     else:
         logger.info(f"  📄 PAPER {side} {symbol} NOT FILLED — {f.message}")
     return f
+
+
+def capacity(framework: str = "INTRADAY", sb=None) -> tuple[bool, str, float]:
+    """
+    Is there room for another paper position?
+
+    Returns (allowed, reason, cash_left). Paper capital is notional and separate
+    from the real account, so a simulation is not constrained by cash that is
+    already deployed live — otherwise the paper run would silently stop taking
+    setups for reasons that have nothing to do with whether they were good.
+
+    Concentration is still enforced. A simulation that opens forty positions
+    tests nothing about a system that can hold four, and its results would not
+    transfer to the account it is meant to inform.
+    """
+    sb = sb or get_supabase()
+    cap = cfg_float("paper_starting_capital", 100000.0)
+    max_open = cfg_int("paper_max_open_positions", 5)
+    try:
+        rows = (sb.table("open_positions")
+                  .select("symbol,invested_value,framework")
+                  .eq("mode", "PAPER").eq("status", "ACTIVE").execute().data or [])
+    except Exception as e:
+        return False, f"could not read paper book: {e}", 0.0
+
+    mine = [r for r in rows if (r.get("framework") or "").upper() == framework.upper()]
+    deployed = sum(float(r.get("invested_value") or 0) for r in rows)
+    left = cap - deployed
+
+    if len(mine) >= max_open:
+        return False, f"{len(mine)} paper {framework} positions already open (cap {max_open})", left
+    if left <= 0:
+        return False, f"paper capital exhausted — ₹{deployed:,.0f} of ₹{cap:,.0f} deployed", left
+    return True, f"₹{left:,.0f} of paper capital free", left
+
+
+def close_position(symbol: str, exit_price: float, reason: str, detail: str,
+                   sb=None) -> bool:
+    """
+    Close a paper position through the SAME path a live one uses.
+
+    Delegates to control.position_lifecycle.close_position, which computes the
+    realised R multiple, hold days, excursions and attribution. Reimplementing
+    any of that here would give paper trades a different outcome record from
+    live ones and make the two incomparable — which would defeat the only reason
+    the simulation exists.
+    """
+    sb = sb or get_supabase()
+    try:
+        rows = (sb.table("open_positions").select("*")
+                  .eq("symbol", symbol).eq("mode", "PAPER").execute().data or [])
+        if not rows:
+            return False
+        from control.position_lifecycle import close_position as _close
+        ok = _close(sb, rows[0], float(exit_price), reason, detail,
+                    today_ist().isoformat(), source="paper")
+        if ok:
+            logger.success(f"  📄 PAPER CLOSED {symbol} @ {exit_price:.2f} — {reason}")
+        return ok
+    except Exception as e:
+        logger.warning(f"  paper close failed for {symbol}: {e}")
+        return False
 
 
 def open_position(symbol: str, qty: int, fill_price: float, setup: dict,

@@ -432,6 +432,29 @@ class IntradayEngine:
         qty = int(d.get("book_qty") or 0) or int(p.get("current_qty") or p.get("actual_qty") or 0)
         if qty <= 0:
             return
+
+        # Paper: there is no broker to notice the holding vanish, so the close
+        # has to be written here. Full exits go through close_position so the
+        # outcome record is identical to a live one; partials only shrink the
+        # quantity, exactly as reconcile does for real fills.
+        from execution.gates import is_paper
+        if is_paper("INTRADAY") and (p.get("mode") or "").upper() == "PAPER":
+            from execution import paper_broker
+            if d["action"].startswith("EXIT"):
+                paper_broker.close_position(p["symbol"], ltp, d["reason"],
+                                            d["detail"], self.sb)
+            else:
+                left = int(p.get("current_qty") or p.get("actual_qty") or 0) - qty
+                try:
+                    self.sb.table("open_positions").update({
+                        "current_qty": max(0, left),
+                        "partial_booked_qty": int(p.get("partial_booked_qty") or 0) + qty,
+                        "partial_booked_price": ltp,
+                    }).eq("symbol", p["symbol"]).execute()
+                except Exception as e:
+                    logger.warning(f"  paper partial failed for {p['symbol']}: {e}")
+            self.load_state()
+            return
         # Marketable limit: priced through the bid so it fills like a market
         # order without accepting an unbounded price in a thin book.
         limit = round(ltp * (1 - cfg_int("intraday_exit_slip_bps", 30) / 10000.0), 1)
@@ -571,6 +594,12 @@ class IntradayEngine:
         for s in setups:
             st, qty, mc = s["setup"], s["qty"], s["market"]
             corro = st.meta.get("corroborated_by") or []
+            # In PAPER mode, actually TAKE the setup. Without this the
+            # simulation measures exits but never a full round trip, and a
+            # system judged only on how it leaves trades tells you nothing
+            # about which trades it should have entered.
+            self._maybe_open_paper(st, qty, mc)
+
             self.notifier.send(Action(
                 symbol=st.symbol, kind=f"SETUP_{st.strategy}",
                 headline=(f"{st.strategy} — buy {qty} @ ₹{st.entry:.2f}, "
@@ -613,6 +642,75 @@ class IntradayEngine:
             return True
         drift = cfg_float("intraday_setup_dedup_pct", 0.35) / 100.0
         return bool(prev_entry and abs(s.entry - prev_entry) / prev_entry > drift)
+
+    def _maybe_open_paper(self, st, qty: int, mc) -> None:
+        """
+        Simulate the entry, so the paper book contains real round trips.
+
+        Gated on capacity as well as the usual rails: a simulation that opens
+        forty positions tests nothing about a system that can hold five, and its
+        results would not transfer to the account it exists to inform.
+        """
+        from execution.gates import is_paper
+        if not is_paper("INTRADAY"):
+            return
+        try:
+            from execution import paper_broker
+            allowed, why, _left = paper_broker.capacity("INTRADAY", self.sb)
+            if not allowed:
+                logger.info(f"  📄 paper skip {st.symbol} — {why}")
+                return
+            if any(p.get("symbol") == st.symbol for p in self.positions):
+                return
+            f = paper_broker.simulate_fill(st.symbol, "BUY", qty, "LIMIT",
+                                           st.entry, st.entry)
+            if not f.ok:
+                return
+            paper_broker.open_position(
+                st.symbol, qty, f.fill_price,
+                {"stop": st.stop, "target": st.target, "strategy": st.strategy},
+                "INTRADAY", self.sb)
+            # Reload so the same setup cannot be opened twice in one session and
+            # so the exit engine sees it on the very next cycle.
+            self.load_state()
+        except Exception as e:
+            logger.warning(f"  paper entry failed for {st.symbol}: {e}")
+
+    def square_off_paper(self, prices: dict) -> int:
+        """
+        Force every INTRADAY paper position flat at the configured time.
+
+        An intraday position that survives the close is not an intraday
+        position — it is an accidental overnight hold, and letting the
+        simulation keep one would make paper results describe a strategy nobody
+        intends to run. Live MIS is squared off by the broker; paper has no
+        broker, so this stands in for it.
+        """
+        from execution.gates import is_paper
+        if not is_paper("INTRADAY"):
+            return 0
+        from intraday.session import phase_at, SQUARE_OFF, CLOSED
+        if phase_at() not in (SQUARE_OFF, CLOSED):
+            return 0
+
+        closed = 0
+        from execution import paper_broker
+        for p in list(self.positions):
+            if (p.get("framework") or "").upper() != "INTRADAY":
+                continue
+            if (p.get("mode") or "").upper() != "PAPER":
+                continue
+            px = prices.get(p["symbol"]) or p.get("current_price")
+            if not px:
+                continue
+            if paper_broker.close_position(
+                    p["symbol"], float(px), "SQUARE_OFF",
+                    "intraday session ended — flat by design", self.sb):
+                closed += 1
+        if closed:
+            logger.info(f"  📄 squared off {closed} paper intraday position(s)")
+            self.load_state()
+        return closed
 
     def _record_setup(self, s, phase: str, cost_pct: float, verdict: str, qty: int) -> None:
         """
@@ -659,6 +757,8 @@ class IntradayEngine:
             self.act_on_setups(setups)
         except Exception as e:
             logger.warning(f"  intraday strategies failed: {e}")
+
+        self.square_off_paper(prices)
 
         gtt_result = None
         if sync_gtt and gtt_enabled():
