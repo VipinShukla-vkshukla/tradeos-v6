@@ -45,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
 from config import IST, cfg_float, get_supabase
-from intraday.config import gtt_enabled, is_market_open
+from execution.gates import gtt_enabled, is_market_open
 
 
 @dataclass

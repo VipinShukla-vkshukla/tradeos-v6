@@ -191,14 +191,45 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
             "new_sl": None, "book_qty": 0,
         }
 
-    # ── 2. Hard target ───────────────────────────────────────────────────────
+    # ── 2. Hard target — EXIT, or run it ─────────────────────────────────────
+    # The old rule exited unconditionally at 3R, which treats every trade the
+    # same at exactly the moment they stop being the same. Over the 70 realised
+    # trades the median capture ratio was 3% — nearly all of the favourable
+    # excursion given back — and cutting winners at a fixed multiple guarantees
+    # that never improves.
+    #
+    # A position here has already booked half at 1.5R with its stop at or above
+    # breakeven, so running risks open PROFIT, never capital. That asymmetry is
+    # what makes the discretion safe; the loss-side rules below stay strict and
+    # unconditional.
     if gain_r >= policy["target_r"]:
-        return {
-            "action": "EXIT_TARGET",
-            "reason": "TARGET_HIT",
-            "detail": f"{gain_r:.2f}R >= {policy['target_r']}R ({gain_pct:+.2f}%)",
-            "new_sl": None, "book_qty": 0,
-        }
+        sig = (policy.get("_trend_ctx") or {}).get(pos.get("symbol")) or {}
+        try:
+            from control.exit_rules import assess_trend, target_decision
+            tq = assess_trend(sig, pos)
+            return target_decision(pos, gain_r, tq, policy)
+        except Exception as e:
+            # A failure to assess must not become a failure to bank a 3R gain.
+            logger.warning(f"  trend assessment failed for {pos.get('symbol')}: {e}")
+            return {
+                "action": "EXIT_TARGET", "reason": "TARGET_HIT",
+                "detail": f"{gain_r:.2f}R >= {policy['target_r']}R ({gain_pct:+.2f}%)",
+                "new_sl": None, "book_qty": 0,
+            }
+
+    # ── 2b. Thesis broken while in profit ────────────────────────────────────
+    # The trail is a price mechanism and only reacts after the damage. This
+    # reacts to the reason while there is still profit to protect.
+    if gain_r >= 1.0:
+        sig = (policy.get("_trend_ctx") or {}).get(pos.get("symbol")) or {}
+        if sig:
+            try:
+                from control.exit_rules import assess_trend, deterioration_check
+                d = deterioration_check(pos, gain_r, assess_trend(sig, pos))
+                if d:
+                    return d
+            except Exception as e:
+                logger.debug(f"  deterioration check skipped: {e}")
 
     # ── 3. Partial booking at the first meaningful multiple ──────────────────
     already_booked = int(pos.get("partial_booked_qty") or 0) > 0
@@ -800,6 +831,16 @@ def manage_open_positions(sb, trade_date: str, require_live: bool = False) -> di
     from analysis.trade_decision import fetch_live_prices
 
     policy = load_exit_policy()
+    # Trend evidence for every managed symbol, fetched ONCE. Passed through the
+    # policy dict so evaluate_exit stays pure — it does no I/O and can still be
+    # tested against a recorded row.
+    try:
+        from control.exit_rules import load_signal_context
+        policy["_trend_ctx"] = load_signal_context(
+            sb, [r.get("symbol") for r in rows if r.get("symbol")])
+    except Exception as e:
+        logger.debug(f"  trend context unavailable: {e}")
+        policy["_trend_ctx"] = {}
     rows = (sb.table("open_positions").select("*")
               .eq("status", "ACTIVE").execute().data) or []
 
@@ -892,6 +933,17 @@ def manage_open_positions(sb, trade_date: str, require_live: bool = False) -> di
         elif act == "TRAIL_SL":
             update["active_sl"]       = decision["new_sl"]
             update["trail_activated"] = True
+        elif act == "RUN":
+            # Converted to a runner: keep the position, ratchet the stop, and
+            # record that the hard target has been consciously passed so the
+            # next cycle does not re-ask the same question from scratch.
+            if decision.get("new_sl"):
+                update["active_sl"] = decision["new_sl"]
+                update["trail_activated"] = True
+            update["action_required"] = f"RUNNER — {decision['detail']}"
+        elif act == "EXIT_DETERIORATION":
+            update["exit_signal"] = decision["reason"]
+            update["action_required"] = f"EXIT — {decision['detail']}"
         elif act == "BOOK_PARTIAL":
             update["action_required"] = f"BOOK {decision['book_qty']} — {decision['detail']}"
             if decision["new_sl"]:
@@ -903,6 +955,27 @@ def manage_open_positions(sb, trade_date: str, require_live: bool = False) -> di
                 sb.table("open_positions").update(update).eq("symbol", sym).execute()
             except Exception as e:
                 logger.warning(f"  {sym}: update failed: {e}")
+
+        # Phase 3: place the order the alert describes, for SWING positions.
+        # Gated per framework via execution/gates — being comfortable
+        # automating intraday exits says nothing about swing ones, so one
+        # switch would force a decision there is no reason to make.
+        if act in ("EXIT_STOP", "EXIT_TARGET", "EXIT_TIME",
+                   "EXIT_DETERIORATION", "BOOK_PARTIAL"):
+            try:
+                from execution.gates import auto_exit_enabled
+                fw = (pos.get("framework") or "SWING").upper()
+                if auto_exit_enabled(fw):
+                    from execution.order_manager import OrderRequest, place
+                    qty = int(decision.get("book_qty") or 0) or int(
+                        pos.get("current_qty") or pos.get("actual_qty") or 0)
+                    if qty > 0 and ltp:
+                        slip = cfg_int("exit_slip_bps", 30) / 10000.0
+                        place(OrderRequest(
+                            sym, "SELL", qty, "LIMIT", round(ltp * (1 - slip), 1),
+                            reason=f"{act}: {decision['detail']}"), sb)
+            except Exception as e:
+                logger.warning(f"  {sym}: auto-exit failed, alert still sent — {e}")
 
         if act != "HOLD":
             actions.append({"symbol": sym, "action": act,
@@ -920,11 +993,12 @@ def send_action_alerts(actions: list[dict]):
     if not actions:
         return
     urgent = [a for a in actions
-              if a["action"] in ("EXIT_STOP", "EXIT_TARGET", "EXIT_TIME", "BOOK_PARTIAL")]
+              if a["action"] in ("EXIT_STOP", "EXIT_TARGET", "EXIT_TIME",
+                                 "EXIT_DETERIORATION", "BOOK_PARTIAL")]
     if not urgent:
         return
-    icons = {"EXIT_STOP": "🔴", "EXIT_TARGET": "🎯",
-             "EXIT_TIME": "⏰", "BOOK_PARTIAL": "💰"}
+    icons = {"EXIT_STOP": "🔴", "EXIT_TARGET": "🎯", "EXIT_TIME": "⏰",
+             "EXIT_DETERIORATION": "⚠️", "BOOK_PARTIAL": "💰", "RUN": "🏃"}
     lines = ["<b>⚡ Position Actions Required</b>", ""]
     for a in urgent:
         lines.append(f"{icons.get(a['action'], '•')} <b>{a['symbol']}</b> — {a['action']}")

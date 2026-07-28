@@ -46,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
 from config import IST, get_supabase, is_kill_switch_active, DRY_RUN
-from intraday.config import (orders_enabled, is_market_open, max_order_value,
+from execution.gates import (orders_enabled, is_market_open, max_order_value,
                              max_orders_per_day, max_notional_per_day)
 
 

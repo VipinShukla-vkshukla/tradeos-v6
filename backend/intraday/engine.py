@@ -428,7 +428,7 @@ class IntradayEngine:
         held. Entries commit new capital on a judgement call, so they stay
         manual longer.
         """
-        from intraday.order_manager import OrderRequest, place
+        from execution.order_manager import OrderRequest, place
         qty = int(d.get("book_qty") or 0) or int(p.get("current_qty") or p.get("actual_qty") or 0)
         if qty <= 0:
             return
@@ -662,7 +662,7 @@ class IntradayEngine:
 
         gtt_result = None
         if sync_gtt and gtt_enabled():
-            from intraday import gtt_manager
+            from execution import gtt_manager
             gtt_result = gtt_manager.sync(self.positions, prices, self.notifier)
 
         return {
