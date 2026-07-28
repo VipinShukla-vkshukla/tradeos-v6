@@ -38,6 +38,7 @@ from intraday.config import (is_trading_session, is_market_open, is_holiday,
 from intraday.engine import IntradayEngine
 from intraday.notifier import Notifier
 from intraday.price_feed import PriceFeed
+from intraday import lease
 
 
 def _banner() -> None:
@@ -68,6 +69,12 @@ def status() -> dict:
         "candidates": [c["symbol"] for c in eng.candidates],
         "universe_size": eng.refresh_universe(),
     }
+    try:
+        cur = (sb.table("intraday_daemon_lease").select("holder,hostname,expires_at")
+                 .eq("id", 1).execute().data or [])
+        st["lease_holder"] = (cur[0].get("hostname") or cur[0].get("holder") or "none") if cur else "none"
+    except Exception:
+        st["lease_holder"] = "unavailable"
     for k, v in st.items():
         logger.info(f"  {k:<16}: {v}")
     return st
@@ -86,6 +93,19 @@ def main(once: bool = False, dry: bool = False) -> None:
     if is_holiday(sb):
         logger.info("NSE holiday — nothing to do")
         return
+
+    # Exactly one daemon may ACT. A second one anywhere — laptop and server
+    # both running — would place every exit order twice and send every alert
+    # twice, because the duplicate guards are per-process and cannot see each
+    # other. Standby computes everything and commits nothing.
+    ls = lease.acquire(sb)
+    if ls.may_act:
+        logger.success(f"  role: ACTIVE ({lease.instance_id()})")
+    else:
+        logger.warning(f"  role: STANDBY — {ls.detail}")
+        logger.warning("  Watching only. No orders, no alerts, no writes. This "
+                       "process promotes itself automatically if the active one "
+                       "stops renewing.")
 
     engine.load_state()
     engine.refresh_universe()
@@ -106,6 +126,8 @@ def main(once: bool = False, dry: bool = False) -> None:
                        f"{poll_interval_s()}s instead of continuously")
 
     last_eval = 0.0
+    last_lease = 0.0
+    was_active = ls.may_act
     last_gtt = 0.0
     last_state = 0.0
     last_beat = 0.0
@@ -128,9 +150,25 @@ def main(once: bool = False, dry: bool = False) -> None:
                 feed.poll_once()
                 last_poll = now
 
+            # Re-check the lease every cycle. A process that paused long enough
+            # to lose it must not resume acting — a standby has almost certainly
+            # promoted itself by then.
+            if now - last_lease >= 30:
+                ls = lease.renew(sb)
+                if ls.may_act and not was_active:
+                    logger.success("  PROMOTED to ACTIVE — taking over the book")
+                elif not ls.may_act and was_active:
+                    logger.warning(f"  DEMOTED to standby — {ls.detail}")
+                was_active = ls.may_act
+                last_lease = now
+
             if now - last_eval >= eval_interval_s() or once:
                 prices = feed.all_prices()
-                if prices:
+                if prices and not was_active:
+                    # Standby: keep state warm so a promotion is instant, but
+                    # commit nothing.
+                    engine.load_state()
+                elif prices:
                     sync = (now - last_gtt >= gtt_sync_interval_s())
                     result = engine.cycle(prices, sync_gtt=sync)
                     if sync:
@@ -171,6 +209,7 @@ def main(once: bool = False, dry: bool = False) -> None:
         logger.info("Interrupted — shutting down")
     finally:
         feed.stop()
+        lease.release(sb)
         logger.info("Intraday daemon stopped")
 
 
