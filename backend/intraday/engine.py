@@ -571,6 +571,20 @@ class IntradayEngine:
                 if ev.reason:
                     best.meta["event_note"] = ev.reason
 
+            # Swing STRUCTURE gate, on intraday settings. Every engine here
+            # reasons about a static level — the range high, VWAP, the coil top
+            # — and none knows the SEQUENCE that level sits in. Breaking the
+            # opening range high while making lower highs all morning is buying
+            # a lower high, which is the trade a downtrend exists to punish.
+            if cfg_bool("intraday_structure_gate", True) and ctx.bars:
+                from analysis.market_structure import gate_for_framework
+                ok_s, why_s, st_struct = gate_for_framework(
+                    "INTRADAY", [b.high for b in ctx.bars], [b.low for b in ctx.bars])
+                if not ok_s:
+                    self._record_setup(best, st.phase, 0.0, "BLOCKED_STRUCTURE", 0)
+                    continue
+                best.meta["structure"] = st_struct.state
+
             # AI advice from the previous slow tick. Queue this setup for the
             # next review regardless, so a first sighting is never delayed
             # waiting for an opinion that takes 88 seconds to form.

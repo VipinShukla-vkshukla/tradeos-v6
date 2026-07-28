@@ -143,6 +143,24 @@ def assess_trend(sig: dict, pos: dict | None = None) -> TrendQuality:
         else:
             against.append(f"volume {vr:.1f}x drying up")
 
+    # ── Structure: is the sequence of highs and lows still rising? ─────────
+    # Weighted like any other check rather than made decisive: a position can
+    # be structurally fine and still be worth banking, and structurally shaky
+    # while momentum and leadership say otherwise. It earns a vote, not a veto.
+    hi = sig.get("_structure_highs")
+    lo = sig.get("_structure_lows")
+    if hi and lo and len(hi) >= 10:
+        try:
+            from analysis.market_structure import for_framework, UPTREND, CONFIRMED_UP, DOWNTREND
+            st, _ = for_framework("SWING", hi, lo)
+            checks += 1
+            if st.state in (UPTREND, CONFIRMED_UP):
+                for_.append(f"structure {st.state.lower().replace('_', ' ')}")
+            elif st.state == DOWNTREND:
+                against.append("structure has turned down — lower highs and lower lows")
+        except Exception:
+            pass
+
     # ── Leadership: outperforming, in a sector still working ────────────────
     rs = _f("rs_vs_nifty")
     if rs is not None:
@@ -269,6 +287,22 @@ def load_signal_context(sb, symbols: list[str]) -> dict[str, dict]:
     out: dict[str, dict] = {}
     if not symbols:
         return out
+
+    # Recent daily highs/lows per symbol, for the structure check. Fetched once
+    # here rather than per position, and attached to the same context dict so
+    # assess_trend stays pure.
+    bars: dict[str, dict] = {}
+    try:
+        raw = (sb.table("stock_data_daily").select("symbol,date,high,low")
+                 .in_("symbol", symbols).order("date", desc=True)
+                 .limit(len(symbols) * 70).execute().data or [])
+        for r in reversed(raw):
+            b = bars.setdefault(r["symbol"], {"h": [], "l": []})
+            if r.get("high") and r.get("low"):
+                b["h"].append(float(r["high"]))
+                b["l"].append(float(r["low"]))
+    except Exception as e:
+        logger.debug(f"  structure bars unavailable: {e}")
     for table, cols in (
         ("signal_output_daily",
          "symbol,date,dist_sma50,rsi_daily,adx,vol_ratio,rs_vs_nifty,"
@@ -287,4 +321,10 @@ def load_signal_context(sb, symbols: list[str]) -> dict[str, dict]:
                 out.setdefault(r["symbol"], r)
         except Exception as e:
             logger.debug(f"  trend context from {table} unavailable: {e}")
+
+    for sym, ctx in out.items():
+        b = bars.get(sym)
+        if b:
+            ctx["_structure_highs"] = b["h"]
+            ctx["_structure_lows"] = b["l"]
     return out
