@@ -241,6 +241,39 @@ export async function GET() {
           detail: 'Without it, intraday stop monitoring cannot run - it skips rather than acting on stale prices.',
           fix: tokenValid ? undefined : 'python -m kite.token_manager --login-url' });
 
+    // ═══ GROUP: STORAGE ═════════════════════════════════════════════════════
+    // Supabase free tier is 500 MB, and hitting it does not degrade gracefully:
+    // WRITES start failing, so the evening pipeline fails and no signals are
+    // produced — on an ordinary day, with no prior warning. stock_data_daily
+    // alone was ~190 MB at 98 trading days and grows ~2 MB per session, so the
+    // ceiling is months away rather than years. Surfacing it early is the whole
+    // point; a quota is only dangerous when it is invisible.
+    try {
+      const { data: usage } = await sb.from('v_storage_usage')
+        .select('table_name,total_size,total_bytes,pct_of_free_tier')
+        .limit(8);
+      if (usage && usage.length) {
+        const totalBytes = usage.reduce(
+          (s: number, r: { total_bytes: number }) => s + Number(r.total_bytes || 0), 0);
+        const pct = (totalBytes / (500 * 1024 * 1024)) * 100;
+        const biggest = usage[0] as { table_name: string; total_size: string };
+        add({
+          id: 'storage_free_tier', group: 'Storage', label: 'Supabase free tier',
+          severity: pct >= 85 ? 'BLOCK' : pct >= 60 ? 'WARN' : 'OK',
+          value: `${(totalBytes / 1048576).toFixed(0)} MB of 500 MB (${pct.toFixed(0)}%)`,
+          expected: 'under 60%',
+          detail: `Largest: ${biggest.table_name} at ${biggest.total_size}. `
+                + `At the ceiling, writes fail — which means the evening pipeline fails `
+                + `and no signals are produced.`,
+          fix: pct >= 60
+            ? 'Roll off old daily history: SELECT * FROM archive_stock_data(250);'
+            : undefined,
+        });
+      }
+    } catch {
+      /* view not created yet — migration 016 pending, not an error */
+    }
+
     // ═══ GROUP: CONFIG ══════════════════════════════════════════════════════
     const { data: cfgRows } = await sb.from('system_config').select('key,value,updated_at');
     const C = Object.fromEntries((cfgRows ?? []).map((r) => [r.key, r.value]));
