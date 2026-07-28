@@ -70,6 +70,10 @@ class OrderResult:
 
 
 _recent: dict[str, datetime] = {}
+# symbol:side -> the configuration error that makes retrying pointless.
+# Session-scoped: a restart re-tries, because that is when you would have fixed
+# whatever was wrong at the broker.
+_blocked: dict[str, str] = {}
 
 
 def _today_totals(sb) -> tuple[int, float]:
@@ -106,6 +110,15 @@ def preflight(req: OrderRequest, sb=None) -> OrderResult:
         return OrderResult(False, None, "market is closed", "MARKET_CLOSED")
     if req.quantity <= 0:
         return OrderResult(False, None, f"quantity {req.quantity} is not positive", "QUANTITY")
+
+    # A configuration rejection cannot be retried into success, so it is checked
+    # BEFORE any broker call — an order that cannot be placed should not cost a
+    # holdings fetch and a margins fetch every cycle to discover that again.
+    key = f"{req.symbol}:{req.side}"
+    if key in _blocked:
+        return OrderResult(False, None,
+                           f"blocked for this session — {_blocked[key][:140]}",
+                           "BROKER_CONFIG")
 
     px = req.price
     if px is None:
@@ -158,7 +171,6 @@ def preflight(req: OrderRequest, sb=None) -> OrderResult:
 
     # Duplicate guard — a loop that re-decides every 15s must not be able to
     # send the same order repeatedly while the first is still being filled.
-    key = f"{req.symbol}:{req.side}"
     last = _recent.get(key)
     if last and datetime.now(IST) - last < timedelta(minutes=5):
         return OrderResult(False, None,
@@ -252,9 +264,38 @@ def place(req: OrderRequest, sb=None, notifier=None,
         return OrderResult(True, str(order_id), "placed")
 
     except Exception as e:
-        logger.error(f"  order FAILED {req.side} {req.quantity} {req.symbol}: {e}")
-        _log(sb, req, "FAILED", None, str(e)[:300])
-        return OrderResult(False, None, str(e), "BROKER_ERROR")
+        msg = str(e)
+        key = f"{req.symbol}:{req.side}"
+
+        # Record the ATTEMPT, not just the success. Without this the duplicate
+        # guard never engaged on failures, so a rejected order retried every
+        # 15-second cycle forever — observed live: the same PPLPHARMA sell
+        # failing at 09:46:30, 09:46:47 and 09:47:03 with an identical error,
+        # hammering the API and burying every other line in the log.
+        _recent[key] = datetime.now(IST)
+
+        # Some rejections are CONFIGURATION, not conditions. Retrying an IP
+        # allowlist error at any interval is pointless — it cannot succeed until
+        # a human changes something at the broker — so it is latched off for the
+        # session and reported once, loudly, instead of once every cycle.
+        permanent = any(s in msg.lower() for s in (
+            "no ips configured", "allowed ips", "static ip",
+            "insufficient permission", "api_key", "access_token",
+            "not authorised", "not authorized",
+        ))
+        if permanent:
+            _blocked[key] = msg
+            logger.error(
+                f"  order PERMANENTLY BLOCKED for {req.symbol} {req.side} — {msg[:160]}\n"
+                f"      This cannot succeed by retrying. Nothing further will be "
+                f"attempted for this symbol until the daemon restarts."
+            )
+        else:
+            logger.error(f"  order FAILED {req.side} {req.quantity} {req.symbol}: {msg[:200]}")
+
+        _log(sb, req, "BLOCKED_PERMANENT" if permanent else "FAILED", None, msg[:300])
+        return OrderResult(False, None, msg,
+                           "BROKER_CONFIG" if permanent else "BROKER_ERROR")
 
 
 def _log(sb, req: OrderRequest, action: str, order_id: str | None, detail: str) -> None:
