@@ -126,7 +126,10 @@ BEGIN
      ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 5
   ) q;
 
-  RAISE NOTICE 'Database is % MB of 500 MB (% %%)', total_mb, round(total_mb / 5.0, 1), '';
+  -- Two placeholders, two arguments. The earlier version passed three against
+  -- '% MB of 500 MB (% %%)' — %% is a literal percent sign, not a placeholder,
+  -- so PL/pgSQL counted two and refused the third.
+  RAISE NOTICE 'Database is % MB of 500 MB (% percent)', total_mb, round(total_mb / 5.0, 1);
   RAISE NOTICE 'Largest: %', big;
   RAISE NOTICE 'Roll off history with:  SELECT * FROM archive_stock_data(250);';
   RAISE NOTICE 'Nothing is deleted by this migration — the function is opt-in.';

@@ -802,6 +802,22 @@ def manage_open_positions(sb, trade_date: str, require_live: bool = False) -> di
     policy = load_exit_policy()
     rows = (sb.table("open_positions").select("*")
               .eq("status", "ACTIVE").execute().data) or []
+
+    # Do not apply the SWING exit policy to INTRADAY positions.
+    #
+    # This engine books a partial at 1.5R, trails after 2R, targets 3R and time
+    # stops after fifteen SESSIONS. An intraday position must be flat the same
+    # day — often within the hour — so inheriting those rules would quietly
+    # carry a four-hour thesis for three weeks. Nothing would error; the
+    # position would simply be managed by rules never meant for it.
+    if not cfg_bool("swing_manages_intraday_rows", False):
+        intraday = [r for r in rows if (r.get("framework") or "SWING").upper() == "INTRADAY"]
+        if intraday:
+            logger.info(f"  skipping {len(intraday)} INTRADAY position(s) — "
+                        f"managed by intraday/engine.py, not the swing exit policy: "
+                        f"{', '.join(r['symbol'] for r in intraday)}")
+        rows = [r for r in rows if (r.get("framework") or "SWING").upper() != "INTRADAY"]
+
     if not rows:
         return {"status": "ok", "managed": 0, "actions": []}
 

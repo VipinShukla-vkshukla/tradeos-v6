@@ -151,12 +151,14 @@ class Notifier:
         import requests
         ok = False
 
-        token = (os.getenv("TELEGRAM_INTRADAY_BOT_TOKEN")
-                 or cfg("telegram_intraday_bot_token", ""))
-        chat  = (os.getenv("TELEGRAM_INTRADAY_CHAT_ID")
-                 or cfg("telegram_intraday_chat_id", ""))
-        hook  = (os.getenv("DISCORD_INTRADAY_WEBHOOK_URL")
-                 or cfg("discord_intraday_webhook_url", ""))
+        # One resolver, one documented order: environment, then system_config.
+        # Previously each caller invented its own lookup, which is how the swing
+        # Discord webhook ended up living only in system_config while the swing
+        # Telegram token lived only in .env — both working, neither documented.
+        from credentials_resolver import resolve
+        token = resolve("TELEGRAM_INTRADAY_BOT_TOKEN")
+        chat  = resolve("TELEGRAM_INTRADAY_CHAT_ID")
+        hook  = resolve("DISCORD_INTRADAY_WEBHOOK_URL")
 
         if token and chat:
             try:
