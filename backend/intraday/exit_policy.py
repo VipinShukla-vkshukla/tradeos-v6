@@ -1,0 +1,243 @@
+"""
+Cutting intraday losses — the rules the swing policy cannot express.
+
+WHAT WAS WRONG
+--------------
+Intraday positions were being managed by load_exit_policy(), the SWING policy.
+Three things about that are incorrect, and the third is the dangerous one:
+
+  target_r = 3.0        Every intraday engine sets its OWN target — ORB at 2R,
+                        PBK and VCE at 2.5R, RNG at the opposite edge of a
+                        proven range. Overriding those with a flat 3R holds
+                        past the level the setup was actually built around.
+
+  time_stop_days = 15   Fifteen SESSIONS, on a trade that must be flat by 15:20.
+                        A dead intraday position would ride the entire day and
+                        into the square-off having never triggered a time stop.
+
+  invalidation          Every Setup states the condition under which it stops
+                        being the trade it was — "a close back below the range
+                        high", "losing VWAP", "back inside the coil". NOTHING
+                        CHECKED IT. The whole point of writing those conditions
+                        was that an intraday thesis dies before the stop is
+                        reached, and the position was instead held to a stop
+                        that is two or three times further away.
+
+THE ASYMMETRY THAT SHAPES ALL OF THIS
+-------------------------------------
+An intraday stop is 0.5-1.2%, and the round trip costs 0.21%. There is no room
+to be wrong slowly. A swing position can spend a week being wrong and recover;
+an intraday position that is wrong is wrong for the rest of the session, because
+the session ends. So every rule here cuts EARLIER than its swing equivalent, and
+the invalidation check exists specifically to cut before the stop.
+"""
+
+from __future__ import annotations
+
+import sys
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from loguru import logger
+from config import IST, cfg_bool, cfg_float, cfg_int
+from intraday.session import phase_at, SQUARE_OFF, CLOSED, minutes_to_close
+
+
+def load_intraday_policy() -> dict:
+    """Deliberately NOT load_exit_policy(). See the module docstring."""
+    return {
+        "use_setup_target":   cfg_bool("intraday_use_setup_target", True),
+        "partial_book_r":     cfg_float("intraday_partial_book_r", 1.2),
+        "partial_book_pct":   cfg_float("intraday_partial_book_pct", 50.0),
+        "move_to_breakeven":  cfg_bool("intraday_move_to_breakeven", True),
+        "trail_r":            cfg_float("intraday_trail_r", 1.0),
+        "trail_after_r":      cfg_float("intraday_trail_after_r", 1.5),
+        "target_r":           cfg_float("intraday_target_r", 2.0),
+        "time_stop_min":      cfg_int("intraday_time_stop_minutes", 75),
+        "time_stop_min_r":    cfg_float("intraday_time_stop_min_r", 0.3),
+        "squareoff_buffer":   cfg_int("intraday_squareoff_buffer_min", 12),
+        "check_invalidation": cfg_bool("intraday_check_invalidation", True),
+    }
+
+
+def _invalidated(pos: dict, ltp: float) -> tuple[bool, str]:
+    """
+    Has the setup's own thesis died?
+
+    invalidation_level is the price the engine named when the setup was created
+    — the range high for ORB, VWAP for a reclaim, the coil high for a squeeze.
+    Losing it means the structure that justified the trade is gone, and that is
+    knowable well before a stop sitting a full R below.
+
+    Requires a small buffer so an ordinary wick through the level does not
+    trigger an exit: intraday levels get tested constantly, and a rule that
+    fires on every touch would exit every trade in its first ten minutes.
+    """
+    level = pos.get("invalidation_level")
+    if not level:
+        return False, ""
+    try:
+        level = float(level)
+    except (TypeError, ValueError):
+        return False, ""
+    if level <= 0:
+        return False, ""
+
+    buf = cfg_float("intraday_invalidation_buffer_pct", 0.12) / 100.0
+    if ltp < level * (1 - buf):
+        note = pos.get("invalidation_note") or f"lost {level:.2f}"
+        return True, note
+    return False, ""
+
+
+def evaluate_intraday_exit(pos: dict, ltp: float, policy: dict,
+                           now: datetime | None = None) -> dict:
+    """
+    What to do with one intraday position. Pure — no I/O.
+
+    Checked in order of how expensive it is to be wrong about each one.
+    """
+    now = now or datetime.now(IST)
+    entry = float(pos.get("entry_price") or 0)
+    stop0 = float(pos.get("planned_stop") or 0)
+    sl = float(pos.get("active_sl") or stop0 or 0)
+    target = float(pos.get("planned_target") or 0)
+
+    if not entry or not ltp:
+        return {"action": "HOLD", "reason": "missing_price", "detail": "",
+                "new_sl": None, "book_qty": 0}
+
+    risk = (entry - stop0) if (stop0 and stop0 < entry) else entry * 0.005
+    gain_r = (ltp - entry) / risk
+    gain_pct = (ltp - entry) / entry * 100.0
+
+    # ── 1. Square-off deadline — nothing outranks being flat ────────────────
+    ph = phase_at(now)
+    if ph in (SQUARE_OFF, CLOSED):
+        return {
+            "action": "EXIT_SQUAREOFF", "reason": "SESSION_END",
+            "detail": f"session over — flat by design ({gain_pct:+.2f}%, {gain_r:+.2f}R)",
+            "new_sl": None, "book_qty": 0,
+        }
+    mins_left = minutes_to_close(now) - policy["squareoff_buffer"]
+    if mins_left <= 0:
+        return {
+            "action": "EXIT_SQUAREOFF", "reason": "SQUAREOFF_APPROACHING",
+            "detail": (f"{policy['squareoff_buffer']} min to the close — exiting on our "
+                       f"terms rather than the broker's ({gain_pct:+.2f}%)"),
+            "new_sl": None, "book_qty": 0,
+        }
+
+    # ── 2. Stop ─────────────────────────────────────────────────────────────
+    if sl and ltp <= sl:
+        return {
+            "action": "EXIT_STOP", "reason": "STOP_LOSS_HIT",
+            "detail": f"ltp {ltp:.2f} <= sl {sl:.2f} ({gain_pct:+.2f}%, {gain_r:+.2f}R)",
+            "new_sl": None, "book_qty": 0,
+        }
+
+    # ── 3. Thesis invalidated — the intraday-specific loss cut ──────────────
+    # Deliberately ABOVE the target check: a setup whose structure has broken is
+    # not a setup that deserves to be held for its target, and this is the rule
+    # that cuts before the stop rather than after.
+    if policy["check_invalidation"]:
+        bad, why = _invalidated(pos, ltp)
+        if bad:
+            return {
+                "action": "EXIT_INVALIDATED", "reason": "SETUP_INVALIDATED",
+                "detail": (f"{why} — the structure that justified this trade is gone "
+                           f"({gain_pct:+.2f}%, {gain_r:+.2f}R). Cutting here rather than "
+                           f"waiting for the stop at {sl:.2f}"),
+                "new_sl": None, "book_qty": 0,
+            }
+
+    # ── 4. The setup's OWN target, not a global multiple ────────────────────
+    if policy["use_setup_target"] and target and ltp >= target:
+        return {
+            "action": "EXIT_TARGET", "reason": "TARGET_HIT",
+            "detail": f"reached the setup's target {target:.2f} ({gain_pct:+.2f}%, {gain_r:+.2f}R)",
+            "new_sl": None, "book_qty": 0,
+        }
+    if not target and gain_r >= policy["target_r"]:
+        return {
+            "action": "EXIT_TARGET", "reason": "TARGET_HIT",
+            "detail": f"{gain_r:.2f}R >= {policy['target_r']}R ({gain_pct:+.2f}%)",
+            "new_sl": None, "book_qty": 0,
+        }
+
+    # ── 5. Partial + breakeven ──────────────────────────────────────────────
+    booked = int(pos.get("partial_booked_qty") or 0) > 0
+    qty = int(pos.get("current_qty") or pos.get("actual_qty") or 0)
+    if not booked and gain_r >= policy["partial_book_r"] and qty > 1:
+        n = max(1, int(qty * policy["partial_book_pct"] / 100.0))
+        return {
+            "action": "BOOK_PARTIAL", "reason": "PARTIAL_TARGET",
+            "detail": (f"{gain_r:.2f}R >= {policy['partial_book_r']}R — book {n}/{qty} "
+                       f"@ {ltp:.2f} ({gain_pct:+.2f}%)"),
+            "new_sl": entry if policy["move_to_breakeven"] else None,
+            "book_qty": n,
+        }
+
+    # ── 6. Trail ────────────────────────────────────────────────────────────
+    if gain_r >= policy["trail_after_r"]:
+        hwm = max(float(pos.get("high_water_mark") or entry), ltp)
+        trail = hwm - policy["trail_r"] * risk
+        if trail > sl:
+            return {
+                "action": "TRAIL_SL", "reason": "TRAIL_UPDATE",
+                "detail": (f"{gain_r:.2f}R — sl {sl:.2f} -> {trail:.2f} "
+                           f"(locks {(trail - entry) / risk:+.2f}R)"),
+                "new_sl": round(trail, 2), "book_qty": 0,
+            }
+
+    # ── 7. Time stop, in MINUTES ────────────────────────────────────────────
+    # A position that has gone nowhere is holding capital and attention that a
+    # working setup could use, and intraday there is no tomorrow to wait for.
+    held_min = 0
+    try:
+        opened = pos.get("partial_booked_at") or pos.get("synced_at") or pos.get("entry_date")
+        if opened and "T" in str(opened):
+            t0 = datetime.fromisoformat(str(opened).replace("Z", "+00:00")).astimezone(IST)
+            held_min = int((now - t0).total_seconds() // 60)
+    except Exception:
+        held_min = 0
+
+    if held_min >= policy["time_stop_min"] and gain_r < policy["time_stop_min_r"]:
+        return {
+            "action": "EXIT_TIME", "reason": "TIME_EXIT",
+            "detail": (f"{held_min} min held at {gain_r:+.2f}R — going nowhere, and "
+                       f"intraday there is no tomorrow to wait for"),
+            "new_sl": None, "book_qty": 0,
+        }
+
+    return {"action": "HOLD", "reason": "holding",
+            "detail": f"{gain_r:+.2f}R ({gain_pct:+.2f}%), {mins_left} min of session left",
+            "new_sl": None, "book_qty": 0}
+
+
+def invalidation_level_from(setup) -> tuple[float | None, str]:
+    """
+    The price whose loss kills the setup, taken from the engine's own meta.
+
+    Each engine already names this in its invalidation string; this reads the
+    numeric level out of the structured meta so it can be checked mechanically
+    rather than by parsing prose.
+    """
+    m = getattr(setup, "meta", None) or {}
+    for key, label in (
+        ("range_high", "closed back inside the opening range"),
+        ("coil_high", "returned inside the coil"),
+        ("or_low", "gave back the gap"),
+        ("vwap", "lost VWAP"),
+        ("pdh", "lost the previous day high"),
+        ("range_low", "broke the range low"),
+    ):
+        v = m.get(key)
+        if v:
+            try:
+                return float(v), label
+            except (TypeError, ValueError):
+                continue
+    return None, ""

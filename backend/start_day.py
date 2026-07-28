@@ -91,9 +91,72 @@ def step_preflight() -> bool:
     return ok
 
 
+def step_public_ip() -> bool:
+    """
+    Has the public IP changed since the last session?
+
+    Zerodha requires a static IP allowlist for ORDER PLACEMENT — read-only calls
+    are unaffected, which is why quotes, holdings and GTTs work fine while a
+    sell is rejected with "No IPs configured for this app".
+
+    On home broadband the IP changes on every router restart and often on a
+    lease renewal, so the allowlist silently goes stale. Discovering that at
+    09:46 when a stop needs acting on is the worst possible moment. Checking it
+    before the market opens turns a mid-session failure into a two-minute task.
+
+    This cannot be automated further: Kite exposes no API to update the
+    allowlist, so a human must paste the new IP into the developer console. The
+    only real elimination is a fixed egress IP — a small VPS, or a cloud NAT.
+    """
+    import urllib.request
+    logger.info("─" * 66)
+    logger.info("2 · PUBLIC IP (Zerodha order allowlist)")
+
+    ip = None
+    for url in ("https://api.ipify.org", "https://checkip.amazonaws.com"):
+        try:
+            with urllib.request.urlopen(url, timeout=6) as r:
+                ip = r.read().decode().strip()
+                break
+        except Exception:
+            continue
+    if not ip:
+        logger.warning("  could not determine the public IP — skipping the check")
+        return True
+
+    sb = get_supabase()
+    known = ""
+    try:
+        rows = (sb.table("system_config").select("value")
+                  .eq("key", "kite_allowlisted_ip").execute().data or [])
+        known = (rows[0]["value"] if rows else "") or ""
+    except Exception:
+        pass
+
+    if not known:
+        logger.warning(f"  current public IP is {ip}, and none is recorded yet.")
+        logger.warning("  Add it at https://developers.kite.trade/apps -> your app -> "
+                       "allowed IPs,")
+        logger.warning("  then record it so future changes are detected:")
+        logger.warning(f"    UPDATE system_config SET value='{ip}' "
+                       f"WHERE key='kite_allowlisted_ip';")
+        return True
+
+    if ip != known:
+        _fail(f"public IP has CHANGED: {known} -> {ip}")
+        logger.error("  Order placement will be rejected until the allowlist is updated.")
+        logger.error("  https://developers.kite.trade/apps -> your app -> allowed IPs")
+        logger.error(f"    UPDATE system_config SET value='{ip}' "
+                     f"WHERE key='kite_allowlisted_ip';")
+        logger.error("  Monitoring and alerts still work — only automated selling is blocked.")
+        return True   # not fatal: alerting is more valuable than nothing
+    _ok(f"public IP unchanged ({ip})")
+    return True
+
+
 def step_kite(wait_seconds: int = 240) -> bool:
     logger.info("─" * 66)
-    logger.info("2 · KITE SESSION")
+    logger.info("3 · KITE SESSION")
     from kite.token_manager import get_access_token, get_login_url
 
     if get_access_token():
@@ -124,7 +187,7 @@ def step_kite(wait_seconds: int = 240) -> bool:
 
 def step_dashboard() -> bool:
     logger.info("─" * 66)
-    logger.info("3 · DASHBOARD")
+    logger.info("4 · DASHBOARD")
     import urllib.request
     try:
         urllib.request.urlopen(DASHBOARD_URL, timeout=3)
@@ -160,7 +223,7 @@ def step_dashboard() -> bool:
 
 def step_intraday() -> bool:
     logger.info("─" * 66)
-    logger.info("4 · INTRADAY MONITOR")
+    logger.info("5 · INTRADAY MONITOR")
     from intraday.config import is_trading_session, is_holiday
     from execution.gates import trading_mode
 
@@ -209,6 +272,7 @@ def main(check_only: bool = False) -> int:
     if not step_preflight():
         logger.error("Preflight failed — stopping before anything is started.")
         return 1
+    step_public_ip()
     if check_only:
         logger.info("--check: readiness verified, nothing started.")
         return 0

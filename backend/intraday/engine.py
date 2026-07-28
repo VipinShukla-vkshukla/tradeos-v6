@@ -40,6 +40,7 @@ class IntradayEngine:
         self.positions: list[dict] = []
         self.candidates: list[dict] = []
         self._policy = None
+        self._intraday_policy = None
         self._last_state: dict[str, str] = {}
         # Bar history per symbol, assembled once per cycle and shared by all
         # seven engines — seven engines each fetching their own history would
@@ -312,7 +313,19 @@ class IntradayEngine:
                 except Exception:
                     held = 0
 
-            d = evaluate_exit(p, float(ltp), held, self._policy)
+            # An INTRADAY position must NOT be managed by the swing policy: a
+            # 3R target overrides the setup's own 2R, and a 15-SESSION time stop
+            # is meaningless on a trade that must be flat by 15:20. Route by
+            # framework, not by which loop happens to be running.
+            if (p.get("framework") or "SWING").upper() == "INTRADAY":
+                from intraday.exit_policy import (evaluate_intraday_exit,
+                                                  load_intraday_policy)
+                if self._intraday_policy is None:
+                    self._intraday_policy = load_intraday_policy()
+                d = evaluate_intraday_exit(p, float(ltp), self._intraday_policy)
+            else:
+                d = evaluate_exit(p, float(ltp), held, self._policy)
+
             if d["action"] == "HOLD":
                 continue
             actions.append({"position": p, "decision": d, "ltp": float(ltp)})
@@ -666,9 +679,12 @@ class IntradayEngine:
                                            st.entry, st.entry)
             if not f.ok:
                 return
+            from intraday.exit_policy import invalidation_level_from
+            inv_level, inv_note = invalidation_level_from(st)
             paper_broker.open_position(
                 st.symbol, qty, f.fill_price,
-                {"stop": st.stop, "target": st.target, "strategy": st.strategy},
+                {"stop": st.stop, "target": st.target, "strategy": st.strategy,
+                 "invalidation_level": inv_level, "invalidation_note": inv_note},
                 "INTRADAY", self.sb)
             # Reload so the same setup cannot be opened twice in one session and
             # so the exit engine sees it on the very next cycle.

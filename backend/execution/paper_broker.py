@@ -233,6 +233,11 @@ def open_position(symbol: str, qty: int, fill_price: float, setup: dict,
             "target_price": setup.get("target"),
             "active_sl": setup.get("stop"),
             "sl_type": "PAPER_SETUP",
+            # The price whose loss kills the thesis. Stored so the exit monitor
+            # can check it mechanically rather than parsing the prose the engine
+            # wrote for the alert.
+            "invalidation_level": setup.get("invalidation_level"),
+            "invalidation_note": setup.get("invalidation_note"),
             "strategy": setup.get("strategy"),
             "intraday_strategy": setup.get("strategy") if framework == "INTRADAY" else None,
             "entry_signal_type": setup.get("strategy"),
