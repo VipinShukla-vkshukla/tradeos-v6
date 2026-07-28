@@ -96,6 +96,7 @@ def main(once: bool = False, dry: bool = False) -> None:
             return
 
     engine.refresh_contexts()
+    engine.refresh_advisory()
     logger.info(f"Watching {len(symbols)} symbols: {', '.join(symbols[:12])}"
                 + (f" +{len(symbols)-12} more" if len(symbols) > 12 else ""))
 
@@ -150,6 +151,9 @@ def main(once: bool = False, dry: bool = False) -> None:
                 # once a minute, and the historical endpoint is rate-limited far
                 # more tightly than quotes.
                 engine.refresh_contexts()
+                # Event data and AI advice — both too slow and too static for
+                # the fast loop, both purely advisory to it.
+                engine.refresh_advisory()
                 last_state = now
 
             if now - last_beat >= 900:

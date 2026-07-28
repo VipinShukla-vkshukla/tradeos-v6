@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -54,6 +54,12 @@ class IntradayEngine:
         self._universe: list[str] = []
         # symbol:strategy -> (entry, verdict) already recorded this session.
         self._recorded: dict[str, tuple[float, str]] = {}
+        # Event awareness and AI advice, both refreshed on the SLOW timer.
+        # The AI in particular can never sit in the fast loop: step 19's
+        # DeepSeek call took 88.6s measured, and this loop runs every 15s.
+        self._news = None
+        self._advice: dict = {}
+        self._pending_review: list = []
 
     # ── state ───────────────────────────────────────────────────────────────
     def load_state(self) -> None:
@@ -170,6 +176,14 @@ class IntradayEngine:
             tv = sum(((b.high + b.low + b.close) / 3.0) * b.volume for b in bars)
             vol = sum(b.volume for b in bars)
             vwap = (tv / vol) if vol else None
+            if vwap is None and bars:
+                # Indices report zero volume, so the weighted average is
+                # undefined and came back None — which made "above VWAP" always
+                # false and pinned the market gate at CAUTION forever. A gate
+                # that can never say RISK_ON is not a gate. Fall back to the
+                # UNWEIGHTED average of typical price, which is what an index
+                # VWAP line effectively is anyway.
+                vwap = sum((b.high + b.low + b.close) / 3.0 for b in bars) / len(bars)
 
             p = prev.get(sym, {})
             ctx = SymbolContext(
@@ -185,6 +199,23 @@ class IntradayEngine:
                 avg_volume_20d=float(p.get("volume") or 0) or None,
             )
             if sym == INDEX_SYMBOL:
+                # The index is not in stock_data_daily — that table holds
+                # stocks — so its prev_close came back None and the market gate
+                # silently degraded to NEUTRAL on every cycle. A gate that is
+                # always neutral is not a gate. Take the previous close from the
+                # broker's own history instead, which is where it actually is.
+                if not ctx.prev_close:
+                    try:
+                        y = kite.historical_data(
+                            meta["instrument_token"],
+                            today - timedelta(days=7), today - timedelta(days=1),
+                            "day") or []
+                        if y:
+                            ctx.prev_close = float(y[-1]["close"])
+                            ctx.prev_high = float(y[-1]["high"])
+                            ctx.prev_low = float(y[-1]["low"])
+                    except Exception as e:
+                        logger.debug(f"  index prev close unavailable: {e}")
                 self._index_ctx = ctx
             else:
                 built[sym] = ctx
@@ -217,6 +248,36 @@ class IntradayEngine:
         return sorted({p["symbol"] for p in self.positions if p.get("symbol")} |
                       {c["symbol"] for c in self.candidates if c.get("symbol")} |
                       set(self._universe))
+
+    def refresh_advisory(self) -> None:
+        """
+        Refresh event data and AI advice. SLOW timer only.
+
+        Both are advisory: if either fails the engines carry on with mechanics
+        alone, which is the correct degradation because they were never
+        dependent on it.
+        """
+        try:
+            from intraday.news_gate import NewsGate
+            if self._news is None:
+                self._news = NewsGate(self.sb)
+            self._news.refresh(self.watch_symbols())
+        except Exception as e:
+            logger.warning(f"  news gate refresh failed: {e}")
+
+        # The AI reviews setups ALREADY DETECTED since the last refresh, so its
+        # latency is absorbed between slow ticks rather than blocking a decision.
+        if self._pending_review:
+            try:
+                from intraday import ai_advisor, market_context as mkt
+                mc = mkt.from_context(self._index_ctx)
+                self._advice = ai_advisor.review(
+                    self._pending_review, mc.state,
+                    [p.get("symbol") for p in self.positions], self.sb)
+            except Exception as e:
+                logger.warning(f"  intraday AI review failed: {e}")
+            finally:
+                self._pending_review = []
 
     def refresh_universe(self) -> int:
         """Rebuild the intraday universe. Daily input, so refreshed on the slow timer."""
@@ -462,6 +523,30 @@ class IntradayEngine:
             best, _all = evaluate_all(ctx, st.phase)
             if not best:
                 continue
+
+            # Event gate BEFORE cost: a results-day setup is not a pricing
+            # question, and computing a position size for a trade that must not
+            # be taken wastes the check that matters.
+            if self._news is not None:
+                ev = self._news.check(best.symbol, ctx.sector)
+                if not ev.allow:
+                    self._record_setup(best, st.phase, 0.0, "BLOCKED_EVENT", 0)
+                    continue
+                if ev.reason:
+                    best.meta["event_note"] = ev.reason
+
+            # AI advice from the previous slow tick. Queue this setup for the
+            # next review regardless, so a first sighting is never delayed
+            # waiting for an opinion that takes 88 seconds to form.
+            self._pending_review.append(best)
+            from intraday import ai_advisor
+            allow_ai, adj_conf, ai_note = ai_advisor.apply(best, self._advice)
+            if not allow_ai:
+                self._record_setup(best, st.phase, 0.0, "VETOED_AI", 0)
+                continue
+            best.confidence = adj_conf
+            if ai_note:
+                best.meta["ai_note"] = ai_note
 
             # Size against the market state, then ask whether the trade still
             # survives its own costs at that size. A setup that only works at
