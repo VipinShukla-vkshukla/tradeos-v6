@@ -28,6 +28,7 @@ and forgotten.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -69,6 +70,7 @@ class Notifier:
         self.sb = sb or get_supabase()
         self._last: dict[str, tuple[str, datetime]] = {}
         self._sent_today = 0
+        self._warned_fallback = False
 
     # ── gate ────────────────────────────────────────────────────────────────
     def _should_send(self, a: Action) -> bool:
@@ -96,7 +98,11 @@ class Notifier:
     # ── render ──────────────────────────────────────────────────────────────
     def _format(self, a: Action) -> str:
         icon = {"CRITICAL": "🚨", "NORMAL": "📌", "INFO": "ℹ️"}.get(a.urgency, "📌")
-        lines = [f"{icon} <b>{a.kind.replace('_', ' ')} — {a.symbol}</b>", a.headline]
+        # Prefix every intraday message. Channel separation is the primary
+        # mechanism, but a label survives a misrouted webhook — and knowing
+        # which system is talking is the whole point of the split.
+        lines = [f"{icon} <b>[INTRADAY] {a.kind.replace('_', ' ')} — {a.symbol}</b>",
+                 a.headline]
         if a.detail:
             lines.append(a.detail)
         bits = []
@@ -115,20 +121,7 @@ class Notifier:
             return False
 
         text = self._format(a)
-        ok_any = False
-
-        # Reuse the senders the evening digest already uses. A second
-        # implementation would mean two places to fix a rate-limit bug, and
-        # two different renderings of the same event.
-        try:
-            from alerts.send_alerts import _send_telegram, _send_discord
-            channel = (cfg("alert_channel", "all") or "all").lower()
-            if channel in ("telegram", "all"):
-                ok_any = _send_telegram(text) or ok_any
-            if channel in ("discord", "all"):
-                ok_any = _send_discord(text) or ok_any
-        except Exception as e:
-            logger.warning(f"  notifier: chat channels failed — {e}")
+        ok_any = self._deliver(text)
 
         # The dashboard row is written regardless of chat success. If Telegram
         # is rate-limited the alert must still exist somewhere you can see it.
@@ -138,6 +131,73 @@ class Notifier:
         self._sent_today += 1
         logger.info(f"  🔔 {a.kind} {a.symbol}: {a.headline}")
         return ok_any
+
+    # ── delivery, on the INTRADAY channels ──────────────────────────────────
+    def _deliver(self, text: str) -> bool:
+        """
+        Send to the intraday bot and webhook, NOT the swing ones.
+
+        The two streams demand different things of you. A swing digest is
+        "read this tonight and decide tomorrow's entries"; an intraday alert is
+        "a stop is being approached right now". Delivering both to one chat
+        means the only way to mute the noisy stream is to mute the urgent one,
+        and the reflex you build for the frequent message is the reflex you
+        apply to the rare one.
+
+        Falls back to the swing channel when no intraday credentials are set,
+        so nothing is silently lost — but says so once, because a fallback that
+        looks like success is how you end up believing the split is working.
+        """
+        import requests
+        ok = False
+
+        token = (os.getenv("TELEGRAM_INTRADAY_BOT_TOKEN")
+                 or cfg("telegram_intraday_bot_token", ""))
+        chat  = (os.getenv("TELEGRAM_INTRADAY_CHAT_ID")
+                 or cfg("telegram_intraday_chat_id", ""))
+        hook  = (os.getenv("DISCORD_INTRADAY_WEBHOOK_URL")
+                 or cfg("discord_intraday_webhook_url", ""))
+
+        if token and chat:
+            try:
+                r = requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": chat, "text": text, "parse_mode": "HTML",
+                          "disable_web_page_preview": True}, timeout=10)
+                ok = (r.status_code == 200) or ok
+                if r.status_code != 200:
+                    logger.warning(f"  intraday telegram {r.status_code}: {r.text[:140]}")
+            except Exception as e:
+                logger.warning(f"  intraday telegram failed: {e}")
+
+        if hook:
+            try:
+                md = (text.replace("<b>", "**").replace("</b>", "**")
+                          .replace("<i>", "_").replace("</i>", "_"))
+                r = requests.post(hook, json={"content": md[:1900]}, timeout=10)
+                ok = (r.status_code in (200, 204)) or ok
+            except Exception as e:
+                logger.warning(f"  intraday discord failed: {e}")
+
+        if not (token and chat) and not hook:
+            if not self._warned_fallback:
+                logger.warning(
+                    "  No intraday chat credentials configured — falling back to the "
+                    "SWING channel, so intraday and swing alerts are arriving in the "
+                    "same place. Set TELEGRAM_INTRADAY_BOT_TOKEN + "
+                    "TELEGRAM_INTRADAY_CHAT_ID and/or DISCORD_INTRADAY_WEBHOOK_URL."
+                )
+                self._warned_fallback = True
+            try:
+                from alerts.send_alerts import _send_telegram, _send_discord
+                channel = (cfg("alert_channel", "all") or "all").lower()
+                if channel in ("telegram", "all"):
+                    ok = _send_telegram(text) or ok
+                if channel in ("discord", "all"):
+                    ok = _send_discord(text) or ok
+            except Exception as e:
+                logger.warning(f"  notifier: fallback channels failed — {e}")
+        return ok
 
     def _write_dashboard(self, a: Action) -> None:
         """

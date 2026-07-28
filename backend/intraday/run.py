@@ -93,6 +93,7 @@ def main(once: bool = False, dry: bool = False) -> None:
         if not once:
             return
 
+    engine.refresh_contexts()
     logger.info(f"Watching {len(symbols)} symbols: {', '.join(symbols[:12])}"
                 + (f" +{len(symbols)-12} more" if len(symbols) > 12 else ""))
 
@@ -142,6 +143,10 @@ def main(once: bool = False, dry: bool = False) -> None:
             if now - last_state >= 300:
                 engine.load_state()
                 feed.resubscribe(engine.watch_symbols())
+                # Bars refresh on the same slow timer: minute candles change
+                # once a minute, and the historical endpoint is rate-limited far
+                # more tightly than quotes.
+                engine.refresh_contexts()
                 last_state = now
 
             if now - last_beat >= 900:

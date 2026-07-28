@@ -27,8 +27,25 @@ from config import cfg_bool, get_supabase
 from intraday.strategies.base import Setup, SymbolContext
 from intraday.strategies.orb import OpeningRangeBreakout
 from intraday.strategies.vwap_reclaim import VwapReclaim
+from intraday.strategies.gap_and_go import GapAndGo
+from intraday.strategies.pullback import TrendPullback
+from intraday.strategies.prev_day_levels import PrevDayLevelRetest
+from intraday.strategies.squeeze import SqueezeExpansion
+from intraday.strategies.range_fade import RangeFade
 
-_ALL = [OpeningRangeBreakout(), VwapReclaim()]
+# Ordered by family so the coverage is visible: three that pay when a level
+# breaks, one that pays when a trend continues, two that pay when nothing
+# breaks at all. That last pair matters — most sessions do not trend, and a
+# system built only of breakout engines is idle on the majority of days.
+_ALL = [
+    OpeningRangeBreakout(),   # ORB — today's level, first 15 min
+    GapAndGo(),               # GAP — overnight repricing that holds
+    PrevDayLevelRetest(),     # PDL — yesterday's level, break and retest
+    SqueezeExpansion(),       # VCE — compression releasing
+    TrendPullback(),          # PBK — first pullback in a trend day
+    VwapReclaim(),            # VWR — fade and reclaim of the day's average
+    RangeFade(),              # RNG — the low of a proven range
+]
 
 
 def enabled_engines() -> list:

@@ -19,6 +19,7 @@ What is genuinely new here is only: when to look, and what to do about it.
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -26,7 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import IST, get_supabase, cfg_bool, cfg_int, cfg_float, today_ist
+from config import IST, get_supabase, cfg, cfg_bool, cfg_int, cfg_float, today_ist
 from intraday.config import (is_market_open, gtt_enabled, orders_enabled,
                              autonomy_phase)
 from intraday.notifier import Notifier, Action
@@ -40,6 +41,12 @@ class IntradayEngine:
         self.candidates: list[dict] = []
         self._policy = None
         self._last_state: dict[str, str] = {}
+        # Bar history per symbol, assembled once per cycle and shared by all
+        # seven engines — seven engines each fetching their own history would
+        # multiply API calls sevenfold for identical data, and would let two
+        # engines disagree about the same bar.
+        self._contexts: dict = {}
+        self._index_ctx = None
 
     # ── state ───────────────────────────────────────────────────────────────
     def load_state(self) -> None:
@@ -80,6 +87,116 @@ class IntradayEngine:
         if self._policy is None:
             from control.position_lifecycle import load_exit_policy
             self._policy = load_exit_policy()
+
+    def refresh_contexts(self) -> int:
+        """
+        Assemble today's bars and reference levels for every watched symbol,
+        plus the index.
+
+        Called on the slow timer, not per cycle. Minute bars change once a
+        minute, so re-fetching them every 15 seconds would triple the API load
+        for data that has not moved — and the historical endpoint is rate
+        limited far more tightly than quotes.
+
+        Silently produces nothing when the broker is unavailable, which
+        correctly disables the strategy engines rather than letting them run on
+        a partial view: an ORB computed from four bars is not a conservative
+        ORB, it is a wrong one.
+        """
+        from intraday.strategies.base import Bar, SymbolContext
+        from intraday.market_context import INDEX_SYMBOL
+        try:
+            from kite import kite_client
+            kite = kite_client.get_kite()
+            if not kite:
+                self._contexts, self._index_ctx = {}, None
+                return 0
+        except Exception:
+            self._contexts, self._index_ctx = {}, None
+            return 0
+
+        symbols = self.watch_symbols()
+        if not symbols:
+            return 0
+
+        interval = cfg("intraday_bar_interval", "minute")
+        today = today_ist()
+        built: dict = {}
+
+        try:
+            tokens = kite.ltp([f"NSE:{s}" for s in symbols] + [f"NSE:{INDEX_SYMBOL}"])
+        except Exception as e:
+            logger.warning(f"  contexts: token lookup failed — {e}")
+            return 0
+
+        # Daily reference levels come from the table the swing pipeline already
+        # maintains. Re-deriving prev_high/prev_low from the broker would be a
+        # second source of truth for a number stock_data_daily already holds.
+        prev: dict = {}
+        try:
+            hist = (self.sb.table("stock_data_daily")
+                      .select("symbol,date,high,low,close,atr_pct,volume")
+                      .in_("symbol", symbols)
+                      .order("date", desc=True).limit(len(symbols) * 3)
+                      .execute().data or [])
+            for r in hist:
+                if r["symbol"] not in prev and str(r["date"]) < today.isoformat():
+                    prev[r["symbol"]] = r
+        except Exception as e:
+            logger.debug(f"  contexts: prev-day levels unavailable — {e}")
+
+        for key, meta in (tokens or {}).items():
+            sym = key.split(":", 1)[1]
+            try:
+                raw = kite.historical_data(
+                    meta["instrument_token"], today, today, interval) or []
+            except Exception:
+                continue
+            if len(raw) < 5:
+                continue
+
+            bars = [Bar(b["date"], float(b["open"]), float(b["high"]),
+                        float(b["low"]), float(b["close"]), float(b.get("volume") or 0))
+                    for b in raw]
+
+            # VWAP from today's own bars — the definition, not an approximation.
+            tv = sum(((b.high + b.low + b.close) / 3.0) * b.volume for b in bars)
+            vol = sum(b.volume for b in bars)
+            vwap = (tv / vol) if vol else None
+
+            p = prev.get(sym, {})
+            ctx = SymbolContext(
+                symbol=sym, ltp=float(meta.get("last_price") or bars[-1].close),
+                bars=bars, vwap=vwap,
+                day_open=bars[0].open,
+                day_high=max(b.high for b in bars),
+                day_low=min(b.low for b in bars),
+                prev_close=float(p.get("close") or 0) or None,
+                prev_high=float(p.get("high") or 0) or None,
+                prev_low=float(p.get("low") or 0) or None,
+                atr_pct_daily=float(p.get("atr_pct") or 0) or None,
+                avg_volume_20d=float(p.get("volume") or 0) or None,
+            )
+            if sym == INDEX_SYMBOL:
+                self._index_ctx = ctx
+            else:
+                built[sym] = ctx
+
+        # Relative strength against the index, computed once and identically for
+        # every engine so "strong today" means one thing across the system.
+        idx_chg = None
+        if self._index_ctx and self._index_ctx.prev_close:
+            idx_chg = ((self._index_ctx.ltp - self._index_ctx.prev_close)
+                       / self._index_ctx.prev_close * 100.0)
+        for ctx in built.values():
+            if idx_chg is not None and ctx.prev_close:
+                ctx.rs_vs_index_pct = round(
+                    (ctx.ltp - ctx.prev_close) / ctx.prev_close * 100.0 - idx_chg, 2)
+
+        self._contexts = built
+        logger.info(f"  contexts: {len(built)} symbols with bars"
+                    + (f", index {idx_chg:+.2f}%" if idx_chg is not None else ", no index"))
+        return len(built)
 
     def watch_symbols(self) -> list[str]:
         return sorted({p["symbol"] for p in self.positions if p.get("symbol")} |
@@ -271,6 +388,114 @@ class IntradayEngine:
             # new capital on a live tick, without the evening pipeline's full
             # context, is the highest-variance thing this system could do.
 
+    # ── intraday strategy engines ───────────────────────────────────────────
+    def evaluate_intraday_setups(self, prices: dict[str, float]) -> list:
+        """
+        Run the dedicated intraday engines over the watch list.
+
+        Gated on THREE things before a single engine runs, in this order:
+        session phase, index context, then per-setup cost. Order matters — the
+        cheapest check that can rule everything out goes first, and the index
+        gate exists because six long-only engines with no market awareness
+        produce a cluster of correlated losses on exactly the day you least
+        want them.
+        """
+        from intraday.session import session_state
+        from intraday.strategies.registry import evaluate_all
+        from intraday.strategies.base import SymbolContext
+        from intraday import market_context as mkt
+        from intraday.cost_model import is_worth_taking, round_trip
+        from config import TOTAL_CAPITAL
+
+        if not cfg_bool("intraday_strategies_enabled", True):
+            return []
+
+        st = session_state()
+        if not st.can_enter:
+            return []
+
+        mc = mkt.from_context(self._index_ctx)
+        if not mc.allow_longs:
+            if self._last_state.get("_market") != mc.state:
+                mkt.log_state(mc)
+                self._last_state["_market"] = mc.state
+            return []
+
+        out = []
+        for sym, ctx in (self._contexts or {}).items():
+            if any(p.get("symbol") == sym for p in self.positions):
+                continue
+            ltp = prices.get(sym)
+            if not ltp:
+                continue
+            ctx.ltp = float(ltp)
+
+            best, _all = evaluate_all(ctx, st.phase)
+            if not best:
+                continue
+
+            # Size against the market state, then ask whether the trade still
+            # survives its own costs at that size. A setup that only works at
+            # full size on a CAUTION day is not a setup, it is leverage.
+            budget = TOTAL_CAPITAL * mc.size_multiplier
+            qty = int(budget // best.entry) if best.entry else 0
+            if qty <= 0:
+                continue
+
+            ok, why = is_worth_taking(best.entry, qty, best.target, best.stop)
+            rt = round_trip(best.entry, qty)
+            self._record_setup(best, st.phase, rt.pct_of_position,
+                               "TAKEN" if ok else "REJECTED_COST", qty)
+            if not ok:
+                continue
+
+            out.append({"setup": best, "qty": qty, "cost_pct": rt.pct_of_position,
+                        "market": mc, "phase": st.phase, "cost_note": why})
+        return out
+
+    def act_on_setups(self, setups: list) -> None:
+        for s in setups:
+            st, qty, mc = s["setup"], s["qty"], s["market"]
+            corro = st.meta.get("corroborated_by") or []
+            self.notifier.send(Action(
+                symbol=st.symbol, kind=f"SETUP_{st.strategy}",
+                headline=(f"{st.strategy} — buy {qty} @ ₹{st.entry:.2f}, "
+                          f"stop ₹{st.stop:.2f}, target ₹{st.target:.2f} "
+                          f"(R:R {st.rr:.1f})"),
+                detail=(f"{st.rationale}\n"
+                        f"Dies if: {st.invalidation}\n"
+                        f"Risk {st.risk_pct:.2f}% · reward {st.reward_pct:.2f}% · "
+                        f"{s['cost_note']}\n"
+                        f"Market {mc.state} (size ×{mc.size_multiplier:g}) · {s['phase']}"
+                        + (f"\nAlso flagged by: {', '.join(corro)}" if corro else "")),
+                ltp=st.entry, urgency="NORMAL",
+                meta={"strategy": st.strategy, "qty": qty, "rr": round(st.rr, 2)},
+            ))
+
+    def _record_setup(self, s, phase: str, cost_pct: float, verdict: str, qty: int) -> None:
+        """
+        Persist every setup DETECTED, including cost rejections.
+
+        "How often did ORB fire and how did those resolve" is unanswerable if
+        only taken trades are stored — and that question is the only way an
+        engine's lifecycle state can ever be justified rather than guessed.
+        """
+        try:
+            self.sb.table("intraday_setups").insert({
+                "trade_date": today_ist().isoformat(),
+                "symbol": s.symbol, "strategy": s.strategy, "phase": phase,
+                "direction": s.direction, "entry": s.entry, "stop": s.stop,
+                "target": s.target, "risk_pct": round(s.risk_pct, 3),
+                "reward_pct": round(s.reward_pct, 3), "rr": round(s.rr, 2),
+                "confidence": s.confidence, "rationale": s.rationale,
+                "invalidation": s.invalidation, "cost_pct": cost_pct,
+                "cost_verdict": verdict,
+                "corroborated_by": ",".join(s.meta.get("corroborated_by") or []) or None,
+                "meta": json.dumps({**s.meta, "qty": qty}, default=str),
+            }).execute()
+        except Exception as e:
+            logger.debug(f"  setup record failed for {s.symbol}: {e}")
+
     # ── one cycle ───────────────────────────────────────────────────────────
     def cycle(self, prices: dict[str, float], sync_gtt: bool = False) -> dict:
         pos_actions = self.evaluate_positions(prices)
@@ -280,6 +505,15 @@ class IntradayEngine:
         if cfg_bool("intraday_watch_candidates", True):
             entries = self.evaluate_candidates(prices)
             self.act_on_candidates(entries)
+
+        # Dedicated intraday engines — separate from the swing candidate watch
+        # above, which evaluates swing plans against live prices.
+        setups = []
+        try:
+            setups = self.evaluate_intraday_setups(prices)
+            self.act_on_setups(setups)
+        except Exception as e:
+            logger.warning(f"  intraday strategies failed: {e}")
 
         gtt_result = None
         if sync_gtt and gtt_enabled():
@@ -291,6 +525,7 @@ class IntradayEngine:
             "candidates": len(self.candidates),
             "position_actions": len(pos_actions),
             "entry_signals": len(entries),
+            "intraday_setups": len(setups),
             "gtt": gtt_result,
             "phase": autonomy_phase(),
         }
