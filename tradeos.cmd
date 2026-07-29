@@ -57,6 +57,9 @@ echo    5   Show current status
 echo.
 echo   Your choice turns the OTHER framework off in the database, so
 echo   the Oracle server daemon obeys it too — it reads the same rows.
+echo.
+echo   The live monitor starts either way: it is the price feed and exit
+echo   manager for BOTH books, so swing positions keep real-time stops.
 echo   Paper/live is NOT changed here; use "tradeos swing live".
 echo.
 set "PICK="

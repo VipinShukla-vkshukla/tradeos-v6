@@ -223,7 +223,7 @@ def step_dashboard() -> bool:
 
 def step_intraday() -> bool:
     logger.info("─" * 66)
-    logger.info("5 · INTRADAY MONITOR")
+    logger.info("5 · LIVE MONITOR  (both books)")
     from intraday.config import is_trading_session, is_holiday
     from execution.gates import trading_mode
 
@@ -322,14 +322,18 @@ def main(check_only: bool = False, only: str = "both") -> int:
     if not step_kite():
         return 1
     step_dashboard()
-    # The dashboard serves both books, so it starts either way. Only the
-    # intraday daemon is conditional.
-    if only in ("both", "intraday"):
-        step_intraday()
-    else:
-        logger.info("─" * 66)
-        logger.info("5 · INTRADAY MONITOR")
-        logger.info("  skipped — you chose swing only")
+    # The daemon starts for EVERY selection, including swing only.
+    #
+    # Its name is misleading: it is the live price feed and exit monitor for
+    # BOTH books. It holds the websocket, and evaluate_positions() routes each
+    # position to its own framework's policy. Skipping it for "swing only" would
+    # leave swing positions with no real-time stop management at all — the
+    # opposite of what choosing swing is asking for.
+    #
+    # What the selection actually turns off is the intraday ENGINES, and that is
+    # done in the database by apply_selection(), which the daemon reads. So the
+    # monitor runs, and finds no intraday setups to act on.
+    step_intraday()
     summary()
     return 0
 

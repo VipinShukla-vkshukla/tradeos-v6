@@ -37,7 +37,7 @@ Press Enter for both. Everything after that is automatic:
 | Public IP check | Kite rejects orders from non-allowlisted IPs; this tells you before the market does |
 | Kite login | The access token expires **daily at 07:30 IST** — there is no way around this |
 | Opens the dashboard | http://localhost:3000 — serves both books, so it starts either way |
-| Starts the intraday daemon | Only if intraday was selected |
+| Starts the live monitor | **Always** — it is the price feed and exit manager for both books |
 
 Then you watch Telegram/Discord and the dashboard. You do not need to touch
 anything else during the day.
@@ -49,6 +49,13 @@ menu told you it was off — a switch that reports a state it does not produce.
 So the unselected framework is turned off everywhere, and the selected one is
 turned back on (in its existing mode) so yesterday's choice does not silently
 persist.
+
+**The live monitor starts for every choice, including "swing only".** Its name
+(the "intraday daemon") is misleading: it holds the Kite WebSocket and routes
+every open position to its own framework's exit policy. Skipping it for swing
+would leave your swing positions with no real-time stop management — the
+opposite of what choosing swing asks for. What the selection turns off is the
+intraday *engines*, in the database, which the monitor then reads.
 
 **Paper/live is never changed by this prompt.** That is a rarer, more
 consequential decision — `tradeos swing live` — and folding it into a daily
@@ -509,6 +516,13 @@ Show what is live, paper, and off.
 ## Change log
 
 Update this section whenever behaviour changes.
+
+**29 July 2026 — later still**
+- Fixed: "swing only" skipped starting the live monitor, which would have left
+  swing positions with no real-time stop management. The monitor now starts for
+  every selection; only the intraday engines are gated.
+- Documented that swing positions and TIER_1/TIER_2 swing candidates are already
+  carried on the same live feed (section 11).
 
 **29 July 2026 — later**
 - `tradeos.cmd` double-click now **asks** swing / intraday / both, and the choice
