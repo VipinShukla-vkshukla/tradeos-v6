@@ -26,6 +26,7 @@ Double-click **`tradeos.cmd`**. It asks one question:
 
    4   Check readiness          start nothing
    5   Show current status
+   6   Full health sweep        every check, find what is broken
 ```
 
 Press Enter for both. Everything after that is automatic:
