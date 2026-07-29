@@ -55,7 +55,7 @@ jobs:
           TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
           TZ: Asia/Kolkata
-        run: python ingestion/ingest_global_cues.py MORNING
+        run: python swing/ingestion/ingest_global_cues.py MORNING
 
       - name: Send consolidated morning brief
         # Single Telegram message — global cues + BUY candidates + SL watch + event risk
