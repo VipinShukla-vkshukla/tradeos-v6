@@ -7,6 +7,7 @@ import { DataGuard, SkeletonKPI, SkeletonChart, SkeletonTable } from '@/componen
 import { WinRateTrendChart } from '@/components/tabs/performance/WinRateTrendChart';
 import { SignalTypeBreakdown } from '@/components/tabs/performance/SignalTypeBreakdown';
 import { EngineLeaderboard } from '@/components/tabs/performance/EngineLeaderboard';
+import { TradeLog } from '@/components/tabs/performance/TradeLog';
 import { formatCurrency, formatPercent } from '@/lib/formatters';
 import { queries } from '@/lib/supabase';
 import type { PerformanceMetricsRow, ClosedPosition, EngineStatsEntry } from '@/types/database';
@@ -169,7 +170,23 @@ const ERA_META: Record<Era, { label: string; blurb: string }> = {
 
 function inEra(p: ClosedPosition, era: Era): boolean {
   if (era === 'all') return true;
-  const attributed = p.signal_date != null || p.signal_id != null;
+  // A trade belongs to the system if the system produced it. There are three
+  // ways that can be true, and the original rule only knew about the first:
+  //
+  //   · signal_id / signal_date — a swing plan from signal_output_daily
+  //   · intraday_strategy       — an intraday ENGINE fired it. These never get
+  //                               a signal_id because they are generated live
+  //                               from ticks, not from the evening pipeline.
+  //   · source === 'paper'      — nobody places a paper trade by hand
+  //
+  // Without the last two, the first intraday trade the system ever took landed
+  // under "Legacy / manual" next to 69 trades entered before the engine
+  // existed — the one bucket guaranteed to misread it.
+  const attributed =
+    p.signal_date != null ||
+    p.signal_id != null ||
+    (p.intraday_strategy != null && p.intraday_strategy !== '') ||
+    p.source === 'paper';
   return era === 'system' ? attributed : !attributed;
 }
 
@@ -437,6 +454,20 @@ export function PerformanceTab() {
           </DataGuard>
         </Panel>
       </div>
+
+      {/* Trade log — what it ACTUALLY did, day by day. The aggregates above
+          answer "how am I doing"; this answers "what happened", which is the
+          question you have whenever a number looks wrong. */}
+      <Panel title="Trade Log"
+        description={`Every closed trade grouped by exit date — ${BOOK_META[book].label.toLowerCase()}, ${ERA_META[era].label.toLowerCase()}`}
+        dataSource="supabase" tableName="closed_positions" isLoading={loading}>
+        <DataGuard data={closed} isLoading={loading} error={errObj}
+          loadingContent={<SkeletonTable rows={5} cols={1} />}
+          emptyTitle="No closed trades in this selection"
+          emptyDescription="Switch book or era above to see others.">
+          {(data) => <TradeLog trades={data} />}
+        </DataGuard>
+      </Panel>
 
       {/* Strategy Breakdown + Engine Leaderboard */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

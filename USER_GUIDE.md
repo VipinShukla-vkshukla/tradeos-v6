@@ -620,6 +620,7 @@ calculation and attribution, which is what makes them comparable.
 |---|---|
 | **Positions tab** | A dedicated PAPER section with its own unrealised P&L, separate from the live book. Individual rows carry a `PAPER` badge. |
 | **Performance tab** | A **Book** selector — Real money / Paper / Both. Defaults to real money. |
+| **Trade Log** (Performance tab) | Every closed trade grouped by exit date: ticker, framework, strategy, qty, entry/exit, net P&L, charges, R, hold, exit reason |
 | **Intraday tab** | Live session: setups fired, gates that blocked them, broker orders |
 | Telegram / Discord | Intraday channels, prefixed `[PAPER]` |
 
@@ -669,6 +670,17 @@ Show what is live, paper, and off.
 ## Change log
 
 Update this section whenever behaviour changes.
+
+**29 July 2026 — trade log**
+- Added a **Trade Log** to the Performance tab: every closed trade grouped by
+  exit date, with ticker, mode/framework chips, strategy, qty, entry/exit, net
+  P&L, charges, R-multiple, hold and exit reason. Charges show `—` when unknown
+  rather than `0.00` — "cost nothing" and "cost unrecorded" must not look alike.
+- **Fixed era attribution.** A trade counted as "system" only if it had a
+  `signal_id`, which only swing plans carry. The first intraday trade the system
+  ever took landed under "Legacy / manual" beside 69 pre-engine trades. Now an
+  `intraday_strategy` or `source='paper'` also counts — PATANJALI correctly
+  reads as 1 system trade.
 
 **29 July 2026 — alert noise**
 - **48 alerts in a day, 45 of them repeats.** De-duplication compared the full

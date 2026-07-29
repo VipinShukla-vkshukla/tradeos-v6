@@ -1,0 +1,4 @@
+C:\Users\vkshu\Downloads>ssh -i ssh-key-2026-07-28.key ubuntu@140.245.218.229
+
+
+cd ~/tradeos-v6 && git pull && bash deploy/setup.sh
