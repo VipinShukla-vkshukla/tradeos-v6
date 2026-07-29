@@ -264,7 +264,46 @@ def summary() -> None:
                 "WHERE key='master_kill_switch';")
 
 
-def main(check_only: bool = False) -> int:
+def apply_selection(only: str) -> None:
+    """
+    Make the database agree with what you chose at the prompt.
+
+    Choosing "swing only" cannot just skip starting the local daemon. The
+    intraday daemon also runs on the Oracle server, reading the same
+    system_config — so skipping it here would leave intraday trading from the
+    server while the menu told you it was off. That is the worst kind of switch:
+    one that reports a state it does not produce.
+
+    So the selection writes the same rows control_panel.py writes. It turns the
+    unselected framework OFF and turns the selected one back ON, because a
+    framework left off by yesterday's choice must not stay off silently today.
+
+    Mode (paper vs live) is deliberately NOT touched. That is a separate, rarer
+    decision — `tradeos swing live` — and folding it into a daily prompt is how
+    it gets made by accident.
+    """
+    from control_panel import apply, _SWITCHES
+    from execution.gates import trading_mode
+    from config import get_supabase
+
+    sb = get_supabase()
+    want = {"SWING": only in ("both", "swing"),
+            "INTRADAY": only in ("both", "intraday")}
+
+    logger.info("─" * 66)
+    logger.info(f"0 · SELECTION — {only.upper()}")
+    for fw, on in want.items():
+        if on:
+            # Re-enable in its EXISTING mode, so a framework that was live
+            # yesterday does not quietly come back as paper, or vice versa.
+            apply(fw, trading_mode(fw).lower(), sb)
+        else:
+            apply(fw, "off", sb)
+            logger.info(f"  {fw} stands down everywhere, including the server "
+                        f"daemon — it reads the same rows.")
+
+
+def main(check_only: bool = False, only: str = "both") -> int:
     logger.info("═" * 66)
     logger.info("TradeOS — start of day")
     logger.info("═" * 66)
@@ -276,10 +315,21 @@ def main(check_only: bool = False) -> int:
     if check_only:
         logger.info("--check: readiness verified, nothing started.")
         return 0
+
+    if only != "both":
+        apply_selection(only)
+
     if not step_kite():
         return 1
     step_dashboard()
-    step_intraday()
+    # The dashboard serves both books, so it starts either way. Only the
+    # intraday daemon is conditional.
+    if only in ("both", "intraday"):
+        step_intraday()
+    else:
+        logger.info("─" * 66)
+        logger.info("5 · INTRADAY MONITOR")
+        logger.info("  skipped — you chose swing only")
     summary()
     return 0
 
@@ -288,4 +338,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="TradeOS one-command start of day")
     ap.add_argument("--check", action="store_true",
                     help="verify readiness and stop, changing nothing")
-    sys.exit(main(ap.parse_args().check))
+    ap.add_argument("--only", choices=["both", "swing", "intraday"], default="both",
+                    help="which framework to run today (default: both)")
+    a = ap.parse_args()
+    sys.exit(main(a.check, a.only))

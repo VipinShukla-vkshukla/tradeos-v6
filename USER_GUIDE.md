@@ -17,18 +17,42 @@ controls it, and which file actually reads that value.
 
 ## 1. Your day, start to finish
 
-Double-click **`tradeos.cmd`**. That is the whole routine.
+Double-click **`tradeos.cmd`**. It asks one question:
+
+```
+   1   Both frameworks          swing + intraday  (default)
+   2   Swing only               intraday stands down
+   3   Intraday only            swing automation stands down
+
+   4   Check readiness          start nothing
+   5   Show current status
+```
+
+Press Enter for both. Everything after that is automatic:
 
 | What it does | Why it matters |
 |---|---|
+| Applies your choice | Writes to `system_config`, so the **Oracle server daemon obeys it too** |
 | Preflight checks | Refuses to start on a broken config rather than trading on one |
 | Public IP check | Kite rejects orders from non-allowlisted IPs; this tells you before the market does |
 | Kite login | The access token expires **daily at 07:30 IST** — there is no way around this |
-| Opens the dashboard | http://localhost:3000 |
-| Starts the intraday daemon | Watches your universe, evaluates setups, manages exits |
+| Opens the dashboard | http://localhost:3000 — serves both books, so it starts either way |
+| Starts the intraday daemon | Only if intraday was selected |
 
 Then you watch Telegram/Discord and the dashboard. You do not need to touch
 anything else during the day.
+
+**Why the choice writes to the database rather than just skipping a step.** The
+intraday daemon also runs on the Oracle server. If "swing only" merely skipped
+starting the local daemon, intraday would keep trading from the server while the
+menu told you it was off — a switch that reports a state it does not produce.
+So the unselected framework is turned off everywhere, and the selected one is
+turned back on (in its existing mode) so yesterday's choice does not silently
+persist.
+
+**Paper/live is never changed by this prompt.** That is a rarer, more
+consequential decision — `tradeos swing live` — and folding it into a daily
+routine is how it gets made by accident.
 
 ### Other commands
 
@@ -49,6 +73,18 @@ tradeos ip
 This machine's public IP, and whether it matches the one recorded for the Kite
 allowlist. Zerodha permits **two** IPs — one for this laptop, one for the daemon
 server.
+
+```bash
+tradeos both
+```
+Runs both frameworks without the prompt — same as choosing 1.
+
+```bash
+tradeos server
+```
+Validates the Oracle daemon server. Run it **on the server**; on Windows it
+prints the ssh command instead, because it records the public IP it sees as the
+server's and running it at home would poison that.
 
 ```bash
 tradeos stop
@@ -383,7 +419,70 @@ renewing. Two daemons both trading would double every position.
 
 ---
 
-## 9. Quick reference
+## 9. The Oracle daemon server
+
+The intraday daemon runs on an Oracle Cloud Always Free VM so it has a **fixed
+IP**. Zerodha requires an IP allowlist for order placement, and home broadband
+rotates its address — the failure surfaces mid-session when a stop needs acting
+on. You have **two allowlist slots**: one for home, one for the server.
+
+| Where | What runs there |
+|---|---|
+| Laptop | Kite login, dashboard, evening pipeline, manual entries |
+| Server | Intraday daemon: engines, monitoring, exits, GTT sync |
+
+Both read and write the same Supabase, so neither has a private view of the book.
+
+### Validating it
+
+```bash
+ssh -i your-key.pem ubuntu@<SERVER_IP>
+cd ~/tradeos-v6 && .venv/bin/python deploy/validate_server.py
+```
+
+Nothing is inspected — every check makes the **actual call the daemon makes**. If
+it passes, the daemon works, because it has just done the same things. It covers:
+
+| Check | Why it is not obvious |
+|---|---|
+| Timezone is IST | On UTC every session-phase decision is wrong by 5h30m |
+| Clock skew | Moves the square-off deadline and the token expiry check |
+| `.env` present, required keys set | `KITE_ACCESS_TOKEN` is **not** needed — that comes from Supabase |
+| Outbound 443 to Supabase, Kite REST, **Kite WebSocket**, Telegram, Discord | A VCN egress rule that blocks one of these is invisible until 09:20 |
+| **WebSocket held open 10s** | A rule permitting the handshake but dropping idle flows passes a port test and fails in the session |
+| Supabase **writable** | The singleton lease is a write; without it two daemons both act and double every position |
+| Kite token is today's, and works from this IP | A token from a retired app reports valid and fails on the first real call |
+| Public IP vs the recorded one | Catches an ephemeral IP that rotated out of the allowlist |
+| systemd service + timer | The service being `disabled` is correct — the timer starts it |
+| Kill switch, mode, engines, capital | A daemon that starts, finds nothing, and looks healthy |
+
+### The one thing the script cannot check
+
+**Whether your public IP is Reserved or Ephemeral.** That lives only in the
+Oracle console, and it is the most expensive thing to get wrong: an ephemeral IP
+changes when the instance is stopped and started, silently invalidating your Kite
+allowlist entry. Orders then fail with *"No IPs configured for this app"* — the
+error you already hit once.
+
+Check it at **Compute → Instances → your instance → Attached VNICs → IPv4
+Addresses**. If it says *Ephemeral*, convert it to *Reserved*.
+
+The script records the IP each run and shouts if it changed, so an ephemeral IP
+is at least detectable after the fact. Reserving it prevents the problem instead.
+
+### Two daemons is not redundancy
+
+If you run the daemon at home **and** on the server, `intraday/lease.py` ensures
+exactly one is ACTIVE — the other stands by and takes over only if the active one
+stops renewing (TTL 120s). Without that lease, both would act and every position
+would be doubled.
+
+If the server is down the daemon simply stops. Positions keep their broker-side
+GTT stops, which is precisely why those exist.
+
+---
+
+## 10. Quick reference
 
 ```bash
 tradeos
@@ -410,6 +509,14 @@ Show what is live, paper, and off.
 ## Change log
 
 Update this section whenever behaviour changes.
+
+**29 July 2026 — later**
+- `tradeos.cmd` double-click now **asks** swing / intraday / both, and the choice
+  writes to `system_config` so the Oracle server daemon obeys it too. Added
+  `start_day.py --only`, plus `tradeos both` and `tradeos server`.
+- Added `deploy/validate_server.py` — proves the server can run the daemon by
+  making the calls the daemon makes, including a 10-second WebSocket hold that a
+  plain port test would pass and a stateful egress rule would fail.
 
 **29 July 2026**
 - Rebased every cap on ₹20,000 (migration `024_risk_coherence.sql`). Per-order
