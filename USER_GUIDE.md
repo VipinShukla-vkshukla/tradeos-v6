@@ -553,7 +553,7 @@ This is `watch_symbols()` in `intraday/engine.py`, and it carries three things:
 | Watched | Why |
 |---|---|
 | **Every open position** — swing *and* intraday | "Positions are non-negotiable — an unwatched position is an unmanaged stop" |
-| **TIER_1 / TIER_2 swing candidates** | So a shortlisted name reaching your entry limit is caught live |
+| **Every live swing candidate** (any plan not SKIP) | So a shortlisted name reaching your entry limit is caught live |
 | The intraday universe | Setup detection |
 
 So both things you asked about are already happening:
@@ -572,8 +572,17 @@ So both things you asked about are already happening:
   that gapped down into `BUY_NOW` is caught intraday instead of waiting for
   tomorrow's pipeline. Names already held are skipped.
 
-Only tiered candidates are streamed — subscribing to the whole shortlist would
-multiply tick load for names the engine will never act on.
+**Two lists, not one.** A websocket subscription is nearly free (Kite allows
+3,000 instruments); a bar fetch is not — one `historical_data` call per symbol
+per refresh, on a tightly rate-limited endpoint. So:
+
+| List | Contents | Today |
+|---|---|---|
+| **Ticks** (`watch_symbols`) | positions + all live swing candidates + intraday universe | 95 |
+| **Bars** (`context_symbols`) | positions + intraday universe only | 40 |
+
+Swing candidates need only a price — `decide(symbol, ltp)` reads no bars — so
+they cost a subscription slot and nothing else.
 
 ### What this means in practice
 
@@ -670,6 +679,14 @@ Show what is live, paper, and off.
 ## Change log
 
 Update this section whenever behaviour changes.
+
+**29 July 2026 — watch list**
+- **6 of the day's 8 actionable swing plans were not on the price feed.** The
+  live watch kept only `ai_tier` in {TIER_1, TIER_2}, but the model emits
+  `WATCH_CLOSELY` for most plans — 75 of 84. Filtering now uses the plan's
+  ACTION (anything not SKIP), so all 8 are streamed.
+- Split `watch_symbols()` (ticks, cheap) from `context_symbols()` (bars, rate
+  limited). Tick list 44 → 95; bar fetches 43 → 40.
 
 **29 July 2026 — trade log**
 - Added a **Trade Log** to the Performance tab: every closed trade grouped by

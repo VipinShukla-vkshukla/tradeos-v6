@@ -89,11 +89,35 @@ class IntradayEngine:
             if latest:
                 rows = (self.sb.table("signal_output_daily").select("*")
                           .eq("date", latest[0]["date"]).execute().data or [])
-                # Only tiered candidates are worth streaming. Subscribing to the
-                # whole shortlist would multiply the tick load for names the
-                # engine will never act on.
-                tiers = {"TIER_1", "TIER_2"}
-                self.candidates = [r for r in rows if (r.get("ai_tier") or "") in tiers]
+                # Filter on what the plan SAYS TO DO, not on an AI label.
+                #
+                # This used to keep only ai_tier in {TIER_1, TIER_2}. That set
+                # does not match the vocabulary the model actually emits: of 84
+                # plans, 75 came back WATCH_CLOSELY, 5 TIER_3, and only 4 were
+                # TIER_1/TIER_2. So 6 of the day's 8 BUY_NOW plans were never
+                # put on the price feed — including five whose tier is literally
+                # named "watch closely".
+                #
+                # SKIP is dropped because a hard gate failed and no intraday
+                # price will change that. Everything else is kept: a WAIT plan
+                # is precisely the one worth watching, since the reason it says
+                # wait is that it wants a better entry, and catching that is the
+                # entire purpose of streaming swing candidates.
+                from analysis.trade_decision import decide
+                keep = []
+                for r in rows:
+                    try:
+                        if decide(r, None).action != "SKIP":
+                            keep.append(r)
+                    except Exception:
+                        keep.append(r)   # undecidable is not the same as unwanted
+                cap = cfg_int("swing_watch_max", 150)
+                if len(keep) > cap:
+                    keep.sort(key=lambda p: -(p.get("final_score") or p.get("score") or 0))
+                    logger.info(f"  engine: {len(keep)} live swing candidates, "
+                                f"streaming the top {cap} by score")
+                    keep = keep[:cap]
+                self.candidates = keep
         except Exception as e:
             logger.warning(f"  engine: candidate load failed — {e}")
             self.candidates = []
@@ -129,7 +153,9 @@ class IntradayEngine:
             self._contexts, self._index_ctx = {}, None
             return 0
 
-        symbols = self.watch_symbols()
+        # context_symbols(), not watch_symbols(): bars are the rate-limited
+        # resource and only the engines and open positions consume them.
+        symbols = self.context_symbols()
         if not symbols:
             return 0
 
@@ -239,15 +265,35 @@ class IntradayEngine:
 
     def watch_symbols(self) -> list[str]:
         """
-        Everything the feed must carry: open positions, swing candidates near
-        their entry limit, and the intraday universe.
+        Everything the TICK FEED must carry: open positions, every live swing
+        candidate, and the intraday universe.
 
         Positions are non-negotiable — an unwatched position is an unmanaged
-        stop. The other two are opportunity, and the cap in the scanner keeps
-        the total inside the websocket and historical-data budget.
+        stop. The other two are opportunity.
+
+        This is deliberately WIDER than context_symbols(). A websocket
+        subscription is nearly free (Kite allows 3000 instruments); a bar fetch
+        is not. Conflating the two meant the expensive limit was applied to the
+        cheap resource, and swing plans were dropped from the price feed to
+        protect a budget they never spent — a swing candidate is evaluated by
+        decide(symbol, ltp), which needs a price and no bars at all.
         """
         return sorted({p["symbol"] for p in self.positions if p.get("symbol")} |
                       {c["symbol"] for c in self.candidates if c.get("symbol")} |
+                      set(self._universe))
+
+    def context_symbols(self) -> list[str]:
+        """
+        What needs BARS, which is the genuinely expensive list.
+
+        One historical_data call per symbol per refresh, on an endpoint rate
+        limited far more tightly than quotes. Only two things need bars: the
+        intraday engines, which compute ranges and VWAP from them, and open
+        positions, whose exit rules read the high-water mark.
+
+        Swing candidates are excluded because nothing about them consumes bars.
+        """
+        return sorted({p["symbol"] for p in self.positions if p.get("symbol")} |
                       set(self._universe))
 
     def refresh_advisory(self) -> None:
