@@ -62,6 +62,26 @@ def run(sb=None, notifier=None) -> dict:
                        "second switch deliberately, or move swing to PAPER.")
         return {**result, "status": "live_entry_not_permitted"}
 
+    if live:
+        # This module has only ever written through paper_broker, and
+        # open_position() hardcodes mode='PAPER'. Letting a LIVE framework reach
+        # that code would create simulated positions inside a live book while
+        # the operator believed real orders had been placed — the worst of both:
+        # no exposure taken on a plan you think you own, and a book whose P&L
+        # mixes fills that never happened with fills that did.
+        #
+        # Live entry is not implemented anywhere, for either framework. Entries
+        # commit new capital on a judgement call; exits reduce exposure on a
+        # position that already exists and are bounded by what is held. That is
+        # why exits are automated and entries are not.
+        logger.warning(
+            "  swing_live_auto_entry is ON, but LIVE auto-entry is not "
+            "implemented — this module can only simulate. Taking NOTHING rather "
+            "than writing paper positions into a live book. Place entries "
+            "yourself from Today's Trade Plans, or move swing to PAPER to let "
+            "the simulation run.")
+        return {**result, "status": "live_entry_not_implemented"}
+
     from analysis.trade_decision import decide
     from execution import paper_broker
 
