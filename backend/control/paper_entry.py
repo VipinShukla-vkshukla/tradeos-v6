@@ -119,7 +119,7 @@ def run(sb=None, notifier=None) -> dict:
         if paper_broker.open_position(
                 sym, qty, f.fill_price,
                 {"stop": d.stop, "target": d.target, "strategy": p.get("strategy")},
-                "SWING", sb):
+                "SWING", sb, charges=f.charges):
             result["taken"] += 1
             held.add(sym)
             open_rows.append({"symbol": sym, "sector": p.get("sector"),

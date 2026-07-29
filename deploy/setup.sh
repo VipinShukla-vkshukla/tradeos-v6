@@ -63,6 +63,16 @@ Type=simple
 User=$USER_NAME
 WorkingDirectory=$BACKEND
 Environment=PYTHONUNBUFFERED=1
+# Pull before every session, so a commit on main is running the next morning
+# without a manual deploy. Prefixed with '-' so a pull failure (no network,
+# local edits, detached HEAD) does NOT stop the daemon: yesterday's working code
+# monitoring your positions beats today's code not running at all.
+ExecStartPre=-/usr/bin/git -C $ROOT pull --ff-only
+# Dependencies can change with the code. Also non-fatal, same reasoning.
+ExecStartPre=-$VENV/bin/pip install --quiet -r $BACKEND/requirements.txt
+# Prove the machine can still do what the daemon needs, and record it. Non-fatal
+# by design — it reports, it does not gate.
+ExecStartPre=-$VENV/bin/python $ROOT/deploy/validate_server.py
 ExecStart=$VENV/bin/python -m intraday.run
 # The daemon exits itself at the close. Restart only on genuine failure, and
 # never in a tight loop — a crash during the session should recover, but a

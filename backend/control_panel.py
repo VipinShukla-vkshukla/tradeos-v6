@@ -111,6 +111,18 @@ def show(sb=None) -> None:
         logger.info(f"  {fw:<9} {tag}  auto-exit {'ON' if auto else 'off'}{extra}")
 
     logger.info("")
+    # WHERE the monitor is running, and whether it is still alive. Two daemons
+    # can be configured — laptop and server — and "which one is actually acting"
+    # is not answerable from the switches above. The lease is the only place
+    # that knows, because it is what the daemons themselves use to decide.
+    try:
+        from tools.health import check_daemon
+        ok, detail = check_daemon()
+        (logger.success if ok else logger.error)(f"  monitor: {detail}")
+    except Exception as e:
+        logger.warning(f"  monitor: could not read the lease — {e}")
+
+    logger.info("")
     try:
         rows = (sb.table("open_positions").select("symbol,mode,framework")
                   .eq("status", "ACTIVE").execute().data or [])

@@ -93,8 +93,13 @@ def simulate_fill(symbol: str, side: str, qty: int, order_type: str,
 
     try:
         from intraday.cost_model import round_trip
-        # Half a round trip — this is one leg.
-        charges = round(round_trip(fill, qty).total / 2.0, 2)
+        rt = round_trip(fill, qty)
+        # Half a round trip — this is one leg. Slippage is deliberately EXCLUDED
+        # from `charges`: it is already reflected in `fill` above, and
+        # round_trip.total includes it, so using total would deduct the same
+        # cost twice and make paper look worse than live rather than equal to it.
+        statutory = rt.brokerage + rt.stt + rt.exchange + rt.sebi + rt.stamp + rt.gst
+        charges = round(statutory / 2.0, 2)
     except Exception:
         charges = 0.0
 
@@ -202,7 +207,8 @@ def close_position(symbol: str, exit_price: float, reason: str, detail: str,
 
 
 def open_position(symbol: str, qty: int, fill_price: float, setup: dict,
-                  framework: str = "INTRADAY", sb=None) -> bool:
+                  framework: str = "INTRADAY", sb=None,
+                  charges: float = 0.0) -> bool:
     """
     Create a PAPER position that the normal exit engine will manage.
 
@@ -214,7 +220,7 @@ def open_position(symbol: str, qty: int, fill_price: float, setup: dict,
     """
     sb = sb or get_supabase()
     try:
-        sb.table("open_positions").upsert({
+        row = {
             "symbol": symbol,
             "mode": "PAPER",
             "framework": framework,
@@ -242,8 +248,25 @@ def open_position(symbol: str, qty: int, fill_price: float, setup: dict,
             "intraday_strategy": setup.get("strategy") if framework == "INTRADAY" else None,
             "entry_signal_type": setup.get("strategy"),
             "source": "paper",
+            # Entry-leg cost. Carried so the close can add the exit leg and
+            # record a true round trip — a P&L that ignores charges overstates
+            # intraday profit by roughly a fifth at this position size.
+            "charges": round(float(charges or 0.0), 2),
             "synced_at": datetime.now(IST).isoformat(),
-        }, on_conflict="symbol").execute()
+        }
+        try:
+            sb.table("open_positions").upsert(row, on_conflict="symbol").execute()
+        except Exception as e:
+            # Migration 025 adds open_positions.charges. Opening without the
+            # entry cost is far better than not opening: the round trip then
+            # records only the exit leg, which understates cost but still beats
+            # a simulation that silently takes no trades.
+            if "charges" not in str(e):
+                raise
+            logger.warning("  open_positions.charges is missing — apply migration "
+                           "025. Opening without the entry cost.")
+            row.pop("charges", None)
+            sb.table("open_positions").upsert(row, on_conflict="symbol").execute()
         logger.success(f"  📄 PAPER POSITION opened {symbol} {qty} @ {fill_price:.2f} "
                        f"[{framework}/{setup.get('strategy')}]")
         return True

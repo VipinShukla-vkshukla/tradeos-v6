@@ -185,6 +185,48 @@ def check_kite() -> tuple[bool, str]:
     return True, f"session live for {prof.get('user_id')}, IP matches"
 
 
+def check_daemon() -> tuple[bool, str]:
+    """
+    Is a monitor alive, and WHERE?
+
+    The lease answers both, because it is the same row the daemons use to decide
+    which of them may act. A stale lease during market hours means nothing is
+    watching your positions — and that is silent: the daemon does not announce
+    its own death, and the dashboard keeps showing the last prices it wrote.
+
+    Outside market hours a stale lease is correct, not a fault.
+    """
+    from datetime import datetime, timezone
+    from config import get_supabase
+    from intraday.config import is_trading_session, is_holiday
+
+    sb = get_supabase()
+    rows = (sb.table("intraday_daemon_lease")
+              .select("holder,hostname,expires_at,acquired_at")
+              .eq("id", 1).execute().data or [])
+    in_session = is_trading_session() and not is_holiday()
+
+    if not rows:
+        return (not in_session,
+                "no monitor has ever run" if not in_session
+                else "NO MONITOR RUNNING — positions are unwatched")
+
+    r = rows[0]
+    host = r.get("hostname") or "?"
+    try:
+        exp = datetime.fromisoformat(str(r["expires_at"]).replace("Z", "+00:00"))
+        age = (datetime.now(timezone.utc) - exp).total_seconds()
+    except Exception:
+        return False, f"lease timestamp unreadable: {r.get('expires_at')}"
+
+    if age < 0:
+        return True, f"monitor ALIVE on '{host}' (lease valid {abs(age):.0f}s more)"
+    if not in_session:
+        return True, f"no monitor — outside market hours (last ran on '{host}')"
+    return False, (f"monitor on '{host}' STOPPED renewing {age / 60:.0f} min ago "
+                   f"during market hours — positions are unwatched")
+
+
 def check_simulate() -> tuple[bool, str]:
     """The slow one: run both frameworks end to end and confirm stages produce output."""
     from config import get_supabase
@@ -212,6 +254,7 @@ CHECKS = [
     ("kite",     "no broker session, or the IP is not allowlisted",              check_kite,     False),
     ("data",     "decisions would run on stale inputs",                          check_data_freshness, False),
     ("broker",   "resting orders do not match the positions they protect",       check_broker_consistency, False),
+    ("daemon",   "nothing is watching your positions right now",                 check_daemon,   False),
     ("simulate", "a stage completes while producing nothing",                    check_simulate, True),
 ]
 

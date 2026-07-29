@@ -652,6 +652,17 @@ Show what is live, paper, and off.
 
 Update this section whenever behaviour changes.
 
+**29 July 2026 — night**
+- **Charges are now recorded.** They were computed on every paper fill and
+  thrown away; `realized_pnl` was gross. On a ₹5,000 intraday position the
+  statutory round trip is ~₹5.31 against a 1% winner of ₹50 — about 11% of the
+  profit. Migration 025 adds `charges` to both position tables. Slippage is
+  excluded from the figure because it is already inside the fill price.
+- Added a **daemon liveness check** — `tradeos health` and `tradeos status` now
+  say whether a monitor is alive and **which machine** holds the lease.
+- The server now **pulls from git before every session**, so a commit on main is
+  running the next morning without a manual deploy.
+
 **29 July 2026 — evening**
 - **Fixed a real-money bug:** GTT sync had no `mode` filter, so a PAPER position
   got a real resting sell order at Zerodha. Found one live for PATANJALI. Paper

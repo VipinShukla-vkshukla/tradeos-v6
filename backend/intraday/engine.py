@@ -729,7 +729,7 @@ class IntradayEngine:
                 st.symbol, qty, f.fill_price,
                 {"stop": st.stop, "target": st.target, "strategy": st.strategy,
                  "invalidation_level": inv_level, "invalidation_note": inv_note},
-                "INTRADAY", self.sb)
+                "INTRADAY", self.sb, charges=f.charges)
             # Reload so the same setup cannot be opened twice in one session and
             # so the exit engine sees it on the very next cycle.
             self.load_state()

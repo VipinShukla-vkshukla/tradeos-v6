@@ -106,6 +106,10 @@ export interface ClosedPosition {
   exit_price: number;
   exit_value: number;
   realized_pnl: number;
+  // GROSS. Charges are recorded separately because the 70 trades closed before
+  // migration 025 have no reconstructable cost — netting them into this column
+  // would make old and new rows incomparable while looking identical.
+  charges?: number | null;
   pnl_pct: number;
   high_water_mark?: number;
   max_favorable_excursion?: number;

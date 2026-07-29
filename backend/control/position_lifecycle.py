@@ -457,7 +457,25 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
     booked_pnl   = (booked_price - entry) * booked_qty if booked_qty and booked_price else 0.0
 
     final_pnl    = (exit_price - entry) * qty
+    # GROSS, deliberately. 70 trades closed before charges were recorded and
+    # their costs cannot be reconstructed; redefining this column would make old
+    # and new rows incomparable while looking identical. Charges are recorded
+    # separately and netted where they are known.
     realized_pnl = round(final_pnl + booked_pnl, 2)
+
+    # Round trip = the entry leg already carried on the position, plus the exit
+    # leg priced now. Slippage is excluded on both: for paper it is inside the
+    # fill price, for live it is inside the actual traded price.
+    entry_charges = float(pos.get("charges") or 0.0)
+    exit_charges = 0.0
+    try:
+        from intraday.cost_model import round_trip
+        rt = round_trip(float(exit_price), int(qty))
+        statutory = rt.brokerage + rt.stt + rt.exchange + rt.sebi + rt.stamp + rt.gst
+        exit_charges = round(statutory / 2.0, 2)
+    except Exception:
+        exit_charges = 0.0
+    total_charges = round(entry_charges + exit_charges, 2) if (entry_charges or exit_charges) else None
     total_qty    = qty + booked_qty
     invested     = entry * total_qty
     pnl_pct      = round(realized_pnl / invested * 100, 3) if invested else 0.0
@@ -495,6 +513,10 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
         "exit_price":       exit_price,
         "exit_value":       round(exit_price * qty + booked_price * booked_qty, 2),
         "realized_pnl":     realized_pnl,
+        # Round-trip cost. NULL rather than 0.0 when unknown, because "no
+        # charges" and "charges not recorded" must not read the same — a zero
+        # here would silently claim a free trade.
+        "charges":          total_charges,
         "pnl_pct":          pnl_pct,
         "exit_reason":      exit_reason,
         "exit_reason_detail": detail,
@@ -526,7 +548,20 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
         return True
 
     try:
-        sb.table("closed_positions").insert(closed).execute()
+        try:
+            sb.table("closed_positions").insert(closed).execute()
+        except Exception as e:
+            # Migration 025 adds closed_positions.charges. If the code is ahead
+            # of the schema, close the trade WITHOUT the cost figure rather than
+            # not at all: a position that cannot be recorded as closed stays
+            # open forever in the book, and losing one optional column is
+            # trivially recoverable next to that.
+            if "charges" not in str(e):
+                raise
+            logger.warning("  closed_positions.charges is missing — apply "
+                           "migration 025. Closing without the cost figure.")
+            sb.table("closed_positions").insert(
+                {k: v for k, v in closed.items() if k != "charges"}).execute()
         sb.table("open_positions").delete().eq("symbol", sym).execute()
         icon = "🟢" if realized_pnl > 0 else "🔴"
         logger.success(

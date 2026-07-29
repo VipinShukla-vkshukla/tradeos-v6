@@ -342,6 +342,13 @@ export function PerformanceTab() {
   const losses = closed.filter((p) => (p.realized_pnl ?? 0) <= 0);
   const winRate = closed.length > 0 ? (wins.length / closed.length) * 100 : 0;
   const totalPnl = closed.reduce((s, p) => s + (p.realized_pnl ?? 0), 0);
+  // Net of what the broker actually took. Charges are NULL on trades closed
+  // before they were recorded, so `costed` says how much of this sample the
+  // net figure can speak for — a net P&L quietly computed over a third of the
+  // rows would be worse than not showing one.
+  const costed = closed.filter((p) => p.charges != null);
+  const totalCharges = costed.reduce((s, p) => s + (p.charges ?? 0), 0);
+  const netPnl = totalPnl - totalCharges;
   const avgWin = wins.length > 0 ? wins.reduce((s, p) => s + (p.realized_pnl ?? 0), 0) / wins.length : 0;
   const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((s, p) => s + (p.realized_pnl ?? 0), 0) / losses.length) : 1;
   const profitFactor = avgLoss > 0 ? (avgWin * wins.length) / (avgLoss * Math.max(losses.length, 1)) : 0;
@@ -382,7 +389,18 @@ export function PerformanceTab() {
             <KPICard title="Win Rate" value={`${winRate.toFixed(1)}%`}
               description={`${closed.length} closed trades`} icon={<Target className="h-4 w-4" />}
               change={closed.length > 0 ? { value: `${wins.length}W / ${losses.length}L`, type: winRate >= 50 ? 'increase' : 'decrease' } : undefined} />
-            <KPICard title="Total Realized P&L" value={formatCurrency(totalPnl, { compact: true })}
+            {/* Headline is NET where costs are known. "Net profitable" over a
+                gross number was a claim the account could not back — a 0.21%
+                round trip is about a fifth of a 1% intraday winner. */}
+            <KPICard
+              title={costed.length === closed.length && closed.length > 0
+                ? 'Realized P&L (net)' : 'Total Realized P&L'}
+              value={formatCurrency(costed.length === closed.length && closed.length > 0
+                ? netPnl : totalPnl, { compact: true })}
+              description={costed.length > 0 && costed.length < closed.length
+                ? `gross — charges known for only ${costed.length}/${closed.length}`
+                : costed.length > 0 ? `after ${formatCurrency(totalCharges)} in charges`
+                : 'gross — charges not recorded for these trades'}
               icon={<Activity className="h-4 w-4" />}
               change={totalPnl !== 0 ? { value: totalPnl > 0 ? 'Net profitable' : 'Net loss', type: totalPnl > 0 ? 'increase' : 'decrease' } : undefined} />
             <KPICard title="Profit Factor"
