@@ -41,7 +41,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import IST, cfg_bool, cfg_float, cfg_int
+from config import IST, cfg, cfg_bool, cfg_float, cfg_int
 from intraday.session import phase_at, SQUARE_OFF, CLOSED, minutes_to_close
 
 
@@ -59,6 +59,7 @@ def load_intraday_policy() -> dict:
         "time_stop_min_r":    cfg_float("intraday_time_stop_min_r", 0.3),
         "squareoff_buffer":   cfg_int("intraday_squareoff_buffer_min", 12),
         "check_invalidation": cfg_bool("intraday_check_invalidation", True),
+        "must_exit_time":     cfg("intraday_must_exit_time", "15:15"),
     }
 
 
@@ -121,6 +122,26 @@ def evaluate_intraday_exit(pos: dict, ltp: float, policy: dict,
             "detail": f"session over — flat by design ({gain_pct:+.2f}%, {gain_r:+.2f}R)",
             "new_sl": None, "book_qty": 0,
         }
+    # intraday_must_exit_time is a wall-clock deadline; squareoff_buffer is
+    # relative to the close. Whichever comes first wins, so a deliberate 15:15
+    # is honoured even when the buffer alone would allow later. This key was
+    # configured and unread until now — it looked like a hard deadline and was
+    # not one.
+    must_exit = policy.get("must_exit_time")
+    if must_exit:
+        try:
+            hh, mm = (int(x) for x in str(must_exit).split(":")[:2])
+            if (now.hour, now.minute) >= (hh, mm):
+                return {
+                    "action": "EXIT_SQUAREOFF", "reason": "MUST_EXIT_TIME",
+                    "detail": (f"past the {must_exit} deadline — flat on our schedule "
+                               f"({gain_pct:+.2f}%, {gain_r:+.2f}R)"),
+                    "new_sl": None, "book_qty": 0,
+                }
+        except (ValueError, TypeError):
+            logger.warning(f"  intraday_must_exit_time is '{must_exit}', which is not "
+                           f"HH:MM — ignoring it and using the close buffer only")
+
     mins_left = minutes_to_close(now) - policy["squareoff_buffer"]
     if mins_left <= 0:
         return {

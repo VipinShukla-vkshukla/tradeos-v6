@@ -601,7 +601,20 @@ class IntradayEngine:
             # Size against the market state, then ask whether the trade still
             # survives its own costs at that size. A setup that only works at
             # full size on a CAUTION day is not a setup, it is leverage.
-            budget = TOTAL_CAPITAL * mc.size_multiplier
+            # Three limits, smallest wins:
+            #   · a fixed FRACTION of capital per position. Without this the
+            #     budget was TOTAL_CAPITAL x multiplier, i.e. the entire account
+            #     in a single intraday setup on any risk-on day.
+            #   · the market-state multiplier, which shrinks size when the index
+            #     is not cooperating.
+            #   · the per-order rupee cap, the same one preflight enforces.
+            #     Sizing above it would produce orders that are computed and
+            #     then rejected, and in PAPER — which does not run preflight —
+            #     a book the live account would have refused.
+            from execution.gates import max_order_value
+            pos_pct = cfg_float("intraday_max_position_pct", 25.0) / 100.0
+            budget = min(TOTAL_CAPITAL * pos_pct * mc.size_multiplier,
+                         max_order_value("INTRADAY"))
             qty = int(budget // best.entry) if best.entry else 0
             if qty <= 0:
                 continue
@@ -679,7 +692,24 @@ class IntradayEngine:
         results would not transfer to the account it exists to inform.
         """
         from execution.gates import is_paper
+        # Two switches, mirroring control/paper_entry.py for swing.
+        # intraday_auto_entry says whether setups are taken at all;
+        # intraday_live_auto_entry says whether that may spend real money.
+        # Both existed in system_config and NOTHING read them — the panel showed
+        # them as on, and they did nothing, which is the same class of failure as
+        # swing_auto_entry before it was wired.
+        if not cfg_bool("intraday_auto_entry", True):
+            return
         if not is_paper("INTRADAY"):
+            if not cfg_bool("intraday_live_auto_entry", False):
+                logger.info(f"  {st.symbol}: INTRADAY is LIVE and "
+                            f"intraday_live_auto_entry is off — alerting only")
+                return
+            # Live auto-entry is deliberately not implemented here. Committing
+            # capital on a single live tick is the highest-variance action this
+            # system can take, and it is not one to enable by flipping a switch.
+            logger.warning(f"  {st.symbol}: live auto-entry is not implemented — "
+                           f"entries stay manual. Alerting only.")
             return
         try:
             from execution import paper_broker

@@ -200,6 +200,11 @@ def sync(positions: list[dict], prices: dict[str, float], notifier=None) -> dict
     below what is already resting, the resting one is left alone — loosening a
     stop that is already protecting a position is never an improvement, and a
     bug that computes a lower stop should not be able to widen real risk.
+
+    Product stays CNC here even when intraday_product is MIS: Kite GTTs are
+    CNC/NRML only. If you switch intraday to MIS, intraday stops must come from
+    the live exit loop, not from a resting GTT — see _product() in
+    order_manager.py.
     """
     result = {"placed": 0, "modified": 0, "cancelled": 0, "skipped": 0, "errors": 0}
     if not gtt_enabled():

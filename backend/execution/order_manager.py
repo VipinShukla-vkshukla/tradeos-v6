@@ -45,7 +45,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import IST, get_supabase, is_kill_switch_active, DRY_RUN
+from config import (IST, TOTAL_CAPITAL, get_supabase, is_kill_switch_active,
+                    DRY_RUN)
 from execution.gates import (orders_enabled, is_market_open, max_order_value,
                              max_orders_per_day, max_notional_per_day)
 
@@ -76,25 +77,75 @@ _recent: dict[str, datetime] = {}
 _blocked: dict[str, str] = {}
 
 
-def _today_totals(sb) -> tuple[int, float]:
-    """Orders placed and notional committed today — the daily budget spent."""
+def _product(kite, framework: str):
+    """
+    CNC or MIS, and only INTRADAY may be MIS.
+
+    intraday_product existed in system_config and nothing read it — every order,
+    swing and intraday alike, went out CNC. That is the safe direction to be
+    wrong in (CNC is delivery: no leverage, no broker-forced square-off), but a
+    switch that reads as configured and is not is exactly what this audit
+    exists to catch.
+
+    Swing is never MIS regardless of the setting: a swing position is meant to
+    be held for days, and MIS would have the broker liquidate it at 15:20 on the
+    day it was opened.
+    """
+    if (framework or "SWING").upper() != "INTRADAY":
+        return kite.PRODUCT_CNC
+    from config import cfg
+    want = (cfg("intraday_product", "CNC") or "CNC").strip().upper()
+    if want == "MIS":
+        return kite.PRODUCT_MIS
+    if want not in ("CNC", "MIS"):
+        logger.warning(f"  intraday_product is '{want}', which is neither CNC nor "
+                       f"MIS — using CNC")
+    return kite.PRODUCT_CNC
+
+
+def _today_totals(sb, framework: str = "SWING") -> tuple[int, float, float]:
+    """
+    Orders placed and notional committed today: (count, framework spend, all spend).
+
+    Scoped per framework because the caps are per framework — counting swing
+    orders against the intraday budget would have either framework exhaust the
+    other's allowance. The third figure is the combined spend, because both
+    books draw on ONE account: two frameworks each permitted their own daily
+    notional can together commit more than the account holds.
+    """
     try:
         start = datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0)
-        rows = (sb.table("intraday_broker_log").select("price,quantity,action")
+        rows = (sb.table("intraday_broker_log").select("price,quantity,action,framework")
                   .eq("channel", "ORDER").gte("ts", start.isoformat())
                   .execute().data or [])
         placed = [r for r in rows if r.get("action") == "PLACED"]
-        notional = sum(float(r.get("price") or 0) * int(r.get("quantity") or 0) for r in placed)
-        return len(placed), notional
+        fw = (framework or "SWING").upper()
+
+        def _val(r):
+            return float(r.get("price") or 0) * int(r.get("quantity") or 0)
+
+        # Rows written before the framework column existed are NULL. Counting
+        # them against whichever framework is asking is the conservative read:
+        # it can only make preflight stricter, never permit more.
+        mine = [r for r in placed if (r.get("framework") or fw).upper() == fw]
+        return len(mine), sum(_val(r) for r in mine), sum(_val(r) for r in placed)
     except Exception as e:
         # Unknown spend must not read as zero spend. Report the budget as fully
         # consumed so preflight blocks rather than permits.
         logger.warning(f"  order: could not read today's totals — {e}")
-        return max_orders_per_day(), max_notional_per_day()
+        return (max_orders_per_day(framework), max_notional_per_day(framework),
+                float(TOTAL_CAPITAL))
 
 
-def preflight(req: OrderRequest, sb=None) -> OrderResult:
-    """Every reason this order must not be sent. Cheap, and checked in order of severity."""
+def preflight(req: OrderRequest, sb=None, framework: str = "SWING") -> OrderResult:
+    """
+    Every reason this order must not be sent. Cheap, and checked in order of severity.
+
+    framework decides WHICH caps apply. It used to be omitted here while place()
+    accepted it, so every swing order was measured against the intraday rails —
+    swing_max_order_value was configured, displayed on the panel, and never
+    consulted by the code that blocks orders.
+    """
     sb = sb or get_supabase()
 
     if is_kill_switch_active():
@@ -130,24 +181,43 @@ def preflight(req: OrderRequest, sb=None) -> OrderResult:
     if not px:
         return OrderResult(False, None, "no price available to value the order", "NO_PRICE")
 
+    fw = (framework or "SWING").upper()
     value = px * req.quantity
-    if value > max_order_value():
+    # The per-order cap guards against a SIZING bug, which is an entry concern:
+    # an exit's quantity is not computed from capital, it is what you already
+    # hold, and it is checked against broker holdings below. Applying the cap to
+    # a SELL would mean a position that grew past the cap could not be closed —
+    # being unable to reduce risk is a strictly worse failure than being unable
+    # to add it, which is the rule this module opens with.
+    if req.side == "BUY" and value > max_order_value(fw):
         return OrderResult(False, None,
-                           f"order value ₹{value:,.0f} exceeds the ₹{max_order_value():,.0f} per-order cap",
+                           f"order value ₹{value:,.0f} exceeds the ₹{max_order_value(fw):,.0f} "
+                           f"per-order cap for {fw}",
                            "ORDER_CAP")
 
-    n_today, notional_today = _today_totals(sb)
+    n_today, notional_today, notional_all = _today_totals(sb, fw)
     # Exits are allowed to consume the last of the budget; entries are not.
     if req.side == "BUY":
-        if n_today >= max_orders_per_day():
+        if n_today >= max_orders_per_day(fw):
             return OrderResult(False, None,
-                               f"{n_today} orders already placed today (cap {max_orders_per_day()})",
+                               f"{n_today} {fw} orders already placed today "
+                               f"(cap {max_orders_per_day(fw)})",
                                "DAILY_COUNT")
-        if notional_today + value > max_notional_per_day():
+        if notional_today + value > max_notional_per_day(fw):
             return OrderResult(False, None,
-                               f"₹{notional_today:,.0f} committed today; this order would breach "
-                               f"the ₹{max_notional_per_day():,.0f} daily notional cap",
+                               f"₹{notional_today:,.0f} committed to {fw} today; this order "
+                               f"would breach the ₹{max_notional_per_day(fw):,.0f} daily "
+                               f"notional cap",
                                "DAILY_NOTIONAL")
+        # Both books spend the same account. Without this, swing and intraday
+        # each staying inside their own daily cap can still commit more in a day
+        # than the account contains.
+        if notional_all + value > TOTAL_CAPITAL:
+            return OrderResult(False, None,
+                               f"₹{notional_all:,.0f} already committed across both "
+                               f"frameworks today; this order would exceed the "
+                               f"₹{TOTAL_CAPITAL:,.0f} account",
+                               "ACCOUNT_NOTIONAL")
 
     # Broker-truth checks.
     try:
@@ -192,11 +262,11 @@ def place(req: OrderRequest, sb=None, notifier=None,
     than useless: it would build confidence in decisions that can never execute.
     """
     sb = sb or get_supabase()
-    pre = preflight(req, sb)
+    pre = preflight(req, sb, framework)
     if not pre.ok:
         logger.warning(f"  order BLOCKED [{pre.blocked_by}] {req.side} {req.quantity} "
                        f"{req.symbol}: {pre.message}")
-        _log(sb, req, "BLOCKED", None, pre.message)
+        _log(sb, req, "BLOCKED", None, pre.message, framework)
         return pre
 
     # ── PAPER: simulate the fill, skip the broker ───────────────────────────
@@ -239,7 +309,7 @@ def place(req: OrderRequest, sb=None, notifier=None,
             "transaction_type": (kite.TRANSACTION_TYPE_BUY if req.side == "BUY"
                                  else kite.TRANSACTION_TYPE_SELL),
             "quantity":         int(req.quantity),
-            "product":          kite.PRODUCT_CNC,
+            "product":          _product(kite, framework),
             "order_type":       (kite.ORDER_TYPE_LIMIT if req.order_type == "LIMIT"
                                  else kite.ORDER_TYPE_MARKET),
             "tag":              "tradeos",
@@ -250,7 +320,7 @@ def place(req: OrderRequest, sb=None, notifier=None,
         order_id = kite.place_order(**params)
         _recent[f"{req.symbol}:{req.side}"] = datetime.now(IST)
         logger.success(f"  order PLACED {req.side} {req.quantity} {req.symbol} (id {order_id})")
-        _log(sb, req, "PLACED", str(order_id), req.reason)
+        _log(sb, req, "PLACED", str(order_id), req.reason, framework)
 
         if notifier:
             from intraday.notifier import Action
@@ -293,12 +363,13 @@ def place(req: OrderRequest, sb=None, notifier=None,
         else:
             logger.error(f"  order FAILED {req.side} {req.quantity} {req.symbol}: {msg[:200]}")
 
-        _log(sb, req, "BLOCKED_PERMANENT" if permanent else "FAILED", None, msg[:300])
+        _log(sb, req, "BLOCKED_PERMANENT" if permanent else "FAILED", None, msg[:300], framework)
         return OrderResult(False, None, msg,
                            "BROKER_CONFIG" if permanent else "BROKER_ERROR")
 
 
-def _log(sb, req: OrderRequest, action: str, order_id: str | None, detail: str) -> None:
+def _log(sb, req: OrderRequest, action: str, order_id: str | None,
+         detail: str, framework: str = "SWING") -> None:
     try:
         sb.table("intraday_broker_log").insert({
             "ts":       datetime.now(IST).isoformat(),
@@ -310,6 +381,9 @@ def _log(sb, req: OrderRequest, action: str, order_id: str | None, detail: str) 
             "price":    req.price,
             "quantity": req.quantity,
             "detail":   detail,
+            # Without this, today's spend cannot be attributed, and the
+            # per-framework daily caps are unenforceable.
+            "framework": (framework or "SWING").upper(),
         }).execute()
     except Exception as e:
         logger.debug(f"  order log failed: {e}")
