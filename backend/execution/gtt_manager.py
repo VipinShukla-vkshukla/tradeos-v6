@@ -216,6 +216,22 @@ def sync(positions: list[dict], prices: dict[str, float], notifier=None) -> dict
         result["skipped"] = len(positions)
         return result
 
+    # A GTT is a REAL resting sell order at Zerodha. A paper position is stock
+    # the simulation only pretends to hold, so resting a stop for one would put
+    # a live sell order against shares that either do not exist — or, far worse,
+    # do exist because another framework holds the same symbol for real, in
+    # which case a simulated stop could sell a genuine holding.
+    #
+    # Paper stops are enforced by the exit engine in-process, which is the
+    # correct simulation of a broker stop and costs nothing at the broker.
+    real = [p for p in positions if (p.get("mode") or "LIVE").upper() != "PAPER"]
+    if len(real) != len(positions):
+        n = len(positions) - len(real)
+        logger.debug(f"  gtt: {n} paper position(s) excluded — simulated stops "
+                     f"stay in-process")
+        result["skipped"] += n
+    positions = real
+
     existing = list_gtts()
     min_move = cfg_float("gtt_resync_min_pct", 0.4) / 100.0
 

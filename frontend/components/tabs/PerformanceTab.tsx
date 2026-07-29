@@ -173,6 +173,71 @@ function inEra(p: ClosedPosition, era: Era): boolean {
   return era === 'system' ? attributed : !attributed;
 }
 
+// ─── Which book ────────────────────────────────────────────────────────────
+//
+// WHY THIS EXISTS
+//   Every stat below read straight from closed_positions with no mode filter.
+//   That was harmless while paper mode did not exist, and became wrong the
+//   moment it did: a simulated win would raise the win rate on the same screen
+//   that reports real money, and simulated P&L would be added to real P&L.
+//
+//   Paper exists precisely so its results can be COMPARED to live, which
+//   requires them to be separable. Blending them destroys both numbers — the
+//   live record stops being a record of what happened, and the paper record
+//   stops being evidence about what would happen.
+//
+//   Default is LIVE, because the unqualified question "how am I doing" is
+//   always about real money.
+type Book = 'live' | 'paper' | 'all';
+
+const BOOK_META: Record<Book, { label: string; blurb: string }> = {
+  live:  { label: 'Real money',  blurb: 'Trades that actually filled at the broker.' },
+  paper: { label: 'Paper',       blurb: 'Simulated fills. Same decisions, no money at risk.' },
+  all:   { label: 'Both',        blurb: 'Mixes real and simulated — useful for volume, not for P&L.' },
+};
+
+function inBook(p: ClosedPosition, book: Book): boolean {
+  if (book === 'all') return true;
+  const isPaper = (p.mode ?? 'LIVE').toUpperCase() === 'PAPER';
+  return book === 'paper' ? isPaper : !isPaper;
+}
+
+function BookToggle({ book, setBook, counts }: {
+  book: Book; setBook: (b: Book) => void; counts: Record<Book, number>;
+}) {
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <span className="text-[11px] text-muted-foreground">Book:</span>
+      {(['live', 'paper', 'all'] as Book[]).map((b) => (
+        <button
+          key={b}
+          onClick={() => setBook(b)}
+          title={BOOK_META[b].blurb}
+          className={`text-[11px] px-2 py-1 rounded border transition-colors ${
+            book === b
+              ? (b === 'paper'
+                  ? 'bg-blue-500/20 border-blue-500/40 text-blue-400'
+                  : 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400')
+              : 'border-border/50 text-muted-foreground hover:border-border'
+          }`}
+        >
+          {BOOK_META[b].label} ({counts[b]})
+        </button>
+      ))}
+      {book === 'paper' && (
+        <span className="text-[10px] text-blue-400">
+          simulated — no money changed hands
+        </span>
+      )}
+      {book === 'all' && (
+        <span className="text-[10px] text-amber-400">
+          real and simulated combined — P&amp;L here is not your account
+        </span>
+      )}
+    </div>
+  );
+}
+
 function EraToggle({ era, setEra, counts }: {
   era: Era; setEra: (e: Era) => void; counts: Record<Era, number>;
 }) {
@@ -227,6 +292,7 @@ export function PerformanceTab() {
   const [metrics, setMetrics] = useState<PerformanceMetricsRow[]>([]);
   const [closedAll, setClosedAll] = useState<ClosedPosition[]>([]);
   const [era, setEra] = useState<Era>('system');
+  const [book, setBook] = useState<Book>('live');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -254,11 +320,20 @@ export function PerformanceTab() {
   // Every KPI and chart below is scoped to the selected era. Mixing a
   // pre-automation record into a metric labelled "Win Rate" is what this whole
   // section exists to prevent.
-  const closed = closedAll.filter((p) => inEra(p, era));
+  // Book first, then era. Both filters are explicit and both are shown,
+  // because a stat whose population you cannot see is a stat you cannot
+  // check.
+  const inScope = closedAll.filter((p) => inBook(p, book));
+  const closed = inScope.filter((p) => inEra(p, era));
   const eraCounts: Record<Era, number> = {
-    system: closedAll.filter((p) => inEra(p, 'system')).length,
-    legacy: closedAll.filter((p) => inEra(p, 'legacy')).length,
-    all:    closedAll.length,
+    system: inScope.filter((p) => inEra(p, 'system')).length,
+    legacy: inScope.filter((p) => inEra(p, 'legacy')).length,
+    all:    inScope.length,
+  };
+  const bookCounts: Record<Book, number> = {
+    live:  closedAll.filter((p) => inBook(p, 'live')).length,
+    paper: closedAll.filter((p) => inBook(p, 'paper')).length,
+    all:   closedAll.length,
   };
   const tooFewToJudge = era === 'system' && closed.length < MIN_MEANINGFUL_SAMPLE;
 
@@ -287,7 +362,12 @@ export function PerformanceTab() {
 
   return (
     <div className="space-y-4">
-      {!loading && <EraToggle era={era} setEra={setEra} counts={eraCounts} />}
+      {!loading && (
+        <div className="space-y-2">
+          <BookToggle book={book} setBook={setBook} counts={bookCounts} />
+          <EraToggle era={era} setEra={setEra} counts={eraCounts} />
+        </div>
+      )}
 
       {/* KPI Row — replaced by an honest empty state when the sample is too
           small to support a win rate. */}

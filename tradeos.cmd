@@ -5,6 +5,7 @@ REM
 REM    tradeos            ASK which framework, then run it
 REM    tradeos both       swing + intraday, no prompt
 REM    tradeos check      verify readiness only, start nothing
+REM    tradeos health     run EVERY check and report what is broken
 REM    tradeos status     what is live, what is paper, what is off
 REM    tradeos ip         this machine's public IP for the Kite allowlist
 REM    tradeos server     validate the daemon server (run this ON the server)
@@ -31,6 +32,7 @@ setlocal
 cd /d "%~dp0backend"
 
 if /i "%~1"=="check"    goto CHECK
+if /i "%~1"=="health"   goto HEALTH
 if /i "%~1"=="status"   goto STATUS
 if /i "%~1"=="ip"       goto IP
 if /i "%~1"=="stop"     goto STOP
@@ -54,6 +56,7 @@ echo    3   Intraday only            swing automation stands down
 echo.
 echo    4   Check readiness          start nothing
 echo    5   Show current status
+echo    6   Full health sweep        every check, find what is broken
 echo.
 echo   Your choice turns the OTHER framework off in the database, so
 echo   the Oracle server daemon obeys it too — it reads the same rows.
@@ -70,6 +73,7 @@ if "%PICK%"=="2" goto ONLYSWING
 if "%PICK%"=="3" goto ONLYINTRA
 if "%PICK%"=="4" goto CHECK
 if "%PICK%"=="5" goto STATUS
+if "%PICK%"=="6" goto HEALTH
 echo.
 echo   "%PICK%" is not one of the choices. Nothing was started.
 goto END
@@ -97,6 +101,10 @@ goto END
 
 :CHECK
 python start_day.py --check
+goto END
+
+:HEALTH
+python -m tools.health
 goto END
 
 :STATUS

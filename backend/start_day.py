@@ -221,6 +221,35 @@ def step_dashboard() -> bool:
     return True
 
 
+def step_health() -> bool:
+    """
+    Run the health sweep every morning, not only when you remember to.
+
+    Deliberately NON-BLOCKING. A stale-data warning or a mismatched GTT is worth
+    knowing about and is not a reason to refuse to start: the monitor still
+    protects open positions, and refusing to launch would remove that protection
+    to punish a problem it did not cause. Preflight above is what blocks — it
+    covers the things that make trading unsafe rather than imperfect.
+
+    --quick skips the end-to-end simulation, which takes ~15s. Run the full
+    sweep with `tradeos health` when something looks wrong.
+    """
+    logger.info("─" * 66)
+    logger.info("3 · HEALTH")
+    try:
+        from tools.health import main as health_main
+        rc = health_main(quick=True)
+        if rc == 0:
+            _ok("all quick checks passed")
+        else:
+            logger.warning("  ⚠ health found problems — see above. Starting anyway; "
+                           "run `tradeos health` for the full sweep.")
+        return True
+    except Exception as e:
+        logger.warning(f"  health sweep could not run — {e}")
+        return True
+
+
 def step_intraday() -> bool:
     logger.info("─" * 66)
     logger.info("5 · LIVE MONITOR  (both books)")
@@ -312,6 +341,7 @@ def main(check_only: bool = False, only: str = "both") -> int:
         logger.error("Preflight failed — stopping before anything is started.")
         return 1
     step_public_ip()
+    step_health()
     if check_only:
         logger.info("--check: readiness verified, nothing started.")
         return 0

@@ -82,6 +82,18 @@ allowlist. Zerodha permits **two** IPs — one for this laptop, one for the daem
 server.
 
 ```bash
+tradeos health
+```
+Runs **every** check and reports what is broken: config coherence, SELECT
+validity, Kite session + IP allowlist, data freshness, broker/GTT consistency,
+and an end-to-end simulation. A `--quick` subset runs automatically on every
+launch, so a problem surfaces before the market opens rather than after.
+
+It is deliberately non-blocking at launch: a stale-data warning is worth knowing
+about and is not a reason to refuse to start the monitor that protects your open
+positions.
+
+```bash
 tradeos both
 ```
 Runs both frameworks without the prompt — same as choosing 1.
@@ -506,7 +518,7 @@ REST quote polling every 30s and says so — degraded, and visible.
 |---|---|---|
 | `intraday_eval_interval_s` | **15s** | Every position and candidate re-evaluated at the latest price |
 | `intraday_poll_interval_s` | 30s | REST fallback, only when the WebSocket is down |
-| `intraday_gtt_sync_interval_s` | 300s | Broker-side stops re-synced |
+| `intraday_gtt_sync_interval_s` | **300s (5 min)** | Broker-side stops re-synced — see below |
 | lease renew | 30s | Which instance is ACTIVE |
 
 Prices stream continuously; **decisions are made every 15 seconds**. That is
@@ -552,13 +564,66 @@ multiply tick load for names the engine will never act on.
 | Monitor not running | GTT stops only | N/A — flat by 15:15 |
 | Overnight / weekend | GTT stops only | N/A |
 
+### What the 5-minute GTT sync actually does
+
+Every 5 minutes, for **live positions only**, `execution/gtt_manager.sync()`:
+
+- **places** a stop for a live position that has none
+- **raises** a resting stop when the engine's intended stop has moved up by more
+  than `gtt_resync_min_pct` (0.4%)
+- **cancels** a GTT for a symbol no longer held
+- **never lowers** a stop. Loosening a stop that is already protecting a position
+  is never an improvement, and a bug computing a lower stop must not be able to
+  widen real risk.
+
+It runs on a slow timer rather than per cycle because a GTT modify is a broker
+write — re-placing it because the intended stop moved four paise would burn rate
+limit for no protective benefit.
+
+**Paper positions are excluded.** A GTT is a real resting sell order; placing one
+for simulated stock would put a live order against shares that do not exist, or —
+worse — that do exist because the other framework holds the same symbol for real.
+
 **The GTT stops are why the monitor being down is survivable.** They rest at
 Zerodha and fire without any process of yours being alive. That is the entire
 reason Phase 2.5 exists.
 
 ---
 
-## 11. Quick reference
+## 11. Watching the paper book
+
+Paper trades are recorded in the **same tables** as live ones, tagged
+`mode='PAPER'` — `open_positions` while running, `closed_positions` once shut.
+That is deliberate: they go through the identical exit engine, R-multiple
+calculation and attribution, which is what makes them comparable.
+
+| Where | What you see |
+|---|---|
+| **Positions tab** | A dedicated PAPER section with its own unrealised P&L, separate from the live book. Individual rows carry a `PAPER` badge. |
+| **Performance tab** | A **Book** selector — Real money / Paper / Both. Defaults to real money. |
+| **Intraday tab** | Live session: setups fired, gates that blocked them, broker orders |
+| Telegram / Discord | Intraday channels, prefixed `[PAPER]` |
+
+**Why the Book selector matters.** Every stat on the Performance tab used to
+read `closed_positions` with no mode filter. Harmless while paper did not exist,
+wrong the moment it did: a simulated win would lift the win rate on the same
+screen that reports real money. Paper exists so it can be *compared* to live,
+which requires the two to be separable.
+
+Combine it with the era toggle — "Since automation" + "Paper" is the honest
+answer to *is the intraday framework working*.
+
+### How the frameworks learn
+
+Every closed paper trade writes the same `signal_outcomes` feedback a live one
+does: realised R, hold time, MFE/MAE, and which engine produced it. The Control
+Room shows per-engine statistics built from that. Because
+`paper_starting_capital` now matches your real ₹20,000, the position sizes are
+the ones you would actually have taken — so the results transfer.
+
+---
+
+## 12. Quick reference
 
 ```bash
 tradeos
@@ -585,6 +650,15 @@ Show what is live, paper, and off.
 ## Change log
 
 Update this section whenever behaviour changes.
+
+**29 July 2026 — evening**
+- **Fixed a real-money bug:** GTT sync had no `mode` filter, so a PAPER position
+  got a real resting sell order at Zerodha. Found one live for PATANJALI. Paper
+  positions are now excluded; the orphan cleanup cancels any that exist.
+- **Performance tab mixed paper with live.** Added a Book selector (Real money /
+  Paper / Both), defaulting to real money.
+- Added `tools/health.py` and `tradeos health` — every check in one verdict.
+  A quick subset now runs on every launch.
 
 **29 July 2026 — later still**
 - Fixed: "swing only" skipped starting the live monitor, which would have left
