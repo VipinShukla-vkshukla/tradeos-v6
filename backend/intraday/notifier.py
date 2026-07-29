@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -73,6 +74,30 @@ class Notifier:
         self._warned_fallback = False
 
     # ── gate ────────────────────────────────────────────────────────────────
+    @staticmethod
+    def _material(headline: str) -> str:
+        """
+        The headline with tick noise removed, for comparison only.
+
+        Headlines embed the live price, so "book 7/15 @ 195.27 (+12.26%)" and
+        "@ 195.15 (+12.19%)" are different strings describing the SAME decision.
+        Comparing raw text therefore routed every repeat down the "something
+        changed" path and re-sent it every 5 minutes: one unresolved partial
+        book produced 17 alerts in a session, and the swing entry watch another
+        28. 45 of 48 alerts in a day were the same three situations restated.
+
+        That is not a cosmetic problem. The reflex you build for the frequent
+        message is the reflex you apply to the rare one, so a channel that cries
+        every five minutes is a channel where a real stop breach goes unread.
+
+        Rounding every number to the nearest integer collapses tick drift while
+        keeping genuine changes visible: 7-of-15 becoming 12-of-15 still differs,
+        and a rupee of real movement still differs. Only the display text is
+        left alone — you still see the exact price.
+        """
+        return re.sub(r"\d+\.\d+",
+                      lambda m: str(round(float(m.group()))), headline)
+
     def _should_send(self, a: Action) -> bool:
         rearm_min = cfg_int("intraday_rearm_minutes", 45)
         key = a.state_key()
@@ -83,17 +108,17 @@ class Notifier:
             return True
         prev_headline, prev_at = prev
 
-        # Same action AND same wording -> nothing has changed. Re-arm only
+        # Same action AND same substance -> nothing has changed. Re-arm only
         # after a timeout so a stop that has been breached for an hour says so
         # again rather than being announced once at 09:31 and never repeated.
-        if prev_headline == a.headline:
+        if self._material(prev_headline) == self._material(a.headline):
             if a.urgency == "CRITICAL":
                 rearm_min = min(rearm_min, cfg_int("intraday_rearm_critical_minutes", 15))
             return now - prev_at >= timedelta(minutes=rearm_min)
 
-        # Same kind, different numbers (price moved, size changed) — worth
-        # sending, but not at tick rate.
-        return now - prev_at >= timedelta(minutes=cfg_int("intraday_restate_minutes", 5))
+        # Same kind, genuinely different numbers (size changed, level crossed) —
+        # worth sending, but not at tick rate.
+        return now - prev_at >= timedelta(minutes=cfg_int("intraday_restate_minutes", 15))
 
     # ── render ──────────────────────────────────────────────────────────────
     def _format(self, a: Action) -> str:

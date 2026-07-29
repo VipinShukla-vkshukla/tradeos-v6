@@ -670,6 +670,13 @@ Show what is live, paper, and off.
 
 Update this section whenever behaviour changes.
 
+**29 July 2026 — alert noise**
+- **48 alerts in a day, 45 of them repeats.** De-duplication compared the full
+  headline text, which embeds the live price — `@ 195.27` vs `@ 195.15` read as
+  "changed" and took the 5-minute restate path instead of the 45-minute re-arm.
+  Numbers are now rounded before comparison (display text is untouched), and
+  `intraday_restate_minutes` raised 5 → 15.
+
 **29 July 2026 — IPv6**
 - **Fixed: every live order was rejected.** Kite saw an IPv6 source address; the
   allowlist is IPv4-only. `config._force_ipv4()` filters `getaddrinfo` to v4
