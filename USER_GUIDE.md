@@ -489,7 +489,76 @@ GTT stops, which is precisely why those exist.
 
 ---
 
-## 10. Quick reference
+## 10. What is monitored in real time, and how
+
+One process — `intraday/run.py`, the "daemon" — is the live monitor for **both**
+books. There is no separate swing monitor.
+
+### The price feed is genuinely real-time
+
+`intraday/price_feed.py` holds a **KiteTicker WebSocket** in `MODE_LTP`. Prices
+are *pushed* as they trade, not polled. If the socket drops, it falls back to
+REST quote polling every 30s and says so — degraded, and visible.
+
+### Decisions run on a 15-second cadence
+
+| Timer | Interval | What happens |
+|---|---|---|
+| `intraday_eval_interval_s` | **15s** | Every position and candidate re-evaluated at the latest price |
+| `intraday_poll_interval_s` | 30s | REST fallback, only when the WebSocket is down |
+| `intraday_gtt_sync_interval_s` | 300s | Broker-side stops re-synced |
+| lease renew | 30s | Which instance is ACTIVE |
+
+Prices stream continuously; **decisions are made every 15 seconds**. That is
+deliberate — re-running the full exit state machine on every tick would burn CPU
+and rate limit to reach the same conclusion, and a 15s gap is immaterial to a
+swing stop and acceptable for an intraday one whose stop is also resting at the
+broker as a GTT.
+
+### Yes — swing already rides the same feed
+
+This is `watch_symbols()` in `intraday/engine.py`, and it carries three things:
+
+| Watched | Why |
+|---|---|
+| **Every open position** — swing *and* intraday | "Positions are non-negotiable — an unwatched position is an unmanaged stop" |
+| **TIER_1 / TIER_2 swing candidates** | So a shortlisted name reaching your entry limit is caught live |
+| The intraday universe | Setup detection |
+
+So both things you asked about are already happening:
+
+- **Swing positions are priced live and evaluated every 15s.**
+  `evaluate_positions()` routes each one by framework — swing positions get
+  `control/position_lifecycle.evaluate_exit()` (1.5R partial, breakeven, 2.0R
+  trail, runners), intraday positions get `intraday/exit_policy.py`. An intraday
+  position must not be managed by the swing policy: a 3R target would override
+  the setup's own 2R, and a 15-**session** time stop is meaningless on a trade
+  that must be flat by 15:20.
+
+- **Shortlisted swing names are watched for a better price.**
+  `evaluate_candidates()` runs the *same* `decide()` the dashboard and Telegram
+  digest use, against the live price rather than the last close. A TIER_1 name
+  that gapped down into `BUY_NOW` is caught intraday instead of waiting for
+  tomorrow's pipeline. Names already held are skipped.
+
+Only tiered candidates are streamed — subscribing to the whole shortlist would
+multiply tick load for names the engine will never act on.
+
+### What this means in practice
+
+| Window | Swing positions | Intraday positions |
+|---|---|---|
+| 09:00–15:40, monitor running | Live, 15s decisions | Live, 15s decisions |
+| Monitor not running | GTT stops only | N/A — flat by 15:15 |
+| Overnight / weekend | GTT stops only | N/A |
+
+**The GTT stops are why the monitor being down is survivable.** They rest at
+Zerodha and fire without any process of yours being alive. That is the entire
+reason Phase 2.5 exists.
+
+---
+
+## 11. Quick reference
 
 ```bash
 tradeos
