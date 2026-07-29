@@ -414,6 +414,24 @@ Also confirms every CRITICAL key is read by at least one module.
 cd backend && python -m tools.validate_selects
 ```
 
+### Orders rejected: "IP (2402:e280:...) is not allowed"
+
+An address starting `2402:`, `2401:`, or any group of hex separated by colons is
+**IPv6**. Zerodha's allowlist is **IPv4 only**, so a v6 source address can never
+be allowlisted — there is no console entry that would fix it.
+
+`api.kite.trade` resolves IPv6-first on a dual-stack connection, so Python
+connected over v6 by default. `config._force_ipv4()` now filters `getaddrinfo`
+to IPv4 process-wide, and the `kite` health check fails if v6 ever comes back.
+
+This one is nasty because **every readiness check passed while every order was
+rejected**: `tradeos ip` asks a v4 endpoint and saw the correct allowlisted
+address, while orders left over v6.
+
+If you see it again: `tradeos health` will now catch it. A running daemon
+latches the symbol as blocked for the session, so **restart the daemon** after
+fixing — it retries on restart by design.
+
 ### Orders are rejected: "No IPs configured for this app"
 
 Your public IP is not on the Kite allowlist. Run `tradeos ip`, then add it at
@@ -651,6 +669,13 @@ Show what is live, paper, and off.
 ## Change log
 
 Update this section whenever behaviour changes.
+
+**29 July 2026 — IPv6**
+- **Fixed: every live order was rejected.** Kite saw an IPv6 source address; the
+  allowlist is IPv4-only. `config._force_ipv4()` filters `getaddrinfo` to v4
+  process-wide. The `kite` health check now fails if `api.kite.trade` resolves
+  over v6 — previously it asked a v4 endpoint, matched, and reported healthy
+  while orders failed.
 
 **29 July 2026 — night**
 - **Charges are now recorded.** They were computed on every paper fill and

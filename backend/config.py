@@ -97,6 +97,52 @@ MODELS.mkdir(exist_ok=True)
 LOGS.mkdir(exist_ok=True)
 
 # ── Logging ──────────────────────────────────────────────────
+def _force_ipv4() -> None:
+    """
+    Make every outbound connection use IPv4, process-wide.
+
+    WHY THIS IS NOT OPTIONAL
+    ------------------------
+    Zerodha's order allowlist accepts IPv4 addresses ONLY. api.kite.trade
+    resolves IPv6-first on a dual-stack network, so Python connects over v6 and
+    Kite sees a source address that is not on the list and cannot be put on it:
+
+        IP (2402:e280:3e1a:...) is not allowed to place orders for this app
+
+    Every order is rejected while the account, the token, the session and the
+    allowlisted v4 address are all correct. Nothing in the error names IPv6, and
+    `tradeos ip` reports the v4 address matching — so the check passes and the
+    orders still fail. That combination cost a live session: a partial book on a
+    winning position retried and was refused every 15 seconds for an hour.
+
+    Filtering getaddrinfo rather than pinning an address is deliberate: Kite sits
+    behind Cloudflare and its IPs rotate, so the hostname must still resolve
+    normally — just never to a v6 answer.
+
+    It lives in config.py because config is the first import in every entry
+    point. In kite_client it worked only because price_feed happened to import
+    that module before constructing the websocket, which is not a guarantee
+    worth depending on for the thing that decides whether exits can execute.
+    """
+    import socket
+    if getattr(socket, "_tradeos_ipv4_only", False):
+        return
+    _orig = socket.getaddrinfo
+
+    def ipv4_only(host, port, family=0, type=0, proto=0, flags=0):
+        res = _orig(host, port, socket.AF_INET, type, proto, flags)
+        if res:
+            return res
+        # An IPv6-only host would be unreachable if this hard-failed. Fall back
+        # rather than break a service that has nothing to do with orders.
+        return _orig(host, port, family, type, proto, flags)
+
+    socket.getaddrinfo = ipv4_only
+    socket._tradeos_ipv4_only = True
+
+
+_force_ipv4()
+
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 logger.remove()
 logger.add(

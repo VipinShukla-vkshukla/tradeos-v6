@@ -31,6 +31,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
 from config import KITE_API_KEY
 
+
+# NOTE: IPv4 is forced process-wide in config.py, not here. Zerodha's order
+# allowlist is IPv4-only and api.kite.trade resolves v6-first on a dual-stack
+# network — see config._force_ipv4() for why every order was rejected while
+# every readiness check passed. It lives in config because this module is not
+# always the first thing imported, and the websocket in intraday/price_feed.py
+# would otherwise race the patch.
+
 _kite = None
 _warned_no_token = False
 

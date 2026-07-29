@@ -168,8 +168,27 @@ def check_kite() -> tuple[bool, str]:
     except Exception as e:
         return False, f"Kite call failed: {str(e)[:110]}"
 
+    # Zerodha's allowlist is IPv4-only. On a dual-stack network api.kite.trade
+    # resolves v6-first, so orders leave from an address that cannot be
+    # allowlisted — while this very check, asking a v4 endpoint, reports a
+    # perfect match. That combination cost a live session: every exit rejected
+    # with "IP (2402:e280:...) is not allowed", and every readiness check green.
+    #
+    # kite_client forces v4 at import. This verifies the force actually took,
+    # because a check that cannot fail is not a check.
+    try:
+        import socket
+        fams = {f for f, *_ in socket.getaddrinfo("api.kite.trade", 443)}
+        if socket.AF_INET6 in fams:
+            return False, ("api.kite.trade still resolves over IPv6 — orders will "
+                           "leave from a v6 address that Zerodha's IPv4-only "
+                           "allowlist can never match")
+    except Exception:
+        pass
+
     # An allowlist mismatch does not surface until an order is rejected, which
     # is mid-session, which is the worst time to discover it.
+    ip = ""
     try:
         import urllib.request
         ip = urllib.request.urlopen("https://api.ipify.org",
@@ -182,7 +201,8 @@ def check_kite() -> tuple[bool, str]:
                            f"placement will be REJECTED")
     except Exception:
         pass
-    return True, f"session live for {prof.get('user_id')}, IP matches"
+    return True, (f"session live for {prof.get('user_id')}"
+                  + (f", IPv4 {ip} matches allowlist" if ip else ", IPv4 forced"))
 
 
 def check_daemon() -> tuple[bool, str]:
