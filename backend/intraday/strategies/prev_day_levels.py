@@ -59,8 +59,18 @@ class PrevDayLevelRetest:
         if not broke:
             return None
 
-        # 2. Price must now be back AT the level, not far above it.
-        tol = cfg_float("pdl_retest_tol_pct", 0.30) / 100.0
+        # 2. Price must now be back NEAR the level, not far above it.
+        #
+        # Widened from 0.30% to 0.55%, because 0.30% left no band at all once
+        # step 4 required the thesis to have more room than the round trip
+        # costs: that needs ~0.29% above the level, and a 0.29-0.30% window is a
+        # setup that can never fire.
+        #
+        # The wider tolerance also changes the trade for the better. Buying
+        # exactly at the level means buying where the noise lives and where
+        # every other stop sits; a retest that has held and lifted slightly is
+        # the same thesis with evidence that it worked.
+        tol = cfg_float("pdl_retest_tol_pct", 0.55) / 100.0
         dist = (ctx.ltp - pdh) / pdh
         if dist < 0:
             return None                      # lost the level — no longer support
@@ -69,18 +79,58 @@ class PrevDayLevelRetest:
 
         # 3. The retest must be HOLDING: the most recent bars have to have found
         #    support, not be mid-collapse through the level.
+        #
+        # The fail margin is clamped BELOW the exit policy's invalidation buffer,
+        # and that is not a detail. This engine called a retest "holding" while a
+        # bar closed 0.15% under the level; exit_policy declares the setup dead
+        # at 0.12% under. So a setup could be created in a state the exit engine
+        # already considered invalid — born dead, alerted, entered, and cut on
+        # the next tick. On 30 Jul PDL produced 25 of 41 detections and hit
+        # target zero times, with both losses exiting SETUP_INVALIDATED inside
+        # 0.4% of entry.
+        #
+        # Two components disagreeing about the same level is worse than either
+        # threshold being wrong, because no value of one fixes the other.
+        inval_buf = cfg_float("intraday_invalidation_buffer_pct", 0.12)
+        fail_pct = min(cfg_float("pdl_fail_margin_pct", 0.15), inval_buf * 0.75)
         look = bars[-cfg_int("pdl_hold_bars", 3):]
-        if any(b.close < pdh * (1 - cfg_float("pdl_fail_margin_pct", 0.15) / 100.0) for b in look):
+        if any(b.close < pdh * (1 - fail_pct / 100.0) for b in look):
             return None
 
-        # 4. A retest on rising volume is distribution, not support. The good
+        # 4. THE THESIS NEEDS MORE ROOM THAN THE TRADE COSTS.
+        #
+        # Entry sits 0 to 0.30% above the level; invalidation triggers 0.12%
+        # below it. Enter right at the level and the thesis has 0.12% of room
+        # against a 0.21% round trip — noise smaller than your own friction
+        # ends the trade, and no stop placement can rescue that.
+        #
+        # So the distance from entry down to the invalidation level must exceed
+        # the round trip by a margin. In practice this means PDL only takes the
+        # retest once price has lifted clearly off the level, which is also the
+        # version that was working.
+        from intraday.cost_model import round_trip as _rt
+        inval_level = pdh * (1 - inval_buf / 100.0)
+        room_pct = (ctx.ltp - inval_level) / ctx.ltp * 100.0
+        cost_pct = _rt(ctx.ltp, max(1, int(6000 // ctx.ltp))).pct_of_position
+        need = cost_pct * cfg_float("pdl_min_room_x_cost", 2.0)
+        if room_pct < need:
+            return None
+
+        # 5. A retest on rising volume is distribution, not support. The good
         #    version comes back quietly.
         vr = ctx.volume_ratio()
         max_vr = cfg_float("pdl_max_retest_volume_ratio", 2.5)
         if vr is not None and vr > max_vr:
             return None
 
-        stop = pdh * (1 - cfg_float("pdl_stop_buffer_pct", 0.25) / 100.0)
+        # Stop below the INVALIDATION level, not merely below the PDH.
+        #
+        # The stop sat 0.25% under the level while invalidation fires at 0.12%
+        # under, so invalidation always triggered first and the stop was
+        # decorative — every PDL exit was an invalidation, never a stop, and the
+        # R the position was sized against was never the R that could be lost.
+        stop = min(pdh * (1 - cfg_float("pdl_stop_buffer_pct", 0.25) / 100.0),
+                   inval_level * (1 - 0.05 / 100.0))
         risk = ctx.ltp - stop
         if risk <= 0:
             return None
