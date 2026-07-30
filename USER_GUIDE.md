@@ -618,6 +618,65 @@ reason Phase 2.5 exists.
 
 ---
 
+## 10b. Is the system operating correctly?
+
+Four questions, four commands. Run them in this order when something feels off.
+
+```bash
+tradeos health
+```
+**Is anything broken right now?** Six checks: config coherence, SELECT validity,
+Kite session + IPv4 allowlist, data freshness, broker/GTT consistency, and
+whether a monitor is alive and on which machine. Runs automatically at every
+launch. `all 6 checks passed` means the machinery is sound — it says nothing
+about whether the decisions are good.
+
+```bash
+cd backend && python -m tools.simulate
+```
+**What would it do right now, without doing it?** Every stage prints what it
+produced rather than whether it completed. Covers both books: swing positions
+and their exit verdicts, the auto-entry dry run with rankings and reasons,
+the intraday engine scan with every gate that blocked a setup, and the engine
+scorecard.
+
+```bash
+tradeos status
+```
+**What is switched on, and where is the monitor?** Both frameworks' mode,
+auto-exit, engines, and which machine holds the lease.
+
+**Dashboard → Performance → Trade Log** — what it actually did, grouped by day,
+with net P&L, charges and the reasoning behind each entry.
+
+### The scorecard is the one that judges the system, not the machinery
+
+```
+engine    TARGET   STOP   TIME     n   hit rate
+PDL            0     21      4    25       0%  <- review
+VWR            1      7      2    10      10%  <- review
+RNG            0      4      0     4       0%
+VCE            2      0      0     2     100%
+
+WAS DECLINING RIGHT? — target-hit rate among setups we refused:
+  REJECTED_COST        0/10 would have reached target (0%)
+  BLOCKED_STRUCTURE    0/9  would have reached target (0%)
+  TAKEN                3/12 would have reached target (25%)
+```
+
+Every **detection** is scored, not just the trades taken — including the ones
+refused. "PDL fired 25 times and hit target zero times" is a statement no P&L
+can make, and it is the only kind that justifies retiring an engine.
+
+The second table is the one to trust the gates on: if `REJECTED_COST` names
+setups that would have worked, the cost model is too strict. Today it declined
+nothing that worked.
+
+**Below about 20 resolved setups per engine, read it as a direction, not a
+verdict.**
+
+---
+
 ## 11. Watching the paper book
 
 Paper trades are recorded in the **same tables** as live ones, tagged

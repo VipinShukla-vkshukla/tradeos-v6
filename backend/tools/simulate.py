@@ -87,6 +87,45 @@ def simulate_swing(sb) -> dict:
             "buyable": buyable, "mode": mode}
 
 
+def engine_report(sb) -> None:
+    """
+    What each intraday engine has actually produced, from resolved outcomes.
+
+    The gates and thresholds tuned this week are assertions until this table
+    disagrees with them. It reads intraday_setups, where every DETECTION is
+    recorded with why it was taken or declined and what then happened — so it
+    answers the question the P&L cannot: was declining right?
+    """
+    _hdr("INTRADAY ENGINE SCORECARD (resolved outcomes)")
+    from collections import defaultdict
+    rows = (sb.table("intraday_setups")
+              .select("strategy,cost_verdict,outcome,outcome_pct,confidence")
+              .execute().data or [])
+    done = [r for r in rows if r.get("outcome")]
+    if not done:
+        logger.info("  no resolved outcomes yet — they are written at session close")
+        return
+
+    by_eng = defaultdict(lambda: defaultdict(int))
+    for r in done:
+        by_eng[r.get("strategy") or "?"][r["outcome"]] += 1
+    logger.info(f"  {'engine':<8}{'TARGET':>8}{'STOP':>7}{'TIME':>7}{'n':>6}   hit rate")
+    for eng, o in sorted(by_eng.items(), key=lambda kv: -sum(kv[1].values())):
+        n = sum(o.values()); t = o.get("TARGET", 0)
+        flag = "  <- review" if n >= 10 and t / n < 0.15 else ""
+        logger.info(f"  {eng:<8}{t:>8}{o.get('STOP',0):>7}{o.get('TIMEOUT',0):>7}{n:>6}"
+                    f"   {t/n:>6.0%}{flag}")
+
+    by_v = defaultdict(lambda: defaultdict(int))
+    for r in done:
+        by_v[r.get("cost_verdict") or "?"][r["outcome"]] += 1
+    logger.info("")
+    logger.info("  WAS DECLINING RIGHT? — target-hit rate among setups we refused:")
+    for v, o in sorted(by_v.items()):
+        n = sum(o.values()); t = o.get("TARGET", 0)
+        logger.info(f"    {v:<20} {t}/{n} would have reached target ({t/n:.0%})")
+
+
 def simulate_swing_entries(sb) -> dict:
     """
     What auto-entry WOULD take tonight, and why it preferred those names.
@@ -264,6 +303,7 @@ def main(force_phase: str | None = None) -> int:
 
     sw = simulate_swing(sb)
     simulate_swing_entries(sb)
+    engine_report(sb)
     it = simulate_intraday(sb, force_phase)
 
     _hdr("SUMMARY")
