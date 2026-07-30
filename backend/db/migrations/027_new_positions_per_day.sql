@@ -41,3 +41,28 @@ VALUES ('swing_replace_margin', '20',
         'round trip and a fresh stop for no edge.',
         'ALERTS', 'NORMAL')
 ON CONFLICT (key) DO UPDATE SET description = EXCLUDED.description;
+
+-- ── Intraday parity ────────────────────────────────────────────────────────
+-- Same two concepts, same names, so one mental model covers both frameworks.
+INSERT INTO system_config (key, value, description, category, risk_level)
+VALUES ('intraday_max_new_per_day', '4',
+        'How many NEW intraday positions may be opened in one day. Distinct '
+        'from intraday_max_orders_per_day, which caps orders placed. Read by '
+        'intraday/engine.py::_maybe_open_paper.',
+        'RISK', 'CRITICAL')
+ON CONFLICT (key) DO UPDATE SET description = EXCLUDED.description;
+
+-- NOTE: this behaves differently from swing_alert_top_n, and deliberately.
+-- Swing ranks a FIXED field — last night's plans and their scores — so the
+-- day's top five is knowable at 09:15. An intraday setup exists only once price
+-- has made it, so the day's best cannot be known until the day is over. This is
+-- therefore a STREAMING top-N: alert freely until N have been sent, then only
+-- for a setup that beats the weakest already sent. The bar rises through the
+-- session instead of being fixed in advance.
+INSERT INTO system_config (key, value, description, category, risk_level)
+VALUES ('intraday_alert_top_n', '5',
+        'How many intraday setups may alert per session. Streaming top-N: once '
+        'N are sent, only a setup beating the weakest of them alerts. Read by '
+        'intraday/engine.py::_intraday_alert_worthy.',
+        'ALERTS', 'NORMAL')
+ON CONFLICT (key) DO UPDATE SET description = EXCLUDED.description;

@@ -61,6 +61,11 @@ class IntradayEngine:
         self._news = None
         self._advice: dict = {}
         self._pending_review: list = []
+        # Confidence of every intraday setup already alerted this session, for
+        # the streaming top-N in _intraday_alert_worthy(). Session-scoped and in
+        # memory on purpose: a restart SHOULD re-announce the current best,
+        # since you have no way of knowing whether the earlier message was seen.
+        self._alerted_conf: list = []
 
     # ── state ───────────────────────────────────────────────────────────────
     def load_state(self) -> None:
@@ -1018,6 +1023,46 @@ class IntradayEngine:
                         "market": mc, "phase": st.phase, "cost_note": why})
         return out
 
+    def _intraday_alert_worthy(self, st) -> bool:
+        """
+        Is this setup good enough to interrupt you, given what today has shown?
+
+        WHY THIS CANNOT WORK LIKE THE SWING VERSION
+        -------------------------------------------
+        Swing ranks a FIXED field: last night's pipeline produced every plan and
+        their scores, so "today's top five" is knowable at 09:15 and stable all
+        day. Intraday has no such list — a setup exists only once price has made
+        it, so the day's best cannot be known until the day is over, and by then
+        the alert is worthless.
+
+        So this is a STREAMING top-N: alert freely until N have been sent, then
+        only for a setup that beats the weakest one already sent. That converges
+        on the best N of the session without needing to see the future, and it
+        degrades in the right direction — an ordinary morning still tells you
+        about its best setups, while a busy one stops repeating mediocre ones.
+
+        The alternative — a fixed confidence threshold — cannot adapt. Set it
+        high and a quiet day says nothing; set it low and a busy day says
+        everything. This asks the only question that matters at each moment: is
+        this better than what I have already interrupted you about?
+        """
+        n = cfg_int("intraday_alert_top_n", 5)
+        if n <= 0:
+            return True
+        if len(self._alerted_conf) < n:
+            return True
+        # Compare against the weakest of the N BEST so far, not of everything
+        # ever sent. Keeping an unbounded list made min() fall with each new
+        # alert, so the bar dropped as the day went on and every setup
+        # eventually qualified — a top-N that ratchets the wrong way.
+        return st.confidence > min(sorted(self._alerted_conf, reverse=True)[:n])
+
+    def _record_alerted(self, st) -> None:
+        """Keep only the N best confidences seen, so the bar rises not falls."""
+        n = max(1, cfg_int("intraday_alert_top_n", 5))
+        self._alerted_conf.append(st.confidence)
+        self._alerted_conf = sorted(self._alerted_conf, reverse=True)[:n]
+
     def act_on_setups(self, setups: list) -> None:
         for s in setups:
             st, qty, mc = s["setup"], s["qty"], s["market"]
@@ -1027,6 +1072,13 @@ class IntradayEngine:
             # system judged only on how it leaves trades tells you nothing
             # about which trades it should have entered.
             self._maybe_open_paper(st, qty, mc)
+
+            if not self._intraday_alert_worthy(st):
+                logger.info(f"      {st.symbol}: {st.strategy} conf {st.confidence:.2f} "
+                            f"does not beat the weakest of today's "
+                            f"{cfg_int('intraday_alert_top_n', 5)} alerted setups — quiet")
+                continue
+            self._record_alerted(st)
 
             self.notifier.send(Action(
                 symbol=st.symbol, kind=f"SETUP_{st.strategy}",
@@ -1088,6 +1140,15 @@ class IntradayEngine:
         # them as on, and they did nothing, which is the same class of failure as
         # swing_auto_entry before it was wired.
         if not cfg_bool("intraday_auto_entry", True):
+            return
+
+        # How many NEW intraday positions today. Distinct from
+        # intraday_max_orders_per_day, which caps ORDERS — the same distinction
+        # swing needed, and for the same reason: one is a safety rail against a
+        # runaway loop, the other is a decision about concentration.
+        open_today = len([p for p in self.positions
+                          if (p.get("framework") or "").upper() == "INTRADAY"])
+        if open_today >= cfg_int("intraday_max_new_per_day", 4):
             return
         if not is_paper("INTRADAY"):
             if not cfg_bool("intraday_live_auto_entry", False):

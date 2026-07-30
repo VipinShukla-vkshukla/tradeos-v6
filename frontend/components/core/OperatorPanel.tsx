@@ -39,6 +39,7 @@ const KEYS = [
   'swing_trading_mode', 'swing_auto_exit', 'swing_auto_entry', 'swing_live_auto_entry',
   'swing_max_order_value', 'swing_max_orders_per_day', 'swing_max_notional_per_day',
   'swing_max_new_per_day', 'swing_alert_top_n',
+  'intraday_max_new_per_day', 'intraday_alert_top_n',
   'intraday_trading_mode', 'intraday_auto_exit', 'intraday_auto_entry',
   'intraday_live_auto_entry', 'intraday_strategies_enabled',
   'intraday_max_order_value', 'intraday_max_orders_per_day',
@@ -219,10 +220,11 @@ export function OperatorPanel() {
             // stricter of the two binds. Raising Orders/day to 4 while this sat
             // at 2 changed nothing — and it was invisible, so there was no way
             // to see why.
-            ...(fw === 'swing'
-              ? [['swing_max_new_per_day', 'New positions/day'],
-                 ['swing_alert_top_n', 'Alert top N']]
-              : []),
+            // Both frameworks, same two concepts, same labels — one mental
+            // model covers both. What differs is HOW top-N is chosen, which the
+            // note below explains rather than leaving to be discovered.
+            [`${fw}_max_new_per_day`, 'New positions/day'],
+            [`${fw}_alert_top_n`, 'Alert top N'],
           ].map(([k, lbl]) => (
             <div key={k}>
               <div className="text-[10px] text-muted-foreground">{lbl}</div>
@@ -243,11 +245,17 @@ export function OperatorPanel() {
         <div className="text-[10px] text-muted-foreground mt-1">
           Caps bound every order regardless of what sizing computes — the one control
           that does not depend on capital, risk percent or ATR being right.
-          {fw === 'swing' && (
-            <> <b>Orders/day</b> is the safety rail; <b>New positions/day</b> is
-            how many the strategy opens. The stricter one wins.
-            <b> Alert top N</b> bounds what interrupts you — the feed still
-            watches every plan.</>
+          {' '}<b>Orders/day</b> is the safety rail; <b>New positions/day</b> is how
+          many the strategy opens. The stricter one wins.
+          {fw === 'swing' ? (
+            <> <b>Alert top N</b> ranks last night&apos;s plans once, so the
+            day&apos;s top {cfg['swing_alert_top_n'] ?? 5} is fixed at 09:15 —
+            the feed still watches every plan.</>
+          ) : (
+            <> <b>Alert top N</b> is a running best-of: a setup only exists once
+            price makes it, so alerts flow until {cfg['intraday_alert_top_n'] ?? 5}{' '}
+            are sent, then only for one that beats the weakest so far. The bar
+            rises through the session.</>
           )}
         </div>
       </div>
