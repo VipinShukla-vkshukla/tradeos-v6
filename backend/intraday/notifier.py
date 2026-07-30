@@ -52,6 +52,11 @@ class Action:
     r_multiple: float | None = None
     urgency: str = "NORMAL"         # CRITICAL | NORMAL | INFO
     meta: dict = field(default_factory=dict)
+    # Which BOOK this concerns. The daemon manages both, so "which process sent
+    # it" is not the same question as "which book is it about" — a swing partial
+    # book raised by the intraday loop is still swing news, and belongs in the
+    # swing channel where swing decisions are read.
+    framework: str = "INTRADAY"
 
     def state_key(self) -> str:
         """What counts as 'the same alert' for de-duplication purposes."""
@@ -126,7 +131,8 @@ class Notifier:
         # Prefix every intraday message. Channel separation is the primary
         # mechanism, but a label survives a misrouted webhook — and knowing
         # which system is talking is the whole point of the split.
-        lines = [f"{icon} <b>[INTRADAY] {a.kind.replace('_', ' ')} — {a.symbol}</b>",
+        tag = (a.framework or "INTRADAY").upper()
+        lines = [f"{icon} <b>[{tag}] {a.kind.replace('_', ' ')} — {a.symbol}</b>",
                  a.headline]
         if a.detail:
             lines.append(a.detail)
@@ -146,7 +152,7 @@ class Notifier:
             return False
 
         text = self._format(a)
-        ok_any = self._deliver(text)
+        ok_any = self._deliver(text, a.framework)
 
         # The dashboard row is written regardless of chat success. If Telegram
         # is rate-limited the alert must still exist somewhere you can see it.
@@ -158,7 +164,7 @@ class Notifier:
         return ok_any
 
     # ── delivery, on the INTRADAY channels ──────────────────────────────────
-    def _deliver(self, text: str) -> bool:
+    def _deliver(self, text: str, framework: str = "INTRADAY") -> bool:
         """
         Send to the intraday bot and webhook, NOT the swing ones.
 
@@ -181,9 +187,14 @@ class Notifier:
         # Discord webhook ended up living only in system_config while the swing
         # Telegram token lived only in .env — both working, neither documented.
         from credentials_resolver import resolve
-        token = resolve("TELEGRAM_INTRADAY_BOT_TOKEN")
-        chat  = resolve("TELEGRAM_INTRADAY_CHAT_ID")
-        hook  = resolve("DISCORD_INTRADAY_WEBHOOK_URL")
+        if (framework or "INTRADAY").upper() == "SWING":
+            token = resolve("TELEGRAM_BOT_TOKEN")
+            chat  = resolve("TELEGRAM_CHAT_ID")
+            hook  = resolve("DISCORD_WEBHOOK_URL")
+        else:
+            token = resolve("TELEGRAM_INTRADAY_BOT_TOKEN")
+            chat  = resolve("TELEGRAM_INTRADAY_CHAT_ID")
+            hook  = resolve("DISCORD_INTRADAY_WEBHOOK_URL")
 
         if token and chat:
             try:

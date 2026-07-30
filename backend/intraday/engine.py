@@ -282,6 +282,27 @@ class IntradayEngine:
                       {c["symbol"] for c in self.candidates if c.get("symbol")} |
                       set(self._universe))
 
+    def _confidence_floor(self) -> float:
+        """
+        How convinced the engine must be, given what is left to spend today.
+
+        base at a full budget, rising linearly to `scarce` at zero remaining.
+        Reading the count from the broker log rather than tracking it in memory
+        keeps it correct across a restart and across the two daemons, only one
+        of which is acting at a time.
+        """
+        base   = cfg_float("intraday_min_confidence", 0.55)
+        scarce = cfg_float("intraday_min_confidence_scarce", 0.80)
+        try:
+            from execution.gates import max_orders_per_day
+            from execution.order_manager import _today_totals
+            n, _mine, _all = _today_totals(self.sb, "INTRADAY")
+            cap = max(1, max_orders_per_day("INTRADAY"))
+            used = min(1.0, n / cap)
+        except Exception:
+            used = 0.0
+        return round(base + (scarce - base) * used, 3)
+
     def context_symbols(self) -> list[str]:
         """
         What needs BARS, which is the genuinely expensive list.
@@ -461,6 +482,9 @@ class IntradayEngine:
                         f"· reason {d['reason']}"),
                 ltp=ltp, r_multiple=r_now, urgency=urgency,
                 meta={"reason": d["reason"], "book_qty": book},
+                # A swing position's exit is swing news even though the intraday
+                # loop noticed it. Routed by the POSITION, not by the process.
+                framework=(p.get("framework") or "SWING").upper(),
             ))
 
             # TRAIL_SL is a book update, not something you do — persist it so
@@ -592,6 +616,7 @@ class IntradayEngine:
                     ltp=ltp, urgency="INFO",
                     meta={"tier": c.get("ai_tier"), "max_entry": d.max_entry,
                           "state": "APPROACHING"},
+                    framework="SWING",   # a swing plan nearing its entry limit
                 ))
                 continue
 
@@ -604,6 +629,7 @@ class IntradayEngine:
                            if getattr(d, 'qty', None) else "")),
                 ltp=ltp, urgency="NORMAL",
                 meta={"tier": c.get("ai_tier"), "action": d.action},
+                framework="SWING",       # from signal_output_daily, a swing plan
             ))
             # Entries are never auto-placed at Phase 3 by this loop. Committing
             # new capital on a live tick, without the evening pipeline's full
@@ -693,6 +719,25 @@ class IntradayEngine:
             if ai_note:
                 best.meta["ai_note"] = ai_note
 
+            # CONVICTION FLOOR, TIGHTENING AS THE DAY'S BUDGET IS SPENT.
+            #
+            # The cap is 5 orders a day and the session is six hours long, so
+            # taking the first five qualifying setups is a strictly worse policy
+            # than taking the best five — and a fixed threshold cannot express
+            # that, because "good enough" at 09:20 with the whole budget intact
+            # is not good enough at 14:30 with one order left.
+            #
+            # So the floor rises with the fraction of the budget already used.
+            # Early, a decent setup is worth taking; late, only a strong one is,
+            # because the alternative to a mediocre trade is no trade, and no
+            # trade costs nothing while a mediocre one costs 0.21% plus the risk.
+            floor = self._confidence_floor()
+            if best.confidence < floor:
+                self._record_setup(best, st.phase, 0.0, "BELOW_CONVICTION", 0)
+                logger.info(f"      {sym}: {best.strategy} conf {best.confidence:.2f} "
+                            f"< floor {floor:.2f} — passing, budget is better spent later")
+                continue
+
             # Size against the market state, then ask whether the trade still
             # survives its own costs at that size. A setup that only works at
             # full size on a CAUTION day is not a setup, it is leverage.
@@ -748,6 +793,7 @@ class IntradayEngine:
                         + (f"\nAlso flagged by: {', '.join(corro)}" if corro else "")),
                 ltp=st.entry, urgency="NORMAL",
                 meta={"strategy": st.strategy, "qty": qty, "rr": round(st.rr, 2)},
+                framework="INTRADAY",
             ))
 
     def _setup_is_new(self, s, verdict: str) -> bool:
