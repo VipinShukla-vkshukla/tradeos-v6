@@ -58,11 +58,14 @@ BEGIN
           JOIN pg_class t ON t.oid = c.conrelid
          WHERE t.relname = 'open_positions'
            AND c.contype = 'u'
-           AND (SELECT array_agg(a.attname ORDER BY a.attname)
+           -- attname is `name`, not `text`. Without the cast this compares
+           -- name[] against text[], for which Postgres has no operator:
+           --   42883 operator does not exist: name[] = text[]
+           AND (SELECT array_agg(a.attname::text ORDER BY a.attname::text)
                   FROM unnest(c.conkey) k
                   JOIN pg_attribute a
                     ON a.attrelid = c.conrelid AND a.attnum = k)
-               = ARRAY['symbol']
+               = ARRAY['symbol']::text[]
     LOOP
         EXECUTE format('ALTER TABLE open_positions DROP CONSTRAINT %I', r.conname);
         RAISE NOTICE 'dropped symbol-only unique constraint %', r.conname;
@@ -76,7 +79,7 @@ BEGIN
          WHERE t.relname = 'open_positions'
            AND x.indisunique
            AND x.indnatts = 1
-           AND (SELECT a.attname FROM pg_attribute a
+           AND (SELECT a.attname::text FROM pg_attribute a
                  WHERE a.attrelid = x.indrelid AND a.attnum = x.indkey[0]) = 'symbol'
     LOOP
         EXECUTE format('DROP INDEX IF EXISTS %I', r.iname);

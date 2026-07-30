@@ -177,20 +177,40 @@ def moved_but_unseen(sb, days: int) -> int:
     # about the past. A second source of truth for the same bars is also how
     # two parts of this project came to disagree about the same number.
     since = (today_ist() - timedelta(days=days)).isoformat()
-    bars = (sb.table("stock_data_daily")
-              .select("symbol,date,open,high,low,close,volume")
-              .gte("date", since).execute().data or [])
+
+    from intraday import scanner
+    universe = set(scanner.symbols(sb))
+
+    # FILTERED AND PAGED, both deliberately.
+    #
+    # PostgREST returns at most 1000 rows per request and says nothing when it
+    # truncates. Asking for 499 symbols over 25 days is ~12,000 rows, so the
+    # first version silently analysed the first 1000 — mostly names outside the
+    # universe — and reported 40 symbol-days as if that were the whole window.
+    # A discovery tool drawing conclusions from 8% of its data is worse than one
+    # that does not run.
+    bars, page = [], 0
+    while True:
+        chunk = (sb.table("stock_data_daily")
+                   .select("symbol,date,open,high,low,close,volume,vol_ratio,adx,"
+                           "atr_pct,delivery_pct,rs_vs_nifty,dist_sma50,sector")
+                   .in_("symbol", sorted(universe))
+                   .gte("date", since)
+                   .order("date")
+                   .range(page * 1000, page * 1000 + 999).execute().data or [])
+        bars.extend(chunk)
+        if len(chunk) < 1000:
+            break
+        page += 1
     if not bars:
         logger.warning("  no bars in stock_data_daily for the window")
         return 0
+    logger.info(f"  {len(bars)} symbol-days loaded for {len(universe)} universe names")
 
     seen = defaultdict(set)      # trade_date -> symbols any engine detected
     for r in (sb.table("intraday_setups").select("symbol,trade_date")
                 .gte("trade_date", since).execute().data or []):
         seen[str(r.get("trade_date"))].add(r.get("symbol"))
-
-    from intraday import scanner
-    universe = set(scanner.symbols(sb))
 
     # Previous close per symbol, so the gap is knowable at the open.
     by_sym = defaultdict(list)
@@ -199,68 +219,116 @@ def moved_but_unseen(sb, days: int) -> int:
     for v in by_sym.values():
         v.sort(key=lambda x: str(x["date"]))
 
-    misses, examined = [], 0
+    # `seen` and `by_sym` are assembled above; the clustering pass below does
+    # the counting, because a miss only means something next to a denominator.
+    # ── Clustering, with a denominator ──────────────────────────────────────
+    #
+    # Counting misses per bucket is not evidence. "28 flat opens ran 3.5%" says
+    # nothing until you know how many flat opens there were in total — a common
+    # bucket produces the most misses simply by being common, and reporting that
+    # as a pattern is how a discovery tool manufactures strategies out of base
+    # rates.
+    #
+    # So every bucket is scored as LIFT: how often a big move followed this
+    # setup, against how often one followed ANY setup. A bucket only earns a
+    # candidate if the move rate is materially higher than the background AND
+    # the engines missed it.
+    #
+    # Features are all from the PRIOR row — knowable at the open, before the
+    # move. A feature read from the same day describes the outcome and would
+    # make every bucket look predictive.
+    def _f(v, d=0.0):
+        try:
+            return float(v) if v is not None else d
+        except (TypeError, ValueError):
+            return d
+
+    feats = {
+        "gap down > 1%":        lambda p, m: m["gap"] <= -1.0,
+        "flat open +/-0.3%":    lambda p, m: abs(m["gap"]) <= 0.3,
+        "gap up > 1%":          lambda p, m: m["gap"] >= 1.0,
+        "prior volume > 1.5x":  lambda p, m: _f(p.get("vol_ratio")) > 1.5,
+        "prior volume < 0.8x":  lambda p, m: 0 < _f(p.get("vol_ratio")) < 0.8,
+        "ADX > 25 (trending)":  lambda p, m: _f(p.get("adx")) > 25,
+        "ADX < 18 (choppy)":    lambda p, m: 0 < _f(p.get("adx")) < 18,
+        "ATR > 3% (volatile)":  lambda p, m: _f(p.get("atr_pct")) > 3.0,
+        "delivery > 60%":       lambda p, m: _f(p.get("delivery_pct")) > 60,
+        "RS vs NIFTY > 5":      lambda p, m: _f(p.get("rs_vs_nifty")) > 5,
+        "extended > 8% o/50MA": lambda p, m: _f(p.get("dist_sma50")) > 8,
+    }
+
+    # Denominators: every symbol-day, whether or not it moved or was detected.
+    tot = defaultdict(int)          # bucket -> all symbol-days
+    moved = defaultdict(int)        # bucket -> days a big move followed
+    missed = defaultdict(list)      # bucket -> the ones no engine saw
     for sym, rows in by_sym.items():
-        # Only the intraday universe: a name that fails the liquidity or
-        # movement screen is not a miss, it is correctly out of scope.
         if sym not in universe:
             continue
-        for i, b in enumerate(rows):
+        for i in range(1, len(rows)):
+            prior, b = rows[i - 1], rows[i]
             try:
-                o, h, c = float(b["open"] or 0), float(b["high"] or 0), float(b["close"] or 0)
-            except (TypeError, ValueError):
+                o, h, c = _f(b["open"]), _f(b["high"]), _f(b["close"])
+                pc = _f(prior["close"])
+            except Exception:
                 continue
-            if not o or not h:
+            if not o or not h or not pc:
                 continue
-            examined += 1
-            up = (h - o) / o * 100.0
-            if up < MOVE_PCT:
-                continue
-            d = str(b["date"])[:10]
-            if sym in seen.get(d, set()):
-                continue          # an engine saw it; not a miss
-            prev_c = float(rows[i - 1]["close"] or 0) if i else 0.0
-            gap = ((o - prev_c) / prev_c * 100.0) if prev_c else 0.0
-            misses.append({"symbol": sym, "date": d, "move": round(up, 2),
-                           "gap": round(gap, 2), "closed_strong": c > o})
+            m = {"symbol": sym, "date": str(b["date"])[:10],
+                 "move": round((h - o) / o * 100.0, 2),
+                 "gap": round((o - pc) / pc * 100.0, 2),
+                 "closed_strong": c > o}
+            big = m["move"] >= MOVE_PCT
+            unseen = big and sym not in seen.get(m["date"], set())
+            for name, fn in feats.items():
+                try:
+                    if not fn(prior, m):
+                        continue
+                except Exception:
+                    continue
+                tot[name] += 1
+                if big:
+                    moved[name] += 1
+                if unseen:
+                    missed[name].append(m)
 
-    if not examined:
-        logger.warning("  no usable bars — cannot judge")
-        return 0
-    logger.info(f"  {len(misses)} moves over {MOVE_PCT}% went undetected, "
-                f"from {examined} symbol-days across {len(universe)} universe names")
-    if not misses:
-        logger.success("  every qualifying move was seen by some engine")
-        return 0
+    all_days = sum(1 for sym, rows in by_sym.items() if sym in universe
+                   for _ in rows[1:])
+    all_moves = sum(1 for sym, rows in by_sym.items() if sym in universe
+                    for i in range(1, len(rows))
+                    if _f(rows[i].get("open")) and
+                    (_f(rows[i]["high"]) - _f(rows[i]["open"])) /
+                    max(_f(rows[i]["open"]), 1e-9) * 100.0 >= MOVE_PCT)
+    base_rate = all_moves / all_days if all_days else 0.0
+    logger.info(f"  background: {all_moves} of {all_days} symbol-days produced a "
+                f"{MOVE_PCT}%+ move ({base_rate:.0%})")
 
-    # Cluster on the one feature knowable in advance: the opening gap.
-    buckets = {
-        "gap down > 1%":       lambda m: m["gap"] <= -1.0,
-        "gap down 0 to 1%":    lambda m: -1.0 < m["gap"] < 0,
-        "flat open +/-0.3%":   lambda m: abs(m["gap"]) <= 0.3,
-        "gap up 0.3 to 1.5%":  lambda m: 0.3 < m["gap"] <= 1.5,
-        "gap up > 1.5%":       lambda m: m["gap"] > 1.5,
-    }
     found = 0
-    for name, fn in buckets.items():
-        hits = [m for m in misses if fn(m)]
-        if len(hits) < MIN_OCCURRENCES:
+    for name in sorted(feats, key=lambda k: -len(missed.get(k, []))):
+        n_tot, n_miss = tot.get(name, 0), len(missed.get(name, []))
+        if n_tot < MIN_OCCURRENCES * 3 or n_miss < MIN_OCCURRENCES:
             continue
+        rate = moved.get(name, 0) / n_tot
+        lift = rate / base_rate if base_rate else 0.0
+        if lift < MIN_LIFT:
+            continue          # common, not predictive
+        hits = missed[name]
         strong = sum(1 for m in hits if m["closed_strong"]) / len(hits)
         avg = sum(m["move"] for m in hits) / len(hits)
         found += 1
-        why = (f"{len(hits)} undetected moves averaging {avg:.2f}% opened with a "
-               f"{name}; {strong:.0%} closed above the open. No engine fires on "
-               f"this shape — it is uncovered ground, not a mis-tuned gate")
-        logger.warning(f"  ! undetected · {name:<22} n={len(hits):<4} "
-                       f"avg {avg:.2f}%  {strong:.0%} closed strong")
+        why = (f"after '{name}', {rate:.0%} of {n_tot} symbol-days produced a "
+               f"{MOVE_PCT}%+ move against a {base_rate:.0%} background "
+               f"({lift:.1f}x lift). {n_miss} of those went undetected by every "
+               f"engine, averaging {avg:.2f}% with {strong:.0%} closing strong")
+        logger.warning(f"  ! {name:<24} lift {lift:.1f}x  "
+                       f"({rate:.0%} of {n_tot})  {n_miss} missed, avg {avg:.2f}%")
         logger.info("      e.g. " + ", ".join(
             f"{m['symbol']} {m['date']} +{m['move']:.1f}%" for m in hits[:3]))
         _propose(sb, f"UNSEEN/{name}", why,
-                 0.6 if len(hits) >= MIN_OCCURRENCES * 2 else 0.4)
+                 0.6 if n_miss >= MIN_OCCURRENCES * 2 else 0.4)
+
     if not found:
-        logger.info("  misses do not cluster on any single opening shape — "
-                    "no candidate worth naming yet")
+        logger.info("  no prior-day condition predicts these moves better than "
+                    f"{MIN_LIFT}x background — the misses are not a pattern yet")
     return found
 
 
