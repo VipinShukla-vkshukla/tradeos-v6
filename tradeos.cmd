@@ -9,6 +9,7 @@ REM    tradeos health     run EVERY check and report what is broken
 REM    tradeos learn      weekly review — measures, proposes, changes nothing
 REM    tradeos learn show just read the open proposals
 REM    tradeos discover   look for engines that do not exist yet
+REM    tradeos proposals  read what is waiting for a decision
 REM    tradeos status     what is live, what is paper, what is off
 REM    tradeos ip         this machine's public IP for the Kite allowlist
 REM    tradeos server     validate the daemon server (run this ON the server)
@@ -42,6 +43,7 @@ if /i "%~1"=="check"    goto CHECK
 if /i "%~1"=="health"   goto HEALTH
 if /i "%~1"=="learn"    goto LEARN
 if /i "%~1"=="discover" goto DISCOVER
+if /i "%~1"=="proposals" goto PROPOSALS
 if /i "%~1"=="status"   goto STATUS
 if /i "%~1"=="ip"       goto IP
 if /i "%~1"=="stop"     goto STOP
@@ -60,24 +62,35 @@ echo  ===========================================================
 echo   TradeOS — what are you running today?
 echo  ===========================================================
 echo.
-echo    1   Both frameworks          swing + intraday  (default)
-echo    2   Swing only               intraday stands down
-echo    3   Intraday only            swing automation stands down
+echo   RUN TODAY
+echo     1   Both frameworks        swing + intraday  (default)
+echo     2   Swing only             intraday stands down
+echo     3   Intraday only          swing automation stands down
 echo.
-echo    4   Check readiness          start nothing
-echo    5   Show current status
-echo    6   Full health sweep        every check, find what is broken
-echo    L   Weekly learning review   what the evidence says to change
-echo    7   Oracle daemon — logs     what the server is doing right now
-echo    8   Oracle daemon — update   git pull + restart on the server
-echo    9   Oracle daemon — status   running? on which commit?
-echo    0   Oracle daemon — stop     hand the book to this laptop
+echo   INSPECT
+echo     4   Check readiness        start nothing
+echo     5   Status                 live/paper, and where the monitor is
+echo     6   Health sweep           every check, find what is broken
+echo     7   IP                     this machine's, vs the Kite allowlist
 echo.
-echo   Your choice turns the OTHER framework off in the database, so
-echo   the Oracle server daemon obeys it too — it reads the same rows.
+echo   LEARN                        measures and proposes, changes nothing
+echo     L   Weekly review          what the evidence says to change
+echo     D   Discover engines       look for edges nothing covers
+echo     P   Open proposals         read what is waiting for a decision
 echo.
-echo   The live monitor starts either way: it is the price feed and exit
-echo   manager for BOTH books, so swing positions keep real-time stops.
+echo   ORACLE SERVER
+echo     8   Logs                   what the server is doing right now
+echo     9   Update                 git pull + restart there
+echo     N   Status                 running? on which commit?
+echo     X   Stop                   hand the book to this laptop
+echo.
+echo   OTHER
+echo     E   Evening pipeline       run the swing pipeline by hand
+echo     K   KILL SWITCH            stop all trading, both frameworks
+echo.
+echo   Your choice of 1/2/3 turns the OTHER framework off in the database,
+echo   so the Oracle daemon obeys it too. The live monitor starts either
+echo   way — it is the price feed and exit manager for BOTH books.
 echo   Paper/live is NOT changed here; use "tradeos swing live".
 echo.
 set "PICK="
@@ -89,12 +102,16 @@ if "%PICK%"=="3" goto ONLYINTRA
 if "%PICK%"=="4" goto CHECK
 if "%PICK%"=="5" goto STATUS
 if "%PICK%"=="6" goto HEALTH
+if "%PICK%"=="7" goto IP
 if /i "%PICK%"=="L" goto LEARN
-if "%PICK%"=="7" set "VCNACT=logs"
-if "%PICK%"=="8" set "VCNACT=fixc"
-if "%PICK%"=="9" set "VCNACT=status"
-if "%PICK%"=="0" set "VCNACT=stopc"
-if defined VCNACT goto VCN
+if /i "%PICK%"=="D" goto DISCOVER
+if /i "%PICK%"=="P" goto PROPOSALS
+if /i "%PICK%"=="E" goto EVENING
+if /i "%PICK%"=="K" goto STOP
+if "%PICK%"=="8" set "VCNACT=logs"
+if "%PICK%"=="9" set "VCNACT=fixc"
+if /i "%PICK%"=="N" set "VCNACT=status"
+if /i "%PICK%"=="X" set "VCNACT=stopc"
 echo.
 echo   "%PICK%" is not one of the choices. Nothing was started.
 goto END
@@ -201,6 +218,10 @@ goto END
 
 :DISCOVER
 python -m tools.discover_engines --days 21
+goto END
+
+:PROPOSALS
+python -m tools.weekly_review --show
 goto END
 
 :STATUS
