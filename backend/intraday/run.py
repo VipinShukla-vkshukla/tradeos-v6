@@ -128,6 +128,7 @@ def main(once: bool = False, dry: bool = False) -> None:
     last_eval = 0.0
     last_lease = 0.0
     last_ws_try = time.time()
+    blind_cycles = 0
     was_active = ls.may_act
     last_gtt = 0.0
     last_state = 0.0
@@ -192,6 +193,7 @@ def main(once: bool = False, dry: bool = False) -> None:
                     # commit nothing.
                     engine.load_state()
                 elif prices:
+                    blind_cycles = 0
                     sync = (now - last_gtt >= gtt_sync_interval_s())
                     result = engine.cycle(prices, sync_gtt=sync)
                     if sync:
@@ -199,7 +201,29 @@ def main(once: bool = False, dry: bool = False) -> None:
                     if result["position_actions"] or result["entry_signals"]:
                         logger.info(f"  cycle: {result}")
                 else:
-                    logger.warning("  no prices yet — skipping evaluation")
+                    # An ACTIVE instance that cannot see prices is not merely
+                    # idle — it is BLOCKING. The lease grants authority on
+                    # liveness, and renewing is something a blind process does
+                    # perfectly well, so it keeps a healthy standby in reserve
+                    # while doing nothing itself. That is exactly how a live
+                    # partial book sat unexecuted for a session: the server held
+                    # the lease with an unreadable token while the laptop, fully
+                    # able to trade, watched in standby.
+                    #
+                    # So stand down. Authority should follow capability, and the
+                    # standby's takeover is bounded by the lease TTL. If no one
+                    # else can see prices either, this process re-acquires on the
+                    # next cycle and nothing is lost.
+                    blind_cycles += 1
+                    logger.warning(f"  no prices yet — skipping evaluation "
+                                   f"({blind_cycles} cycle(s))")
+                    if was_active and blind_cycles >= cfg_int("intraday_blind_cycles_before_standdown", 8):
+                        logger.error(f"  {blind_cycles} cycles with no prices while ACTIVE — "
+                                     f"releasing the lease so a standby that CAN see "
+                                     f"prices takes over")
+                        lease.release(sb)
+                        was_active = False
+                        blind_cycles = 0
                 last_eval = now
 
             # Reload positions/candidates periodically so a fill reported through
