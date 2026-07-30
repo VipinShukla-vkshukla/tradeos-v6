@@ -57,29 +57,41 @@ if "%~1"==""            goto MENU
 goto START
 
 :MENU
-REM Kept to ~20 printed lines on purpose. The grouped version ran to 36, and a
-REM default Windows console shows 25 — so RUN TODAY, INSPECT and LEARN scrolled
-REM off the top before they could be read, and the operator reasonably concluded
-REM the learn and discover options did not exist. A menu you cannot see is worse
-REM than a short one, because it hides the features it was widened to expose.
-mode con: cols=100 lines=45 >nul 2>&1
-cls
-echo  ==========================================================================
-echo   TradeOS  —  what are you running today?
-echo  ==========================================================================
-echo    1  Both frameworks (default)     4  Check readiness    7  IP vs allowlist
-echo    2  Swing only                    5  Status             E  Evening pipeline
-echo    3  Intraday only                 6  Health sweep       K  KILL SWITCH
 echo.
-echo    LEARN (measures, proposes, changes nothing)
-echo      L  Weekly review     D  Discover engines     P  Open proposals
+echo  ===========================================================
+echo   TradeOS — what are you running today?
+echo  ===========================================================
 echo.
-echo    ORACLE SERVER
-echo      8  Logs     9  Update (pull+restart)     N  Status     X  Stop
+echo   RUN TODAY
+echo     1   Both frameworks        swing + intraday  (default)
+echo     2   Swing only             intraday stands down
+echo     3   Intraday only          swing automation stands down
 echo.
-echo   1/2/3 also turns the other framework off in the database, so the Oracle
-echo   daemon obeys it. The live monitor starts either way. Paper/live is not
-echo   changed here — use "tradeos swing live".
+echo   INSPECT
+echo     4   Check readiness        start nothing
+echo     5   Status                 live/paper, and where the monitor is
+echo     6   Health sweep           every check, find what is broken
+echo     7   IP                     this machine's, vs the Kite allowlist
+echo.
+echo   LEARN                        measures and proposes, changes nothing
+echo     L   Weekly review          what the evidence says to change
+echo     D   Discover engines       look for edges nothing covers
+echo     P   Open proposals         read what is waiting for a decision
+echo.
+echo   ORACLE SERVER
+echo     8   Logs                   what the server is doing right now
+echo     9   Update                 git pull + restart there
+echo     N   Status                 running? on which commit?
+echo     X   Stop                   hand the book to this laptop
+echo.
+echo   OTHER
+echo     E   Evening pipeline       run the swing pipeline by hand
+echo     K   KILL SWITCH            stop all trading, both frameworks
+echo.
+echo   Your choice of 1/2/3 turns the OTHER framework off in the database,
+echo   so the Oracle daemon obeys it too. The live monitor starts either
+echo   way — it is the price feed and exit manager for BOTH books.
+echo   Paper/live is NOT changed here; use "tradeos swing live".
 echo.
 set "PICK="
 set /p "PICK=Choice [1]: "
