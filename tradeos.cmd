@@ -119,6 +119,11 @@ if "%PICK%"=="8" set "VCNACT=logs"
 if "%PICK%"=="9" set "VCNACT=fixc"
 if /i "%PICK%"=="N" set "VCNACT=status"
 if /i "%PICK%"=="X" set "VCNACT=stopc"
+REM The four server options SET an action rather than jumping, so they all enter
+REM through :VCN — the only place the ssh key and host are resolved. Without this
+REM line they set the variable and fall through to "not one of the choices",
+REM which is what 8/9/N/X did after the layout was restored.
+if defined VCNACT goto VCN
 echo.
 echo   "%PICK%" is not one of the choices. Nothing was started.
 goto END
