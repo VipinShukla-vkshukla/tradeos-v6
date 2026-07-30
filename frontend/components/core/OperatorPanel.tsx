@@ -38,6 +38,7 @@ const KEYS = [
   'intraday_orders_enabled',
   'swing_trading_mode', 'swing_auto_exit', 'swing_auto_entry', 'swing_live_auto_entry',
   'swing_max_order_value', 'swing_max_orders_per_day', 'swing_max_notional_per_day',
+  'swing_max_new_per_day', 'swing_alert_top_n',
   'intraday_trading_mode', 'intraday_auto_exit', 'intraday_auto_entry',
   'intraday_live_auto_entry', 'intraday_strategies_enabled',
   'intraday_max_order_value', 'intraday_max_orders_per_day',
@@ -214,6 +215,14 @@ export function OperatorPanel() {
             [`${fw}_max_order_value`, 'Per order'],
             [`${fw}_max_orders_per_day`, 'Orders/day'],
             [`${fw}_max_notional_per_day`, 'Notional/day'],
+            // New POSITIONS is a different question from orders placed, and the
+            // stricter of the two binds. Raising Orders/day to 4 while this sat
+            // at 2 changed nothing — and it was invisible, so there was no way
+            // to see why.
+            ...(fw === 'swing'
+              ? [['swing_max_new_per_day', 'New positions/day'],
+                 ['swing_alert_top_n', 'Alert top N']]
+              : []),
           ].map(([k, lbl]) => (
             <div key={k}>
               <div className="text-[10px] text-muted-foreground">{lbl}</div>
@@ -234,6 +243,12 @@ export function OperatorPanel() {
         <div className="text-[10px] text-muted-foreground mt-1">
           Caps bound every order regardless of what sizing computes — the one control
           that does not depend on capital, risk percent or ATR being right.
+          {fw === 'swing' && (
+            <> <b>Orders/day</b> is the safety rail; <b>New positions/day</b> is
+            how many the strategy opens. The stricter one wins.
+            <b> Alert top N</b> bounds what interrupts you — the feed still
+            watches every plan.</>
+          )}
         </div>
       </div>
     );
