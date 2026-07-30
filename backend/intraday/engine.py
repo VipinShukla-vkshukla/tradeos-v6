@@ -594,10 +594,87 @@ class IntradayEngine:
                              f"position row — {e}. It may be re-sold on the next "
                              f"cycle. Reconcile against the broker now.")
 
+    def _swing_contenders(self) -> dict:
+        """
+        The only swing names worth interrupting you about today.
+
+        WATCHING AND ALERTING ARE DIFFERENT QUESTIONS
+        --------------------------------------------
+        Sixty plans belong on the price feed: a tick costs nothing, and the last
+        time this list was narrowed six of the day's eight actionable plans went
+        unwatched. But sixty plans do NOT belong in your phone. With two entries
+        a day, a plan ranked fortieth cannot be bought no matter what it does, so
+        an alert about it is a message you can only ignore — and the reflex you
+        build for the frequent message is the one you apply to the rare one.
+
+        So the feed stays wide and the alerts narrow to the names actually in
+        contention: the top N by composite rank. That is the swing lens the
+        alerts were missing — they were reporting price events, while a swing
+        decision is about which plan deserves capital over one to three weeks.
+
+        Returns {symbol: (rank_position, Ranked)} for the contenders only.
+        """
+        try:
+            from analysis.entry_ranking import rank
+            top_n = cfg_int("swing_alert_top_n", 5)
+            return {r.symbol: (i + 1, r)
+                    for i, r in enumerate(rank(self.candidates)[:top_n])}
+        except Exception as e:
+            logger.debug(f"  contender ranking unavailable: {e}")
+            return {}
+
+    def _replacement_case(self, cand_rank) -> tuple[bool, str]:
+        """
+        Is this plan good enough to justify replacing something already held?
+
+        The book is finite. When it is full, a new plan is not competing against
+        cash, it is competing against the weakest position you own — and that is
+        a comparison the system never made. It would alert BUY on a name it had
+        no room for, leaving you to work out silently whether it beat what you
+        already had.
+
+        Only a MATERIAL margin counts. Churning one holding for another of
+        similar conviction pays a round trip and a fresh stop for no edge, so the
+        margin has to exceed what the swap costs before it is worth naming.
+        """
+        held = [p for p in self.positions
+                if (p.get("framework") or "SWING").upper() == "SWING"]
+        if not held:
+            return False, ""
+        weakest, weakest_rank = None, None
+        for p in held:
+            raw = p.get("entry_rationale") or ""
+            try:
+                # "rank 79 — screener 59 · ..." — the score it was chosen on.
+                val = float(raw.split("rank", 1)[1].split("—")[0].strip())
+            except Exception:
+                continue
+            if weakest_rank is None or val < weakest_rank:
+                weakest, weakest_rank = p, val
+        if weakest is None:
+            return False, ""
+        margin = cfg_float("swing_replace_margin", 20.0)
+        if cand_rank.total >= weakest_rank + margin:
+            return True, (f"ranks {cand_rank.total:.0f} against {weakest['symbol']} "
+                          f"at {weakest_rank:.0f} — {cand_rank.total - weakest_rank:.0f} "
+                          f"points better than the weakest thing you hold")
+        return False, ""
+
     def act_on_candidates(self, entries: list[dict]) -> None:
+        contenders = self._swing_contenders()
         for e in entries:
             c, d, ltp = e["candidate"], e["decision"], e["ltp"]
             approaching = e.get("state") == "APPROACHING"
+
+            # Not in contention -> no alert. The entry path below still runs, so
+            # nothing that could legitimately be bought is skipped; it simply
+            # stops narrating names that cannot win the day's capital.
+            sym = c.get("symbol")
+            place = contenders.get(sym)
+            if not place:
+                self._maybe_enter_swing(c, d, ltp)
+                continue
+            pos, rk = place
 
             if approaching:
                 # Distinct kind so the notifier's de-duplication treats
@@ -606,8 +683,8 @@ class IntradayEngine:
                 # restatement of the first.
                 self.notifier.send(Action(
                     symbol=c["symbol"], kind="ENTRY_APPROACHING",
-                    headline=(f"{e['gap_pct']:.1f}% above the buy limit "
-                              f"₹{d.max_entry:.2f} — rest a limit now"),
+                    headline=(f"#{pos} today · {e['gap_pct']:.1f}% above the buy "
+                              f"limit ₹{d.max_entry:.2f} — rest a limit now"),
                     detail=(f"Below ₹{d.max_entry:.2f} this is {d.min_rr_used:g}R:R or better "
                             f"(currently {d.rr_live:.2f}).\n"
                             f"Stop ₹{d.stop} · target ₹{d.target}"
@@ -615,20 +692,47 @@ class IntradayEngine:
                                if d.rr_at_zone_low else "")),
                     ltp=ltp, urgency="INFO",
                     meta={"tier": c.get("ai_tier"), "max_entry": d.max_entry,
-                          "state": "APPROACHING"},
+                          "state": "APPROACHING", "rank": rk.total, "rank_pos": pos},
                     framework="SWING",   # a swing plan nearing its entry limit
                 ))
                 continue
 
+            # Room for another position, or is this a swap? Two different
+            # decisions, and the alert should not present them as one.
+            from execution.order_manager import _today_totals
+            try:
+                n_today, _m, _a = _today_totals(self.sb, "SWING")
+            except Exception:
+                n_today = 0
+            room = n_today < cfg_int("swing_max_new_per_day", 2)
+            swap, swap_why = (False, "") if room else self._replacement_case(rk)
+            if not room and not swap:
+                # Cannot buy it and it does not beat what is held. Silence here
+                # is the correct message: there is no decision to make.
+                continue
+
+            ai_bits = " · ".join(x for x in (
+                str(c.get("ai_tier") or ""),
+                (f"AI: {str(c.get('ai_conviction_reason'))[:90]}"
+                 if c.get("ai_conviction_reason") else ""),
+                (f"note: {str(c.get('ai_note'))[:90]}" if c.get("ai_note") else ""),
+            ) if x)
+
             self.notifier.send(Action(
-                symbol=c["symbol"], kind="ENTRY",
-                headline=d.headline,
+                symbol=c["symbol"],
+                kind="ENTRY" if room else "SWAP_CANDIDATE",
+                headline=(d.headline if room
+                          else f"Better than what you hold — {d.headline}"),
                 detail=(f"{d.reason}\n"
                         f"Stop ₹{d.stop} · target ₹{d.target}"
                         + (f" · {d.qty} sh ≈ ₹{d.invested:,.0f}, risk ₹{d.risk_amount:,.0f}"
-                           if getattr(d, 'qty', None) else "")),
+                           if getattr(d, 'qty', None) else "")
+                        + f"\n#{pos} of today's plans — {rk.why()}"
+                        + (f"\n{swap_why}" if swap else "")
+                        + (f"\n{ai_bits}" if ai_bits else "")),
                 ltp=ltp, urgency="NORMAL",
-                meta={"tier": c.get("ai_tier"), "action": d.action},
+                meta={"tier": c.get("ai_tier"), "action": d.action,
+                      "rank": rk.total, "rank_pos": pos, "swap": swap},
                 framework="SWING",       # from signal_output_daily, a swing plan
             ))
             self._maybe_enter_swing(c, d, ltp)

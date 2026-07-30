@@ -119,9 +119,21 @@ def score_plan(p: dict) -> Ranked:
     # worse trade than it was when written, and only implied_rr knows that.
     rr = _f(p.get("implied_rr")) or _f(p.get("expected_r"))
     if rr:
-        rp = (rr - 1.5) * 8.0 * cfg_float("rank_weight_rr", 1.0)
+        # CLAMPED, because an unbounded reward term lets one implausible number
+        # decide where the day's capital goes.
+        #
+        # KIMS came through with implied_rr 19.67, worth +145 points — more than
+        # the entire screener score — and ranked first on that alone. A 19x
+        # reward-to-risk on a swing plan is not a great trade, it is a stop
+        # computed too close or a target computed too far, and either way it is a
+        # data fault being rewarded as if it were an edge.
+        #
+        # Above the cap the difference stops mattering anyway: 4R and 19R are
+        # both "more than enough", and what separates them is noise in the stop.
+        rr_cap = cfg_float("rank_rr_cap", 4.0)
+        rp = (min(rr, rr_cap) - 1.5) * 8.0 * cfg_float("rank_weight_rr", 1.0)
         comp["rr"] = rp
-        reasons.append(f"R:R {rr:.2f} {rp:+.0f}")
+        reasons.append(f"R:R {rr:.2f}{'(capped)' if rr > rr_cap else ''} {rp:+.0f}")
 
     # ── entry timing: how much of the move is already gone ──────────────────
     timing = str(p.get("entry_timing_type") or "").upper()
