@@ -11,6 +11,8 @@ REM    tradeos ip         this machine's public IP for the Kite allowlist
 REM    tradeos server     validate the daemon server (run this ON the server)
 REM    tradeos vcn        live logs from the Oracle daemon
 REM    tradeos vcn fix    pull latest code there and restart it
+REM    tradeos vcn stop   stop the Oracle daemon
+REM    tradeos vcn status is it running, and on which commit
 REM    tradeos stop       set the kill switch — everything stops trading
 REM    tradeos evening    run the swing pipeline by hand
 REM
@@ -60,7 +62,10 @@ echo.
 echo    4   Check readiness          start nothing
 echo    5   Show current status
 echo    6   Full health sweep        every check, find what is broken
-echo    7   Oracle daemon logs       what the server is doing right now
+echo    7   Oracle daemon — logs     what the server is doing right now
+echo    8   Oracle daemon — update   git pull + restart on the server
+echo    9   Oracle daemon — status   running? on which commit?
+echo    0   Oracle daemon — stop     hand the book to this laptop
 echo.
 echo   Your choice turns the OTHER framework off in the database, so
 echo   the Oracle server daemon obeys it too — it reads the same rows.
@@ -78,7 +83,11 @@ if "%PICK%"=="3" goto ONLYINTRA
 if "%PICK%"=="4" goto CHECK
 if "%PICK%"=="5" goto STATUS
 if "%PICK%"=="6" goto HEALTH
-if "%PICK%"=="7" goto VCN
+if "%PICK%"=="7" set "VCNACT=logs"
+if "%PICK%"=="8" set "VCNACT=fixc"
+if "%PICK%"=="9" set "VCNACT=status"
+if "%PICK%"=="0" set "VCNACT=stopc"
+if defined VCNACT goto VCN
 echo.
 echo   "%PICK%" is not one of the choices. Nothing was started.
 goto END
@@ -102,11 +111,59 @@ REM Reads SERVER_IP and SSH_KEY from the environment when set, so the key path i
 REM not baked into a file that lives in git.
 if "%TRADEOS_SSH_KEY%"=="" (set "KEY=%USERPROFILE%\Downloads\ssh-key-2026-07-28.key") else (set "KEY=%TRADEOS_SSH_KEY%")
 if "%TRADEOS_SERVER_IP%"=="" (set "SRV=140.245.218.229") else (set "SRV=%TRADEOS_SERVER_IP%")
-if /i "%~2"=="fix" goto VCNFIX
+REM Dispatch AFTER KEY and SRV are resolved above — the menu paths jump here
+REM rather than to the action labels directly, because a label reached without
+REM those two produces an ssh call with an empty key and an empty host.
+if /i "%~2"=="fix"        goto VCNFIX
+if /i "%~2"=="stop"       goto VCNSTOP
+if /i "%~2"=="status"     goto VCNSTAT
+if /i "%VCNACT%"=="fixc"   goto VCNFIXC
+if /i "%VCNACT%"=="stopc"  goto VCNSTOPC
+if /i "%VCNACT%"=="status" goto VCNSTAT
 echo Streaming the Oracle daemon log — Ctrl+C to stop.
 echo   server %SRV%
 echo.
 ssh -i "%KEY%" ubuntu@%SRV% "journalctl -u tradeos-intraday -n 60 -f --no-pager"
+goto END
+
+:VCNFIXC
+REM Reached from the MENU, where a mistyped digit should not restart a daemon
+REM that is mid-session and working. The typed form (tradeos vcn fix) skips this
+REM — someone who typed the words meant them.
+echo.
+echo   This pulls the latest code on %SRV% and RESTARTS the daemon.
+echo   Any position it is mid-way through acting on will be re-evaluated
+echo   from scratch on restart. Broker-side GTT stops are unaffected.
+echo.
+set "OK="
+set /p "OK=Type y to proceed: "
+if /i not "%OK%"=="y" goto VCNCANCEL
+goto VCNFIX
+
+:VCNSTOPC
+echo.
+echo   This STOPS the Oracle daemon. Your laptop's monitor takes over the
+echo   book within about two minutes, once the lease expires.
+echo   If no laptop monitor is running, nothing will manage exits — open
+echo   positions keep only their resting GTT stops.
+echo.
+set "OK="
+set /p "OK=Type y to proceed: "
+if /i not "%OK%"=="y" goto VCNCANCEL
+goto VCNSTOP
+
+:VCNCANCEL
+echo   Cancelled. Nothing was changed on the server.
+goto END
+
+:VCNSTAT
+echo Oracle daemon status on %SRV%...
+ssh -i "%KEY%" ubuntu@%SRV% "systemctl is-active tradeos-intraday; echo '--- commit ---'; cd ~/tradeos-v6 && git log --oneline -1; echo '--- next timer ---'; systemctl list-timers tradeos-intraday.timer --no-pager | head -3"
+goto END
+
+:VCNSTOP
+echo Stopping the Oracle daemon on %SRV%...
+ssh -i "%KEY%" ubuntu@%SRV% "sudo systemctl stop tradeos-intraday && systemctl is-active tradeos-intraday; echo 'stopped — the timer will start it again at 09:00 on the next weekday'"
 goto END
 
 :VCNFIX
