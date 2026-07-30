@@ -789,6 +789,17 @@ class IntradayEngine:
             return
 
         sym = c.get("symbol")
+        # ONE SYMBOL, ONE BOOK — checked across BOTH frameworks, not just swing.
+        #
+        # open_positions is keyed on symbol alone, so a second entry in the same
+        # name would UPSERT over the first: entry price, stop, target, framework
+        # and the R baseline all replaced by whichever book bought last. A swing
+        # position silently becomes an intraday one, and the 15:15 square-off
+        # then sells a multi-week thesis because the row says INTRADAY.
+        #
+        # Whichever framework reaches a symbol first owns it until it closes.
+        # That is also the right risk answer at this account size: doubling into
+        # one name across two books concentrates far more than either intends.
         if not sym or any(p.get("symbol") == sym for p in self.positions):
             return
 

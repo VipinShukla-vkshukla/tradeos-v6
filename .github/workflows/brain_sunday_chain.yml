@@ -69,6 +69,25 @@ jobs:
         run: |
           python -c "from swing.brain.performance_tracker import send_weekly_telegram_summary; send_weekly_telegram_summary()"
 
+      # The trading-performance half of the weekly learning pass.
+      #
+      # The brain has run every Sunday since May and every one of its 43
+      # proposals is a CODE_SUGGESTION — it reviews the codebase, not the
+      # results. Nothing was scoring engines on their outcomes, checking whether
+      # a gate refused setups that would have worked, or testing whether the
+      # entry ranking separates winners. That ran only when someone remembered.
+      #
+      # Same table, different `source`, so both halves read together.
+      - name: "Weekly learning review (trading outcomes)"
+        continue-on-error: true
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TOTAL_CAPITAL:        ${{ secrets.TOTAL_CAPITAL }}
+          TZ: Asia/Kolkata
+        run: |
+          cd backend && python -m tools.weekly_review
+
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
