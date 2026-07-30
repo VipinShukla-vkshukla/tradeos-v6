@@ -9,7 +9,7 @@ works today; this is only what is missing.
 
 ---
 
-## 1. Same symbol in both books — key on (symbol, product)
+## 1. Same symbol in both books — key on (symbol, product)  — BUILT 30 Jul, awaiting migration 028
 
 ### The problem
 

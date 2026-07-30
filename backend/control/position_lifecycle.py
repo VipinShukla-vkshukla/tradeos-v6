@@ -80,6 +80,33 @@ from config import (
 # EXIT POLICY
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _upsert_position(sb, row: dict):
+    """
+    Upsert on (symbol, product), falling back to symbol alone.
+
+    The composite key arrives with migration 028. Code reaching production
+    before the migration would raise 42P10 on every write, and a position that
+    cannot be recorded is precisely the failure that causes a double sell — so
+    this degrades to the old key instead of failing, and says so once.
+    """
+    try:
+        return sb.table("open_positions").upsert(
+            row, on_conflict="symbol,product").execute()
+    except Exception as e:
+        if "42P10" not in str(e) and "ON CONFLICT" not in str(e):
+            raise
+        global _WARNED_NO_COMPOSITE_KEY
+        if not _WARNED_NO_COMPOSITE_KEY:
+            logger.warning("  open_positions has no (symbol, product) key — apply "
+                           "migration 028. Falling back to symbol; one book per "
+                           "symbol until then.")
+            _WARNED_NO_COMPOSITE_KEY = True
+        return sb.table("open_positions").upsert(row, on_conflict="symbol").execute()
+
+
+_WARNED_NO_COMPOSITE_KEY = False
+
+
 def load_exit_policy() -> dict:
     """
     NOTE ON trail_r (was trail_pct).
@@ -425,7 +452,7 @@ def open_position_from_holding(sb, holding: dict, trade_date: str) -> bool:
         return True
 
     try:
-        sb.table("open_positions").upsert(row, on_conflict="symbol").execute()
+        _upsert_position(sb, row)
         logger.success(
             f"  OPENED {sym:<12} qty={qty:<5} @ Rs.{entry:.2f}  "
             f"sl={planned_stop or '-'}  tgt={planned_target or '-'}  "
@@ -596,7 +623,14 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
         return {"status": "no_broker", "opened": 0, "closed": 0, "adjusted": 0}
 
     holdings = fetch_holdings()
-    hold_map = {h["symbol"]: h for h in holdings}
+    # KEYED ON (symbol, product), matching open_positions since migration 028.
+    #
+    # holdings() is delivery only, so everything it returns is CNC. Day
+    # positions below carry their own product and are keyed on it, which is what
+    # lets a swing CNC core and an intraday MIS tranche in the same name be
+    # reconciled independently — and is the entire reason the schema change did
+    # not need a fill-attribution layer. Kite separates them; this follows.
+    hold_map = {(h["symbol"], "CNC"): h for h in holdings}
 
     # PAPER positions are excluded, and this is not a refinement.
     #
@@ -630,31 +664,33 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
         for p in (fetch_positions().get("net") or []):
             q = int(p.get("quantity") or 0)
             if q > 0:
-                day_qty[p.get("tradingsymbol")] = q
+                day_qty[(p.get("tradingsymbol"),
+                         (p.get("product") or "CNC").upper())] = q
     except Exception as e:
         # Cannot see today's fills -> cannot safely decide anything is gone.
         logger.warning(f"  reconcile: day positions unavailable ({e}) — "
                        f"skipping to avoid closing settled-tomorrow buys")
         return {"status": "no_day_positions", "opened": 0, "closed": 0, "adjusted": 0}
 
-    for sym, q in day_qty.items():
-        if sym not in hold_map:
+    for key, q in day_qty.items():
+        if key not in hold_map:
             # Same shape fetch_holdings() returns, total_quantity included —
             # callers below read that key and a partial dict would raise here
             # rather than at the boundary where it was built.
-            hold_map[sym] = {"symbol": sym, "quantity": q, "t1_quantity": 0,
+            hold_map[key] = {"symbol": key[0], "quantity": q, "t1_quantity": 0,
                              "total_quantity": q, "average_price": 0.0,
-                             "last_price": 0.0, "product": "CNC",
+                             "last_price": 0.0, "product": key[1],
                              "pnl": 0.0, "close_price": 0.0, "day_change_pct": 0.0}
-    db_map  = {r["symbol"]: r for r in db_rows}
+    db_map  = {(r["symbol"], (r.get("product") or "CNC").upper()): r
+               for r in db_rows}
 
     logger.info(f"  Reconcile: broker={len(hold_map)} holdings | db={len(db_map)} open")
 
     opened = closed = adjusted = 0
 
     # ── In Kite, not in DB ───────────────────────────────────────────────────
-    for sym, h in hold_map.items():
-        if sym not in db_map:
+    for (sym, _prod), h in hold_map.items():
+        if (sym, _prod) not in db_map:
             if open_position_from_holding(sb, h, trade_date):
                 opened += 1
 
@@ -664,8 +700,8 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
         trades = fetch_trades()
         sell_map = {t["symbol"]: t for t in trades if t["transaction_type"] == "SELL"}
 
-        for sym, pos in db_map.items():
-            if sym in hold_map:
+        for (sym, _prod), pos in db_map.items():
+            if (sym, _prod) in hold_map:
                 continue
             # Exact fill price when the sale happened today; otherwise fall back
             # to the last known price and say so, rather than inventing one.
@@ -692,10 +728,10 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
     # trigger and the trail are computed off a number nobody chose.
     # Observed live: both open positions had sl/tgt/R/signal_id all NULL after
     # a successful reconcile.
-    for sym, pos in db_map.items():
+    for (sym, _prod), pos in db_map.items():
         if pos.get("planned_stop"):
             continue
-        h = hold_map.get(sym)
+        h = hold_map.get((sym, _prod))
         entry = float(pos.get("entry_price") or (h or {}).get("average_price") or 0)
         if not entry:
             continue
@@ -769,7 +805,7 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
     _IDENTITY_CANDIDATES = ("strategy", "signal_subtype", "sector", "company_name")
     _sample = next(iter(db_map.values()), {})
     _IDENTITY = tuple(f for f in _IDENTITY_CANDIDATES if f in _sample)
-    for sym, pos in db_map.items():
+    for (sym, _prod), pos in db_map.items():
         missing = [f for f in _IDENTITY if not pos.get(f)]
         if not missing or not pos.get("signal_id"):
             continue
@@ -792,8 +828,8 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
             logger.warning(f"  {sym}: identity backfill failed: {e}")
 
     # ── Quantity drift ───────────────────────────────────────────────────────
-    for sym, pos in db_map.items():
-        h = hold_map.get(sym)
+    for (sym, _prod), pos in db_map.items():
+        h = hold_map.get((sym, _prod))
         if not h:
             continue
         db_qty, br_qty = int(pos.get("current_qty") or 0), h["total_quantity"]

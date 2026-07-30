@@ -105,7 +105,7 @@ def place_order(signal: dict, approved_by: str = "TELEGRAM") -> dict:
             "active_sl":     sizing.stop_loss,
             "initial_sl_atr": sizing.stop_loss,
             "status":        "ACTIVE",
-        }, on_conflict="symbol").execute()
+        })
 
         logger.success(f"ORDER PLACED: {sym} | Qty:{sizing.quantity} | ₹{sizing.invested_value:.0f} | OrderID:{order_id}")
         return {

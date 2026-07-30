@@ -313,7 +313,7 @@ def ingest_open_positions(service, sb):
 
     # Upsert snapshot (use normalized symbol as key)
     if rows:
-        sb.table("open_positions").upsert(rows, on_conflict="symbol").execute()
+        sb.table("open_positions").upsert(rows, on_conflict="symbol,product").execute()
         logger.info(f"✓ OPEN_POSITIONS: {len(rows)} rows upserted")
     else:
         logger.info("No rows to upsert")

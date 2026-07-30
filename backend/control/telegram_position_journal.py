@@ -129,7 +129,7 @@ def record_entry(sb, symbol: str, signal_id: int | None,
     Telegram-recorded position carries the same stop, target and signal link
     as a Kite-reconciled one.
     """
-    from control.position_lifecycle import find_originating_signal
+    from control.position_lifecycle import _upsert_position, find_originating_signal
     from analysis.risk_model import compute_trade_levels
 
     trade_date = str(today_ist())
@@ -191,7 +191,7 @@ def record_entry(sb, symbol: str, signal_id: int | None,
         logger.info(f"[DRY RUN] would record entry {symbol} {qty}@{price}")
         return True
     try:
-        sb.table("open_positions").upsert(row, on_conflict="symbol").execute()
+        _upsert_position(sb, row)
         logger.success(f"  Entry recorded: {symbol} {qty} @ Rs.{price:.2f} "
                        f"(sl={planned_stop} tgt={planned_target})")
         return True

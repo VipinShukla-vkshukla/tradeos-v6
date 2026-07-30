@@ -224,7 +224,12 @@ def sync(positions: list[dict], prices: dict[str, float], notifier=None) -> dict
     #
     # Paper stops are enforced by the exit engine in-process, which is the
     # correct simulation of a broker stop and costs nothing at the broker.
-    real = [p for p in positions if (p.get("mode") or "LIVE").upper() != "PAPER"]
+    # CNC only. Kite GTTs are CNC/NRML — an MIS tranche cannot have one, and
+    # does not need one: the broker force-squares MIS around 15:20, which is the
+    # same protection (survives this process dying) by another mechanism.
+    real = [p for p in positions
+            if (p.get("mode") or "LIVE").upper() != "PAPER"
+            and (p.get("product") or "CNC").upper() != "MIS"]
     if len(real) != len(positions):
         n = len(positions) - len(real)
         logger.debug(f"  gtt: {n} paper position(s) excluded — simulated stops "

@@ -132,7 +132,7 @@ class IntradayEngine:
             self.candidates = []
 
         if self._policy is None:
-            from control.position_lifecycle import load_exit_policy
+            from control.position_lifecycle import _upsert_position, load_exit_policy
             self._policy = load_exit_policy()
 
     def refresh_contexts(self) -> int:
@@ -290,6 +290,21 @@ class IntradayEngine:
         return sorted({p["symbol"] for p in self.positions if p.get("symbol")} |
                       {c["symbol"] for c in self.candidates if c.get("symbol")} |
                       set(self._universe))
+
+    def _held(self, symbol: str, product: str) -> bool:
+        """
+        Is this (symbol, product) already held?
+
+        Keyed the same way open_positions is, so the guard and the constraint
+        can never disagree. Asking by symbol alone was correct while one row per
+        symbol was the rule; now it would refuse a legitimate intraday MIS
+        tranche because a swing CNC core exists — the exact opportunity
+        migration 028 was written to unlock.
+        """
+        p = (product or "CNC").upper()
+        return any((x.get("symbol") == symbol
+                    and (x.get("product") or "CNC").upper() == p)
+                   for x in self.positions)
 
     def _confidence_floor(self) -> float:
         """
@@ -800,7 +815,9 @@ class IntradayEngine:
         # Whichever framework reaches a symbol first owns it until it closes.
         # That is also the right risk answer at this account size: doubling into
         # one name across two books concentrates far more than either intends.
-        if not sym or any(p.get("symbol") == sym for p in self.positions):
+        # Swing is CNC by construction. An intraday MIS tranche in the same name
+        # is a different row and does not block this.
+        if not sym or self._held(sym, "CNC"):
             return
 
         # Today's swing entries, counted from the BROKER LOG rather than from
@@ -894,7 +911,7 @@ class IntradayEngine:
         # hard way: an order placed and not recorded is re-derived and placed
         # again on the next cycle. PPLPHARMA sold twice that way.
         try:
-            self.sb.table("open_positions").upsert({
+            _upsert_position(self.sb, {
                 "symbol": sym, "mode": "LIVE", "framework": "SWING",
                 "product": "CNC", "status": "ACTIVE",
                 "entry_date": today_ist().isoformat(), "entry_price": limit,
@@ -909,7 +926,7 @@ class IntradayEngine:
                 "sector": c.get("sector"), "source": "auto_entry",
                 "entry_rationale": rationale,
                 "synced_at": datetime.now(IST).isoformat(),
-            }, on_conflict="symbol").execute()
+            })
             self._entries_taken += 1
             self.load_state()
             logger.success(f"  🟢 AUTO-ENTRY {sym} {qty} @ ~{limit} "
@@ -1198,7 +1215,7 @@ class IntradayEngine:
             if not allowed:
                 logger.info(f"  📄 paper skip {st.symbol} — {why}")
                 return
-            if any(p.get("symbol") == st.symbol for p in self.positions):
+            if self._held(st.symbol, cfg("intraday_product", "CNC")):
                 return
             f = paper_broker.simulate_fill(st.symbol, "BUY", qty, "LIMIT",
                                            st.entry, st.entry)

@@ -44,7 +44,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import IST, get_supabase, cfg_float, cfg_int, today_ist
+from config import cfg, IST, get_supabase, cfg_float, cfg_int, today_ist
 
 
 @dataclass
@@ -195,7 +195,7 @@ def close_position(symbol: str, exit_price: float, reason: str, detail: str,
                   .eq("symbol", symbol).eq("mode", "PAPER").execute().data or [])
         if not rows:
             return False
-        from control.position_lifecycle import close_position as _close
+        from control.position_lifecycle import _upsert_position, close_position as _close
         ok = _close(sb, rows[0], float(exit_price), reason, detail,
                     today_ist().isoformat(), source="paper")
         if ok:
@@ -224,7 +224,12 @@ def open_position(symbol: str, qty: int, fill_price: float, setup: dict,
             "symbol": symbol,
             "mode": "PAPER",
             "framework": framework,
-            "product": "CNC",
+            # The framework's product, not a constant. It is half the
+            # uniqueness key now (migration 028), so hardcoding CNC would put an
+            # intraday tranche in the swing slot and collide with the core it
+            # was meant to sit beside.
+            "product": ("CNC" if (framework or "SWING").upper() == "SWING"
+                        else (cfg("intraday_product", "CNC") or "CNC").upper()),
             "status": "ACTIVE",
             "entry_date": today_ist().isoformat(),
             "entry_price": fill_price,
@@ -259,7 +264,7 @@ def open_position(symbol: str, qty: int, fill_price: float, setup: dict,
             "synced_at": datetime.now(IST).isoformat(),
         }
         try:
-            sb.table("open_positions").upsert(row, on_conflict="symbol").execute()
+            _upsert_position(sb, row)
         except Exception as e:
             # Migration 025 adds open_positions.charges. Opening without the
             # entry cost is far better than not opening: the round trip then
@@ -271,7 +276,7 @@ def open_position(symbol: str, qty: int, fill_price: float, setup: dict,
                            "— opening without it rather than not at all.")
             row.pop("charges", None)
             row.pop("entry_rationale", None)
-            sb.table("open_positions").upsert(row, on_conflict="symbol").execute()
+            _upsert_position(sb, row)
         logger.success(f"  📄 PAPER POSITION opened {symbol} {qty} @ {fill_price:.2f} "
                        f"[{framework}/{setup.get('strategy')}]")
         return True
