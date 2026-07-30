@@ -9,6 +9,8 @@ REM    tradeos health     run EVERY check and report what is broken
 REM    tradeos status     what is live, what is paper, what is off
 REM    tradeos ip         this machine's public IP for the Kite allowlist
 REM    tradeos server     validate the daemon server (run this ON the server)
+REM    tradeos vcn        live logs from the Oracle daemon
+REM    tradeos vcn fix    pull latest code there and restart it
 REM    tradeos stop       set the kill switch — everything stops trading
 REM    tradeos evening    run the swing pipeline by hand
 REM
@@ -41,6 +43,7 @@ if /i "%~1"=="intraday" goto INTRADAY
 if /i "%~1"=="swing"    goto SWING
 if /i "%~1"=="both"     goto BOTH
 if /i "%~1"=="server"   goto SERVER
+if /i "%~1"=="vcn"      goto VCN
 if "%~1"==""            goto MENU
 goto START
 
@@ -57,6 +60,7 @@ echo.
 echo    4   Check readiness          start nothing
 echo    5   Show current status
 echo    6   Full health sweep        every check, find what is broken
+echo    7   Oracle daemon logs       what the server is doing right now
 echo.
 echo   Your choice turns the OTHER framework off in the database, so
 echo   the Oracle server daemon obeys it too — it reads the same rows.
@@ -74,6 +78,7 @@ if "%PICK%"=="3" goto ONLYINTRA
 if "%PICK%"=="4" goto CHECK
 if "%PICK%"=="5" goto STATUS
 if "%PICK%"=="6" goto HEALTH
+if "%PICK%"=="7" goto VCN
 echo.
 echo   "%PICK%" is not one of the choices. Nothing was started.
 goto END
@@ -88,6 +93,25 @@ goto END
 
 :ONLYINTRA
 python start_day.py --only intraday
+goto END
+
+:VCN
+REM The daemon that actually holds the lease usually runs on Oracle, so "what is
+REM the system doing" is often a question about a machine this laptop cannot see.
+REM Reads SERVER_IP and SSH_KEY from the environment when set, so the key path is
+REM not baked into a file that lives in git.
+if "%TRADEOS_SSH_KEY%"=="" (set "KEY=%USERPROFILE%\Downloads\ssh-key-2026-07-28.key") else (set "KEY=%TRADEOS_SSH_KEY%")
+if "%TRADEOS_SERVER_IP%"=="" (set "SRV=140.245.218.229") else (set "SRV=%TRADEOS_SERVER_IP%")
+if /i "%~2"=="fix" goto VCNFIX
+echo Streaming the Oracle daemon log — Ctrl+C to stop.
+echo   server %SRV%
+echo.
+ssh -i "%KEY%" ubuntu@%SRV% "journalctl -u tradeos-intraday -n 60 -f --no-pager"
+goto END
+
+:VCNFIX
+echo Pulling latest code on %SRV% and restarting the daemon...
+ssh -i "%KEY%" ubuntu@%SRV% "cd ~/tradeos-v6 && git pull --ff-only && sudo systemctl restart tradeos-intraday && sleep 8 && systemctl is-active tradeos-intraday && journalctl -u tradeos-intraday -n 25 --no-pager"
 goto END
 
 :SERVER

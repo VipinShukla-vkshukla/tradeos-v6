@@ -87,6 +87,86 @@ def simulate_swing(sb) -> dict:
             "buyable": buyable, "mode": mode}
 
 
+def simulate_swing_entries(sb) -> dict:
+    """
+    What auto-entry WOULD take tonight, and why it preferred those names.
+
+    Answers the question the aggregate cannot: given eight buyable plans and two
+    entries, which two, and what beat what. Every gate that removes a name is
+    printed with its reason, because a plan silently absent from the result is
+    indistinguishable from one that was never considered.
+    """
+    _hdr("SWING AUTO-ENTRY (dry run)")
+    from analysis.trade_decision import decide
+    from analysis.entry_ranking import rank
+    from execution.gates import trading_mode
+    from execution import paper_broker
+    from config import TOTAL_CAPITAL, cfg_bool, cfg_int
+
+    on   = cfg_bool("swing_auto_entry", False)
+    live = trading_mode("SWING") == "LIVE"
+    mx   = cfg_int("swing_max_new_per_day", 2)
+    logger.info(f"  swing_auto_entry={'ON' if on else 'off'} · mode={trading_mode('SWING')} "
+                f"· max {mx}/day")
+    if live:
+        logger.warning("  SWING is LIVE — auto-entry refuses to run (not implemented "
+                       "for live). This shows what it WOULD do in PAPER.")
+
+    latest = (sb.table("signal_output_daily").select("date")
+                .order("date", desc=True).limit(1).execute().data or [])
+    if not latest:
+        logger.info("  no plans")
+        return {"would_take": 0}
+    day = latest[0]["date"]
+    plans = (sb.table("signal_output_daily").select("*")
+               .eq("date", day).execute().data or [])
+    open_rows = (sb.table("open_positions").select("*")
+                   .eq("status", "ACTIVE").execute().data or [])
+    held = {r["symbol"] for r in open_rows}
+    regime = plans[0].get("regime") if plans else "NEUTRAL"
+
+    ranked = {r.symbol: r for r in rank(plans)}
+    plans.sort(key=lambda p: -(ranked[p["symbol"]].total if p.get("symbol") in ranked else 0))
+
+    logger.info("")
+    logger.info(f"  {len(plans)} plans for {day}, ranked by the composite:")
+    taken, considered = [], 0
+    for p in plans:
+        sym = p.get("symbol")
+        if not sym:
+            continue
+        rk = ranked.get(sym)
+        if sym in held:
+            continue
+        d = decide(p, None, total_capital=TOTAL_CAPITAL,
+                   open_positions=open_rows, regime=regime,
+                   max_chase_pct=p.get("ai_max_chase_pct") or None)
+        if d.action not in ("BUY_NOW", "CHASE_LIMIT"):
+            continue
+        considered += 1
+        qty = int(d.qty or 0)
+        if qty <= 0:
+            logger.info(f"      {sym:<12} rank {rk.total:>6.1f}  SKIP — no size at this price")
+            continue
+        allowed, why, _ = paper_broker.capacity("SWING", sb)
+        if not allowed:
+            logger.info(f"      {sym:<12} rank {rk.total:>6.1f}  SKIP — {why}")
+            break
+        if len(taken) >= mx:
+            logger.info(f"      {sym:<12} rank {rk.total:>6.1f}  not taken — daily cap "
+                        f"of {mx} already filled by higher-ranked names")
+            continue
+        taken.append(sym)
+        logger.info(f"    → {sym:<12} rank {rk.total:>6.1f}  TAKE {qty} @ ~{d.live_price} "
+                    f"stop {d.stop} target {d.target}")
+        logger.info(f"        why: {rk.why()}")
+
+    logger.info("")
+    logger.info(f"      {considered} buyable · would take {len(taken)}: "
+                f"{', '.join(taken) or 'none'}")
+    return {"would_take": len(taken), "considered": considered, "symbols": taken}
+
+
 def simulate_intraday(sb, force_phase: str | None = None) -> dict:
     _hdr("INTRADAY")
     from intraday.engine import IntradayEngine
@@ -183,6 +263,7 @@ def main(force_phase: str | None = None) -> int:
     logger.info(f"  DRY_RUN={DRY_RUN}  kill_switch={is_kill_switch_active()}")
 
     sw = simulate_swing(sb)
+    simulate_swing_entries(sb)
     it = simulate_intraday(sb, force_phase)
 
     _hdr("SUMMARY")

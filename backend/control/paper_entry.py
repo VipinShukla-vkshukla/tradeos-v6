@@ -99,9 +99,21 @@ def run(sb=None, notifier=None) -> dict:
     regime = plans[0].get("regime") if plans else "NEUTRAL"
     max_new = cfg_int("swing_max_new_per_day", 2)
 
-    # Rank by the system's own conviction so a cap takes the best, not the
-    # first alphabetically.
-    plans.sort(key=lambda p: -(p.get("final_score") or p.get("score") or 0))
+    # Rank on everything the pipeline computed, not just the screener score.
+    #
+    # final_score is the SCREENER's verdict, formed before the AI reviewed the
+    # name, before R:R was measured at today's price, and before entry timing
+    # was classified. Sorting on it alone discarded 27 steps of analysis at the
+    # exact moment it mattered — choosing which two of the day's plans get the
+    # only two entries available.
+    #
+    # On 29 Jul it ranked AJANTPHARM first at 71. The composite puts it seventh,
+    # because it has a results event inside a day. The old order would have
+    # opened a position directly into it.
+    from analysis.entry_ranking import rank as _rank
+    _ranked = {r.symbol: r for r in _rank(plans)}
+    plans.sort(key=lambda p: -(_ranked[p["symbol"]].total
+                               if p.get("symbol") in _ranked else 0))
 
     for p in plans:
         if result["taken"] >= max_new:
@@ -136,9 +148,14 @@ def run(sb=None, notifier=None) -> dict:
             result["skipped"] += 1
             continue
 
+        rk = _ranked.get(sym)
         if paper_broker.open_position(
                 sym, qty, f.fill_price,
-                {"stop": d.stop, "target": d.target, "strategy": p.get("strategy")},
+                {"stop": d.stop, "target": d.target, "strategy": p.get("strategy"),
+                 # WHY this name and not the other seven. Recorded on the
+                 # position so the dashboard can show the reasoning beside the
+                 # trade rather than leaving it in a log nobody opens.
+                 "entry_rationale": (f"rank {rk.total:.0f} — {rk.why()}" if rk else None)},
                 "SWING", sb, charges=f.charges):
             result["taken"] += 1
             held.add(sym)
@@ -152,7 +169,8 @@ def run(sb=None, notifier=None) -> dict:
                         f"[PAPER] bought {qty} @ ₹{f.fill_price:,.2f}",
                         f"{d.reason}\nStop ₹{d.stop} · target ₹{d.target}. "
                         f"Simulated — no real order.",
-                        ltp=f.fill_price, urgency="INFO"), force=True)
+                        ltp=f.fill_price, urgency="INFO",
+                        framework="SWING"), force=True)
                 except Exception:
                     pass
 

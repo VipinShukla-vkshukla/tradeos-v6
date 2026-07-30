@@ -252,6 +252,10 @@ def open_position(symbol: str, qty: int, fill_price: float, setup: dict,
             # record a true round trip — a P&L that ignores charges overstates
             # intraday profit by roughly a fifth at this position size.
             "charges": round(float(charges or 0.0), 2),
+            # Why this name was chosen over the others available today. See
+            # migration 026 — a trade whose reasoning is not recorded cannot be
+            # judged later on whether the reasoning or the market was wrong.
+            "entry_rationale": setup.get("entry_rationale"),
             "synced_at": datetime.now(IST).isoformat(),
         }
         try:
@@ -261,11 +265,12 @@ def open_position(symbol: str, qty: int, fill_price: float, setup: dict,
             # entry cost is far better than not opening: the round trip then
             # records only the exit leg, which understates cost but still beats
             # a simulation that silently takes no trades.
-            if "charges" not in str(e):
+            if "charges" not in str(e) and "entry_rationale" not in str(e):
                 raise
-            logger.warning("  open_positions.charges is missing — apply migration "
-                           "025. Opening without the entry cost.")
+            logger.warning("  open_positions is missing a column (migration 025/026) "
+                           "— opening without it rather than not at all.")
             row.pop("charges", None)
+            row.pop("entry_rationale", None)
             sb.table("open_positions").upsert(row, on_conflict="symbol").execute()
         logger.success(f"  📄 PAPER POSITION opened {symbol} {qty} @ {fill_price:.2f} "
                        f"[{framework}/{setup.get('strategy')}]")
