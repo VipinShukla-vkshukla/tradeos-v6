@@ -74,13 +74,19 @@ def run(sb=None, notifier=None) -> dict:
         # commit new capital on a judgement call; exits reduce exposure on a
         # position that already exists and are bounded by what is held. That is
         # why exits are automated and entries are not.
-        logger.warning(
-            "  swing_live_auto_entry is ON, but LIVE auto-entry is not "
-            "implemented — this module can only simulate. Taking NOTHING rather "
-            "than writing paper positions into a live book. Place entries "
-            "yourself from Today's Trade Plans, or move swing to PAPER to let "
-            "the simulation run.")
-        return {**result, "status": "live_entry_not_implemented"}
+        # Live entry EXISTS now, but not here. It lives in the daemon —
+        # IntradayEngine._maybe_enter_swing — because this module runs after the
+        # close and preflight requires an open market: a real order from here is
+        # rejected MARKET_CLOSED every time.
+        #
+        # This path still refuses rather than simulating, because open_position()
+        # hardcodes mode='PAPER' and writing simulated positions into a live book
+        # is the worst outcome available: no exposure on a plan you believe you
+        # own, and a P&L mixing fills that happened with fills that did not.
+        logger.info(
+            "  swing is LIVE — entries are taken intraday by the daemon on live "
+            "prices, not by this evening pass. Nothing to do here.")
+        return {**result, "status": "live_entry_handled_by_daemon"}
 
     from analysis.trade_decision import decide
     from execution import paper_broker

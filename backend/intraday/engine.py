@@ -631,9 +631,153 @@ class IntradayEngine:
                 meta={"tier": c.get("ai_tier"), "action": d.action},
                 framework="SWING",       # from signal_output_daily, a swing plan
             ))
-            # Entries are never auto-placed at Phase 3 by this loop. Committing
-            # new capital on a live tick, without the evening pipeline's full
-            # context, is the highest-variance thing this system could do.
+            self._maybe_enter_swing(c, d, ltp)
+
+    def _maybe_enter_swing(self, c: dict, d, ltp: float) -> None:
+        """
+        Take a swing entry — paper or live — on a plan that is buyable NOW.
+
+        WHY HERE AND NOT IN THE EVENING PIPELINE
+        ----------------------------------------
+        control/paper_entry.py runs after the close. That is fine for a
+        simulated fill and impossible for a real one, because preflight requires
+        an open market: a live order from the evening pipeline is rejected
+        MARKET_CLOSED every time. Live entry has to happen while there is a
+        market, on live prices, which means here.
+
+        IT DOES NOT RE-DECIDE
+        ---------------------
+        decide() has already run and returned BUY_NOW or CHASE_LIMIT on the same
+        data the alert above just reported. This acts on that decision; it does
+        not form a second one. If the alert and the order ever disagree about a
+        symbol, one of them is broken.
+
+        THE RAILS, IN ORDER OF WHAT EACH PROTECTS
+        -----------------------------------------
+          swing_auto_entry        whether entries happen at all
+          swing_live_auto_entry   whether they may spend real money
+          composite rank          whether this is the best use of a scarce entry
+          swing_max_new_per_day   how many the strategy wants
+          max_entry               never chase past the price where the plan's
+                                  own R:R holds — beyond it, it is not the trade
+                                  the pipeline approved
+          preflight               per-order cap, daily count, daily notional,
+                                  the combined account guard, available cash,
+                                  and the duplicate window
+
+        Only the last reads broker truth rather than the book, which is why it
+        is last and why nothing here tries to reason around it.
+        """
+        from execution.gates import is_paper
+        if not cfg_bool("swing_auto_entry", False):
+            return
+        live = not is_paper("SWING")
+        if live and not cfg_bool("swing_live_auto_entry", False):
+            return
+
+        sym = c.get("symbol")
+        if not sym or any(p.get("symbol") == sym for p in self.positions):
+            return
+
+        # Today's swing entries, counted from the BROKER LOG rather than from
+        # this process, so a restart does not hand the day a fresh budget and
+        # the laptop and the server cannot each take two.
+        try:
+            from execution.order_manager import _today_totals
+            n_today, _mine, _all = _today_totals(self.sb, "SWING")
+        except Exception:
+            n_today = 0
+        max_new = cfg_int("swing_max_new_per_day", 2)
+        if n_today >= max_new:
+            return
+
+        # Rank against the whole day's field, not against arriving first.
+        #
+        # Without this the loop takes whichever plan reaches its limit earliest
+        # in the session, and time-of-arrival is uncorrelated with quality. With
+        # only two entries a day it is the worst available tie-breaker. A plan
+        # outside today's top few is passed over — if it is still buyable later
+        # and the better ones never triggered, it will be back.
+        here = None
+        try:
+            from analysis.entry_ranking import score_plan, rank
+            here = score_plan(c)
+            field = rank(self.candidates)
+            keep = min(max_new * 2, len(field))
+            if keep and here.total < field[keep - 1].total:
+                logger.info(f"  {sym}: rank {here.total:.0f} is outside today's top "
+                            f"{keep} — holding the entry for a stronger plan")
+                return
+        except Exception as e:
+            logger.debug(f"  ranking unavailable for {sym}: {e}")
+
+        qty = int(getattr(d, "qty", 0) or 0)
+        if qty <= 0:
+            return
+        rationale = f"rank {here.total:.0f} — {here.why()}" if here else None
+
+        if not live:
+            from execution import paper_broker
+            allowed, why, _ = paper_broker.capacity("SWING", self.sb)
+            if not allowed:
+                logger.info(f"  📄 swing paper skip {sym} — {why}")
+                return
+            f = paper_broker.simulate_fill(sym, "BUY", qty, "LIMIT", ltp, ltp)
+            if f.ok and paper_broker.open_position(
+                    sym, qty, f.fill_price,
+                    {"stop": d.stop, "target": d.target,
+                     "strategy": c.get("strategy"), "entry_rationale": rationale},
+                    "SWING", self.sb, charges=f.charges):
+                self.load_state()
+            return
+
+        # ── LIVE ────────────────────────────────────────────────────────────
+        # Marketable limit priced THROUGH the offer, so it fills like a market
+        # order without accepting an unbounded price in a thin book — the mirror
+        # of what the exit side does, and for the same reason.
+        from execution.order_manager import OrderRequest, place
+        slip = cfg_int("swing_entry_slip_bps", 20) / 10000.0
+        limit = round(ltp * (1 + slip), 1)
+
+        max_entry = getattr(d, "max_entry", None)
+        if max_entry and limit > float(max_entry):
+            logger.info(f"  {sym}: a {limit} limit would exceed the plan's max entry "
+                        f"{max_entry} — not chasing past its own R:R")
+            return
+
+        res = place(OrderRequest(sym, "BUY", qty, "LIMIT", limit,
+                                 reason=f"AUTO_ENTRY: {getattr(d, 'reason', '')[:120]}"),
+                    self.sb, self.notifier, framework="SWING")
+        if not (res and res.ok):
+            return
+
+        # Write it back IMMEDIATELY, for the reason the exit side learned the
+        # hard way: an order placed and not recorded is re-derived and placed
+        # again on the next cycle. PPLPHARMA sold twice that way.
+        try:
+            self.sb.table("open_positions").upsert({
+                "symbol": sym, "mode": "LIVE", "framework": "SWING",
+                "product": "CNC", "status": "ACTIVE",
+                "entry_date": today_ist().isoformat(), "entry_price": limit,
+                "actual_qty": qty, "current_qty": qty, "original_qty": qty,
+                "invested_value": round(limit * qty, 2),
+                "current_price": limit, "high_water_mark": limit,
+                "planned_stop": d.stop, "active_sl": d.stop,
+                "planned_target": d.target, "target_price": d.target,
+                "sl_type": "AUTO_ENTRY", "strategy": c.get("strategy"),
+                "entry_signal_type": c.get("signal_type"),
+                "signal_id": c.get("id"), "signal_date": c.get("date"),
+                "sector": c.get("sector"), "source": "auto_entry",
+                "entry_rationale": rationale,
+                "synced_at": datetime.now(IST).isoformat(),
+            }, on_conflict="symbol").execute()
+            self.load_state()
+            logger.success(f"  🟢 AUTO-ENTRY {sym} {qty} @ ~{limit} "
+                           f"(order {res.order_id}) — {rationale or 'no rank'}")
+        except Exception as e:
+            logger.error(f"  {sym}: BOUGHT {qty} but the position row could not be "
+                         f"written — {e}. It may be bought again next cycle. "
+                         f"Reconcile against the broker NOW.")
 
     # ── intraday strategy engines ───────────────────────────────────────────
     def evaluate_intraday_setups(self, prices: dict[str, float]) -> list:

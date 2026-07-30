@@ -128,7 +128,23 @@ def _today_totals(sb, framework: str = "SWING") -> tuple[int, float, float]:
         # them against whichever framework is asking is the conservative read:
         # it can only make preflight stricter, never permit more.
         mine = [r for r in placed if (r.get("framework") or fw).upper() == fw]
-        return len(mine), sum(_val(r) for r in mine), sum(_val(r) for r in placed)
+
+        # BUY ONLY, and that is the whole point of these numbers.
+        #
+        # Both figures gate entries: how many positions may be opened today, and
+        # how much capital may be committed. A SELL does neither — it closes
+        # exposure and returns cash — so counting sells against them meant a
+        # normal day's exits exhausted the entry budget before any entry was
+        # considered. On 30 Jul three PPLPHARMA partial-book sells filled a cap
+        # of two, and auto-entry could not have fired for the rest of the day no
+        # matter what the pipeline found.
+        #
+        # Exits were already exempt from being BLOCKED by the cap. They were not
+        # exempt from CONSUMING it, which is the same bug wearing the opposite
+        # face.
+        buys     = [r for r in mine   if (r.get("side") or "").upper() == "BUY"]
+        buys_all = [r for r in placed if (r.get("side") or "").upper() == "BUY"]
+        return len(buys), sum(_val(r) for r in buys), sum(_val(r) for r in buys_all)
     except Exception as e:
         # Unknown spend must not read as zero spend. Report the budget as fully
         # consumed so preflight blocks rather than permits.
