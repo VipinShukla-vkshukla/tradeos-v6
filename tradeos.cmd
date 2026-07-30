@@ -57,6 +57,13 @@ if "%~1"==""            goto MENU
 goto START
 
 :MENU
+REM The grouped menu prints 36 lines and a default Windows console shows 25, so
+REM the first two groups scroll off before they can be read — which is exactly
+REM how the LEARN options came to look absent when they were present all along.
+REM Resizing costs one line and keeps the layout. Redirected because a console
+REM that cannot be resized (a terminal tab, ssh) should not print an error.
+mode con: cols=100 lines=45 >nul 2>&1
+cls
 echo.
 echo  ===========================================================
 echo   TradeOS — what are you running today?
