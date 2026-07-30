@@ -291,6 +291,24 @@ class IntradayEngine:
                       {c["symbol"] for c in self.candidates if c.get("symbol")} |
                       set(self._universe))
 
+    def _held_by_framework(self, symbol: str, framework: str) -> bool:
+        """
+        Does THIS framework already hold this symbol, under any product?
+
+        The product key lets swing and intraday both hold a name. It must not
+        let ONE framework hold it twice. That is not hypothetical: changing
+        intraday_product from CNC to MIS leaves yesterday's CNC intraday
+        positions invisible to a product-keyed guard, so the engine would open a
+        second MIS tranche in a name it already holds — two intraday positions,
+        two stops, one thesis, and a square-off that only knows about one.
+
+        Cross-framework is the opportunity. Within a framework it is a bug.
+        """
+        fw = (framework or "INTRADAY").upper()
+        return any((x.get("symbol") == symbol
+                    and (x.get("framework") or "SWING").upper() == fw)
+                   for x in self.positions)
+
     def _held(self, symbol: str, product: str) -> bool:
         """
         Is this (symbol, product) already held?
@@ -817,7 +835,7 @@ class IntradayEngine:
         # one name across two books concentrates far more than either intends.
         # Swing is CNC by construction. An intraday MIS tranche in the same name
         # is a different row and does not block this.
-        if not sym or self._held(sym, "CNC"):
+        if not sym or self._held_by_framework(sym, "SWING"):
             return
 
         # Today's swing entries, counted from the BROKER LOG rather than from
@@ -1215,7 +1233,7 @@ class IntradayEngine:
             if not allowed:
                 logger.info(f"  📄 paper skip {st.symbol} — {why}")
                 return
-            if self._held(st.symbol, cfg("intraday_product", "CNC")):
+            if self._held_by_framework(st.symbol, "INTRADAY"):
                 return
             f = paper_broker.simulate_fill(st.symbol, "BUY", qty, "LIMIT",
                                            st.entry, st.entry)
