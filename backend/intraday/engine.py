@@ -529,9 +529,46 @@ class IntradayEngine:
         # framework decides which caps preflight applies and how the order is
         # attributed in the broker log. Omitting it defaulted every exit —
         # including intraday ones — to the SWING rails.
-        place(OrderRequest(p["symbol"], "SELL", qty, "LIMIT", limit,
-                           reason=f"{d['action']}: {d['detail']}"),
-              self.sb, self.notifier, framework=fw)
+        res = place(OrderRequest(p["symbol"], "SELL", qty, "LIMIT", limit,
+                                 reason=f"{d['action']}: {d['detail']}"),
+                    self.sb, self.notifier, framework=fw)
+
+        # RECORD THE EXIT AGAINST THE POSITION, IMMEDIATELY.
+        #
+        # Without this the row still reads current_qty=15, partial_booked_qty=0
+        # after a successful sale, so the very next cycle re-derives the SAME
+        # BOOK_PARTIAL and places it again. The only thing standing between that
+        # and a double sale was order_manager's 5-minute duplicate window — and
+        # once it lapsed, PPLPHARMA sold 7 shares at 05:35 and another 7 at
+        # 05:40, leaving 1 of 15 where a 50% book was intended. Real money, and
+        # the runner half of the position gone.
+        #
+        # Written optimistically on PLACED rather than waiting for a confirmed
+        # fill, because the failure modes are not symmetric: an unfilled order
+        # recorded as booked is corrected by the next reconcile against broker
+        # holdings, while a filled order NOT recorded sells the position twice.
+        if res and res.ok:
+            try:
+                if d["action"].startswith("EXIT"):
+                    upd = {"current_qty": 0, "status": "CLOSING"}
+                else:
+                    left = int(p.get("current_qty") or p.get("actual_qty") or 0) - qty
+                    upd = {
+                        "current_qty": max(0, left),
+                        "partial_booked_qty": int(p.get("partial_booked_qty") or 0) + qty,
+                        "partial_booked_price": limit,
+                    }
+                    if d.get("new_sl"):
+                        upd["active_sl"] = d["new_sl"]
+                upd["updated_at"] = datetime.now(IST).isoformat()
+                self.sb.table("open_positions").update(upd).eq("symbol", p["symbol"]).execute()
+                self.load_state()
+            except Exception as e:
+                # A recorded sale that cannot be persisted is the dangerous case,
+                # so this is an error rather than a debug line.
+                logger.error(f"  {p['symbol']}: SOLD {qty} but could not update the "
+                             f"position row — {e}. It may be re-sold on the next "
+                             f"cycle. Reconcile against the broker now.")
 
     def act_on_candidates(self, entries: list[dict]) -> None:
         for e in entries:

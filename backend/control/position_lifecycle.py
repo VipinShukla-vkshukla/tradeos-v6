@@ -598,8 +598,20 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
     holdings = fetch_holdings()
     hold_map = {h["symbol"]: h for h in holdings}
 
-    db_rows = (sb.table("open_positions").select("*")
-                 .eq("status", "ACTIVE").execute().data) or []
+    # PAPER positions are excluded, and this is not a refinement.
+    #
+    # Broker holdings are the truth for positions the broker HAS. A simulated
+    # position is deliberately absent from Kite, so the "in DB, not in Kite ->
+    # CLOSED" rule reads every paper trade as sold and closes it at its entry
+    # price for a flat 0.00% — silently destroying the open paper book on the
+    # first reconcile after it was created. Three intraday paper positions were
+    # wiped exactly this way before the filter existed.
+    #
+    # Paper positions are closed by the exit engine and by square_off_paper(),
+    # both of which know they are simulated.
+    db_rows = [r for r in ((sb.table("open_positions").select("*")
+                              .eq("status", "ACTIVE").execute().data) or [])
+               if (r.get("mode") or "LIVE").upper() != "PAPER"]
     db_map  = {r["symbol"]: r for r in db_rows}
 
     logger.info(f"  Reconcile: broker={len(hold_map)} holdings | db={len(db_map)} open")
