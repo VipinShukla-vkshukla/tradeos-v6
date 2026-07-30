@@ -256,6 +256,32 @@ def main(once: bool = False, dry: bool = False) -> None:
         logger.info("Interrupted — shutting down")
     finally:
         feed.stop()
+
+        # RESOLVE THE DAY'S SETUPS BEFORE LETTING GO.
+        #
+        # intraday/outcomes.py was written to answer "did the setup work" for
+        # every setup DETECTED, including the ones rejected on cost — because
+        # "ORB fired 40 times and 12 would have worked" is a far more useful
+        # statement than "we took 3 ORB trades and 1 worked", and only the first
+        # can justify enabling, shadowing or retiring an engine.
+        #
+        # Nothing called it. 282 setups had accumulated with cost_verdict
+        # recorded and outcome NULL on every single row — the decisions were
+        # kept and the results were not, so no engine could be judged and the
+        # conviction floor had no evidence behind its numbers.
+        #
+        # Runs while ACTIVE only, so two daemons do not both replay the same
+        # bars, and never fatally: a failure here must not stop the daemon
+        # exiting cleanly, because the alternative is a lease held by a dead
+        # process.
+        try:
+            if was_active:
+                from intraday import outcomes
+                res = outcomes.resolve_day(sb=sb)
+                logger.info(f"  outcomes resolved: {res}")
+        except Exception as e:
+            logger.warning(f"  could not resolve today's outcomes — {e}")
+
         lease.release(sb)
         logger.info("Intraday daemon stopped")
 
