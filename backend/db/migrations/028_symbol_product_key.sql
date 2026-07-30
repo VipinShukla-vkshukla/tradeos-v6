@@ -52,15 +52,18 @@ ALTER TABLE open_positions
 DO $$
 DECLARE r RECORD;
 BEGIN
+    -- Both PRIMARY KEY and UNIQUE, because symbol turned out to be the primary
+    -- key here, not merely a unique constraint. A PK on symbol alone is exactly
+    -- the thing that makes two tranches impossible, so it has to be replaced
+    -- rather than worked around.
     FOR r IN
-        SELECT c.conname
+        SELECT c.conname, c.contype
           FROM pg_constraint c
           JOIN pg_class t ON t.oid = c.conrelid
          WHERE t.relname = 'open_positions'
-           AND c.contype = 'u'
-           -- attname is `name`, not `text`. Without the cast this compares
-           -- name[] against text[], for which Postgres has no operator:
-           --   42883 operator does not exist: name[] = text[]
+           AND c.contype IN ('p', 'u')
+           -- attname is `name`, not `text`. Comparing name[] to a text[]
+           -- literal fails with 42883 operator does not exist.
            AND (SELECT array_agg(a.attname::text ORDER BY a.attname::text)
                   FROM unnest(c.conkey) k
                   JOIN pg_attribute a
@@ -68,9 +71,14 @@ BEGIN
                = ARRAY['symbol']::text[]
     LOOP
         EXECUTE format('ALTER TABLE open_positions DROP CONSTRAINT %I', r.conname);
-        RAISE NOTICE 'dropped symbol-only unique constraint %', r.conname;
+        RAISE NOTICE 'dropped % constraint % on symbol alone',
+            CASE r.contype WHEN 'p' THEN 'PRIMARY KEY' ELSE 'UNIQUE' END, r.conname;
     END LOOP;
 
+    -- Standalone unique indexes only. An index that BACKS a constraint cannot
+    -- be dropped directly — Postgres refuses with 2BP01 and tells you to drop
+    -- the constraint, which the loop above already did. Filtering on
+    -- conindid IS NULL leaves only indexes created independently.
     FOR r IN
         SELECT i.relname AS iname
           FROM pg_index x
@@ -78,19 +86,40 @@ BEGIN
           JOIN pg_class t ON t.oid = x.indrelid
          WHERE t.relname = 'open_positions'
            AND x.indisunique
+           AND NOT x.indisprimary
            AND x.indnatts = 1
+           AND NOT EXISTS (SELECT 1 FROM pg_constraint c
+                            WHERE c.conindid = x.indexrelid)
            AND (SELECT a.attname::text FROM pg_attribute a
                  WHERE a.attrelid = x.indrelid AND a.attnum = x.indkey[0]) = 'symbol'
     LOOP
         EXECUTE format('DROP INDEX IF EXISTS %I', r.iname);
-        RAISE NOTICE 'dropped symbol-only unique index %', r.iname;
+        RAISE NOTICE 'dropped standalone unique index %', r.iname;
     END LOOP;
 END $$;
 
 -- ON CONFLICT needs a real unique constraint over exactly these columns.
 -- Not a partial index: PostgREST upserts cannot target one.
+-- product cannot be NULL once it is part of the key.
+ALTER TABLE open_positions
+    ALTER COLUMN product SET NOT NULL;
+
 ALTER TABLE open_positions
     ADD CONSTRAINT open_positions_symbol_product_key UNIQUE (symbol, product);
+
+-- Restore a primary key if dropping the symbol-only one left the table without
+-- one. A table with no PK still works, but replication and several tools assume
+-- one exists, and the composite is the honest identity now.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint c
+                     JOIN pg_class t ON t.oid = c.conrelid
+                    WHERE t.relname = 'open_positions' AND c.contype = 'p') THEN
+        ALTER TABLE open_positions
+            ADD CONSTRAINT open_positions_pkey PRIMARY KEY (symbol, product);
+        RAISE NOTICE 'primary key restored on (symbol, product)';
+    END IF;
+END $$;
 
 COMMENT ON COLUMN open_positions.product IS
     'CNC or MIS. Half the uniqueness key — one symbol may be held once per '
