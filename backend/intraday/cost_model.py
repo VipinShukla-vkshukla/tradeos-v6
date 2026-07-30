@@ -178,10 +178,29 @@ def is_worth_taking(entry_price: float, qty: int, target_price: float,
         net = gross_up - rt.pct_of_position
         return False, (f"costs {rt.pct_of_position:.2f}% eat a {gross_up:.2f}% target "
                        f"— only {net:.2f}% net, under the {keep:.0%} keep-ratio")
-    if gross_down > 0 and rt.pct_of_position > gross_down * 0.5:
+    # The stop must be a MULTIPLE of the friction, not merely larger than it.
+    #
+    # This was 0.5 — reject only if costs exceed half the stop. On 30 Jul that
+    # let through M&MFIN with a 0.44% stop against 0.21% costs (0.21 vs a 0.22
+    # threshold, passing by a hundredth) and ATHERENERG at 0.52%. Both were
+    # stopped out as SETUP_INVALIDATED inside 0.4% of entry, for -0.81R and
+    # -0.80R. The one winner that day, GODFRYPHLP, had the widest stop at 0.66%.
+    #
+    # A stop only twice the round trip is inside ordinary noise: the position
+    # has to survive a 0.21% tax before the thesis gets any room at all, so a
+    # 0.44% stop is really a 0.23% thesis. At 0.35 the stop must be ~3x the
+    # friction, which on that day rejected both losers and kept the winner.
+    #
+    # Three trades is not evidence, and the ratio is configurable for that
+    # reason. The principle does not depend on the sample: a stop that noise can
+    # reach is not a stop, it is a fee.
+    ratio = cfg_float("intraday_cost_stop_ratio", 0.35)
+    if gross_down > 0 and rt.pct_of_position > gross_down * ratio:
+        need = rt.pct_of_position / ratio
         return False, (f"stop is {gross_down:.2f}% but the round trip costs "
-                       f"{rt.pct_of_position:.2f}% — a stop-out loses "
-                       f"{gross_down + rt.pct_of_position:.2f}%, not {gross_down:.2f}%")
+                       f"{rt.pct_of_position:.2f}% — needs a {need:.2f}% stop to "
+                       f"give the thesis room; a stop-out here loses "
+                       f"{gross_down + rt.pct_of_position:.2f}%")
     return True, (f"net {gross_up - rt.pct_of_position:.2f}% after "
                   f"{rt.pct_of_position:.2f}% costs")
 
