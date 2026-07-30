@@ -197,7 +197,7 @@ def check_supabase() -> None:
         rows = (sb.table("system_config").select("key,value")
                   .in_("key", ["master_kill_switch", "intraday_trading_mode",
                                "intraday_strategies_enabled", "kite_access_token",
-                               "kite_token_date", "kite_allowlisted_ip"])
+                               "kite_access_token_date", "kite_allowlisted_ip"])
                   .execute().data or [])
         cfg = {r["key"]: r["value"] for r in rows}
         rec(PASS, f"Supabase reachable — read {len(rows)} config rows")
@@ -222,16 +222,24 @@ def check_supabase() -> None:
             f"{str(e)[:130]}\n           Without a writable lease two daemons "
             f"can both go ACTIVE and double every position.")
 
-    tok_date = cfg.get("kite_token_date", "")
+    # kite_access_token_date, matching TOKEN_DATE_KEY in kite/token_manager.py.
+    # This read "kite_token_date", which does not exist, so it always came back
+    # empty and the server reported "Kite token is from , not 2026-07-30" on
+    # every run — a warning about a perfectly valid session, printed at exactly
+    # the moment you are trying to work out whether the session is the problem.
+    tok_date = cfg.get("kite_access_token_date", "")
     today = datetime.now().strftime("%Y-%m-%d")
     if not cfg.get("kite_access_token"):
         rec(WARN, "no Kite token in Supabase yet",
             "your LAPTOP writes this at login. Run `tradeos` at home first; the "
             "server never logs in itself.")
-    elif tok_date == today:
-        rec(PASS, f"Kite token in Supabase is today's ({tok_date})")
+    elif tok_date[:10] == today:
+        # Compared on the date PREFIX: the dashboard writes a full ISO timestamp
+        # and this module writes an IST one, so an equality test against a bare
+        # date can only ever match one of the two writers.
+        rec(PASS, f"Kite token in Supabase is today's ({tok_date[:19]})")
     else:
-        rec(WARN, f"Kite token is from {tok_date}, not {today}",
+        rec(WARN, f"Kite token is from {tok_date[:10] or 'an unrecorded date'}, not {today}",
             "tokens expire 07:30 IST daily. Log in from the laptop.")
 
     # Probe the token rather than trusting a validity flag — a token from a
