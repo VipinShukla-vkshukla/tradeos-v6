@@ -8,6 +8,7 @@ REM    tradeos check      verify readiness only, start nothing
 REM    tradeos health     run EVERY check and report what is broken
 REM    tradeos learn      weekly review — measures, proposes, changes nothing
 REM    tradeos learn show just read the open proposals
+REM    tradeos discover   look for engines that do not exist yet
 REM    tradeos status     what is live, what is paper, what is off
 REM    tradeos ip         this machine's public IP for the Kite allowlist
 REM    tradeos server     validate the daemon server (run this ON the server)
@@ -40,6 +41,7 @@ cd /d "%~dp0backend"
 if /i "%~1"=="check"    goto CHECK
 if /i "%~1"=="health"   goto HEALTH
 if /i "%~1"=="learn"    goto LEARN
+if /i "%~1"=="discover" goto DISCOVER
 if /i "%~1"=="status"   goto STATUS
 if /i "%~1"=="ip"       goto IP
 if /i "%~1"=="stop"     goto STOP
@@ -195,6 +197,10 @@ goto END
 
 :LEARN
 if /i "%~2"=="show" (python -m tools.weekly_review --show) else (python -m tools.weekly_review)
+goto END
+
+:DISCOVER
+python -m tools.discover_engines --days 21
 goto END
 
 :STATUS

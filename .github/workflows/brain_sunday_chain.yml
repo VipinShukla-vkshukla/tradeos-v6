@@ -88,6 +88,19 @@ jobs:
         run: |
           cd backend && python -m tools.weekly_review
 
+      # Discovery, after the review. The review judges the engines that
+      # exist; this looks for the ones that do not — the moves no engine saw at
+      # all, which appear in no P&L because there is no losing trade to notice.
+      - name: "Engine discovery (SHADOW candidates)"
+        continue-on-error: true
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TOTAL_CAPITAL:        ${{ secrets.TOTAL_CAPITAL }}
+          TZ: Asia/Kolkata
+        run: |
+          cd backend && python -m tools.discover_engines --days 21
+
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
