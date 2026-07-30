@@ -612,6 +612,40 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
     db_rows = [r for r in ((sb.table("open_positions").select("*")
                               .eq("status", "ACTIVE").execute().data) or [])
                if (r.get("mode") or "LIVE").upper() != "PAPER"]
+
+    # A CNC BUY FILLED TODAY IS NOT IN holdings() YET.
+    #
+    # Kite moves a delivery purchase into holdings on T+1. Until then it lives
+    # only in positions(), so "in DB, not in Kite" is true of every position the
+    # system opened this morning — and this function would close all of them as
+    # BROKER_EXIT at their entry price, minutes after buying them.
+    #
+    # CIPLA, ETERNAL and GABRIEL were bought at 14:28 today and appear in
+    # positions() with product=CNC while holdings() shows only BHEL. Reconciling
+    # without this would have wiped three real positions and left the account
+    # holding stock the book had no record of.
+    try:
+        from kite.kite_client import fetch_positions
+        day_qty = {}
+        for p in (fetch_positions().get("net") or []):
+            q = int(p.get("quantity") or 0)
+            if q > 0:
+                day_qty[p.get("tradingsymbol")] = q
+    except Exception as e:
+        # Cannot see today's fills -> cannot safely decide anything is gone.
+        logger.warning(f"  reconcile: day positions unavailable ({e}) — "
+                       f"skipping to avoid closing settled-tomorrow buys")
+        return {"status": "no_day_positions", "opened": 0, "closed": 0, "adjusted": 0}
+
+    for sym, q in day_qty.items():
+        if sym not in hold_map:
+            # Same shape fetch_holdings() returns, total_quantity included —
+            # callers below read that key and a partial dict would raise here
+            # rather than at the boundary where it was built.
+            hold_map[sym] = {"symbol": sym, "quantity": q, "t1_quantity": 0,
+                             "total_quantity": q, "average_price": 0.0,
+                             "last_price": 0.0, "product": "CNC",
+                             "pnl": 0.0, "close_price": 0.0, "day_change_pct": 0.0}
     db_map  = {r["symbol"]: r for r in db_rows}
 
     logger.info(f"  Reconcile: broker={len(hold_map)} holdings | db={len(db_map)} open")

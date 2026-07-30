@@ -66,6 +66,10 @@ class IntradayEngine:
         # memory on purpose: a restart SHOULD re-announce the current best,
         # since you have no way of knowing whether the earlier message was seen.
         self._alerted_conf: list = []
+        # Swing entries taken by THIS process today. Guards the daily cap
+        # against read-after-write lag on the broker log — see
+        # _maybe_enter_swing().
+        self._entries_taken = 0
 
     # ── state ───────────────────────────────────────────────────────────────
     def load_state(self) -> None:
@@ -796,6 +800,20 @@ class IntradayEngine:
             n_today, _mine, _all = _today_totals(self.sb, "SWING")
         except Exception:
             n_today = 0
+
+        # Count THIS process's entries too, and take the larger.
+        #
+        # Reading the count from the broker log alone assumes the previous
+        # insert is visible by the time the next candidate is evaluated. Three
+        # entries fired three seconds apart on 30 Jul — CIPLA, ETERNAL, GABRIEL
+        # — against a cap of two, because each read still saw the count from
+        # before its predecessor landed. A cap enforced by a read-after-write is
+        # not a cap; it is a race that usually goes your way.
+        #
+        # The in-process counter cannot miss its own writes. The database count
+        # covers the restart case, where the counter is empty but the day's
+        # entries are not. Neither is sufficient alone, so both are consulted.
+        n_today = max(n_today, self._entries_taken)
         max_new = cfg_int("swing_max_new_per_day", 2)
         if n_today >= max_new:
             return
@@ -837,6 +855,7 @@ class IntradayEngine:
                     {"stop": d.stop, "target": d.target,
                      "strategy": c.get("strategy"), "entry_rationale": rationale},
                     "SWING", self.sb, charges=f.charges):
+                self._entries_taken += 1
                 self.load_state()
             return
 
@@ -880,6 +899,7 @@ class IntradayEngine:
                 "entry_rationale": rationale,
                 "synced_at": datetime.now(IST).isoformat(),
             }, on_conflict="symbol").execute()
+            self._entries_taken += 1
             self.load_state()
             logger.success(f"  🟢 AUTO-ENTRY {sym} {qty} @ ~{limit} "
                            f"(order {res.order_id}) — {rationale or 'no rank'}")
