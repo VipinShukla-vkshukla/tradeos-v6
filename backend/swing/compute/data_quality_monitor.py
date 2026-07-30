@@ -290,7 +290,20 @@ def c07_pipeline_completeness(sb, td):
         ("msl_history",           "snapshot_date",           "21_history",            "WARN",  True),   # ← uses today_ist()
         ("ai_context",            "date",           "23_ai_market_intel",    "WARN",  False),
         ("ai_context",            "date",           "24_ai_decision_engine", "WARN",  False),
-        ("data_anomalies",        "date",           "27_quality_audit",      "WARN",  True),   # ← self, writes today
+        # 27_quality_audit is NOT listed here, deliberately.
+        #
+        # It writes data_anomalies, so checking data_anomalies for freshness is
+        # this step asking whether it has already produced the output it is in
+        # the middle of producing. On any morning before the evening pipeline
+        # runs, the answer is no, and the dashboard showed a permanent
+        # "1/15 steps missing data" warning that resolved itself every night and
+        # returned every morning.
+        #
+        # A step cannot evidence its own execution by looking for its own rows:
+        # if the check is running, the step is running. The circularity made the
+        # warning both guaranteed and meaningless, and a warning that is always
+        # on is one you stop reading — which is the cost, because the other
+        # fourteen entries here are real.
     ]
 
     missing = []

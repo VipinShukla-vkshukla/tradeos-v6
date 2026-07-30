@@ -31,7 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import IST, get_supabase, is_kill_switch_active
+from config import IST, cfg_int, get_supabase, is_kill_switch_active
 from intraday.config import (is_trading_session, is_market_open, is_holiday,
                              autonomy_phase, gtt_enabled, orders_enabled,
                              eval_interval_s, gtt_sync_interval_s, poll_interval_s)
@@ -127,6 +127,7 @@ def main(once: bool = False, dry: bool = False) -> None:
 
     last_eval = 0.0
     last_lease = 0.0
+    last_ws_try = time.time()
     was_active = ls.may_act
     last_gtt = 0.0
     last_state = 0.0
@@ -144,6 +145,28 @@ def main(once: bool = False, dry: bool = False) -> None:
             if is_kill_switch_active():
                 logger.error("Kill switch active — intraday daemon stopping")
                 break
+
+            # Retry the websocket when it is down and a session has appeared.
+            #
+            # start_websocket() ran once at boot. The systemd timer starts this
+            # daemon at 09:00, but the Kite token is not written until you log in
+            # — often after the open. So the very first attempt reliably failed,
+            # the daemon fell back to REST polling, and REST needs the same token,
+            # so it collected nothing for the entire session while reporting
+            # itself healthy. The only cure was an ssh restart.
+            #
+            # Cheap to attempt: get_kite() returns None instantly with no session,
+            # so this costs nothing until there is genuinely something to connect
+            # with. Rate limited so a persistent outage does not spin.
+            if not feed.connected and now - last_ws_try >= cfg_int("intraday_ws_retry_seconds", 60):
+                last_ws_try = now
+                try:
+                    from kite import kite_client
+                    if kite_client.get_kite() and feed.start_websocket():
+                        logger.success("  price_feed: websocket connected — a session "
+                                       "appeared after startup, switching off polling")
+                except Exception as e:
+                    logger.debug(f"  websocket retry failed: {e}")
 
             # Poll only when the websocket is not carrying the load.
             if not feed.connected and now - last_poll >= poll_interval_s():

@@ -44,6 +44,49 @@ from config import KITE_API_KEY, KITE_API_SECRET, IST, get_supabase
 
 TOKEN_KEY      = "kite_access_token"
 TOKEN_DATE_KEY = "kite_access_token_date"
+
+
+def _parse_issued(raw: str):
+    """
+    Parse the stored token timestamp, whichever writer produced it.
+
+    TWO WRITERS, TWO FORMATS, AND A PYTHON VERSION THAT CARES
+    ---------------------------------------------------------
+    The dashboard callback writes JavaScript's toISOString(), which ends in a
+    literal 'Z'. This module writes datetime.isoformat(), which uses a +05:30
+    offset. Both are valid ISO 8601.
+
+    datetime.fromisoformat() only learned to accept 'Z' in Python 3.11. The
+    laptop runs 3.12 and parsed it; the Oracle server runs Ubuntu 22.04 with
+    Python 3.10 and did not. So a token written by the dashboard was read as
+    "unparseable — treating as expired" on the server ONLY, and the daemon spent
+    the session with no prices while the same token worked perfectly at home.
+
+    Nothing in the error mentioned the version, the writer, or the 'Z'. It said
+    the token was expired, which was false in the way that costs a session.
+
+    Normalising here rather than at the writer because both writers are correct
+    and the reader is the thing that has to cope with a value it did not write.
+    """
+    if not raw:
+        return None
+    s = str(raw).strip()
+    # 'Z' is UTC. Python < 3.11 rejects it outright.
+    if s.endswith(("Z", "z")):
+        s = s[:-1] + "+00:00"
+    for attempt in (s, s.replace(" ", "T")):
+        try:
+            dt = datetime.fromisoformat(attempt)
+            return IST.localize(dt) if dt.tzinfo is None else dt
+        except ValueError:
+            continue
+    # A bare date is what the very first version of this stored.
+    try:
+        return IST.localize(datetime.strptime(s[:10], "%Y-%m-%d"))
+    except ValueError:
+        return None
+
+
 # The api_key the stored token was minted under.
 #
 # Without this, swapping the Kite Connect app (new api_key in .env) leaves a
@@ -225,11 +268,8 @@ def get_access_token() -> str | None:
             )
             return None
 
-    try:
-        issued = datetime.fromisoformat(issued_s)
-        if issued.tzinfo is None:
-            issued = IST.localize(issued)
-    except Exception:
+    issued = _parse_issued(issued_s)
+    if issued is None:
         logger.warning(f"  Unparseable kite token date '{issued_s}' — treating as expired")
         return None
 
