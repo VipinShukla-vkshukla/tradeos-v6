@@ -156,7 +156,7 @@ def step_public_ip() -> bool:
 
 def step_kite(wait_seconds: int = 240) -> bool:
     logger.info("─" * 66)
-    logger.info("5 · KITE SESSION")
+    logger.info("4 · KITE SESSION")
     from kite.token_manager import get_access_token, get_login_url
 
     if get_access_token():
@@ -205,7 +205,7 @@ def step_kite(wait_seconds: int = 240) -> bool:
 
 def step_dashboard() -> bool:
     logger.info("─" * 66)
-    logger.info("4 · DASHBOARD")
+    logger.info("3 · DASHBOARD")
     import urllib.request
     try:
         urllib.request.urlopen(DASHBOARD_URL, timeout=3)
@@ -253,7 +253,7 @@ def step_health() -> bool:
     sweep with `tradeos health` when something looks wrong.
     """
     logger.info("─" * 66)
-    logger.info("3 · HEALTH")
+    logger.info("6 · HEALTH")
     try:
         from tools.health import main as health_main
         rc = health_main(quick=True)
@@ -270,7 +270,7 @@ def step_health() -> bool:
 
 def step_intraday() -> bool:
     logger.info("─" * 66)
-    logger.info("6 · LIVE MONITOR  (both books)")
+    logger.info("7 · LIVE MONITOR  (both books)")
     from intraday.config import is_trading_session, is_holiday
     from execution.gates import trading_mode
 
@@ -359,8 +359,11 @@ def main(check_only: bool = False, only: str = "both") -> int:
         logger.error("Preflight failed — stopping before anything is started.")
         return 1
     step_public_ip()
-    step_health()
     if check_only:
+        # --check cannot log in, so the session may legitimately be absent. Run
+        # health anyway: config, selects, data and daemon are all still worth
+        # knowing about, and the kite line correctly reports what it finds.
+        step_health()
         logger.info("--check: readiness verified, nothing started.")
         return 0
 
@@ -384,6 +387,19 @@ def main(check_only: bool = False, only: str = "both") -> int:
     step_dashboard()
     if not step_kite():
         return 1
+
+    # HEALTH RUNS AFTER THE LOGIN, not before.
+    #
+    # The token expires at 07:30 IST every day, so on any normal morning there
+    # is no session until step_kite() creates one. Running health first meant
+    # the `kite` check failed EVERY single day — "Kite call failed: 'NoneType'
+    # object has no attribute 'profile'" — and dragged `broker` down with it,
+    # since GTTs cannot be listed without a session either.
+    #
+    # A check that fails every morning for a reason the launcher is about to fix
+    # two steps later is noise, and noise is what makes the one real failure
+    # easy to scroll past. Now it runs when there is something true to say.
+    step_health()
     # The daemon starts for EVERY selection, including swing only.
     #
     # Its name is misleading: it is the live price feed and exit monitor for

@@ -475,12 +475,20 @@ class IntradayEngine:
                 except Exception as e:
                     logger.warning(f"  engine: trail persist failed for {sym} — {e}")
 
-            if orders_enabled() and cfg_bool("intraday_auto_exit", False):
+            # Gate on the POSITION's framework, not a fixed key. This read
+            # cfg_bool("intraday_auto_exit") for every position, so a swing
+            # exit was permitted or refused by the intraday switch — turning
+            # intraday off would have silently frozen swing partial books on a
+            # LIVE account, and swing_auto_exit did nothing here at all.
+            from execution.gates import auto_exit_enabled
+            fw = (p.get("framework") or "SWING").upper()
+            if auto_exit_enabled(fw):
                 self._auto_exit(p, d, ltp)
 
     def _auto_exit(self, p: dict, d: dict, ltp: float) -> None:
         """
-        Phase 3 exits. Gated separately from entries by intraday_auto_exit.
+        Phase 3 exits. Gated separately from entries by the FRAMEWORK's
+        own auto-exit switch — swing_auto_exit or intraday_auto_exit.
 
         Exits are the safer half to automate — they reduce exposure, they act on
         a position that already exists, and the quantity is bounded by what is
@@ -497,7 +505,8 @@ class IntradayEngine:
         # outcome record is identical to a live one; partials only shrink the
         # quantity, exactly as reconcile does for real fills.
         from execution.gates import is_paper
-        if is_paper("INTRADAY") and (p.get("mode") or "").upper() == "PAPER":
+        fw = (p.get("framework") or "SWING").upper()
+        if is_paper(fw) and (p.get("mode") or "").upper() == "PAPER":
             from execution import paper_broker
             if d["action"].startswith("EXIT"):
                 paper_broker.close_position(p["symbol"], ltp, d["reason"],
@@ -517,9 +526,12 @@ class IntradayEngine:
         # Marketable limit: priced through the bid so it fills like a market
         # order without accepting an unbounded price in a thin book.
         limit = round(ltp * (1 - cfg_int("intraday_exit_slip_bps", 30) / 10000.0), 1)
+        # framework decides which caps preflight applies and how the order is
+        # attributed in the broker log. Omitting it defaulted every exit —
+        # including intraday ones — to the SWING rails.
         place(OrderRequest(p["symbol"], "SELL", qty, "LIMIT", limit,
                            reason=f"{d['action']}: {d['detail']}"),
-              self.sb, self.notifier)
+              self.sb, self.notifier, framework=fw)
 
     def act_on_candidates(self, entries: list[dict]) -> None:
         for e in entries:
