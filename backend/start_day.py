@@ -156,17 +156,35 @@ def step_public_ip() -> bool:
 
 def step_kite(wait_seconds: int = 240) -> bool:
     logger.info("─" * 66)
-    logger.info("3 · KITE SESSION")
+    logger.info("5 · KITE SESSION")
     from kite.token_manager import get_access_token, get_login_url
 
     if get_access_token():
         _ok("today's session is already valid")
         return True
 
+    # The login is worthless without somewhere for Zerodha to redirect BACK to.
+    # The token is exchanged and stored by the dashboard's /api/kite/callback,
+    # so if that endpoint is not listening the browser lands on a
+    # connection-refused page and this loop waits out its full deadline for a
+    # callback that cannot arrive. Say so instead of pretending to wait.
+    import urllib.request
+    cb = f"{DASHBOARD_URL}/api/kite/callback"
+    try:
+        urllib.request.urlopen(cb, timeout=4)
+    except urllib.error.HTTPError:
+        pass          # 4xx/3xx means it IS listening — a bare GET has no token
+    except Exception:
+        _fail(f"the dashboard is not answering at {DASHBOARD_URL}, so the Zerodha "
+              f"redirect has nowhere to land and the token cannot be stored.")
+        logger.error("  Start it first, then re-run:")
+        logger.error(f"    cd {FRONTEND} && npm run dev")
+        return False
+
     url = get_login_url()
     logger.warning("  No valid session. Opening the Zerodha login in your browser.")
     logger.info(f"    {url}")
-    logger.info("    Log in; the dashboard callback stores the token automatically.")
+    logger.info(f"    Log in; {cb} stores the token automatically.")
     try:
         webbrowser.open(url)
     except Exception:
@@ -252,7 +270,7 @@ def step_health() -> bool:
 
 def step_intraday() -> bool:
     logger.info("─" * 66)
-    logger.info("5 · LIVE MONITOR  (both books)")
+    logger.info("6 · LIVE MONITOR  (both books)")
     from intraday.config import is_trading_session, is_holiday
     from execution.gates import trading_mode
 
@@ -349,9 +367,23 @@ def main(check_only: bool = False, only: str = "both") -> int:
     if only != "both":
         apply_selection(only)
 
+    # DASHBOARD BEFORE KITE, and the order is not cosmetic.
+    #
+    # step_kite() opens the Zerodha login and then waits for the DASHBOARD
+    # callback (/api/kite/callback) to exchange the request_token and store the
+    # session. Starting the dashboard afterwards meant that on any cold start —
+    # laptop rebooted, dev server not already running — the login redirected to
+    # a port with nothing listening. The browser showed connection-refused, the
+    # token was never stored, and the launcher sat waiting the full 240s for a
+    # callback that could not arrive.
+    #
+    # The module docstring listed Kite as step 2 and the dashboard as step 3,
+    # and said "a failed step stops the sequence rather than letting later steps
+    # run on a broken foundation" — while the earlier step depended on the later
+    # one. This is that dependency put back in the right order.
+    step_dashboard()
     if not step_kite():
         return 1
-    step_dashboard()
     # The daemon starts for EVERY selection, including swing only.
     #
     # Its name is misleading: it is the live price feed and exit monitor for

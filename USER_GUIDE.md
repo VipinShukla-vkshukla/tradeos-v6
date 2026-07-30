@@ -36,8 +36,8 @@ Press Enter for both. Everything after that is automatic:
 | Applies your choice | Writes to `system_config`, so the **Oracle server daemon obeys it too** |
 | Preflight checks | Refuses to start on a broken config rather than trading on one |
 | Public IP check | Kite rejects orders from non-allowlisted IPs; this tells you before the market does |
+| Opens the dashboard | http://localhost:3000 — **before** Kite, because it receives the login callback |
 | Kite login | The access token expires **daily at 07:30 IST** — there is no way around this |
-| Opens the dashboard | http://localhost:3000 — serves both books, so it starts either way |
 | Starts the live monitor | **Always** — it is the price feed and exit manager for both books |
 
 Then you watch Telegram/Discord and the dashboard. You do not need to touch
@@ -679,6 +679,18 @@ Show what is live, paper, and off.
 ## Change log
 
 Update this section whenever behaviour changes.
+
+**30 July 2026 — cold start**
+- **Fixed: the daily login could never complete on a cold start.** `step_kite()`
+  ran before `step_dashboard()`, but the token is exchanged and stored by the
+  dashboard's `/api/kite/callback`. With no dev server running, Zerodha
+  redirected to a dead port and the launcher waited out its full 240s. Dashboard
+  now starts first, and the Kite step refuses with instructions if the callback
+  endpoint is not answering.
+- Health `broker` check no longer reports "live position with NO broker stop"
+  when it simply has no session to look with — that buried the real finding
+  (the session had expired) under a false one.
+- Step numbers renumbered; HEALTH and KITE were both labelled "3".
 
 **29 July 2026 — watch list**
 - **6 of the day's 8 actionable swing plans were not on the price feed.** The

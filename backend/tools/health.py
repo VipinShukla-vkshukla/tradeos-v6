@@ -109,6 +109,18 @@ def check_broker_consistency() -> tuple[bool, str]:
     live = {r["symbol"] for r in rows if (r.get("mode") or "LIVE").upper() != "PAPER"}
     paper = {r["symbol"] for r in rows if (r.get("mode") or "LIVE").upper() == "PAPER"}
 
+    # Without a broker session list_gtts() returns {}, which is indistinguishable
+    # from "no stops exist" — and reporting every live position as unprotected
+    # when the truth is "cannot see" sends you hunting for a problem that may not
+    # be there. It also buries the real finding, which is that the session died.
+    try:
+        from kite import kite_client
+        if not kite_client.get_kite():
+            return True, ("cannot verify — no broker session. Resting GTTs are "
+                          "unaffected by this; fix the session and re-check.")
+    except Exception:
+        return True, "cannot verify — broker unavailable"
+
     try:
         from execution.gtt_manager import list_gtts
         resting = set(list_gtts())
