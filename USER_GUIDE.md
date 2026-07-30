@@ -649,6 +649,24 @@ auto-exit, engines, and which machine holds the lease.
 **Dashboard → Performance → Trade Log** — what it actually did, grouped by day,
 with net P&L, charges and the reasoning behind each entry.
 
+```bash
+tradeos learn
+```
+**What does the evidence say to change?** The weekly pass. Scores every engine on
+resolved outcomes, checks whether each gate refused setups that would have
+worked, tests whether high-ranked entries actually outperformed low-ranked ones,
+and refreshes `performance_metrics` (which the dashboard reads and which had not
+been written since 12 May).
+
+It **proposes and never applies**. Proposals land in `brain_proposals` with the
+numbers as they stood; `tradeos learn show` reads the open ones. Nothing changes
+until you act.
+
+Weekly, not daily: a day gives 20-40 detections, which cannot separate an edge
+from a run of luck, and a system that retunes nightly converges on noise while
+appearing to learn. An engine needs 20 resolved outcomes before it is judged
+at all.
+
 ### The scorecard is the one that judges the system, not the machinery
 
 ```

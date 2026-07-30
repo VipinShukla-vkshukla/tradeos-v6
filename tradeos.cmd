@@ -6,6 +6,8 @@ REM    tradeos            ASK which framework, then run it
 REM    tradeos both       swing + intraday, no prompt
 REM    tradeos check      verify readiness only, start nothing
 REM    tradeos health     run EVERY check and report what is broken
+REM    tradeos learn      weekly review — measures, proposes, changes nothing
+REM    tradeos learn show just read the open proposals
 REM    tradeos status     what is live, what is paper, what is off
 REM    tradeos ip         this machine's public IP for the Kite allowlist
 REM    tradeos server     validate the daemon server (run this ON the server)
@@ -37,6 +39,7 @@ cd /d "%~dp0backend"
 
 if /i "%~1"=="check"    goto CHECK
 if /i "%~1"=="health"   goto HEALTH
+if /i "%~1"=="learn"    goto LEARN
 if /i "%~1"=="status"   goto STATUS
 if /i "%~1"=="ip"       goto IP
 if /i "%~1"=="stop"     goto STOP
@@ -62,6 +65,7 @@ echo.
 echo    4   Check readiness          start nothing
 echo    5   Show current status
 echo    6   Full health sweep        every check, find what is broken
+echo    L   Weekly learning review   what the evidence says to change
 echo    7   Oracle daemon — logs     what the server is doing right now
 echo    8   Oracle daemon — update   git pull + restart on the server
 echo    9   Oracle daemon — status   running? on which commit?
@@ -83,6 +87,7 @@ if "%PICK%"=="3" goto ONLYINTRA
 if "%PICK%"=="4" goto CHECK
 if "%PICK%"=="5" goto STATUS
 if "%PICK%"=="6" goto HEALTH
+if /i "%PICK%"=="L" goto LEARN
 if "%PICK%"=="7" set "VCNACT=logs"
 if "%PICK%"=="8" set "VCNACT=fixc"
 if "%PICK%"=="9" set "VCNACT=status"
@@ -186,6 +191,10 @@ goto END
 
 :HEALTH
 python -m tools.health
+goto END
+
+:LEARN
+if /i "%~2"=="show" (python -m tools.weekly_review --show) else (python -m tools.weekly_review)
 goto END
 
 :STATUS
