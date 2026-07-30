@@ -20,31 +20,15 @@ controls it, and which file actually reads that value.
 Double-click **`tradeos.cmd`**. It asks one question:
 
 ```
-  RUN TODAY
-    1   Both frameworks        swing + intraday  (default)
-    2   Swing only             intraday stands down
-    3   Intraday only          swing automation stands down
+   1  Both frameworks (default)     4  Check readiness    7  IP vs allowlist
+   2  Swing only                    5  Status             E  Evening pipeline
+   3  Intraday only                 6  Health sweep       K  KILL SWITCH
 
-  INSPECT
-    4   Check readiness        start nothing
-    5   Status                 live/paper, and where the monitor is
-    6   Health sweep           every check, find what is broken
-    7   IP                     this machine's, vs the Kite allowlist
+   LEARN (measures, proposes, changes nothing)
+     L  Weekly review     D  Discover engines     P  Open proposals
 
-  LEARN                        measures and proposes, changes nothing
-    L   Weekly review          what the evidence says to change
-    D   Discover engines       look for edges nothing covers
-    P   Open proposals         read what is waiting for a decision
-
-  ORACLE SERVER
-    8   Logs                   what the server is doing right now
-    9   Update                 git pull + restart there
-    N   Status                 running? on which commit?
-    X   Stop                   hand the book to this laptop
-
-  OTHER
-    E   Evening pipeline       run the swing pipeline by hand
-    K   KILL SWITCH            stop all trading, both frameworks
+   ORACLE SERVER
+     8  Logs     9  Update (pull+restart)     N  Status     X  Stop
 ```
 
 Press Enter for both. Everything after that is automatic:
