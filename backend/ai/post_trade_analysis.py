@@ -1276,11 +1276,32 @@ def handle_lesson_dedup(sb, lesson: dict, existing: list[dict]) -> bool:
 
 def enrich_signal_log(sb, trade: dict, lesson: dict):
     """
-    Write outcome fields back to signal_log.
-    v2 additions vs v1:
-      - ai_note: 1-line retrospective summary from lesson
-      - execution_status: set to COMPLETED to mark signal lifecycle done
+    SWING ONLY. signal_log is the evening pipeline's output.
+
+    An intraday trade has no row here — it comes from intraday_setups, and its
+    outcome is scored by intraday.outcomes.resolve_day. Writing one into
+    signal_log does not fail; it silently lands on whatever SWING signal shares
+    the symbol and date, and stamps a four-hour paper result onto a 1-3 week
+    plan that had nothing to do with it.
+
+    That happened. On 2026-08-01 the 2026-07-30 LALPATHLAB and ATHERENERG swing
+    signals were marked LOSS from intraday paper trades, and ATHERENERG had two
+    intraday closes that day so the second overwrote the first — the recorded
+    outcome was not even the right intraday trade. signal_log.outcome is what
+    the swing learning loop reads, so this poisons the evidence with results
+    from a different framework and a different horizon.
+
+    Same class as the exit policy being applied across frameworks and the health
+    check counting intraday positions against swing signals. The two books stay
+    separate here for the same reason they do everywhere else.
     """
+    fw = (trade.get("framework") or "SWING").upper()
+    if fw != "SWING":
+        logger.debug(f"  {trade.get('symbol')}: {fw} trade — scored in "
+                     f"intraday_setups, not signal_log")
+        return None
+
+    # Writes outcome, outcome_pnl_pct, execution_status and a one-line ai_note.
     sym         = trade.get("symbol", "")
     pnl         = float(trade.get("pnl_pct", 0) or 0)
     outcome     = "WIN" if pnl > 0 else "LOSS"
@@ -1465,12 +1486,20 @@ def main():
         if enrich_signal_log(sb, trade, lesson):
             signal_match_count += 1
 
+    # Denominator is the SWING trades, not every trade. Reporting against all
+    # of them read as "5/16 enriched" — a permanent-looking failure — when
+    # eleven of the sixteen were intraday and have no signal_log row to reach
+    # by construction. A ratio that cannot reach 1 teaches you to ignore it.
+    eligible = len([t for t in trades
+                    if (t.get("framework") or "SWING").upper() == "SWING"])
+    skipped = len(trades) - eligible
     logger.success(
         f"Post-trade analysis v3 done: "
         f"{analyzed_count} new lessons | "
         f"{dedup_count} deduped (times_applied++) | "
-        f"{signal_match_count}/{len(trades)} signal_log enriched | "
-        f"AI calls this run: {ai_count_this_run}"
+        f"{signal_match_count}/{eligible} swing signal_log enriched"
+        + (f" ({skipped} intraday scored in intraday_setups)" if skipped else "")
+        + f" | AI calls this run: {ai_count_this_run}"
     )
     logger.info(f"  Trade grade distribution: {grade_dist}")
 
