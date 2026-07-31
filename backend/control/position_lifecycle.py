@@ -757,10 +757,18 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
     entry_charges = float(pos.get("charges") or 0.0)
     exit_charges = 0.0
     try:
-        from intraday.cost_model import round_trip
-        rt = round_trip(float(exit_price), int(qty))
-        statutory = rt.brokerage + rt.stt + rt.exchange + rt.sebi + rt.stamp + rt.gst
-        exit_charges = round(statutory / 2.0, 2)
+        # PRODUCT-AWARE, and the sell leg priced as a sell leg.
+        #
+        # This used to compute the full round trip on MIS rates and halve the
+        # statutory total. Two errors compounded: a CNC position was priced as
+        # intraday (no DP, 0.025% STT instead of 0.1% on both legs), and halving
+        # charged the exit half an STT it owes in full plus half a stamp duty it
+        # does not owe at all. On a Rs 2,900 CNC exit that recorded about Rs 1.60
+        # against a true Rs 18.09 — so every closed swing row understated its
+        # charges by roughly a tenth of the per-trade risk budget.
+        from intraday.cost_model import exit_leg
+        exit_charges = exit_leg(float(exit_price), int(qty),
+                                product=(pos.get("product") or "CNC"))
     except Exception:
         exit_charges = 0.0
     total_charges = round(entry_charges + exit_charges, 2) if (entry_charges or exit_charges) else None

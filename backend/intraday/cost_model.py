@@ -66,22 +66,66 @@ class RoundTrip:
     total: float
     pct_of_position: float     # total cost as % of the entry value
     breakeven_move_pct: float  # move needed just to get back to flat
+    dp: float = 0.0            # depository fee, delivery sells only
 
 
-def _rates() -> dict:
+def _rates(product: str = "MIS") -> dict:
+    """
+    Charges for ONE product. MIS and CNC are not the same trade financially.
+
+    This module was written for the intraday book and every rate in it is an
+    MIS rate. The swing book then reused it — close_position, paper_broker and
+    weekly_review all call round_trip — so every CNC trade was priced as if it
+    were intraday. Four of the seven lines are wrong in that direction, and the
+    error is one-sided: delivery is DEARER, so swing costs were understated on
+    every trade, on entry sizing and on the recorded outcome alike.
+
+    What actually differs at Zerodha:
+
+      brokerage   equity DELIVERY is free; MIS is Rs 20 or 0.03%, lower of.
+      STT         delivery 0.1% on BOTH legs; MIS 0.025% on the sell only.
+                  This is the big one — 8x the rate and twice the sides.
+      stamp       delivery 0.015% on buy; MIS 0.003%.
+      DP          Rs 15.04 per scrip per SELL day, delivery only. Flat, so it
+                  hurts small positions most: on a Rs 2,000 position it is
+                  0.75% by itself, more than the entire modelled round trip.
+
+    Exchange, SEBI and GST are the same for both.
+
+    The MIS defaults are unchanged, so the intraday cost gate — which is
+    calibrated on them and has 460 scored outcomes behind it — behaves exactly
+    as before.
+    """
+    delivery = (product or "MIS").upper() in ("CNC", "NRML", "DELIVERY")
+    if delivery:
+        return {
+            "brokerage_flat":   cfg_float("cost_cnc_brokerage_flat", 0.0),
+            "brokerage_pct":    cfg_float("cost_cnc_brokerage_pct", 0.0),
+            "stt_buy_pct":      cfg_float("cost_cnc_stt_buy_pct", 0.1),
+            "stt_sell_pct":     cfg_float("cost_cnc_stt_sell_pct", 0.1),
+            "exchange_pct":     cfg_float("cost_exchange_pct", 0.00297),
+            "sebi_pct":         cfg_float("cost_sebi_pct", 0.0001),
+            "stamp_buy_pct":    cfg_float("cost_cnc_stamp_buy_pct", 0.015),
+            "gst_pct":          cfg_float("cost_gst_pct", 18.0),
+            "slippage_bps":     cfg_float("cost_slippage_bps", 5.0),
+            "dp_per_sell":      cfg_float("cost_dp_per_sell", 15.04),
+        }
     return {
         "brokerage_flat":   cfg_float("cost_brokerage_flat", 20.0),
         "brokerage_pct":    cfg_float("cost_brokerage_pct", 0.03),
+        "stt_buy_pct":      cfg_float("cost_stt_buy_pct", 0.0),
         "stt_sell_pct":     cfg_float("cost_stt_sell_pct", 0.025),
         "exchange_pct":     cfg_float("cost_exchange_pct", 0.00297),
         "sebi_pct":         cfg_float("cost_sebi_pct", 0.0001),
         "stamp_buy_pct":    cfg_float("cost_stamp_buy_pct", 0.003),
         "gst_pct":          cfg_float("cost_gst_pct", 18.0),
         "slippage_bps":     cfg_float("cost_slippage_bps", 5.0),
+        "dp_per_sell":      0.0,
     }
 
 
-def round_trip(entry_price: float, qty: int, exit_price: float | None = None) -> RoundTrip:
+def round_trip(entry_price: float, qty: int, exit_price: float | None = None,
+               product: str = "MIS") -> RoundTrip:
     """
     Full cost of buying and selling `qty` shares.
 
@@ -90,17 +134,22 @@ def round_trip(entry_price: float, qty: int, exit_price: float | None = None) ->
     entry for both sides understates STT slightly on a winner, which is the safe
     direction for a go/no-go decision.
     """
-    r = _rates()
+    r = _rates(product)
     exit_price = exit_price or entry_price
     buy_val  = entry_price * qty
     sell_val = exit_price * qty
     turnover = buy_val + sell_val
 
     # Flat OR percentage, whichever is lower — per executed order, so twice.
+    # For delivery both are zero, and min(0, x) is 0, so this is free as it
+    # should be rather than needing a special case.
     per_order = lambda v: min(r["brokerage_flat"], v * r["brokerage_pct"] / 100.0)
     brokerage = per_order(buy_val) + per_order(sell_val)
 
-    stt      = sell_val * r["stt_sell_pct"] / 100.0
+    # Delivery pays STT on BOTH legs. MIS pays it on the sell only, and its
+    # stt_buy_pct is 0, so one expression serves both.
+    stt      = (sell_val * r["stt_sell_pct"] / 100.0
+                + buy_val * r["stt_buy_pct"] / 100.0)
     exchange = turnover * r["exchange_pct"] / 100.0
     sebi     = turnover * r["sebi_pct"] / 100.0
     stamp    = buy_val  * r["stamp_buy_pct"] / 100.0
@@ -110,13 +159,20 @@ def round_trip(entry_price: float, qty: int, exit_price: float | None = None) ->
     # backtest beats a live account. Applied to both legs.
     slippage = turnover * r["slippage_bps"] / 10000.0
 
-    total = brokerage + stt + exchange + sebi + stamp + gst + slippage
+    # DP is a FLAT rupee fee per scrip per selling day, delivery only. Being
+    # flat it does not scale with position size, so it dominates small ones:
+    # Rs 15.04 on a Rs 2,000 position is 0.75% before a single statutory charge
+    # is counted. On a Rs 20,000 account taking Rs 2,000-4,000 positions this is
+    # the largest single cost line, and it was absent entirely.
+    dp       = r["dp_per_sell"] if qty > 0 else 0.0
+
+    total = brokerage + stt + exchange + sebi + stamp + gst + slippage + dp
     pct   = (total / buy_val * 100.0) if buy_val else 0.0
 
     return RoundTrip(
         turnover=round(turnover, 2), brokerage=round(brokerage, 2),
         stt=round(stt, 2), exchange=round(exchange, 2), sebi=round(sebi, 2),
-        stamp=round(stamp, 2), gst=round(gst, 2),
+        stamp=round(stamp, 2), gst=round(gst, 2), dp=round(dp, 2),
         total=round(total + 0.0, 2), pct_of_position=round(pct, 4),
         breakeven_move_pct=round(pct, 4),
     )
@@ -210,3 +266,53 @@ def explain(entry_price: float, qty: int) -> str:
     rt = round_trip(entry_price, qty)
     return (f"₹{entry_price * qty:,.0f} position · round trip ₹{rt.total:,.0f} "
             f"({rt.pct_of_position:.2f}%) · breakeven +{rt.breakeven_move_pct:.2f}%")
+
+
+def exit_leg(exit_price: float, qty: int, product: str = "MIS") -> float:
+    """
+    Charges owed on the SELL leg alone.
+
+    close_position needed this and did not have it, so it computed the full
+    round trip and halved the statutory total. Halving is wrong in both
+    directions at once and does not cancel:
+
+      · STT is a SELL-side charge (for MIS entirely, for delivery on both legs
+        but at the same rate). Halving the round-trip figure charges the exit
+        only half of what it actually owes.
+      · Stamp duty is a BUY-side charge. Halving the round-trip figure charges
+        the exit for half a stamp duty it does not owe at all.
+      · DP is a sell-side fee. Half of it is not a thing that exists.
+
+    On a Rs 2,900 CNC exit the halving approach recorded about Rs 1.60 against
+    a true cost near Rs 18.50. Every closed swing row understates its charges,
+    which means realized_pnl net of charges is overstated, which means the
+    weekly review scores every engine slightly better than it earned.
+    """
+    r = _rates(product)
+    sell_val = exit_price * qty
+    brokerage = min(r["brokerage_flat"], sell_val * r["brokerage_pct"] / 100.0)
+    stt       = sell_val * r["stt_sell_pct"] / 100.0
+    exchange  = sell_val * r["exchange_pct"] / 100.0
+    sebi      = sell_val * r["sebi_pct"] / 100.0
+    gst       = (brokerage + exchange + sebi) * r["gst_pct"] / 100.0
+    dp        = r["dp_per_sell"] if qty > 0 else 0.0
+    return round(brokerage + stt + exchange + sebi + gst + dp, 2)
+
+
+def entry_leg(entry_price: float, qty: int, product: str = "MIS") -> float:
+    """
+    Charges owed on the BUY leg alone.
+
+    The counterpart to exit_leg, and split out for the same reason: stamp duty
+    is buy-side, DP is sell-side, and STT differs by product. Half a round trip
+    charges each leg a blend of the other's costs.
+    """
+    r = _rates(product)
+    buy_val = entry_price * qty
+    brokerage = min(r["brokerage_flat"], buy_val * r["brokerage_pct"] / 100.0)
+    stt       = buy_val * r["stt_buy_pct"] / 100.0
+    exchange  = buy_val * r["exchange_pct"] / 100.0
+    sebi      = buy_val * r["sebi_pct"] / 100.0
+    stamp     = buy_val * r["stamp_buy_pct"] / 100.0
+    gst       = (brokerage + exchange + sebi) * r["gst_pct"] / 100.0
+    return round(brokerage + stt + exchange + sebi + stamp + gst, 2)

@@ -1156,7 +1156,8 @@ class IntradayEngine:
             if not allowed:
                 logger.info(f"  📄 swing paper skip {sym} — {why}")
                 return
-            f = paper_broker.simulate_fill(sym, "BUY", qty, "LIMIT", ltp, ltp)
+            f = paper_broker.simulate_fill(sym, "BUY", qty, "LIMIT", ltp, ltp,
+                                           product=paper_broker.product_for("SWING"))
             if f.ok and paper_broker.open_position(
                     sym, qty, f.fill_price,
                     {"stop": d.stop, "target": d.target,
@@ -1568,7 +1569,8 @@ class IntradayEngine:
             if self._held_by_framework(st.symbol, "INTRADAY"):
                 return
             f = paper_broker.simulate_fill(st.symbol, "BUY", qty, "LIMIT",
-                                           st.entry, st.entry)
+                                           st.entry, st.entry,
+                                           product=paper_broker.product_for("INTRADAY"))
             if not f.ok:
                 return
             from intraday.exit_policy import invalidation_level_from

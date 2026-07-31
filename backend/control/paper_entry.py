@@ -148,8 +148,11 @@ def run(sb=None, notifier=None) -> dict:
             logger.info(f"  📄 swing paper skip {sym} — {why}")
             break
 
+        # Swing is CNC, and CNC charges differ enough from MIS that pricing the
+        # fill without saying so understates the entry leg on every paper trade.
         f = paper_broker.simulate_fill(sym, "BUY", qty, "LIMIT",
-                                       d.live_price, d.live_price)
+                                       d.live_price, d.live_price,
+                                       product=paper_broker.product_for("SWING"))
         if not f.ok:
             result["skipped"] += 1
             continue

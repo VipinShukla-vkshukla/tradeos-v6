@@ -61,8 +61,21 @@ def _slippage_pct() -> float:
     return cfg_float("cost_slippage_bps", 5.0) / 10000.0
 
 
+def product_for(framework: str) -> str:
+    """
+    The product a framework trades. One definition, because charges depend on
+    it: CNC pays no brokerage but 0.1% STT on both legs plus a flat Rs 15.04 DP
+    fee on every sell, and MIS pays the opposite shape. Getting this wrong does
+    not raise — it just prices the trade as the other product.
+    """
+    if (framework or "SWING").upper() == "SWING":
+        return "CNC"
+    return (cfg("intraday_product", "CNC") or "CNC").upper()
+
+
 def simulate_fill(symbol: str, side: str, qty: int, order_type: str,
-                  limit_price: float | None, ltp: float) -> PaperFill:
+                  limit_price: float | None, ltp: float,
+                  product: str = "MIS") -> PaperFill:
     """
     Would this order have filled, and at what price?
 
@@ -92,14 +105,18 @@ def simulate_fill(symbol: str, side: str, qty: int, order_type: str,
         fill = limit_price
 
     try:
-        from intraday.cost_model import round_trip
-        rt = round_trip(fill, qty)
-        # Half a round trip — this is one leg. Slippage is deliberately EXCLUDED
-        # from `charges`: it is already reflected in `fill` above, and
-        # round_trip.total includes it, so using total would deduct the same
+        # The leg being simulated, priced for the product being traded. This
+        # halved a full MIS round trip regardless of side or product, so a CNC
+        # buy was charged half an STT it does not pay on that leg at that rate,
+        # and a CNC sell was charged nothing for the Rs 15.04 DP fee that is the
+        # single largest cost on a small delivery position.
+        #
+        # Slippage is deliberately EXCLUDED from `charges`: it is already
+        # reflected in `fill` above, so counting it here would deduct the same
         # cost twice and make paper look worse than live rather than equal to it.
-        statutory = rt.brokerage + rt.stt + rt.exchange + rt.sebi + rt.stamp + rt.gst
-        charges = round(statutory / 2.0, 2)
+        from intraday.cost_model import entry_leg, exit_leg
+        leg = exit_leg if (side or "").upper() == "SELL" else entry_leg
+        charges = leg(fill, qty, product=product)
     except Exception:
         charges = 0.0
 
@@ -119,7 +136,8 @@ def place(symbol: str, side: str, qty: int, order_type: str,
     mode mix-up is visible rather than hidden in a separate table nobody reads.
     """
     sb = sb or get_supabase()
-    f = simulate_fill(symbol, side, qty, order_type, limit_price, ltp)
+    f = simulate_fill(symbol, side, qty, order_type, limit_price, ltp,
+                      product=product_for(framework))
 
     try:
         sb.table("intraday_broker_log").insert({
@@ -234,8 +252,7 @@ def open_position(symbol: str, qty: int, fill_price: float, setup: dict,
             # uniqueness key now (migration 028), so hardcoding CNC would put an
             # intraday tranche in the swing slot and collide with the core it
             # was meant to sit beside.
-            "product": ("CNC" if (framework or "SWING").upper() == "SWING"
-                        else (cfg("intraday_product", "CNC") or "CNC").upper()),
+            "product": product_for(framework),
             "status": "ACTIVE",
             "entry_date": today_ist().isoformat(),
             "entry_price": fill_price,
