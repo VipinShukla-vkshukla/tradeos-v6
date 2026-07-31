@@ -257,6 +257,15 @@ def open_position(symbol: str, qty: int, fill_price: float, setup: dict,
             "invalidation_note": setup.get("invalidation_note"),
             "strategy": setup.get("strategy"),
             "intraday_strategy": setup.get("strategy") if framework == "INTRADAY" else None,
+            # SECTOR, on every paper row. It was written by the live swing path
+            # and by nothing else, so sector was NULL on all fourteen closed
+            # intraday positions — which makes "did these engines put me in one
+            # sector three times" unanswerable. Six long-only engines producing
+            # a cluster of correlated names is the documented reason the index
+            # gate exists, and the concentration version of that risk could not
+            # even be measured. close_position copies the column through, so
+            # recording it here is what makes the question askable later.
+            "sector": setup.get("sector"),
             "entry_signal_type": setup.get("strategy"),
             "source": "paper",
             # Entry-leg cost. Carried so the close can add the exit leg and

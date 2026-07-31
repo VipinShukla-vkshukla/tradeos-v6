@@ -196,7 +196,14 @@ export default function ControlRoom() {
         {topSectors.length > 0 && (
           <section className="mb-6">
             <h2 className="mb-2 text-[11px] uppercase tracking-wide text-zinc-500">
-              sector rotation · every engine gates on this rank
+              {/* NOT a gate. Nothing in the pipeline refuses a stock for its
+                  sector rank — it is a weighted SCORE input: 5% of final_score
+                  (100/82/64/46/25 by rank band) and up to 6 of 100 points of
+                  validity_score. Saying "gates" invites the belief that a
+                  bottom-ranked sector cannot produce a signal, which is false
+                  and would hide a real concentration. Swing only: the intraday
+                  engines do not read sector strength at all. */}
+              sector rotation · swing scoring input, ~5% of final_score
             </h2>
             <div className="flex gap-2 overflow-x-auto pb-1">
               {topSectors.map((s) => {

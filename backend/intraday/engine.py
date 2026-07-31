@@ -1160,7 +1160,8 @@ class IntradayEngine:
             if f.ok and paper_broker.open_position(
                     sym, qty, f.fill_price,
                     {"stop": d.stop, "target": d.target,
-                     "strategy": c.get("strategy"), "entry_rationale": rationale},
+                     "strategy": c.get("strategy"), "entry_rationale": rationale,
+                     "sector": c.get("sector")},
                     "SWING", self.sb, charges=f.charges):
                 self._entries_taken += 1
                 self.load_state()
@@ -1294,6 +1295,11 @@ class IntradayEngine:
             # Event gate BEFORE cost: a results-day setup is not a pricing
             # question, and computing a position size for a trade that must not
             # be taken wastes the check that matters.
+            # Carry the sector onto the setup. ctx has it, the setup does not,
+            # and _maybe_open_paper never sees ctx — which is why sector was
+            # NULL on every intraday position ever opened.
+            best.meta["sector"] = ctx.sector
+
             if self._news is not None:
                 ev = self._news.check(best.symbol, ctx.sector)
                 if not ev.allow:
@@ -1570,7 +1576,8 @@ class IntradayEngine:
             paper_broker.open_position(
                 st.symbol, qty, f.fill_price,
                 {"stop": st.stop, "target": st.target, "strategy": st.strategy,
-                 "invalidation_level": inv_level, "invalidation_note": inv_note},
+                 "invalidation_level": inv_level, "invalidation_note": inv_note,
+                 "sector": st.meta.get("sector")},
                 "INTRADAY", self.sb, charges=f.charges)
             # Reload so the same setup cannot be opened twice in one session and
             # so the exit engine sees it on the very next cycle.

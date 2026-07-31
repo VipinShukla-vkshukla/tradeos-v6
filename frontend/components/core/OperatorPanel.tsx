@@ -311,8 +311,6 @@ export function OperatorPanel() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-  
         {/* ── RISK EXPOSURE ─────────────────────────────────────────────────
             Every control below caps position VALUE. None of them caps RISK,
             and the two are not the same number: risk is value x stop width,
@@ -326,8 +324,19 @@ export function OperatorPanel() {
             sizes a position (portfolio_constraints.py sizes on
             risk_budget // risk_per_share) — the caps below are a blunter
             ceiling on top of it. */}
+        {/* Full width, like the kill switch above it. It was the first child of
+            a two-column grid whose other children were the swing and intraday
+            cards — three items in two columns, so it sat BESIDE swing and
+            pushed intraday onto its own row. The two books then could not be
+            read against each other, which is the whole point of showing them.
+            Risk exposure describes BOTH books, so it spans both columns. */}
         <RiskExposure cfg={cfg} />
-        {framework('swing', 'Swing')}
+
+        {/* The two books, side by side and equal width, so the same control
+            lines up across frameworks and a difference is visible rather than
+            remembered. */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
+          {framework('swing', 'Swing')}
           {framework('intraday', 'Intraday')}
         </div>
 
@@ -442,7 +451,9 @@ function RiskExposure({ cfg }: { cfg: Cfg }) {
         varies 5–9% — so one notional cap is a range of risk, not a number. These are the
         rupee figures those settings imply.
       </div>
-      <div className="grid grid-cols-3 gap-2">
+      {/* Stacks on a narrow screen. It is full-width now, so three fixed
+          columns would squeeze the rupee figures on a laptop half-window. */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
         {cells.map(([label, value, hint]) => (
           <div key={label} className="rounded border border-border/40 p-2">
             <div className="text-[10px] text-muted-foreground">{label}</div>
