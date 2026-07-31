@@ -347,6 +347,43 @@ because intraday noise would otherwise manufacture pivots that are not there.
 To allow reversals for one framework, set `structure_swing_allow_reversal` or
 `structure_intraday_allow_reversal` to 1.
 
+### Which setup gets the slot
+
+Detection is not selection. On a normal day 50+ setups clear every gate and the
+book has room for three, so the question that decides the P&L is *which three*.
+
+Four rules answer it, and all four were added on 31 Jul 2026 after a session
+that took six trades, won one, and only broke even because the winner was large:
+
+**1. Best first, not first-seen first.** Setups are ranked by conviction, ties
+broken by R:R, before any is acted on. Before this, `evaluate_intraday_setups`
+returned them in watch-list order and the slot went to whichever symbol sat
+earlier in the dictionary. On 31 Jul a 0.97-conviction CGPOWER GAP cleared every
+gate at 10:43 and never got a position, because 0.71 and 0.76 setups had taken
+the slots minutes earlier.
+
+**2. The conviction floor rises as the day's budget is spent.** From
+`intraday_min_confidence` (0.55) at a full budget to
+`intraday_min_confidence_scarce` (0.80) once it is gone. Early, a decent setup is
+worth taking; late, the alternative to a mediocre trade is no trade, and no trade
+costs nothing. *This existed but did not work* — it counted orders in
+`intraday_broker_log`, which only LIVE orders write to, so in paper it read zero
+all day and the floor never left 0.55. It now counts positions entered today,
+which reads the same in paper and live.
+
+**3. One failure per name per day.** `intraday_block_reentry_after_loss`. A level
+that has already failed once today has a demonstrated seller at it. On 31 Jul
+ACMESOLAR was stopped out for −1.35R and re-bought two minutes later at the same
+0.57 conviction.
+
+**4. Two caps, not one.** `intraday_max_concurrent` (3) limits open risk at once;
+`intraday_max_new_per_day` (5) limits how many times the system may be wrong
+before it stops for the day. The daily cap previously counted only *currently
+open* positions, so every close freed a slot and it could never bind — 7 entries
+were taken under a cap of 5.
+
+The engines find setups. These four decide which ones are worth your money.
+
 ### Intraday exits
 
 `intraday/exit_policy.py`, in order:

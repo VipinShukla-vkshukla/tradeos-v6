@@ -600,13 +600,53 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
             # not at all: a position that cannot be recorded as closed stays
             # open forever in the book, and losing one optional column is
             # trivially recoverable next to that.
-            if "charges" not in str(e):
+            if "23505" in str(e):
+                # closed_positions is unique on (symbol, entry_date, exit_date),
+                # so a symbol entered AND closed twice in one day cannot record
+                # its second round trip. The insert failed, the delete below
+                # never ran, and the position stayed open — so the exit fired
+                # again 15s later, and again, forever. ZEEL did this 23 times on
+                # 31 Jul and was still open at the close.
+                #
+                # Fold the second leg into the existing row rather than dropping
+                # it. Same symbol, same day, same session: the aggregate is the
+                # honest outcome, and an aggregated trade is far better than a
+                # phantom position the square-off can never clear.
+                prior = (sb.table("closed_positions").select("*")
+                         .eq("symbol", sym).eq("entry_date", closed.get("entry_date"))
+                         .eq("exit_date", closed.get("exit_date")).execute().data or [])
+                if not prior:
+                    raise
+                p0 = prior[0]
+                merged = {
+                    "realized_pnl": float(p0.get("realized_pnl") or 0) + float(closed.get("realized_pnl") or 0),
+                    "charges":      float(p0.get("charges") or 0) + float(closed.get("charges") or 0),
+                    "actual_qty":   int(p0.get("actual_qty") or 0) + int(closed.get("actual_qty") or 0),
+                    "exit_reason":  "MULTI_LEG",
+                    "exit_reason_detail": (f"{p0.get('exit_reason')} then "
+                                           f"{closed.get('exit_reason')} — two round trips "
+                                           f"in {sym} on {closed.get('exit_date')}, aggregated"),
+                }
+                sb.table("closed_positions").update(merged).eq("id", p0["id"]).execute()
+                logger.warning(f"  {sym}: second round trip today folded into the "
+                               f"existing outcome row (total P&L "
+                               f"Rs.{merged['realized_pnl']:+.2f}). Re-entry into a "
+                               f"name that already traded today is blocked by "
+                               f"intraday_block_reentry_after_loss.")
+            elif "charges" in str(e):
+                logger.warning("  closed_positions.charges is missing — apply "
+                               "migration 025. Closing without the cost figure.")
+                sb.table("closed_positions").insert(
+                    {k: v for k, v in closed.items() if k != "charges"}).execute()
+            else:
                 raise
-            logger.warning("  closed_positions.charges is missing — apply "
-                           "migration 025. Closing without the cost figure.")
-            sb.table("closed_positions").insert(
-                {k: v for k, v in closed.items() if k != "charges"}).execute()
-        sb.table("open_positions").delete().eq("symbol", sym).execute()
+        # KEYED ON (symbol, product), like every other write since migration 028.
+        # This deleted on symbol alone, so closing the intraday MIS tranche of a
+        # name would also delete the swing CNC position in it — the book would
+        # lose a live holding with a real GTT behind it, and reconcile would then
+        # "discover" it in Kite and re-open it with a guessed stop.
+        (sb.table("open_positions").delete()
+           .eq("symbol", sym).eq("product", pos.get("product") or "CNC").execute())
         icon = "🟢" if realized_pnl > 0 else "🔴"
         logger.success(
             f"  {icon} CLOSED {sym:<12} @ Rs.{exit_price:.2f}  "

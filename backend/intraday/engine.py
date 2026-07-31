@@ -344,6 +344,48 @@ class IntradayEngine:
         elif not left:
             logger.info(f"     daily entry budget spent ({taken}/{mx})")
 
+    def _failed_today(self) -> set:
+        """
+        Intraday names that already lost money today.
+
+        WHY THIS EXISTS
+        ---------------
+        Nothing stopped the engine re-entering a name it had just been stopped
+        out of. `_held_by_framework` only asks whether a symbol is held RIGHT
+        NOW, and the capacity gate counts only positions currently open — so the
+        moment a loser closed, its slot reopened and the same symbol was free to
+        come straight back through the same engine on the same thesis.
+
+        On 31 Jul that is exactly what happened. ACMESOLAR was stopped out for
+        -1.35R and re-bought two minutes later at the same 0.57 conviction; ZEEL
+        was invalidated and re-entered. Seven entries were taken against a cap of
+        five because re-entries did not count against anything.
+
+        A level that has already failed once today is not the same setup at a
+        discount — it is a level with a demonstrated seller at it, and the second
+        attempt is the one professionals stand down from. The cost is real and
+        one-sided: a genuine second breakout is missed, which costs opportunity;
+        a revenge re-entry is taken, which costs money.
+
+        Cached for the session because closed_positions only grows and the
+        answer cannot go backwards.
+        """
+        today = str(today_ist())
+        if getattr(self, "_failed_day", None) != today:
+            self._failed_day, self._failed_set = today, set()
+        try:
+            rows = (self.sb.table("closed_positions")
+                    .select("symbol,r_multiple,realized_pnl")
+                    .eq("framework", "INTRADAY").eq("entry_date", today)
+                    .execute().data or [])
+            self._failed_set = {r["symbol"] for r in rows
+                                if float(r.get("r_multiple") or r.get("realized_pnl") or 0) < 0}
+        except Exception as e:
+            # Keep whatever is already known rather than returning an empty set:
+            # forgetting a loser is the failure mode this guard exists to stop.
+            logger.debug(f"  failed-today lookup failed, keeping cached set: {e}")
+        return self._failed_set
+
     def _held_by_framework(self, symbol: str, framework: str) -> bool:
         """
         Does THIS framework already hold this symbol, under any product?
@@ -388,15 +430,52 @@ class IntradayEngine:
         """
         base   = cfg_float("intraday_min_confidence", 0.55)
         scarce = cfg_float("intraday_min_confidence_scarce", 0.80)
-        try:
-            from execution.gates import max_orders_per_day
-            from execution.order_manager import _today_totals
-            n, _mine, _all = _today_totals(self.sb, "INTRADAY")
-            cap = max(1, max_orders_per_day("INTRADAY"))
-            used = min(1.0, n / cap)
-        except Exception:
-            used = 0.0
+        used = min(1.0, self._entries_today() / max(1, self._entry_cap()))
         return round(base + (scarce - base) * used, 3)
+
+    def _entry_cap(self) -> int:
+        from execution.gates import max_orders_per_day
+        try:
+            return max(1, max_orders_per_day("INTRADAY"))
+        except Exception:
+            return 5
+
+    def _entries_today(self) -> int:
+        """
+        Intraday positions ENTERED today, open or already closed.
+
+        This used to read intraday_broker_log via _today_totals, which only LIVE
+        orders write to. Intraday runs in PAPER, so the count was 0 on every
+        cycle of every session and the rising floor never rose — it sat at the
+        0.55 base from 09:15 to 15:15. That is why a 0.57 VWR was entered at
+        13:40 on 31 Jul with most of the day's budget already spent, while a
+        0.97 GAP at 10:43 got nothing.
+
+        Counting POSITIONS rather than orders is also the more honest measure of
+        "budget spent": an order that never became a position consumed nothing,
+        and a closed position still used its slot. It reads the same in paper and
+        live, which is the point — a simulation whose gates behave differently
+        from the live ones is measuring a system nobody will run.
+        """
+        try:
+            # str(): today_ist() returns a date, and comparing a date to the
+            # sliced string form of entry_date is silently always False — the
+            # same zero-by-accident this function exists to fix.
+            today = str(today_ist())
+            n = len([p for p in self.positions
+                     if (p.get("framework") or "").upper() == "INTRADAY"
+                     and str(p.get("entry_date") or "")[:10] == today])
+            closed = (self.sb.table("closed_positions")
+                      .select("id", count="exact")
+                      .eq("framework", "INTRADAY")
+                      .eq("entry_date", today).execute())
+            return n + int(closed.count or 0)
+        except Exception as e:
+            # Fail to the STRICT side. An unknown count previously meant used=0,
+            # i.e. the lowest floor of the day — a query failure quietly made the
+            # system take worse trades. Assume the budget is spent instead.
+            logger.debug(f"  entries-today count failed, assuming budget spent: {e}")
+            return self._entry_cap()
 
     def context_symbols(self) -> list[str]:
         """
@@ -631,9 +710,17 @@ class IntradayEngine:
         # Whitelist rather than blacklist: an action not named here does not
         # place an order. A future action added to the exit policy should have to
         # opt IN to spending money.
+        # EXIT_DETERIORATION belongs here and was missing. exit_rules.py
+        # computes it, position_lifecycle routes it and alerts on it, and the
+        # dashboard advertises it as a capability — but the daemon silently
+        # dropped it, so the one exit designed to protect a PROFITABLE position
+        # whose thesis broke was the one exit that needed a human to act. That
+        # is the opposite of what it is for: it exists to beat the trail, and a
+        # rule that only fires when you happen to be watching cannot.
         action = (d.get("action") or "").upper()
         if action not in ("EXIT_STOP", "EXIT_TARGET", "EXIT_TIME",
-                          "EXIT_INVALIDATED", "EXIT_SQUAREOFF", "BOOK_PARTIAL"):
+                          "EXIT_INVALIDATED", "EXIT_SQUAREOFF",
+                          "EXIT_DETERIORATION", "BOOK_PARTIAL"):
             return
 
         qty = int(d.get("book_qty") or 0) or int(p.get("current_qty") or p.get("actual_qty") or 0)
@@ -1102,6 +1189,16 @@ class IntradayEngine:
             if not best:
                 continue
 
+            # One failure per name per day. Recorded rather than skipped
+            # silently, so the weekly review can measure what this rule cost as
+            # well as what it saved — a guard nobody can audit is a guess.
+            if cfg_bool("intraday_block_reentry_after_loss", True) \
+                    and sym in self._failed_today():
+                self._record_setup(best, st.phase, 0.0, "BLOCKED_REENTRY", 0)
+                logger.info(f"      {sym}: {best.strategy} conf {best.confidence:.2f} "
+                            f"— already lost money in this name today, standing down")
+                continue
+
             # Event gate BEFORE cost: a results-day setup is not a pricing
             # question, and computing a position size for a trade that must not
             # be taken wastes the check that matters.
@@ -1189,6 +1286,24 @@ class IntradayEngine:
 
             out.append({"setup": best, "qty": qty, "cost_pct": rt.pct_of_position,
                         "market": mc, "phase": st.phase, "cost_note": why})
+
+        # BEST FIRST, not first-seen first.
+        #
+        # This loop walks self._contexts, a dict, so `out` came back in watch
+        # list order and act_on_setups consumed it in that order until the book
+        # was full. Whichever symbol happened to sit earlier in the dict won the
+        # slot — the ranking inside a symbol (evaluate_all picks its best
+        # engine) had no equivalent ACROSS symbols.
+        #
+        # On 31 Jul four setups cleared every gate in the same minute and the
+        # slot went to the alphabetically luckier one. Sorting costs nothing and
+        # is the whole difference between "take five setups" and "take the best
+        # five setups available at the moment of choosing".
+        #
+        # Tie-break on R:R: at equal conviction the trade that pays more for the
+        # same risk is strictly better, and a stable second key also stops two
+        # equally-rated setups from swapping places between ticks.
+        out.sort(key=lambda s: (s["setup"].confidence, s["setup"].rr), reverse=True)
         return out
 
     def _intraday_alert_worthy(self, st) -> bool:
@@ -1314,9 +1429,26 @@ class IntradayEngine:
         # intraday_max_orders_per_day, which caps ORDERS — the same distinction
         # swing needed, and for the same reason: one is a safety rail against a
         # runaway loop, the other is a decision about concentration.
-        open_today = len([p for p in self.positions
-                          if (p.get("framework") or "").upper() == "INTRADAY"])
-        if open_today >= cfg_int("intraday_max_new_per_day", 4):
+        # TWO limits, and they are not the same question.
+        #
+        # `intraday_max_concurrent` is about attention and correlation: how many
+        # open intraday risks at once. `intraday_max_new_per_day` is about churn:
+        # how many times the system is allowed to be wrong before it stops for
+        # the day.
+        #
+        # This checked only currently-OPEN positions against max_new_per_day, so
+        # every close freed a slot and the "daily" cap could never bind. On
+        # 31 Jul it permitted 7 entries under a cap of 4 — and since 5 of those
+        # 7 lost, the cap that was supposed to stop the bleeding was the one
+        # measuring the wrong thing.
+        open_now = len([p for p in self.positions
+                        if (p.get("framework") or "").upper() == "INTRADAY"])
+        if open_now >= cfg_int("intraday_max_concurrent",
+                               cfg_int("intraday_max_new_per_day", 4)):
+            return
+        if self._entries_today() >= cfg_int("intraday_max_new_per_day", 4):
+            logger.info(f"  {st.symbol}: intraday daily entry budget spent "
+                        f"({self._entries_today()}) — no more new risk today")
             return
         if not is_paper("INTRADAY"):
             if not cfg_bool("intraday_live_auto_entry", False):

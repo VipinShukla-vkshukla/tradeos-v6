@@ -185,12 +185,38 @@ export async function GET() {
             ? 'Unmanaged: the exit policy falls back to a guessed 5% risk. Run: python -m control.position_lifecycle --reconcile-only'
             : undefined });
 
-    const noSignal = P.filter((p) => !p.signal_id);
-    add({ id: 'pos_attrib', group: 'Positions', label: 'Positions linked to a signal',
-          severity: P.length === 0 ? 'INFO' : noSignal.length === 0 ? 'OK' : 'WARN',
-          value: `${P.length - noSignal.length}/${P.length}`, expected: 'all',
+    // SWING ONLY. signal_id points at signal_log, which the evening pipeline
+    // writes — intraday positions come from intraday_setups and have no row to
+    // point at, so counting them made this warn on every day an intraday
+    // position was open, i.e. permanently. A check that cannot reach OK teaches
+    // you to scroll past the panel, which is when it stops protecting anything.
+    // Intraday attribution is real, it just lives elsewhere; it is checked below.
+    const SW = P.filter((p) => (p.framework ?? 'SWING').toUpperCase() === 'SWING');
+    const noSignal = SW.filter((p) => !p.signal_id);
+    add({ id: 'pos_attrib', group: 'Positions', label: 'Swing positions linked to a signal',
+          severity: SW.length === 0 ? 'INFO' : noSignal.length === 0 ? 'OK' : 'WARN',
+          value: `${SW.length - noSignal.length}/${SW.length}`, expected: 'all',
           detail: noSignal.length ? noSignal.map((p) => p.symbol).join(', ') : 'all attributed',
-          fix: noSignal.length ? 'Unlinked positions produce outcomes the Brain cannot learn from.' : undefined });
+          fix: noSignal.length
+            ? 'A swing position with no signal_id produces an outcome the Brain cannot trace back to the plan that caused it.'
+            : undefined });
+
+    // The intraday equivalent: every open intraday position should have a
+    // detection row behind it. Same guarantee, different table.
+    const ID = P.filter((p) => (p.framework ?? '').toUpperCase() === 'INTRADAY');
+    if (ID.length) {
+      const { data: dets } = await sb.from('intraday_setups')
+        .select('symbol').eq('trade_date', tradeDate).eq('cost_verdict', 'TAKEN');
+      const seen = new Set((dets ?? []).map((d) => d.symbol as string));
+      const orphan = ID.filter((p) => !seen.has(p.symbol as string));
+      add({ id: 'pos_attrib_intraday', group: 'Positions', label: 'Intraday positions linked to a detection',
+            severity: orphan.length === 0 ? 'OK' : 'WARN',
+            value: `${ID.length - orphan.length}/${ID.length}`, expected: 'all',
+            detail: orphan.length ? orphan.map((p) => p.symbol).join(', ') : 'all attributed to intraday_setups',
+            fix: orphan.length
+              ? 'An intraday position with no detection row cannot be scored by outcomes.resolve_day, so its engine never gets credit or blame.'
+              : undefined });
+    }
 
     // ═══ GROUP: ATTRIBUTION ═════════════════════════════════════════════════
     const { count: closedTotal } = await sb.from('closed_positions').select('id', { count: 'exact', head: true });
