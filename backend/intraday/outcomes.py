@@ -42,18 +42,30 @@ from loguru import logger
 from config import IST, get_supabase, cfg, today_ist
 
 
-def _bars_after(kite, token: int, day: date, after: datetime, interval: str):
+def _session_bars(kite, token: int, day: date, interval: str) -> list:
+    """
+    Every bar for one symbol on one day. ONE broker call, cached by the caller.
+
+    This used to be `_bars_after`, called once per SETUP. A session routinely
+    produces several setups on the same symbol — 236 detections over 13 symbols
+    on 28 July — so resolving that day meant 236 rate-limited historical_data
+    calls to fetch the same 13 series over and over. Kite allows about three a
+    second, so the replay took minutes and was the most likely thing to fail
+    part-way and leave the day half-scored.
+
+    Fetch once per symbol, filter per setup in memory.
+    """
     try:
         raw = kite.historical_data(token, day, day, interval) or []
-    except Exception:
+    except Exception as e:
+        logger.debug(f"  bars unavailable for token {token} on {day}: {e}")
         return []
     out = []
     for b in raw:
         ts = b["date"]
         if ts.tzinfo is None:
             ts = IST.localize(ts)
-        if ts >= after:
-            out.append(b)
+        out.append({**b, "date": ts})
     return out
 
 
@@ -97,6 +109,7 @@ def resolve_day(trade_date: str | None = None, sb=None) -> dict:
 
     tally = {"TARGET": 0, "STOP": 0, "TIMEOUT": 0, "UNKNOWN": 0}
     resolved = 0
+    bar_cache: dict[str, list] = {}
 
     for r in rows:
         sym = r["symbol"]
@@ -109,7 +122,9 @@ def resolve_day(trade_date: str | None = None, sb=None) -> dict:
         except Exception:
             after = IST.localize(datetime.combine(day, datetime.min.time()))
 
-        bars = _bars_after(kite, t, day, after, interval)
+        if sym not in bar_cache:
+            bar_cache[sym] = _session_bars(kite, t, day, interval)
+        bars = [b for b in bar_cache[sym] if b["date"] >= after]
         if not bars:
             tally["UNKNOWN"] += 1
             continue
@@ -153,11 +168,79 @@ def resolve_day(trade_date: str | None = None, sb=None) -> dict:
             logger.debug(f"  outcomes: update failed for {sym}: {e}")
 
     logger.success(
-        f"  outcomes {d}: {resolved} resolved — "
-        f"{tally['TARGET']} target, {tally['STOP']} stop, {tally['TIMEOUT']} timeout"
+        f"  outcomes {d}: {resolved} resolved from {len(bar_cache)} symbol "
+        f"fetch(es) — {tally['TARGET']} target, {tally['STOP']} stop, "
+        f"{tally['TIMEOUT']} timeout"
         + (f", {tally['UNKNOWN']} unknown" if tally["UNKNOWN"] else "")
     )
     return {"resolved": resolved, **tally}
+
+
+def unresolved_days(sb=None, days: int = 30) -> list[tuple[str, int]]:
+    """
+    Past sessions that still carry unscored detections. Newest first.
+
+    Today is excluded: its setups are legitimately unresolved until the close,
+    and reporting them as a gap would make the health check cry wolf every
+    single trading day — which is how a real warning stops being read.
+    """
+    sb = sb or get_supabase()
+    since = (today_ist() - timedelta(days=days)).isoformat()
+    today = today_ist().isoformat()
+    rows = (sb.table("intraday_setups").select("trade_date")
+              .gte("trade_date", since).is_("outcome", "null")
+              .execute().data or [])
+    tally: dict[str, int] = {}
+    for r in rows:
+        d = str(r.get("trade_date"))
+        if d and d != today:
+            tally[d] = tally.get(d, 0) + 1
+    return sorted(tally.items(), reverse=True)
+
+
+def backfill(days: int = 30, sb=None) -> dict:
+    """
+    Resolve every past session that was left unscored. Idempotent.
+
+    WHY THIS HAS TO EXIST SEPARATELY FROM resolve_day
+    -------------------------------------------------
+    resolve_day() defaults to TODAY and is called from exactly one place: the
+    `finally` block of the intraday daemon, and only when that daemon held the
+    lease. So a day is scored if and only if the daemon started, acquired the
+    lease, and exited cleanly on that specific day. Miss any of those — a crash,
+    a hard kill, a laptop lid, the lease held by the other machine — and the
+    day is skipped, and nothing ever revisits it. The setups sit with a
+    cost_verdict and a NULL outcome forever.
+
+    That is not hypothetical. On 31 July the table held 460 detections and 241
+    of them — all of 28 and 29 July — were unresolved and unreachable, because
+    resolve_day had only ever run for the day it was invoked on. The engines
+    that fire in the first hour are hit hardest, since a daemon started late
+    misses the whole ORB and GAP window and then never scores it.
+
+    The cost of that is not visible anywhere. weekly_review needs 20 resolved
+    outcomes before it will judge an engine at all, so a starved loop does not
+    report a problem — it reports "only 8 outcomes, below the 20 needed", which
+    reads like patience rather than breakage. This is the check that makes the
+    absence visible, and tools/health.py fails on it.
+    """
+    sb = sb or get_supabase()
+    pending = unresolved_days(sb, days)
+    if not pending:
+        logger.success("  outcomes: no unresolved past sessions")
+        return {"days": 0, "resolved": 0}
+
+    logger.warning(f"  outcomes: {len(pending)} past session(s) never scored — "
+                   f"{sum(n for _, n in pending)} detection(s) the learning loop "
+                   f"has never seen")
+    total = 0
+    for d, n in pending:
+        logger.info(f"    backfilling {d} ({n} unresolved)")
+        try:
+            total += resolve_day(d, sb=sb).get("resolved", 0)
+        except Exception as e:
+            logger.warning(f"    {d} could not be backfilled — {e}")
+    return {"days": len(pending), "resolved": total}
 
 
 def engine_scorecard(days: int = 30, sb=None) -> list[dict]:
@@ -200,11 +283,16 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Resolve intraday setup outcomes")
     ap.add_argument("--date", help="YYYY-MM-DD, defaults to today")
     ap.add_argument("--scorecard", action="store_true", help="print per-engine stats")
+    ap.add_argument("--backfill", action="store_true",
+                    help="resolve every past session left unscored")
+    ap.add_argument("--days", type=int, default=30, help="backfill window")
     a = ap.parse_args()
     if a.scorecard:
         for row in engine_scorecard():
             logger.info(f"  {row['strategy']:<5} setups {row['setups']:>4} "
                         f"taken {row['taken']:>3}  hit {row['hit_rate']:>5.1f}%  "
                         f"avg net {row['avg_net_pct']:+.3f}%")
+    elif a.backfill:
+        backfill(a.days)
     else:
         resolve_day(a.date)

@@ -567,10 +567,74 @@ class IntradayEngine:
             else:
                 d = evaluate_exit(p, float(ltp), held, self._policy)
 
+            # LIVE METRICS ON EVERY CYCLE, INCLUDING WHEN NOTHING IS TO BE DONE.
+            #
+            # This loop only ever wrote to a position when it was ACTING on it —
+            # a partial, an exit, a trail. So high_water_mark stayed at the entry
+            # price for the life of the trade and max_favorable_excursion was
+            # never written at all. close_position() copies those columns
+            # through, which is why all fourteen closed intraday positions carry
+            # NULL for both.
+            #
+            # The cost is that the intraday book cannot be measured the way the
+            # swing book can. "Median capture ratio 3%" and "24 of 28 losers had
+            # been in profit" — the two measurements that rebuilt the swing exit
+            # ladder — are both computed from MFE, and neither can be asked of
+            # intraday. A book that cannot be measured cannot be improved, and
+            # this one is PAPER precisely so that it can be.
+            #
+            # HOLD is where most of the excursion happens, so writing only on
+            # action would miss the peak by construction.
+            self._track_excursion(p, float(ltp))
+
             if d["action"] == "HOLD":
                 continue
             actions.append({"position": p, "decision": d, "ltp": float(ltp)})
         return actions
+
+    def _track_excursion(self, p: dict, ltp: float) -> None:
+        """Keep high_water_mark, MFE and MAE current. Cheap, and only on change."""
+        try:
+            entry = float(p.get("entry_price") or 0)
+            if not entry or not ltp:
+                return
+            pct = (ltp - entry) / entry * 100.0
+            hwm = max(float(p.get("high_water_mark") or entry), ltp)
+            mfe = max(float(p.get("max_favorable_excursion") or 0.0), pct)
+            mae = min(float(p.get("max_adverse_excursion") or 0.0), pct)
+
+            # Only write when something actually moved, so a quiet position does
+            # not produce a database round trip every 15 seconds per name.
+            if (abs(hwm - float(p.get("high_water_mark") or 0)) < 0.005
+                    and abs(mfe - float(p.get("max_favorable_excursion") or 0)) < 0.005
+                    and abs(mae - float(p.get("max_adverse_excursion") or 0)) < 0.005):
+                return
+
+            upd = {"current_price": round(ltp, 2),
+                   "high_water_mark": round(hwm, 2),
+                   "max_favorable_excursion": round(mfe, 3),
+                   "max_adverse_excursion": round(mae, 3),
+                   "pnl_pct": round(pct, 3)}
+            self._update_position(p, upd)
+            p.update(upd)
+        except Exception as e:
+            logger.debug(f"  {p.get('symbol')}: excursion tracking skipped — {e}")
+
+    def _update_position(self, p: dict, upd: dict) -> None:
+        """
+        Update ONE position row, keyed on (symbol, product).
+
+        open_positions is unique on the pair since migration 028. Matching on
+        symbol alone writes this tranche's price, stop and excursion onto the
+        other one when the same name is held CNC by swing and MIS by intraday —
+        the exact corruption the composite key exists to prevent, and the reason
+        DESIGN_NOTES sequences the two-book capability behind clean single-book
+        operation.
+        """
+        q = self.sb.table("open_positions").update(upd).eq("symbol", p["symbol"])
+        if p.get("product"):
+            q = q.eq("product", p["product"])
+        q.eq("status", "ACTIVE").execute()
 
     def evaluate_candidates(self, prices: dict[str, float]) -> list[dict]:
         """Run the shared entry decision against live prices."""
@@ -665,11 +729,18 @@ class IntradayEngine:
             # the GTT sync has the new intended stop to push to the broker.
             if d["action"] == "TRAIL_SL" and d.get("new_sl"):
                 try:
-                    self.sb.table("open_positions").update({
-                        "active_sl": d["new_sl"], "trail_activated": True,
-                        "updated_at": datetime.now(IST).isoformat(),
-                    }).eq("symbol", sym).execute()
-                    p["active_sl"] = d["new_sl"]
+                    upd = {"active_sl": d["new_sl"],
+                           "updated_at": datetime.now(IST).isoformat()}
+                    # BREAKEVEN is not a trail. trail_activated flips the
+                    # stop-breach label to TRAIL_SL_HIT, and recording a
+                    # breakeven stop as a trailing one merges two different
+                    # rules into one unreadable bucket.
+                    if d.get("reason") == "BREAKEVEN":
+                        upd["breakeven_moved"] = True
+                    else:
+                        upd["trail_activated"] = True
+                    self._update_position(p, upd)
+                    p.update(upd)
                 except Exception as e:
                     logger.warning(f"  engine: trail persist failed for {sym} — {e}")
 
@@ -717,10 +788,22 @@ class IntradayEngine:
         # whose thesis broke was the one exit that needed a human to act. That
         # is the opposite of what it is for: it exists to beat the trail, and a
         # rule that only fires when you happen to be watching cannot.
+        # EXIT_GIVEBACK and EXIT_STALL are here because position_lifecycle's own
+        # order-placing branch already acts on them. Leaving them out made the
+        # SAME decision execute or not depending on which process evaluated it —
+        # the pipeline sold, the daemon alerted — and the daemon is the one
+        # running every 15 seconds during market hours, so in practice the two
+        # newest loss-cutting rules would almost never have fired.
+        #
+        # Divergent behaviour between two callers of one decision function is
+        # the exact failure the "import the decision, never reimplement it"
+        # rule exists to prevent; a whitelist that disagrees with the other
+        # caller's whitelist reintroduces it by the back door.
         action = (d.get("action") or "").upper()
         if action not in ("EXIT_STOP", "EXIT_TARGET", "EXIT_TIME",
                           "EXIT_INVALIDATED", "EXIT_SQUAREOFF",
-                          "EXIT_DETERIORATION", "BOOK_PARTIAL"):
+                          "EXIT_DETERIORATION", "EXIT_GIVEBACK", "EXIT_STALL",
+                          "BOOK_PARTIAL"):
             return
 
         qty = int(d.get("book_qty") or 0) or int(p.get("current_qty") or p.get("actual_qty") or 0)
@@ -746,11 +829,20 @@ class IntradayEngine:
             else:
                 left = int(p.get("current_qty") or p.get("actual_qty") or 0) - qty
                 try:
-                    self.sb.table("open_positions").update({
+                    upd = {
                         "current_qty": max(0, left),
                         "partial_booked_qty": int(p.get("partial_booked_qty") or 0) + qty,
                         "partial_booked_price": ltp,
-                    }).eq("symbol", p["symbol"]).execute()
+                    }
+                    # The partial carries the stop to breakeven with it. This was
+                    # dropped on the PAPER path only, so a paper position booked
+                    # half and kept its original stop while the live path moved
+                    # it — the two books were running different exit policies on
+                    # the same decision, which defeats the point of paper.
+                    if d.get("new_sl"):
+                        upd["active_sl"] = d["new_sl"]
+                        upd["breakeven_moved"] = True
+                    self._update_position(p, upd)
                 except Exception as e:
                     logger.warning(f"  paper partial failed for {p['symbol']}: {e}")
             self.load_state()
@@ -793,7 +885,7 @@ class IntradayEngine:
                     if d.get("new_sl"):
                         upd["active_sl"] = d["new_sl"]
                 upd["updated_at"] = datetime.now(IST).isoformat()
-                self.sb.table("open_positions").update(upd).eq("symbol", p["symbol"]).execute()
+                self._update_position(p, upd)
                 self.load_state()
             except Exception as e:
                 # A recorded sale that cannot be persisted is the dangerous case,

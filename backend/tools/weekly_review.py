@@ -49,6 +49,76 @@ from config import get_supabase, today_ist
 # session looks like plenty and is one day of one market regime.
 MIN_SAMPLE = 20
 
+# A verdict also needs the sample to span more than one session. 236 detections
+# from a single Tuesday is one market, one index path, one volatility regime —
+# a large n that carries almost no independent information. Judging an engine on
+# it produces a confident answer about that Tuesday.
+MIN_SESSIONS = 3
+
+
+def dedupe_setups(rows: list) -> list:
+    """
+    One row per real setup, not one row per evaluation tick.
+
+    THE MOST DANGEROUS THING IN THIS FILE BEFORE THIS FUNCTION EXISTED
+    ------------------------------------------------------------------
+    The engine evaluates every symbol every 15 seconds and records a detection
+    each time the setup is still live. So a single setup on a single symbol
+    writes a row over and over until it is taken, invalidated or the level moves
+    away. Measured on the first 460 detections:
+
+        460 rows  ->  97 distinct (session, symbol, engine) setups
+        LALPATHLAB/RNG on 28 Jul alone:  52 rows
+        RKFORGE/PDL:                     43 rows
+        UNIONBANK/VWR:                   42 rows
+
+    Every statistic in this review counted those as independent observations,
+    and none of them are. The consequences were not subtle:
+
+      · MIN_SAMPLE = 20 was satisfied by ONE symbol ticking twenty times. The
+        guard that exists to stop a verdict being formed on a single day's
+        market was being cleared by a single SYMBOL on a single day.
+      · The tradeable population showed a 100% hit rate below 0.55 confidence
+        over "15 outcomes". It was two setups — CONCOR detected fourteen times
+        and GODFRYPHLP once — and it made the conviction floor look actively
+        harmful on the strength of one name that happened to work.
+      · VWR read 68% of 31 tradeable outcomes, comfortably a PROMOTE. Those 31
+        rows are 11 real setups hitting 36%, which is not enough to promote
+        anything.
+
+    A repeated reading of one event is one observation. Keeping the FIRST
+    detection is the honest choice: it is the one an entry would actually have
+    been taken on, since the engine skips a symbol once it holds a position in
+    it, and every later row describes a chance that was already spent.
+    """
+    best: dict[tuple, dict] = {}
+    for r in rows:
+        key = (str(r.get("trade_date")), r.get("symbol"), r.get("strategy"))
+        cur = best.get(key)
+        if cur is None or str(r.get("ts") or "") < str(cur.get("ts") or ""):
+            best[key] = r
+    return list(best.values())
+
+
+def _tradeable_floor() -> float:
+    """
+    The stop distance below which the cost model refuses a setup outright.
+
+    is_worth_taking() rejects any setup whose stop is closer than
+    cost / intraday_cost_stop_ratio. This reads the SAME two config values
+    rather than restating the number, because a floor that is hardcoded here
+    and computed there will disagree the first time either is tuned — and the
+    whole point of this guardrail is that a threshold changed in one place must
+    change how history is read everywhere.
+    """
+    from config import cfg_float
+    from intraday.cost_model import round_trip
+    ratio = cfg_float("intraday_cost_stop_ratio", 0.35)
+    # Cost is essentially flat with size on this account (0.206% from ₹5k to
+    # ₹20k), so a representative position gives the right floor.
+    cost = round_trip(1000.0, 10).pct_of_position
+    return cost / ratio if ratio > 0 else 0.0
+
 # One id per pass, so every proposal from a single review can be read, accepted
 # or rolled back together.
 from datetime import datetime as _dt
@@ -97,56 +167,235 @@ def _propose(sb, kind: str, subject: str, current: str, suggested: str,
         logger.warning(f"  could not record proposal ({subject}): {e}")
 
 
+def _supersede(sb, kind: str, subject: str, keep: str | None, why: str) -> int:
+    """
+    Retire PENDING proposals for this subject that this pass no longer stands by.
+
+    WHY A LEARNING LOOP MUST BE ABLE TO WITHDRAW
+    --------------------------------------------
+    _propose() is idempotent per (kind, subject, proposed_value), so re-running a
+    review restates a proposal rather than duplicating it. What it could not do
+    is take one BACK. A proposal written last week under a configuration that has
+    since changed stayed PENDING forever, sitting in the dashboard next to this
+    week's contradicting one with nothing to say which was current.
+
+    That is not tidiness, it is a live hazard. The first run of the guarded
+    review put "PDL: widen the stop, the engine is not failing" directly beneath
+    a stale "PDL: ACTIVE -> RETIRE" left by the unguarded version — two open
+    recommendations about the same engine pointing in opposite directions, both
+    marked PENDING, both looking equally authoritative. Acting on the wrong one
+    retires a working engine.
+
+    So every pass now withdraws what it no longer believes, with the reason
+    recorded. SUPERSEDED, never deleted: the audit trail is the point, and a
+    proposal that vanishes is one nobody can learn from.
+    """
+    try:
+        q = (sb.table("brain_proposals").select("id,proposed_value")
+               .eq("proposal_type", kind).eq("target_key", subject)
+               .eq("status", "PENDING").eq("source", "weekly_review"))
+        rows = q.execute().data or []
+    except Exception as e:
+        logger.debug(f"  could not scan proposals for {subject}: {e}")
+        return 0
+    n = 0
+    for r in rows:
+        if keep is not None and r.get("proposed_value") == keep:
+            continue
+        try:
+            sb.table("brain_proposals").update({
+                "status": "SUPERSEDED",
+                "rationale": (f"withdrawn by {_RUN_ID}: {why}"),
+            }).eq("id", r["id"]).execute()
+            n += 1
+            logger.info(f"      withdrew a stale proposal for {subject} "
+                        f"({r.get('proposed_value')}) — {why}")
+        except Exception as e:
+            logger.debug(f"  could not supersede proposal {r['id']}: {e}")
+    return n
+
+
 def review_engines(sb, days: int = 14) -> list:
-    """Score every intraday engine on resolved outcomes, and say what to do."""
+    """
+    Score every intraday engine on resolved outcomes, and say what to do.
+
+    JUDGED ONLY ON TRADES THE CURRENT CONFIGURATION WOULD STILL TAKE
+    ----------------------------------------------------------------
+    This is the guardrail that stops the learning loop from destroying working
+    engines, and it was not hypothetical. Measured on the full 460-detection
+    history the moment the outcome backfill made it visible:
+
+        engine   ALL detections        below the cost floor    at/above it
+        VWR      127, 27% hit          96, 14% hit             31, 68% hit
+        PDL       94,  6% hit          94,  6% hit              0,  no sample
+        RNG       61,  0% hit          61,  0% hit              0,  no sample
+        VCE       56,  7% hit          39,  5% hit             17, 12% hit
+        ORB       20,  0% hit           0                      20,  0% hit
+
+    The cost model refuses any setup whose stop is closer than ~0.59% — a rail
+    that landed on 31 July after measuring that a stop inside three times the
+    round trip is not a stop but a fee. EVERY ONE of PDL's 94 detections and all
+    61 of RNG's sit below that floor. They are trades the system can no longer
+    take, and the naive scorecard would have proposed RETIRE for both on the
+    strength of them: retiring two engines for a fault that had already been
+    fixed, on evidence about trades that can never recur.
+
+    The same blindness ran the other way and cost more. VWR reads 27% overall —
+    "keep", unremarkable. On the 31 setups it can actually still take it hits
+    68%, comfortably the best engine in the system. That is a PROMOTE hiding
+    inside a shrug, and it stayed hidden because 96 sub-floor setups were
+    averaged in with it.
+
+    So the population is split, the verdict is formed on the tradeable half, and
+    an engine whose entire sample is untradeable gets "re-measure" rather than a
+    death sentence. Nothing here is thrown away — the excluded half is still
+    printed, because "this engine only ever produces setups the cost model
+    refuses" is itself a finding worth acting on, just not by retiring it.
+    """
     _hdr(f"INTRADAY ENGINES — last {days} days of resolved outcomes")
     since = (today_ist() - timedelta(days=days)).isoformat()
     rows = (sb.table("intraday_setups")
-              .select("strategy,cost_verdict,outcome,outcome_pct,confidence,trade_date")
+              # symbol and ts are REQUIRED by dedupe_setups — the key is
+              # (session, symbol, engine) and the tie-break is the earliest
+              # timestamp. Omitting symbol silently collapses every name on a
+              # day into one row per engine, which understates the sample
+              # instead of overstating it: 460 detections read as 19 setups
+              # rather than the true 97. Both directions are wrong, and a
+              # missing column produces neither an error nor a warning.
+              .select("strategy,cost_verdict,outcome,outcome_pct,confidence,"
+                      "trade_date,risk_pct,symbol,ts")
               .gte("trade_date", since).execute().data or [])
-    done = [r for r in rows if r.get("outcome")]
+    raw_n = len([r for r in rows if r.get("outcome")])
+    done = [r for r in dedupe_setups(rows) if r.get("outcome")]
     if not done:
         logger.info("  no resolved outcomes in the window")
         return []
 
-    by = defaultdict(lambda: {"TARGET": 0, "STOP": 0, "TIMEOUT": 0, "pct": []})
+    floor = _tradeable_floor()
+    logger.info(f"  {raw_n} resolved detections collapse to {len(done)} distinct "
+                f"setups — the engine re-records a live setup every 15s tick, and "
+                f"counting those as separate observations is how one symbol clears "
+                f"a {MIN_SAMPLE}-sample bar on its own")
+    logger.info(f"  cost-model stop floor in force: {floor:.3f}% — setups below it "
+                f"are excluded from the verdict, because the system would refuse "
+                f"them today")
+
+    def _risk(r) -> float:
+        try:
+            return float(r.get("risk_pct") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _tally(rs: list) -> dict:
+        t = sum(1 for r in rs if r["outcome"] == "TARGET")
+        pct = [float(r["outcome_pct"]) for r in rs if r.get("outcome_pct") is not None]
+        return {"n": len(rs), "t": t,
+                "hit": t / len(rs) if rs else 0.0,
+                "avg": sum(pct) / len(pct) if pct else 0.0,
+                "sessions": len({str(r.get("trade_date")) for r in rs})}
+
+    by = defaultdict(list)
     for r in done:
-        b = by[r.get("strategy") or "?"]
-        b[r["outcome"]] = b.get(r["outcome"], 0) + 1
-        if r.get("outcome_pct") is not None:
-            b["pct"].append(float(r["outcome_pct"]))
+        by[r.get("strategy") or "?"].append(r)
 
     cfg = {c["strategy"]: c for c in
            (sb.table("strategy_config").select("strategy,lifecycle,enabled")
               .execute().data or [])}
 
     out = []
-    logger.info(f"  {'engine':<8}{'n':>5}{'TARGET':>8}{'hit':>7}{'avg%':>8}   lifecycle -> proposal")
-    for eng, b in sorted(by.items(), key=lambda kv: -sum(
-            v for k, v in kv[1].items() if k != "pct")):
-        n = b["TARGET"] + b["STOP"] + b["TIMEOUT"]
-        hit = b["TARGET"] / n if n else 0
-        avg = sum(b["pct"]) / len(b["pct"]) if b["pct"] else 0.0
+    logger.info("")
+    logger.info(f"  {'engine':<8}{'all':>6}{'hit':>6}  |{'tradeable':>10}{'hit':>6}"
+                f"{'avg%':>8}{'days':>6}   lifecycle -> proposal")
+    for eng, rs in sorted(by.items(), key=lambda kv: -len(kv[1])):
+        allt = _tally(rs)
+        good = [r for r in rs if _risk(r) >= floor]
+        excl = len(rs) - len(good)
+        g = _tally(good)
         cur = (cfg.get(eng) or {}).get("lifecycle") or "ACTIVE"
 
-        if n < MIN_SAMPLE:
-            verdict, why = "hold", f"only {n} outcomes — below the {MIN_SAMPLE} needed to judge"
-        elif hit < 0.10:
-            verdict, why = "RETIRE", f"{hit:.0%} of {n} reached target over {days}d"
-        elif hit < 0.25:
-            verdict, why = "SHADOW", f"{hit:.0%} of {n} — detects but does not deliver"
-        elif hit >= 0.40 and avg > 0:
-            verdict, why = "PROMOTE", f"{hit:.0%} of {n}, avg {avg:+.2f}%"
+        # ── the verdict, formed only on the tradeable population ────────────
+        if g["n"] == 0:
+            verdict = "hold"
+            why = (f"all {allt['n']} detections had a stop tighter than the "
+                   f"{floor:.2f}% cost floor and would be refused today — there is "
+                   f"no evidence about what this engine does under the current "
+                   f"configuration. Re-measure; do not retire on this")
+        elif g["n"] < MIN_SAMPLE:
+            verdict = "hold"
+            why = (f"only {g['n']} tradeable outcomes ({excl} excluded below the "
+                   f"{floor:.2f}% floor) — below the {MIN_SAMPLE} needed to judge")
+        elif g["sessions"] < MIN_SESSIONS:
+            verdict = "hold"
+            why = (f"{g['n']} tradeable outcomes but from only {g['sessions']} "
+                   f"session(s) — one day is one market, and a threshold moved on "
+                   f"it would be fitted to that day rather than to the edge")
+        elif g["hit"] < 0.10:
+            verdict = "RETIRE"
+            why = (f"{g['hit']:.0%} of {g['n']} tradeable setups reached target over "
+                   f"{g['sessions']} sessions, avg {g['avg']:+.2f}%")
+        elif g["hit"] < 0.25:
+            verdict = "SHADOW"
+            why = (f"{g['hit']:.0%} of {g['n']} tradeable — detects but does not "
+                   f"deliver, avg {g['avg']:+.2f}%")
+        elif g["hit"] >= 0.40 and g["avg"] > 0:
+            verdict = "PROMOTE"
+            why = (f"{g['hit']:.0%} of {g['n']} tradeable setups over "
+                   f"{g['sessions']} sessions, avg {g['avg']:+.2f}%")
         else:
-            verdict, why = "keep", f"{hit:.0%} of {n}, avg {avg:+.2f}%"
+            verdict = "keep"
+            why = f"{g['hit']:.0%} of {g['n']} tradeable, avg {g['avg']:+.2f}%"
 
-        logger.info(f"  {eng:<8}{n:>5}{b['TARGET']:>8}{hit:>6.0%}{avg:>8.2f}   "
-                    f"{cur} -> {verdict}")
+        flag = ""
+        if excl and allt["n"]:
+            flag = f"  [{excl}/{allt['n']} below floor]"
+        logger.info(f"  {eng:<8}{allt['n']:>6}{allt['hit']:>5.0%}  |{g['n']:>10}"
+                    f"{g['hit']:>5.0%}{g['avg']:>8.2f}{g['sessions']:>6}   "
+                    f"{cur} -> {verdict}{flag}")
+
+        # An engine producing nothing but untradeable setups is a real problem —
+        # it burns scan budget and teaches the loop nothing. Say so, as a
+        # parameter proposal, which is what it actually is.
+        if g["n"] == 0 and allt["n"] >= MIN_SAMPLE:
+            _propose(sb, "ENGINE_PARAMETERS", eng, f"stops below {floor:.2f}%",
+                     "widen the stop or the anchor",
+                     (f"every one of {allt['n']} detections had a stop tighter than "
+                      f"the {floor:.2f}% cost floor, so none could be taken. The "
+                      f"engine is not failing, it is proposing trades the cost "
+                      f"model correctly refuses — the stop placement is what needs "
+                      f"changing, not the lifecycle"), "high")
+
         if verdict in ("RETIRE", "SHADOW", "PROMOTE") and verdict.lower() != cur.lower():
+            _supersede(sb, "ENGINE_LIFECYCLE", eng, keep=verdict,
+                       why=f"this pass proposes {verdict} instead")
             _propose(sb, "ENGINE_LIFECYCLE", eng, cur, verdict, why,
-                     "high" if n >= MIN_SAMPLE * 2 else "medium")
+                     "high" if g["n"] >= MIN_SAMPLE * 2 else "medium")
             out.append((eng, verdict, why))
+        else:
+            # No lifecycle change is warranted. Anything still open proposing
+            # one was written on evidence this pass has re-read and rejected —
+            # most importantly the RETIRE verdicts the unguarded review produced
+            # for engines whose entire sample sits below the cost floor.
+            _supersede(sb, "ENGINE_LIFECYCLE", eng, keep=None,
+                       why=(f"re-measured on the tradeable population: {why}"))
     return out
+
+
+# Gates whose refusal is arithmetic rather than judgement, and which must
+# therefore never be proposed for loosening no matter what the sample says.
+#
+# REJECTED_COST is the one that matters. It declines a setup when the target
+# does not clear the round trip by the keep-ratio, or when the stop is inside
+# ~3x the friction. Those are not opinions about the market that evidence can
+# overturn — they are statements about ₹20 brokerage, 0.025% STT and stamp duty,
+# and they are true whether or not a particular refused setup happened to reach
+# its target. A refused setup that "would have worked" gross may still have lost
+# money net, which is precisely the confusion the cost model exists to remove.
+#
+# Loosening it would also be self-justifying: admit tighter stops, and the newly
+# admitted population reaches target more often per unit of stop distance while
+# losing money after costs. The measured floor is the opposite lesson — setups
+# at or above the floor hit 55%, those below it 8%.
+_ARITHMETIC_GATES = {"REJECTED_COST"}
 
 
 def review_gates(sb, days: int = 14) -> list:
@@ -156,41 +405,91 @@ def review_gates(sb, days: int = 14) -> list:
     A gate that declines setups which would have worked is costing money
     silently — there is no losing trade to notice, only the absence of a winning
     one. This is the only place that absence becomes visible.
+
+    THREE GUARDRAILS, EACH FOR A DIFFERENT WAY THIS GOES WRONG
+    ---------------------------------------------------------
+    1. Compare like with like. The taken population is, by construction, the one
+       that already cleared the cost floor; the refused population is mostly
+       below it. Comparing the two raw is comparing a filtered sample against an
+       unfiltered one, and the gap that produces is an artefact of the filter,
+       not evidence about the gate.
+    2. Never propose loosening an arithmetic gate. See _ARITHMETIC_GATES.
+    3. Loosening is a ONE-WAY DOOR toward more risk and gets a higher bar than
+       tightening: more sample, more sessions, and a margin wide enough that it
+       is not a run of luck. Tightening costs opportunity, which is recoverable;
+       loosening costs money, which is not.
     """
     _hdr(f"GATES — did refusing turn out to be correct? ({days}d)")
     since = (today_ist() - timedelta(days=days)).isoformat()
-    rows = (sb.table("intraday_setups").select("cost_verdict,outcome")
+    rows = (sb.table("intraday_setups")
+              # symbol, strategy and ts are the dedupe key — see review_engines.
+              .select("cost_verdict,outcome,trade_date,risk_pct,symbol,strategy,ts")
               .gte("trade_date", since).execute().data or [])
-    done = [r for r in rows if r.get("outcome")]
+    # Same de-duplication as review_engines, for the same reason: a gate that
+    # refused one setup forty times refused one setup.
+    done = [r for r in dedupe_setups(rows) if r.get("outcome")]
     if not done:
         logger.info("  nothing resolved yet")
         return []
 
-    by = defaultdict(lambda: defaultdict(int))
-    for r in done:
-        by[r.get("cost_verdict") or "?"][r["outcome"]] += 1
+    floor = _tradeable_floor()
 
-    taken = by.get("TAKEN", {})
-    base = (taken.get("TARGET", 0) /
-            max(1, sum(taken.values()))) if taken else 0.0
-    logger.info(f"  taken setups reach target {base:.0%} of the time — the bar a "
-                f"refusal has to beat")
+    def _risk(r) -> float:
+        try:
+            return float(r.get("risk_pct") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    # Guardrail 1: everything below is measured on the tradeable population only.
+    tradeable = [r for r in done if _risk(r) >= floor]
+    logger.info(f"  {len(tradeable)} of {len(done)} resolved setups clear the "
+                f"{floor:.2f}% cost floor — the rest are excluded from both sides "
+                f"of the comparison, since the system would refuse them today")
+    if not tradeable:
+        logger.warning("  no tradeable setups in the window — no gate can be judged")
+        return []
+
+    by = defaultdict(list)
+    for r in tradeable:
+        by[r.get("cost_verdict") or "?"].append(r)
+
+    taken = by.get("TAKEN", [])
+    base = (sum(1 for r in taken if r["outcome"] == "TARGET") / len(taken)) if taken else 0.0
+    logger.info(f"  taken setups reach target {base:.0%} of the time (n={len(taken)}) "
+                f"— the bar a refusal has to beat")
 
     out = []
-    for v, o in sorted(by.items()):
+    for v, rs in sorted(by.items()):
         if v == "TAKEN":
             continue
-        n = sum(o.values())
-        hit = o.get("TARGET", 0) / n if n else 0
-        logger.info(f"    {v:<20} {o.get('TARGET',0)}/{n} would have worked ({hit:.0%})")
-        # A gate is wrong when what it refused did BETTER than what was taken.
-        if n >= MIN_SAMPLE and hit > base * 1.2:
-            why = (f"refused {n} setups of which {hit:.0%} reached target, against "
-                   f"{base:.0%} for those taken — this gate is rejecting the good ones")
+        n = len(rs)
+        t = sum(1 for r in rs if r["outcome"] == "TARGET")
+        hit = t / n if n else 0
+        sessions = len({str(r.get("trade_date")) for r in rs})
+        note = "  (arithmetic — never loosened)" if v in _ARITHMETIC_GATES else ""
+        logger.info(f"    {v:<20} {t}/{n} would have worked ({hit:.0%}) "
+                    f"over {sessions} session(s){note}")
+
+        if v in _ARITHMETIC_GATES:
+            continue                                    # guardrail 2
+        # Guardrail 3: a one-way door needs a wider margin and a real sample.
+        if (n >= MIN_SAMPLE * 2 and sessions >= MIN_SESSIONS
+                and hit > max(base * 1.5, base + 0.10)):
+            why = (f"refused {n} tradeable setups across {sessions} sessions, of "
+                   f"which {hit:.0%} reached target against {base:.0%} for those "
+                   f"taken — this gate is rejecting the good ones. Measured only "
+                   f"on setups that clear the {floor:.2f}% cost floor, so the gap "
+                   f"is not an artefact of stop distance")
             _propose(sb, "GATE_TOO_STRICT", v, "as configured", "loosen", why, "high")
             out.append((v, why))
+        elif n >= MIN_SAMPLE and hit > base:
+            logger.info(f"      ↑ refused better than taken, but {n} setups over "
+                        f"{sessions} session(s) is short of the bar for loosening "
+                        f"a gate ({MIN_SAMPLE * 2} over {MIN_SESSIONS}+ sessions, "
+                        f"and >{max(base * 1.5, base + 0.10):.0%}). Watching")
     if not out:
-        logger.info("  every gate declined worse setups than it allowed — none too strict")
+        logger.info("  no gate cleared the bar for loosening — refusals are declining "
+                    "worse setups than they allow, which is their job")
     return out
 
 
@@ -208,8 +507,13 @@ def review_ranking(sb, days: int = 30) -> None:
               .select("symbol,entry_rationale,r_multiple,realized_pnl,exit_date")
               .gte("exit_date", since).execute().data or [])
     scored = []
+    have_rank = have_r = 0
     for r in rows:
         raw = r.get("entry_rationale") or ""
+        if "rank" in raw:
+            have_rank += 1
+        if r.get("r_multiple") is not None:
+            have_r += 1
         if "rank" not in raw or r.get("r_multiple") is None:
             continue
         try:
@@ -218,8 +522,29 @@ def review_ranking(sb, days: int = 30) -> None:
         except Exception:
             continue
     if len(scored) < 6:
-        logger.info(f"  {len(scored)} ranked trades closed — needs ~6 before the "
-                    f"comparison means anything")
+        # SAY WHICH KIND OF NOTHING THIS IS.
+        #
+        # "0 ranked trades closed — needs ~6" was printed every week for months
+        # and read as patience. It was not: close_position() did not carry
+        # entry_rationale into closed_positions at all, so the column was
+        # structurally NULL and the count could never rise no matter how many
+        # trades closed. Distinguishing "few trades" from "the inputs are not
+        # being recorded" is the difference between waiting and being broken,
+        # and only one of those is worth waiting for.
+        logger.info(f"  {len(scored)} ranked trades closed of {len(rows)} in the "
+                    f"window — needs ~6 before the comparison means anything")
+        if rows and not have_rank:
+            logger.warning(
+                f"  none of the {len(rows)} closed trades carries an entry rank. "
+                f"That is not a small sample, it is a missing input — check that "
+                f"entry_rationale is written at entry AND carried through "
+                f"close_position(). Until it is, this review can never produce a "
+                f"verdict on the ranking weights.")
+        elif rows and not have_r:
+            logger.warning(
+                f"  {have_rank} closed trades carry a rank but none carries an "
+                f"r_multiple — planned_stop is missing at entry, so R cannot be "
+                f"computed. The ranking cannot be scored without it.")
         return
     scored.sort(key=lambda x: -x[0])
     half = len(scored) // 2

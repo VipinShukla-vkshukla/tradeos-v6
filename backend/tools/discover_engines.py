@@ -61,7 +61,41 @@ MIN_OCCURRENCES = 6
 MIN_LIFT = 1.5
 
 # What counts as a move worth having caught, net of a 0.21% round trip.
+#
+# A FLOOR, NOT THE THRESHOLD. The threshold itself is derived per run — see
+# _move_threshold. 1.5% was chosen against a general equity universe, but this
+# pass runs over the INTRADAY universe, which the scanner has already filtered
+# for movement (intraday_min_atr_pct is 1.20). Measured on 560 symbol-days of
+# that universe, 45% of them produced a 1.5%+ move.
+#
+# A 45% background makes Pass B structurally incapable of reporting anything: a
+# bucket must beat MIN_LIFT x background = 67% to be named, and almost nothing
+# does, so the pass would run forever and always conclude "not a pattern yet".
+# That is not a quiet failure mode — it is a tool that cannot fail, which this
+# project has now found five times.
 MOVE_PCT = 1.5
+
+# Where the background rate should land for the lift comparison to mean
+# something. Too high and everything is "normal"; too low and the buckets are
+# too sparse to compare.
+TARGET_BACKGROUND = 0.20
+
+
+def _move_threshold(moves: list[float]) -> float:
+    """
+    The move size that makes 'a big move' genuinely uncommon in THIS universe.
+
+    Picked so roughly TARGET_BACKGROUND of symbol-days qualify, floored at
+    MOVE_PCT so it can never drift below what a round trip makes worth having.
+    Derived per run because the universe is re-selected daily and its volatility
+    is not a constant.
+    """
+    if not moves:
+        return MOVE_PCT
+    ordered = sorted(moves)
+    idx = int(len(ordered) * (1.0 - TARGET_BACKGROUND))
+    idx = min(max(idx, 0), len(ordered) - 1)
+    return max(MOVE_PCT, round(ordered[idx], 2))
 
 
 def _hdr(t: str) -> None:
@@ -108,11 +142,40 @@ def refused_but_right(sb, days: int) -> int:
     _hdr(f"A · REFUSED BUT RIGHT — gates that decline winners ({days}d)")
     since = (today_ist() - timedelta(days=days)).isoformat()
     rows = (sb.table("intraday_setups")
-              .select("strategy,cost_verdict,outcome,outcome_pct,phase,confidence")
+              # symbol, trade_date and ts are the de-duplication key. Without
+              # them this pass counted evaluation ticks: LALPATHLAB/RNG wrote 52
+              # rows for ONE setup on 28 July, and MIN_OCCURRENCES = 6 was
+              # cleared eight times over by a single symbol standing still. A
+              # discovery tool that manufactures a "pattern" out of one name
+              # repeating is worse than one that does not run.
+              .select("strategy,cost_verdict,outcome,outcome_pct,phase,confidence,"
+                      "symbol,trade_date,ts,risk_pct")
               .gte("trade_date", since).execute().data or [])
-    done = [r for r in rows if r.get("outcome")]
+    from tools.weekly_review import dedupe_setups, _tradeable_floor
+    raw_n = len([r for r in rows if r.get("outcome")])
+    done = [r for r in dedupe_setups(rows) if r.get("outcome")]
     if not done:
         logger.info("  nothing resolved in the window")
+        return 0
+
+    # Same cost-floor restriction as the weekly review, and for the same reason:
+    # a refused setup that "would have worked" but sits below the stop floor is
+    # not an edge the system can act on — it is a trade it would refuse again
+    # tomorrow, correctly.
+    floor = _tradeable_floor()
+
+    def _risk(r) -> float:
+        try:
+            return float(r.get("risk_pct") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    before = len(done)
+    done = [r for r in done if _risk(r) >= floor]
+    logger.info(f"  {raw_n} resolved detections -> {before} distinct setups -> "
+                f"{len(done)} that clear the {floor:.2f}% cost floor")
+    if not done:
+        logger.info("  nothing tradeable resolved in the window")
         return 0
 
     taken = [r for r in done if r.get("cost_verdict") == "TAKEN"]
@@ -257,6 +320,22 @@ def moved_but_unseen(sb, days: int) -> int:
         "extended > 8% o/50MA": lambda p, m: _f(p.get("dist_sma50")) > 8,
     }
 
+    # Calibrate what counts as a big move against THIS universe, before using
+    # it as a denominator. See _move_threshold.
+    all_moves = []
+    for sym, rows in by_sym.items():
+        if sym not in universe:
+            continue
+        for i in range(1, len(rows)):
+            o, h = _f(rows[i].get("open")), _f(rows[i].get("high"))
+            if o and h:
+                all_moves.append((h - o) / o * 100.0)
+    move_pct = _move_threshold(all_moves)
+    logger.info(f"  a 'big move' here is {move_pct:.2f}%+ — chosen so roughly "
+                f"{TARGET_BACKGROUND:.0%} of this universe's symbol-days qualify "
+                f"(a flat {MOVE_PCT}% caught 45% of them, which leaves no headroom "
+                f"for a {MIN_LIFT}x lift to be reachable)")
+
     # Denominators: every symbol-day, whether or not it moved or was detected.
     tot = defaultdict(int)          # bucket -> all symbol-days
     moved = defaultdict(int)        # bucket -> days a big move followed
@@ -277,7 +356,7 @@ def moved_but_unseen(sb, days: int) -> int:
                  "move": round((h - o) / o * 100.0, 2),
                  "gap": round((o - pc) / pc * 100.0, 2),
                  "closed_strong": c > o}
-            big = m["move"] >= MOVE_PCT
+            big = m["move"] >= move_pct
             unseen = big and sym not in seen.get(m["date"], set())
             for name, fn in feats.items():
                 try:
@@ -291,16 +370,12 @@ def moved_but_unseen(sb, days: int) -> int:
                 if unseen:
                     missed[name].append(m)
 
-    all_days = sum(1 for sym, rows in by_sym.items() if sym in universe
-                   for _ in rows[1:])
-    all_moves = sum(1 for sym, rows in by_sym.items() if sym in universe
-                    for i in range(1, len(rows))
-                    if _f(rows[i].get("open")) and
-                    (_f(rows[i]["high"]) - _f(rows[i]["open"])) /
-                    max(_f(rows[i]["open"]), 1e-9) * 100.0 >= MOVE_PCT)
-    base_rate = all_moves / all_days if all_days else 0.0
-    logger.info(f"  background: {all_moves} of {all_days} symbol-days produced a "
-                f"{MOVE_PCT}%+ move ({base_rate:.0%})")
+    all_days = len(all_moves)
+    n_big = sum(1 for m in all_moves if m >= move_pct)
+    base_rate = n_big / all_days if all_days else 0.0
+    logger.info(f"  background: {n_big} of {all_days} symbol-days produced a "
+                f"{move_pct:.2f}%+ move ({base_rate:.0%}) — a bucket must beat "
+                f"{base_rate * MIN_LIFT:.0%} to be named")
 
     found = 0
     for name in sorted(feats, key=lambda k: -len(missed.get(k, []))):
@@ -316,7 +391,7 @@ def moved_but_unseen(sb, days: int) -> int:
         avg = sum(m["move"] for m in hits) / len(hits)
         found += 1
         why = (f"after '{name}', {rate:.0%} of {n_tot} symbol-days produced a "
-               f"{MOVE_PCT}%+ move against a {base_rate:.0%} background "
+               f"{move_pct:.2f}%+ move against a {base_rate:.0%} background "
                f"({lift:.1f}x lift). {n_miss} of those went undetected by every "
                f"engine, averaging {avg:.2f}% with {strong:.0%} closing strong")
         logger.warning(f"  ! {name:<24} lift {lift:.1f}x  "

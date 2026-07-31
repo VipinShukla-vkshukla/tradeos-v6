@@ -45,6 +45,9 @@ const KEYS = [
   'intraday_max_order_value', 'intraday_max_orders_per_day',
   'intraday_max_notional_per_day', 'intraday_structure_gate',
   'intraday_news_gate_enabled', 'exit_runners_enabled', 'exit_deterioration_enabled',
+  // Risk denominators. Not editable here — they are what the caps above MEAN.
+  'risk_pct_per_trade', 'portfolio_max_total_risk_pct', 'intraday_max_position_pct',
+  'max_position_pct',
 ];
 
 async function writeKey(key: string, value: string, reason: string) {
@@ -309,7 +312,22 @@ export function OperatorPanel() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          {framework('swing', 'Swing')}
+  
+        {/* ── RISK EXPOSURE ─────────────────────────────────────────────────
+            Every control below caps position VALUE. None of them caps RISK,
+            and the two are not the same number: risk is value x stop width,
+            and the stop varies from 5% to 9% across this book. So "Per order
+            4,000" is between 200 and 360 of risk depending on the trade, and
+            nothing on this panel used to say so.
+
+            This strip is READ-ONLY on purpose. It is not another control; it
+            is the translation that makes the controls legible. The per-trade
+            budget it reports is risk_pct_per_trade, which is what actually
+            sizes a position (portfolio_constraints.py sizes on
+            risk_budget // risk_per_share) — the caps below are a blunter
+            ceiling on top of it. */}
+        <RiskExposure cfg={cfg} />
+        {framework('swing', 'Swing')}
           {framework('intraday', 'Intraday')}
         </div>
 
@@ -361,6 +379,84 @@ export function OperatorPanel() {
         </div>
       </div>
     </Panel>
+  );
+}
+
+/**
+ * What the caps above actually put at stake, in rupees.
+ *
+ * Answers the question the panel could not: "risk of 200 a day — where did
+ * that come from?" It comes from risk_pct_per_trade x capital, it is enforced
+ * in the sizing model, and it was invisible here.
+ *
+ * Capital is read from the same NEXT_PUBLIC_TOTAL_CAPITAL the rest of the
+ * dashboard uses, falling back to 20000 so the strip degrades to "approximately
+ * right" rather than blank.
+ */
+function RiskExposure({ cfg }: { cfg: Cfg }) {
+  const num = (k: string, d: number) => {
+    const v = parseFloat(cfg[k] ?? '');
+    return Number.isFinite(v) ? v : d;
+  };
+  const capital = num('__capital__', Number(process.env.NEXT_PUBLIC_TOTAL_CAPITAL) || 20000);
+  const perTradePct = num('risk_pct_per_trade', 1);
+  const heatPct = num('portfolio_max_total_risk_pct', 6);
+  const perTrade = (capital * perTradePct) / 100;
+  const heatCap = (capital * heatPct) / 100;
+
+  // What a day costs if every cap is hit. The stricter of orders/day and new
+  // positions/day binds, then the notional cap on top.
+  const daily = (fw: 'swing' | 'intraday') => {
+    const per = num(`${fw}_max_order_value`, fw === 'swing' ? 4000 : 6000);
+    const orders = num(`${fw}_max_orders_per_day`, 5);
+    const news = num(`${fw}_max_new_per_day`, fw === 'swing' ? 3 : 5);
+    const notional = num(`${fw}_max_notional_per_day`, 20000);
+    // Intraday sizes on min(capital x max_position_pct, per order), so the
+    // panel's per-order figure is not necessarily what binds.
+    const real = fw === 'intraday'
+      ? Math.min(per, (capital * num('intraday_max_position_pct', 25)) / 100)
+      : per;
+    return Math.min(real * orders, real * news, notional);
+  };
+  const swingDay = daily('swing');
+  const intraDay = daily('intraday');
+  const both = swingDay + intraDay;
+
+  const rs = (n: number) =>
+    `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+
+  const cells: Array<[string, string, string]> = [
+    ['Risk per trade', rs(perTrade),
+      `risk_pct_per_trade ${perTradePct}% of ${rs(capital)} — this is the number the sizing model enforces`],
+    ['Max open heat', rs(heatCap),
+      `portfolio_max_total_risk_pct ${heatPct}% — total money at stake across every open position at once`],
+    ['New exposure/day', rs(both),
+      `swing ${rs(swingDay)} + intraday ${rs(intraDay)}. Each book is capped separately; nothing caps the pair`],
+  ];
+
+  return (
+    <div className="rounded-lg border border-border/50 p-3">
+      <div className="text-sm font-semibold mb-0.5">Risk exposure</div>
+      <div className="text-[10px] text-muted-foreground mb-2">
+        The caps below bound position <b>value</b>. Risk is value × stop width, and the stop
+        varies 5–9% — so one notional cap is a range of risk, not a number. These are the
+        rupee figures those settings imply.
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        {cells.map(([label, value, hint]) => (
+          <div key={label} className="rounded border border-border/40 p-2">
+            <div className="text-[10px] text-muted-foreground">{label}</div>
+            <div className="font-mono text-base tabular-nums leading-tight">{value}</div>
+            <div className="text-[9px] text-muted-foreground mt-0.5 leading-snug">{hint}</div>
+          </div>
+        ))}
+      </div>
+      <div className="text-[10px] text-muted-foreground mt-2">
+        A cap that is larger than what the other caps allow can never bind.{' '}
+        <code className="font-mono">tradeos settings</code> reports which of these controls
+        currently does nothing, and what the week&apos;s evidence says each should be.
+      </div>
+    </div>
   );
 }
 

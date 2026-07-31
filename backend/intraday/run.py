@@ -279,6 +279,21 @@ def main(once: bool = False, dry: bool = False) -> None:
                 from intraday import outcomes
                 res = outcomes.resolve_day(sb=sb)
                 logger.info(f"  outcomes resolved: {res}")
+                # AND ANY DAY THIS PATH MISSED.
+                #
+                # The line above only ever scores the day it runs on, and it
+                # only runs when the daemon reached this `finally` while holding
+                # the lease. Every other ending — a crash, a hard kill, a closed
+                # laptop, the lease held by the other machine — leaves that
+                # session unscored, and nothing used to come back for it. 241 of
+                # the first 460 detections were orphaned exactly this way.
+                #
+                # Idempotent and cheap: it resolves nothing when nothing is
+                # outstanding, and one symbol fetch per symbol when something is.
+                bf = outcomes.backfill(sb=sb)
+                if bf.get("resolved"):
+                    logger.success(f"  backfilled {bf['resolved']} outcome(s) from "
+                                   f"{bf['days']} earlier session(s)")
         except Exception as e:
             logger.warning(f"  could not resolve today's outcomes — {e}")
 

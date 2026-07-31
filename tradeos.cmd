@@ -9,6 +9,7 @@ REM    tradeos health     run EVERY check and report what is broken
 REM    tradeos learn      weekly review — measures, proposes, changes nothing
 REM    tradeos learn show just read the open proposals
 REM    tradeos discover   look for engines that do not exist yet
+REM    tradeos settings   which Control Room switches this week's evidence supports
 REM    tradeos proposals  read what is waiting for a decision
 REM    tradeos status     what is live, what is paper, what is off
 REM    tradeos ip         this machine's public IP for the Kite allowlist
@@ -43,6 +44,8 @@ if /i "%~1"=="check"    goto CHECK
 if /i "%~1"=="health"   goto HEALTH
 if /i "%~1"=="learn"    goto LEARN
 if /i "%~1"=="discover" goto DISCOVER
+if /i "%~1"=="settings" goto SETTINGS
+if /i "%~1"=="backfill" goto BACKFILL
 if /i "%~1"=="proposals" goto PROPOSALS
 if /i "%~1"=="status"   goto STATUS
 if /i "%~1"=="ip"       goto IP
@@ -230,6 +233,17 @@ goto END
 
 :DISCOVER
 python -m tools.discover_engines --days 21
+goto END
+
+:SETTINGS
+REM Reads the same evidence as `learn` and answers the question it does not:
+REM which switch to move, to what, and whether the sample actually supports it.
+if /i "%~2"=="propose" (python -m tools.control_room --propose) else (python -m tools.control_room)
+goto END
+
+:BACKFILL
+REM Score any past session the daemon never resolved. Idempotent and safe.
+python -m intraday.outcomes --backfill
 goto END
 
 :PROPOSALS

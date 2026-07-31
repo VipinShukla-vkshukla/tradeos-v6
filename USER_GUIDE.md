@@ -293,12 +293,49 @@ of how expensive it is to be wrong:
 | Stage | Default | What it does |
 |---|---|---|
 | Stop | planned stop | Exits |
-| Partial book | `exit_partial_book_r` = 1.5R | Books `exit_partial_book_pct` = 50% |
-| Breakeven | `exit_move_to_breakeven` = on | Stop to entry after the partial |
-| Trail | starts `exit_trail_after_r` = 2.0R | Trails at `exit_trail_r` = 1.5R |
-| Target | `exit_target_r` = 3.0R | Exits — **unless the runner logic says otherwise** |
-| Time stop | `exit_time_stop_days` = 15 | Exits if below `exit_time_stop_min_r` = 0.5R |
+| Target (T2) | `exit_target_r` = 3.0R | Exits — **unless the runner logic says otherwise** |
 | Deterioration | `exit_deterioration_enabled` | Exits on trend breakdown above 1.0R |
+| Partial book (T1) | the plan's own `planned_target`, else `exit_partial_book_r` = 1.5R | Books `exit_partial_book_pct` = 50% and moves to breakeven |
+| Give-back guard | `exit_giveback_pct` = 50% above `exit_giveback_min_r` = 0.5R | Exits if half the peak move is handed back |
+| Breakeven | `exit_breakeven_at_r` = 1.0R | Stop to entry **+ costs**, independent of the partial |
+| Trail | starts `exit_trail_after_r` = 2.0R | Trails at `exit_trail_r` = 1.5R |
+| Stall exit | `exit_stall_days` = 10 | Exits if the **peak** never reached `exit_stall_peak_r` = 0.5R |
+| Time stop | `exit_time_stop_days` = 15 | Exits if below `exit_time_stop_min_r` = 0.5R |
+
+**Why the profit side has three rungs the loss side does not.** Measured on the
+55 closed swing trades that carry a favourable-excursion figure, where 1R (entry
+minus planned stop) is about 6–9% of price:
+
+| Peak excursion | n | Median result | Net | Win rate |
+|---|---|---|---|---|
+| 0–1% | 9 | −2.69% | −₹3,006 | 0% |
+| 1–2% | 11 | −2.44% | −₹5,203 | 27% |
+| 2–3% | 9 | −0.03% | −₹316 | 33% |
+| 3–5% | 8 | +1.03% | −₹20 | 62% |
+| 5–8% | 8 | +3.93% | +₹3,442 | 88% |
+| 8%+ | 9 | +7.74% | +₹8,026 | 89% |
+
+A trade that never gets 2% in its favour wins about one time in six; one that
+clears 5% wins nearly nine times in ten. But 1.5R meant a 9–14% move, reached by
+20% of trades, so the partial rarely fired — and breakeven was attached to it,
+so the stop essentially never moved to entry. The result: **24 of 28 losing
+trades had been more than 0.5% in profit before they lost**, and the median
+trade captured 0% of its favourable excursion.
+
+The three new rungs each answer one row of that table. The give-back guard and
+the stall exit **partition** at the same 0.5R, so a position that ran and faded
+is handled by the first and one that never moved by the second, with no gap
+between them. All of it is switched off above the target, because the 5% of
+trades that reach 3R are where the winners live and must not be strangled by a
+rule built from the 63% that never clear 2%.
+
+**The plan's own target is now used.** The pipeline computes `planned_target`
+for every plan — it sits near 1.2R — and the exit engine ignored it in favour of
+a flat 3.0R. It is now T1, the level at which half comes off and the stop goes
+to breakeven. It is deliberately **not** the bank-or-run decision: running a
+position is only safe because half is already booked and the stop is at or above
+entry, and moving that decision down to 1.2R would let a full-size position run
+with its stop still below entry.
 
 **Runners — staying invested when the setup deserves it.** At target,
 `assess_trend()` scores the position STRONG / INTACT / FADING / BROKEN from RSI,
@@ -775,6 +812,46 @@ Room shows per-engine statistics built from that. Because
 `paper_starting_capital` now matches your real ₹20,000, the position sizes are
 the ones you would actually have taken — so the results transfer.
 
+### What the learning loop refuses to conclude, and why
+
+Three rules stop the weekly review making the system worse. Each has a measured
+failure behind it.
+
+**1. One setup is one observation.** The engine re-records a live setup every
+15-second tick, so `intraday_setups` counts evaluations, not opportunities. The
+first 460 detections are **97 real setups** — LALPATHLAB/RNG alone wrote 52 rows
+for one setup on one day. Before this was corrected, `MIN_SAMPLE = 20` could be
+cleared by a single symbol standing still, and a "100% hit rate below 0.55
+confidence over 15 outcomes" was two names, one of which was detected fourteen
+times.
+
+**2. An engine is judged only on trades it could still take today.** The cost
+model refuses any setup whose stop is inside ~0.59% (about three times the round
+trip). Setups below that floor reach target 8% of the time; those just above it,
+55%. **Every one of PDL's 94 detections and all 61 of RNG's sit below the
+floor** — so scoring them on the full history proposes RETIRE for two engines on
+the strength of trades the system now declines. Those raise an
+`ENGINE_PARAMETERS` proposal — *widen the stop* — instead. The same blindness ran
+the other way: VWR reads 27% overall and 38% on the setups it can still take.
+
+**3. Loosening a gate is a one-way door.** Tightening costs opportunity, which
+comes back tomorrow; loosening costs money, which does not. A loosening proposal
+needs twice the sample, three or more sessions, and a wider margin. The cost gate
+is never proposed for loosening at all — it is arithmetic about brokerage and
+STT, not a judgement the market can overturn.
+
+Every pass also **withdraws** what it no longer stands by. A stale proposal that
+sits PENDING next to a contradicting new one is a live hazard, not clutter.
+
+```bash
+cd backend && python -m intraday.outcomes --backfill
+```
+Score any past session the daemon never resolved. `resolve_day` only ever ran
+for the day it was invoked on, from the daemon's shutdown path — so a crash, a
+closed laptop or a lease held elsewhere orphaned that session permanently. 241
+of the first 460 detections were lost this way. `tradeos health` now fails when
+it happens.
+
 ---
 
 ## 12. Quick reference
@@ -798,6 +875,21 @@ Dry-run both frameworks against live data.
 cd backend && python control_panel.py
 ```
 Show what is live, paper, and off.
+
+```bash
+tradeos settings
+```
+Which Control Room switches this week's evidence supports moving, to what, and
+on how large a sample. Prints two lists: **RECOMMENDED**, where the evidence
+clears the sample bar, and **NOT YET**, where it does not — the second exists so
+the reasoning is not re-derived from scratch every week. `tradeos settings
+propose` records the confident ones in `brain_proposals`. Nothing is ever
+applied automatically.
+
+```bash
+tradeos backfill
+```
+Score any past session the daemon never resolved. Idempotent.
 
 ---
 

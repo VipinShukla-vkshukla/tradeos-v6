@@ -49,7 +49,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import cfg_bool, cfg_float, cfg_int, get_supabase
+from config import cfg_bool, cfg_float, cfg_int, get_supabase  # noqa: F401
 
 
 @dataclass
@@ -59,10 +59,25 @@ class TrendQuality:
     verdict: str                       # STRONG | INTACT | FADING | BROKEN
     reasons: list[str] = field(default_factory=list)
     against: list[str] = field(default_factory=list)
+    checks: int = 0                    # how many inputs were actually available
+
+    @property
+    def has_evidence(self) -> bool:
+        """
+        Did anything at all get measured?
+
+        This exists because `checks == 0` and "measured, and it looks fine" were
+        indistinguishable: the no-data branch returned INTACT/0.50, whose
+        should_run is True. Combined with a bug that made the trend context
+        always empty, EVERY position reaching the hard target was converted to
+        a runner on literally zero evidence — a decision this module exists to
+        prevent. The two cases now answer differently.
+        """
+        return self.checks >= cfg_int("exit_runner_min_checks", 3)
 
     @property
     def should_run(self) -> bool:
-        return self.verdict in ("STRONG", "INTACT")
+        return self.verdict in ("STRONG", "INTACT") and self.has_evidence
 
 
 def assess_trend(sig: dict, pos: dict | None = None) -> TrendQuality:
@@ -181,7 +196,8 @@ def assess_trend(sig: dict, pos: dict | None = None) -> TrendQuality:
     if checks == 0:
         return TrendQuality(0.5, "INTACT",
                             ["no trend data available — neither confirming nor "
-                             "contradicting, so the loss-side rules alone decide"], [])
+                             "contradicting, so the loss-side rules alone decide"],
+                            [], checks=0)
 
     score = len(for_) / max(checks, 1)
     strong = cfg_float("exit_runner_strong_score", 0.75)
@@ -196,7 +212,7 @@ def assess_trend(sig: dict, pos: dict | None = None) -> TrendQuality:
         verdict = "FADING"
     else:
         verdict = "BROKEN"
-    return TrendQuality(round(score, 2), verdict, for_, against)
+    return TrendQuality(round(score, 2), verdict, for_, against, checks=checks)
 
 
 def target_decision(pos: dict, gain_r: float, tq: TrendQuality,
@@ -214,6 +230,22 @@ def target_decision(pos: dict, gain_r: float, tq: TrendQuality,
         return {"action": "EXIT_TARGET", "reason": "TARGET_HIT",
                 "detail": f"{gain_r:.2f}R — runners disabled",
                 "new_sl": None, "book_qty": 0}
+
+    # NO EVIDENCE IS A REASON TO BANK, NOT A REASON TO RUN.
+    #
+    # Separated from the "trend has faded" branch because they are different
+    # statements and the operator should be able to tell them apart on the
+    # alert. "I looked and it is weakening" and "I could not look" both mean
+    # bank the gain, but only the second one means something is broken upstream.
+    if not tq.has_evidence:
+        return {
+            "action": "EXIT_TARGET", "reason": "TARGET_HIT",
+            "detail": (f"{gain_r:.2f}R at target with only {tq.checks} trend "
+                       f"input(s) available — not enough to justify holding past "
+                       f"the target, so banking it. A runner has to be earned on "
+                       f"evidence, and there is none here"),
+            "new_sl": None, "book_qty": 0,
+        }
 
     if not tq.should_run:
         return {
@@ -262,6 +294,10 @@ def deterioration_check(pos: dict, gain_r: float, tq: TrendQuality) -> dict | No
         return None
     floor = cfg_float("exit_deterioration_min_r", 1.0)
     if gain_r < floor:
+        return None
+    # Same asymmetry as the runner decision, in the other direction: an absent
+    # signal must not manufacture an exit any more than it manufactures a hold.
+    if not tq.has_evidence:
         return None
     if tq.verdict != "BROKEN":
         return None

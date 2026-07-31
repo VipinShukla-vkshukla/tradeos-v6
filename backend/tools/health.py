@@ -280,13 +280,106 @@ def check_simulate() -> tuple[bool, str]:
                   f"{i.get('takeable', 0)} takeable")
 
 
+def check_learning_loop() -> tuple[bool, str]:
+    """
+    Is the learning loop actually being fed?
+
+    THE FAILURE THIS EXISTS TO CATCH IS SILENT BY CONSTRUCTION.
+
+    intraday_setups records every detection with its verdict, and outcomes are
+    resolved after the close by the daemon's shutdown path — and only there. A
+    day the daemon crashed, was killed, or never held the lease is simply never
+    scored, and nothing revisits it. On 31 July the table held 460 detections of
+    which 241 — every setup from 28 and 29 July — had a cost_verdict and a NULL
+    outcome, permanently.
+
+    Nothing reported that. weekly_review needs 20 resolved outcomes before it
+    will judge an engine, so a starved loop does not announce breakage; it
+    announces "only 8 outcomes, below the 20 needed to judge", which reads like
+    patience. Meanwhile the conviction floors, the lifecycle states and the gate
+    calibration all rest on evidence that is quietly missing.
+
+    Today is excluded — its setups are legitimately unresolved until the close.
+    """
+    from config import get_supabase
+    from intraday import outcomes
+    sb = get_supabase()
+    pending = outcomes.unresolved_days(sb, days=30)
+    if not pending:
+        n = len((sb.table("intraday_setups").select("id")
+                   .not_.is_("outcome", "null").limit(1000).execute().data) or [])
+        return True, f"every past session scored ({n} resolved outcomes on hand)"
+    total = sum(n for _, n in pending)
+    days = ", ".join(d for d, _ in pending[:4])
+    return False, (f"{total} detection(s) across {len(pending)} past session(s) "
+                   f"were never scored ({days}) — the weekly review is judging "
+                   f"engines on a fraction of the evidence. Fix: "
+                   f"python -m intraday.outcomes --backfill")
+
+
+def check_exit_actions() -> tuple[bool, str]:
+    """
+    Every exit action that can SELL must be able to sell from either caller,
+    and must be able to alert.
+
+    Three lists decide what an exit action does, in three files:
+      · position_lifecycle.manage_open_positions  places the order (pipeline)
+      · intraday.engine._auto_exit                places the order (daemon)
+      · position_lifecycle.send_action_alerts     tells the operator
+
+    They are independent literals, so adding a rule to one and forgetting the
+    others is a silent, one-line mistake — and it happened: EXIT_GIVEBACK and
+    EXIT_STALL were added to the pipeline's list only, so the daemon would not
+    act on them and nothing would have alerted. Worst case that is a position
+    sold with no notification; best case a loss-cutting rule that never fires.
+
+    This compares the three sets by parsing the source, so it fails the moment
+    they drift rather than the next time money moves.
+    """
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+
+    def literal_after(path: Path, anchor: str) -> set:
+        src = path.read_text(encoding="utf-8")
+        i = src.find(anchor)
+        if i < 0:
+            return set()
+        seg = src[i:i + 700]
+        return set(re.findall(r'"(EXIT_[A-Z_]+|BOOK_PARTIAL)"', seg))
+
+    pipe  = literal_after(root / "control/position_lifecycle.py",
+                          'if act in ("EXIT_STOP", "EXIT_TARGET", "EXIT_TIME",\n'
+                          '                   "EXIT_DETERIORATION"')
+    alert = literal_after(root / "control/position_lifecycle.py", "SELLABLE = (")
+    daemn = literal_after(root / "intraday/engine.py", "if action not in (\"EXIT_STOP\"")
+
+    if not (pipe and alert and daemn):
+        return False, ("could not locate one of the three exit-action lists — "
+                       "the check itself is broken, fix it before trusting it")
+
+    # The daemon carries two intraday-only actions the swing pipeline never
+    # emits. Everything else must match exactly.
+    intraday_only = {"EXIT_INVALIDATED", "EXIT_SQUAREOFF"}
+    d = daemn - intraday_only
+    if d == pipe == alert:
+        return True, f"{len(d)} sell-capable actions agree across pipeline, daemon and alerts"
+
+    return False, (f"exit-action lists disagree — pipeline={sorted(pipe)} "
+                   f"daemon={sorted(d)} alerts={sorted(alert)}; "
+                   f"missing from daemon: {sorted(pipe - d) or 'none'}, "
+                   f"missing from alerts: {sorted(pipe - alert) or 'none'}")
+
+
 CHECKS = [
     ("config",   "risk numbers contradict each other, or a switch does nothing", check_config,   False),
+    ("exits",    "an exit rule can sell without alerting, or fires from only one caller", check_exit_actions, False),
     ("selects",  "a query reads a column the schema no longer has",              check_selects,  False),
     ("kite",     "no broker session, or the IP is not allowlisted",              check_kite,     False),
     ("data",     "decisions would run on stale inputs",                          check_data_freshness, False),
     ("broker",   "resting orders do not match the positions they protect",       check_broker_consistency, False),
     ("daemon",   "nothing is watching your positions right now",                 check_daemon,   False),
+    ("learning", "engines are being judged on evidence that was never collected", check_learning_loop, False),
     ("simulate", "a stage completes while producing nothing",                    check_simulate, True),
 ]
 

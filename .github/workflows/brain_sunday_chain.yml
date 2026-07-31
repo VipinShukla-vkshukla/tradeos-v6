@@ -101,6 +101,35 @@ jobs:
         run: |
           cd backend && python -m tools.discover_engines --days 21
 
+      # Resolve anything the daemon left unscored BEFORE the two analyses above
+      # would have read it. Kept as its own step rather than folded into them,
+      # so a broker-session failure here is visible instead of silently
+      # shrinking the sample every engine verdict rests on.
+      - name: "Backfill unresolved intraday outcomes"
+        continue-on-error: true
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TOTAL_CAPITAL:        ${{ secrets.TOTAL_CAPITAL }}
+          TZ: Asia/Kolkata
+        run: |
+          cd backend && python -m intraday.outcomes --backfill
+
+      # The two steps above say which ENGINES and GATES are working. This says
+      # which SWITCHES to move as a result — the question the operator actually
+      # faces, and the one nothing joined up before. It also reports what each
+      # panel control puts at RISK rather than at notional, and flags controls
+      # that cannot bind at all.
+      - name: "Control Room settings advisor"
+        continue-on-error: true
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TOTAL_CAPITAL:        ${{ secrets.TOTAL_CAPITAL }}
+          TZ: Asia/Kolkata
+        run: |
+          cd backend && python -m tools.control_room --propose
+
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4

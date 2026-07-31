@@ -60,6 +60,14 @@ def load_intraday_policy() -> dict:
         "squareoff_buffer":   cfg_int("intraday_squareoff_buffer_min", 12),
         "check_invalidation": cfg_bool("intraday_check_invalidation", True),
         "must_exit_time":     cfg("intraday_must_exit_time", "15:15"),
+        # Breakeven as its OWN rung, defaulting to the partial's level so a
+        # multi-share position behaves exactly as before. See evaluate_intraday_exit.
+        "breakeven_at_r":     cfg_float("intraday_breakeven_at_r",
+                                        cfg_float("intraday_partial_book_r", 1.2)),
+        "cost_buffer_pct":    cfg_float("intraday_breakeven_cost_pct", 0.21),
+        # Give-back guard. OFF by default — see the note in evaluate_intraday_exit.
+        "giveback_pct":       cfg_float("intraday_giveback_pct", 0.0),
+        "giveback_min_r":     cfg_float("intraday_giveback_min_r", 1.0),
     }
 
 
@@ -152,9 +160,22 @@ def evaluate_intraday_exit(pos: dict, ltp: float, policy: dict,
         }
 
     # ── 2. Stop ─────────────────────────────────────────────────────────────
+    # The REASON distinguishes the three ways a stop gets hit, because they mean
+    # opposite things and were all being recorded as STOP_LOSS_HIT. ATHERENERG
+    # closed at +0.84% / +1.93R labelled STOP_LOSS_HIT — a trailing stop doing
+    # its job, filed under the bucket for trades that were simply wrong. Three
+    # of the paper book's fourteen exits are in that bucket and it nets POSITIVE,
+    # which makes the exit-reason table unreadable and would teach the weekly
+    # review that being stopped out is profitable.
     if sl and ltp <= sl:
+        if pos.get("trail_activated"):
+            reason = "TRAIL_SL_HIT"
+        elif pos.get("breakeven_moved"):
+            reason = "BREAKEVEN_STOP_HIT"
+        else:
+            reason = "STOP_LOSS_HIT"
         return {
-            "action": "EXIT_STOP", "reason": "STOP_LOSS_HIT",
+            "action": "EXIT_STOP", "reason": reason,
             "detail": f"ltp {ltp:.2f} <= sl {sl:.2f} ({gain_pct:+.2f}%, {gain_r:+.2f}R)",
             "new_sl": None, "book_qty": 0,
         }
@@ -200,6 +221,63 @@ def evaluate_intraday_exit(pos: dict, ltp: float, policy: dict,
             "new_sl": entry if policy["move_to_breakeven"] else None,
             "book_qty": n,
         }
+
+    # ── 5b. GIVE-BACK GUARD — off by default, and deliberately ──────────────
+    #
+    # The swing book has this rule because it could be measured there: 24 of 28
+    # losing swing trades had been in profit first, giving back a median 3.14%.
+    # The same rule almost certainly belongs here — an intraday position has
+    # LESS time to recover, not more — but it cannot be calibrated yet, because
+    # max_favorable_excursion is NULL on all fourteen closed intraday positions.
+    # The engine never maintained it (fixed in engine.py alongside this), so
+    # there is no record of how far any intraday trade ran before it faded.
+    #
+    # Shipping an uncalibrated exit into the book it cannot be measured against
+    # is how a system gets worse while looking busier. So the rule is built and
+    # switched OFF: set intraday_giveback_pct once ~20 intraday positions have
+    # closed carrying excursion data, and calibrate it on those rather than on
+    # the swing number, which comes from a different horizon.
+    hwm_px = float(pos.get("high_water_mark") or 0)
+    if policy["giveback_pct"] > 0 and hwm_px > entry:
+        peak_r = (hwm_px - entry) / risk
+        if peak_r >= policy["giveback_min_r"]:
+            kept = gain_r / peak_r if peak_r > 0 else 1.0
+            if kept < (1.0 - policy["giveback_pct"] / 100.0):
+                return {
+                    "action": "EXIT_GIVEBACK", "reason": "GAVE_BACK_THE_MOVE",
+                    "detail": (f"peaked at {peak_r:.2f}R and is back to {gain_r:+.2f}R "
+                               f"({gain_pct:+.2f}%) — {1 - kept:.0%} of the move handed "
+                               f"back, and intraday there is no tomorrow to recover it"),
+                    "new_sl": None, "book_qty": 0,
+                }
+
+    # ── 5c. BREAKEVEN AS ITS OWN RUNG ───────────────────────────────────────
+    #
+    # Breakeven was reachable ONLY through BOOK_PARTIAL, which requires qty > 1.
+    # With intraday_max_order_value at Rs 6,000, seven of the 48 names in the
+    # traded universe size to a single share — NETWEB, GVT&D, KAYNES, ENRIN and
+    # others above Rs 3,000 — and three (POWERINDIA, APARINDS, OFSS) size to
+    # zero and cannot be traded at all. For every single-share position the
+    # partial can never fire, so the stop never moved to entry and a trade that
+    # paid a full R could still finish at -1R.
+    #
+    # Defaulting breakeven_at_r to partial_book_r means nothing changes for a
+    # multi-share position: the partial still fires first and carries the stop
+    # with it. This rung exists for the ones the partial cannot reach.
+    #
+    # Set above entry by the round trip, for the same reason as swing — a stop
+    # at exactly the entry price still owes brokerage, STT and stamp duty on
+    # both legs, and intraday that is 0.21% of a move worth maybe 0.7%.
+    if policy["move_to_breakeven"] and gain_r >= policy["breakeven_at_r"]:
+        be = round(entry * (1 + policy["cost_buffer_pct"] / 100.0), 2)
+        if be > sl:
+            return {
+                "action": "TRAIL_SL", "reason": "BREAKEVEN",
+                "detail": (f"{gain_r:.2f}R — sl {sl:.2f} -> {be:.2f}, entry plus the "
+                           f"{policy['cost_buffer_pct']:.2f}% round trip. This trade "
+                           f"can no longer cost money"),
+                "new_sl": be, "book_qty": 0,
+            }
 
     # ── 6. Trail ────────────────────────────────────────────────────────────
     if gain_r >= policy["trail_after_r"]:
