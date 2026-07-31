@@ -310,14 +310,27 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
     # R governs WHEN to book and how much; this governs how much open profit can
     # evaporate. It only ever raises the stop, never lowers it, so it cannot
     # widen risk on a position the R rules already tightened.
+    # DEFAULTS DELIBERATELY LOOSE, AND OFF BELOW A REAL GAIN.
+    #
+    # The first version fired at +1.5% and tightened to 8% below price. On
+    # GABRIEL that meant moving the stop from 1248 to 1310 — still BELOW the
+    # 1393 entry, so it protected no profit at all and merely narrowed the loss
+    # the plan had deliberately sized for. A 10% stop on that name was an ATR
+    # decision, not an oversight, and overriding it with a flat percentage
+    # discards the volatility model that produced it.
+    #
+    # It now requires the position to be up enough that an 8% lag actually sits
+    # ABOVE entry — otherwise this is not protecting profit, it is second-
+    # guessing the stop. The floor is additionally clamped to never fall below
+    # breakeven once triggered.
     max_lag = cfg_float("exit_max_stop_lag_pct", 8.0)
-    min_gain = cfg_float("exit_stop_lag_min_gain_pct", 1.5)
+    min_gain = cfg_float("exit_stop_lag_min_gain_pct", 10.0)
     gain_pct = (ltp - entry) / entry * 100.0 if entry else 0.0
     if max_lag > 0 and gain_pct >= min_gain:
         floor = round(ltp * (1 - max_lag / 100.0), 2)
-        # Never below breakeven-minus-nothing on a profitable trade, and never
-        # below the stop already in force.
-        if floor > sl:
+        # Never below entry: a "profit protection" stop under the entry price is
+        # not protecting profit. And never below the stop already in force.
+        if floor > sl and floor >= entry:
             return {
                 "action": "TRAIL_SL", "reason": "STOP_LAG_CAP",
                 "detail": (f"up {gain_pct:.2f}% with the stop {((ltp - sl) / ltp * 100):.1f}% "

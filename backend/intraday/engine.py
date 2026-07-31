@@ -615,8 +615,34 @@ class IntradayEngine:
         manual longer.
         """
         from execution.order_manager import OrderRequest, place
+
+        # TRAIL_SL AND HOLD ARE NOT EXITS. They must never reach an order.
+        #
+        # This function sold current_qty for ANY action with no book_qty, and
+        # TRAIL_SL has no book_qty because it moves a stop rather than selling
+        # anything. So a stop adjustment placed a market-priced SELL for the
+        # whole position. GABRIEL was sold at 1420.00 on a TRAIL_SL that was only
+        # asking to raise its stop to 1310.
+        #
+        # It never fired before only because the R-based trail needs 2R and no
+        # position had reached it. Any position that ever did would have been
+        # liquidated by its own trail — the bug was latent, not new.
+        #
+        # Whitelist rather than blacklist: an action not named here does not
+        # place an order. A future action added to the exit policy should have to
+        # opt IN to spending money.
+        action = (d.get("action") or "").upper()
+        if action not in ("EXIT_STOP", "EXIT_TARGET", "EXIT_TIME",
+                          "EXIT_INVALIDATED", "EXIT_SQUAREOFF", "BOOK_PARTIAL"):
+            return
+
         qty = int(d.get("book_qty") or 0) or int(p.get("current_qty") or p.get("actual_qty") or 0)
         if qty <= 0:
+            return
+        # A partial with no book_qty would sell everything. Refuse instead.
+        if action == "BOOK_PARTIAL" and int(d.get("book_qty") or 0) <= 0:
+            logger.error(f"  {p.get('symbol')}: BOOK_PARTIAL with no book_qty — "
+                         f"refusing rather than selling the whole position")
             return
 
         # Paper: there is no broker to notice the holding vanish, so the close
