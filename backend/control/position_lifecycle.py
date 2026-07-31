@@ -293,6 +293,39 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
                 "new_sl": round(trail_sl, 2), "book_qty": 0,
             }
 
+    # ── 4b. A stop may not lag price indefinitely ───────────────────────────
+    #
+    # The ladder above is expressed entirely in R, which is correct for
+    # comparing setups and wrong as the ONLY control. Risk is entry minus stop,
+    # so a plan with a 10% stop has 1R = 10%: the 1.5R partial needs +15.6% and
+    # the 2R trail needs +20.8%. Below those the stop never moves at all.
+    #
+    # Observed on 31 Jul: GABRIEL +2.17% with its stop 12.3% below price, and
+    # PPLPHARMA +2.25% with 11.3%. Both "working", both giving back everything
+    # plus a tenth of the position before anything fires. No desk lets a stop sit
+    # twelve percent under a position that is up.
+    #
+    # So a second, absolute rule: once a position has made a real gain, the stop
+    # may not trail further than exit_max_stop_lag_pct below the last price.
+    # R governs WHEN to book and how much; this governs how much open profit can
+    # evaporate. It only ever raises the stop, never lowers it, so it cannot
+    # widen risk on a position the R rules already tightened.
+    max_lag = cfg_float("exit_max_stop_lag_pct", 8.0)
+    min_gain = cfg_float("exit_stop_lag_min_gain_pct", 1.5)
+    gain_pct = (ltp - entry) / entry * 100.0 if entry else 0.0
+    if max_lag > 0 and gain_pct >= min_gain:
+        floor = round(ltp * (1 - max_lag / 100.0), 2)
+        # Never below breakeven-minus-nothing on a profitable trade, and never
+        # below the stop already in force.
+        if floor > sl:
+            return {
+                "action": "TRAIL_SL", "reason": "STOP_LAG_CAP",
+                "detail": (f"up {gain_pct:.2f}% with the stop {((ltp - sl) / ltp * 100):.1f}% "
+                           f"below price — tightening to {floor:.2f}, no more than "
+                           f"{max_lag:g}% of open profit at risk"),
+                "new_sl": floor, "book_qty": 0,
+            }
+
     # ── 5. Time stop — only on positions that are NOT working ────────────────
     if (sessions_held >= policy["time_stop_days"]
             and gain_r < policy["time_stop_min_r"]):
