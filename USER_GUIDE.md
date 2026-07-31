@@ -520,6 +520,15 @@ would be doubled.
 If the server is down the daemon simply stops. Positions keep their broker-side
 GTT stops, which is precisely why those exist.
 
+**A note on the `daemon` health check.** It reports `STOPPED renewing N min ago`
+when no lease has been renewed inside the TTL. During a launch that is normal
+for a few seconds: the previous holder's lease has lapsed and this machine has
+not claimed one yet. `start_day.py` therefore runs the health sweep **last** —
+after the Kite login and after the monitor starts — so it describes the state
+the launcher leaves behind. Seeing that warning from `tradeos health` (option 6)
+run on its own is different: there the launcher is not about to fix anything, so
+it means what it says — nothing is watching the book.
+
 ---
 
 ## 10. What is monitored in real time, and how
