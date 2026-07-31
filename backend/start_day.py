@@ -388,18 +388,6 @@ def main(check_only: bool = False, only: str = "both") -> int:
     if not step_kite():
         return 1
 
-    # HEALTH RUNS AFTER THE LOGIN, not before.
-    #
-    # The token expires at 07:30 IST every day, so on any normal morning there
-    # is no session until step_kite() creates one. Running health first meant
-    # the `kite` check failed EVERY single day — "Kite call failed: 'NoneType'
-    # object has no attribute 'profile'" — and dragged `broker` down with it,
-    # since GTTs cannot be listed without a session either.
-    #
-    # A check that fails every morning for a reason the launcher is about to fix
-    # two steps later is noise, and noise is what makes the one real failure
-    # easy to scroll past. Now it runs when there is something true to say.
-    step_health()
     # The daemon starts for EVERY selection, including swing only.
     #
     # Its name is misleading: it is the live price feed and exit monitor for
@@ -412,7 +400,24 @@ def main(check_only: bool = False, only: str = "both") -> int:
     # done in the database by apply_selection(), which the daemon reads. So the
     # monitor runs, and finds no intraday setups to act on.
     step_intraday()
+
+    # HEALTH RUNS LAST, after the login AND after the monitor starts.
+    #
+    # Two checks were failing by construction, not by fault. The token expires
+    # at 07:30 daily, so `kite` failed every morning until step_kite() ran — and
+    # dragged `broker` down with it, since GTTs need a session. Moving health
+    # after the login fixed those two and left `daemon` doing the same thing:
+    # asking whether a monitor is alive immediately before starting one. On
+    # 31 Jul it reported "STOPPED renewing 0 min ago" at 11:57:16 and the lease
+    # was taken at 11:57:18.
+    #
+    # A check that fails every morning for a reason the launcher is about to fix
+    # is noise, and noise is what makes the one real failure easy to scroll past.
+    # Health now runs last, so it reports the state the launcher actually leaves
+    # behind rather than a state it is halfway through changing.
+    step_health()
     summary()
+
     return 0
 
 
