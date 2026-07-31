@@ -69,10 +69,50 @@ broke, what it cost, and what was restored. Do not bury it.
 
 ---
 
+## Working cheaply in this repo
+
+This file costs ~1.8k tokens every session. One careless whole-file `Read` of
+`compute_msl.py` costs **29k** — sixteen times this entire file. So the way to
+save context is not to shorten this document, it is to stop reading large
+things. Context spent re-reading is context unavailable for the problem, and a
+session that runs out mid-task rediscovers everything from scratch.
+
+Measured over one long session here: 1,190 Bash calls, ~492k tokens of tool
+output. The twenty largest results were 25% of it, and most were whole files.
+
+**Never `Read` a large file whole.** 28 modules exceed 20k chars. Locate, then
+read the range:
+
+```bash
+# find it, then read only what matters
+Grep -n "def evaluate_exit" backend/control/position_lifecycle.py
+Read file_path=backend/control/position_lifecycle.py offset=196 limit=60
+```
+
+Worst offenders, in tokens for a full read: `compute_msl` 29k · `send_alerts`
+29k · `ai_decision_engine` 24k · `intraday/engine` 22k · `screen_stocks` 21k ·
+`position_lifecycle` 21k · `generate_signals` 20k · `post_trade_analysis` 17k.
+
+**`USER_GUIDE.md` is 12k tokens. Grep it, never read it whole.**
+
+**Grep in the cheapest mode that answers the question.**
+`files_with_matches` to locate · `count` to size · `content` with `-A/-B` only
+when the surrounding lines *are* the answer. Cap with `head_limit`.
+
+**Cap every Bash output** — `| tail -20`, `| grep -E "..."`. A pipeline run or
+health sweep emits hundreds of lines and three of them matter.
+
+**Prefer structure over pixels.** A browser screenshot of `/control` is ~13k
+tokens; `read_page` or a `javascript_tool` geometry check is a few hundred and
+is what actually verifies a layout claim.
+
+**Never re-read a file to confirm an edit.** `Edit` fails loudly if it did not
+apply. Re-reading buys nothing and costs the whole file.
+
 ## Before changing anything
 
 ```bash
-cd backend && python -m tools.health        # 7 checks, is anything broken
+cd backend && python -m tools.health        # 10 checks, is anything broken
 cd backend && python -m tools.simulate      # what BOTH books would do, writes nothing
 ```
 
@@ -91,7 +131,24 @@ both again. `simulate` is read-only and safe at any time.
 - **Kite's order allowlist is IPv4 only.** `config._force_ipv4()` exists because
   a v6 source address rejects every order while every readiness check passes.
 - **PostgREST caps responses at 1000 rows silently.** Page anything larger.
+- **PostgREST fails the WHOLE update on one unknown column.** A single missing
+  column loses every other field in the payload. Strip and retry, do not
+  abandon the row.
 - **Migrations run against a live book.** Verify preconditions first.
+- **CNC and MIS are different trades financially.** Delivery pays zero
+  brokerage but 0.1% STT on *both* legs, 0.015% stamp, and a flat ₹15.04 DP fee
+  per sell. `cost_model.round_trip(..., product=)` — default MIS. A ₹2,000 CNC
+  round trip is ~1.0%, not the 0.21% the intraday model reports.
+- **`signal_log` is the SWING pipeline's table.** Intraday has no row in it;
+  its outcomes live in `intraday_setups` and are scored by
+  `outcomes.resolve_day`. Writing an intraday result there does not error — it
+  lands on whatever swing signal shares the symbol and date and poisons the
+  learning loop.
+- **`deepseek-v4-flash` is a reasoning model.** `max_tokens` budgets reasoning
+  AND output together, reasoning is spent first, and it expands to fill
+  whatever it is given (8000→7999, 32000→32000, always `finish_reason=length`).
+  Raising the budget never converges; `ai_thinking_enabled` is off for that
+  reason. Read `finish_reason`, never infer truncation from a closing brace.
 
 ## Architecture — the actual data flow
 
