@@ -975,6 +975,13 @@ class IntradayEngine:
                         f"{max_entry} — not chasing past its own R:R")
             return
 
+        from control.position_lifecycle import find_originating_signal
+        try:
+            _s = find_originating_signal(self.sb, sym, today_ist().isoformat()) or {}
+            _sig = {"signal_id": _s.get("id"), "signal_date": _s.get("date") or c.get("date")}
+        except Exception:
+            _sig = {"signal_id": None, "signal_date": c.get("date")}
+
         res = place(OrderRequest(sym, "BUY", qty, "LIMIT", limit,
                                  reason=f"AUTO_ENTRY: {getattr(d, 'reason', '')[:120]}"),
                     self.sb, self.notifier, framework="SWING")
@@ -996,7 +1003,13 @@ class IntradayEngine:
                 "planned_target": d.target, "target_price": d.target,
                 "sl_type": "AUTO_ENTRY", "strategy": c.get("strategy"),
                 "entry_signal_type": c.get("signal_type"),
-                "signal_id": c.get("id"), "signal_date": c.get("date"),
+                # signal_output_daily has NO id column, so c.get("id") was
+                # always None and every auto-entry landed unattributed —
+                # producing outcomes signal_outcomes cannot learn from, which is
+                # the exact gap position_lifecycle was built to close. The id
+                # lives in signal_log; find_originating_signal is what reconcile
+                # already uses to backfill it.
+                **_sig,
                 "sector": c.get("sector"), "source": "auto_entry",
                 "entry_rationale": rationale,
                 "synced_at": datetime.now(IST).isoformat(),

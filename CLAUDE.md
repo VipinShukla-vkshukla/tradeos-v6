@@ -93,6 +93,46 @@ both again. `simulate` is read-only and safe at any time.
 - **PostgREST caps responses at 1000 rows silently.** Page anything larger.
 - **Migrations run against a live book.** Verify preconditions first.
 
+## Architecture — the actual data flow
+
+```
+EVENING (GitHub Actions, 27 steps, run_pipeline.py)
+  ingest bhavcopy/chartink/FII-DII/events
+    -> compute_indicators (86 cols on stock_data_daily)
+    -> sector_strength -> regime -> screen_stocks (9 engines -> master_shortlist)
+    -> compute_msl (entry zones, final_score) -> quality_gate -> signals
+    -> ai_decision_engine (ai_tier, conviction) -> signal_snapshot
+    -> signal_output_daily   << 114 columns, the day's plans, IMMUTABLE
+
+MARKET HOURS (intraday/run.py, one process, BOTH books)
+  KiteTicker websocket, MODE_LTP, ~95 symbols
+    every 15s: evaluate_positions -> route by framework -> exit ladder
+               evaluate_candidates -> decide() -> swing entry if ranked
+               evaluate_intraday_setups -> 7 engines -> gates -> paper entry
+    every 300s: gtt_manager.sync (CNC only)
+    at close: outcomes.resolve_day  << scores EVERY detection
+
+WEEKLY (brain_sunday_chain.yml)
+  weekly_review    engines, gates, ranking -> brain_proposals
+  discover_engines refused-but-right + moved-but-unseen -> brain_proposals
+```
+
+**Key tables.** `signal_output_daily` (plans, no `id` column — the signal id
+lives in `signal_log`), `open_positions` (keyed on symbol+product),
+`closed_positions` (gross `realized_pnl` plus separate `charges`),
+`intraday_setups` (every detection with its verdict and outcome),
+`system_config` (every switch; `cfg()` reads it), `brain_proposals` (learning
+output, never auto-applied).
+
+**The seven intraday engines.** ORB, GAP, PDL, VCE, PBK, VWR, RNG — registered in
+`strategy_config` with a lifecycle state, scored weekly on resolved outcomes.
+
+**Decision reuse is the core design.** `analysis.trade_decision.decide()` and
+`control.position_lifecycle.evaluate_exit()` are called by the pipeline, the
+dashboard, Telegram AND the daemon. A second copy would drift; this project
+already lived through three divergent R:R models giving three answers for one
+stock on one day. Never reimplement a decision — import it.
+
 ## Where things live
 
 ```
