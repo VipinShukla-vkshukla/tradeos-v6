@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
-from config import cfg, AI_KEYS, AZURE_ENDPOINT, AZURE_DEPLOYMENT
+from config import cfg, cfg_bool, AI_KEYS, AZURE_ENDPOINT, AZURE_DEPLOYMENT
 from ai.providers.base_provider import ConvictionResult, UNKNOWN_RESULT
 
 
@@ -148,10 +148,36 @@ def raw_completion(prompt: str, max_tokens: int = 1500) -> str:
             base_url=getattr(provider, "base_url", None) or _base_urls.get(provider_name),
         )
         model = getattr(provider, "model", None) or _models.get(provider_name, "gpt-4o-mini")
+        # THINKING OFF BY DEFAULT, and this is the fix for every truncation.
+        #
+        # deepseek-v4-flash is a REASONING model: max_tokens budgets reasoning
+        # AND output together, and the reasoning is spent first. Measured on
+        # 2026-08-01, a step-19 batch of five candidates burned all 20,000
+        # tokens and emitted 2,900 characters of JSON — roughly 19,250 tokens
+        # of thinking, then truncation mid-object. Step 18 died the same way at
+        # 8,000. Batching helped less than it should have, because each call
+        # pays its own reasoning floor and more calls means more floors.
+        #
+        # That reasoning is DISCARDED. Nothing reads reasoning_content; the
+        # only consumed output is the JSON. So the budget was being spent on a
+        # artefact we throw away, and the answer we keep is what got cut.
+        #
+        # The reasoning we actually want is already in the schema — thesis,
+        # risks, chase_rationale, invalidation are fields the model must fill
+        # and we do read. Those survive; only the hidden scratchpad goes.
+        #
+        # Switchable because it is a real trade-off, not a free win: set
+        # ai_thinking_enabled true to restore it, and raise the budgets to
+        # match if you do.
+        extra: dict = {}
+        if provider_name == "deepseek" and not cfg_bool("ai_thinking_enabled", False):
+            extra["extra_body"] = {"thinking": {"type": "disabled"}}
+
         resp = client.chat.completions.create(
             model=model,
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
+            **extra,
         )
         # finish_reason IS the answer to "was this truncated", and it was being
         # thrown away — so callers guessed by looking for a closing brace, which

@@ -2523,7 +2523,19 @@ def main():
 
     # An unrecognised flag is not harmless here: `--dryrun` or `--dry_run` would
     # have fallen through to a live send. Refuse rather than guess.
-    unknown = [a for a in sys.argv[1:] if a.startswith("-") and a not in _KNOWN_FLAGS]
+    #
+    # But only judge OUR OWN flags. run_pipeline invokes this in-process and
+    # leaves its own argv in place, so `run_pipeline.py --step alerts` reached
+    # here as an unknown `--step` and refused to send — the step failed for the
+    # one invocation style used to re-run it after fixing something upstream.
+    # The pipeline's flags are known and are not ours to validate.
+    _PIPELINE_FLAGS = {"--step", "--dry-run"}
+    argv = list(sys.argv[1:])
+    if argv and "run_pipeline" in (sys.argv[0] or ""):
+        argv = [a for i, a in enumerate(argv)
+                if a not in _PIPELINE_FLAGS
+                and not (i > 0 and argv[i - 1] == "--step")]
+    unknown = [a for a in argv if a.startswith("-") and a not in _KNOWN_FLAGS]
     if unknown:
         raise SystemExit(
             f"\n  Unrecognised flag(s): {', '.join(unknown)}\n"

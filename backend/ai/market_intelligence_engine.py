@@ -55,7 +55,8 @@ import requests
 from loguru import logger
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import get_supabase, today_ist, is_kill_switch_active, cfg,cfg_float, AI_KEYS, get_trade_date, get_step_window
+from config import (get_supabase, today_ist, is_kill_switch_active, cfg, cfg_float,
+                    cfg_int, AI_KEYS, get_trade_date, get_step_window)
 
 DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
 
@@ -836,16 +837,48 @@ def call_ai(prompt: str, n_candidates: int = 0) -> dict | None:
         full_text = _call_claude_websearch(prompt)
         if not full_text:
             try:
-                full_text = raw_completion(f"{_SYSTEM_PROMPT}\n\n{prompt}", max_tokens=8000)
+                full_text = raw_completion(
+                    f"{_SYSTEM_PROMPT}\n\n{prompt}",
+                    max_tokens=cfg_int("ai_market_intel_max_tokens", 16000))
             except Exception as e:
                 logger.warning(f"Claude fallback also failed: {e}")
                 return None
     else:
-        try:
-            full_text = raw_completion(f"{_SYSTEM_PROMPT}\n\n{prompt}", max_tokens=8000)
-        except Exception as e:
-            logger.warning(f"AI call failed for provider={provider}: {e}")
-            return None
+        # ESCALATING BUDGET, because 8000 was not a considered number — it was
+        # the only number. On 2026-07-31 the response came back with
+        # finish_reason=length and completion_tokens=8000: it spent every token
+        # it was given and was still mid-object. The step then exited with
+        # nothing, step 19 ran with no market overlay, and C08 fired. One fixed
+        # ceiling took out the whole market view.
+        #
+        # This output scales with the day — macro_sector_impacts covers up to 23
+        # sectors, candidate_sentiment one entry per candidate, near_miss_upgrades
+        # one per watch signal — so a single fixed budget is guaranteed to be
+        # wrong on one side or the other. Escalate, and let the finish_reason
+        # log say which side it landed on.
+        budgets = [cfg_int("ai_market_intel_max_tokens", 16000), 28000]
+        for attempt, mt in enumerate(budgets, start=1):
+            try:
+                full_text = raw_completion(f"{_SYSTEM_PROMPT}\n\n{prompt}", max_tokens=mt)
+            except Exception as e:
+                logger.warning(f"AI call failed for provider={provider}: {e}")
+                return None
+            if not full_text:
+                return None
+            # Strip trailing code fences and prose before judging completeness.
+            # The naive endswith() saw a ```-terminated response as truncated
+            # and spent a second call proving it was not — the parse below
+            # succeeded "(direct)" both times.
+            _tail = full_text.rstrip().rstrip("`").rstrip()
+            if _tail.endswith(("}", "]")):
+                break
+            if attempt < len(budgets):
+                logger.warning(f"  step 18 response incomplete at max_tokens={mt} "
+                               f"({len(full_text)} chars) — retrying at {budgets[attempt]}")
+            else:
+                logger.warning(f"  step 18 still incomplete at max_tokens={mt}. JSON "
+                               f"repair below will salvage what it can; if this "
+                               f"recurs the per-symbol sections need their own call.")
 
     if not full_text:
         return None

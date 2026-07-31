@@ -1283,7 +1283,12 @@ def _looks_truncated(full_text: str) -> bool:
     """Cheap pre-parse check: does the response end without closing its
     outermost JSON structure? Used to decide whether a retry at a higher
     token budget is worth it before spending time on full JSON repair."""
-    tail = full_text.rstrip()
+    # Trailing code fences and sign-off prose are not truncation. Judging on
+    # the raw last character made every ```-wrapped response look cut off, so
+    # a complete answer was thrown away and re-requested at a higher budget —
+    # both batches on 2026-08-01 parsed fine on the FIRST response and still
+    # paid for a second one. The retry is for genuinely incomplete JSON.
+    tail = full_text.rstrip().rstrip("`").rstrip()
     return not tail or tail[-1] not in "}]"
 
 
