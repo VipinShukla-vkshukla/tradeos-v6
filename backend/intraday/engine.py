@@ -291,6 +291,59 @@ class IntradayEngine:
                       {c["symbol"] for c in self.candidates if c.get("symbol")} |
                       set(self._universe))
 
+    def _log_swing_state(self, prices: dict) -> None:
+        """One line per cycle: what swing is eligible for, and why not more."""
+        from analysis.trade_decision import decide
+        from analysis.entry_ranking import rank
+        from config import TOTAL_CAPITAL
+        from execution.gates import is_paper
+        if not self.candidates:
+            return
+        mx = cfg_int("swing_max_new_per_day", 2)
+        keep = max(1, mx * 2)
+        field = rank(self.candidates)[:keep]
+        elig = {r.symbol: r for r in field}
+
+        buyable, ready = 0, []
+        for c in self.candidates:
+            sym = c.get("symbol")
+            ltp = prices.get(sym)
+            if not sym or not ltp:
+                continue
+            try:
+                d = decide(c, float(ltp), total_capital=TOTAL_CAPITAL,
+                           open_positions=self.positions)
+            except Exception:
+                continue
+            if d.action not in ("BUY_NOW", "CHASE_LIMIT"):
+                continue
+            buyable += 1
+            if sym in elig:
+                ready.append(sym)
+
+        try:
+            from execution.order_manager import _today_totals
+            taken, _m, _a = _today_totals(self.sb, "SWING")
+        except Exception:
+            taken = 0
+        taken = max(taken, self._entries_taken)
+        left = max(0, mx - taken)
+
+        held = sum(1 for p in self.positions
+                   if (p.get("framework") or "SWING").upper() == "SWING")
+        logger.info(f"  swing: {held} held · {len(self.candidates)} watched · "
+                    f"{buyable} buyable now · eligible today "
+                    f"[{', '.join(elig) or 'none'}] · {taken}/{mx} entries used")
+        if ready and left:
+            logger.success(f"     ready to enter: {', '.join(ready)}")
+        elif buyable and not ready and left:
+            # The single most useful line, and it was invisible: plans ARE
+            # buyable, they are simply not the ones the ranking prefers.
+            logger.info(f"     {buyable} buyable but none in today's top {keep} — "
+                        f"waiting for a ranked name rather than taking the first")
+        elif not left:
+            logger.info(f"     daily entry budget spent ({taken}/{mx})")
+
     def _held_by_framework(self, symbol: str, framework: str) -> bool:
         """
         Does THIS framework already hold this symbol, under any product?
@@ -878,8 +931,11 @@ class IntradayEngine:
             field = rank(self.candidates)
             keep = min(max_new * 2, len(field))
             if keep and here.total < field[keep - 1].total:
-                logger.info(f"  {sym}: rank {here.total:.0f} is outside today's top "
-                            f"{keep} — holding the entry for a stronger plan")
+                # DEBUG, not INFO. With 56 candidates this line fired dozens of
+                # times a cycle and buried everything else, while saying the
+                # same thing each time. The per-cycle swing summary below
+                # reports the same fact once, with the names that ARE eligible.
+                logger.debug(f"  {sym}: rank {here.total:.0f} outside today's top {keep}")
                 return
         except Exception as e:
             logger.debug(f"  ranking unavailable for {sym}: {e}")
@@ -1333,6 +1389,16 @@ class IntradayEngine:
             self.act_on_setups(setups)
         except Exception as e:
             logger.warning(f"  intraday strategies failed: {e}")
+
+        # SWING, SAID OUT LOUD.
+        #
+        # The console showed the intraday engine scan in detail and swing not at
+        # all — so "why did it not buy" had no answer on screen, only in a
+        # database. Both books are managed by this loop; both should report.
+        try:
+            self._log_swing_state(prices)
+        except Exception as e:
+            logger.debug(f"  swing summary failed: {e}")
 
         self.square_off_paper(prices)
 

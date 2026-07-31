@@ -219,6 +219,12 @@ def open_position(symbol: str, qty: int, fill_price: float, setup: dict,
     the only way the simulation tests the real system rather than a copy of it.
     """
     sb = sb or get_supabase()
+    # Imported here, not at module scope: control.position_lifecycle imports
+    # this module, so a top-level import would be circular. The regex that
+    # rewrote these call sites put the import in close_position() only, which is
+    # why every paper entry failed with "name '_upsert_position' is not defined"
+    # while closes worked.
+    from control.position_lifecycle import _upsert_position
     try:
         row = {
             "symbol": symbol,
