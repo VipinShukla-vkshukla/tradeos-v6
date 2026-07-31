@@ -293,51 +293,22 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
                 "new_sl": round(trail_sl, 2), "book_qty": 0,
             }
 
-    # ── 4b. A stop may not lag price indefinitely ───────────────────────────
+    # NOTE — a "maximum stop lag" rule was added here on 31 Jul and REMOVED
+    # the same day. It tightened the stop whenever it sat more than 8% below
+    # price, on the reasoning that a 12% gap on a position that is up looks
+    # wrong.
     #
-    # The ladder above is expressed entirely in R, which is correct for
-    # comparing setups and wrong as the ONLY control. Risk is entry minus stop,
-    # so a plan with a 10% stop has 1R = 10%: the 1.5R partial needs +15.6% and
-    # the 2R trail needs +20.8%. Below those the stop never moves at all.
+    # It was wrong. Risk is entry minus stop, so a plan with a 10% ATR stop has
+    # 1R = 10%: a position at +2% is 0.2R, which is an ordinary healthy swing
+    # trade, and tolerating a 12% adverse move is precisely what that stop was
+    # sized to do. Overriding an ATR-derived level with a flat percentage
+    # discards the volatility model that produced it and cuts winners early —
+    # the exact failure already measured on this book, where 37 of 70 exits were
+    # trailing stops averaging -0.40% and the median capture ratio was 3%.
     #
-    # Observed on 31 Jul: GABRIEL +2.17% with its stop 12.3% below price, and
-    # PPLPHARMA +2.25% with 11.3%. Both "working", both giving back everything
-    # plus a tenth of the position before anything fires. No desk lets a stop sit
-    # twelve percent under a position that is up.
-    #
-    # So a second, absolute rule: once a position has made a real gain, the stop
-    # may not trail further than exit_max_stop_lag_pct below the last price.
-    # R governs WHEN to book and how much; this governs how much open profit can
-    # evaporate. It only ever raises the stop, never lowers it, so it cannot
-    # widen risk on a position the R rules already tightened.
-    # DEFAULTS DELIBERATELY LOOSE, AND OFF BELOW A REAL GAIN.
-    #
-    # The first version fired at +1.5% and tightened to 8% below price. On
-    # GABRIEL that meant moving the stop from 1248 to 1310 — still BELOW the
-    # 1393 entry, so it protected no profit at all and merely narrowed the loss
-    # the plan had deliberately sized for. A 10% stop on that name was an ATR
-    # decision, not an oversight, and overriding it with a flat percentage
-    # discards the volatility model that produced it.
-    #
-    # It now requires the position to be up enough that an 8% lag actually sits
-    # ABOVE entry — otherwise this is not protecting profit, it is second-
-    # guessing the stop. The floor is additionally clamped to never fall below
-    # breakeven once triggered.
-    max_lag = cfg_float("exit_max_stop_lag_pct", 8.0)
-    min_gain = cfg_float("exit_stop_lag_min_gain_pct", 10.0)
-    gain_pct = (ltp - entry) / entry * 100.0 if entry else 0.0
-    if max_lag > 0 and gain_pct >= min_gain:
-        floor = round(ltp * (1 - max_lag / 100.0), 2)
-        # Never below entry: a "profit protection" stop under the entry price is
-        # not protecting profit. And never below the stop already in force.
-        if floor > sl and floor >= entry:
-            return {
-                "action": "TRAIL_SL", "reason": "STOP_LAG_CAP",
-                "detail": (f"up {gain_pct:.2f}% with the stop {((ltp - sl) / ltp * 100):.1f}% "
-                           f"below price — tightening to {floor:.2f}, no more than "
-                           f"{max_lag:g}% of open profit at risk"),
-                "new_sl": floor, "book_qty": 0,
-            }
+    # The ladder below already answers "not too late": deterioration exits above
+    # 1R when the trend breaks, and the time stop closes anything going nowhere.
+    # Neither needs a percentage invented on the day.
 
     # ── 5. Time stop — only on positions that are NOT working ────────────────
     if (sessions_held >= policy["time_stop_days"]
