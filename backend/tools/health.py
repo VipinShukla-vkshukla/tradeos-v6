@@ -317,6 +317,55 @@ def check_learning_loop() -> tuple[bool, str]:
                    f"python -m intraday.outcomes --backfill")
 
 
+def check_cost_rates() -> tuple[bool, str]:
+    """
+    Do the configured charge rates still match the published schedule?
+
+    Rates live in system_config so they can be corrected without a deploy. The
+    cost of that flexibility is that a rate can go stale and nothing notices —
+    and cost_model's own docstring says a stale rate "silently biases every
+    sizing decision", which is exactly what happened: cost_exchange_pct sat at
+    the superseded NSE 0.00297% after NSE moved to 0.00307%.
+
+    PUBLISHED is the Zerodha equity schedule, NSE, pinned here as the reference
+    the config is checked against. It does NOT detect Zerodha changing its
+    prices — nothing automated can — but it does detect the config drifting
+    from what this file says the schedule is, which is the failure that
+    actually occurred. When Zerodha revises a rate, change it here AND in
+    system_config; the check failing is the reminder that both must move.
+    """
+    from intraday.cost_model import _rates
+    PUBLISHED = {
+        # equity DELIVERY (CNC)
+        "CNC": {"brokerage_flat": 0.0, "brokerage_pct": 0.0,
+                "stt_buy_pct": 0.1, "stt_sell_pct": 0.1,
+                "exchange_pct": 0.00307, "sebi_pct": 0.0001,
+                "stamp_buy_pct": 0.015, "gst_pct": 18.0},
+        # equity INTRADAY (MIS)
+        "MIS": {"brokerage_flat": 20.0, "brokerage_pct": 0.03,
+                "stt_buy_pct": 0.0, "stt_sell_pct": 0.025,
+                "exchange_pct": 0.00307, "sebi_pct": 0.0001,
+                "stamp_buy_pct": 0.003, "gst_pct": 18.0},
+    }
+    bad = []
+    for product, expected in PUBLISHED.items():
+        got = _rates(product)
+        for key, want in expected.items():
+            if abs(float(got.get(key, 0)) - want) > 1e-9:
+                bad.append(f"{product}.{key}={got.get(key)} (published {want})")
+    if bad:
+        return False, ("charge rates disagree with the published schedule: "
+                       + "; ".join(bad))
+    # DP is not in the rate table above because it is account-specific and only
+    # the ledger proves it. This one comes from the operator's own ledger rows.
+    dp = _rates("CNC")["dp_per_sell"]
+    if dp <= 0:
+        return False, ("CNC dp_per_sell is 0 — delivery sells pay a flat "
+                       "depository fee and omitting it understates every swing exit")
+    return True, (f"{sum(len(v) for v in PUBLISHED.values())} rates match the "
+                  f"published NSE equity schedule, CNC DP Rs {dp:.2f}")
+
+
 def check_exit_actions() -> tuple[bool, str]:
     """
     Every exit action that can SELL must be able to sell from either caller,
@@ -374,6 +423,7 @@ def check_exit_actions() -> tuple[bool, str]:
 CHECKS = [
     ("config",   "risk numbers contradict each other, or a switch does nothing", check_config,   False),
     ("exits",    "an exit rule can sell without alerting, or fires from only one caller", check_exit_actions, False),
+    ("costs",    "charges are priced off a stale or wrong-product rate",         check_cost_rates, False),
     ("selects",  "a query reads a column the schema no longer has",              check_selects,  False),
     ("kite",     "no broker session, or the IP is not allowlisted",              check_kite,     False),
     ("data",     "decisions would run on stale inputs",                          check_data_freshness, False),

@@ -34,7 +34,7 @@ CHARGES MODELLED (Zerodha equity intraday, MIS)
 -----------------------------------------------
     brokerage   ₹20 or 0.03% per executed order, whichever is LOWER
     STT         0.025% on the SELL side only
-    exchange    0.00297% (NSE) on turnover
+    exchange    0.00307% (NSE) on turnover — BSE is 0.00375%
     SEBI        0.0001% on turnover
     stamp duty  0.003% on the BUY side only
     GST         18% on (brokerage + exchange + SEBI)
@@ -103,7 +103,7 @@ def _rates(product: str = "MIS") -> dict:
             "brokerage_pct":    cfg_float("cost_cnc_brokerage_pct", 0.0),
             "stt_buy_pct":      cfg_float("cost_cnc_stt_buy_pct", 0.1),
             "stt_sell_pct":     cfg_float("cost_cnc_stt_sell_pct", 0.1),
-            "exchange_pct":     cfg_float("cost_exchange_pct", 0.00297),
+            "exchange_pct":     cfg_float("cost_exchange_pct", 0.00307),
             "sebi_pct":         cfg_float("cost_sebi_pct", 0.0001),
             "stamp_buy_pct":    cfg_float("cost_cnc_stamp_buy_pct", 0.015),
             "gst_pct":          cfg_float("cost_gst_pct", 18.0),
@@ -115,7 +115,7 @@ def _rates(product: str = "MIS") -> dict:
         "brokerage_pct":    cfg_float("cost_brokerage_pct", 0.03),
         "stt_buy_pct":      cfg_float("cost_stt_buy_pct", 0.0),
         "stt_sell_pct":     cfg_float("cost_stt_sell_pct", 0.025),
-        "exchange_pct":     cfg_float("cost_exchange_pct", 0.00297),
+        "exchange_pct":     cfg_float("cost_exchange_pct", 0.00307),
         "sebi_pct":         cfg_float("cost_sebi_pct", 0.0001),
         "stamp_buy_pct":    cfg_float("cost_stamp_buy_pct", 0.003),
         "gst_pct":          cfg_float("cost_gst_pct", 18.0),
