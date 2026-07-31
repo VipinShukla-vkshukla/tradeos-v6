@@ -132,7 +132,7 @@ class IntradayEngine:
             self.candidates = []
 
         if self._policy is None:
-            from control.position_lifecycle import _upsert_position, load_exit_policy
+            from control.position_lifecycle import load_exit_policy
             self._policy = load_exit_policy()
 
     def refresh_contexts(self) -> int:
@@ -992,6 +992,13 @@ class IntradayEngine:
         # hard way: an order placed and not recorded is re-derived and placed
         # again on the next cycle. PPLPHARMA sold twice that way.
         try:
+            # Local import: control.position_lifecycle imports this package, so
+            # module scope would be circular. It was previously imported only
+            # inside load_state(), which put the name out of scope here — every
+            # auto-entry placed its order and then raised NameError writing the
+            # position, leaving a real holding with no row. PPLPHARMA was bought
+            # at 09:24 and never appeared in the book.
+            from control.position_lifecycle import _upsert_position
             _upsert_position(self.sb, {
                 "symbol": sym, "mode": "LIVE", "framework": "SWING",
                 "product": "CNC", "status": "ACTIVE",

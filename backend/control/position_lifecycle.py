@@ -664,22 +664,27 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
         for p in (fetch_positions().get("net") or []):
             q = int(p.get("quantity") or 0)
             if q > 0:
+                # Carry the REAL average price. It was dropped, so a position
+                # adopted from day positions opened at entry_price 0.00 — which
+                # makes the R multiple, the P&L and every rung of the exit ladder
+                # meaningless, on a position the system just bought.
                 day_qty[(p.get("tradingsymbol"),
-                         (p.get("product") or "CNC").upper())] = q
+                         (p.get("product") or "CNC").upper())] = (
+                    q, float(p.get("average_price") or p.get("last_price") or 0))
     except Exception as e:
         # Cannot see today's fills -> cannot safely decide anything is gone.
         logger.warning(f"  reconcile: day positions unavailable ({e}) — "
                        f"skipping to avoid closing settled-tomorrow buys")
         return {"status": "no_day_positions", "opened": 0, "closed": 0, "adjusted": 0}
 
-    for key, q in day_qty.items():
+    for key, (q, avg) in day_qty.items():
         if key not in hold_map:
             # Same shape fetch_holdings() returns, total_quantity included —
             # callers below read that key and a partial dict would raise here
             # rather than at the boundary where it was built.
             hold_map[key] = {"symbol": key[0], "quantity": q, "t1_quantity": 0,
-                             "total_quantity": q, "average_price": 0.0,
-                             "last_price": 0.0, "product": key[1],
+                             "total_quantity": q, "average_price": avg,
+                             "last_price": avg, "product": key[1],
                              "pnl": 0.0, "close_price": 0.0, "day_change_pct": 0.0}
     db_map  = {(r["symbol"], (r.get("product") or "CNC").upper()): r
                for r in db_rows}

@@ -115,7 +115,7 @@ def _today_totals(sb, framework: str = "SWING") -> tuple[int, float, float]:
     """
     try:
         start = datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0)
-        rows = (sb.table("intraday_broker_log").select("price,quantity,action,framework")
+        rows = (sb.table("intraday_broker_log").select("price,quantity,action,framework,side")
                   .eq("channel", "ORDER").gte("ts", start.isoformat())
                   .execute().data or [])
         placed = [r for r in rows if r.get("action") == "PLACED"]
