@@ -639,7 +639,17 @@ def load_context(sb, trade_date: str) -> dict:
 
 # ── Prompt builder ─────────────────────────────────────────────────────────
 
-def build_prompt(ctx: dict, trade_date: str) -> str:
+def build_prompt(ctx: dict, trade_date: str,
+                 rank_only: list | None = None) -> str:
+    """
+    `rank_only` scopes the OUTPUT, never the INPUT.
+
+    Every candidate stays in the prompt regardless, because sector exposure and
+    correlation groups are cross-candidate judgements — asking about four names
+    in isolation would produce four "standalone" verdicts and miss the very
+    concentration this step exists to catch. Only the list the model must
+    RETURN is narrowed, which is what bounds the response length.
+    """
     mi  = ctx["market_intel"]
     pos = ctx["positions"]
 
@@ -1006,6 +1016,18 @@ def build_prompt(ctx: dict, trade_date: str) -> str:
                 f"Reason: {note[1].strip()[:120] if len(note)>1 else '?'}"
             )
 
+    if rank_only:
+        lines += [
+            "",
+            "═══ SCOPE FOR THIS RESPONSE ═══",
+            f"  Every candidate above is shown so you can judge sector exposure and",
+            f"  correlation across the WHOLE field. But return ranked_candidates for",
+            f"  ONLY these {len(rank_only)} symbols: {', '.join(rank_only)}",
+            "  Omit all others from ranked_candidates. Still fill in",
+            "  sector_exposure_warnings and correlation_groups using the full field.",
+            "",
+        ]
+
     lines.append(r"""
 ═══ OUTPUT FORMAT ═══
 Return ONLY this exact JSON. Rank ALL candidates above — none should be missing.
@@ -1144,6 +1166,117 @@ def call_ai(prompt: str) -> dict | None:
         break
 
     return _parse_ai_json(full_text)
+
+
+def call_ai_batched(ctx: dict, trade_date: str, batch_size: int = 0,
+                    suffix: str = "") -> dict | None:
+    """
+    Rank the field in batches small enough to come back whole.
+
+    WHY THIS EXISTS
+    ---------------
+    On 2026-07-31 twelve candidates in one call truncated at 20,000 max_tokens,
+    truncated again on retry at 28,000, failed to parse at line 301, and the
+    step exited with nothing. The ML fallback then produced nothing either, so
+    signal_output_daily got zero ranked candidates, the alert went out with
+    T1:0 T2:0, and quality checks C08/C09/C18 all fired. One over-long response
+    took out the whole evening's tiering.
+
+    Raising max_tokens does not fix it. The provider accepts the larger number
+    and stops generating anyway — attempt one returned 4,321 characters against
+    a 20,000-token budget. Output length is the constraint, so the request has
+    to be smaller, which is what the previous code's own warning said.
+
+    WHAT IS PRESERVED
+    -----------------
+    Every batch sees EVERY candidate; only the list it must return is narrowed.
+    Sector exposure and correlation are cross-candidate judgements and would be
+    destroyed by splitting the input — four names looked at alone are four
+    standalone verdicts. So the input is whole and the output is partitioned.
+
+    WHAT IS LOST
+    ------------
+    The model no longer assigns one global rank order in a single pass; ranks
+    are renumbered on merge by (tier, confidence). For a decision whose output
+    is tiers and actions this is close to free, and it is unambiguously better
+    than the current behaviour of returning nothing at all.
+
+    A batch that fails does not fail the step. Its candidates are simply absent
+    from the ranking, which is logged, and the remaining batches still land.
+    """
+    cands = ctx.get("candidates") or []
+    if not cands:
+        return None
+
+    batch_size = batch_size or cfg_int("ai_decision_batch_size", 5)
+    symbols = [c.get("symbol") for c in cands if c.get("symbol")]
+
+    # One call is cheaper and keeps a single global rank order, so it stays the
+    # path for a field small enough to answer in one response.
+    if len(symbols) <= batch_size:
+        return call_ai(build_prompt(ctx, trade_date) + suffix)
+
+    batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
+    logger.info(f"  {len(symbols)} candidates exceeds the {batch_size}-per-call "
+                f"budget — splitting into {len(batches)} batches, each seeing "
+                f"the full field")
+
+    merged: dict = {}
+    ranked: list = []
+    seen: set = set()
+    failed: list = []
+
+    for i, group in enumerate(batches, start=1):
+        logger.info(f"  batch {i}/{len(batches)}: {', '.join(group)}")
+        part = call_ai(build_prompt(ctx, trade_date, rank_only=group) + suffix)
+        if not part:
+            failed.append(group)
+            logger.warning(f"  batch {i} returned nothing — {len(group)} "
+                           f"candidate(s) will be missing from the ranking")
+            continue
+
+        for row in (part.get("ranked_candidates") or []):
+            sym = row.get("symbol")
+            # A batch asked for four names can still volunteer others. Keep the
+            # first verdict per symbol so a later batch cannot silently restate
+            # an earlier one with different conviction.
+            if not sym or sym in seen:
+                continue
+            seen.add(sym)
+            ranked.append(row)
+
+        # Cross-candidate and portfolio sections: first non-empty wins, because
+        # every batch saw the whole field and they are answering the same
+        # question. Merging them would double-count the same warning.
+        for key in ("sector_exposure_warnings", "correlation_groups",
+                    "position_actions", "portfolio_guidance",
+                    "self_improvement_notes", "summary"):
+            if key not in merged and part.get(key):
+                merged[key] = part[key]
+
+    if not ranked:
+        logger.warning("  every batch failed — nothing to rank")
+        return None
+
+    # Renumber. The per-batch ranks are 1..n within their own batch, so leaving
+    # them would produce several rank 1s and a downstream sort on a field that
+    # no longer means anything.
+    _tier = {"TIER_1": 0, "TIER_2": 1, "TIER_3": 2}
+    ranked.sort(key=lambda r: (_tier.get(str(r.get("tier")).upper(), 3),
+                               -float(r.get("confidence") or 0)))
+    for n, row in enumerate(ranked, start=1):
+        row["rank"] = n
+
+    merged["ranked_candidates"] = ranked
+    if failed:
+        missing = [s for g in failed for s in g]
+        merged["batch_failures"] = missing
+        logger.warning(f"  ranked {len(ranked)}/{len(symbols)} — missing: "
+                       f"{', '.join(missing)}")
+    else:
+        logger.success(f"  ranked {len(ranked)}/{len(symbols)} across "
+                       f"{len(batches)} batches")
+    return merged
 
 
 def _looks_truncated(full_text: str) -> bool:
@@ -1742,12 +1875,19 @@ def main():
     # The block states the model's own trustworthiness. Right now only one
     # closed trade is signal-attributed, so it is presented as a weak prior;
     # a confident-looking 0.73 must not imply evidence that does not exist.
+    ml_suffix = ""
     try:
         from ai.ml_support import ml_win_probability, is_ml_trustworthy, format_for_prompt
         ml_scores = ml_win_probability(candidates)
         if ml_scores:
             ok, why = is_ml_trustworthy(sb)
-            prompt += format_for_prompt(ml_scores, ok, why)
+            # Held separately as well as appended: batching rebuilds the prompt
+            # per batch from ctx, and appending only to this copy would have
+            # silently dropped the ML second opinion from every batched run —
+            # the model back on disk unused, which is the exact failure the
+            # block was written to end.
+            ml_suffix = format_for_prompt(ml_scores, ok, why)
+            prompt += ml_suffix
             logger.info(f"  ML second opinion attached ({'usable' if ok else 'weak prior'}: {why})")
     except Exception as e:
         logger.debug(f"  ML second opinion unavailable: {e}")
@@ -1758,10 +1898,11 @@ def main():
         return {"status": "dry_run", "prompt_chars": len(prompt),
                 "candidates": len(candidates)}
 
-    # Single AI call
-    logger.info(f"Calling AI (single batch, {len(candidates)} candidates)...")
+    # Batched when the field is too large to answer in one response. Small
+    # fields still go in a single call — see call_ai_batched.
+    logger.info(f"Calling AI ({len(candidates)} candidates)...")
     t0     = time.time()
-    result = call_ai(prompt)
+    result = call_ai_batched(ctx, trade_date, suffix=ml_suffix)
     elapsed = time.time() - t0
 
     if not result:

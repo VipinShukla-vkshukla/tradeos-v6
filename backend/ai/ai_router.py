@@ -153,7 +153,22 @@ def raw_completion(prompt: str, max_tokens: int = 1500) -> str:
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
-        return resp.choices[0].message.content.strip()
+        # finish_reason IS the answer to "was this truncated", and it was being
+        # thrown away — so callers guessed by looking for a closing brace, which
+        # cannot distinguish "the model stopped early" from "the model wrote
+        # invalid JSON". Step 19 spent two calls and eight minutes on 2026-07-31
+        # inferring what one field states outright.
+        choice = resp.choices[0]
+        if getattr(choice, "finish_reason", None) == "length":
+            used = getattr(getattr(resp, "usage", None), "completion_tokens", "?")
+            logger.warning(
+                f"  {provider_name}/{model} stopped at the token limit "
+                f"(finish_reason=length, completion_tokens={used}, "
+                f"max_tokens={max_tokens}) — the response is incomplete. "
+                f"Raising max_tokens only helps if the model honours it; "
+                f"otherwise the request has to be split."
+            )
+        return (choice.message.content or "").strip()
 
     raise RuntimeError(f"raw_completion not implemented for provider: {provider_name}")
 

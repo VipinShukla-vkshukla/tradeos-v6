@@ -1298,12 +1298,52 @@ def enrich_signal_log(sb, trade: dict, lesson: dict):
         "ai_note":          ai_note[:200],
     }
 
+    def _write(payload: dict, date_value: str):
+        return (sb.table("signal_log").update(payload)
+                  .eq("symbol", sym).eq("date", date_value).execute())
+
+    def _drop_unknown(payload: dict, err: str) -> dict | None:
+        """
+        Strip the one column PostgREST just rejected and hand back the rest.
+
+        PostgREST fails the WHOLE update when any column is unknown, so a single
+        missing column loses every field in the payload. On 2026-07-31 that meant
+        "0/16 signal_log enriched" and no outcome, no pnl and no ai_note reached
+        the table — because execution_status did not exist.
+
+        Migration 029 adds the three missing columns. Until it is applied, and on
+        any future schema drift, writing the fields that DO exist is strictly
+        better than writing none: the learning loop reads outcome, and losing it
+        to keep an all-or-nothing write is the wrong trade.
+        """
+        import re
+        m = re.search(r"'([a-z_]+)' column", err or "")
+        if not m or m.group(1) not in payload:
+            return None
+        col = m.group(1)
+        logger.warning(f"  signal_log has no '{col}' column — apply migration 029. "
+                       f"Writing the remaining fields rather than none.")
+        return {k: v for k, v in payload.items() if k != col}
+
     try:
-        response = (sb.table("signal_log")
-                      .update(update_payload)
-                      .eq("symbol", sym)
-                      .eq("date", signal_date)
-                      .execute())
+        try:
+            response = _write(update_payload, signal_date)
+        except Exception as e:
+            reduced = update_payload
+            # At most one attempt per column, so a schema missing all three
+            # still resolves rather than looping.
+            for _ in range(len(update_payload)):
+                reduced = _drop_unknown(reduced, str(e))
+                if not reduced:
+                    raise
+                try:
+                    response = _write(reduced, signal_date)
+                    update_payload = reduced
+                    break
+                except Exception as e2:
+                    e = e2
+            else:
+                raise
         if response.data:
             logger.debug(f"signal_log enriched for {sym}@{signal_date}: {outcome}")
             return True
