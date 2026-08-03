@@ -839,7 +839,7 @@ def call_ai(prompt: str, n_candidates: int = 0) -> dict | None:
             try:
                 full_text = raw_completion(
                     f"{_SYSTEM_PROMPT}\n\n{prompt}",
-                    max_tokens=cfg_int("ai_market_intel_max_tokens", 16000))
+                    max_tokens=cfg_int("ai_market_intel_max_tokens", 28000))
             except Exception as e:
                 logger.warning(f"Claude fallback also failed: {e}")
                 return None
@@ -856,7 +856,7 @@ def call_ai(prompt: str, n_candidates: int = 0) -> dict | None:
         # one per watch signal — so a single fixed budget is guaranteed to be
         # wrong on one side or the other. Escalate, and let the finish_reason
         # log say which side it landed on.
-        budgets = [cfg_int("ai_market_intel_max_tokens", 16000), 28000]
+        budgets = [cfg_int("ai_market_intel_max_tokens", 28000), 35000]
         for attempt, mt in enumerate(budgets, start=1):
             try:
                 full_text = raw_completion(f"{_SYSTEM_PROMPT}\n\n{prompt}", max_tokens=mt)
