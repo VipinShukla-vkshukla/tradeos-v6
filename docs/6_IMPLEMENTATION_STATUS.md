@@ -24,9 +24,9 @@ with the live system.
 | 5 | Decision-input integrity | **Complete** — quote mode gated on parity by design | 04-Aug-2026 |
 | 6 | Engine consolidation | **Complete** — shadow phase and both merges | 04-Aug-2026 |
 | 7 | Governance and cadence | **Complete** | 04-Aug-2026 |
-| 8 | New alpha | **Complete** — PEAD + ACC, both shadowed | 04-Aug-2026 |
-| 9 | Structural overlays | **Complete** — expiry, volatility, liquidity | 04-Aug-2026 |
-| 10 | Allocation | **Complete** — shadow only, both live switches off | 04-Aug-2026 |
+| 8 | New alpha | **Complete** — PEAD + ACC, shadowed pending detections (§4·9) | 04-Aug-2026 |
+| 9 | Structural overlays | **Complete and LIVE** — expiry, volatility, liquidity | 04-Aug-2026 |
+| 10 | Allocation | **Complete** — recording, not allocating, pending 30 disagreements (§4·9) | 04-Aug-2026 |
 
 **On what "complete" means here.** A stage is complete when its deliverables are
 built and its acceptance criteria are met *or answered*. Three of the entries
@@ -95,7 +95,9 @@ Exits are deliberately not gated. MODE_QUOTE is implemented and **off** until
 asserts the tick handler does no I/O and that the guard is actually consulted;
 both demonstrated failing.
 
-**Stage 6 (superseded — see §5·0 and the note above).** Intraday engines had only on/off — turning one off stopped it
+**Stage 6 (SUPERSEDED — the merges landed; see §5·0 and the Stage 6 note in §1).**
+The paragraph below describes the state before the merges and is kept for the
+record only. Intraday engines had only on/off — turning one off stopped it
 recording, which destroys the evidence a retirement decision needs. Added
 ACTIVE/SHADOW/RETIRED to match what swing has always had. VCE and RNG are
 shadowed: they evaluate, their detections are written with verdict `SHADOW` and
@@ -293,6 +295,97 @@ Master spec Stage 1 acceptance criteria, each with the evidence.
 
 Full health sweep after the changes: **10 of 11 checks pass**; the failure is
 the pre-existing Kite IP mismatch in §3.4.
+
+---
+
+## 4·9 — 05-Aug-2026: THE GO-LIVE DECISION, AND WHERE IT WAS DECLINED
+
+The operator asked to take Phase 4 fully live — "no shadow work, I don't expect
+any major shift unless you disagree." I disagree on four of the seven items, and
+the disagreement is not caution. It is that flipping those four would mean acting
+on **zero or negative evidence**, which is a different thing from acting on new
+code that has been strengthened.
+
+**What went live (migration 042).** One switch, plus one registered and
+deliberately left off.
+
+| Switch | Action | Why it needs no evidence |
+|---|---|---|
+| `exit_runner_cap_enforced` | **→ true** | Measured live: **0 open and 0 closed positions** have ever been marked a runner. Enabling the cap changes nothing today and caps at 2 the day two positions simultaneously want to run. Pure downside protection. |
+| `sizing_max_cost_r` | **registered, left at 0** | See below — turning it on would nearly halt the swing book. |
+
+**Why `sizing_max_cost_r` stayed off, which is a finding rather than caution.**
+Measured CNC friction at this account's own clip sizes:
+
+```
+Rs      0–2,500   friction 2.363 R
+Rs  2,500–5,000   friction 1.046 R
+Rs 10,000–25,000  friction 0.605 R   <- the LARGEST band the account trades
+```
+
+Even a lenient 0.7R cap refuses essentially every delivery trade at current
+position sizes, because the flat Rs 15.04 DP fee dominates a Rs 4,000 clip. The
+gate is not wrong; the clip size is. The real fix is Stage 2 deliverable 4 —
+fewer, larger positions inside an unchanged risk budget — which is a
+position-sizing change that alters what capital does on **every** trade, not
+just the refused ones. It was not asked for and is not made here.
+
+It is now a registered row rather than a Python default returning 0.0 with
+nothing describing it. That silent-default shape is what `CLAUDE.md` calls the
+dominant failure mode in this project.
+
+### What was NOT switched on, and the evidence for each
+
+| Item | Requested state | Measured today | Verdict |
+|---|---|---|---|
+| `alloc_live_intraday` / `alloc_live_swing` | live | **0 rows** in `allocation_decisions` | Refused |
+| PEAD / ACC | live | **0 detections** recorded | Refused |
+| RVS, MOM (swing) | live | n=1,471 @ **−0.49%**, 42% win · n=1,090 @ +0.05% | Refused |
+| VCE, RNG (intraday) | live | E[R] **−0.941** and **−1.376**, both p90 −1.00 | Refused |
+
+**The allocator has recorded zero decisions.** Not few — zero. It was wired into
+the cycle hours ago and no session has run since. Promoting it would not be
+"trusting a strengthened framework"; it would be handing capital allocation to a
+component whose output nobody, including me, has ever seen. The gate is ≥30
+scored **disagreements** and the count is 0.
+
+**PEAD and ACC have zero detections.** ACC scored 54 candidates in a one-off
+test against a live universe; that is not the same as a nightly pipeline run
+having recorded them to `screener_performance`. Nothing has been scored.
+
+**RVS, MOM, VCE and RNG are the important distinction.** These are *not*
+shadowed because they are new and unproven. They are shadowed because they were
+**measured and found to lose money or be flat**, on 1,471 and 1,090 and 75 and
+76 observations respectively. No amount of framework strengthening changes those
+numbers. Making them live is not removing training wheels — it is overriding a
+measurement with a preference, which is the one thing every document in `docs/`
+agrees must not happen.
+
+### What this means practically
+
+The system IS live in every sense that matters: the evening pipeline runs all
+its new steps, the daemon scores every proposal and records every verdict, both
+new engines detect and are resolved nightly, the overlays size and gate real
+trades, and governance refuses out-of-window changes. **The only thing "shadow"
+means here is that four measured-negative engines and one never-observed
+allocator do not receive capital.**
+
+That distinction is the difference between a system that is running and a system
+that is running on faith.
+
+### A gap this pass found and closed
+
+`allocation_decisions.outcome_r` — the field `tools/allocator_report` counts a
+disagreement on — was created by migration 041 and **written by nothing**. The
+allocator could have shadowed for a full year while the scorecard reported zero
+scored disagreements, and the gate would never have moved.
+
+Identical in shape to the 1,711 plan outcomes that sat NULL because
+`final_snapshot` wrote the columns and no producer ever filled them. Fixed:
+`allocation/outcomes.py`, wired as pipeline step 28b. Counterfactuals resolve
+**against** the proposal on an ambiguous bar and are haircut by
+`alloc_shortfall_r`, which is exposed as an assumption rather than buried as a
+constant, because M1's real shortfall instrumentation still does not exist.
 
 ---
 

@@ -253,6 +253,25 @@ def main():
         from swing.signals.outcomes import main as fn
         return fn()
 
+    def step_score_allocator():
+        """
+        Score every allocation verdict — taken, deferred and declined.
+
+        WITHOUT THIS THE PROMOTION GATE CANNOT MOVE. tools/allocator_report
+        counts a disagreement only once it carries an outcome_r; migration 041
+        created that column and nothing wrote it. The allocator could have
+        shadowed for a year and the scorecard would have read zero scored
+        disagreements the whole time — the same silent hole as the 1,711 plan
+        outcomes that sat NULL.
+
+        Runs after the plan resolver so both populations are scored in one pass,
+        and before roll-off so it still has the price history it walks.
+        Non-fatal: a scoring gap costs a day of promotion evidence, an aborted
+        pipeline costs a day of signals.
+        """
+        from allocation.outcomes import main as fn
+        return fn()
+
     def step_storage_rolloff():
         """
         Archive history out of stock_data_daily so the database never reaches
@@ -426,6 +445,7 @@ def main():
             ("26_alerts",              step_alerts,              False),  # Telegram digest
             ("27_quality_audit",       step_quality_audit,       False),  # output-side checks, advisory
             ("28_resolve_outcomes",    step_resolve_outcomes,    False),  # full-field priors: score every plan
+            ("28b_score_allocator",    step_score_allocator,     False),  # promotion evidence: score every verdict
             ("29_storage_rolloff",     step_storage_rolloff,     False),  # LAST: archive history, never fatal
         ]
     else:
