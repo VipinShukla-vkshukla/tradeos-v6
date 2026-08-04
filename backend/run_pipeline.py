@@ -212,6 +212,22 @@ def main():
     def step_compute_msl():
         from swing.compute.compute_msl import main as fn; return fn()
 
+    def step_results_calendar():
+        """
+        Give the results calendar a memory.
+
+        nifty_upcoming_events is forward-only: measured 04-Aug-2026 it held one
+        day of past and two weeks of future, and dates that pass stop being
+        there. The post-earnings drift engine asks "what reported N days ago",
+        which that table structurally cannot answer.
+
+        Runs after events ingestion and before screening, so today's screen sees
+        a calendar that remembers. Non-fatal: a missed capture costs one day of
+        PEAD history, an aborted pipeline costs a day of signals.
+        """
+        from swing.signals.engines_stage8 import capture_results_calendar
+        return {"recorded": capture_results_calendar()}
+
     def step_resolve_outcomes():
         """
         Score every plan the system wrote, traded or not.
@@ -392,6 +408,7 @@ def main():
             ("15_regime_predict",      step_regime_predict,      False),  # ML predicted_regime overlay (P2-D)
             # ── Exit policy on held positions (needs EOD closes from step 12) ──
             ("16_position_manage",     step_position_manage,     False),
+            ("16b_results_calendar",   step_results_calendar,    False),  # PEAD needs a past, not a future
             # ── Selection + enrichment ──
             ("17_screen_stocks",       step_screen_stocks,       True),   # 9 engines → master_shortlist / msl_computed
             ("18_compute_msl",         step_compute_msl,         True),   # intelligence fields, entry zones, final_score
