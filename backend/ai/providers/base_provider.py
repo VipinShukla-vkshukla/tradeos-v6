@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Base AI Provider Interface
+TradeOS v7 — Base AI Provider Interface
 All providers must implement this interface.
 ConvictionResult is the shared output struct.
 """

@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Brain Engine v2: LLM Synthesizer
+TradeOS v7 — Brain Engine v2: LLM Synthesizer
 ===============================================
 Uses your existing ai_router with the full dataset. The LLM sees
 ALL fields from ALL tables — no pre-filtering by us.

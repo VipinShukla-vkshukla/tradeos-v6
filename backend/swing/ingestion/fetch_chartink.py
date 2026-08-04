@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Chartink Atlas CSV Fetcher (Playwright)
+TradeOS v7 — Chartink Atlas CSV Fetcher (Playwright)
 Fetches CSV from Chartink dashboard and writes to Google Sheet + Supabase.
 Runs headed (headless=False) always — Xvfb provides virtual display on GitHub Actions.
 """

@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Phase 2: Macro Indicators Ingestion (SG5)
+TradeOS v7 — Phase 2: Macro Indicators Ingestion (SG5)
 Runs as step 00b — after 00a_market_news, before fetch_chartink.
 
 WHY THIS EXISTS:
@@ -557,7 +557,7 @@ def main():
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="TradeOS v6 — Macro Indicators Ingestion")
+    parser = argparse.ArgumentParser(description="TradeOS v7 — Macro Indicators Ingestion")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if args.dry_run:

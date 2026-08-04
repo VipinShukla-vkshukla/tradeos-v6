@@ -332,7 +332,7 @@ def main(once: bool = False, dry: bool = False) -> None:
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="TradeOS v6 — Intraday monitor")
+    ap = argparse.ArgumentParser(description="TradeOS v7 — Intraday monitor")
     ap.add_argument("--once", action="store_true", help="one cycle then exit")
     ap.add_argument("--dry", action="store_true", help="force DRY_RUN, no broker writes")
     ap.add_argument("--status", action="store_true", help="print gates and watch list")

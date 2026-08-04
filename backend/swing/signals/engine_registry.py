@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Engine Registry
+TradeOS v7 — Engine Registry
 =============================
 Declarative hard-filter gates for all nine screener engines, plus engine
 lifecycle state.

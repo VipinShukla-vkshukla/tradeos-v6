@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Phase 2: Market News Ingestion
+TradeOS v7 — Phase 2: Market News Ingestion
 Runs as step 01 — first step of evening pipeline, before fetch_chartink.
 Scrapes 8 sources to populate market_news table so
 market_intelligence_engine.py has structured news context.
@@ -730,7 +730,7 @@ def main():
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="TradeOS v6 — Market News Ingestion")
+    parser = argparse.ArgumentParser(description="TradeOS v7 — Market News Ingestion")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if args.dry_run:

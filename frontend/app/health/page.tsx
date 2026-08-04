@@ -1,6 +1,6 @@
 'use client';
 
-// TradeOS v6 — Preflight
+// TradeOS v7 — Preflight
 //
 // Runs every readiness check the moment the page opens and answers ONE
 // question above the fold: can I trust today's output?

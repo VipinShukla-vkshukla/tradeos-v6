@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Capital Reconciliation
+TradeOS v7 — Capital Reconciliation
 ====================================
 Compares the TOTAL_CAPITAL the system SIZES ON against what the broker account
 actually holds.

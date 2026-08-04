@@ -1,5 +1,5 @@
 """
-TradeOS v6 — AI Fallback: News Aggregator
+TradeOS v7 — AI Fallback: News Aggregator
 Combines multiple scraped sources for a stock.
 Used when AI provider is unavailable or budget exceeded.
 """

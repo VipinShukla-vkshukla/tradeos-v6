@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Pipeline Orchestrator
+TradeOS v7 — Pipeline Orchestrator
 Phase 0: foundation (ingest → signals → history)
 Phase 1: + AI enrichment, FII, events, post-trade, alerts
 Phase 2: + compute indicators, ASM, market news, macro, market intel, quality gate
@@ -56,7 +56,7 @@ def print_summary(results: dict, total: float):
     ok  = sum(1 for r in results.values() if r["ok"])
     err = sum(1 for r in results.values() if not r["ok"])
     logger.info(f"\n{'═'*60}")
-    logger.info(f"  TradeOS v6 Pipeline — {today_ist()} IST")
+    logger.info(f"  TradeOS v7 Pipeline — {today_ist()} IST")
     logger.info(f"{'═'*60}")
     for name, r in results.items():
         status = "✅ OK" if r["ok"] else "❌ FAIL"
@@ -67,7 +67,7 @@ def print_summary(results: dict, total: float):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="TradeOS v6 Pipeline")
+    parser = argparse.ArgumentParser(description="TradeOS v7 Pipeline")
     parser.add_argument("--step",      help="Run single step only")
     parser.add_argument("--dry-run",   action="store_true")
     args = parser.parse_args()
@@ -80,7 +80,7 @@ def main():
 
     phase = int(cfg("autonomy_phase", "0"))
     logger.info(f"{'═'*60}")
-    logger.info(f"  TradeOS v6 Pipeline | Phase {phase}")
+    logger.info(f"  TradeOS v7 Pipeline | Phase {phase}")
     logger.info(f"{'═'*60}")
 
     # ── Step definitions ──────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Phase 2: ML Regime Classifier  (v3 — holistic rebuild)
+TradeOS v7 — Phase 2: ML Regime Classifier  (v3 — holistic rebuild)
 ====================================================================
 CHANGES vs v2 (strategic audit, 03-May-2026):
 
@@ -844,7 +844,7 @@ def _should_retrain() -> bool:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="TradeOS v6 — ML Regime Classifier v3")
+    parser = argparse.ArgumentParser(description="TradeOS v7 — ML Regime Classifier v3")
     parser.add_argument("--train",   action="store_true")
     parser.add_argument("--predict", action="store_true")
     parser.add_argument("--status",  action="store_true")

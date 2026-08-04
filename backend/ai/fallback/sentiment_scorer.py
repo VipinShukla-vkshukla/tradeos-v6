@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Rule-Based Sentiment Scorer
+TradeOS v7 — Rule-Based Sentiment Scorer
 Scores news headlines without any AI/LLM.
 Free, deterministic.
 """

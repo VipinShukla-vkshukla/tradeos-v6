@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Signal Output Daily Snapshot
+TradeOS v7 — Signal Output Daily Snapshot
 Step 20.5: Runs after ai_decision_engine (step 19), before send_alerts (step 20).
 
 PURPOSE
@@ -633,7 +633,7 @@ def main(force: bool = False):
 
 if __name__ == "__main__":
     import argparse
-    _ap = argparse.ArgumentParser(description="TradeOS v6 — step 20.5 snapshot")
+    _ap = argparse.ArgumentParser(description="TradeOS v7 — step 20.5 snapshot")
     _ap.add_argument("--force", action="store_true",
                      help="overwrite an existing snapshot for today (use only to "
                           "repair a run where an upstream step failed)")

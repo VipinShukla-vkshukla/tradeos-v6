@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Brain Engine v2: Backtester + Change Manager
+TradeOS v7 — Brain Engine v2: Backtester + Change Manager
 ===========================================================
 """
 

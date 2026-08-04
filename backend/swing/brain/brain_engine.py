@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Brain Engine v2: Orchestrator
+TradeOS v7 — Brain Engine v2: Orchestrator
 ============================================
 Full holistic pipeline:
   script_scanner (+ behavioral profiler + consistency checker)

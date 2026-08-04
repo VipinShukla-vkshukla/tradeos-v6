@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Phase 3: Execution Engine
+TradeOS v7 — Phase 3: Execution Engine
 Places orders via Kite Connect after all gates pass.
 NEVER called directly — only via telegram_bot.py approval flow.
 

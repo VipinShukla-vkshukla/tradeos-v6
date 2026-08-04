@@ -1,6 +1,6 @@
 'use client';
 
-// TradeOS v6 — Engine Card
+// TradeOS v7 — Engine Card
 //
 // One engine, one card. Everything needed to decide its fate is on the card:
 //   what it is, what it produces TODAY, what it has historically RETURNED,

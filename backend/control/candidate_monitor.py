@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Intraday Candidate Monitor
+TradeOS v7 — Intraday Candidate Monitor
 ========================================
 Watches today's ranked candidates against LIVE prices and alerts when the
 decision changes.
@@ -220,7 +220,7 @@ def main(require_live: bool = True) -> dict:
 
 if __name__ == "__main__":
     import argparse, os
-    ap = argparse.ArgumentParser(description="TradeOS v6 — intraday candidate monitor")
+    ap = argparse.ArgumentParser(description="TradeOS v7 — intraday candidate monitor")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--force",   action="store_true", help="Run outside market hours")
     ap.add_argument("--allow-stale", action="store_true",

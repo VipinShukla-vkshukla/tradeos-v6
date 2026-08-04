@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Post-Trade Analysis v3 (Consolidated)
+TradeOS v7 — Post-Trade Analysis v3 (Consolidated)
 ====================================================
 Pipeline position: [17] — after step_history, before generate_shortlist.
 

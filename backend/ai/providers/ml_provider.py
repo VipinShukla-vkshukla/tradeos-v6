@@ -1,5 +1,5 @@
 """
-TradeOS v6 — ML Provider v2 (conviction model)
+TradeOS v7 — ML Provider v2 (conviction model)
 ===============================================
 AI fallback #7 in ai_router.py chain. Predicts WIN probability per signal.
 No API key, no cost. Local RandomForest trained on your closed trade history.

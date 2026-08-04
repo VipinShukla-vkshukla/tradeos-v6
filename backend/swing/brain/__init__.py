@@ -1,3 +1,3 @@
 """
-TradeOS v6 — Brain Engine v2
+TradeOS v7 — Brain Engine v2
 """

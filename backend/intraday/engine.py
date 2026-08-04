@@ -1601,6 +1601,18 @@ class IntradayEngine:
         for s in setups:
             st, qty, mc = s["setup"], s["qty"], s["market"]
             corro = st.meta.get("corroborated_by") or []
+
+            # THE ALLOCATOR'S VETO, before the position is opened or alerted.
+            # Recorded as a refusal so the decision stays in intraday_setups
+            # rather than vanishing — a setup that was found and then declined
+            # on opportunity cost is evidence, and dropping it silently would
+            # make the allocator unscoreable against the greedy path.
+            ok, why = self.allocator_permits(st.symbol, "MIS", "INTRADAY")
+            if not ok:
+                self._record_setup(st, s["phase"], s.get("cost_pct") or 0.0,
+                                   "ALLOCATOR_DECLINED", 0)
+                logger.info(f"      {st.symbol}: allocator declined — {why[:90]}")
+                continue
             # In PAPER mode, actually TAKE the setup. Without this the
             # simulation measures exits but never a full round trip, and a
             # system judged only on how it leaves trades tells you nothing
@@ -1824,8 +1836,49 @@ class IntradayEngine:
             minutes_left=max(getattr(st, "minutes_to_close", 0) or 0, 0),
             open_positions=self.positions)
         takes = sum(1 for x in v if x["verdict"] == "TAKE")
-        logger.info(f"  allocator (shadow): {len(v)} proposal(s) scored, "
-                    f"{takes} would be taken, {len(v)-takes} refused")
+
+        # Keyed for the veto below. (symbol, product) is the same key
+        # open_positions has been unique on since migration 028 — a bare symbol
+        # would let a swing CNC tranche and an intraday MIS tranche of one name
+        # collide, which is the corruption that key exists to prevent.
+        self._verdicts = {(x["proposal"].symbol, x["proposal"].product): x for x in v}
+
+        live_books = [b for b in ("intraday", "swing")
+                      if cfg_bool(f"alloc_live_{b}", False)]
+        mode = f"LIVE for {'+'.join(live_books)}" if live_books else "shadow"
+        logger.info(f"  allocator ({mode}): {len(v)} proposal(s) scored, "
+                    f"{takes} to take, {len(v)-takes} refused")
+        return v
+
+    def allocator_permits(self, symbol: str, product: str, framework: str) -> tuple[bool, str]:
+        """
+        Does the allocator allow this entry? THE VETO.
+
+        Until 05-Aug-2026 `alloc_live_*` set a column value in
+        allocation_decisions and nothing else — the allocator scored, recorded,
+        and the greedy path took whatever it always would have. Flipping the
+        switch would have produced a system REPORTING itself as live-allocating
+        while allocating nothing, which is the silent-success failure this
+        project has hit four times. This is the consumer that makes the switch
+        mean what it says.
+
+        FAILS OPEN, DELIBERATELY. A proposal the allocator never saw — because
+        scoring threw, or because the adapter could not express it — is allowed
+        through. The allocator is an opportunity-cost optimiser layered on top
+        of gates that have already said yes; it is not a safety control, and
+        turning its absence into a refusal would make an allocator bug look
+        exactly like a market with no opportunities. The gates that ARE safety
+        controls (cost, structure, event, conviction, staleness) have all run
+        before this point and none of them fails open.
+        """
+        if not cfg_bool(f"alloc_live_{framework.lower()}", False):
+            return True, "allocator not live for this book"
+        v = (getattr(self, "_verdicts", None) or {}).get((symbol, product))
+        if v is None:
+            return True, "no allocator verdict — failing open"
+        if v["verdict"] == "TAKE":
+            return True, v.get("reason") or "allocator selected it"
+        return False, v.get("reason") or f"allocator returned {v['verdict']}"
 
     def _record_setup(self, s, phase: str, cost_pct: float, verdict: str, qty: int) -> None:
         """

@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Brain Engine v2: Performance Tracker
+TradeOS v7 — Brain Engine v2: Performance Tracker
 ===================================================
 Computes and stores daily/weekly/monthly performance metrics.
 Runs as the last step of the daily pipeline (after step_21_quality_check)

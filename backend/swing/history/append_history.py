@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Append MSL Snapshot to History
+TradeOS v7 — Append MSL Snapshot to History
 Runs daily as step 06_history in run_pipeline.py (Phase 0/1) or 09_history (Phase 2+).
 
 BUG FIXED (01-Apr-2026 audit):

@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Ingest Bhavcopy (NSE primary + BSE fallback)
+TradeOS v7 — Ingest Bhavcopy (NSE primary + BSE fallback)
 
 Writes to:
   - raw_prices table          (PRIMARY KEY: date, symbol)

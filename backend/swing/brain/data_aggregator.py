@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Brain Engine v2: Data Aggregator
+TradeOS v7 — Brain Engine v2: Data Aggregator
 ===============================================
 DESIGN PRINCIPLES:
   1. SELECT * everywhere — the brain decides what correlates, not us.

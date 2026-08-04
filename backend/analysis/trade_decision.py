@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Trade Decision
+TradeOS v7 — Trade Decision
 ============================
 Turns a candidate plus a live price into an ACTION.
 

@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Portfolio Construction Constraints
+TradeOS v7 — Portfolio Construction Constraints
 ================================================
 Decides whether a NEW entry is admissible given what is already held, and
 sizes it.

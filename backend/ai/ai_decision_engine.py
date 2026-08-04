@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Step 19: AI Decision Engine
+TradeOS v7 — Step 19: AI Decision Engine
 =========================================
 Pipeline position: after step 18 (market_intel), final AI step of the day.
 
@@ -1989,7 +1989,7 @@ def main():
 
 if __name__ == "__main__":
     import argparse
-    p = argparse.ArgumentParser(description="TradeOS v6 — Step 19: AI Decision Engine")
+    p = argparse.ArgumentParser(description="TradeOS v7 — Step 19: AI Decision Engine")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
     if args.dry_run:

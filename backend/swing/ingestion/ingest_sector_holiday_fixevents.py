@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Google Sheets Ingestion
+TradeOS v7 — Google Sheets Ingestion
 Reads all 15 Sheet tabs → Supabase
 Handles exact row offsets per tab (headers are NOT always row 1)
 """
@@ -520,7 +520,7 @@ def main_strength():
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser(description="TradeOS v6 — calendar prep / sector strength")
+    ap = argparse.ArgumentParser(description="TradeOS v7 — calendar prep / sector strength")
     ap.add_argument("--strength", action="store_true",
                     help="Run sector/industry strength only (requires compute_indicators to have run)")
     args = ap.parse_args()

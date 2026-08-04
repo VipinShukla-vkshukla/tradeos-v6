@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Position Lifecycle Manager
+TradeOS v7 — Position Lifecycle Manager
 ========================================
 The missing link between signals, the broker, and outcomes.
 
@@ -1634,7 +1634,7 @@ def main(reconcile: bool = True, manage: bool = True,
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser(description="TradeOS v6 — Position Lifecycle Manager")
+    ap = argparse.ArgumentParser(description="TradeOS v7 — Position Lifecycle Manager")
     ap.add_argument("--dry-run",           action="store_true")
     ap.add_argument("--reconcile-only",    action="store_true")
     ap.add_argument("--manage-only",       action="store_true")

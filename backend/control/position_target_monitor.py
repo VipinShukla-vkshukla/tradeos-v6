@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Phase 2: Position Target Monitor (SG6 + SG7)
+TradeOS v7 — Phase 2: Position Target Monitor (SG6 + SG7)
 Runs every 30 min during market hours alongside sl_monitor in pipeline_intraday.yml.
 
 SG6 — TARGET PRICE MONITOR:
@@ -285,7 +285,7 @@ def main():
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="TradeOS v6 — Position Target Monitor")
+    parser = argparse.ArgumentParser(description="TradeOS v7 — Position Target Monitor")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if args.dry_run:

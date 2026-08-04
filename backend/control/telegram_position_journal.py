@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Telegram Position Journal
+TradeOS v7 — Telegram Position Journal
 =======================================
 Manual/discretionary fallback for recording entries and exits, for trades made
 outside the framework or before the Kite reconciler next runs.
@@ -361,7 +361,7 @@ def main():
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser(description="TradeOS v6 — Telegram position journal")
+    ap = argparse.ArgumentParser(description="TradeOS v7 — Telegram position journal")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     if args.dry_run:

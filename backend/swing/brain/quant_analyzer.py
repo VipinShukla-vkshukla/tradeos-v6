@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Brain Engine v2: Quantitative Analyzer
+TradeOS v7 — Brain Engine v2: Quantitative Analyzer
 =====================================================
 Full-field statistical analysis. Receives complete DataFrames (SELECT *)
 and decides internally what correlates with outcomes.

@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Signal Generation Engine v5
+TradeOS v7 — Signal Generation Engine v5
 ==========================================
 Pipeline position: [15] — after compute_msl, before msl_history.
 

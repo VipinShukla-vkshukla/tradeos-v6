@@ -1,5 +1,5 @@
 """
-TradeOS v6 — ML Support Layer
+TradeOS v7 — ML Support Layer
 ==============================
 Puts the trained conviction model to work in the two ways it should be:
 as a SECOND OPINION alongside the LLM, and as a FALLBACK when the LLM is

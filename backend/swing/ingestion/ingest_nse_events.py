@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Phase 1: NSE Corporate Events Ingestion
+TradeOS v7 — Phase 1: NSE Corporate Events Ingestion
 Fetches upcoming corporate filings (results, dividends, AGMs) from NSE.
 Replaces the manual weekly update of 'Nifty Upcoming Events' Sheet tab.
 

@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Dynamic Stock Screener v1.0
+TradeOS v7 — Dynamic Stock Screener v1.0
 ==========================================
 Pipeline position: [10.6] — after compute_indicators, before compute_msl
 
@@ -1934,7 +1934,7 @@ def main():
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="TradeOS v6 — Screen Stocks v1.1")
+    parser = argparse.ArgumentParser(description="TradeOS v7 — Screen Stocks v1.1")
     parser.add_argument("--dry-run",  action="store_true")
     parser.add_argument("--mode",     choices=["shadow","hybrid","full"])
     parser.add_argument("--max",      type=int, default=30, help="Max symbols to select")

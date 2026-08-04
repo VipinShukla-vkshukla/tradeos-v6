@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Phase 1: FII/DII Flow Ingestion
+TradeOS v7 — Phase 1: FII/DII Flow Ingestion
 Fetches daily FII/DII provisional data from NSE.
 Published by NSE by ~7 PM daily.
 

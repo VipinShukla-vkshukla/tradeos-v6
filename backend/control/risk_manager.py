@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Phase 3: Risk Manager
+TradeOS v7 — Phase 3: Risk Manager
 Position sizing using ATR-based method.
 Portfolio risk checks before any new entry.
 """

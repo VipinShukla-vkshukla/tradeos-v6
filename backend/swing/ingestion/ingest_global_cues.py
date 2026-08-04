@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Phase 1: Global Cues Ingestion
+TradeOS v7 — Phase 1: Global Cues Ingestion
 
 Runs TWICE daily:
   EVENING (6 PM IST) — captures intraday USD/INR, Brent, US direction

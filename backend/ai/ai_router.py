@@ -1,5 +1,5 @@
 """
-TradeOS v6 — AI Router
+TradeOS v7 — AI Router
 Routes to configured provider with automatic fallback chain.
 Switch provider from frontend Settings — no code changes needed.
 """
