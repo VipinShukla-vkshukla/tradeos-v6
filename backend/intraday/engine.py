@@ -1390,6 +1390,26 @@ class IntradayEngine:
             ctx.ltp = float(ltp)
 
             best, _all = evaluate_all(ctx, st.phase)
+
+            # SHADOWED ENGINES ARE RECORDED, NOT DISCARDED.
+            #
+            # A retiree earns its removal — or its reprieve — from detections
+            # that were scored, and outcomes.resolve_day scores whatever is in
+            # intraday_setups. If a shadowed detection is never written, the
+            # engine goes quiet, the quarter passes with no evidence either way,
+            # and "no data" gets read as "no edge". That is not a retirement
+            # test, it is a retirement with extra steps.
+            #
+            # Written with verdict SHADOW so it can never be mistaken for a
+            # setup that was refused on merit, and with qty 0 so it can never be
+            # mistaken for one that traded.
+            for s in _all:
+                if s.meta.get("lifecycle") == "SHADOW":
+                    try:
+                        self._record_setup(s, st.phase, 0.0, "SHADOW", 0)
+                    except Exception as e:
+                        logger.debug(f"  shadow record failed for {s.strategy}: {e}")
+
             if not best:
                 continue
 
