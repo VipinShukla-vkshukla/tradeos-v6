@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Kill Switch
+TradeOS v7 — Kill Switch
 Sets master_kill_switch=true in system_config to halt all pipeline activity
 """
 import sys

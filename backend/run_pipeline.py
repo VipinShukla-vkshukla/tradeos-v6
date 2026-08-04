@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Pipeline Orchestrator
+TradeOS v7 — Pipeline Orchestrator
 Phase 0: foundation (ingest → signals → history)
 Phase 1: + AI enrichment, FII, events, post-trade, alerts
 Phase 2: + compute indicators, ASM, market news, macro, market intel, quality gate
@@ -56,7 +56,7 @@ def print_summary(results: dict, total: float):
     ok  = sum(1 for r in results.values() if r["ok"])
     err = sum(1 for r in results.values() if not r["ok"])
     logger.info(f"\n{'═'*60}")
-    logger.info(f"  TradeOS v6 Pipeline — {today_ist()} IST")
+    logger.info(f"  TradeOS v7 Pipeline — {today_ist()} IST")
     logger.info(f"{'═'*60}")
     for name, r in results.items():
         status = "✅ OK" if r["ok"] else "❌ FAIL"
@@ -67,7 +67,7 @@ def print_summary(results: dict, total: float):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="TradeOS v6 Pipeline")
+    parser = argparse.ArgumentParser(description="TradeOS v7 Pipeline")
     parser.add_argument("--step",      help="Run single step only")
     parser.add_argument("--dry-run",   action="store_true")
     args = parser.parse_args()
@@ -80,7 +80,7 @@ def main():
 
     phase = int(cfg("autonomy_phase", "0"))
     logger.info(f"{'═'*60}")
-    logger.info(f"  TradeOS v6 Pipeline | Phase {phase}")
+    logger.info(f"  TradeOS v7 Pipeline | Phase {phase}")
     logger.info(f"{'═'*60}")
 
     # ── Step definitions ──────────────────────────────────────────────────────
@@ -211,8 +211,128 @@ def main():
     
     def step_compute_msl():
         from swing.compute.compute_msl import main as fn; return fn()
-    
-    
+
+    def step_results_calendar():
+        """
+        Give the results calendar a memory.
+
+        nifty_upcoming_events is forward-only: measured 04-Aug-2026 it held one
+        day of past and two weeks of future, and dates that pass stop being
+        there. The post-earnings drift engine asks "what reported N days ago",
+        which that table structurally cannot answer.
+
+        Runs after events ingestion and before screening, so today's screen sees
+        a calendar that remembers. Non-fatal: a missed capture costs one day of
+        PEAD history, an aborted pipeline costs a day of signals.
+        """
+        from swing.signals.engines_stage8 import capture_results_calendar
+        return {"recorded": capture_results_calendar()}
+
+    def step_resolve_outcomes():
+        """
+        Score every plan the system wrote, traded or not.
+
+        THE SWING BOOK'S UNBIASED DENOMINATOR. The intraday daemon has resolved
+        every detection it ever made — 595 of 595 on 04-Aug-2026. The swing side
+        had the same seven outcome columns on signal_output_daily, written as
+        NULL by final_snapshot, and **nothing had ever filled a single one**:
+        0 resolved of 1,711. ai_decision_engine reads outcome_category and
+        outcome_return_pct to tell the model how past signals fared, and had
+        therefore always read NULL.
+
+        Every prior the allocator is meant to rank on comes from this table. A
+        prior built from executed trades inherits the old policy's selection and
+        is applied to a region that policy never sampled, which is why the
+        architecture calls full-field priors the single most important thing in
+        the plan.
+
+        Runs after the snapshot so today's plans exist, and before roll-off so
+        it still has the price history it reads. Non-fatal: a scoring gap costs
+        a day of learning, an aborted pipeline costs a day of signals.
+        """
+        from swing.signals.outcomes import main as fn
+        return fn()
+
+    def step_score_allocator():
+        """
+        Score every allocation verdict — taken, deferred and declined.
+
+        WITHOUT THIS THE PROMOTION GATE CANNOT MOVE. tools/allocator_report
+        counts a disagreement only once it carries an outcome_r; migration 041
+        created that column and nothing wrote it. The allocator could have
+        shadowed for a year and the scorecard would have read zero scored
+        disagreements the whole time — the same silent hole as the 1,711 plan
+        outcomes that sat NULL.
+
+        Runs after the plan resolver so both populations are scored in one pass,
+        and before roll-off so it still has the price history it walks.
+        Non-fatal: a scoring gap costs a day of promotion evidence, an aborted
+        pipeline costs a day of signals.
+        """
+        from allocation.outcomes import main as fn
+        return fn()
+
+    def step_storage_rolloff():
+        """
+        Archive history out of stock_data_daily so the database never reaches
+        the ceiling that would stop it accepting writes.
+
+        WHY THIS IS THE LAST STEP, AND WHY IT IS NON-FATAL.
+        It deletes rows the same pipeline just wrote indicators onto, so it can
+        only run once everything that reads them is done. And it is maintenance:
+        a roll-off that fails costs a night of headroom, while a roll-off that
+        aborts the pipeline costs a day of signals. Failure here must never be
+        the reason there are no plans tomorrow.
+
+        WHY IT IS SAFE. archive_stock_data() is archive-then-delete in one
+        transaction and is re-runnable, so a failure leaves the rows in
+        stock_data_daily rather than nowhere. Migration 016 wrote it in
+        Feb-2026 and nothing has ever called it; this is the call.
+
+        It is a no-op until the table holds more than keep_days trading dates —
+        99 on 04-Aug-2026 against a 250-day window — and reports that plainly
+        instead of logging a success it did not earn.
+        """
+        from config import get_supabase, cfg_bool, cfg_int
+        if not cfg_bool("storage_rolloff_enabled", True):
+            logger.info("  roll-off disabled (storage_rolloff_enabled=false) — skipped")
+            return {"skipped": True}
+
+        keep = cfg_int("storage_rolloff_keep_days", 250)
+        rows = get_supabase().rpc("archive_stock_data", {"keep_days": keep}).execute().data
+        r    = (rows or [{}])[0]
+        archived, deleted, cutoff = r.get("archived", 0), r.get("deleted", 0), r.get("cutoff")
+
+        if cutoff is None:
+            logger.info(f"  fewer than {keep} trading dates on hand — nothing to roll off yet")
+        else:
+            logger.info(f"  archived {archived} rows, deleted {deleted}, cutoff {cutoff} "
+                        f"(keeping {keep} trading days)")
+
+        # ── Ingestion staging ────────────────────────────────────────────────
+        # raw_prices and chartink_raw_data are 33% of the database and 45% of
+        # its growth, and every reader in the repository queries them one day
+        # deep. Every field they feed is already persisted on stock_data_daily —
+        # verified 04-Aug-2026 — and both sources are re-fetchable, so this is a
+        # delete with no archive half. See migration 032.
+        staging = {}
+        if cfg_bool("storage_staging_rolloff_enabled", False):
+            keep_s = cfg_int("storage_staging_keep_days", 120)
+            try:
+                for row in (get_supabase().rpc("rolloff_staging",
+                                               {"keep_days": keep_s}).execute().data or []):
+                    staging[row["table_name"]] = row["deleted"]
+                    logger.info(f"  {row['table_name']}: deleted {row['deleted']} row(s) "
+                                f"before {row['cutoff']}")
+            except Exception as e:
+                # Non-fatal within a non-fatal step: the archive above already
+                # succeeded and must not be reported as failed because a second,
+                # independent prune could not run.
+                logger.warning(f"  staging roll-off skipped: {e}")
+
+        return {"archived": archived, "deleted": deleted, "cutoff": cutoff,
+                "keep_days": keep, "staging": staging}
+
 
     # ── Phase 0 steps ─────────────────────────────────────────────────────────
     steps_p0 = [
@@ -307,6 +427,7 @@ def main():
             ("15_regime_predict",      step_regime_predict,      False),  # ML predicted_regime overlay (P2-D)
             # ── Exit policy on held positions (needs EOD closes from step 12) ──
             ("16_position_manage",     step_position_manage,     False),
+            ("16b_results_calendar",   step_results_calendar,    False),  # PEAD needs a past, not a future
             # ── Selection + enrichment ──
             ("17_screen_stocks",       step_screen_stocks,       True),   # 9 engines → master_shortlist / msl_computed
             ("18_compute_msl",         step_compute_msl,         True),   # intelligence fields, entry zones, final_score
@@ -323,6 +444,9 @@ def main():
             ("25_signal_snapshot",     step_signal_snapshot,     False),  # immutable signal_output_daily freeze
             ("26_alerts",              step_alerts,              False),  # Telegram digest
             ("27_quality_audit",       step_quality_audit,       False),  # output-side checks, advisory
+            ("28_resolve_outcomes",    step_resolve_outcomes,    False),  # full-field priors: score every plan
+            ("28b_score_allocator",    step_score_allocator,     False),  # promotion evidence: score every verdict
+            ("29_storage_rolloff",     step_storage_rolloff,     False),  # LAST: archive history, never fatal
         ]
     else:
         all_steps = steps_p0 + (steps_p1 if phase >= 1 else [])

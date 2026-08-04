@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Kite Connect Client
+TradeOS v7 — Kite Connect Client
 =================================
 THIS MODULE DID NOT EXIST. Three files imported it:
 

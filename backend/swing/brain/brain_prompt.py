@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Brain Engine: Expert System Prompt
+TradeOS v7 — Brain Engine: Expert System Prompt
 =================================================
 The master persona and expertise definition injected into every LLM call.
 Centralised here so updating the brain's expertise requires changing one file.

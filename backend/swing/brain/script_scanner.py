@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Brain Engine v2: Script Scanner
+TradeOS v7 — Brain Engine v2: Script Scanner
 =============================================
 Plug-and-play script analysis. Point it at any Python file and it:
   1. Extracts all hardcoded numeric/string values that are candidates

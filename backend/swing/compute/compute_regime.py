@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Compute Regime v2.0
+TradeOS v7 — Compute Regime v2.0
 ==================================
 Pipeline position: [10.4] — after compute_indicators, before screen_stocks
 
@@ -1560,7 +1560,7 @@ def main():
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="TradeOS v6 — Compute Regime v2.0")
+    parser = argparse.ArgumentParser(description="TradeOS v7 — Compute Regime v2.0")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--mode", choices=["shadow", "full"])
     args = parser.parse_args()

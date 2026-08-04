@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Brain Engine v2: Script Profiler
+TradeOS v7 — Brain Engine v2: Script Profiler
 ===============================================
 The script_scanner module answers "what hardcoded values could become config?".
 This module answers a different question: "what does this script actually DO,

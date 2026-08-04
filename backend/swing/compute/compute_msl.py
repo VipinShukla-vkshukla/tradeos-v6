@@ -1,5 +1,5 @@
 """
-TradeOS v6 — MSL Computation Engine v3.0
+TradeOS v7 — MSL Computation Engine v3.0
 ==========================================
 Pipeline position: [14] — after screen_stocks, before signals.
 
@@ -2794,7 +2794,7 @@ def main():
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="TradeOS v6 — Compute MSL v3.0")
+    parser = argparse.ArgumentParser(description="TradeOS v7 — Compute MSL v3.0")
     parser.add_argument("--dry-run", action="store_true", help="Do not write to DB")
     parser.add_argument("--mode", choices=["shadow", "hybrid", "full"],
                         help="Override compute_msl_mode from system_config")

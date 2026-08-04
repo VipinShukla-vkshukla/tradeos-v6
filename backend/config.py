@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Central Configuration
+TradeOS v7 — Central Configuration
 All environment loading, Supabase client, shared utilities
 """
 import os
@@ -370,7 +370,7 @@ def buy_candidate_threshold() -> float:
     return cfg_float("buy_candidate_threshold_pct", 0.5) / 100
 
 logger.info(
-    f"TradeOS v6 config loaded | Capital=₹{TOTAL_CAPITAL:,.0f} | "
+    f"TradeOS v7 config loaded | Capital=₹{TOTAL_CAPITAL:,.0f} | "
     f"DRY_RUN={DRY_RUN} | Phase={cfg('autonomy_phase', '0')} | "
     f"Today's date={today_ist()}"
 )

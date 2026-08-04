@@ -65,6 +65,11 @@ class Ranked:
     total: float
     components: dict = field(default_factory=dict)
     reasons: list = field(default_factory=list)
+    # Carried alongside the decision and auditable against outcomes, but with
+    # zero weight on the rank. This is what "annotation, not an input" means in
+    # practice: visible, recorded, scoreable later — and unable to move capital
+    # until it has been scored.
+    annotations: dict = field(default_factory=dict)
 
     def why(self) -> str:
         """One line, ordered by contribution — the largest reason first."""
@@ -91,6 +96,7 @@ def score_plan(p: dict) -> Ranked:
     NULL would silently reorder the book on a day the AI timed out.
     """
     comp: dict[str, float] = {}
+    annot: dict = {}
     reasons: list[str] = []
 
     # ── base: the screener's own composite ──────────────────────────────────
@@ -98,9 +104,31 @@ def score_plan(p: dict) -> Ranked:
     comp["screener"] = base
     reasons.append(f"screener {base:.0f}")
 
-    # ── the AI's verdict, which was being discarded entirely ────────────────
+    # ── the conviction layer: ANNOTATION, not a ranking input ───────────────
+    #
+    # DEMOTED 04-Aug-2026 (Stage 7), pending validation.
+    #
+    # ai_tier and ai_conviction sat at the top of the decision stack and moved
+    # the rank of every plan, and no tier-by-tier forward return had ever been
+    # produced from the unbiased record. An unmeasured component deciding which
+    # plan gets scarce capital is unpriced risk: if the tiers carry no signal it
+    # is noise weighted at 20 points, and if they carry negative signal it is
+    # actively destructive — and nothing in the system could tell those apart.
+    #
+    # The gate for restoring it is stated and is not a matter of taste:
+    # tier-by-tier forward returns from signal_output_daily's resolved outcomes,
+    # which Stage 4's resolver began producing on 04-Aug-2026. Until that exists
+    # the values are carried alongside the decision and audited against
+    # outcomes, exactly as the architecture requires of enrichment output —
+    # "never an unaudited input to ranking".
+    #
+    # Both weights default to 0.0. The arithmetic is preserved rather than
+    # deleted so that restoring the layer is a config change and the historical
+    # scores stay reconstructable.
     tier = str(p.get("ai_tier") or "").upper()
-    tp = _TIER_POINTS.get(tier, 0.0) * cfg_float("rank_weight_tier", 1.0)
+    tp = _TIER_POINTS.get(tier, 0.0) * cfg_float("rank_weight_tier", 0.0)
+    if tier:
+        annot["ai_tier"] = tier
     if tp:
         comp["ai_tier"] = tp
         reasons.append(f"{tier} +{tp:.0f}")
@@ -109,9 +137,11 @@ def score_plan(p: dict) -> Ranked:
     if conv:
         # Stored 0-1 or 0-100 depending on the model run; normalise both.
         conv01 = conv / 100.0 if conv > 1.0 else conv
-        cp = (conv01 - 0.5) * 20.0 * cfg_float("rank_weight_conviction", 1.0)
-        comp["ai_conviction"] = cp
-        reasons.append(f"AI conviction {conv01:.0%} {cp:+.0f}")
+        annot["ai_conviction"] = round(conv01, 3)
+        cp = (conv01 - 0.5) * 20.0 * cfg_float("rank_weight_conviction", 0.0)
+        if cp:
+            comp["ai_conviction"] = cp
+            reasons.append(f"AI conviction {conv01:.0%} {cp:+.0f}")
 
     # ── reward per unit of risk, measured at TODAY's price ──────────────────
     # implied_rr is the live figure; expected_r is the plan's own estimate.
@@ -182,7 +212,7 @@ def score_plan(p: dict) -> Ranked:
     total = round(sum(comp.values()), 2)
     # Largest absolute contributions first, so `why` leads with what decided it.
     reasons.sort(key=lambda r: -abs(comp.get(r.split()[0].lower(), 0.0)))
-    return Ranked(symbol=p.get("symbol") or "?", total=total,
+    return Ranked(symbol=p.get("symbol") or "?", total=total, annotations=annot,
                   components=comp, reasons=reasons)
 
 

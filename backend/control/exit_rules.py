@@ -223,13 +223,45 @@ def target_decision(pos: dict, gain_r: float, tq: TrendQuality,
     Only ever reached with the position already profitable and its stop at or
     above breakeven, so both branches risk open profit rather than capital.
     """
-    max_runners = cfg_int("exit_max_runners", 2)
-    already = int(pos.get("runner_since_r") or 0)
+    # INSTRUMENTATION, ON EVERY BRANCH.
+    #
+    # The two failure modes this rule can have are indistinguishable from
+    # outside it: the logic cannot fire because its evidence is empty, or it
+    # fires and correctly declines. Both show up as "no runners". So every
+    # branch below carries the evidence count and the verdict, including — and
+    # especially — the ones that decline, and position_lifecycle persists them.
+    obs = {"runner_evidence": tq.checks, "runner_verdict": tq.verdict}
 
     if not cfg_bool("exit_runners_enabled", True):
         return {"action": "EXIT_TARGET", "reason": "TARGET_HIT",
                 "detail": f"{gain_r:.2f}R — runners disabled",
-                "new_sl": None, "book_qty": 0}
+                "new_sl": None, "book_qty": 0, **obs}
+
+    # THE CAP THAT WAS COMPUTED AND THROWN AWAY.
+    #
+    # `max_runners` and `already` were both read here and then never referenced
+    # again, so exit_max_runners has been a setting the operator could tune and
+    # nothing enforced. `already` read pos["runner_since_r"], a column that did
+    # not exist in any migration until 031 — which is *why* it stayed unused:
+    # counting concurrent runners needs a marker, and converting to a runner
+    # left none.
+    #
+    # Enforcing it changes which positions run, so it is behind its own switch
+    # defaulting to false. The count comes from the caller, which holds the
+    # book; this function still sees one position and stays pure.
+    if cfg_bool("exit_runner_cap_enforced", False):
+        max_runners = cfg_int("exit_max_runners", 2)
+        already     = int(policy.get("runners_open") or 0)
+        if pos.get("runner_since_r") in (None, ""):      # not already one itself
+            if already >= max_runners:
+                return {
+                    "action": "EXIT_TARGET", "reason": "TARGET_HIT",
+                    "detail": (f"{gain_r:.2f}R at target and the trend is "
+                               f"{tq.verdict.lower()}, but {already} runner(s) are "
+                               f"already open against a cap of {max_runners} — "
+                               f"banking rather than adding a third open-profit bet"),
+                    "new_sl": None, "book_qty": 0, **obs,
+                }
 
     # NO EVIDENCE IS A REASON TO BANK, NOT A REASON TO RUN.
     #
@@ -244,7 +276,7 @@ def target_decision(pos: dict, gain_r: float, tq: TrendQuality,
                        f"input(s) available — not enough to justify holding past "
                        f"the target, so banking it. A runner has to be earned on "
                        f"evidence, and there is none here"),
-            "new_sl": None, "book_qty": 0,
+            "new_sl": None, "book_qty": 0, **obs,
         }
 
     if not tq.should_run:
@@ -253,7 +285,7 @@ def target_decision(pos: dict, gain_r: float, tq: TrendQuality,
             "detail": (f"{gain_r:.2f}R and the trend is {tq.verdict.lower()} "
                        f"({', '.join(tq.against[:3]) or 'no supporting evidence'}) "
                        f"— banking it"),
-            "new_sl": None, "book_qty": 0,
+            "new_sl": None, "book_qty": 0, **obs,
         }
 
     # Convert to a runner: widen the trail and stop asking for a target.
@@ -275,6 +307,9 @@ def target_decision(pos: dict, gain_r: float, tq: TrendQuality,
         # slower way to give the gain back.
         "new_sl": round(max(new_sl, cur_sl), 2) if new_sl > cur_sl else None,
         "book_qty": 0,
+        # The R at which it became a runner. This is the marker the cap counts
+        # and the field capture-ratio analysis splits on.
+        "runner_since_r": round(gain_r, 3), **obs,
         "trend": {"score": tq.score, "verdict": tq.verdict,
                   "for": tq.reasons, "against": tq.against},
     }

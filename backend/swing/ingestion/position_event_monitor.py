@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Phase 1: Position Event Monitor
+TradeOS v7 — Phase 1: Position Event Monitor
 Runs at 8:35 AM IST via pipeline_morning.yml, after ingest_nse_events.
 Scans ONLY open_positions symbols for upcoming corporate events.
 Sends a pre-market Telegram brief so you can act before market opens.
@@ -289,7 +289,7 @@ def main(lookahead_days: int = 5):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="TradeOS v6 — Position Event Monitor")
+    parser = argparse.ArgumentParser(description="TradeOS v7 — Position Event Monitor")
     parser.add_argument("--days",    type=int, default=5, help="Lookahead window in days (default: 5)")
     parser.add_argument("--dry-run", action="store_true",  help="Print alerts without writing to DB")
     args = parser.parse_args()

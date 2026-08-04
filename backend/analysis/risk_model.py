@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Unified Risk Model
+TradeOS v7 — Unified Risk Model
 ================================
 Single source of truth for stop, target, R-multiple and position size.
 

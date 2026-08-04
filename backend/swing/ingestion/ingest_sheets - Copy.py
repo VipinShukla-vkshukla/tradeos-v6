@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Google Sheets Ingestion
+TradeOS v7 — Google Sheets Ingestion
 Reads all 15 Sheet tabs → Supabase
 Handles exact row offsets per tab (headers are NOT always row 1)
 """

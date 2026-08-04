@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Send Alerts v6
+TradeOS v7 — Send Alerts v6
 ============================
 Pipeline position: final step — after step 19 (ai_decision_engine).
 
@@ -2147,7 +2147,7 @@ def build_afternoon(data: dict, sb=None) -> str:
     date_str = data["signal_date"]
 
     lines = [
-        f"<b>📊 AFTERNOON CONVICTION CHECK — {date_str}  |  TradeOS v6  |  {now_str}</b>",
+        f"<b>📊 AFTERNOON CONVICTION CHECK — {date_str}  |  TradeOS v7  |  {now_str}</b>",
         "═" * 35,
         "",
     ]

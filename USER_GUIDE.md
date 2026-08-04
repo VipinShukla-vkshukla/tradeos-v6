@@ -111,8 +111,37 @@ server's and running it at home would poison that.
 ```bash
 tradeos stop
 ```
-Sets the master kill switch. Everything stops trading immediately. Both
-frameworks, entries and exits alike.
+Sets the master kill switch. Both frameworks, entries and exits alike.
+
+**Within 300 seconds, not instantly** — and until 04-Aug-2026 it was *never*,
+for a daemon that was already running. The daemon reads its settings from a
+cache filled once at startup, and nothing refreshed it, so a kill switch set
+mid-session was stored, shown as engaged, and ignored. It now re-reads settings
+on the same 5-minute timer that refreshes everything else, so the worst case is
+one timer's wait.
+
+If you need a stop faster than that, stop the process: `sudo systemctl stop
+tradeos-intraday` on the server, or close the window on this machine. Open
+positions keep their broker-side stops either way — those live at Zerodha, not
+here.
+
+```bash
+tradeos backup
+```
+Dumps the system of record — every decision, outcome, plan and setting — to
+`backend/data/backups`, then reads it back to prove it is not an empty file with
+a reassuring name. Bulk price history is deliberately excluded: it is 84% of the
+database and the exchange will hand it back for free. Credentials are redacted.
+
+The free Supabase plan provides **no backups at all**. On the server this runs
+itself every Sunday at 06:00; on this machine, run it when you think of it.
+
+```bash
+tradeos rollback
+```
+Shows which Phase 4 switches are on and what each one was before Phase 4.
+`tradeos rollback off` puts every one of them back — configuration only, no
+deploy, no code change, and it never touches a position.
 
 ```bash
 tradeos evening
@@ -521,9 +550,37 @@ rather than trusting the validity flag.
 
 ### A setting on the dashboard does not seem to do anything
 
-Run `validate_config` — it will tell you if the key is unread. If the key is
-read but the value is not what you set, check that the write actually landed:
-the config API returns 404 if no row matched, rather than reporting success.
+**First: wait five minutes.** A running daemon re-reads settings on its
+300-second timer, so a change made at 10:47 takes effect by 10:52. Before
+04-Aug-2026 it never took effect at all — the cache was filled at startup and
+nothing refreshed it, which meant every switch, including the kill switch, was
+frozen at whatever it was when the daemon booted.
+
+If it still does nothing after five minutes: run `validate_config`, which will
+tell you if the key is unread. If the key is read but the value is not what you
+set, check that the write actually landed — the config API returns 404 if no row
+matched, rather than reporting success.
+
+### The database is filling up
+
+`tradeos health` reports it on every run, and **fails** — not warns — once the
+database passes 80% of its 500 MB plan:
+
+```
+✓ storage  206 MB of 500 MB (41.1%), 30 MB/month → 80% on 2027-02-14,
+           full on 2027-05-25
+```
+
+Past 100% the database stops accepting *writes*. That means the evening pipeline
+produces no signals, on an ordinary Tuesday, with nothing else looking wrong. It
+is the one failure here that is a total loss rather than a bad trade, which is
+why the alarm sounds at 80% — with enough room left that a fix is still possible.
+
+The evening pipeline archives history out of `stock_data_daily` as its last step
+every night. That alone is not enough: see `RETENTION_PROPOSAL.md`, which
+measures what is actually growing and proposes windows for it. Nothing there is
+built yet — retention decides what the system can still learn from, so it is
+your call, not the code's.
 
 ### The daemon runs in two places
 

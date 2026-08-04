@@ -1,6 +1,6 @@
 'use client';
 
-// TradeOS v6 — System Navigation
+// TradeOS v7 — System Navigation
 //
 // Links the console to Preflight and the Control Room, and surfaces the live
 // readiness verdict in the header so a BLOCKED state is visible from any tab

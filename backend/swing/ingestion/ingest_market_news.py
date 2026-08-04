@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Phase 2: Market News Ingestion
+TradeOS v7 — Phase 2: Market News Ingestion
 Runs as step 01 — first step of evening pipeline, before fetch_chartink.
 Scrapes 8 sources to populate market_news table so
 market_intelligence_engine.py has structured news context.
@@ -42,7 +42,7 @@ import requests
 from loguru import logger
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config import get_supabase, today_ist, is_kill_switch_active
+from config import get_supabase, today_ist, is_kill_switch_active, cfg_bool
 
 DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
 
@@ -279,8 +279,20 @@ def fetch_nse_bulk_deals() -> list[dict]:
                 logger.warning(f"NSE bulk/block deals HTTP {resp.status_code} — endpoint may have changed")
             else:
                 data = resp.json()
+                structured = []
                 for deal_type, key in (("bulk", "BULK_DEALS_DATA"), ("block", "BLOCK_DEALS_DATA")):
-                    for d in (data.get(key) or [])[:15]:
+                    # NO [:15] SLICE.
+                    #
+                    # It used to keep the first fifteen deals per type. NSE
+                    # reports well over thirty on a busy session, and the tail is
+                    # where mid-cap accumulation lives — precisely the population
+                    # an accumulation-confirmed engine exists to find. The cap
+                    # was invisible: the alert looked complete because fifteen
+                    # deals is more than anyone reads.
+                    #
+                    # Alert volume is bounded downstream by relevance, not here
+                    # by an arbitrary count.
+                    for d in (data.get(key) or []):
                         symbol = str(d.get("symbol") or "")
                         entity = str(d.get("clientName") or "")
                         side   = str(d.get("buySell") or "")
@@ -288,6 +300,31 @@ def fetch_nse_bulk_deals() -> list[dict]:
                         price  = d.get("watp") or 0
                         if not symbol or not entity:
                             continue
+
+                        # KEEP THE NUMBERS.
+                        #
+                        # The headline below formats side, quantity and price
+                        # into a sentence, which is right for an alert and
+                        # useless for an engine — "net institutional buying over
+                        # twenty sessions" cannot be asked of prose. Same fields,
+                        # kept as numbers, written alongside. The headline row is
+                        # unchanged, so alerts behave exactly as before.
+                        try:
+                            q = float(qty or 0)
+                            p = float(price or 0)
+                            structured.append({
+                                "deal_date":   (d.get("date") or today_ist().isoformat())[:10],
+                                "symbol":      symbol.upper().strip(),
+                                "deal_type":   deal_type.upper(),
+                                "client_name": entity.strip()[:200],
+                                "side":        "BUY" if side.upper().startswith("B") else "SELL",
+                                "quantity":    q,
+                                "price":       p or None,
+                                "value_cr":    round(q * p / 1e7, 4) if (q and p) else None,
+                            })
+                        except (TypeError, ValueError):
+                            pass
+
                         results.append({
                             "headline":       f"{entity} {side.upper()} {symbol}: {int(qty):,} shares @ ₹{float(price):.0f}"[:500],
                             "source":         "NSE_BULK_DEAL",
@@ -297,11 +334,44 @@ def fetch_nse_bulk_deals() -> list[dict]:
                             "parsed_symbols": [symbol],
                             "raw_url":        "",
                         })
+                _persist_bulk_deals(structured)
         except Exception as e:
             logger.warning(f"NSE bulk/block deals fetch failed: {e}")
     except Exception as e:
         logger.warning(f"NSE bulk/block deals session failed (non-fatal): {e}")
     return results
+
+
+def _persist_bulk_deals(rows: list[dict]) -> int:
+    """
+    Write structured deals, ignoring ones already recorded.
+
+    Upsert on the natural key rather than insert, because the evening pipeline
+    can legitimately run twice and this table is summed. A double-counted
+    17-million-share block would not look like an error — it would look like
+    twice the institutional conviction, which is the worst possible way for a
+    duplicate to present itself.
+
+    Non-fatal throughout: the headline row is the alert path and must never fail
+    because a structured write did.
+    """
+    if not rows:
+        return 0
+    if not cfg_bool("bulk_deal_capture_enabled", False):
+        return 0
+    try:
+        from config import get_supabase
+        get_supabase().table("bulk_deals").upsert(
+            rows, on_conflict="deal_date,symbol,client_name,side,quantity"
+        ).execute()
+        logger.info(f"  bulk_deals: captured {len(rows)} structured deal(s)")
+        return len(rows)
+    except Exception as e:
+        # A missing table means migration 038 has not been applied. Say which,
+        # rather than logging a bare PostgREST error nobody can act on.
+        logger.warning(f"  bulk_deals capture skipped ({e}) — "
+                       f"apply migration 038 if this persists")
+        return 0
 
 
 # ── Source 4: Economic Times Markets RSS ──────────────────────────────────
@@ -660,7 +730,7 @@ def main():
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="TradeOS v6 — Market News Ingestion")
+    parser = argparse.ArgumentParser(description="TradeOS v7 — Market News Ingestion")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if args.dry_run:

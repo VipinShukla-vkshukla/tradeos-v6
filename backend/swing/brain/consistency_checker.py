@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Brain Engine v2: Consistency Checker
+TradeOS v7 — Brain Engine v2: Consistency Checker
 ====================================================
 script_profiler.py records what each script ASSUMES about every table/config
 resource it touches. This module is the payoff: it groups those assumptions

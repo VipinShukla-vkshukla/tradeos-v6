@@ -48,6 +48,10 @@ class IntradayEngine:
         # engines disagree about the same bar.
         self._contexts: dict = {}
         self._index_ctx = None
+        # Epoch-ish sentinel so the first cycle logs parity immediately rather
+        # than waiting a full interval for the first sample.
+        self._last_parity_at = datetime.fromtimestamp(0, IST)
+        self._allocator = None
         # The intraday universe, selected on its OWN criteria. Until this
         # existed the engines only saw swing shortlist names — stocks chosen for
         # a one-to-three-week thesis, which predicts almost nothing about
@@ -233,6 +237,9 @@ class IntradayEngine:
                 prev_low=float(p.get("low") or 0) or None,
                 atr_pct_daily=float(p.get("atr_pct") or 0) or None,
                 avg_volume_20d=float(p.get("volume") or 0) or None,
+                # Stamped so every consumer can ask how old this is. Contexts
+                # are rebuilt on the 300 s timer and read on the 15 s one.
+                as_of=datetime.now(IST),
             )
             if sym == INDEX_SYMBOL:
                 # The index is not in stock_data_daily — that table holds
@@ -271,6 +278,108 @@ class IntradayEngine:
         logger.info(f"  contexts: {len(built)} symbols with bars"
                     + (f", index {idx_chg:+.2f}%" if idx_chg is not None else ", no index"))
         return len(built)
+
+    def apply_live_quotes(self, feed) -> int:
+        """
+        Overlay live day range, volume and VWAP onto the contexts. Per cycle.
+
+        WHY THIS EXISTS. refresh_contexts() runs on the 300-second timer because
+        the historical endpoint is rate-limited; the decision loop runs every 15
+        seconds. Between refreshes the day high, the day low and the session
+        volume were simply wrong — a breakout at 10:47 was measured against a
+        range that stopped at 10:45. The websocket already carries all three in
+        QUOTE mode, at no extra API cost, so the fix is to prefer the live value
+        and keep the fetched one as the fallback.
+
+        FALLBACK IS PER FIELD, NOT PER SYMBOL. A tick that carries volume but no
+        OHLC must update volume and leave the range alone. Treating a missing
+        field as zero is how a live upgrade becomes a downgrade.
+
+        THE INDEX FALLBACK IS PRESERVED DELIBERATELY. Indices report zero traded
+        volume, so a volume-weighted average price is undefined for them, and
+        refresh_contexts falls back to the unweighted average of typical price.
+        An earlier version of that fallback was missing and the market gate sat
+        pinned at CAUTION forever — a gate that can never say RISK_ON is not a
+        gate. So a zero or absent VWAP from the tick stream never overwrites the
+        computed one.
+        """
+        # Parity logging is independent of quote MODE being consumed: the whole
+        # point is to compare the two BEFORE the live one is trusted, which means
+        # it must run while quote mode is still off.
+        #
+        # RATE-LIMITED AND BATCHED, because this function runs every 15 seconds.
+        # The first version wrote one synchronous insert per symbol per field per
+        # cycle — roughly 95 x 4 x 240 = 91,000 round trips in a session, every
+        # one of them inside the decision loop that is required to do no
+        # synchronous writes at all. It would have delayed exit evaluation on
+        # live positions behind a network call, which is the exact failure the
+        # buffered-write rule exists to prevent.
+        #
+        # Once per slow-timer interval is also the right sampling rate: the
+        # fetched side only changes when refresh_contexts runs, so comparing more
+        # often just records the same fetched number against a moving live one.
+        if feed is not None and cfg_bool("intraday_quote_parity_log", False):
+            interval = cfg_float("intraday_context_refresh_s", 300.0)
+            if (now - self._last_parity_at).total_seconds() >= interval:
+                self._last_parity_at = now
+                try:
+                    from tools import quote_parity
+                    batch = []
+                    for sym, ctx in (self._contexts or {}).items():
+                        q = feed.quote(sym)
+                        if not q:
+                            continue
+                        for field, fetched in (("day_high", ctx.day_high),
+                                               ("day_low", ctx.day_low),
+                                               ("vwap", ctx.vwap),
+                                               ("prev_close", ctx.prev_close)):
+                            row = quote_parity.compare(sym, field, q.get(field), fetched)
+                            if row:
+                                batch.append(row)
+                    quote_parity.record_many(self.sb, batch)
+                except Exception as e:
+                    logger.debug(f"  parity logging skipped: {e}")
+
+        if not cfg_bool("intraday_quote_mode", False):
+            return 0
+        touched = 0
+        for sym, ctx in (self._contexts or {}).items():
+            q = feed.quote(sym) if feed else None
+            if not q:
+                continue
+            live = []
+            for field, key in (("day_high", "day_high"), ("day_low", "day_low"),
+                               ("day_open", "day_open"), ("prev_close", "prev_close")):
+                v = q.get(key)
+                if v:
+                    setattr(ctx, field, float(v))
+                    live.append(field)
+            if q.get("volume"):
+                ctx.session_volume = float(q["volume"])
+                live.append("volume")
+            # Never let a zero VWAP through — see the index note above.
+            if q.get("vwap"):
+                ctx.vwap = float(q["vwap"])
+                live.append("vwap")
+            if live:
+                ctx.as_of = q.get("at") or now
+                ctx.live_fields = tuple(live)
+                touched += 1
+        return touched
+
+    def stale_contexts(self, max_age_s: float | None = None) -> dict[str, float | None]:
+        """
+        Which contexts are too old to decide on, and by how much.
+
+        A dead socket with a live cache is the failure this answers. Unknown age
+        counts as stale — "we do not know when this was true" is not a reason to
+        proceed.
+        """
+        limit = (max_age_s if max_age_s is not None
+                 else cfg_float("intraday_context_max_age_s", 420.0))
+        now = datetime.now(IST)
+        return {s: c.age_seconds(now) for s, c in (self._contexts or {}).items()
+                if c.is_stale(limit, now)}
 
     def watch_symbols(self) -> list[str]:
         """
@@ -1270,9 +1379,32 @@ class IntradayEngine:
                 self._last_state["_market"] = mc.state
             return []
 
+        # STALENESS GUARD — no entry is decided on data of unknown age.
+        #
+        # Contexts are rebuilt on the 300-second timer. If that refresh fails —
+        # broker unavailable, rate limit, a dead socket with a live cache — the
+        # previous contexts stay in memory and keep being read, and every day
+        # range and volume in them is from whenever the failure started. Nothing
+        # about that reads as broken: the engines run, the prices tick, the
+        # verdicts look ordinary.
+        #
+        # The bound is 420 s rather than 300 so an ordinary late refresh does not
+        # blank the book; anything beyond that is a refresh that did not happen.
+        # Exits are NOT gated on this — a stale range is a bad reason to enter and
+        # never a reason to stop protecting an open position.
+        stale = self.stale_contexts()
+        if stale:
+            worst = max((a for a in stale.values() if a is not None), default=None)
+            logger.warning(
+                f"  staleness guard: {len(stale)} context(s) older than the bound"
+                + (f" (worst {worst:.0f}s)" if worst else " (age unknown)")
+                + " — no new entries on those names until the next refresh")
+
         out = []
         for sym, ctx in (self._contexts or {}).items():
             if any(p.get("symbol") == sym for p in self.positions):
+                continue
+            if sym in stale:
                 continue
             ltp = prices.get(sym)
             if not ltp:
@@ -1280,6 +1412,26 @@ class IntradayEngine:
             ctx.ltp = float(ltp)
 
             best, _all = evaluate_all(ctx, st.phase)
+
+            # SHADOWED ENGINES ARE RECORDED, NOT DISCARDED.
+            #
+            # A retiree earns its removal — or its reprieve — from detections
+            # that were scored, and outcomes.resolve_day scores whatever is in
+            # intraday_setups. If a shadowed detection is never written, the
+            # engine goes quiet, the quarter passes with no evidence either way,
+            # and "no data" gets read as "no edge". That is not a retirement
+            # test, it is a retirement with extra steps.
+            #
+            # Written with verdict SHADOW so it can never be mistaken for a
+            # setup that was refused on merit, and with qty 0 so it can never be
+            # mistaken for one that traded.
+            for s in _all:
+                if s.meta.get("lifecycle") == "SHADOW":
+                    try:
+                        self._record_setup(s, st.phase, 0.0, "SHADOW", 0)
+                    except Exception as e:
+                        logger.debug(f"  shadow record failed for {s.strategy}: {e}")
+
             if not best:
                 continue
 
@@ -1449,6 +1601,18 @@ class IntradayEngine:
         for s in setups:
             st, qty, mc = s["setup"], s["qty"], s["market"]
             corro = st.meta.get("corroborated_by") or []
+
+            # THE ALLOCATOR'S VETO, before the position is opened or alerted.
+            # Recorded as a refusal so the decision stays in intraday_setups
+            # rather than vanishing — a setup that was found and then declined
+            # on opportunity cost is evidence, and dropping it silently would
+            # make the allocator unscoreable against the greedy path.
+            ok, why = self.allocator_permits(st.symbol, "MIS", "INTRADAY")
+            if not ok:
+                self._record_setup(st, s["phase"], s.get("cost_pct") or 0.0,
+                                   "ALLOCATOR_DECLINED", 0)
+                logger.info(f"      {st.symbol}: allocator declined — {why[:90]}")
+                continue
             # In PAPER mode, actually TAKE the setup. Without this the
             # simulation measures exits but never a full round trip, and a
             # system judged only on how it leaves trades tells you nothing
@@ -1623,6 +1787,99 @@ class IntradayEngine:
             self.load_state()
         return closed
 
+    def _allocate_shadow(self, entries: list, setups: list) -> None:
+        """
+        Score what both books just proposed, record the verdicts, act on none.
+
+        BUFFERED, NEVER WRITTEN HERE. select() appends to an in-memory buffer;
+        the 300-second timer flushes it. A synchronous write in this loop would
+        put a network round trip in front of exit evaluation on live positions,
+        which is the one latency this system cannot afford.
+        """
+        if not cfg_bool("alloc_shadow_enabled", False):
+            return
+        if not entries and not setups:
+            return
+
+        from allocation.proposal import from_intraday, from_swing
+        from allocation.allocator import Allocator
+        from intraday.session import session_state
+        from intraday import market_context as mkt
+
+        if self._allocator is None:
+            self._allocator = Allocator(self.sb)
+            self._allocator.refresh_priors()
+
+        props = []
+        for e in entries or []:
+            d = e.get("decision") if isinstance(e, dict) else e
+            p = from_swing(d, e.get("plan") if isinstance(e, dict) else None)
+            if p:
+                props.append(p)
+        for s in setups or []:
+            setup = s.get("setup") if isinstance(s, dict) else s
+            qty   = int((s.get("qty") if isinstance(s, dict) else 0) or 0)
+            p = from_intraday(setup, qty)
+            if p:
+                props.append(p)
+        if not props:
+            return
+
+        st = session_state()
+        mc = mkt.from_context(self._index_ctx)
+        used = len([x for x in self.positions if str(x.get("entry_date") or "")[:10]
+                    == today_ist().isoformat()])
+        slots_left = max(cfg_int("alloc_max_slots", 2) - used, 0)
+
+        v = self._allocator.select(
+            props, regime=mc.state, slots_left=slots_left,
+            minutes_left=max(getattr(st, "minutes_to_close", 0) or 0, 0),
+            open_positions=self.positions)
+        takes = sum(1 for x in v if x["verdict"] == "TAKE")
+
+        # Keyed for the veto below. (symbol, product) is the same key
+        # open_positions has been unique on since migration 028 — a bare symbol
+        # would let a swing CNC tranche and an intraday MIS tranche of one name
+        # collide, which is the corruption that key exists to prevent.
+        self._verdicts = {(x["proposal"].symbol, x["proposal"].product): x for x in v}
+
+        live_books = [b for b in ("intraday", "swing")
+                      if cfg_bool(f"alloc_live_{b}", False)]
+        mode = f"LIVE for {'+'.join(live_books)}" if live_books else "shadow"
+        logger.info(f"  allocator ({mode}): {len(v)} proposal(s) scored, "
+                    f"{takes} to take, {len(v)-takes} refused")
+        return v
+
+    def allocator_permits(self, symbol: str, product: str, framework: str) -> tuple[bool, str]:
+        """
+        Does the allocator allow this entry? THE VETO.
+
+        Until 05-Aug-2026 `alloc_live_*` set a column value in
+        allocation_decisions and nothing else — the allocator scored, recorded,
+        and the greedy path took whatever it always would have. Flipping the
+        switch would have produced a system REPORTING itself as live-allocating
+        while allocating nothing, which is the silent-success failure this
+        project has hit four times. This is the consumer that makes the switch
+        mean what it says.
+
+        FAILS OPEN, DELIBERATELY. A proposal the allocator never saw — because
+        scoring threw, or because the adapter could not express it — is allowed
+        through. The allocator is an opportunity-cost optimiser layered on top
+        of gates that have already said yes; it is not a safety control, and
+        turning its absence into a refusal would make an allocator bug look
+        exactly like a market with no opportunities. The gates that ARE safety
+        controls (cost, structure, event, conviction, staleness) have all run
+        before this point and none of them fails open.
+        """
+        if not cfg_bool(f"alloc_live_{framework.lower()}", False):
+            return True, "allocator not live for this book"
+        v = (getattr(self, "_verdicts", None) or {}).get((symbol, product))
+        if v is None:
+            return True, "no allocator verdict — failing open"
+        if v["verdict"] == "TAKE":
+            return True, v.get("reason") or "allocator selected it"
+        return False, v.get("reason") or f"allocator returned {v['verdict']}"
+
     def _record_setup(self, s, phase: str, cost_pct: float, verdict: str, qty: int) -> None:
         """
         Persist every setup DETECTED, including cost rejections.
@@ -1633,10 +1890,21 @@ class IntradayEngine:
         """
         if not self._setup_is_new(s, verdict):
             return
+        # SCORED UNDER THE FAMILY, RECORDED WITH THE CONDITION.
+        #
+        # `strategy` is what the learning loop groups on, so writing the family
+        # there is what actually raises detections-per-engine — ORB's 30 becomes
+        # the family's 230 — and what makes a monthly verdict statistically
+        # possible. The condition that fired is kept in meta.sub_engine, so
+        # nothing is lost and a family can be split again on evidence.
+        #
+        # Falls back to the engine's own name when no family is set, so a
+        # detection from before this change reads exactly as it did.
+        family = s.meta.get("family") or s.strategy
         try:
             self.sb.table("intraday_setups").insert({
                 "trade_date": today_ist().isoformat(),
-                "symbol": s.symbol, "strategy": s.strategy, "phase": phase,
+                "symbol": s.symbol, "strategy": family, "phase": phase,
                 "direction": s.direction, "entry": s.entry, "stop": s.stop,
                 "target": s.target, "risk_pct": round(s.risk_pct, 3),
                 "reward_pct": round(s.reward_pct, 3), "rr": round(s.rr, 2),
@@ -1651,23 +1919,58 @@ class IntradayEngine:
             logger.debug(f"  setup record failed for {s.symbol}: {e}")
 
     # ── one cycle ───────────────────────────────────────────────────────────
-    def cycle(self, prices: dict[str, float], sync_gtt: bool = False) -> dict:
+    def cycle(self, prices: dict[str, float], sync_gtt: bool = False,
+              feed=None) -> dict:
+        # Live day range, volume and VWAP onto the contexts BEFORE anything
+        # reads them. Cheap — a dict lookup per symbol over data the websocket
+        # already delivered — and it is what makes a 10:47 breakout measured
+        # against a 10:47 range instead of a 10:45 one. No-op unless quote mode
+        # is on. `feed` is optional so existing callers keep working unchanged.
+        if feed is not None:
+            try:
+                self.apply_live_quotes(feed)
+            except Exception as e:
+                # A failed overlay must leave the fetched context in place, not
+                # take the cycle down. The staleness guard still applies.
+                logger.debug(f"  live quote overlay skipped: {e}")
+
         pos_actions = self.evaluate_positions(prices)
         self.act_on_positions(pos_actions)
 
         entries = []
         if cfg_bool("intraday_watch_candidates", True):
             entries = self.evaluate_candidates(prices)
-            self.act_on_candidates(entries)
 
         # Dedicated intraday engines — separate from the swing candidate watch
         # above, which evaluates swing plans against live prices.
         setups = []
         try:
             setups = self.evaluate_intraday_setups(prices)
-            self.act_on_setups(setups)
         except Exception as e:
             logger.warning(f"  intraday strategies failed: {e}")
+
+        # ── ALLOCATION, OBSERVING ONLY ──────────────────────────────────────
+        #
+        # Placed AFTER both books have produced proposals and BEFORE either acts,
+        # which is the only position from which it can see the same choice the
+        # live path is about to make. Read-only with respect to everything the
+        # live path subsequently reads, and wrapped so it cannot break the cycle.
+        #
+        # In shadow it records what it WOULD have chosen and changes nothing —
+        # act_on_* below run exactly as they always have. That is not a
+        # limitation, it is the evidence-gathering mode the promotion gate is
+        # denominated in: >=30 scored DISAGREEMENTS with the greedy path, which
+        # cannot be counted without a row per proposal the allocator refused.
+        try:
+            self._allocate_shadow(entries, setups)
+        except Exception as e:
+            logger.debug(f"  allocator skipped: {e}")
+
+        # The live path, unchanged.
+        if entries:
+            self.act_on_candidates(entries)
+        if setups:
+            self.act_on_setups(setups)
 
         # SWING, SAID OUT LOUD.
         #

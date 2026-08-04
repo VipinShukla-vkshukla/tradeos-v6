@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Intraday Stop-Loss Monitor  [DELEGATING SHIM]
+TradeOS v7 — Intraday Stop-Loss Monitor  [DELEGATING SHIM]
 ===========================================================
 Superseded by control/position_lifecycle.py. Kept as an entry point because
 pipeline docs and workflow files reference it by name.

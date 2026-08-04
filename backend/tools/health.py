@@ -17,6 +17,7 @@ WHAT EACH ONE IS FOR, AND WHY IT IS NOT REDUNDANT
 They fail in genuinely different ways, which is why all of them exist:
 
   config     numbers that contradict each other, or a setting nothing reads
+  storage    the database ceiling arriving on an ordinary Tuesday
   selects    a SELECT naming a column the schema no longer has
   broker     resting orders that do not match the positions they protect
   data       today's inputs actually arrived and are not yesterday's
@@ -24,7 +25,9 @@ They fail in genuinely different ways, which is why all of them exist:
 
 None of these raise an exception in production. They produce a system that
 looks healthy and decides on nothing, which is the failure mode this project
-has hit more than any other.
+has hit more than any other. Storage is the exception and the reason it FAILS
+rather than warns: past the ceiling the system does not decide wrongly, it
+stops existing — writes are refused and the evening pipeline produces nothing.
 
 EXIT CODE
 ---------
@@ -420,8 +423,288 @@ def check_exit_actions() -> tuple[bool, str]:
                    f"missing from alerts: {sorted(pipe - alert) or 'none'}")
 
 
+def storage_snapshot() -> dict:
+    """
+    Where the database stands against its plan ceiling, and when it breaches.
+
+    Shared by the health check and by anything that needs the same numbers, so
+    there is one measurement rather than two that can disagree.
+
+    GROWTH IS MEASURED, NOT ASSUMED. Migration 016 sized stock_data_daily at
+    "roughly 190 MB" from 48,967 rows; it is 58 MB at 53,463. A projection
+    resting on that estimate would have declared an emergency two years early
+    and been ignored the day it was real. So growth is derived here from rows
+    actually added in the last 30 days, at the table's own measured bytes/row.
+
+    Only tables above 1% of the ceiling are projected. They are 84% of the
+    database and the tail cannot move the date; the coverage figure is reported
+    so a shrinking coverage number is visible rather than silent.
+    """
+    import datetime as _dt
+    from config import get_supabase, cfg_float
+
+    sb       = get_supabase()
+    ceiling  = cfg_float("storage_ceiling_mb", 500.0) * 1024 * 1024
+    fail_pct = cfg_float("storage_fail_pct", 80.0)
+
+    rows, off = [], 0
+    while True:
+        page = (sb.table("v_storage_usage")
+                  .select("table_name,total_bytes")
+                  .range(off, off + 999).execute().data) or []
+        rows += page
+        if len(page) < 1000:
+            break
+        off += 1000
+
+    total = sum(r["total_bytes"] or 0 for r in rows)
+    rows.sort(key=lambda r: -(r["total_bytes"] or 0))
+
+    # Whichever of these a table has, first match wins. A table with none of
+    # them is not append-only in any way this can measure, so it is skipped and
+    # its bytes are excluded from the coverage figure rather than assumed flat.
+    date_cols = ("date", "snapshot_date", "news_date", "trade_date",
+                 "entry_date", "created_at", "ingested_at")
+    since = str(_dt.date.today() - _dt.timedelta(days=30))
+
+    bytes_per_day, covered, unmeasured = 0.0, 0, []
+    for r in rows:
+        size = r["total_bytes"] or 0
+        if size < ceiling * 0.01:
+            break                              # sorted desc — the rest are smaller
+        name = r["table_name"]
+        for col in date_cols:
+            try:
+                n_all = sb.table(name).select(col, count="exact").limit(1).execute().count
+                n_30  = (sb.table(name).select(col, count="exact")
+                           .gte(col, since).limit(1).execute().count)
+                break
+            except Exception:
+                continue
+        else:
+            unmeasured.append(name)
+            continue
+        if not n_all:
+            unmeasured.append(name)
+            continue
+        bytes_per_day += (n_30 or 0) * (size / n_all) / 30.0
+        covered += size
+
+    # "already passed" and "never at this growth rate" are different facts and
+    # printing both as "never" is how a breached ceiling reads like headroom.
+    def _breach(limit_bytes: float) -> str:
+        if limit_bytes <= total:
+            return "ALREADY PASSED"
+        if bytes_per_day <= 0:
+            return "not projectable"
+        d = _dt.date.today() + _dt.timedelta(days=(limit_bytes - total) / bytes_per_day)
+        return d.isoformat()
+
+    return {
+        "total_bytes":   total,
+        "ceiling_bytes": ceiling,
+        "pct":           100.0 * total / ceiling if ceiling else 0.0,
+        "fail_pct":      fail_pct,
+        "mb_per_month":  bytes_per_day * 30 / 1024 / 1024,
+        "coverage_pct":  100.0 * covered / total if total else 0.0,
+        "unmeasured":    unmeasured,
+        "fail_date":     _breach(ceiling * fail_pct / 100.0),
+        "full_date":     _breach(ceiling),
+        "top":           [(r["table_name"], r["total_bytes"] or 0) for r in rows[:12]],
+    }
+
+
+def check_storage() -> tuple[bool, str]:
+    """
+    Is the database going to stop accepting writes, and when?
+
+    THIS FAILS. It does not warn.
+
+    Breaching the ceiling puts the project into read-only mode: writes fail,
+    the evening pipeline produces no signals, on an ordinary Tuesday, with no
+    other symptom. It is the only failure in this system that is a total loss
+    rather than a bad trade, and a WARN on a list of ten green lines is a line
+    nobody reads.
+
+    Failing at 80% rather than 100% is deliberate — a migration run against a
+    near-full database can itself fail, so the guard has to fire while there is
+    still room to fix it.
+
+    Both thresholds are config (storage_ceiling_mb, storage_fail_pct) so the
+    guard can be demonstrated failing without waiting for the disk to fill.
+    """
+    s = storage_snapshot()
+    mb, ceil_mb = s["total_bytes"] / 1048576, s["ceiling_bytes"] / 1048576
+
+    if s["mb_per_month"] > 0:
+        when = (f"{s['mb_per_month']:.0f} MB/month → {s['fail_pct']:.0f}% on "
+                f"{s['fail_date']}, full on {s['full_date']}")
+    else:
+        when = "no rows added in the last 30 days — growth not projectable"
+
+    detail = (f"{mb:.0f} MB of {ceil_mb:.0f} MB ({s['pct']:.1f}%), {when} "
+              f"[growth measured across {s['coverage_pct']:.0f}% of size]")
+
+    if s["pct"] >= s["fail_pct"]:
+        biggest = ", ".join(f"{n} {b/1048576:.0f}MB" for n, b in s["top"][:3])
+        return False, (f"STORAGE CEILING: {detail}. Largest: {biggest}. "
+                       f"Writes fail at the ceiling — the evening pipeline "
+                       f"produces no signals. Roll off history or raise the plan.")
+    return True, detail
+
+
+def check_feed_integrity() -> tuple[bool, str]:
+    """
+    Two properties the decision path depends on and cannot detect losing.
+
+    1. THE TICK HANDLER DOES NO I/O.
+       on_ticks runs on the websocket thread for every tick of ~95 symbols. One
+       logger call or one database write in there backs the socket up behind it,
+       and prices go late in exactly the fast market where lateness costs money.
+       Nothing about that failure looks like a failure — the daemon runs, the
+       numbers move, they are just behind.
+
+    2. THE STALENESS GUARD IS WIRED TO THE ENTRY PATH.
+       A dead socket with a live cache keeps serving the reference levels from
+       whenever it died. The guard exists so no entry is decided on data of
+       unknown age; a guard that is present but not consulted is worse than
+       none, because it reads as protection.
+
+    Asserted by reading the source, the same way check_exit_actions asserts its
+    three lists still agree — so it fails the moment someone removes either,
+    rather than the next time the market is fast.
+    """
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+
+    src = (root / "intraday/price_feed.py").read_text(encoding="utf-8")
+    i = src.find("def on_ticks(")
+    if i < 0:
+        return False, "cannot find on_ticks in price_feed — the check itself is broken"
+    # The handler body ends where the next nested def begins.
+    j = src.find("def on_connect(", i)
+    body = src[i:j if j > i else i + 2000]
+    # Strip comments before looking for calls: this file explains at length why
+    # the handler must not log, and the word appears in that explanation.
+    code = "\n".join(l for l in body.splitlines() if not l.strip().startswith("#"))
+    dirty = [p for p in ("logger.", ".execute(", "sb.table", "requests.", "print(")
+             if p in code]
+    if dirty:
+        return False, (f"tick handler performs I/O ({', '.join(dirty)}) — this runs "
+                       f"per tick on the socket thread and will make prices late")
+
+    eng = (root / "intraday/engine.py").read_text(encoding="utf-8")
+    if not re.search(r"stale\s*=\s*self\.stale_contexts\(\)", eng):
+        return False, ("the staleness guard is not called in the entry path — "
+                       "a dead feed with a live cache would trade on whatever it "
+                       "last saw")
+    if "if sym in stale:" not in eng:
+        return False, ("stale_contexts() is computed but its result never filters "
+                       "a symbol — the guard is decorative")
+
+    from config import cfg_float, cfg_bool
+    age  = cfg_float("intraday_context_max_age_s", 420.0)
+    mode = "QUOTE" if cfg_bool("intraday_quote_mode", False) else "LTP"
+    return True, (f"tick handler is I/O-free, staleness guard active at {age:.0f}s, "
+                  f"feed mode {mode}")
+
+
+def check_governance() -> tuple[bool, str]:
+    """
+    Is there still exactly one door, and is the conviction layer still annotation?
+
+    THE THING THIS WATCHES CANNOT ANNOUNCE ITSELF.
+
+    Auto-apply was removed in code rather than switched off, precisely so that
+    re-opening it would require an edit somebody has to justify. But an edit is
+    exactly what could happen — a merge conflict resolved the wrong way, a
+    refactor that "cleaned up" an early return, a revert. Nothing about a
+    reopened door looks wrong: proposals simply start applying themselves, which
+    is what the system did for months and reported as success.
+
+    Likewise the conviction weights. They are zero because no tier-by-tier
+    forward return exists yet; a non-zero value means an unmeasured component is
+    back at the top of the decision stack deciding where capital goes.
+    """
+    from config import cfg_float, cfg_bool
+    from swing.brain.backtester_and_change_manager import evaluate_auto_apply
+
+    # Behavioural, not textual: hand it the exact proposal shape that WOULD have
+    # auto-applied under the old live policy and require a refusal.
+    ok, why = evaluate_auto_apply({
+        "proposal_type": "THRESHOLD_CHANGE", "confidence": 0.99,
+        "backtest_result": {"wr_delta": 25.0, "high_impact": False},
+    })
+    if ok:
+        return False, ("AUTO-APPLY IS OPEN AGAIN — a threshold can move with nobody "
+                       f"reading it ({why}). Every parameter change must go through "
+                       f"the proposal queue and a human.")
+
+    bad = [f"{k}={v}" for k, v in (("rank_weight_tier", cfg_float("rank_weight_tier", 0.0)),
+                                   ("rank_weight_conviction", cfg_float("rank_weight_conviction", 0.0)))
+           if v]
+    if bad:
+        return False, (f"conviction is back in the ranking ({', '.join(bad)}) but no "
+                       f"tier-by-tier forward returns exist yet — an unmeasured "
+                       f"component is deciding where capital goes")
+
+    freeze = "on" if cfg_bool("governance_freeze_enabled", False) else "OFF"
+    oos    = "on" if cfg_bool("governance_require_oos", False) else "OFF"
+    return True, (f"one door: auto-apply refuses, conviction is annotation, "
+                  f"freeze {freeze}, out-of-sample {oos}")
+
+
+def check_allocator_isolation() -> tuple[bool, str]:
+    """
+    Can the allocator reach an order path? It must not be able to.
+
+    THIS IS THE GUARD THAT MAKES SHADOW MODE SAFE ON A LIVE BOOK.
+
+    Every other protection around the allocator is a value in a config row —
+    switches default off, shadow defaults true — and a config row can be
+    changed by anyone, including by a script, including by accident. The
+    prohibition on `allocation` importing `execution` is different in kind: a
+    module that cannot import the thing that places orders cannot place one
+    however wrong its arithmetic, however confused its priors, however badly
+    someone wires its call-site.
+
+    So it is asserted rather than assumed, by inspection, the same way the exit
+    lists and the tick handler are. It fails the moment somebody adds the import
+    that would make it convenient.
+    """
+    import re
+    from pathlib import Path
+    pkg = Path(__file__).resolve().parent.parent / "allocation"
+    if not pkg.is_dir():
+        return True, "allocation package not built yet"
+
+    banned = ("execution", "order_manager", "paper_broker", "gtt_manager", "kite")
+    offenders = []
+    for f in sorted(pkg.glob("*.py")):
+        for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            code = line.split("#", 1)[0]
+            if not re.match(r"\s*(import|from)\s", code):
+                continue
+            if any(b in code for b in banned):
+                offenders.append(f"{f.name}:{n}")
+    if offenders:
+        return False, (f"allocation imports an order path at {', '.join(offenders)} — "
+                       f"shadow mode is NO LONGER SAFE on a live book, because the "
+                       f"allocator can now reach execution regardless of its switches")
+
+    from config import cfg_bool
+    live = [b for b in ("intraday", "swing") if cfg_bool(f"alloc_live_{b}", False)]
+    mode = f"LIVE for {'+'.join(live)}" if live else "shadow only"
+    return True, f"allocation cannot import an order path ({mode})"
+
+
 CHECKS = [
     ("config",   "risk numbers contradict each other, or a switch does nothing", check_config,   False),
+    ("governance", "a parameter can change itself, or an unmeasured layer ranks trades", check_governance, False),
+    ("allocator", "the allocator can reach an order path despite its switches", check_allocator_isolation, False),
+    ("storage",  "the database stops accepting writes and the pipeline goes silent", check_storage, False),
+    ("feed",     "decisions run on data of unknown age, or ticks arrive late",  check_feed_integrity, False),
     ("exits",    "an exit rule can sell without alerting, or fires from only one caller", check_exit_actions, False),
     ("costs",    "charges are priced off a stale or wrong-product rate",         check_cost_rates, False),
     ("selects",  "a query reads a column the schema no longer has",              check_selects,  False),

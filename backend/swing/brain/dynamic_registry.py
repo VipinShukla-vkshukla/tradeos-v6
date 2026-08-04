@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Brain Engine v2: Dynamic Registry
+TradeOS v7 — Brain Engine v2: Dynamic Registry
 ================================================
 Replaces ALL hardcoded lists in the brain with live discovery from:
   - Supabase information_schema  → table names, column names, column types

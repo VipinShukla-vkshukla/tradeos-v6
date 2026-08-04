@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Phase 1/2: ASM/GSM + F&O Ban Safety Lists
+TradeOS v7 — Phase 1/2: ASM/GSM + F&O Ban Safety Lists
 Fetches NSE surveillance lists daily. These are HARD BLOCKERS —
 no BUY signal fires on any stock in these lists.
 

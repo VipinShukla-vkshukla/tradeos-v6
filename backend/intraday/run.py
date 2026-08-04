@@ -31,7 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import IST, cfg_int, get_supabase, is_kill_switch_active
+from config import IST, cfg_int, get_supabase, get_system_config, is_kill_switch_active
 from intraday.config import (is_trading_session, is_market_open, is_holiday,
                              autonomy_phase, gtt_enabled, orders_enabled,
                              eval_interval_s, gtt_sync_interval_s, poll_interval_s)
@@ -195,7 +195,7 @@ def main(once: bool = False, dry: bool = False) -> None:
                 elif prices:
                     blind_cycles = 0
                     sync = (now - last_gtt >= gtt_sync_interval_s())
-                    result = engine.cycle(prices, sync_gtt=sync)
+                    result = engine.cycle(prices, sync_gtt=sync, feed=feed)
                     if sync:
                         last_gtt = now
                     if result["position_actions"] or result["entry_signals"]:
@@ -229,6 +229,26 @@ def main(once: bool = False, dry: bool = False) -> None:
             # Reload positions/candidates periodically so a fill reported through
             # Telegram, or a manual exit, is picked up without a restart.
             if now - last_state >= 300:
+                # RE-READ system_config FIRST, BEFORE ANYTHING CONSULTS IT.
+                #
+                # get_system_config() caches on first read and, until 04-Aug-2026,
+                # nothing in this process ever refreshed it. A daemon that booted
+                # at 09:00 therefore answered every cfg_*() call for the rest of
+                # the session with the values that were true at 09:00 — including
+                # the kill switch checked on line 146 of this loop, every second,
+                # against a dict that could not change.
+                #
+                # So `master_kill_switch = true` set during a live session was
+                # stored, displayed as set, and ignored: the operator would pull
+                # the handle, see it engaged, and the daemon would keep trading.
+                # The same staleness silently disabled the config layer of
+                # rollback, which is the one rollback layer that needs no deploy.
+                #
+                # It belongs on this timer and not the fast one: the fast path
+                # does no blocking I/O, and a bounded 300-second lag on a switch
+                # is the difference between a control that is slow and one that
+                # does not exist. Cost is ~20 narrow reads per session.
+                get_system_config(refresh=True)
                 engine.load_state()
                 engine.refresh_universe()
                 feed.resubscribe(engine.watch_symbols())
@@ -239,6 +259,16 @@ def main(once: bool = False, dry: bool = False) -> None:
                 # Event data and AI advice — both too slow and too static for
                 # the fast loop, both purely advisory to it.
                 engine.refresh_advisory()
+                # Flush the allocator's verdict buffer HERE, on the slow timer,
+                # never in the 15-second cycle. Buffered writes that never flush
+                # leave silent holes in the promotion evidence, and the gate is
+                # denominated in exactly these rows — so a failure is logged
+                # loudly rather than swallowed.
+                if engine._allocator is not None:
+                    n = engine._allocator.flush()
+                    if n:
+                        logger.info(f"  allocator: flushed {n} verdict(s)")
+                    engine._allocator.refresh_priors()
                 last_state = now
 
             if now - last_beat >= 900:
@@ -302,7 +332,7 @@ def main(once: bool = False, dry: bool = False) -> None:
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="TradeOS v6 — Intraday monitor")
+    ap = argparse.ArgumentParser(description="TradeOS v7 — Intraday monitor")
     ap.add_argument("--once", action="store_true", help="one cycle then exit")
     ap.add_argument("--dry", action="store_true", help="force DRY_RUN, no broker writes")
     ap.add_argument("--status", action="store_true", help="print gates and watch list")

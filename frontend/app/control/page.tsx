@@ -1,6 +1,6 @@
 'use client';
 
-// TradeOS v6 — Strategy Control Room
+// TradeOS v7 — Strategy Control Room
 //
 // A standalone surface at /control, deliberately separate from the tabbed
 // console. The console answers "what happened". This answers "what should the

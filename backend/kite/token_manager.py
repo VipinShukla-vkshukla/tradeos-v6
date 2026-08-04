@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Kite Access Token Manager
+TradeOS v7 — Kite Access Token Manager
 =======================================
 Zerodha access tokens expire every morning at ~07:30 IST. There is no
 refresh-token flow: obtaining a new one always requires an interactive login.
@@ -337,7 +337,7 @@ def token_status() -> dict:
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser(description="TradeOS v6 — Kite token manager")
+    ap = argparse.ArgumentParser(description="TradeOS v7 — Kite token manager")
     ap.add_argument("--login-url", action="store_true", help="Print the Zerodha login URL")
     ap.add_argument("--exchange",  metavar="REQUEST_TOKEN",
                     help="Exchange a request_token for an access_token")

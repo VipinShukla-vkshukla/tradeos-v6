@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Engine Registry
+TradeOS v7 — Engine Registry
 =============================
 Declarative hard-filter gates for all nine screener engines, plus engine
 lifecycle state.
@@ -58,7 +58,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from loguru import logger
-from config import get_supabase
+from config import get_supabase, cfg
 
 
 LIFECYCLE_ACTIVE  = "ACTIVE"
@@ -66,6 +66,61 @@ LIFECYCLE_SHADOW  = "SHADOW"
 LIFECYCLE_RETIRED = "RETIRED"
 
 ENGINES = ["CTL", "SBS", "TPO", "VBD", "IAD", "RSB", "MOM", "RVS", "SEC"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FAMILIES — the swing merge, which is not the same thing as a retirement
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Merging keeps every detection and changes only who gets credit for it.
+# Retiring stops the detection contributing at all. Stage 6's acceptance
+# criterion — "detection rate per surviving engine >= 3x prior" — is reachable
+# only by the first: you cannot raise a sample rate by deleting the samples.
+#
+# So the seven ACTIVE screeners keep running exactly as they do. Their hits are
+# attributed to one CONTINUATION identity, which is what raises the per-engine
+# sample rate and makes a quarterly verdict statistically possible. Measured
+# over 4,747 resolved detections, the family carries ~4,600 of them against
+# CTL's 1,739 alone.
+#
+# WHAT ACTUALLY CHANGES IS THE CONVERGENCE BONUS.
+#
+# Today a name found by CTL, SEC and MOM scores a convergence bonus for three
+# engines agreeing. Measured Jaccard co-occurrence says CTL-SEC is 0.41 and
+# CTL-MOM 0.25 — the only real overlap in the whole set — so that bonus was
+# paid precisely where the agreement was least independent. Within a family,
+# agreement is expected and earns nothing. Two DIFFERENT families agreeing
+# still earns it, because that is two different burdens of proof being met.
+#
+# RVS and MOM are deliberately NOT in the family. They are shadowed on measured
+# performance (RVS n=1,471 mean -0.49% win 42%; MOM n=1,090 mean +0.05%), which
+# is a separate decision from the merge and stands on its own evidence. Keeping
+# them as their own families means their forward returns stay separable for the
+# shadow quarter rather than being absorbed into the survivors' record.
+FAMILIES = {
+    "CTL": "CONTINUATION",   # the core: consolidation/trend-alignment breakout
+    "SEC": "CONTINUATION",   # sector-led continuation — 0.41 overlap with CTL
+    "TPO": "CONTINUATION",
+    "SBS": "CONTINUATION",
+    "VBD": "CONTINUATION",
+    "RSB": "CONTINUATION",
+    "IAD": "CONTINUATION",
+    "MOM": "MOM",            # shadowed; own family so its evidence stays separable
+    "RVS": "RVS",            # shadowed; same
+}
+
+
+def engine_family(engine: str) -> str:
+    """
+    Which family an engine's detections are scored under.
+
+    Config-overridable per engine so a family can be split back apart without a
+    deploy. The burden of proof runs both ways: a merge that turns out to have
+    hidden an independent signal must be reversible the same day.
+    """
+    e = (engine or "").upper()
+    default = FAMILIES.get(e, e)
+    return (cfg(f"screener_engine_{e.lower()}_family", default) or default).upper()
 
 _registry_cache: dict | None = None
 

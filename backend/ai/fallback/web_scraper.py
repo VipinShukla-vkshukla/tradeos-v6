@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Web Scraping Fallback
+TradeOS v7 — Web Scraping Fallback
 Scrapes NSE/BSE/Moneycontrol for news sentiment.
 Free, no API key needed.
 """

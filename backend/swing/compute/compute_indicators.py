@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Phase 2: Compute Indicators v2.3
+TradeOS v7 — Phase 2: Compute Indicators v2.3
 ==============================================
 Hybrid reconciliation with field-level trust graduation.
 
@@ -1295,7 +1295,7 @@ def main():
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="TradeOS v6 — Compute Indicators v2.3")
+    parser = argparse.ArgumentParser(description="TradeOS v7 — Compute Indicators v2.3")
     parser.add_argument("--dry-run",      action="store_true")
     parser.add_argument("--no-reconcile", action="store_true",
                         help="Skip sheet reconciliation — use computed everywhere")

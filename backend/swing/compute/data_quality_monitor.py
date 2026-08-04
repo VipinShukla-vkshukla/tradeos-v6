@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Data Quality Monitor v4
+TradeOS v7 — Data Quality Monitor v4
 ======================================
 Step 21 in run_pipeline.py — always last, always non-fatal.
 
@@ -1074,7 +1074,7 @@ def main_output():
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser(description="TradeOS v6 — data quality monitor")
+    ap = argparse.ArgumentParser(description="TradeOS v7 — data quality monitor")
     ap.add_argument("--phase", choices=["input", "output", "all"], default="all")
     args = ap.parse_args()
     result = main(phase=args.phase)

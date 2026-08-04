@@ -98,9 +98,53 @@ Persistent=false
 WantedBy=timers.target
 TIMER
 
+echo "── weekly backup service"
+# THE PLATFORM PROVIDES NO BACKUPS. Not a shorter window — none. Every decision
+# this system has recorded and every resolved outcome its priors are built from
+# live in exactly one place, and the free plan will not give them back.
+#
+# WHY HERE AND NOT IN GITHUB ACTIONS. The obvious home is a scheduled workflow
+# uploading an artifact, and it is wrong: this repository is PUBLIC, and
+# artifacts from a public repository's workflow runs are downloadable by anyone.
+# That would publish the complete position and P&L history to the internet
+# every Sunday. This machine is always on, has the large disk, and is private.
+sudo tee /etc/systemd/system/tradeos-backup.service >/dev/null <<UNIT
+[Unit]
+Description=TradeOS weekly dump of the system of record
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=$USER_NAME
+WorkingDirectory=$BACKEND
+Environment=PYTHONUNBUFFERED=1
+# Writes to backend/data/backups, keeps the last 8, and exits non-zero if the
+# dump does not read back — a backup nobody has opened is a belief, not a backup.
+ExecStart=$VENV/bin/python -m tools.backup --keep 8
+UNIT
+
+sudo tee /etc/systemd/system/tradeos-backup.timer >/dev/null <<'TIMER'
+[Unit]
+Description=Weekly TradeOS backup
+
+[Timer]
+# Sunday morning, well clear of the session and of the evening pipeline.
+OnCalendar=Sun 06:00
+# Unlike the trading timer, this one CATCHES UP. A backup missed because the
+# machine was down is a backup that should run at boot, not one that waits a
+# further week.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMER
+
 sudo systemctl daemon-reload
 sudo systemctl enable tradeos-intraday.timer
 sudo systemctl start tradeos-intraday.timer
+sudo systemctl enable tradeos-backup.timer
+sudo systemctl start tradeos-backup.timer
 
 echo
 echo "── done"
@@ -111,4 +155,5 @@ echo
 echo "  start now:     sudo systemctl start tradeos-intraday"
 echo "  watch logs:    journalctl -u tradeos-intraday -f"
 echo "  check timer:   systemctl list-timers tradeos-intraday.timer"
+echo "  back up now:   sudo systemctl start tradeos-backup && journalctl -u tradeos-backup -n 20"
 echo "  stop trading:  cd $BACKEND && $VENV/bin/python control_panel.py --intraday off"

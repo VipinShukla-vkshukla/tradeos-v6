@@ -63,6 +63,45 @@ class SymbolContext:
     # engine so "strong today" means one thing across the system.
     rs_vs_index_pct: float | None = None
 
+    # ── Provenance, so no decision runs on data of unknown age ──────────────
+    #
+    # WHY AGE IS A FIELD AND NOT A COMMENT.
+    #
+    # Bars and reference levels are assembled on the 300-second slow timer,
+    # while the decision loop runs every 15. A breakout at 10:47 was therefore
+    # judged against a day range built at 10:45 — and nothing anywhere said so,
+    # because a stale context and a fresh one were the same object.
+    #
+    # Worse is the failure that has no upper bound: a dead websocket with a
+    # live cache. The prices keep reading, the range keeps reading, everything
+    # looks healthy, and every one of those numbers is from whenever the socket
+    # died. "Live" becomes confident garbage. The guard is the deliverable, not
+    # the quote-mode upgrade.
+    as_of: datetime | None = None            # when the reference levels were built
+    live_fields: tuple[str, ...] = ()        # which fields came from the tick stream
+
+    # Cumulative traded volume for the session, from the exchange rather than
+    # summed from bars. Separate from avg_volume_20d, which is a daily average
+    # and answers a different question ("is today busy?" vs "how busy so far?").
+    session_volume: float | None = None
+
+    def age_seconds(self, now: datetime | None = None) -> float | None:
+        """Seconds since the reference levels were assembled. None if unknown."""
+        if self.as_of is None:
+            return None
+        return ((now or datetime.now(self.as_of.tzinfo)) - self.as_of).total_seconds()
+
+    def is_stale(self, max_age_s: float, now: datetime | None = None) -> bool:
+        """
+        Too old to decide on.
+
+        Unknown age counts as STALE, deliberately. The alternative reads "we do
+        not know when this was true, so proceed", which is the exact reasoning
+        that lets a dead feed keep trading.
+        """
+        age = self.age_seconds(now)
+        return age is None or age > max_age_s
+
     def range_between(self, start_min: int, end_min: int) -> tuple[float, float] | None:
         """High/low between N and M minutes after the open. The ORB primitive."""
         if not self.bars:

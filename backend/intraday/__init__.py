@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Intraday subsystem
+TradeOS v7 — Intraday subsystem
 ================================
 A SEPARATE package, deliberately.
 

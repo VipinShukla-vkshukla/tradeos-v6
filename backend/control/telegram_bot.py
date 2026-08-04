@@ -1,5 +1,5 @@
 """
-TradeOS v6 — Phase 3: Telegram Approval Bot
+TradeOS v7 — Phase 3: Telegram Approval Bot
 Sends signal alerts and waits for your approval before executing orders.
 Commands: /approve <signal_id>, /reject <signal_id>, /status, /kill
 """
@@ -86,7 +86,7 @@ def send_daily_summary(signals: list) -> bool:
     )
 
     msg = (
-        f"<b>🤖 TradeOS v6 — Daily Summary</b>\n"
+        f"<b>🤖 TradeOS v7 — Daily Summary</b>\n"
         f"{today_ist().strftime('%d %b %Y')}\n"
         f"{'─' * 30}\n"
         f"{regime_emoji} <b>Regime:</b> {regime.get('regime', '?')} | "
