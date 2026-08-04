@@ -9,6 +9,7 @@ REM    tradeos health     run EVERY check and report what is broken
 REM    tradeos backup     dump the system of record off-platform, then verify it
 REM    tradeos rollback   what Phase 4 has switched on, and what it was before
 REM    tradeos rollback off   every Phase 4 switch back to its pre-Phase-4 value
+REM    tradeos alloc      is the allocator ahead of greedy, and is there evidence yet
 REM    tradeos learn      weekly review — measures, proposes, changes nothing
 REM    tradeos learn show just read the open proposals
 REM    tradeos discover   look for engines that do not exist yet
@@ -47,6 +48,7 @@ if /i "%~1"=="check"    goto CHECK
 if /i "%~1"=="health"   goto HEALTH
 if /i "%~1"=="backup"   goto BACKUP
 if /i "%~1"=="rollback" goto ROLLBACK
+if /i "%~1"=="alloc"    goto ALLOC
 if /i "%~1"=="learn"    goto LEARN
 if /i "%~1"=="discover" goto DISCOVER
 if /i "%~1"=="settings" goto SETTINGS
@@ -234,6 +236,12 @@ goto END
 
 :BACKUP
 python -m tools.backup --keep 8
+goto END
+
+:ALLOC
+REM  Scorecard by default. The number that matters is scored DISAGREEMENTS with
+REM  the greedy path — sessions where the two agree carry no information at all.
+if /i "%~2"=="today" (python -m tools.allocator_report --today) else (python -m tools.allocator_report)
 goto END
 
 :ROLLBACK

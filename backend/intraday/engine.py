@@ -51,6 +51,7 @@ class IntradayEngine:
         # Epoch-ish sentinel so the first cycle logs parity immediately rather
         # than waiting a full interval for the first sample.
         self._last_parity_at = datetime.fromtimestamp(0, IST)
+        self._allocator = None
         # The intraday universe, selected on its OWN criteria. Until this
         # existed the engines only saw swing shortlist names — stocks chosen for
         # a one-to-three-week thesis, which predicts almost nothing about
@@ -1774,6 +1775,58 @@ class IntradayEngine:
             self.load_state()
         return closed
 
+    def _allocate_shadow(self, entries: list, setups: list) -> None:
+        """
+        Score what both books just proposed, record the verdicts, act on none.
+
+        BUFFERED, NEVER WRITTEN HERE. select() appends to an in-memory buffer;
+        the 300-second timer flushes it. A synchronous write in this loop would
+        put a network round trip in front of exit evaluation on live positions,
+        which is the one latency this system cannot afford.
+        """
+        if not cfg_bool("alloc_shadow_enabled", False):
+            return
+        if not entries and not setups:
+            return
+
+        from allocation.proposal import from_intraday, from_swing
+        from allocation.allocator import Allocator
+        from intraday.session import session_state
+        from intraday import market_context as mkt
+
+        if self._allocator is None:
+            self._allocator = Allocator(self.sb)
+            self._allocator.refresh_priors()
+
+        props = []
+        for e in entries or []:
+            d = e.get("decision") if isinstance(e, dict) else e
+            p = from_swing(d, e.get("plan") if isinstance(e, dict) else None)
+            if p:
+                props.append(p)
+        for s in setups or []:
+            setup = s.get("setup") if isinstance(s, dict) else s
+            qty   = int((s.get("qty") if isinstance(s, dict) else 0) or 0)
+            p = from_intraday(setup, qty)
+            if p:
+                props.append(p)
+        if not props:
+            return
+
+        st = session_state()
+        mc = mkt.from_context(self._index_ctx)
+        used = len([x for x in self.positions if str(x.get("entry_date") or "")[:10]
+                    == today_ist().isoformat()])
+        slots_left = max(cfg_int("alloc_max_slots", 2) - used, 0)
+
+        v = self._allocator.select(
+            props, regime=mc.state, slots_left=slots_left,
+            minutes_left=max(getattr(st, "minutes_to_close", 0) or 0, 0),
+            open_positions=self.positions)
+        takes = sum(1 for x in v if x["verdict"] == "TAKE")
+        logger.info(f"  allocator (shadow): {len(v)} proposal(s) scored, "
+                    f"{takes} would be taken, {len(v)-takes} refused")
+
     def _record_setup(self, s, phase: str, cost_pct: float, verdict: str, qty: int) -> None:
         """
         Persist every setup DETECTED, including cost rejections.
@@ -1834,16 +1887,37 @@ class IntradayEngine:
         entries = []
         if cfg_bool("intraday_watch_candidates", True):
             entries = self.evaluate_candidates(prices)
-            self.act_on_candidates(entries)
 
         # Dedicated intraday engines — separate from the swing candidate watch
         # above, which evaluates swing plans against live prices.
         setups = []
         try:
             setups = self.evaluate_intraday_setups(prices)
-            self.act_on_setups(setups)
         except Exception as e:
             logger.warning(f"  intraday strategies failed: {e}")
+
+        # ── ALLOCATION, OBSERVING ONLY ──────────────────────────────────────
+        #
+        # Placed AFTER both books have produced proposals and BEFORE either acts,
+        # which is the only position from which it can see the same choice the
+        # live path is about to make. Read-only with respect to everything the
+        # live path subsequently reads, and wrapped so it cannot break the cycle.
+        #
+        # In shadow it records what it WOULD have chosen and changes nothing —
+        # act_on_* below run exactly as they always have. That is not a
+        # limitation, it is the evidence-gathering mode the promotion gate is
+        # denominated in: >=30 scored DISAGREEMENTS with the greedy path, which
+        # cannot be counted without a row per proposal the allocator refused.
+        try:
+            self._allocate_shadow(entries, setups)
+        except Exception as e:
+            logger.debug(f"  allocator skipped: {e}")
+
+        # The live path, unchanged.
+        if entries:
+            self.act_on_candidates(entries)
+        if setups:
+            self.act_on_setups(setups)
 
         # SWING, SAID OUT LOUD.
         #

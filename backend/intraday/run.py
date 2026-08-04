@@ -259,6 +259,16 @@ def main(once: bool = False, dry: bool = False) -> None:
                 # Event data and AI advice — both too slow and too static for
                 # the fast loop, both purely advisory to it.
                 engine.refresh_advisory()
+                # Flush the allocator's verdict buffer HERE, on the slow timer,
+                # never in the 15-second cycle. Buffered writes that never flush
+                # leave silent holes in the promotion evidence, and the gate is
+                # denominated in exactly these rows — so a failure is logged
+                # loudly rather than swallowed.
+                if engine._allocator is not None:
+                    n = engine._allocator.flush()
+                    if n:
+                        logger.info(f"  allocator: flushed {n} verdict(s)")
+                    engine._allocator.refresh_priors()
                 last_state = now
 
             if now - last_beat >= 900:
