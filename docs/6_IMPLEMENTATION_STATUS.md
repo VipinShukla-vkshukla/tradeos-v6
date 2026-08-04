@@ -21,12 +21,41 @@ with the live system.
 | 2 | Economics | **Complete but UNVALIDATED** — needs broker charges | 04-Aug-2026 |
 | 3 | Exits | **Premise failed — stopped and reported, per §0.9** | 04-Aug-2026 |
 | 4 | Measurement spine | **Complete** | 04-Aug-2026 |
-| 5 | Decision-input integrity | not started | |
-| 6 | Engine consolidation | not started — but see §7, the evidence now exists | |
-| 7 | Governance and cadence | not started | |
+| 5 | Decision-input integrity | **Complete** — quote mode off pending parity | 04-Aug-2026 |
+| 6 | Engine consolidation | **Shadow phase complete**; merges deferred to the evidence | 04-Aug-2026 |
+| 7 | Governance and cadence | **Complete** | 04-Aug-2026 |
 | 8 | New alpha | not started | |
 | 9 | Structural overlays | not started | |
 | 10 | Allocation | `allocation/scoring` built early (Stage 4 needs it); the other four modules not started | 04-Aug-2026 |
+
+### Stages 5–7, in one line each
+
+**Stage 5.** `SymbolContext` now carries `as_of`; entries are refused on a
+context older than 420 s **or of unknown age**, because "we do not know when
+this was true, so proceed" is the reasoning that lets a dead feed keep trading.
+Exits are deliberately not gated. MODE_QUOTE is implemented and **off** until
+`tools/quote_parity` shows one session of agreement. New health check `feed`
+asserts the tick handler does no I/O and that the guard is actually consulted;
+both demonstrated failing.
+
+**Stage 6.** Intraday engines had only on/off — turning one off stopped it
+recording, which destroys the evidence a retirement decision needs. Added
+ACTIVE/SHADOW/RETIRED to match what swing has always had. VCE and RNG are
+shadowed: they evaluate, their detections are written with verdict `SHADOW` and
+qty 0, outcomes resolve them, they can never be funded, and they cannot lift a
+survivor's confidence through corroboration. **The merges (GAP/PDL into ORB,
+PBK into VWR, seven swing screeners into one) are deliberately not done** —
+they rest on correlations the readiness review says are structural estimates
+"because the sample does not support measurement", and shadowing is what
+produces that sample. The swing side waits for a stronger reason still: 85
+resolved plans against intraday's 595.
+
+**Stage 7.** `evaluate_auto_apply()` returns False before reading anything —
+removed in code, not toggled off, because a JSON edit re-opening it would look
+like tuning. `governance_allows()` is enforced inside `apply_proposal`, the one
+place a parameter actually changes, and applies to human-approved proposals too.
+`freeze_calendar` covers 2026-Q3 → 2027-Q1. Conviction is demoted to
+`Ranked.annotations` with both weights at 0.
 
 Stages are strictly ordered and each gates the next (master spec §2).
 
@@ -455,22 +484,33 @@ warning. `allocation.scoring` prints that warning every time it runs.
 
 ---
 
-## 5c. Stages 5–10 — NOT DONE
+## 5c. What remains — Stages 8, 9, 10
 
-Stages 5, 6, 7, 8 and 9 were not started, and Stage 10 has only its `scoring`
-module. This is a real shortfall against the request and it is stated plainly
-rather than presented as a judgement call.
-
-What remains, in the specification's order:
+Stages 8 and 9 were not started, and Stage 10 has only its `scoring` module.
+Stated plainly rather than presented as a judgement call.
 
 | Stage | Remaining work |
 |---|---|
-| 5 | Quote-mode subscription; staleness guard at every consumer; dual-log one session |
-| 6 | 9 swing screeners → continuation; 7 intraday engines → 2 families; retirees shadowed one quarter |
-| 7 | Quarterly freeze; auto-apply retired; conviction demoted from ranking; freeze calendar |
-| 8 | Post-earnings-drift engine; accumulation-confirmed engine; block/bulk deal ingestion |
-| 9 | Expiry day-type conditioning; volatility-regime exposure scaling; liquidity/circuit-band gate |
-| 10 | `proposal`, `hurdle`, `policies`, `allocator`; no-bypass accounting; four dashboard views; `tools/allocator_report`, `tools/rollback` allocator entries |
+| 6 (partial) | The engine MERGES: GAP/PDL → ORB family as day-type conditions, PBK → VWR as a condition, seven swing screeners → one continuation engine. Gated on the shadow quarter and on a swing denominator that has 85 observations today. |
+| 8 | Post-earnings-drift engine; accumulation-confirmed engine; block/bulk deal ingestion (the one new external dependency in the whole plan) |
+| 9 | Expiry day-type conditioning; volatility-regime exposure scaling; liquidity/circuit-band eligibility gate |
+| 10 | `proposal`, `hurdle`, `policies`, `allocator`; no-bypass accounting; four dashboard views; `tools/allocator_report`; allocator entries in `tools/rollback` |
+
+**Two of these should be re-read before they are built.**
+
+- **Stage 10 is conditional** on Stages 2 and 3 having made per-trade expectancy
+  positive (master spec §10). Expectancy is **unmeasured**, not negative — the
+  system's own record is +₹269 across 25 closes, of which 3 are real money. An
+  allocator optimises which of several positive-expectancy proposals gets
+  capital; with n=25 there is nothing yet to optimise over.
+- **Stage 8's accumulation engine needs block and bulk deal ingestion**, which
+  M3 in the readiness review flags as having no source specified. If no reliable
+  free source exists the engine degrades to delivery-persistence only, and that
+  degradation must be reported rather than silently absorbed.
+
+**Not done and worth doing:** a health check asserting the governance door stays
+shut. Everything else new in Stages 1–7 has a guard that was demonstrated
+failing; `evaluate_auto_apply` does not yet.
 
 **Two of these are now better informed than the specification could be**, and
 should be re-read before they are built:
