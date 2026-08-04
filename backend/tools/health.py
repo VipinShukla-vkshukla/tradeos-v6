@@ -655,9 +655,54 @@ def check_governance() -> tuple[bool, str]:
                   f"freeze {freeze}, out-of-sample {oos}")
 
 
+def check_allocator_isolation() -> tuple[bool, str]:
+    """
+    Can the allocator reach an order path? It must not be able to.
+
+    THIS IS THE GUARD THAT MAKES SHADOW MODE SAFE ON A LIVE BOOK.
+
+    Every other protection around the allocator is a value in a config row —
+    switches default off, shadow defaults true — and a config row can be
+    changed by anyone, including by a script, including by accident. The
+    prohibition on `allocation` importing `execution` is different in kind: a
+    module that cannot import the thing that places orders cannot place one
+    however wrong its arithmetic, however confused its priors, however badly
+    someone wires its call-site.
+
+    So it is asserted rather than assumed, by inspection, the same way the exit
+    lists and the tick handler are. It fails the moment somebody adds the import
+    that would make it convenient.
+    """
+    import re
+    from pathlib import Path
+    pkg = Path(__file__).resolve().parent.parent / "allocation"
+    if not pkg.is_dir():
+        return True, "allocation package not built yet"
+
+    banned = ("execution", "order_manager", "paper_broker", "gtt_manager", "kite")
+    offenders = []
+    for f in sorted(pkg.glob("*.py")):
+        for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            code = line.split("#", 1)[0]
+            if not re.match(r"\s*(import|from)\s", code):
+                continue
+            if any(b in code for b in banned):
+                offenders.append(f"{f.name}:{n}")
+    if offenders:
+        return False, (f"allocation imports an order path at {', '.join(offenders)} — "
+                       f"shadow mode is NO LONGER SAFE on a live book, because the "
+                       f"allocator can now reach execution regardless of its switches")
+
+    from config import cfg_bool
+    live = [b for b in ("intraday", "swing") if cfg_bool(f"alloc_live_{b}", False)]
+    mode = f"LIVE for {'+'.join(live)}" if live else "shadow only"
+    return True, f"allocation cannot import an order path ({mode})"
+
+
 CHECKS = [
     ("config",   "risk numbers contradict each other, or a switch does nothing", check_config,   False),
     ("governance", "a parameter can change itself, or an unmeasured layer ranks trades", check_governance, False),
+    ("allocator", "the allocator can reach an order path despite its switches", check_allocator_isolation, False),
     ("storage",  "the database stops accepting writes and the pipeline goes silent", check_storage, False),
     ("feed",     "decisions run on data of unknown age, or ticks arrive late",  check_feed_integrity, False),
     ("exits",    "an exit rule can sell without alerting, or fires from only one caller", check_exit_actions, False),

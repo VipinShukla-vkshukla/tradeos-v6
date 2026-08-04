@@ -49,6 +49,16 @@ from loguru import logger
 # switches here as it lands. A switch that is not in this list is not restored
 # by --all-off, which is why the drift check below exists.
 SWITCHES: list[tuple[str, int, str]] = [
+    ("alloc_live_swing", 10,
+     "the swing book stops asking the allocator which plan gets the entry and "
+     "returns to the greedy path — the ranked-first plan wins, as before"),
+    ("alloc_live_intraday", 10,
+     "the intraday book returns to taking the highest-confidence setup that "
+     "clears its gates, with no opportunity-cost comparison"),
+    ("alloc_shadow_enabled", 10,
+     "the allocator stops recording verdicts entirely. Note this destroys the "
+     "evidence the promotion gate is denominated in, so it is the LAST thing "
+     "to turn off, not the first"),
     ("storage_rolloff_enabled", 1,
      "the evening pipeline stops calling archive_stock_data(); the function "
      "goes back to existing and never running, as it did from Feb to Aug 2026"),
