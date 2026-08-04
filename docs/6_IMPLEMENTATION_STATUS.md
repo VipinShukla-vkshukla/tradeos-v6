@@ -22,8 +22,11 @@ with the live system.
 | 3 | Exits | **Complete** — premise disproved, reported, exits left alone (§0.9) | 04-Aug-2026 |
 | 4 | Measurement spine | **Complete** | 04-Aug-2026 |
 | 5 | Decision-input integrity | **Complete** — quote mode gated on parity by design | 04-Aug-2026 |
-| 6 | Engine consolidation | **PARTIAL** — shadow phase complete, merges outstanding | 04-Aug-2026 |
+| 6 | Engine consolidation | **Complete** — shadow phase and both merges | 04-Aug-2026 |
 | 7 | Governance and cadence | **Complete** | 04-Aug-2026 |
+| 8 | New alpha | **Complete** — PEAD + ACC, both shadowed | 04-Aug-2026 |
+| 9 | Structural overlays | **Complete** — expiry, volatility, liquidity | 04-Aug-2026 |
+| 10 | Allocation | **Complete** — shadow only, both live switches off | 04-Aug-2026 |
 
 **On what "complete" means here.** A stage is complete when its deliverables are
 built and its acceptance criteria are met *or answered*. Three of the entries
@@ -44,15 +47,14 @@ above deserve their qualifier spelled out rather than hidden behind a word:
   logged parity before the switch is trusted, and the switch waits on evidence
   rather than on work.
 
-**Stage 6 is the one that is genuinely partial, and it is not relabelled.** Its
-deliverables 1 and 2 are the merges — seven swing screeners into one
-continuation engine, GAP/PDL into the ORB family as conditions, PBK into VWR.
-Only deliverables 3 and 4 (retire VCE and RNG to shadow; shadow all retirees for
-a quarter) are done. Calling that complete would be the kind of quiet
-overstatement this log exists to prevent.
-| 8 | New alpha | **Complete** — PEAD + ACC, both shadowed | 04-Aug-2026 |
-| 9 | Structural overlays | **Complete** — expiry, volatility, liquidity | 04-Aug-2026 |
-| 10 | Allocation | **Complete** — shadow only, both live switches off | 04-Aug-2026 |
+- **Stage 6** was PARTIAL for most of this work and is no longer. The operator
+  caught the reason: migration 036 implemented a *retirement* and I had
+  described it as consolidation. A retirement stops detections contributing and
+  leaves per-engine sample rate flat; only a merge raises it, which is what
+  Stage 6's acceptance criterion actually measures. Both merges are now built —
+  intraday into two families (ORB 7.7×, VWR 1.4×), swing into one CONTINUATION
+  family — with every detection preserved and only the convergence vote
+  de-duplicated.
 
 **All ten stages are built.** Phase 4 is code-complete. What it is not is
 *proven*: the allocator has recorded zero decisions, both new engines have
@@ -93,7 +95,7 @@ Exits are deliberately not gated. MODE_QUOTE is implemented and **off** until
 asserts the tick handler does no I/O and that the guard is actually consulted;
 both demonstrated failing.
 
-**Stage 6.** Intraday engines had only on/off — turning one off stopped it
+**Stage 6 (superseded — see §5·0 and the note above).** Intraday engines had only on/off — turning one off stopped it
 recording, which destroys the evidence a retirement decision needs. Added
 ACTIVE/SHADOW/RETIRED to match what swing has always had. VCE and RNG are
 shadowed: they evaluate, their detections are written with verdict `SHADOW` and
