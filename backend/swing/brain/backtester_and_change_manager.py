@@ -18,7 +18,7 @@ import pandas as pd
 from loguru import logger
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config import get_supabase, cfg
+from config import get_supabase, cfg, cfg_bool
 
 MIN_BACKTEST = 10
 MAX_CHANGE   = 0.30   # max 30% change per cycle
@@ -339,6 +339,34 @@ def _get_auto_apply_policy() -> dict:
 
 
 def evaluate_auto_apply(proposal: dict) -> tuple[bool, str]:
+    """
+    Always False. Auto-apply authority was removed on 04-Aug-2026.
+
+    ONE GOVERNANCE DOOR, AND THIS WAS THE SECOND ONE.
+
+    Every parameter change is supposed to enter through the proposal queue and
+    be approved by a human. This function was the exception: with
+    brain_auto_apply_policy set to {"THRESHOLD_CHANGE": {"mode": "auto", ...}} —
+    which is what it held in the live database — a threshold could move on the
+    system's own authority, on its own backtest, with nobody reading it.
+
+    Two doors is not redundancy, it is drift. The queue is auditable and the
+    auto path is not, so over time the two diverge and nobody can say which
+    changes were decided and which merely happened. That is unacceptable in a
+    system whose entire premise is that its measurements can be trusted.
+
+    THE REFUSAL IS IN CODE, NOT IN CONFIGURATION, DELIBERATELY.
+    Turning auto-apply off by editing the policy JSON would leave a system that
+    is one careless edit away from re-opening the door — and the edit would look
+    like tuning rather than like a governance change. Removing the authority
+    means removing it.
+
+    The logic below is preserved, unreachable, because it documents the bar that
+    was actually being applied. Nothing in this repository is deleted.
+    """
+    return False, ("auto-apply authority was removed (Stage 7) — every change "
+                   "goes through the proposal queue and a human")
+
     ptype = proposal.get("proposal_type","")
     if ptype in REVIEW_ONLY:
         return False, "review-only type"
@@ -371,6 +399,69 @@ def evaluate_auto_apply(proposal: dict) -> tuple[bool, str]:
     return True, f"auto-apply: conf={conf:.2f}, wr_delta={wr_delta:.1f}pp"
 
 
+def current_freeze_window(sb=None) -> dict | None:
+    """The freeze window today falls inside, or None if the calendar has none."""
+    try:
+        sb = sb or get_supabase()
+        today = date.today().isoformat()
+        rows = (sb.table("freeze_calendar")
+                  .select("quarter,starts_on,ends_on,decisions_due")
+                  .lte("starts_on", today).gte("ends_on", today)
+                  .limit(1).execute().data) or []
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+
+def governance_allows(proposal: dict, sb=None) -> tuple[bool, str]:
+    """
+    May this change be applied today?
+
+    TWO RULES, BOTH DENOMINATED IN INFORMATION RATHER THAN IN IMPATIENCE.
+
+    1. FREEZE WINDOW. Parameters are frozen for a quarter. Proposals accumulate
+       and are decided in one batch at the boundary. At 5-10 closed observations
+       a week, a change decided mid-quarter is fitted to a fortnight of noise —
+       and the moment it feels most urgent to move is a drawdown, which is
+       exactly when the recent sample is least representative.
+
+    2. OUT-OF-SAMPLE CONFIRMATION. Fit in quarter N, confirm in N+1, act in N+2.
+       A proposal whose confirmed_quarter is empty or equal to its fitted
+       quarter has only in-sample evidence, and in-sample evidence at this
+       sample rate is indistinguishable from noise.
+
+    Both default OFF in code so that a database without migration 035 behaves
+    exactly as before, and ON in the migration.
+    """
+    sb = sb or get_supabase()
+
+    if cfg_bool("governance_require_oos", False):
+        fitted    = (proposal.get("fitted_quarter") or "").strip()
+        confirmed = (proposal.get("confirmed_quarter") or "").strip()
+        if not confirmed:
+            return False, ("no out-of-sample confirmation — fitted "
+                           f"{fitted or 'in an unrecorded window'} and never "
+                           f"confirmed in a later one. Fit in N, confirm in N+1, "
+                           f"act in N+2.")
+        if fitted and confirmed <= fitted:
+            return False, (f"confirmed in {confirmed}, which is not later than the "
+                           f"window it was fitted in ({fitted}) — that is the same "
+                           f"sample, not a confirmation")
+
+    if cfg_bool("governance_freeze_enabled", False):
+        win = current_freeze_window(sb)
+        if win:
+            actionable = proposal.get("actionable_from")
+            if actionable and str(actionable) <= date.today().isoformat():
+                return True, f"released early: actionable_from {actionable} has passed"
+            return False, (f"{win['quarter']} is frozen until {win['ends_on']} — "
+                           f"proposals accumulate and are decided together on "
+                           f"{win['decisions_due']}. This will feel like inaction "
+                           f"during a drawdown; that is the intended behaviour.")
+
+    return True, "no governance restriction applies"
+
+
 def apply_proposal(proposal_id: int, reviewer: str = "brain_engine") -> bool:
     sb       = get_supabase()
     rows     = sb.table("brain_proposals").select("*").eq("id", proposal_id).execute().data
@@ -382,6 +473,26 @@ def apply_proposal(proposal_id: int, reviewer: str = "brain_engine") -> bool:
     ptype       = p.get("proposal_type","")
     target_key  = p.get("target_key")
     new_value   = p.get("proposed_value")
+
+    # ── The freeze window, and out-of-sample confirmation ───────────────────
+    #
+    # Applied HERE rather than in the approval UI because this is the single
+    # place a parameter actually changes. A gate on the path to the decision can
+    # be walked around; a gate on the decision itself cannot.
+    #
+    # Both are checked even for a human-approved proposal. The freeze is not
+    # protection against the brain — it is protection against fitting noise, and
+    # a human approving a noise-fit change inside the window is the specific
+    # thing that happens during a drawdown.
+    ok, why = governance_allows(p)
+    if not ok:
+        logger.error(f"Proposal {proposal_id} REFUSED: {why}")
+        try:
+            sb.table("brain_proposals").update(
+                {"status": "HELD", "review_note": why}).eq("id", proposal_id).execute()
+        except Exception:
+            pass
+        return False
 
     if ptype in REVIEW_ONLY:
         logger.info(f"Proposal {proposal_id} is {ptype} — acknowledged, no automated "
