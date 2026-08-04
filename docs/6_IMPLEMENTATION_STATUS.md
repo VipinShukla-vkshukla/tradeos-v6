@@ -265,6 +265,80 @@ the pre-existing Kite IP mismatch in §3.4.
 
 ---
 
+## 5·0 — THE BINDING NUMBER WAS WRONG
+
+**Checked against `PRODUCTION_DECISION.md`, `TRADING_METHODOLOGY_REVIEW.md` and
+`PHASE4_RED_TEAM.md` on 04-Aug-2026, at the operator's request, before merging
+engine consolidation to live.**
+
+`PRODUCTION_DECISION.md` §2 states, of the nine swing screeners:
+
+> Inter-engine correlation | **0.75–0.95 within cluster. The binding number in
+> this document** … Verdict: **MERGE nine into two** … **Deleted outright:** the
+> seven residual screeners.
+
+It is candid that this is an estimate: *"Correlation figures are structural
+estimates from signal construction, not measured correlations — the sample does
+not support measurement."*
+
+**The sample does support measurement.** `screener_performance` holds **4,747
+resolved detections across 2,704 distinct (symbol, date) pairs**, 09-Jun to
+27-Jul-2026. Measured Jaccard co-occurrence — how often two engines actually
+fire on the same name on the same day:
+
+```
+         CTL    IAD    MOM    RSB    RVS    SBS    SEC    TPO    VBD
+  CTL      -   0.03   0.25   0.05   0.04   0.04   0.41   0.06   0.01
+  MOM   0.25   0.02      -   0.03   0.00   0.02   0.24   0.01   0.02
+  SEC   0.41   0.03   0.24   0.05   0.03   0.03      -   0.02   0.01
+  RVS   0.04   0.01   0.00   0.00      -   0.00   0.03   0.04   0.00
+  ...every remaining pair ≤ 0.08
+```
+
+**The highest correlation anywhere is 0.41, against an assumed 0.75–0.95.** The
+nine engines are not one bet in nine costumes. **RVS fires alone on 88% of its
+detections** — it is the *most independent* engine in the set, not a duplicate.
+
+Per-engine forward return over the same population:
+
+| engine | n | mean % | median % | win % |
+|---|---|---|---|---|
+| SEC | 2,331 | +0.53 | +0.35 | 54% |
+| **CTL** | 1,739 | **+1.08** | +0.72 | 58% |
+| RVS | 1,471 | **−0.49** | −0.66 | **42%** |
+| MOM | 1,090 | +0.05 | +0.01 | 50% |
+| RSB | 170 | +0.35 | +0.47 | 59% |
+| IAD | 150 | −0.58 | +0.48 | 57% |
+| SBS | 114 | +0.86 | +0.61 | 57% |
+| TPO | 76 | **+2.41** | +2.62 | **74%** |
+| VBD | 52 | +0.85 | +0.52 | 58% |
+
+**Six of nine are positive.** Deleting seven of them to satisfy a correlation
+figure that 4,747 observations contradict would have destroyed independent
+signal on the strength of an assumption — the one thing every document in
+`docs/` agrees must not happen. H5 in the readiness review anticipated exactly
+this risk and expected the shadow quarter to catch it; measurement caught it
+first, and three months cheaper.
+
+**What was done instead (migration 036), honouring the intent rather than the
+letter:** RVS → SHADOW (n=1,471, −0.49%, 42% win — the largest body of evidence
+against any engine in the system, and note this is a *performance* argument, not
+a correlation one: independence is not edge). MOM → SHADOW (n=1,090, +0.05%,
+indistinguishable from a coin, and the one engine with real overlap onto CTL and
+SEC). Everything else stays ACTIVE. CTL is the continuation core the
+specification asked for, and the measurement agrees.
+
+**Nine → seven, not nine → one.** Both retirees keep running and keep being
+scored; restoring either is one `UPDATE`.
+
+**Where the docs were right and the measurement agrees:** the intraday call.
+`PRODUCTION_DECISION.md` marks VCE and RNG for deletion on structural grounds;
+the per-engine E[R] from 595 resolved detections makes them measurably the two
+worst (−0.941 and −1.376, both p90 = −1.00). Stage 6's intraday shadow proceeds
+as specified.
+
+---
+
 ## 5a. CORRECTIONS — 04-Aug-2026, after the operator supplied real data
 
 Two things stated in §5b were wrong when written. Both are corrected here and in
