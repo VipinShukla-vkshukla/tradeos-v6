@@ -1193,7 +1193,37 @@ def aggregate_and_rank(
         n_engines = len(data["engines"])
         avg_score = sum(data["scores"]) / len(data["scores"]) if data["scores"] else 0
         quality_multiplier = min(avg_score / 60, 1.5)
-        convergence = (n_engines - 1) * CONVERGENCE_BONUS * quality_multiplier
+
+        # CONVERGENCE IS COUNTED PER FAMILY, NOT PER ENGINE.
+        #
+        # This is the whole substantive effect of the swing merge, and it is
+        # deliberately the ONLY thing the merge changes. Every engine still runs,
+        # every detection is still found, every score still enters base_score,
+        # and engines_list still names each engine so forward returns stay
+        # attributable. What stops is paying a bonus for agreement that was never
+        # independent.
+        #
+        # Measured over 4,747 resolved detections, the only real overlap in the
+        # nine is CTL-SEC at 0.41 and CTL-MOM / SEC-MOM at ~0.25; every other
+        # pair is <= 0.08. So the convergence bonus was being paid almost
+        # exclusively on the one cluster that is genuinely one bet — three
+        # readings of the same continuation structure counted as three
+        # independent votes.
+        #
+        # Two engines from DIFFERENT families agreeing still earns the bonus,
+        # because that is two different burdens of proof being met on one name.
+        # BEHIND A SWITCH, because it re-ranks the live book. Measured over 400
+        # recent shortlist rows: 151 names lose convergence points, mean 10.85
+        # and up to 38.4 against composites around 60. That is a real change to
+        # what gets recommended with real money, so it is a decision the operator
+        # applies rather than one that arrives with a deploy. False reproduces
+        # the prior per-engine count exactly.
+        from swing.signals.engine_registry import engine_family
+        if cfg_bool("screener_convergence_per_family", False):
+            n_units = len({engine_family(e) for e in data["engines"]})
+        else:
+            n_units = n_engines
+        convergence = (n_units - 1) * CONVERGENCE_BONUS * quality_multiplier
 
         eap_adj = eap_adjustments.get(sym, 0)
 
