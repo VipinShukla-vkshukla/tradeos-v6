@@ -85,18 +85,44 @@ END $$;
 --
 -- A new engine going live on its author's confidence is precisely the failure
 -- the governance stage exists to prevent, and these two are the author's.
-INSERT INTO public.strategy_config (strategy, enabled, lifecycle, label, description)
+-- strategy_config.params is NOT NULL and carries a CHECK on its shape (migration
+-- 005, after a double-encoded string turned params into an ARRAY and took two
+-- fatal pipeline steps down with it). The first version of this migration
+-- omitted it, and because the SQL editor runs the file as one transaction the
+-- whole migration rolled back — including the table above. Gates are supplied
+-- in the same grammar engine_registry.evaluate_gates already reads, so these
+-- two are visible and tunable from the Control Room like every other engine.
+INSERT INTO public.strategy_config
+  (strategy, enabled, lifecycle, label, description, engine_type, params)
 VALUES
   ('PEAD', true, 'SHADOW', 'Post-earnings drift',
    'Results-day reaction, delivery-confirmed, held for the drift rather than '
    'faded. Edge is structural: a large buyer cannot compress a week of '
    'accumulation into one session, so the drift is a consequence of size rather '
-   'than a pattern to be arbitraged away.'),
+   'than a pattern to be arbitraged away.',
+   'SCANNER',
+   '{"lifecycle": "SHADOW",
+     "source": "STAGE8",
+     "gates": {
+       "delivery_pct": {"min": 45},
+       "vol_ratio":    {"min": 1.5},
+       "above_sma50":  {"eq": true},
+       "rsi_daily":    {"max": 80},
+       "pct_change":   {"min": 2.0, "max": 12.0}
+     }}'::jsonb),
+
   ('ACC',  true, 'SHADOW', 'Accumulation-confirmed',
    'Delivery-% persistence as the PRIMARY sort, structure only as confirmation. '
    'The inversion is the point: the breakout level is the crowded half, and '
    'sustained delivery elevation is what the crowd cannot see. Block and bulk '
-   'deals corroborate; they never create the candidate.')
+   'deals corroborate; they never create the candidate.',
+   'SCANNER',
+   '{"lifecycle": "SHADOW",
+     "source": "STAGE8",
+     "gates": {
+       "delivery_pct": {"min": 55},
+       "market_cap":   {"min": 300}
+     }}'::jsonb)
 ON CONFLICT (strategy) DO NOTHING;
 
 INSERT INTO public.system_config
