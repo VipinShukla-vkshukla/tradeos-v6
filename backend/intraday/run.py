@@ -195,7 +195,7 @@ def main(once: bool = False, dry: bool = False) -> None:
                 elif prices:
                     blind_cycles = 0
                     sync = (now - last_gtt >= gtt_sync_interval_s())
-                    result = engine.cycle(prices, sync_gtt=sync)
+                    result = engine.cycle(prices, sync_gtt=sync, feed=feed)
                     if sync:
                         last_gtt = now
                     if result["position_actions"] or result["entry_signals"]:

@@ -233,6 +233,9 @@ class IntradayEngine:
                 prev_low=float(p.get("low") or 0) or None,
                 atr_pct_daily=float(p.get("atr_pct") or 0) or None,
                 avg_volume_20d=float(p.get("volume") or 0) or None,
+                # Stamped so every consumer can ask how old this is. Contexts
+                # are rebuilt on the 300 s timer and read on the 15 s one.
+                as_of=datetime.now(IST),
             )
             if sym == INDEX_SYMBOL:
                 # The index is not in stock_data_daily — that table holds
@@ -271,6 +274,90 @@ class IntradayEngine:
         logger.info(f"  contexts: {len(built)} symbols with bars"
                     + (f", index {idx_chg:+.2f}%" if idx_chg is not None else ", no index"))
         return len(built)
+
+    def apply_live_quotes(self, feed) -> int:
+        """
+        Overlay live day range, volume and VWAP onto the contexts. Per cycle.
+
+        WHY THIS EXISTS. refresh_contexts() runs on the 300-second timer because
+        the historical endpoint is rate-limited; the decision loop runs every 15
+        seconds. Between refreshes the day high, the day low and the session
+        volume were simply wrong — a breakout at 10:47 was measured against a
+        range that stopped at 10:45. The websocket already carries all three in
+        QUOTE mode, at no extra API cost, so the fix is to prefer the live value
+        and keep the fetched one as the fallback.
+
+        FALLBACK IS PER FIELD, NOT PER SYMBOL. A tick that carries volume but no
+        OHLC must update volume and leave the range alone. Treating a missing
+        field as zero is how a live upgrade becomes a downgrade.
+
+        THE INDEX FALLBACK IS PRESERVED DELIBERATELY. Indices report zero traded
+        volume, so a volume-weighted average price is undefined for them, and
+        refresh_contexts falls back to the unweighted average of typical price.
+        An earlier version of that fallback was missing and the market gate sat
+        pinned at CAUTION forever — a gate that can never say RISK_ON is not a
+        gate. So a zero or absent VWAP from the tick stream never overwrites the
+        computed one.
+        """
+        # Parity logging is independent of quote MODE being consumed: the whole
+        # point is to compare the two BEFORE the live one is trusted, which
+        # means it has to run while quote mode is still off.
+        parity = cfg_bool("intraday_quote_parity_log", False)
+        if parity and feed is not None:
+            try:
+                from tools import quote_parity
+                for sym, ctx in (self._contexts or {}).items():
+                    q = feed.quote(sym)
+                    if not q:
+                        continue
+                    for field, fetched in (("day_high", ctx.day_high),
+                                           ("day_low", ctx.day_low),
+                                           ("vwap", ctx.vwap),
+                                           ("prev_close", ctx.prev_close)):
+                        quote_parity.record(self.sb, sym, field, q.get(field), fetched)
+            except Exception as e:
+                logger.debug(f"  parity logging skipped: {e}")
+
+        if not cfg_bool("intraday_quote_mode", False):
+            return 0
+        now, touched = datetime.now(IST), 0
+        for sym, ctx in (self._contexts or {}).items():
+            q = feed.quote(sym) if feed else None
+            if not q:
+                continue
+            live = []
+            for field, key in (("day_high", "day_high"), ("day_low", "day_low"),
+                               ("day_open", "day_open"), ("prev_close", "prev_close")):
+                v = q.get(key)
+                if v:
+                    setattr(ctx, field, float(v))
+                    live.append(field)
+            if q.get("volume"):
+                ctx.session_volume = float(q["volume"])
+                live.append("volume")
+            # Never let a zero VWAP through — see the index note above.
+            if q.get("vwap"):
+                ctx.vwap = float(q["vwap"])
+                live.append("vwap")
+            if live:
+                ctx.as_of = q.get("at") or now
+                ctx.live_fields = tuple(live)
+                touched += 1
+        return touched
+
+    def stale_contexts(self, max_age_s: float | None = None) -> dict[str, float | None]:
+        """
+        Which contexts are too old to decide on, and by how much.
+
+        A dead socket with a live cache is the failure this answers. Unknown age
+        counts as stale — "we do not know when this was true" is not a reason to
+        proceed.
+        """
+        limit = (max_age_s if max_age_s is not None
+                 else cfg_float("intraday_context_max_age_s", 420.0))
+        now = datetime.now(IST)
+        return {s: c.age_seconds(now) for s, c in (self._contexts or {}).items()
+                if c.is_stale(limit, now)}
 
     def watch_symbols(self) -> list[str]:
         """
@@ -1270,9 +1357,32 @@ class IntradayEngine:
                 self._last_state["_market"] = mc.state
             return []
 
+        # STALENESS GUARD — no entry is decided on data of unknown age.
+        #
+        # Contexts are rebuilt on the 300-second timer. If that refresh fails —
+        # broker unavailable, rate limit, a dead socket with a live cache — the
+        # previous contexts stay in memory and keep being read, and every day
+        # range and volume in them is from whenever the failure started. Nothing
+        # about that reads as broken: the engines run, the prices tick, the
+        # verdicts look ordinary.
+        #
+        # The bound is 420 s rather than 300 so an ordinary late refresh does not
+        # blank the book; anything beyond that is a refresh that did not happen.
+        # Exits are NOT gated on this — a stale range is a bad reason to enter and
+        # never a reason to stop protecting an open position.
+        stale = self.stale_contexts()
+        if stale:
+            worst = max((a for a in stale.values() if a is not None), default=None)
+            logger.warning(
+                f"  staleness guard: {len(stale)} context(s) older than the bound"
+                + (f" (worst {worst:.0f}s)" if worst else " (age unknown)")
+                + " — no new entries on those names until the next refresh")
+
         out = []
         for sym, ctx in (self._contexts or {}).items():
             if any(p.get("symbol") == sym for p in self.positions):
+                continue
+            if sym in stale:
                 continue
             ltp = prices.get(sym)
             if not ltp:
@@ -1651,7 +1761,21 @@ class IntradayEngine:
             logger.debug(f"  setup record failed for {s.symbol}: {e}")
 
     # ── one cycle ───────────────────────────────────────────────────────────
-    def cycle(self, prices: dict[str, float], sync_gtt: bool = False) -> dict:
+    def cycle(self, prices: dict[str, float], sync_gtt: bool = False,
+              feed=None) -> dict:
+        # Live day range, volume and VWAP onto the contexts BEFORE anything
+        # reads them. Cheap — a dict lookup per symbol over data the websocket
+        # already delivered — and it is what makes a 10:47 breakout measured
+        # against a 10:47 range instead of a 10:45 one. No-op unless quote mode
+        # is on. `feed` is optional so existing callers keep working unchanged.
+        if feed is not None:
+            try:
+                self.apply_live_quotes(feed)
+            except Exception as e:
+                # A failed overlay must leave the fetched context in place, not
+                # take the cycle down. The staleness guard still applies.
+                logger.debug(f"  live quote overlay skipped: {e}")
+
         pos_actions = self.evaluate_positions(prices)
         self.act_on_positions(pos_actions)
 

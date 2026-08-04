@@ -553,9 +553,67 @@ def check_storage() -> tuple[bool, str]:
     return True, detail
 
 
+def check_feed_integrity() -> tuple[bool, str]:
+    """
+    Two properties the decision path depends on and cannot detect losing.
+
+    1. THE TICK HANDLER DOES NO I/O.
+       on_ticks runs on the websocket thread for every tick of ~95 symbols. One
+       logger call or one database write in there backs the socket up behind it,
+       and prices go late in exactly the fast market where lateness costs money.
+       Nothing about that failure looks like a failure — the daemon runs, the
+       numbers move, they are just behind.
+
+    2. THE STALENESS GUARD IS WIRED TO THE ENTRY PATH.
+       A dead socket with a live cache keeps serving the reference levels from
+       whenever it died. The guard exists so no entry is decided on data of
+       unknown age; a guard that is present but not consulted is worse than
+       none, because it reads as protection.
+
+    Asserted by reading the source, the same way check_exit_actions asserts its
+    three lists still agree — so it fails the moment someone removes either,
+    rather than the next time the market is fast.
+    """
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+
+    src = (root / "intraday/price_feed.py").read_text(encoding="utf-8")
+    i = src.find("def on_ticks(")
+    if i < 0:
+        return False, "cannot find on_ticks in price_feed — the check itself is broken"
+    # The handler body ends where the next nested def begins.
+    j = src.find("def on_connect(", i)
+    body = src[i:j if j > i else i + 2000]
+    # Strip comments before looking for calls: this file explains at length why
+    # the handler must not log, and the word appears in that explanation.
+    code = "\n".join(l for l in body.splitlines() if not l.strip().startswith("#"))
+    dirty = [p for p in ("logger.", ".execute(", "sb.table", "requests.", "print(")
+             if p in code]
+    if dirty:
+        return False, (f"tick handler performs I/O ({', '.join(dirty)}) — this runs "
+                       f"per tick on the socket thread and will make prices late")
+
+    eng = (root / "intraday/engine.py").read_text(encoding="utf-8")
+    if not re.search(r"stale\s*=\s*self\.stale_contexts\(\)", eng):
+        return False, ("the staleness guard is not called in the entry path — "
+                       "a dead feed with a live cache would trade on whatever it "
+                       "last saw")
+    if "if sym in stale:" not in eng:
+        return False, ("stale_contexts() is computed but its result never filters "
+                       "a symbol — the guard is decorative")
+
+    from config import cfg_float, cfg_bool
+    age  = cfg_float("intraday_context_max_age_s", 420.0)
+    mode = "QUOTE" if cfg_bool("intraday_quote_mode", False) else "LTP"
+    return True, (f"tick handler is I/O-free, staleness guard active at {age:.0f}s, "
+                  f"feed mode {mode}")
+
+
 CHECKS = [
     ("config",   "risk numbers contradict each other, or a switch does nothing", check_config,   False),
     ("storage",  "the database stops accepting writes and the pipeline goes silent", check_storage, False),
+    ("feed",     "decisions run on data of unknown age, or ticks arrive late",  check_feed_integrity, False),
     ("exits",    "an exit rule can sell without alerting, or fires from only one caller", check_exit_actions, False),
     ("costs",    "charges are priced off a stale or wrong-product rate",         check_cost_rates, False),
     ("selects",  "a query reads a column the schema no longer has",              check_selects,  False),
