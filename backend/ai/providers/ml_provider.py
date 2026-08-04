@@ -41,17 +41,22 @@ Required SQL:    sql_signal_log_market_context.sql (adds 4 new columns to signal
 Required script: generate_signals_v2.py (writes the 4 new market-context columns)
 """
 import json
-from config import  cfg_float, cfg_int
 import os
+import sys
 from pathlib import Path
+
+# Resolve backend root FIRST, before any project-local imports (config, etc.),
+# so this module works both when imported as part of the package
+# (ai_router.py) and when run directly (python ml_provider.py from providers/).
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from config import cfg_float, cfg_int
+
 try:
     # Normal import when used as a module inside the package (ai_router.py etc.)
     from .base_provider import BaseProvider, ConvictionResult, UNKNOWN_RESULT
 except ImportError:
     # Direct execution: python ml_provider.py — no parent package context.
-    # Resolve backend root and import absolutely.
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
     from ai.providers.base_provider import BaseProvider, ConvictionResult, UNKNOWN_RESULT
 
 MODEL_PATH = Path(__file__).parent.parent.parent / "models" / "ml_conviction.pkl"
