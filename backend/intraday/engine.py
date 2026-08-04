@@ -48,6 +48,9 @@ class IntradayEngine:
         # engines disagree about the same bar.
         self._contexts: dict = {}
         self._index_ctx = None
+        # Epoch-ish sentinel so the first cycle logs parity immediately rather
+        # than waiting a full interval for the first sample.
+        self._last_parity_at = datetime.fromtimestamp(0, IST)
         # The intraday universe, selected on its OWN criteria. Until this
         # existed the engines only saw swing shortlist names — stocks chosen for
         # a one-to-three-week thesis, which predicts almost nothing about
@@ -300,27 +303,45 @@ class IntradayEngine:
         computed one.
         """
         # Parity logging is independent of quote MODE being consumed: the whole
-        # point is to compare the two BEFORE the live one is trusted, which
-        # means it has to run while quote mode is still off.
-        parity = cfg_bool("intraday_quote_parity_log", False)
-        if parity and feed is not None:
-            try:
-                from tools import quote_parity
-                for sym, ctx in (self._contexts or {}).items():
-                    q = feed.quote(sym)
-                    if not q:
-                        continue
-                    for field, fetched in (("day_high", ctx.day_high),
-                                           ("day_low", ctx.day_low),
-                                           ("vwap", ctx.vwap),
-                                           ("prev_close", ctx.prev_close)):
-                        quote_parity.record(self.sb, sym, field, q.get(field), fetched)
-            except Exception as e:
-                logger.debug(f"  parity logging skipped: {e}")
+        # point is to compare the two BEFORE the live one is trusted, which means
+        # it must run while quote mode is still off.
+        #
+        # RATE-LIMITED AND BATCHED, because this function runs every 15 seconds.
+        # The first version wrote one synchronous insert per symbol per field per
+        # cycle — roughly 95 x 4 x 240 = 91,000 round trips in a session, every
+        # one of them inside the decision loop that is required to do no
+        # synchronous writes at all. It would have delayed exit evaluation on
+        # live positions behind a network call, which is the exact failure the
+        # buffered-write rule exists to prevent.
+        #
+        # Once per slow-timer interval is also the right sampling rate: the
+        # fetched side only changes when refresh_contexts runs, so comparing more
+        # often just records the same fetched number against a moving live one.
+        if feed is not None and cfg_bool("intraday_quote_parity_log", False):
+            interval = cfg_float("intraday_context_refresh_s", 300.0)
+            if (now - self._last_parity_at).total_seconds() >= interval:
+                self._last_parity_at = now
+                try:
+                    from tools import quote_parity
+                    batch = []
+                    for sym, ctx in (self._contexts or {}).items():
+                        q = feed.quote(sym)
+                        if not q:
+                            continue
+                        for field, fetched in (("day_high", ctx.day_high),
+                                               ("day_low", ctx.day_low),
+                                               ("vwap", ctx.vwap),
+                                               ("prev_close", ctx.prev_close)):
+                            row = quote_parity.compare(sym, field, q.get(field), fetched)
+                            if row:
+                                batch.append(row)
+                    quote_parity.record_many(self.sb, batch)
+                except Exception as e:
+                    logger.debug(f"  parity logging skipped: {e}")
 
         if not cfg_bool("intraday_quote_mode", False):
             return 0
-        now, touched = datetime.now(IST), 0
+        touched = 0
         for sym, ctx in (self._contexts or {}).items():
             q = feed.quote(sym) if feed else None
             if not q:

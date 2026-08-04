@@ -610,8 +610,54 @@ def check_feed_integrity() -> tuple[bool, str]:
                   f"feed mode {mode}")
 
 
+def check_governance() -> tuple[bool, str]:
+    """
+    Is there still exactly one door, and is the conviction layer still annotation?
+
+    THE THING THIS WATCHES CANNOT ANNOUNCE ITSELF.
+
+    Auto-apply was removed in code rather than switched off, precisely so that
+    re-opening it would require an edit somebody has to justify. But an edit is
+    exactly what could happen — a merge conflict resolved the wrong way, a
+    refactor that "cleaned up" an early return, a revert. Nothing about a
+    reopened door looks wrong: proposals simply start applying themselves, which
+    is what the system did for months and reported as success.
+
+    Likewise the conviction weights. They are zero because no tier-by-tier
+    forward return exists yet; a non-zero value means an unmeasured component is
+    back at the top of the decision stack deciding where capital goes.
+    """
+    from config import cfg_float, cfg_bool
+    from swing.brain.backtester_and_change_manager import evaluate_auto_apply
+
+    # Behavioural, not textual: hand it the exact proposal shape that WOULD have
+    # auto-applied under the old live policy and require a refusal.
+    ok, why = evaluate_auto_apply({
+        "proposal_type": "THRESHOLD_CHANGE", "confidence": 0.99,
+        "backtest_result": {"wr_delta": 25.0, "high_impact": False},
+    })
+    if ok:
+        return False, ("AUTO-APPLY IS OPEN AGAIN — a threshold can move with nobody "
+                       f"reading it ({why}). Every parameter change must go through "
+                       f"the proposal queue and a human.")
+
+    bad = [f"{k}={v}" for k, v in (("rank_weight_tier", cfg_float("rank_weight_tier", 0.0)),
+                                   ("rank_weight_conviction", cfg_float("rank_weight_conviction", 0.0)))
+           if v]
+    if bad:
+        return False, (f"conviction is back in the ranking ({', '.join(bad)}) but no "
+                       f"tier-by-tier forward returns exist yet — an unmeasured "
+                       f"component is deciding where capital goes")
+
+    freeze = "on" if cfg_bool("governance_freeze_enabled", False) else "OFF"
+    oos    = "on" if cfg_bool("governance_require_oos", False) else "OFF"
+    return True, (f"one door: auto-apply refuses, conviction is annotation, "
+                  f"freeze {freeze}, out-of-sample {oos}")
+
+
 CHECKS = [
     ("config",   "risk numbers contradict each other, or a switch does nothing", check_config,   False),
+    ("governance", "a parameter can change itself, or an unmeasured layer ranks trades", check_governance, False),
     ("storage",  "the database stops accepting writes and the pipeline goes silent", check_storage, False),
     ("feed",     "decisions run on data of unknown age, or ticks arrive late",  check_feed_integrity, False),
     ("exits",    "an exit rule can sell without alerting, or fires from only one caller", check_exit_actions, False),

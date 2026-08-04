@@ -55,24 +55,43 @@ RATCHET_UP   = ("day_high",)
 RATCHET_DOWN = ("day_low",)
 
 
-def record(sb, symbol: str, field: str, live, fetched) -> None:
+def compare(symbol: str, field: str, live, fetched) -> dict | None:
     """
-    Write one comparison. Called from the slow timer when logging is armed.
+    Build one comparison row, or None when there is nothing to compare.
 
-    Deliberately tolerant: parity logging must never be able to break a session
-    it is only observing.
+    Pure — no I/O — so the caller can collect a whole cycle's worth and write
+    them in ONE round trip. The first version inserted per symbol per field
+    inside the 15-second decision loop, which is ~91,000 synchronous writes a
+    session sitting in front of exit evaluation on live positions.
     """
     try:
         if live is None or fetched is None or not float(fetched):
-            return
+            return None
         live, fetched = float(live), float(fetched)
-        sb.table("intraday_quote_parity").insert({
-            "symbol": symbol, "field": field,
+    except (TypeError, ValueError):
+        return None
+    return {"symbol": symbol, "field": field,
             "live_value": live, "fetched_value": fetched,
-            "diff_pct": round((live - fetched) / fetched * 100.0, 4),
-        }).execute()
+            "diff_pct": round((live - fetched) / fetched * 100.0, 4)}
+
+
+def record_many(sb, rows: list[dict]) -> int:
+    """
+    Write a batch. Deliberately tolerant: parity logging must never be able to
+    break a session it is only observing.
+    """
+    if not rows:
+        return 0
+    try:
+        sb.table("intraday_quote_parity").insert(rows).execute()
+        return len(rows)
     except Exception:
-        pass
+        return 0
+
+
+def record(sb, symbol: str, field: str, live, fetched) -> None:
+    """Single-row convenience, kept for callers outside the hot path."""
+    record_many(sb, [r for r in (compare(symbol, field, live, fetched),) if r])
 
 
 def report(sb) -> int:

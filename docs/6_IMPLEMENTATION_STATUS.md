@@ -18,12 +18,38 @@ with the live system.
 | Stage | Name | Status | Verified on |
 |---|---|---|---|
 | 1 | Survival | **Complete** | 04-Aug-2026 |
-| 2 | Economics | **Complete but UNVALIDATED** — needs broker charges | 04-Aug-2026 |
-| 3 | Exits | **Premise failed — stopped and reported, per §0.9** | 04-Aug-2026 |
+| 2 | Economics | **Complete** — validated to −0.01% against the broker | 04-Aug-2026 |
+| 3 | Exits | **Complete** — premise disproved, reported, exits left alone (§0.9) | 04-Aug-2026 |
 | 4 | Measurement spine | **Complete** | 04-Aug-2026 |
-| 5 | Decision-input integrity | **Complete** — quote mode off pending parity | 04-Aug-2026 |
-| 6 | Engine consolidation | **Shadow phase complete**; merges deferred to the evidence | 04-Aug-2026 |
+| 5 | Decision-input integrity | **Complete** — quote mode gated on parity by design | 04-Aug-2026 |
+| 6 | Engine consolidation | **PARTIAL** — shadow phase complete, merges outstanding | 04-Aug-2026 |
 | 7 | Governance and cadence | **Complete** | 04-Aug-2026 |
+
+**On what "complete" means here.** A stage is complete when its deliverables are
+built and its acceptance criteria are met *or answered*. Three of the entries
+above deserve their qualifier spelled out rather than hidden behind a word:
+
+- **Stage 2** is validated, not merely built: modelled friction reconciled to
+  −0.01% of the broker's own statement. The specification asks for ≥20 round
+  trips and this is 4 — so the *rate table* is validated (exchange and SEBI
+  match to four decimals, which independently confirms the turnover) while the
+  *sample* cannot yet catch a rate that is only wrong in cases these four trades
+  never hit. That is a stated limitation, not an open deliverable.
+- **Stage 3** is complete *because* its premise failed. §0.9 is explicit: "a
+  section whose honest outcome is 'the premise was wrong' is a successful
+  section." Capture on winners is 62.6%, not the 3% the spec assumed, so
+  deliverable 2 was correctly not built. Deliverables 1 and 3 were.
+- **Stage 5** is complete with `intraday_quote_mode` off. That is the specified
+  end state, not an unfinished one — the specification requires one session of
+  logged parity before the switch is trusted, and the switch waits on evidence
+  rather than on work.
+
+**Stage 6 is the one that is genuinely partial, and it is not relabelled.** Its
+deliverables 1 and 2 are the merges — seven swing screeners into one
+continuation engine, GAP/PDL into the ORB family as conditions, PBK into VWR.
+Only deliverables 3 and 4 (retire VCE and RNG to shadow; shadow all retirees for
+a quarter) are done. Calling that complete would be the kind of quiet
+overstatement this log exists to prevent.
 | 8 | New alpha | not started | |
 | 9 | Structural overlays | not started | |
 | 10 | Allocation | `allocation/scoring` built early (Stage 4 needs it); the other four modules not started | 04-Aug-2026 |

@@ -55,6 +55,7 @@ class PriceFeed:
         self._token_to_symbol: dict[int, str] = {}
         self.source = "none"
         self.mode = "ltp"
+        self._capture_quote = False
 
     # ── read side ───────────────────────────────────────────────────────────
     def get(self, symbol: str) -> float | None:
@@ -91,6 +92,26 @@ class PriceFeed:
     @property
     def connected(self) -> bool:
         return self._connected
+
+    def _refresh_capture_flags(self) -> bool:
+        """
+        Should the socket be carrying quote fields at all?
+
+        True when the feature is on OR the parity harness is armed. Kept as an
+        attribute rather than read inside on_ticks so the handler stays a pure
+        in-memory update, and recomputed on the slow timer so ARMING PARITY
+        MID-SESSION TAKES EFFECT — the first version captured this once at
+        connect time, which meant arming it at 12:42 did nothing until the
+        daemon was restarted the next morning.
+
+        Returns True when the value changed, so the caller knows to re-issue
+        set_mode.
+        """
+        want = (cfg_bool("intraday_quote_mode", False)
+                or cfg_bool("intraday_quote_parity_log", False))
+        changed = want != self._capture_quote
+        self._capture_quote = want
+        return changed
 
     # ── websocket ───────────────────────────────────────────────────────────
     def start_websocket(self) -> bool:
@@ -129,7 +150,18 @@ class PriceFeed:
 
             ticker = KiteTicker(KITE_API_KEY, token)
 
-            want_quote = cfg_bool("intraday_quote_mode", False)
+            # CAPTURE IS BROADER THAN CONSUMPTION, AND HAS TO BE.
+            #
+            # The first version tied capture to intraday_quote_mode alone, which
+            # made the parity harness unable to ever collect anything: the fields
+            # it compares are only captured once the switch it is meant to
+            # justify is already on. Arming parity, running a session and finding
+            # zero rows was not a quiet failure — it was a guarantee.
+            #
+            # So the socket subscribes in QUOTE mode when EITHER the feature or
+            # the parity log wants it, and `apply_live_quotes` decides separately
+            # whether anything acts on what was captured.
+            self._refresh_capture_flags()
 
             def on_ticks(ws, ticks):
                 # THE HANDLER DOES NO I/O AND NO LOGGING. Not a style
@@ -144,7 +176,9 @@ class PriceFeed:
                     if not sym or not px:
                         continue
                     self._set(sym, float(px))
-                    if not want_quote:
+                    # A plain attribute read — no config lookup, no I/O. The flag
+                    # is recomputed on the slow timer by _refresh_capture_flags.
+                    if not self._capture_quote:
                         continue
                     ohlc = t.get("ohlc") or {}
                     # Only the fields present in this tick are written. QUOTE
@@ -179,7 +213,7 @@ class PriceFeed:
                 # Behind a switch defaulting OFF because the specification
                 # requires one session of dual logging before trusting parity —
                 # see tools/quote_parity.
-                if want_quote:
+                if self._capture_quote:
                     ws.set_mode(ws.MODE_QUOTE, list(self._token_to_symbol))
                     self.mode = "quote"
                 else:
@@ -261,6 +295,15 @@ class PriceFeed:
                 # universe is rebuilt on the slow timer, so a mode reset here
                 # would quietly disable quote fields mid-session and every
                 # consumer would fall back without anything saying so.
+                #
+                # This is also where a mid-session change to either switch takes
+                # effect: the daemon calls resubscribe on the same 300s timer
+                # that re-reads config, so arming the parity log is live within
+                # one slow tick rather than at the next restart.
+                if self._refresh_capture_flags():
+                    logger.info(f"  price_feed: switching to "
+                                f"{'QUOTE' if self._capture_quote else 'LTP'} mode")
+                self.mode = "quote" if self._capture_quote else "ltp"
                 mode = (self._ticker.MODE_QUOTE if self.mode == "quote"
                         else self._ticker.MODE_LTP)
                 self._ticker.set_mode(mode, list(tokens))
