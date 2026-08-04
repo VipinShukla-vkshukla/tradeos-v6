@@ -1784,10 +1784,21 @@ class IntradayEngine:
         """
         if not self._setup_is_new(s, verdict):
             return
+        # SCORED UNDER THE FAMILY, RECORDED WITH THE CONDITION.
+        #
+        # `strategy` is what the learning loop groups on, so writing the family
+        # there is what actually raises detections-per-engine — ORB's 30 becomes
+        # the family's 230 — and what makes a monthly verdict statistically
+        # possible. The condition that fired is kept in meta.sub_engine, so
+        # nothing is lost and a family can be split again on evidence.
+        #
+        # Falls back to the engine's own name when no family is set, so a
+        # detection from before this change reads exactly as it did.
+        family = s.meta.get("family") or s.strategy
         try:
             self.sb.table("intraday_setups").insert({
                 "trade_date": today_ist().isoformat(),
-                "symbol": s.symbol, "strategy": s.strategy, "phase": phase,
+                "symbol": s.symbol, "strategy": family, "phase": phase,
                 "direction": s.direction, "entry": s.entry, "stop": s.stop,
                 "target": s.target, "risk_pct": round(s.risk_pct, 3),
                 "reward_pct": round(s.reward_pct, 3), "rr": round(s.rr, 2),

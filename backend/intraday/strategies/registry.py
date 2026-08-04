@@ -53,6 +53,62 @@ LIFECYCLE_SHADOW  = "SHADOW"     # evaluates and records, but never receives cap
 LIFECYCLE_RETIRED = "RETIRED"    # does not run at all
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# FAMILIES — seven engines become two, WITHOUT LOSING A SINGLE DETECTION
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# THE DISTINCTION THAT MATTERS, AND THAT IS EASY TO GET WRONG.
+#
+# Merging is not retiring. A retired engine stops contributing, and detections
+# per surviving engine stay flat. A MERGED engine keeps finding exactly what it
+# found before — its logic is untouched — and its hits are attributed to one
+# family identity instead of to seven separate ones.
+#
+# That is what makes Stage 6's acceptance criterion reachable at all:
+#
+#     "Detection rate per surviving engine >= 3x prior"
+#
+# You cannot get there by deleting engines. You get there by counting the same
+# detections under fewer names. Measured over the 595 resolved detections:
+#
+#     ORB family = ORB 30 + GAP 103 + PDL 97 = 230 against ORB's 30   -> 7.7x
+#     VWR family = VWR 154 + PBK 60          = 214 against VWR's 154  -> 1.4x
+#
+# WHAT THE MERGE ACTUALLY CHANGES, THEN, IS THE VOTE — NOT THE DETECTION.
+#
+# Before, ORB, GAP and PDL firing on one name counted as three engines agreeing,
+# and corroboration lifted confidence accordingly. They are not three
+# independent opinions; GAP correlates ~0.6 with ORB and PDL ~0.7 by the
+# production decision's own estimate, and all three key off the same opening
+# structure. Treating them as independent manufactured conviction no single
+# engine had. Within a family, agreement is now expected rather than evidence.
+#
+# The sub-engine name survives on every recorded setup, so "which condition
+# fired" stays answerable and a family can be split again if the evidence ever
+# demands it. Nothing is deleted.
+FAMILIES = {
+    "ORB": "ORB",     # opening-range breakout — the family core
+    "GAP": "ORB",     # overnight repricing: a DAY-TYPE condition on the same structure
+    "PDL": "ORB",     # prior-day levels: a REFERENCE condition on the same structure
+    "VWR": "VWR",     # VWAP reclaim — institutional benchmark defence, the family core
+    "PBK": "VWR",     # first pullback in a trend: a CONDITION within that defence
+    "VCE": "VCE",     # shadowed; kept as its own family so its evidence stays separable
+    "RNG": "RNG",     # shadowed; same
+}
+
+
+def family_of(name: str) -> str:
+    """
+    Which family an engine's detections are scored under.
+
+    Config-overridable per engine so a family can be split back apart without a
+    deploy — the burden of proof runs both ways, and a merge that turns out to
+    have hidden an independent signal has to be reversible the same day.
+    """
+    default = FAMILIES.get(name.upper(), name.upper())
+    return (cfg(f"intraday_engine_{name.lower()}_family", default) or default).upper()
+
+
 def engine_lifecycle(name: str) -> str:
     """
     What an engine is allowed to do, read live.
@@ -115,6 +171,11 @@ def evaluate_all(ctx: SymbolContext, phase: str) -> tuple[Setup | None, list[Set
                 # read at a different moment, is how a shadow engine's outcomes
                 # end up scored as if they had been live.
                 s.meta["lifecycle"] = engine_lifecycle(eng.name)
+                # Provenance first, identity second. `sub_engine` is which
+                # condition actually fired; `family` is what the detection is
+                # scored as. Keeping both is what makes the merge reversible.
+                s.meta["sub_engine"] = s.strategy
+                s.meta["family"] = family_of(eng.name)
                 found.append(s)
         except Exception as ex:
             # One misbehaving engine must not stop the others. A scanner that
@@ -136,11 +197,31 @@ def evaluate_all(ctx: SymbolContext, phase: str) -> tuple[Setup | None, list[Set
         return None, found
 
     best = fundable[0]
-    # Corroboration counts only fundable agreement. A retiree agreeing with a
-    # survivor is not independent evidence — the whole reason it is being
-    # retired is that it expresses the same bet — so letting it lift confidence
-    # would quietly re-admit the engine through the back door.
-    others = [s for s in fundable[1:]]
+
+    # CORROBORATION IS NOW CROSS-FAMILY ONLY.
+    #
+    # This is the substantive half of the merge. ORB, GAP and PDL firing on the
+    # same name used to count as three engines agreeing and lifted confidence by
+    # 0.10; they are three readings of one opening structure, correlated ~0.6-0.7
+    # by the production decision's own estimate. Counting them as independent
+    # manufactured conviction that no single engine had — and did it most
+    # eagerly on exactly the setups where the three conditions coincide, which
+    # is where they are least independent.
+    #
+    # Two engines from DIFFERENT families agreeing is still real evidence: an
+    # opening-range break that also reclaims VWAP is two different things being
+    # true. That still lifts.
+    #
+    # A retiree agreeing lifts nothing either — the reason it is being retired is
+    # that it expresses the same bet, so counting it would re-admit the engine
+    # through the back door.
+    best_family = best.meta.get("family")
+    same_family = [s for s in fundable[1:] if s.meta.get("family") == best_family]
+    others      = [s for s in fundable[1:] if s.meta.get("family") != best_family]
+    if same_family:
+        # Recorded, because "which conditions coincided" is the evidence that
+        # would later justify splitting a family back apart.
+        best.meta["family_conditions"] = [s.strategy for s in same_family]
     if others:
         best.meta["corroborated_by"] = [s.strategy for s in others]
         # Agreement is evidence. Bounded so it can lift a setup but never
