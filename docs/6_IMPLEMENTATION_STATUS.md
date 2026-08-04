@@ -50,9 +50,38 @@ continuation engine, GAP/PDL into the ORB family as conditions, PBK into VWR.
 Only deliverables 3 and 4 (retire VCE and RNG to shadow; shadow all retirees for
 a quarter) are done. Calling that complete would be the kind of quiet
 overstatement this log exists to prevent.
-| 8 | New alpha | not started | |
-| 9 | Structural overlays | not started | |
-| 10 | Allocation | `allocation/scoring` built early (Stage 4 needs it); the other four modules not started | 04-Aug-2026 |
+| 8 | New alpha | **Complete** — PEAD + ACC, both shadowed | 04-Aug-2026 |
+| 9 | Structural overlays | **Complete** — expiry, volatility, liquidity | 04-Aug-2026 |
+| 10 | Allocation | **Complete** — shadow only, both live switches off | 04-Aug-2026 |
+
+**All ten stages are built.** Phase 4 is code-complete. What it is not is
+*proven*: the allocator has recorded zero decisions, both new engines have
+shadowed zero quarters, and per-trade expectancy remains unmeasured at +₹269
+across 25 attributable closes. The instruments exist and have not yet had time
+to read anything.
+
+See [`7_PHASE5_READINESS.md`](7_PHASE5_READINESS.md) for what Phase 5 would
+require, what it would cost, and why it should not begin yet.
+
+### Stages 8–10, in one line each
+
+**Stage 8.** PEAD and ACC — the only two additions carrying a genuinely
+different burden of proof. ACC produces 54 candidates on the live universe;
+PEAD produced 0 until migration 039, because `nifty_upcoming_events` is
+forward-only and could not answer "what reported three days ago". Both
+registered SHADOW.
+
+**Stage 9.** Three overlays that only ever reduce: expiry day-type sizing,
+VIX-banded book exposure (bands from this account's own 94 readings, not
+textbook levels), and a liquidity gate measured against each name's own traded
+value. None will ever appear as a winning trade — their contribution is the
+losses that did not happen.
+
+**Stage 10.** `proposal`, `hurdle`, `policies`, `allocator`. Verified end to end
+on live priors: swing TAKE, both intraday DECLINE, all verdicts buffered, none
+written, `shadow=true` throughout. The `allocator` health check asserts by
+inspection that `allocation/` cannot import `execution/` — the one protection
+that is structural rather than a config value.
 
 ### Stages 5–7, in one line each
 
