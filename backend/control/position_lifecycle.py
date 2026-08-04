@@ -61,6 +61,7 @@ SAFETY
 
 from __future__ import annotations
 
+import re
 import sys
 import json
 from datetime import date, datetime, timedelta
@@ -98,6 +99,48 @@ def _patch_position(sb, pos: dict, patch: dict) -> None:
     if pos.get("product"):
         q = q.eq("product", pos["product"])
     q.execute()
+
+
+def _update_stripping_unknown(write, payload: dict, what: str, _depth: int = 0):
+    """
+    Write a payload, dropping columns the schema does not have, and say so.
+
+    POSTGREST FAILS THE WHOLE STATEMENT ON ONE UNKNOWN COLUMN.
+
+    Not the column — the statement. A payload carrying `current_price`,
+    `high_water_mark`, `max_favorable_excursion`, `active_sl`, `exit_signal`
+    and one column that does not exist writes NONE of them, and the caller here
+    logged a warning and moved on. Every position in the book would silently
+    stop updating its price, its excursion and its stop, and the only symptom
+    would be one warning line per cycle among hundreds.
+
+    That is not hypothetical: it is the failure mode that arrives the moment
+    code is deployed ahead of its migration, which is the normal order of
+    events. Migration 031 adds the runner columns this payload now carries, and
+    between deploying and applying it, this function is the difference between
+    "the runner fields are not recorded yet" and "the book stopped updating".
+
+    So: strip the column the error names, retry, and log at WARNING which field
+    was dropped. Bounded by the payload size so a genuinely broken write cannot
+    loop.
+    """
+    try:
+        return write(payload)
+    except Exception as e:
+        msg = str(e)
+        # PGRST204: "Could not find the 'x' column of 'y' in the schema cache"
+        # 42703:    "column y.x does not exist"
+        m = (re.search(r"Could not find the '([^']+)' column", msg)
+             or re.search(r"column \"?(?:[\w.]+\.)?([\w]+)\"? does not exist", msg))
+        col = m.group(1) if m else None
+        if col and col in payload and _depth < len(payload):
+            trimmed = {k: v for k, v in payload.items() if k != col}
+            logger.warning(f"  {what}: column '{col}' does not exist — dropped it and "
+                           f"retried so the other {len(trimmed)} field(s) still land. "
+                           f"A migration is probably unapplied.")
+            return _update_stripping_unknown(write, trimmed, what, _depth + 1)
+        logger.warning(f"  {what}: update failed: {e}")
+        return None
 
 
 def _upsert_position(sb, row: dict):
@@ -1403,6 +1446,16 @@ def manage_open_positions(sb, trade_date: str, require_live: bool = False) -> di
         }
 
         act = decision["action"]
+
+        # RUNNER INSTRUMENTATION — recorded on every target touch, not just the
+        # ones that run. "The rule declined correctly" and "the rule could not
+        # see anything to decide on" both produce zero runners, and only the
+        # evidence count separates them. Written for the declining branches too,
+        # which are the ones carrying the information.
+        for k in ("runner_evidence", "runner_verdict", "runner_since_r"):
+            if decision.get(k) is not None:
+                update[k] = decision[k]
+
         if act in ("EXIT_STOP", "EXIT_TARGET", "EXIT_TIME", "EXIT_GIVEBACK",
                    "EXIT_STALL"):
             # RECORD ONLY. This module never places orders — it raises the
@@ -1439,20 +1492,20 @@ def manage_open_positions(sb, trade_date: str, require_live: bool = False) -> di
                 update["breakeven_moved"] = True
 
         if not DRY_RUN:
-            try:
-                # Keyed on (symbol, product), not symbol. open_positions is
-                # unique on the pair since migration 028, so a bare symbol match
-                # would write this position's price, stop and exit signal onto
-                # BOTH tranches when the same name is held CNC by swing and MIS
-                # by intraday — the exact corruption the composite key exists to
-                # prevent. Falls back to symbol alone when product is unset, so
-                # pre-028 rows still update.
-                q = sb.table("open_positions").update(update).eq("symbol", sym)
+            # Keyed on (symbol, product), not symbol. open_positions is unique
+            # on the pair since migration 028, so a bare symbol match would
+            # write this position's price, stop and exit signal onto BOTH
+            # tranches when the same name is held CNC by swing and MIS by
+            # intraday — the exact corruption the composite key exists to
+            # prevent. Falls back to symbol alone when product is unset, so
+            # pre-028 rows still update.
+            def _write(payload: dict):
+                q = sb.table("open_positions").update(payload).eq("symbol", sym)
                 if pos.get("product"):
                     q = q.eq("product", pos["product"])
-                q.eq("status", "ACTIVE").execute()
-            except Exception as e:
-                logger.warning(f"  {sym}: update failed: {e}")
+                return q.eq("status", "ACTIVE").execute()
+
+            _update_stripping_unknown(_write, update, f"open_positions/{sym}")
 
         # Phase 3: place the order the alert describes, for SWING positions.
         # Gated per framework via execution/gates — being comfortable

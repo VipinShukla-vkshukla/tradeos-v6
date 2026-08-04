@@ -17,6 +17,7 @@ WHAT EACH ONE IS FOR, AND WHY IT IS NOT REDUNDANT
 They fail in genuinely different ways, which is why all of them exist:
 
   config     numbers that contradict each other, or a setting nothing reads
+  storage    the database ceiling arriving on an ordinary Tuesday
   selects    a SELECT naming a column the schema no longer has
   broker     resting orders that do not match the positions they protect
   data       today's inputs actually arrived and are not yesterday's
@@ -24,7 +25,9 @@ They fail in genuinely different ways, which is why all of them exist:
 
 None of these raise an exception in production. They produce a system that
 looks healthy and decides on nothing, which is the failure mode this project
-has hit more than any other.
+has hit more than any other. Storage is the exception and the reason it FAILS
+rather than warns: past the ceiling the system does not decide wrongly, it
+stops existing — writes are refused and the evening pipeline produces nothing.
 
 EXIT CODE
 ---------
@@ -420,8 +423,139 @@ def check_exit_actions() -> tuple[bool, str]:
                    f"missing from alerts: {sorted(pipe - alert) or 'none'}")
 
 
+def storage_snapshot() -> dict:
+    """
+    Where the database stands against its plan ceiling, and when it breaches.
+
+    Shared by the health check and by anything that needs the same numbers, so
+    there is one measurement rather than two that can disagree.
+
+    GROWTH IS MEASURED, NOT ASSUMED. Migration 016 sized stock_data_daily at
+    "roughly 190 MB" from 48,967 rows; it is 58 MB at 53,463. A projection
+    resting on that estimate would have declared an emergency two years early
+    and been ignored the day it was real. So growth is derived here from rows
+    actually added in the last 30 days, at the table's own measured bytes/row.
+
+    Only tables above 1% of the ceiling are projected. They are 84% of the
+    database and the tail cannot move the date; the coverage figure is reported
+    so a shrinking coverage number is visible rather than silent.
+    """
+    import datetime as _dt
+    from config import get_supabase, cfg_float
+
+    sb       = get_supabase()
+    ceiling  = cfg_float("storage_ceiling_mb", 500.0) * 1024 * 1024
+    fail_pct = cfg_float("storage_fail_pct", 80.0)
+
+    rows, off = [], 0
+    while True:
+        page = (sb.table("v_storage_usage")
+                  .select("table_name,total_bytes")
+                  .range(off, off + 999).execute().data) or []
+        rows += page
+        if len(page) < 1000:
+            break
+        off += 1000
+
+    total = sum(r["total_bytes"] or 0 for r in rows)
+    rows.sort(key=lambda r: -(r["total_bytes"] or 0))
+
+    # Whichever of these a table has, first match wins. A table with none of
+    # them is not append-only in any way this can measure, so it is skipped and
+    # its bytes are excluded from the coverage figure rather than assumed flat.
+    date_cols = ("date", "snapshot_date", "news_date", "trade_date",
+                 "entry_date", "created_at", "ingested_at")
+    since = str(_dt.date.today() - _dt.timedelta(days=30))
+
+    bytes_per_day, covered, unmeasured = 0.0, 0, []
+    for r in rows:
+        size = r["total_bytes"] or 0
+        if size < ceiling * 0.01:
+            break                              # sorted desc — the rest are smaller
+        name = r["table_name"]
+        for col in date_cols:
+            try:
+                n_all = sb.table(name).select(col, count="exact").limit(1).execute().count
+                n_30  = (sb.table(name).select(col, count="exact")
+                           .gte(col, since).limit(1).execute().count)
+                break
+            except Exception:
+                continue
+        else:
+            unmeasured.append(name)
+            continue
+        if not n_all:
+            unmeasured.append(name)
+            continue
+        bytes_per_day += (n_30 or 0) * (size / n_all) / 30.0
+        covered += size
+
+    # "already passed" and "never at this growth rate" are different facts and
+    # printing both as "never" is how a breached ceiling reads like headroom.
+    def _breach(limit_bytes: float) -> str:
+        if limit_bytes <= total:
+            return "ALREADY PASSED"
+        if bytes_per_day <= 0:
+            return "not projectable"
+        d = _dt.date.today() + _dt.timedelta(days=(limit_bytes - total) / bytes_per_day)
+        return d.isoformat()
+
+    return {
+        "total_bytes":   total,
+        "ceiling_bytes": ceiling,
+        "pct":           100.0 * total / ceiling if ceiling else 0.0,
+        "fail_pct":      fail_pct,
+        "mb_per_month":  bytes_per_day * 30 / 1024 / 1024,
+        "coverage_pct":  100.0 * covered / total if total else 0.0,
+        "unmeasured":    unmeasured,
+        "fail_date":     _breach(ceiling * fail_pct / 100.0),
+        "full_date":     _breach(ceiling),
+        "top":           [(r["table_name"], r["total_bytes"] or 0) for r in rows[:12]],
+    }
+
+
+def check_storage() -> tuple[bool, str]:
+    """
+    Is the database going to stop accepting writes, and when?
+
+    THIS FAILS. It does not warn.
+
+    Breaching the ceiling puts the project into read-only mode: writes fail,
+    the evening pipeline produces no signals, on an ordinary Tuesday, with no
+    other symptom. It is the only failure in this system that is a total loss
+    rather than a bad trade, and a WARN on a list of ten green lines is a line
+    nobody reads.
+
+    Failing at 80% rather than 100% is deliberate — a migration run against a
+    near-full database can itself fail, so the guard has to fire while there is
+    still room to fix it.
+
+    Both thresholds are config (storage_ceiling_mb, storage_fail_pct) so the
+    guard can be demonstrated failing without waiting for the disk to fill.
+    """
+    s = storage_snapshot()
+    mb, ceil_mb = s["total_bytes"] / 1048576, s["ceiling_bytes"] / 1048576
+
+    if s["mb_per_month"] > 0:
+        when = (f"{s['mb_per_month']:.0f} MB/month → {s['fail_pct']:.0f}% on "
+                f"{s['fail_date']}, full on {s['full_date']}")
+    else:
+        when = "no rows added in the last 30 days — growth not projectable"
+
+    detail = (f"{mb:.0f} MB of {ceil_mb:.0f} MB ({s['pct']:.1f}%), {when} "
+              f"[growth measured across {s['coverage_pct']:.0f}% of size]")
+
+    if s["pct"] >= s["fail_pct"]:
+        biggest = ", ".join(f"{n} {b/1048576:.0f}MB" for n, b in s["top"][:3])
+        return False, (f"STORAGE CEILING: {detail}. Largest: {biggest}. "
+                       f"Writes fail at the ceiling — the evening pipeline "
+                       f"produces no signals. Roll off history or raise the plan.")
+    return True, detail
+
+
 CHECKS = [
     ("config",   "risk numbers contradict each other, or a switch does nothing", check_config,   False),
+    ("storage",  "the database stops accepting writes and the pipeline goes silent", check_storage, False),
     ("exits",    "an exit rule can sell without alerting, or fires from only one caller", check_exit_actions, False),
     ("costs",    "charges are priced off a stale or wrong-product rate",         check_cost_rates, False),
     ("selects",  "a query reads a column the schema no longer has",              check_selects,  False),

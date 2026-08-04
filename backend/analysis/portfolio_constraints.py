@@ -134,6 +134,7 @@ def check_new_entry(
     regime:          str = "NEUTRAL",
     total_capital:   float | None = None,
     available_cash:  float | None = None,
+    product:         str = "CNC",
 ) -> ConstraintVerdict:
     """
     Admissibility + maximum size for one prospective entry.
@@ -144,6 +145,12 @@ def check_new_entry(
       3. portfolio risk       — total open risk budget across all positions
       4. sector capital cap   — regime-scaled share of deployed capital
       5. per-position cap     — no single name dominates
+      6. minimum viable trade — friction against the risk budget, per product
+
+    `product` decides which charge schedule step 6 prices against. It defaults
+    to CNC because every caller of this function today is the swing book; an
+    intraday caller must pass MIS, and passing nothing is the safe direction
+    since CNC is the dearer of the two.
     """
     C       = load_constraints(regime)
     capital = total_capital if total_capital is not None else TOTAL_CAPITAL
@@ -231,6 +238,52 @@ def check_new_entry(
             f"A position this small pays full costs and occupies a slot without "
             f"moving portfolio returns.",
             max_qty=qty, max_value=round(value, 2))
+
+    # ── Minimum VIABLE trade — friction measured against the risk budget ─────
+    #
+    # The rule above is a proxy: it assumes a position worth 3% of capital is
+    # large enough to outrun its costs. It does not look at the costs. Measured
+    # across 91 closed trades on 04-Aug-2026, that assumption fails badly at
+    # the small end of the delivery book:
+    #
+    #     CNC clip  Rs     0-2,500   friction = 2.363 R      net R  -3.180
+    #     CNC clip  Rs 2,500-5,000   friction = 1.046 R      net R  -0.598
+    #     CNC clip  Rs 10,000+       friction = 0.605 R      net R  +1.322
+    #
+    # A trade whose friction is 2.4x its own risk budget cannot be won. It is
+    # not a marginal trade or a low-edge trade; the arithmetic excludes it
+    # before the thesis is considered. The flat Rs 15.04 DP fee is most of it,
+    # which is why the lever is clip size and not target.
+    #
+    # cost_R is the architecture's own currency (§13): round-trip friction
+    # divided by the risk the trade is sized to. Refusing on it means refusing
+    # on the same quantity the allocator will later rank on.
+    #
+    # DEFAULTS TO OFF. A gate that refuses trades changes what the account
+    # does with money, and this one would have refused a meaningful share of
+    # the existing book. sizing_max_cost_r = 0 disables it, reproducing today's
+    # behaviour exactly. See RETENTION_PROPOSAL.md's sibling section in
+    # docs/6_IMPLEMENTATION_STATUS.md for the value proposed and the evidence.
+    max_cost_r = cfg_float("sizing_max_cost_r", 0.0)
+    if max_cost_r > 0 and risk_per_share > 0:
+        try:
+            from intraday.cost_model import round_trip
+            friction = round_trip(entry_price, qty, product=product).total
+            cost_r   = friction / (qty * risk_per_share)
+        except Exception:
+            cost_r = 0.0                      # never refuse on a broken cost model
+        if cost_r > max_cost_r:
+            need = friction / max_cost_r / risk_per_share
+            return ConstraintVerdict(
+                False, "friction_exceeds_budget",
+                f"friction Rs.{friction:,.0f} is {cost_r:.2f}R against a "
+                f"Rs.{qty * risk_per_share:,.0f} risk budget, over the "
+                f"{max_cost_r:.2f}R limit — this {product} trade pays "
+                f"{cost_r:.0%} of what it risks just to open and close. "
+                f"It needs ~{int(need)} shares (Rs.{need * entry_price:,.0f}) "
+                f"to clear the bar at this stop.",
+                max_qty=qty, max_value=round(value, 2))
+
     return ConstraintVerdict(
         True, "ok",
         f"{qty} sh @ Rs.{entry_price:.2f} = Rs.{value:,.0f} | "

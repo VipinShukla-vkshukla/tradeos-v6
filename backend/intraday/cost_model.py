@@ -179,7 +179,8 @@ def round_trip(entry_price: float, qty: int, exit_price: float | None = None,
 
 
 def min_viable_position(entry_price: float, target_move_pct: float,
-                        keep_ratio: float | None = None) -> int:
+                        keep_ratio: float | None = None,
+                        product: str = "MIS") -> int:
     """
     Smallest position for which `target_move_pct` still leaves a real profit.
 
@@ -190,6 +191,12 @@ def min_viable_position(entry_price: float, target_move_pct: float,
     Returns 0 when NO size clears the bar, which happens when the target is
     simply too small to trade at this price. That is a real answer and the
     caller should reject the setup rather than shrink it.
+
+    `product` defaults to MIS, which is what every caller of this function is
+    and what the intraday cost gate is calibrated on. It is a parameter rather
+    than an assumption because the answer differs enormously: the flat DP fee
+    makes the delivery floor several times higher, and a delivery caller
+    silently getting the intraday floor would size below its own break-even.
     """
     keep = keep_ratio if keep_ratio is not None else cfg_float("intraday_cost_keep_ratio", 0.70)
     if entry_price <= 0 or target_move_pct <= 0:
@@ -201,14 +208,14 @@ def min_viable_position(entry_price: float, target_move_pct: float,
     qty = 1
     cap = int(2_000_000 / entry_price) + 1
     while qty <= cap:
-        if round_trip(entry_price, qty).pct_of_position <= max_cost_pct:
+        if round_trip(entry_price, qty, product=product).pct_of_position <= max_cost_pct:
             return qty
         qty = max(qty + 1, int(qty * 1.25))
     return 0
 
 
 def is_worth_taking(entry_price: float, qty: int, target_price: float,
-                    stop_price: float) -> tuple[bool, str]:
+                    stop_price: float, product: str = "MIS") -> tuple[bool, str]:
     """
     Does this setup survive its own costs?
 
@@ -223,7 +230,7 @@ def is_worth_taking(entry_price: float, qty: int, target_price: float,
     """
     if qty <= 0 or entry_price <= 0:
         return False, "no position"
-    rt = round_trip(entry_price, qty)
+    rt = round_trip(entry_price, qty, product=product)
     gross_up   = (target_price - entry_price) / entry_price * 100.0
     gross_down = (entry_price - stop_price) / entry_price * 100.0
 
