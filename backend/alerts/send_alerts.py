@@ -613,9 +613,26 @@ def conviction_icon(c: str) -> str:
     return {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "🔴"}.get((c or "").upper(), "⚪")
 
 def regime_icon(r: str) -> str:
+    """
+    `r` is always `regime.get("regime")` / `regime.get("predicted_regime")` —
+    the swing regime engine's own five states (TRENDING, RISK ON, NEUTRAL,
+    RECOVERING, RISK OFF; `compute_regime.py`'s `apply_hysteresis`), never the
+    intraday market context's states. The two vocabularies read as similar and
+    are not the same one — see allocation/hurdle.py::regime_bucket for what
+    happened when a different function conflated them.
+
+    RECOVERING had no entry and fell through to ❓ on every single session in
+    that state, even though it is one of only five values this can ever be.
+    CAUTION and BULLISH are removed: CAUTION is never a swing regime value —
+    it belongs to intraday/market_context.py — and BULLISH is a legacy label
+    from before the hysteresis engine existed
+    (ai/providers/ml_regime_classifier.py's own legacy_map normalises it away).
+    Neither can arrive here from `regime.get("regime")`, so keeping them was
+    decoration that implied a coverage this function did not have.
+    """
     return {
-        "TRENDING": "🚀", "NEUTRAL": "⚖️", "CAUTION": "⚠️",
-        "RISK OFF": "🔴", "RISK ON": "🚀", "BULLISH": "📈",
+        "TRENDING": "🚀", "RISK ON": "🚀", "NEUTRAL": "⚖️",
+        "RECOVERING": "🌤️", "RISK OFF": "🔴",
     }.get((r or "").upper(), "❓")
 
 def fii_icon(f: str) -> str:

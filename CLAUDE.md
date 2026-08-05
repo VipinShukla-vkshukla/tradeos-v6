@@ -7,6 +7,9 @@ for.
 
 **Read `USER_GUIDE.md` for how the system behaves, and `DESIGN_NOTES.md` for what
 is decided but unbuilt.** This file is the operating context around both.
+`docs/TERMINOLOGY.md` disambiguates every regime/state vocabulary — read it
+before writing anything that compares a "regime" string, because at least two
+of these near-homophone systems have already collided silently once.
 
 ---
 
@@ -184,6 +187,16 @@ both again. `simulate` is read-only and safe at any time.
   `intraday_max_new_per_day` (4) — at one slot for the rest of the session, and
   two capped it at zero, where `hurdle` returns an infinite bar. Each book
   brings its own budget.
+- **"RISK OFF" is not one thing.** Four systems classify market/sector state
+  with overlapping vocabulary: swing regime (`market_regime` table, space-
+  separated, once/day — `RISK ON`), intraday market context (in-memory,
+  underscore, every 15s — `RISK_ON`), sector event bias (per-candidate,
+  underscore, per-event), and market structure (`UPTREND`/`DOWNTREND`, pivot-
+  based, shared by both frameworks but a different axis entirely). `hurdle.
+  regime_bucket()` was written against the swing vocabulary while its only
+  caller fed it the intraday one — `"RISK ON" in "RISK_ON"` is `False` — so the
+  STRONG bucket was unreachable in every session this ran. Full map, and why
+  each system stays separate: `docs/TERMINOLOGY.md`. Migration 048.
 
 ## Architecture — the actual data flow
 
