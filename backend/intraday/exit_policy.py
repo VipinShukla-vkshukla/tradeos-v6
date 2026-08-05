@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
 from config import IST, cfg, cfg_bool, cfg_float, cfg_int
 from intraday.session import phase_at, SQUARE_OFF, CLOSED, minutes_to_close
+from intraday import direction as D
 
 
 def load_intraday_policy() -> dict:
@@ -83,6 +84,12 @@ def _invalidated(pos: dict, ltp: float) -> tuple[bool, str]:
     Requires a small buffer so an ordinary wick through the level does not
     trigger an exit: intraday levels get tested constantly, and a rule that
     fires on every touch would exit every trade in its first ten minutes.
+
+    DIRECTIONAL. A long is invalidated by price falling BELOW its level; a short
+    by price rising ABOVE it — a breakdown that reclaims the level it broke is
+    exactly as dead as a breakout that loses the one it cleared. Written in the
+    long form (`ltp < level * (1 - buf)`) this fired on a short the moment the
+    trade started WORKING, cutting every winner at its first tick of profit.
     """
     level = pos.get("invalidation_level")
     if not level:
@@ -94,8 +101,10 @@ def _invalidated(pos: dict, ltp: float) -> tuple[bool, str]:
     if level <= 0:
         return False, ""
 
+    d = D.normalise(pos.get("direction"))
     buf = cfg_float("intraday_invalidation_buffer_pct", 0.12) / 100.0
-    if ltp < level * (1 - buf):
+    breached = level * (1 - D.sign(d) * buf)
+    if not D.is_better_price(ltp, breached, d):
         note = pos.get("invalidation_note") or f"lost {level:.2f}"
         return True, note
     return False, ""
@@ -118,9 +127,23 @@ def evaluate_intraday_exit(pos: dict, ltp: float, policy: dict,
         return {"action": "HOLD", "reason": "missing_price", "detail": "",
                 "new_sl": None, "book_qty": 0}
 
-    risk = (entry - stop0) if (stop0 and stop0 < entry) else entry * 0.005
-    gain_r = (ltp - entry) / risk
-    gain_pct = (ltp - entry) / entry * 100.0
+    # DIRECTION, READ FROM THE POSITION AND APPLIED TO EVERY RUNG BELOW.
+    #
+    # This whole ladder was written in the long form and there is no version of
+    # it that is merely "slightly off" for a short. `risk = entry - stop0` is
+    # NEGATIVE when the stop sits above entry, so the `stop0 < entry` guard sent
+    # it to the 0.5% fallback and discarded the real stop; then
+    # `gain_r = (ltp - entry) / risk` rose as the price rose. A short losing
+    # money read as a winning trade — it would have booked a partial, moved the
+    # stop to "breakeven" on the wrong side, and trailed away from the entry as
+    # the loss grew. Every rung, in the wrong direction, confidently.
+    #
+    # `direction` defaults to LONG for any row without one, which is every
+    # position written before this change.
+    d       = D.normalise(pos.get("direction"))
+    risk    = D.risk_per_share(entry, stop0, d) or entry * 0.005
+    gain_r  = D.gain_r(entry, ltp, risk, d)
+    gain_pct = D.gain_pct(entry, ltp, d)
 
     # ── 1. Square-off deadline — nothing outranks being flat ────────────────
     ph = phase_at(now)
@@ -139,17 +162,53 @@ def evaluate_intraday_exit(pos: dict, ltp: float, policy: dict,
     if must_exit:
         try:
             hh, mm = (int(x) for x in str(must_exit).split(":")[:2])
-            if (now.hour, now.minute) >= (hh, mm):
+
+            # A SHORT'S DEADLINE IS THE LONG'S, BROUGHT FORWARD.
+            #
+            # Measured against `must_exit_time` rather than against the close,
+            # and this is the whole reason it works. The first version of this
+            # inflated `squareoff_buffer` instead — but SQUARE_OFF phase begins
+            # at 15:20, i.e. `minutes_to_close` = 10, so any buffer at or under
+            # ten minutes was unreachable: rung 1 fired first, every time. It
+            # would have been a CRITICAL config key that did nothing, which is
+            # this project's most-repeated defect and one I nearly shipped here.
+            # Caught by testing it rather than by reading it.
+            #
+            # Anchoring to must_exit_time also means the lead stays correct if
+            # the operator moves that deadline — a short is always covered N
+            # minutes before a long would be exited, whenever that is.
+            lead = cfg_int("intraday_short_cover_lead_min", 10) if D.is_short(d) else 0
+            deadline_min = hh * 60 + mm - lead
+            if (now.hour * 60 + now.minute) >= deadline_min:
+                dl = f"{deadline_min // 60:02d}:{deadline_min % 60:02d}"
                 return {
                     "action": "EXIT_SQUAREOFF", "reason": "MUST_EXIT_TIME",
-                    "detail": (f"past the {must_exit} deadline — flat on our schedule "
-                               f"({gain_pct:+.2f}%, {gain_r:+.2f}R)"),
+                    "detail": (
+                        (f"past the {dl} cover deadline ({lead} min ahead of the "
+                         f"{must_exit} exit) — an UNCOVERED SHORT goes to the auction "
+                         f"session and the penalty runs to ~20% of the trade, which "
+                         f"dwarfs any stop here"
+                         if D.is_short(d) else
+                         f"past the {must_exit} deadline — flat on our schedule")
+                        + f" ({gain_pct:+.2f}%, {gain_r:+.2f}R)"),
                     "new_sl": None, "book_qty": 0,
                 }
         except (ValueError, TypeError):
             logger.warning(f"  intraday_must_exit_time is '{must_exit}', which is not "
                            f"HH:MM — ignoring it and using the close buffer only")
 
+    # A SHORT COVERS EARLIER THAN A LONG EXITS, AND THIS IS NOT SYMMETRY.
+    #
+    # The two failures are not the same size. A long left open at the close
+    # becomes delivery: you need the cash, which is inconvenient and recoverable.
+    # A short left open is SHORT DELIVERY — the exchange buys it back for you in
+    # the auction session and the penalty runs to roughly 20% of the trade value,
+    # which dwarfs any stop this system would ever set. It is the one outcome
+    # here that is an order of magnitude worse than being wrong about direction.
+    #
+    # So a short gets its own, earlier buffer on top of the shared one. Paying a
+    # few minutes of give-back on every short is a trivially cheap insurance
+    # premium against one un-covered position.
     mins_left = minutes_to_close(now) - policy["squareoff_buffer"]
     if mins_left <= 0:
         return {
@@ -167,7 +226,10 @@ def evaluate_intraday_exit(pos: dict, ltp: float, policy: dict,
     # of the paper book's fourteen exits are in that bucket and it nets POSITIVE,
     # which makes the exit-reason table unreadable and would teach the weekly
     # review that being stopped out is profitable.
-    if sl and ltp <= sl:
+    # `ltp <= sl` is the long form. A short is stopped when price rises THROUGH
+    # the stop, so the comparison is "is the stop now a better price than where
+    # we are" — one expression, both directions.
+    if sl and not D.is_better_price(ltp, sl, d):
         if pos.get("trail_activated"):
             reason = "TRAIL_SL_HIT"
         elif pos.get("breakeven_moved"):
@@ -196,7 +258,7 @@ def evaluate_intraday_exit(pos: dict, ltp: float, policy: dict,
             }
 
     # ── 4. The setup's OWN target, not a global multiple ────────────────────
-    if policy["use_setup_target"] and target and ltp >= target:
+    if policy["use_setup_target"] and target and not D.is_better_price(target, ltp, d):
         return {
             "action": "EXIT_TARGET", "reason": "TARGET_HIT",
             "detail": f"reached the setup's target {target:.2f} ({gain_pct:+.2f}%, {gain_r:+.2f}R)",
@@ -237,9 +299,12 @@ def evaluate_intraday_exit(pos: dict, ltp: float, policy: dict,
     # switched OFF: set intraday_giveback_pct once ~20 intraday positions have
     # closed carrying excursion data, and calibrate it on those rather than on
     # the swing number, which comes from a different horizon.
+    # high_water_mark holds the MOST FAVOURABLE price seen, which for a short is
+    # the session low. The column keeps its name; its meaning is direction-
+    # dependent and is defined in intraday/direction.py rather than here.
     hwm_px = float(pos.get("high_water_mark") or 0)
-    if policy["giveback_pct"] > 0 and hwm_px > entry:
-        peak_r = (hwm_px - entry) / risk
+    if policy["giveback_pct"] > 0 and hwm_px and D.is_better_price(hwm_px, entry, d):
+        peak_r = D.gain_r(entry, hwm_px, risk, d)
         if peak_r >= policy["giveback_min_r"]:
             kept = gain_r / peak_r if peak_r > 0 else 1.0
             if kept < (1.0 - policy["giveback_pct"] / 100.0):
@@ -268,9 +333,11 @@ def evaluate_intraday_exit(pos: dict, ltp: float, policy: dict,
     # Set above entry by the round trip, for the same reason as swing — a stop
     # at exactly the entry price still owes brokerage, STT and stamp duty on
     # both legs, and intraday that is 0.21% of a move worth maybe 0.7%.
+    # Breakeven sits PAST entry in the direction of profit — above it for a long,
+    # BELOW it for a short — because the round trip is owed either way.
     if policy["move_to_breakeven"] and gain_r >= policy["breakeven_at_r"]:
-        be = round(entry * (1 + policy["cost_buffer_pct"] / 100.0), 2)
-        if be > sl:
+        be = round(entry * (1 + D.sign(d) * policy["cost_buffer_pct"] / 100.0), 2)
+        if D.is_better_price(be, sl, d):
             return {
                 "action": "TRAIL_SL", "reason": "BREAKEVEN",
                 "detail": (f"{gain_r:.2f}R — sl {sl:.2f} -> {be:.2f}, entry plus the "
@@ -281,13 +348,17 @@ def evaluate_intraday_exit(pos: dict, ltp: float, policy: dict,
 
     # ── 6. Trail ────────────────────────────────────────────────────────────
     if gain_r >= policy["trail_after_r"]:
-        hwm = max(float(pos.get("high_water_mark") or entry), ltp)
-        trail = hwm - policy["trail_r"] * risk
-        if trail > sl:
+        # The stop trails BEHIND the best price seen — below it for a long, above
+        # it for a short. Written as `max(...) - trail_r * risk` this loosened a
+        # short's stop by two risk units every single cycle.
+        hwm = D.favourable_excursion(float(pos.get("high_water_mark") or 0),
+                                     ltp, entry, d)
+        trail = hwm - D.sign(d) * policy["trail_r"] * risk
+        if D.is_better_price(trail, sl, d):
             return {
                 "action": "TRAIL_SL", "reason": "TRAIL_UPDATE",
                 "detail": (f"{gain_r:.2f}R — sl {sl:.2f} -> {trail:.2f} "
-                           f"(locks {(trail - entry) / risk:+.2f}R)"),
+                           f"(locks {D.gain_r(entry, trail, risk, d):+.2f}R)"),
                 "new_sl": round(trail, 2), "book_qty": 0,
             }
 

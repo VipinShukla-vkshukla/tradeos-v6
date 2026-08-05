@@ -52,6 +52,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import cfg_float
+from intraday import direction as D
 
 
 @dataclass(frozen=True)
@@ -215,7 +216,8 @@ def min_viable_position(entry_price: float, target_move_pct: float,
 
 
 def is_worth_taking(entry_price: float, qty: int, target_price: float,
-                    stop_price: float, product: str = "MIS") -> tuple[bool, str]:
+                    stop_price: float, product: str = "MIS",
+                    direction: str = "LONG") -> tuple[bool, str]:
     """
     Does this setup survive its own costs?
 
@@ -231,12 +233,24 @@ def is_worth_taking(entry_price: float, qty: int, target_price: float,
     if qty <= 0 or entry_price <= 0:
         return False, "no position"
     rt = round_trip(entry_price, qty, product=product)
-    gross_up   = (target_price - entry_price) / entry_price * 100.0
-    gross_down = (entry_price - stop_price) / entry_price * 100.0
+
+    # DIRECTIONAL. `gross_up` is the move TOWARDS the target and `gross_down`
+    # the move to the stop — for a short those are a fall and a rise
+    # respectively. Written in the long form, every short was refused with
+    # "target is at or below entry", which is true of every correctly
+    # constructed short and says nothing about whether it survives its costs.
+    #
+    # The cost arithmetic itself is direction-neutral: an intraday round trip
+    # pays the same brokerage, the same 0.025% STT on the sell leg (charged at
+    # ENTRY for a short rather than at exit) and the same stamp duty on the buy
+    # leg. Same total, different order, so `round_trip` needs no change.
+    gross_up   = D.reward_per_share(entry_price, target_price, direction) / entry_price * 100.0
+    gross_down = D.risk_per_share(entry_price, stop_price, direction) / entry_price * 100.0
 
     keep = cfg_float("intraday_cost_keep_ratio", 0.70)
     if gross_up <= 0:
-        return False, "target is at or below entry"
+        return False, (f"target {target_price} is on the wrong side of entry "
+                       f"{entry_price} for a {D.normalise(direction)}")
     if rt.pct_of_position > gross_up * (1 - keep):
         net = gross_up - rt.pct_of_position
         return False, (f"costs {rt.pct_of_position:.2f}% eat a {gross_up:.2f}% target "

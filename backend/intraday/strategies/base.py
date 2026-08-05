@@ -24,6 +24,7 @@ from typing import Protocol
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config import IST
+from intraday import direction as D
 
 
 @dataclass
@@ -128,10 +129,24 @@ class SymbolContext:
 
 @dataclass
 class Setup:
-    """A tradeable intraday opportunity, fully specified."""
+    """
+    A tradeable intraday opportunity, fully specified.
+
+    DIRECTION IS NOW READ, NOT JUST STORED. It was a field on this dataclass and
+    a column on `intraday_setups` from the beginning, every engine hardcoded
+    "LONG", and nothing consumed it — so these three properties were written as
+    if the field did not exist. On a short they returned a negative risk, a
+    negative reward, and an rr of exactly 0.0 (the `r > 0` guard), which would
+    have sorted every short to the bottom of `evaluate_intraday_setups`' ranking
+    and made it look like the engines simply never found good ones.
+
+    The arithmetic lives in `intraday.direction` so that this class, the exit
+    ladder, the scorer, the cost model and the outcome resolver cannot disagree
+    about what "R" means for a short.
+    """
     symbol: str
     strategy: str
-    direction: str                     # LONG (SHORT is defined but gated off)
+    direction: str                     # LONG | SHORT — see intraday/direction.py
     entry: float
     stop: float
     target: float
@@ -144,16 +159,30 @@ class Setup:
 
     @property
     def risk_pct(self) -> float:
-        return (self.entry - self.stop) / self.entry * 100.0 if self.entry else 0.0
+        """Distance to the stop, as a positive percent, in either direction."""
+        if not self.entry:
+            return 0.0
+        return D.risk_per_share(self.entry, self.stop, self.direction) / self.entry * 100.0
 
     @property
     def reward_pct(self) -> float:
-        return (self.target - self.entry) / self.entry * 100.0 if self.entry else 0.0
+        """Distance to the target, as a positive percent, in either direction."""
+        if not self.entry:
+            return 0.0
+        return D.reward_per_share(self.entry, self.target, self.direction) / self.entry * 100.0
 
     @property
     def rr(self) -> float:
-        r = self.entry - self.stop
-        return (self.target - self.entry) / r if r > 0 else 0.0
+        r = D.risk_per_share(self.entry, self.stop, self.direction)
+        return D.reward_per_share(self.entry, self.target, self.direction) / r if r > 0 else 0.0
+
+    @property
+    def is_short(self) -> bool:
+        return D.is_short(self.direction)
+
+    def coherent(self) -> tuple[bool, str]:
+        """Are these levels valid FOR THIS DIRECTION? One definition, in D."""
+        return D.validate(self.entry, self.stop, self.target, self.direction)
 
 
 class IntradayStrategy(Protocol):

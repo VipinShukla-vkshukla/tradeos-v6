@@ -239,12 +239,58 @@ def for_framework(framework: str, highs: list[float],
     return s, p
 
 
-def gate_for_framework(framework: str, highs: list[float],
-                       lows: list[float]) -> tuple[bool, str, Structure]:
-    """One call: classify for the framework and decide whether a long may go."""
+def gate_for_framework(framework: str, highs: list[float], lows: list[float],
+                       direction: str = "LONG") -> tuple[bool, str, Structure]:
+    """
+    One call: classify for the framework and decide whether the trade may go.
+
+    `direction` defaults to LONG so every existing caller is unchanged. Without
+    it, a short was gated by `gate_long` — which blocks a DOWNTREND. That is the
+    single structure a short most wants, so shorting would have been refused
+    precisely when it was right and permitted when it was wrong.
+    """
     s, p = for_framework(framework, highs, lows)
-    ok, why = gate_long(s, allow_reversal=p["allow_reversal"])
+    if (direction or "LONG").upper() == "SHORT":
+        ok, why = gate_short(s, allow_reversal=p["allow_reversal"])
+    else:
+        ok, why = gate_long(s, allow_reversal=p["allow_reversal"])
     return ok, f"[{framework.lower()} structure] {why}", s
+
+
+def gate_short(struct: Structure, allow_reversal: bool | None = None) -> tuple[bool, str]:
+    """
+    Should a SHORT be allowed given the structure? The mirror of gate_long,
+    with one deliberate asymmetry at the end.
+
+    An UPTREND blocks outright, for the reason gate_long blocks a downtrend
+    inverted: selling a breakdown inside an uptrend is selling a higher low, and
+    the trend exists to punish exactly that trade. It is also the setup that
+    produces a squeeze rather than an ordinary loss, because the buyers taking
+    the other side are the ones who have been right all session.
+
+    CONFIRMED_UP and REVERSAL_UP both block. A market that has turned up is the
+    worst possible tape for a short even before it has proved the turn — and
+    unlike gate_long, there is no config to permit it. `structure_allow_reversal`
+    lets a long take an unconfirmed turn early, which is a question of paying up
+    for a good entry. The short-side equivalent is standing in front of a
+    reversal that is already moving, which is not the same trade at all.
+
+    UNKNOWN does NOT block, matching gate_long: too few bars is not evidence, and
+    the shortability filter plus the market-context gate are the checks that
+    refuse on ignorance. Blocking here as well would make a short impossible in
+    the first thirty minutes, which is when the best ones set up.
+    """
+    if struct.state == UNKNOWN:
+        return True, "structure unknown — not blocking"
+    if struct.state == UPTREND:
+        return False, (f"uptrend — {struct.detail}. Selling a breakdown inside an "
+                       f"uptrend is selling a higher low, and the buyers on the "
+                       f"other side have been right all session")
+    if struct.state in (CONFIRMED_UP, REVERSAL_UP):
+        return False, (f"the tape has turned up ({struct.state}) — {struct.detail}. "
+                       f"No config permits a short into a confirmed or forming "
+                       f"reversal; that is a squeeze, not a trade")
+    return True, struct.detail or struct.state
 
 
 def gate_long(struct: Structure, allow_reversal: bool | None = None) -> tuple[bool, str]:

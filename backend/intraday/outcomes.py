@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from datetime import date, datetime, timedelta
 from loguru import logger
 from config import IST, get_supabase, cfg, today_ist
+from intraday import direction as D
 
 
 def _session_bars(kite, token: int, day: date, interval: str) -> list:
@@ -136,10 +137,24 @@ def resolve_day(trade_date: str | None = None, sb=None) -> dict:
             tally["UNKNOWN"] += 1
             continue
 
+        # DIRECTION DECIDES WHICH EXTREME OF THE BAR HITS WHICH LEVEL.
+        #
+        # `lo <= stop, hi >= tgt` is the long form, and on a short it is not
+        # merely wrong — it is wrong on the FIRST BAR, every time. A short's stop
+        # sits ABOVE its entry, so `lo <= stop` is true immediately and every
+        # short would have resolved STOP at its own stop price within seconds of
+        # detection. The learning loop reads this table: `intraday_priors` and
+        # `hurdle`'s arrival distribution are both built from it, so a short
+        # engine would have been assigned a catastrophic measured prior made
+        # entirely of an arithmetic error, and then retired on that evidence.
+        d = D.normalise(r.get("direction"))
         outcome, exit_px = "TIMEOUT", float(bars[-1]["close"])
         for b in bars:
             hi, lo = float(b["high"]), float(b["low"])
-            hit_stop, hit_tgt = lo <= stop, hi >= tgt
+            if D.is_short(d):
+                hit_stop, hit_tgt = hi >= stop, lo <= tgt
+            else:
+                hit_stop, hit_tgt = lo <= stop, hi >= tgt
             if hit_stop and hit_tgt:
                 # Both inside one bar. Assume the bad one — a coarse bar cannot
                 # tell you the sequence, and assuming the good one is how a
@@ -153,7 +168,11 @@ def resolve_day(trade_date: str | None = None, sb=None) -> dict:
                 outcome, exit_px = "TARGET", tgt
                 break
 
-        pct = (exit_px - entry) / entry * 100.0 if entry else 0.0
+        # Signed IN THE TRADE'S FAVOUR, not in the price's direction. A short
+        # that fell 1% made +1%. Unsigned, every profitable short would have been
+        # recorded as a loss of the same size, which is the sign error that
+        # turns a working engine into a retired one.
+        pct = D.gain_pct(entry, exit_px, d)
         # Net of the round trip, because a gross win under 0.21% is a loss and
         # recording it as a win would teach the wrong lesson.
         cost = float(r.get("cost_pct") or 0)

@@ -32,6 +32,7 @@ from intraday.strategies.pullback import TrendPullback
 from intraday.strategies.prev_day_levels import PrevDayLevelRetest
 from intraday.strategies.squeeze import SqueezeExpansion
 from intraday.strategies.range_fade import RangeFade
+from intraday.strategies.short_distribution import ShortDistribution
 
 # Ordered by family so the coverage is visible: three that pay when a level
 # breaks, one that pays when a trend continues, two that pay when nothing
@@ -45,6 +46,7 @@ _ALL = [
     TrendPullback(),          # PBK — first pullback in a trend day
     VwapReclaim(),            # VWR — fade and reclaim of the day's average
     RangeFade(),              # RNG — the low of a proven range
+    ShortDistribution(),      # SDN — the short family: VWAP rejection, trap, breakdown
 ]
 
 
@@ -94,6 +96,12 @@ FAMILIES = {
     "PBK": "VWR",     # first pullback in a trend: a CONDITION within that defence
     "VCE": "VCE",     # shadowed; kept as its own family so its evidence stays separable
     "RNG": "RNG",     # shadowed; same
+    # The short family is its own family and must NEVER be merged into a long
+    # one. A long and a short in the same structure have different base rates
+    # (the index drifts up), different failure modes (a short squeezes) and
+    # different tails — pooling their detections would average away the only
+    # thing worth measuring about either.
+    "SDN": "SDN",     # SHORT: VWAP rejection · failed-breakout trap · range breakdown
 }
 
 
