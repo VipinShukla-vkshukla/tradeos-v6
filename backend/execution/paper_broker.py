@@ -264,6 +264,17 @@ def open_position(symbol: str, qty: int, fill_price: float, setup: dict,
             # was meant to sit beside.
             "product": product_for(framework),
             "status": "ACTIVE",
+            # FOUND DURING MERGE REVIEW, migration 047: this key did not exist
+            # on this dict at all, open_positions had no column to receive it,
+            # and every reader of a position's direction — the exit ladder,
+            # excursion tracking, close_position's cover-vs-sell choice — reads
+            # it from THIS table, not from intraday_setups. A short would have
+            # opened correctly (the entry leg is already direction-aware) and
+            # then been managed as a long for its entire life. Explicit LONG
+            # when the caller omits the key, matching intraday.direction's own
+            # "unlabelled reads as LONG" default rather than leaving a gap for
+            # a future caller to get right by accident.
+            "direction": setup.get("direction") or "LONG",
             "entry_date": today_ist().isoformat(),
             "entry_price": fill_price,
             "actual_qty": qty,

@@ -2305,7 +2305,17 @@ class IntradayEngine:
                 st.symbol, qty, f.fill_price,
                 {"stop": st.stop, "target": st.target, "strategy": st.strategy,
                  "invalidation_level": inv_level, "invalidation_note": inv_note,
-                 "sector": st.meta.get("sector")},
+                 "sector": st.meta.get("sector"),
+                 # FOUND DURING MERGE REVIEW, migration 047: this was the one
+                 # missing link. The entry FILL already used D.entry_side(
+                 # st.direction) a few lines up, so a short's opening leg was
+                 # already correct — but without this key the resulting row
+                 # carried no direction at all, and every later reader
+                 # (excursion tracking, the exit ladder, cover-vs-sell at
+                 # square-off) would read it back as None -> LONG. A short
+                 # would have opened correctly and then been managed as a
+                 # long for the rest of its life.
+                 "direction": st.direction},
                 "INTRADAY", self.sb, charges=f.charges)
             # Reload so the same setup cannot be opened twice in one session and
             # so the exit engine sees it on the very next cycle.

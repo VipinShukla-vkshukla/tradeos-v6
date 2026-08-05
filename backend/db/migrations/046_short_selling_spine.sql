@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- TradeOS v7 — Migration 045: the sign convention shorting actually needs
+-- TradeOS v7 — Migration 046: the sign convention shorting actually needs
 -- ═══════════════════════════════════════════════════════════════════════════
 --
 -- `direction` has been a column on intraday_setups since migration 014 and a
@@ -107,7 +107,7 @@ DECLARE spine text;
 BEGIN
   SELECT value INTO spine FROM public.system_config WHERE key = 'intraday_allow_shorts';
   RAISE NOTICE '';
-  RAISE NOTICE 'Migration 045 applied. intraday_allow_shorts = %', spine;
+  RAISE NOTICE 'Migration 046 applied. intraday_allow_shorts = %', spine;
   RAISE NOTICE '';
   RAISE NOTICE 'The DIRECTION SPINE is partially built. Converted so far:';
   RAISE NOTICE '  exit ladder · cover deadline · invalidation · cost model';

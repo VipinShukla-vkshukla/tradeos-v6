@@ -969,6 +969,18 @@ _SHORT_SPINE = [
     ("entry side",       "intraday/engine.py",             "D.entry_side"),
     ("cover on squareoff", "intraday/engine.py",           "D.exit_side"),
     ("shortability",     "intraday/shortability.py",       "def can_short"),
+    # FOUND DURING MERGE REVIEW, migration 047. Every site above is a
+    # CONSUMER of direction — it reads pos.get("direction") from an
+    # open_positions row. None of them is the site that WRITES one, and
+    # nothing here checks that write exists, which is exactly how it was
+    # missing: every marker above was present, check_shorts reported the
+    # spine complete, and a short would still have opened with no direction
+    # recorded — read back as LONG by every one of these correctly-converted
+    # sites. Text presence and a value's ability to round-trip through the
+    # database are different claims; see the schema check below the marker
+    # loop, which is the one assertion in this function that is not a grep.
+    ("position write",   "execution/paper_broker.py",      '"direction": setup.get("direction")'),
+    ("position write (caller)", "intraday/engine.py",       '"direction": st.direction'),
 ]
 
 
@@ -990,6 +1002,11 @@ def check_shorts() -> tuple[bool, str]:
         taught the learning loop that the engine was catastrophic
       · scoring.score treated `stop >= entry` as incoherent, so the allocator
         DECLINED every short before any engine's opinion was consulted
+      · open_positions had no direction column and nothing wrote one, so a
+        short that opened correctly would be MANAGED as a long for its entire
+        life — found during merge review, after every marker-based check
+        below already reported the spine complete, which is why this
+        function no longer trusts markers alone (see the schema check)
 
     So the switch is not the capability. This check refuses to call shorting
     healthy until every consumer of `direction` has been made to read it, and it
@@ -998,7 +1015,7 @@ def check_shorts() -> tuple[bool, str]:
     long-only sites produce confident wrong numbers rather than errors.
     """
     from pathlib import Path
-    from config import cfg_bool
+    from config import cfg_bool, get_supabase
     root = Path(__file__).parent.parent
 
     done, missing = [], []
@@ -1011,21 +1028,41 @@ def check_shorts() -> tuple[bool, str]:
             continue
         (done if marker in src else missing).append(label)
 
+    # THE ONE ASSERTION HERE THAT IS NOT A GREP.
+    #
+    # Every entry above proves a file CONTAINS the right words. None of them
+    # proves a short position, once opened, can be told apart from a long one
+    # by anything that reads it back — which is exactly the gap that shipped:
+    # every marker present, the spine reported complete, and open_positions
+    # had no column to hold the value the whole spine is built to interpret.
+    # A live schema probe is the only check in this function a passing grep
+    # cannot satisfy on its own.
+    try:
+        get_supabase().table("open_positions").select("direction").limit(1).execute()
+        done.append("open_positions.direction column")
+    except Exception as e:
+        missing.append(f"open_positions.direction column ({str(e)[:60]})")
+
+    # +1 for the schema probe above, which is not one of the text markers and
+    # was never counted by len(_SHORT_SPINE) — without this, a message could
+    # say "N/N complete" in the same breath as naming something still missing,
+    # which is the exact contradiction a marker-only check would print.
+    total = len(_SHORT_SPINE) + 1
     on = cfg_bool("intraday_allow_shorts", False)
     if on and missing:
         return False, (
             f"intraday_allow_shorts is ON but {len(missing)} of "
-            f"{len(_SHORT_SPINE)} direction-aware sites are missing: "
+            f"{total} direction-aware sites are missing: "
             f"{', '.join(missing[:6])}"
             + (f" (+{len(missing) - 6} more)" if len(missing) > 6 else "")
             + ". A half-converted spine does not refuse shorts, it MIS-PRICES "
               "them — the long-only sites return confident wrong numbers rather "
               "than errors. Turn the switch off until these land.")
     if missing:
-        return True, (f"shorts OFF — spine {len(done)}/{len(_SHORT_SPINE)} complete, "
+        return True, (f"shorts OFF — spine {len(done)}/{total} complete, "
                       f"still to build: {', '.join(missing[:4])}"
                       + (f" (+{len(missing) - 4} more)" if len(missing) > 4 else ""))
-    return True, (f"shorts {'ON' if on else 'off'} — all {len(done)} direction-aware "
+    return True, (f"shorts {'ON' if on else 'off'} — all {total} direction-aware "
                   f"sites present, exit ladder and outcome resolver included")
 
 

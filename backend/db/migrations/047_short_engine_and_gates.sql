@@ -1,8 +1,8 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- TradeOS v7 — Migration 046: the short engine, its gates, and its solvency filter
+-- TradeOS v7 — Migration 047: the short engine, its gates, and its solvency filter
 -- ═══════════════════════════════════════════════════════════════════════════
 --
--- 045 built the sign convention. This adds the parts that decide WHETHER to
+-- 046 built the sign convention. This adds the parts that decide WHETHER to
 -- short and WHICH names can be shorted at all, and registers the engine.
 --
 -- SDN STARTS SHADOW. It evaluates every cycle and records every detection, and
@@ -43,7 +43,45 @@
 --
 -- Covering is compulsory and time-boxed; selling a long is neither. The same
 -- name can be an acceptable long and an unacceptable short.
+--
 -- ═══════════════════════════════════════════════════════════════════════════
+-- FOUND DURING MERGE REVIEW: open_positions.direction DID NOT EXIST
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- 046 correctly backfills and indexes intraday_setups.direction — the DETECTION
+-- log. But intraday/exit_policy.py's evaluate_intraday_exit(), engine.py's
+-- excursion tracking, and paper_broker.close_position()'s cover-vs-sell choice
+-- all read direction from the POSITION row in open_positions, not from
+-- intraday_setups — and nothing added the column there, and nothing in
+-- _maybe_open_paper() / paper_broker.open_position() passed direction through
+-- to be written.
+--
+-- The spine's own sign-convention math is correct and independently verified
+-- against this account's real fills. It was simply never reachable: every
+-- position ever opened would read pos.get("direction") as None, normalise() to
+-- LONG, and a genuine short would be tracked, exited and covered as if it were
+-- a long — excursion inverted, the exit ladder computed on the wrong sign, and
+-- squared off with a SELL instead of a BUY-to-cover. The exact failure class
+-- 046's own header describes fixing, one level removed: the conversion
+-- functions were correct, the data that invokes them correctly was never
+-- persisted. check_shorts() (migration 047, tools/health.py) could not have
+-- caught this — it greps for known call-site markers, which are all present;
+-- it does not verify a value round-trips through the database.
+--
+-- Both switches (intraday_allow_shorts, the SDN lifecycle) are off, so nothing
+-- has traded on this gap. Fixed here, before either switch is ever turned on.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+ALTER TABLE public.open_positions
+  ADD COLUMN IF NOT EXISTS direction text NOT NULL DEFAULT 'LONG';
+
+COMMENT ON COLUMN public.open_positions.direction IS
+  'LONG | SHORT. Read by intraday/direction.py — the exit ladder, excursion '
+  'tracking, and paper_broker.close_position()''s cover-vs-sell choice all key '
+  'off this. Defaulted LONG so every existing row (100% of them, predating '
+  'shorting) is unaffected. Written at open by paper_broker.open_position(); '
+  'a row with no direction key in its setup dict still gets LONG explicitly, '
+  'never a silent NULL.';
 
 INSERT INTO public.system_config
   (key, value, description, category, subsystem, value_type, default_value, risk_level)
@@ -152,8 +190,8 @@ BEGIN
   SELECT value INTO lc FROM public.system_config WHERE key = 'intraday_engine_sdn_lifecycle';
 
   RAISE NOTICE '';
-  RAISE NOTICE 'Migration 046 applied.';
-  RAISE NOTICE '  intraday_allow_shorts        = %   (045; still the master switch)', sw;
+  RAISE NOTICE 'Migration 047 applied.';
+  RAISE NOTICE '  intraday_allow_shorts        = %   (046; still the master switch)', sw;
   RAISE NOTICE '  intraday_engine_sdn_lifecycle = %', lc;
   RAISE NOTICE '';
   RAISE NOTICE 'SDN detects and records. It receives no capital in SHADOW, and the';
