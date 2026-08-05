@@ -2085,7 +2085,21 @@ class IntradayEngine:
                 logger.info(f"      {sym}: {best.strategy} — {liq_why}")
                 continue
 
-            ok, why = is_worth_taking(best.entry, qty, best.target, best.stop)
+            # DIRECTION MUST BE PASSED, NOT DEFAULTED. is_worth_taking() was
+            # made direction-aware in the sign-convention spine and defaults to
+            # LONG so every pre-shorting caller keeps working unchanged — but
+            # this IS the caller a short setup reaches, and omitting the
+            # argument here silently invoked that same default. A short's
+            # target sits BELOW entry and its stop ABOVE it; scored as LONG
+            # that reads as "target is on the wrong side of entry", and every
+            # short would be REJECTED_COST regardless of how good the trade
+            # was — the setup detects, passes shortability and the structure
+            # gate, and dies at the one check that never learned it was a
+            # short. The exact shape of the open_positions.direction gap found
+            # during merge review, one call site over: a correct function,
+            # forgotten at its call.
+            ok, why = is_worth_taking(best.entry, qty, best.target, best.stop,
+                                      direction=best.direction)
             rt = round_trip(best.entry, qty)
             self._record_setup(best, st.phase, rt.pct_of_position,
                                "TAKEN" if ok else "REJECTED_COST", qty)

@@ -1012,6 +1012,28 @@ _SHORT_SPINE = [
     # loop, which is the one assertion in this function that is not a grep.
     ("position write",   "execution/paper_broker.py",      '"direction": setup.get("direction")'),
     ("position write (caller)", "intraday/engine.py",       '"direction": st.direction'),
+    # FOUND DURING A PRE-SESSION READINESS SWEEP, migration 049 — the same
+    # shape of gap as the merge review above, three call sites over. Every
+    # entry above proves the CALLEE is direction-aware. None of them proves
+    # a caller actually PASSES the argument, and the default is LONG, so an
+    # omitted argument is not a crash — it is a short silently scored,
+    # structure-gated, or cost-checked as if it were a long. Found by testing
+    # is_worth_taking() with the literal call from evaluate_intraday_setups()
+    # and getting "target is on the wrong side of entry for a LONG" on a
+    # coherent short.
+    ("cost gate (caller)", "intraday/engine.py",
+     "ok, why = is_worth_taking(best.entry, qty, best.target, best.stop,\n"
+     "                                      direction=best.direction)"),
+    ("allocator prior carried", "allocation/proposal.py",    'direction   = getattr(setup, "direction"'),
+    ("allocator coherence",     "allocation/proposal.py",    "from intraday.direction import validate"),
+    ("allocator scorer (caller)", "allocation/allocator.py", "direction=p.direction)"),
+    ("allocator prior ladder",  "allocation/allocator.py",   '/SHORT")'),
+    ("simulate cost gate",      "tools/simulate.py",
+     "is_worth_taking(best.entry, qty, best.target, best.stop,\n"
+     "                                      direction=best.direction) if qty"),
+    ("simulate structure gate", "tools/simulate.py",
+     'gate_for_framework(\n            "INTRADAY", [b.high for b in ctx.bars], [b.low for b in ctx.bars],\n'
+     "            direction=best.direction)"),
 ]
 
 

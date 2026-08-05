@@ -47,12 +47,19 @@ class Proposal:
     quantity:    int
     source:      str            # engine or family that produced it
     native_rank: float          # the book's own confidence/score, 0-100
+    # LONG | SHORT. Defaulted so every pre-shorting construction of this class
+    # is unaffected — swing is CNC-only and always LONG by construction, so
+    # from_swing() passes it explicitly rather than relying on the default,
+    # the same reasoning intraday.direction's own module docstring gives for
+    # never defaulting silently at a site that COULD be either.
+    direction:   str = "LONG"
     meta:        dict = field(default_factory=dict)
     created_at:  datetime = field(default_factory=lambda: datetime.now(IST))
 
     @property
     def risk_per_share(self) -> float:
-        return max(self.entry - self.stop, 0.0)
+        from intraday.direction import risk_per_share
+        return risk_per_share(self.entry, self.stop, self.direction)
 
     @property
     def value(self) -> float:
@@ -60,9 +67,22 @@ class Proposal:
 
     @property
     def coherent(self) -> bool:
-        """Levels that make arithmetic sense. Everything downstream assumes it."""
-        return (self.entry > 0 and self.quantity > 0
-                and 0 < self.stop < self.entry < self.target)
+        """
+        Levels that make arithmetic sense. Everything downstream assumes it.
+
+        WAS `0 < stop < entry < target` — the LONG shape, unconditionally. A
+        short's stop sits ABOVE entry and its target BELOW it, so every short
+        proposal ever built here failed this check and was scored as
+        incoherent before allocation/scoring.py ever saw it — the identical
+        failure class the sign-convention spine fixed in Setup.coherent(),
+        reached through a second, independent implementation that this class
+        had always kept for itself instead of importing.
+        """
+        from intraday.direction import validate
+        if not (self.entry > 0 and self.quantity > 0):
+            return False
+        ok, _ = validate(self.entry, self.stop, self.target, self.direction)
+        return ok
 
     def key(self) -> tuple[str, str]:
         # (symbol, product) — the same key open_positions has been unique on
@@ -104,6 +124,11 @@ def from_swing(decision, plan: dict | None = None) -> Proposal | None:
         quantity    = int(qty),
         source      = str((plan or {}).get("strategy_source") or "CONTINUATION"),
         native_rank = float((plan or {}).get("final_score") or 0.0),
+        # CNC by construction — this system does not short the delivery book,
+        # and Indian cash-market rules make an unhedged retail short outside
+        # intraday square-off impractical regardless. Explicit rather than
+        # relying on the class default, matching product="CNC" above.
+        direction   = "LONG",
         meta        = {
             "action":      action,
             "rr_live":     getattr(decision, "rr_live", None),
@@ -143,6 +168,15 @@ def from_intraday(setup, quantity: int, product: str = "MIS") -> Proposal | None
         quantity    = int(quantity),
         source      = str((setup.meta or {}).get("family") or setup.strategy),
         native_rank = round(float(setup.confidence) * 100.0, 1),
+        # Carried from the setup, not defaulted. Before this the allocator's
+        # OWN proposal object had no way to express a short at all — a short
+        # Setup adapted here silently became a LONG Proposal, coherent()
+        # rejected it (stop sits above entry, which fails the long-only
+        # 0<stop<entry<target shape), and every short was scored
+        # "not scoreable — levels incoherent" before scoring.score() ever
+        # looked at it. Independent of, and found alongside, the missing
+        # direction=best.direction argument at the setup's cost-model gate.
+        direction   = getattr(setup, "direction", "LONG"),
         meta        = {
             "sub_engine":  (setup.meta or {}).get("sub_engine") or setup.strategy,
             "rationale":   getattr(setup, "rationale", ""),

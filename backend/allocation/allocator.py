@@ -66,6 +66,26 @@ class Allocator:
         if self._priors is None:
             self.refresh_priors()
         pri = self._priors or {}
+
+        # SHORT PROPOSALS MUST NEVER FALL BACK TO THE LONG POPULATION.
+        #
+        # scoring.intraday_priors() keys a short engine's distribution as
+        # "{framework}/{source}/SHORT" — a genuinely different population, per
+        # its own docstring: different base rate, different failure mode, a
+        # different tail. Before this branch existed every proposal was LONG,
+        # so a two-step ladder (class, then book) was complete. It stopped
+        # being complete the moment a Proposal could carry direction="SHORT":
+        # unmodified, this ladder would look up "INTRADAY/SDN" — a key that
+        # does not exist for the short-only SDN family — miss, and fall
+        # through to "INTRADAY/ALL", which is now explicitly the LONG-only
+        # book-level distribution. A short would be scored against a
+        # population that excludes every short ever observed, which is the
+        # exact cross-class borrowing this docstring's own next line forbids.
+        if (p.direction or "LONG").upper() == "SHORT":
+            return (pri.get(f"{p.framework}/{p.source}/SHORT")
+                    or pri.get(f"{p.framework}/ALL/SHORT")
+                    or S._dist(f"{p.framework}/NONE/SHORT", [], floor=10**9))
+
         # Most specific first, then the book, then neutral. A missing class
         # prior is NOT borrowed from a neighbour — it falls back to the book's
         # own distribution and is flagged, because an invented prior is
@@ -118,8 +138,16 @@ class Allocator:
             scored = []
             for p in book:
                 pri = self._prior_for(p)
+                # direction=p.direction: without it every SHORT proposal was
+                # scored as LONG. scoring.score()'s own coherence check then
+                # read a short's stop (above entry) as "incoherent", returned
+                # edge=None, and policies.intraday_stopping declines a None
+                # edge as "not scoreable" — every short refused before its
+                # prior or its cost was ever weighed, silently, because the
+                # DEFAULT direction absorbed the missing argument instead of
+                # raising.
                 sc = S.score(p.entry, p.stop, p.target, p.quantity, p.product,
-                             pri, days)
+                             pri, days, direction=p.direction)
                 scored.append({"proposal": p, "symbol": p.symbol, **sc,
                                "hold_days_n": n_days})
 
@@ -219,6 +247,7 @@ class Allocator:
         return {
             "decided_at": datetime.now(IST).isoformat(),
             "symbol": p.symbol, "framework": p.framework, "product": p.product,
+            "direction": p.direction,
             "source": p.source, "verdict": v["verdict"], "reason": v.get("reason"),
             "entry": p.entry, "stop": p.stop, "target": p.target,
             "quantity": p.quantity,

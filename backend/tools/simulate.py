@@ -259,21 +259,40 @@ def simulate_intraday(sb, force_phase: str | None = None) -> dict:
             blocked_event += 1
             logger.info(f"      {sym:<12} {best.strategy}  BLOCKED event — {ev.reason[:52]}")
             continue
+        # direction=best.direction on both gates below: without it, a SHORT
+        # setup was structurally judged by gate_long (which blocks a
+        # downtrend — exactly the structure a short wants) and cost-checked
+        # as a LONG (whose stop/target shape a short's levels fail by
+        # construction, refused as "wrong side of entry for a LONG"). This is
+        # the read-only preview tool CLAUDE.md tells the operator to run
+        # before trusting a session; leaving it long-only here would have
+        # reported every short setup as blocked or uneconomic when it was
+        # neither — the same "quiet market" illusion the live engine's own
+        # missing direction= argument produced, caught here before it shipped.
         ok_s, why_s, _ = gate_for_framework(
-            "INTRADAY", [b.high for b in ctx.bars], [b.low for b in ctx.bars])
+            "INTRADAY", [b.high for b in ctx.bars], [b.low for b in ctx.bars],
+            direction=best.direction)
         if not ok_s:
             blocked_struct += 1
             logger.info(f"      {sym:<12} {best.strategy}  BLOCKED structure — {why_s[:52]}")
             continue
-        qty = int((TOTAL_CAPITAL * mc.size_multiplier) // best.entry) if best.entry else 0
-        ok_c, why_c = is_worth_taking(best.entry, qty, best.target, best.stop) if qty else (False, "no size")
+        # capital_for("INTRADAY"): TOTAL_CAPITAL alone predates the swing/
+        # intraday capital split and no longer matches what the live engine
+        # actually sizes against once intraday_capital diverges from it —
+        # this preview would silently show a different quantity than the
+        # session it is meant to preview.
+        from config import capital_for
+        qty = int((capital_for("INTRADAY") * mc.size_multiplier) // best.entry) if best.entry else 0
+        ok_c, why_c = is_worth_taking(best.entry, qty, best.target, best.stop,
+                                      direction=best.direction) if qty else (False, "no size")
         if not ok_c:
             blocked_cost += 1
             logger.info(f"      {sym:<12} {best.strategy}  BLOCKED cost — {why_c[:52]}")
             continue
         passed += 1
-        logger.info(f"    → {sym:<12} {best.strategy}  TAKEABLE  entry {best.entry} "
-                    f"stop {best.stop} target {best.target} R:R {best.rr:.1f} conf {best.confidence}")
+        logger.info(f"    → {sym:<12} {best.strategy} {best.direction:<5} TAKEABLE  "
+                    f"entry {best.entry} stop {best.stop} target {best.target} "
+                    f"R:R {best.rr:.1f} conf {best.confidence}")
 
     logger.info(f"\n      {fired} fired · {blocked_event} event · {blocked_struct} structure "
                 f"· {blocked_cost} cost · {passed} takeable")

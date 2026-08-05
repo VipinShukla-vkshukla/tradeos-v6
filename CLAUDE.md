@@ -197,6 +197,23 @@ both again. `simulate` is read-only and safe at any time.
   caller fed it the intraday one — `"RISK ON" in "RISK_ON"` is `False` — so the
   STRONG bucket was unreachable in every session this ran. Full map, and why
   each system stays separate: `docs/TERMINOLOGY.md`. Migration 048.
+- **A direction-aware function's correctness proves nothing about its
+  callers.** `direction` shipped as a parameter that defaults to `LONG`, so
+  every pre-shorting call site kept compiling — and kept silently scoring,
+  gating, or writing every SHORT as if it were a LONG. Found four separate
+  times in one feature: `open_positions` had no `direction` column and nothing
+  wrote one (migration 047); `evaluate_intraday_setups`' own cost-gate call
+  omitted the argument, so a coherent short was refused as "wrong side of
+  entry for a LONG"; `allocation/proposal.py`'s `Proposal` had no `direction`
+  field at all, so `coherent` used the long-only `0<stop<entry<target` shape
+  and rejected every short before scoring ever ran; `tools/simulate.py` — the
+  read-only preview tool this file tells you to run first — had the identical
+  gate and cost-gate gaps, so it would have reported real shorts as blocked or
+  uneconomic. A marker-based health check that greps a function's own
+  definition cannot see this class of gap; `check_shorts()` now also greps the
+  literal call sites, and one check (`open_positions.direction`) is a live
+  schema probe rather than a grep, because "the code mentions this column" and
+  "this column exists" are different claims. Migration 049.
 
 ## Architecture — the actual data flow
 
