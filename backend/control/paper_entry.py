@@ -32,8 +32,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import (IST, TOTAL_CAPITAL, cfg_bool, cfg_int, get_supabase,
-                    today_ist, is_kill_switch_active)
+from config import (IST, cfg_bool, cfg_int, get_supabase,
+                    today_ist, is_kill_switch_active, capital_for)
 
 
 def run(sb=None, notifier=None) -> dict:
@@ -129,7 +129,7 @@ def run(sb=None, notifier=None) -> dict:
             continue
         result["considered"] += 1
 
-        d = decide(p, None, total_capital=TOTAL_CAPITAL,
+        d = decide(p, None, total_capital=capital_for("SWING"),
                    open_positions=open_rows, regime=regime,
                    max_chase_pct=p.get("ai_max_chase_pct") or None)
         if d.action not in ("BUY_NOW", "CHASE_LIMIT"):

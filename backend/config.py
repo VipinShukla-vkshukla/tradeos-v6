@@ -3,6 +3,7 @@ TradeOS v7 — Central Configuration
 All environment loading, Supabase client, shared utilities
 """
 import os
+import sys
 import json
 from datetime import date, datetime
 from pathlib import Path
@@ -150,6 +151,8 @@ logger.add(
     rotation="1 day", retention="30 days",
     level=LOG_LEVEL, format="{time:HH:mm:ss} | {level:<8} | {name}:{line} - {message}"
 )
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # cp1252 can't print ₹/✓/—
 logger.add(lambda msg: print(msg, end=""), level="INFO",
            format="{time:HH:mm:ss} | {level:<8} | {message}")
 
@@ -174,6 +177,21 @@ except ValueError:
     logger.error(f"TOTAL_CAPITAL={_capital_raw!r} is not a usable number — "
                  f"falling back to ₹{TOTAL_CAPITAL_FALLBACK:,.0f}")
     TOTAL_CAPITAL, CAPITAL_IS_FALLBACK = TOTAL_CAPITAL_FALLBACK, True
+
+
+def capital_for(framework: str) -> float:
+    """
+    The capital ONE book sizes against — not the shared pool.
+
+    Defaults to TOTAL_CAPITAL for both, so a book with no sleeve configured
+    behaves exactly as it always has. Only diverges once swing_capital or
+    intraday_capital is explicitly set in system_config, which is how paper
+    intraday can be sized bigger for realism without ever touching what
+    swing's real, live orders size against — they are different config keys,
+    not a shared TOTAL_CAPITAL read by both. See swing_capital / intraday_capital.
+    """
+    key = "intraday_capital" if (framework or "").upper() == "INTRADAY" else "swing_capital"
+    return cfg_float(key, TOTAL_CAPITAL)
 
 # ── Supabase ─────────────────────────────────────────────────
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")

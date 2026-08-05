@@ -511,7 +511,7 @@ class IntradayEngine:
         """One line per cycle: what swing is eligible for, and why not more."""
         from analysis.trade_decision import decide
         from analysis.entry_ranking import rank
-        from config import TOTAL_CAPITAL
+        from config import capital_for
         from execution.gates import is_paper
         if not self.candidates:
             return
@@ -527,7 +527,7 @@ class IntradayEngine:
             if not sym or not ltp:
                 continue
             try:
-                d = decide(c, float(ltp), total_capital=TOTAL_CAPITAL,
+                d = decide(c, float(ltp), total_capital=capital_for("SWING"),
                            open_positions=self.positions,
                            vol_mult=self._overlay_vol_mult)
             except Exception:
@@ -991,7 +991,7 @@ class IntradayEngine:
     def evaluate_candidates(self, prices: dict[str, float]) -> list[dict]:
         """Run the shared entry decision against live prices."""
         from analysis.trade_decision import decide
-        from config import TOTAL_CAPITAL
+        from config import capital_for
 
         regime = "NEUTRAL"
         if self.candidates:
@@ -1014,7 +1014,7 @@ class IntradayEngine:
                 continue
             if any(p.get("symbol") == sym for p in self.positions):
                 continue  # already held
-            d = decide(c, float(ltp), total_capital=TOTAL_CAPITAL,
+            d = decide(c, float(ltp), total_capital=capital_for("SWING"),
                        open_positions=self.positions, regime=regime,
                        max_chase_pct=c.get("ai_max_chase_pct") or None,
                        available_cash=cash, vol_mult=self._overlay_vol_mult)
@@ -1835,7 +1835,7 @@ class IntradayEngine:
         from intraday.strategies.base import SymbolContext
         from intraday import market_context as mkt
         from intraday.cost_model import is_worth_taking, round_trip
-        from config import TOTAL_CAPITAL
+        from config import capital_for
 
         if not cfg_bool("intraday_strategies_enabled", True):
             return []
@@ -2065,7 +2065,7 @@ class IntradayEngine:
             # (RISK_ON/CAUTION/...); self._overlay_intraday_mult reacts to
             # expiry mechanics and the VIX level. Different signals, both
             # real — multiplied together rather than one replacing the other.
-            budget = min(TOTAL_CAPITAL * pos_pct * mc.size_multiplier * self._overlay_intraday_mult,
+            budget = min(capital_for("INTRADAY") * pos_pct * mc.size_multiplier * self._overlay_intraday_mult,
                          max_order_value("INTRADAY"))
             qty = int(budget // best.entry) if best.entry else 0
             if qty <= 0:

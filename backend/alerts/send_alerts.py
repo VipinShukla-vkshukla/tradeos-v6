@@ -208,8 +208,8 @@ def decision_line(row: dict, live_price: float | None,
     """
     try:
         from analysis.trade_decision import decide
-        from config import TOTAL_CAPITAL
-        d = decide(row, live_price, total_capital=TOTAL_CAPITAL,
+        from config import capital_for
+        d = decide(row, live_price, total_capital=capital_for("SWING"),
                    open_positions=open_pos or [], regime=regime,
                    max_chase_pct=row.get("ai_max_chase_pct"))
         icon = {"BUY_NOW": "🟢", "CHASE_LIMIT": "🟡", "WAIT": "⏳",
