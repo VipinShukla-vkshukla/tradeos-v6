@@ -6,6 +6,7 @@ REM    tradeos            ASK which framework, then run it
 REM    tradeos both       swing + intraday, no prompt
 REM    tradeos check      verify readiness only, start nothing
 REM    tradeos health     run EVERY check and report what is broken
+REM    tradeos simulate   what BOTH books would do right now — writes nothing
 REM    tradeos backup     dump the system of record off-platform, then verify it
 REM    tradeos rollback   what Phase 4 has switched on, and what it was before
 REM    tradeos rollback off   every Phase 4 switch back to its pre-Phase-4 value
@@ -51,6 +52,7 @@ cd /d "%~dp0backend"
 
 if /i "%~1"=="check"    goto CHECK
 if /i "%~1"=="health"   goto HEALTH
+if /i "%~1"=="simulate" goto SIMULATE
 if /i "%~1"=="backup"   goto BACKUP
 if /i "%~1"=="rollback" goto ROLLBACK
 if /i "%~1"=="alloc"    goto ALLOC
@@ -96,6 +98,7 @@ echo     4   Check readiness        start nothing
 echo     5   Status                 live/paper, and where the monitor is
 echo     6   Health sweep           every check, find what is broken
 echo     7   IP                     this machine's, vs the Kite allowlist
+echo     S   Simulate               what BOTH books would do right now — writes nothing
 echo.
 echo   LEARN                        measures and proposes, changes nothing
 echo     L   Weekly review          what the evidence says to change
@@ -133,6 +136,7 @@ if "%PICK%"=="4" goto CHECK
 if "%PICK%"=="5" goto STATUS
 if "%PICK%"=="6" goto HEALTH
 if "%PICK%"=="7" goto IP
+if /i "%PICK%"=="S" goto SIMULATE
 if /i "%PICK%"=="L" goto LEARN
 if /i "%PICK%"=="D" goto DISCOVER
 if /i "%PICK%"=="P" goto PROPOSALS
@@ -249,6 +253,14 @@ goto END
 
 :HEALTH
 python -m tools.health
+goto END
+
+:SIMULATE
+REM Read-only. Runs the same engines, gates and sizing both books use live —
+REM writes nothing to system_config or open_positions. Paired with `health` as
+REM the two commands to run before trusting a session; now direction-aware, so
+REM a SHORT row appears here (marked LONG/SHORT) if one would fire.
+python -m tools.simulate
 goto END
 
 :BACKUP
