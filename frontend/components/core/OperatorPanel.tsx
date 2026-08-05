@@ -86,6 +86,9 @@ const KEYS = [
   'rank_weight_tier', 'rank_weight_conviction',
   'storage_rolloff_enabled', 'storage_staging_rolloff_enabled', 'storage_fail_pct',
   'sizing_max_cost_r', 'exit_runner_cap_enforced', 'intraday_quote_mode',
+  // Capital sleeves (config.capital_for) and the real-account figure they are
+  // split from — written by control/capital_check.py, not guessable client-side.
+  'swing_capital', 'intraday_capital', 'capital_snapshot',
 ];
 
 async function writeKey(key: string, value: string, reason: string) {
@@ -214,19 +217,32 @@ export function OperatorPanel() {
     );
   }
 
-  const numField = (k: string, reason = 'Operator panel') => (
+  // fallback: shown when the key has no row yet (e.g. swing_capital before it
+  // is ever set explicitly) so the field reads what is actually in force
+  // rather than blank. Typing the SAME number as the fallback is treated as no
+  // change — only a genuinely different value pins an explicit row.
+  const numField = (k: string, reason = 'Operator panel', fallback?: string) => (
     <input
       type="number"
-      defaultValue={cfg[k] ?? ''}
+      defaultValue={cfg[k] ?? fallback ?? ''}
       disabled={busy !== null}
       onBlur={(e) => {
         const v = e.target.value.trim();
-        if (v && v !== cfg[k]) set(k, v, reason);
+        if (v && v !== (cfg[k] ?? fallback ?? '')) set(k, v, reason);
       }}
       className="w-full mt-0.5 bg-panel border border-border/50 rounded px-1.5 py-1
                  text-xs font-mono tabular-nums"
     />
   );
+
+  // The real account figure, from control/capital_check.py's persisted
+  // snapshot — the same number swing's live orders are checked against, not a
+  // frontend guess. Falls back to the backend's own last-resort default.
+  let totalCapital = 20000;
+  try {
+    const v = Number(JSON.parse(cfg['capital_snapshot'] ?? '{}').configured);
+    if (Number.isFinite(v) && v > 0) totalCapital = v;
+  } catch { /* snapshot not persisted yet — keep the fallback */ }
 
   const framework = (fw: 'swing' | 'intraday', title: string) => {
     const m = mode(fw);
@@ -266,6 +282,16 @@ export function OperatorPanel() {
                 ? setConfirm(confirmKey)
                 : set(`${fw}_trading_mode`, 'PAPER', 'Operator panel: back to paper')} />
           )}
+        </Row>
+
+        <Row label="Capital"
+          hint={fw === 'swing'
+            ? `What swing sizes positions against. Defaults to the real account (₹${totalCapital.toLocaleString('en-IN')}) until set explicitly here or via the split above — independent of intraday's number below.`
+            : `What intraday sizes against — independent of swing's number above, so swing holding capital for 1–3 weeks never shrinks this. Safe at any figure while PAPER; matters for real money once "Auto-entry with real money" is on.`}>
+          <div className="w-28">
+            {numField(`${fw}_capital`, 'Operator panel: capital sleeve',
+              fw === 'swing' ? String(totalCapital) : undefined)}
+          </div>
         </Row>
 
         <Row label="Auto-exit"
@@ -499,6 +525,12 @@ export function OperatorPanel() {
           </div>
         </div>
 
+        {/* ── CAPITAL ALLOCATION ────────────────────────────────────────────
+            One control, both books: writes swing_capital AND intraday_capital
+            together so a split is never half-applied — either book's own
+            "Capital" field below still overrides it individually. */}
+        <CapitalSplit cfg={cfg} totalCapital={totalCapital} onApplied={load} />
+
         {/* ── RISK EXPOSURE ─────────────────────────────────────────────────
             Every control below caps position VALUE. None of them caps RISK,
             and the two are not the same number: risk is value x stop width,
@@ -546,30 +578,106 @@ export function OperatorPanel() {
 }
 
 /**
+ * A single control, both books: swing_capital and intraday_capital together,
+ * so a split is never half-applied to only one of the two keys.
+ *
+ * Total comes from control/capital_check.py's persisted snapshot — the same
+ * figure swing's real orders are checked against — not a number invented on
+ * the frontend. The preset buttons are ONE way in; typing an exact rupee
+ * figure in either book's own "Capital" field below is the other, and the two
+ * do not have to agree — a preset just fills both fields in one click.
+ */
+function CapitalSplit({ cfg, totalCapital, onApplied }: {
+  cfg: Cfg; totalCapital: number; onApplied: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  let snap: { as_of?: string; severity?: string } = {};
+  try { snap = JSON.parse(cfg['capital_snapshot'] ?? '{}'); } catch { /* none yet */ }
+  const asOf = snap.as_of
+    ? new Date(snap.as_of).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' })
+    : null;
+
+  const apply = async (swingPct: number) => {
+    setBusy(true);
+    try {
+      const swingCut = Math.round((totalCapital * swingPct) / 100);
+      const intradayCut = totalCapital - swingCut;
+      const reason = `Operator panel: ${swingPct}/${100 - swingPct} capital split`;
+      await writeKey('swing_capital', String(swingCut), reason);
+      await writeKey('intraday_capital', String(intradayCut), reason);
+      onApplied();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const curSwing = Number(cfg['swing_capital'] ?? totalCapital);
+  const curIntraday = Number(cfg['intraday_capital'] ?? totalCapital);
+  const rs = (n: number) => `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+
+  return (
+    <div className="rounded-lg border border-border/50 p-3">
+      <div className="text-sm font-semibold mb-0.5">Capital allocation</div>
+      <div className="text-[10px] text-muted-foreground mb-2">
+        Splits sizing capital between the two books so one can never draw the other
+        down — swing holding capital for 1–3 weeks does not shrink what intraday
+        sizes against, or vice versa. Real account <b>{rs(totalCapital)}</b>
+        {asOf ? ` as of ${asOf}` : ''}
+        {snap.severity === 'UNKNOWN' ? ' (no live Kite session — last known figure)' : ''}.
+        A split here only changes real-money exposure once a book&apos;s own
+        &quot;Auto-entry with real money&quot; switch is on — paper sizing reads it
+        immediately either way, harmlessly.
+      </div>
+      <div className="flex items-center gap-3 text-[11px] mb-2">
+        <span>Currently: swing <b className="font-mono">{rs(curSwing)}</b></span>
+        <span className="text-muted-foreground">·</span>
+        <span>intraday <b className="font-mono">{rs(curIntraday)}</b></span>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {[70, 60, 50, 40, 30].map((pct) => (
+          <button key={pct} disabled={busy} onClick={() => apply(pct)}
+            className="text-[10px] px-2 py-1 rounded border border-border/50 hover:bg-panel disabled:opacity-40">
+            {pct}/{100 - pct} <span className="text-muted-foreground">swing/intraday</span>
+          </button>
+        ))}
+      </div>
+      <div className="text-[10px] text-muted-foreground mt-2">
+        Or type an exact rupee amount directly in each book&apos;s card below —
+        a preset here just fills both at once.
+      </div>
+    </div>
+  );
+}
+
+/**
  * What the caps above actually put at stake, in rupees.
  *
  * Answers the question the panel could not: "risk of 200 a day — where did
  * that come from?" It comes from risk_pct_per_trade x capital, it is enforced
  * in the sizing model, and it was invisible here.
  *
- * Capital is read from the same NEXT_PUBLIC_TOTAL_CAPITAL the rest of the
- * dashboard uses, falling back to 20000 so the strip degrades to "approximately
- * right" rather than blank.
+ * Capital is PER BOOK (config.capital_for) — swing and intraday can size
+ * against different figures once split above, so this reads the same two
+ * config keys the backend does rather than one pooled guess.
  */
 function RiskExposure({ cfg }: { cfg: Cfg }) {
   const num = (k: string, d: number) => {
     const v = parseFloat(cfg[k] ?? '');
     return Number.isFinite(v) ? v : d;
   };
-  const capital = num('__capital__', Number(process.env.NEXT_PUBLIC_TOTAL_CAPITAL) || 20000);
+  let totalCapital = 20000;
+  try {
+    const v = Number(JSON.parse(cfg['capital_snapshot'] ?? '{}').configured);
+    if (Number.isFinite(v) && v > 0) totalCapital = v;
+  } catch { /* snapshot not persisted yet — keep the fallback */ }
+  const capitalOf = (fw: 'swing' | 'intraday') => num(`${fw}_capital`, totalCapital);
   const perTradePct = num('risk_pct_per_trade', 1);
   const heatPct = num('portfolio_max_total_risk_pct', 6);
-  const perTrade = (capital * perTradePct) / 100;
-  const heatCap = (capital * heatPct) / 100;
 
   // What a day costs if every cap is hit. The stricter of orders/day and new
   // positions/day binds, then the notional cap on top.
   const daily = (fw: 'swing' | 'intraday') => {
+    const capital = capitalOf(fw);
     const per = num(`${fw}_max_order_value`, fw === 'swing' ? 4000 : 6000);
     const orders = num(`${fw}_max_orders_per_day`, 5);
     const news = num(`${fw}_max_new_per_day`, fw === 'swing' ? 3 : 5);
@@ -588,11 +696,18 @@ function RiskExposure({ cfg }: { cfg: Cfg }) {
   const rs = (n: number) =>
     `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 
+  const swingCap = capitalOf('swing');
+  const intraCap = capitalOf('intraday');
+  const swingPerTrade = (swingCap * perTradePct) / 100;
+  const intraPerTrade = (intraCap * perTradePct) / 100;
+  const swingHeat = (swingCap * heatPct) / 100;
+  const intraHeat = (intraCap * heatPct) / 100;
+
   const cells: Array<[string, string, string]> = [
-    ['Risk per trade', rs(perTrade),
-      `risk_pct_per_trade ${perTradePct}% of ${rs(capital)} — this is the number the sizing model enforces`],
-    ['Max open heat', rs(heatCap),
-      `portfolio_max_total_risk_pct ${heatPct}% — total money at stake across every open position at once`],
+    ['Risk per trade', `${rs(swingPerTrade)} / ${rs(intraPerTrade)}`,
+      `risk_pct_per_trade ${perTradePct}% of each book's own capital (swing ${rs(swingCap)}, intraday ${rs(intraCap)}) — swing/intraday`],
+    ['Max open heat', `${rs(swingHeat)} / ${rs(intraHeat)}`,
+      `portfolio_max_total_risk_pct ${heatPct}% of each book's own capital — total at stake across that book's open positions at once — swing/intraday`],
     ['New exposure/day', rs(both),
       `swing ${rs(swingDay)} + intraday ${rs(intraDay)}. Each book is capped separately; nothing caps the pair`],
   ];
