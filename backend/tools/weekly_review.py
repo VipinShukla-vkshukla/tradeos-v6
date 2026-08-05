@@ -49,11 +49,13 @@ from config import get_supabase, today_ist
 # session looks like plenty and is one day of one market regime.
 MIN_SAMPLE = 20
 
-# A verdict also needs the sample to span more than one session. 236 detections
-# from a single Tuesday is one market, one index path, one volatility regime —
-# a large n that carries almost no independent information. Judging an engine on
-# it produces a confident answer about that Tuesday.
-MIN_SESSIONS = 3
+# A verdict also needs the sample to span real time, not one burst. 236
+# detections from a single Tuesday is one market, one index path, one
+# volatility regime — a large n that carries almost no independent
+# information. 10 sessions is ~2 trading weeks, not "days" — a verdict, and
+# especially a new candidate's first PROMOTE, needs weeks of data, not a
+# lucky run inside one.
+MIN_SESSIONS = 10
 
 
 def dedupe_setups(rows: list) -> list:
@@ -215,7 +217,7 @@ def _supersede(sb, kind: str, subject: str, keep: str | None, why: str) -> int:
     return n
 
 
-def review_engines(sb, days: int = 14) -> list:
+def review_engines(sb, days: int = 30) -> list:
     """
     Score every intraday engine on resolved outcomes, and say what to do.
 
