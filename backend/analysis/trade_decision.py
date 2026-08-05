@@ -108,6 +108,7 @@ def decide(
     min_rr: float = 1.0,
     max_chase_pct: float | None = None,
     available_cash: float | None = None,
+    vol_mult: float = 1.0,
 ) -> Decision:
     """
     row: a signal_output_daily / master_shortlist row carrying planned_stop,
@@ -115,6 +116,9 @@ def decide(
     live_price: real-time price. None falls back to row['current_price'] and
          the result is flagged stale_price so the caller can say so rather
          than presenting yesterday's number as today's.
+    vol_mult: analysis.overlays.vol_exposure()'s book-level multiplier,
+         1.0 (no scaling) unless the caller passes the cycle's cached reading
+         — see check_new_entry's docstring for why this is not fetched here.
     """
     sym   = row.get("symbol") or "?"
     stop  = _f(row.get("planned_stop"))
@@ -182,7 +186,7 @@ def decide(
             sym, row.get("sector") or "", row.get("industry") or "",
             px, risk, open_positions or [],
             regime=regime, total_capital=total_capital,
-            available_cash=available_cash)
+            available_cash=available_cash, vol_mult=vol_mult)
         if v.allowed:
             qty, invested, risk_amt = v.max_qty, v.max_value, round(v.max_qty * risk, 2)
         else:

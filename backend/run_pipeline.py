@@ -70,6 +70,7 @@ def main():
     parser = argparse.ArgumentParser(description="TradeOS v7 Pipeline")
     parser.add_argument("--step",      help="Run single step only")
     parser.add_argument("--dry-run",   action="store_true")
+    parser.add_argument("--date", help="Trading date (YYYY-MM-DD)")
     args = parser.parse_args()
     if is_kill_switch_active():
         logger.critical("⛔ KILL SWITCH ACTIVE — pipeline aborted")

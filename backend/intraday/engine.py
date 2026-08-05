@@ -65,6 +65,22 @@ class IntradayEngine:
         self._news = None
         self._advice: dict = {}
         self._pending_review: list = []
+        # Structural overlays (analysis.overlays) — expiry day-type and VIX
+        # exposure scaling. Both are BOOK-level, not per-symbol, and both are
+        # slow-changing (the day type does not change intraday; VIX moves in
+        # minutes, not seconds), so they are computed once on the SLOW timer
+        # in refresh_advisory() rather than per-symbol inside the 15s loop,
+        # which would multiply their DB reads by the watchlist size for a
+        # value that has not moved.
+        #
+        # Two separate multipliers, not one: expiry-day sizedown is an
+        # INTRADAY-only overlay (its rationale is cash-tape microstructure —
+        # pinning, unwind flows — that condition opening-range/VWAP-reversion
+        # archetypes specifically, not a 1-3 week thesis). VIX exposure
+        # scaling applies to BOTH books' open risk.
+        self._overlay_intraday_mult: float = 1.0   # expiry x VIX, intraday budget only
+        self._overlay_vol_mult: float = 1.0         # VIX only, shared with swing sizing
+        self._overlay_note: str = ""
         # Confidence of every intraday setup already alerted this session, for
         # the streaming top-N in _intraday_alert_worthy(). Session-scoped and in
         # memory on purpose: a restart SHOULD re-announce the current best,
@@ -188,7 +204,7 @@ class IntradayEngine:
         prev: dict = {}
         try:
             hist = (self.sb.table("stock_data_daily")
-                      .select("symbol,date,high,low,close,atr_pct,volume")
+                      .select("symbol,date,high,low,close,atr_pct,volume,value_cr")
                       .in_("symbol", symbols)
                       .order("date", desc=True).limit(len(symbols) * 3)
                       .execute().data or [])
@@ -237,6 +253,7 @@ class IntradayEngine:
                 prev_low=float(p.get("low") or 0) or None,
                 atr_pct_daily=float(p.get("atr_pct") or 0) or None,
                 avg_volume_20d=float(p.get("volume") or 0) or None,
+                value_cr=float(p.get("value_cr") or 0) or None,
                 # Stamped so every consumer can ask how old this is. Contexts
                 # are rebuilt on the 300 s timer and read on the 15 s one.
                 as_of=datetime.now(IST),
@@ -421,7 +438,8 @@ class IntradayEngine:
                 continue
             try:
                 d = decide(c, float(ltp), total_capital=TOTAL_CAPITAL,
-                           open_positions=self.positions)
+                           open_positions=self.positions,
+                           vol_mult=self._overlay_vol_mult)
             except Exception:
                 continue
             if d.action not in ("BUY_NOW", "CHASE_LIMIT"):
@@ -616,6 +634,34 @@ class IntradayEngine:
         except Exception as e:
             logger.warning(f"  news gate refresh failed: {e}")
 
+        # Structural overlays — expiry-day sizedown x VIX-regime exposure.
+        # Computed ONCE here rather than inside decide()/evaluate_intraday_
+        # setups(), which run per-candidate every 15s: vol_exposure() and
+        # expiry_size_multiplier() each read Supabase, and up to ~60 swing
+        # candidates x ~40 intraday names every cycle would turn one book-level
+        # read into a hundred.
+        try:
+            from analysis.overlays import expiry_size_multiplier, vol_exposure
+            exp_mult = expiry_size_multiplier()
+            vol_mult, vol_why = vol_exposure()
+            # exp_mult is INTRADAY-ONLY — see the __init__ comment on these
+            # two attributes for why. vol_mult alone is shared with swing.
+            self._overlay_intraday_mult = exp_mult * vol_mult
+            self._overlay_vol_mult = vol_mult
+            note = f"expiry x{exp_mult:.2f}, {vol_why}"
+            if note != self._overlay_note:
+                if vol_mult < 1.0 or exp_mult < 1.0:
+                    logger.info(f"  overlays: {note} -> intraday x{self._overlay_intraday_mult:.2f}, "
+                                f"swing x{vol_mult:.2f}")
+                self._overlay_note = note
+        except Exception as e:
+            # Fail OPEN to no scaling, same as the functions' own internal
+            # fallback — an overlay that cannot read its input is not a
+            # reason to stop trading, only a reason to stop shrinking.
+            logger.warning(f"  structural overlay refresh failed: {e}")
+            self._overlay_intraday_mult = 1.0
+            self._overlay_vol_mult = 1.0
+
         # The AI reviews setups ALREADY DETECTED since the last refresh, so its
         # latency is absorbed between slow ticks rather than blocking a decision.
         if self._pending_review:
@@ -774,7 +820,7 @@ class IntradayEngine:
             d = decide(c, float(ltp), total_capital=TOTAL_CAPITAL,
                        open_positions=self.positions, regime=regime,
                        max_chase_pct=c.get("ai_max_chase_pct") or None,
-                       available_cash=cash)
+                       available_cash=cash, vol_mult=self._overlay_vol_mult)
             if d.action in ("BUY_NOW", "CHASE_LIMIT"):
                 out.append({"candidate": c, "decision": d, "ltp": float(ltp),
                             "state": "BUYABLE"})
@@ -1274,6 +1320,27 @@ class IntradayEngine:
         qty = int(getattr(d, "qty", 0) or 0)
         if qty <= 0:
             return
+
+        # LIQUIDITY / CIRCUIT-BAND GATE — can this be got OUT of at plan?
+        # Same overlay intraday uses (analysis.overlays.liquidity_ok), on the
+        # same rationale: a CNC stop is still a plan for a continuous price,
+        # and a swing position is held for 1-3 weeks of chances to gap through
+        # it. Reuses the SymbolContext refresh_contexts() already built for
+        # this symbol (swing candidates are in context_symbols()) rather than
+        # a fresh query — a context that never built (too few bars, or a name
+        # refresh_contexts() has not reached yet) reads as unknown liquidity,
+        # which liquidity_ok() already refuses by default.
+        sctx = self._contexts.get(sym)
+        from analysis.overlays import liquidity_ok
+        liq_ok, liq_why = liquidity_ok(
+            {"value_cr": sctx.value_cr if sctx else None,
+             "atr_pct": sctx.atr_pct_daily if sctx else None},
+            planned_value=qty * ltp,
+        )
+        if not liq_ok:
+            logger.info(f"  {sym}: swing entry blocked — {liq_why}")
+            return
+
         rationale = f"rank {here.total:.0f} — {here.why()}" if here else None
 
         if not live:
@@ -1539,10 +1606,28 @@ class IntradayEngine:
             #     a book the live account would have refused.
             from execution.gates import max_order_value
             pos_pct = cfg_float("intraday_max_position_pct", 25.0) / 100.0
-            budget = min(TOTAL_CAPITAL * pos_pct * mc.size_multiplier,
+            # mc.size_multiplier reacts to the INDEX's technical state
+            # (RISK_ON/CAUTION/...); self._overlay_intraday_mult reacts to
+            # expiry mechanics and the VIX level. Different signals, both
+            # real — multiplied together rather than one replacing the other.
+            budget = min(TOTAL_CAPITAL * pos_pct * mc.size_multiplier * self._overlay_intraday_mult,
                          max_order_value("INTRADAY"))
             qty = int(budget // best.entry) if best.entry else 0
             if qty <= 0:
+                continue
+
+            # LIQUIDITY / CIRCUIT-BAND GATE — can this be got out of at plan?
+            # Structural, not a pricing question, so it runs before the cost
+            # check: a setup that cannot be exited at plan is not made viable
+            # by being cheap to enter.
+            from analysis.overlays import liquidity_ok
+            liq_ok, liq_why = liquidity_ok(
+                {"value_cr": ctx.value_cr, "atr_pct": ctx.atr_pct_daily},
+                planned_value=qty * best.entry,
+            )
+            if not liq_ok:
+                self._record_setup(best, st.phase, 0.0, "BLOCKED_LIQUIDITY", 0)
+                logger.info(f"      {sym}: {best.strategy} — {liq_why}")
                 continue
 
             ok, why = is_worth_taking(best.entry, qty, best.target, best.stop)

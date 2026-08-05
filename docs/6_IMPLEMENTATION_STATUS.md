@@ -427,6 +427,10 @@ overlays, governance, storage, sizing — with `alloc_live_swing` carrying the
 same two-click confirm as going live on a framework, because it is the one
 control on the new panel that can refuse a real-money entry.
 
+**That panel's own hint text for the three overlays turned out to be wrong —
+see 4·9c below.** They were described as active because the switches were on;
+nothing had checked whether the functions they name were ever called.
+
 **A pre-existing, unrelated finding surfaced while wiring the dashboard's
 reads.** `frontend/.env.local`'s `NEXT_PUBLIC_SUPABASE_ANON_KEY` decodes to a
 `service_role` JWT, not the real anon key — meaning every browser-side query in
@@ -456,6 +460,96 @@ passing:**
   all (`expectancy`, `quote-parity`). Verified: menu renders at 41 lines
   (console is sized for 45), no letter or label collisions, all four dispatch
   to the correct tool.
+
+---
+
+## 4·9c — 05-Aug-2026: three Stage 9 overlays were switched on and wired to nothing
+
+**Found while scoping the operator's next ask, not while looking for it.**
+The operator's actual request was to simplify `OperatorPanel.tsx` into one
+grouped view by which book each control affects. Getting that grouping right
+meant re-verifying what every Phase 4 switch actually touches — and tracing
+`overlay_expiry_enabled`, `overlay_vol_scaling_enabled` and
+`overlay_liquidity_enabled` found that `analysis/overlays.py`'s three
+functions (`expiry_size_multiplier`, `vol_exposure`, `liquidity_ok`) had **zero
+callers anywhere outside their own file.** Migration 040 had already set all
+three switches `true` in the live `system_config`, and 4·9b's own dashboard
+pass described them, in the panel's hint text, as protecting the account. Same
+failure class as everything else in this document under that name: a check
+that cannot fail is not a check, and a switch nothing reads is not a control.
+
+**Fixed at the two real decision points, not by adding a fourth abstraction.**
+
+- **Intraday** — `evaluate_intraday_setups()`'s budget line already scales by
+  `mc.size_multiplier` (existing, pre-Phase-4, driven by the INDEX's technical
+  state). The overlay multiplier is a second, genuinely different signal —
+  expiry mechanics and the VIX level — so it multiplies alongside that number
+  rather than replacing it. A new liquidity gate runs right after quantity is
+  computed, before the cost-worth-taking check, and records `BLOCKED_LIQUIDITY`
+  through the same `_record_setup` path every other refusal uses — so
+  `outcomes.resolve_day` and the weekly review score it exactly like
+  `BLOCKED_STRUCTURE` or `BLOCKED_EVENT` already are.
+
+- **Swing** — `expiry_size_multiplier()` stays intraday-only on purpose: its
+  own docstring is specific to cash-tape microstructure (pinning, unwind
+  flows) that distorts opening-range/VWAP-reversion archetypes, not a 1–3 week
+  thesis. `vol_exposure()`, by contrast, is a book-level control in the
+  architecture (§15/§16 — "book-level exposure scales inversely to volatility
+  regime", listed with no book qualifier) so it now applies to both.
+  `portfolio_constraints.check_new_entry()` gained a `vol_mult` parameter,
+  defaulting to `1.0` so every existing caller that does not pass it is
+  unaffected; `trade_decision.decide()` threads it through the same way.
+  `_maybe_enter_swing()` — the one choke point 4·9b already established for
+  the allocator veto — now also runs the liquidity gate there, reusing the
+  `SymbolContext` `refresh_contexts()` already built for the symbol rather
+  than issuing a new query.
+
+- **The DB read this would have cost.** `vol_exposure()` and
+  `expiry_size_multiplier()` each hit Supabase. Naively calling either inside
+  `decide()`/`evaluate_intraday_setups()` — which run per-candidate, every 15
+  seconds, against up to ~60 swing plans and ~40 intraday names — would have
+  turned one book-level read into dozens per cycle. Both are instead computed
+  ONCE per slow tick in `refresh_advisory()` and cached on the engine
+  (`_overlay_intraday_mult`, `_overlay_vol_mult`), then passed down as plain
+  floats. Worth naming on its own: this would have been a second, quieter
+  version of the same bug class — technically wired, but expensive enough
+  under load that it either throttles the loop or gets disabled under
+  pressure and stays disabled.
+
+- **`SymbolContext` gained a `value_cr` field** (previous day's traded value,
+  Rs crore), threaded from `stock_data_daily.value_cr` — already collected,
+  already used by swing screening — through `refresh_contexts()`'s existing
+  select. `liquidity_ok()` needs it and had nothing to read.
+
+**Verification, not assertion:**
+
+- `tools.health` — all 14 checks still pass after the change.
+- `tools.simulate` — ran clean end to end against live data: 79 swing plans
+  ranked and sized without error, 6 buyable, 3 would-take. India VIX read
+  12.19 (below the 14.0 "calm" floor), so today's multiplier is correctly a
+  no-op 1.0× — expected, and also why this alone does not prove the multiplier
+  *engages*.
+- Direct proof it engages: calling `check_new_entry()` with identical inputs
+  at `vol_mult=1.0` vs `vol_mult=0.35` returned 40 shares vs 14 — the
+  overlay demonstrably changes swing sizing, not just compiles.
+- Direct proof `liquidity_ok()` gates: a synthetic Rs 50 cr/day name passed, a
+  Rs 0.8 cr/day name and a name with no traded-value data were both refused —
+  with `overlay_liquidity_strict=true`, which is the live setting, unknown
+  liquidity refuses rather than waves through, exactly as designed.
+- Live query against the current watchlist: 0 of 42 built contexts are
+  missing `value_cr` after the `refresh_contexts()` change.
+
+**Left alone, and noted rather than silently expanded:** `analysis.risk_model.
+compute_position_size` and `portfolio_constraints.annotate_candidates` are
+both pre-existing functions with zero callers anywhere in the codebase,
+unrelated to Phase 4 and unrelated to this fix. They were found while tracing
+this bug, not caused by it — out of scope here, but worth a line so they are
+not rediscovered as a surprise later.
+
+**Not yet done:** `OperatorPanel.tsx`'s hint text for these three switches
+still needs correcting to describe what is now actually true. That correction
+is folded into the grouped-view redesign the operator asked for next, rather
+than patched twice.
 
 ---
 

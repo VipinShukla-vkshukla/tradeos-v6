@@ -58,6 +58,7 @@ class SymbolContext:
     prev_low: float | None = None
     atr_pct_daily: float | None = None  # daily ATR%, for sanity-checking targets
     avg_volume_20d: float | None = None
+    value_cr: float | None = None       # prev day's traded value, Rs crore — analysis.overlays.liquidity_ok()
     sector: str = ""
     # Relative strength against the index, computed the same way for every
     # engine so "strong today" means one thing across the system.

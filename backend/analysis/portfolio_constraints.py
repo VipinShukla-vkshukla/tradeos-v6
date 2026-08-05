@@ -135,6 +135,7 @@ def check_new_entry(
     total_capital:   float | None = None,
     available_cash:  float | None = None,
     product:         str = "CNC",
+    vol_mult:        float = 1.0,
 ) -> ConstraintVerdict:
     """
     Admissibility + maximum size for one prospective entry.
@@ -145,12 +146,20 @@ def check_new_entry(
       3. portfolio risk       — total open risk budget across all positions
       4. sector capital cap   — regime-scaled share of deployed capital
       5. per-position cap     — no single name dominates
+      5b. volatility exposure — book-level scaledown in high-VIX regimes
       6. minimum viable trade — friction against the risk budget, per product
 
     `product` decides which charge schedule step 6 prices against. It defaults
     to CNC because every caller of this function today is the swing book; an
     intraday caller must pass MIS, and passing nothing is the safe direction
     since CNC is the dearer of the two.
+
+    `vol_mult` is analysis.overlays.vol_exposure()'s multiplier, read ONCE per
+    slow tick by the caller and passed in rather than fetched here — this
+    function is called per-candidate, and vol_exposure() reads Supabase, so
+    fetching it here would turn one book-level read into dozens per cycle.
+    Defaults to 1.0 (no scaling), reproducing today's behaviour exactly for
+    any caller that does not pass it.
     """
     C       = load_constraints(regime)
     capital = total_capital if total_capital is not None else TOTAL_CAPITAL
@@ -210,11 +219,24 @@ def check_new_entry(
     qty_by_cash   = int(available_cash // entry_price) if available_cash is not None else qty_by_maxpos
 
     qty = max(0, min(qty_by_risk, qty_by_sector, qty_by_maxpos, qty_by_cash))
+
+    # ── Volatility-regime exposure scaling (Stage 9 overlay) ─────────────────
+    # Applied to the already-capped qty, not to `capital` upstream of it — so
+    # it changes what gets bought without also loosening or tightening the
+    # sector/industry caps above, which exist for a correlation reason, not a
+    # volatility one. See analysis.overlays.vol_exposure() for the VIX bands.
+    qty_before_vol = qty
+    if vol_mult < 1.0:
+        qty = int(qty * vol_mult)
+
     if qty == 0:
-        binding = min(
-            [(qty_by_risk, "risk budget"), (qty_by_sector, "sector cap"),
-             (qty_by_maxpos, "max position size"), (qty_by_cash, "available cash")],
-            key=lambda t: t[0])[1]
+        if qty_before_vol > 0:
+            binding = "volatility exposure scaling"
+        else:
+            binding = min(
+                [(qty_by_risk, "risk budget"), (qty_by_sector, "sector cap"),
+                 (qty_by_maxpos, "max position size"), (qty_by_cash, "available cash")],
+                key=lambda t: t[0])[1]
         return ConstraintVerdict(
             False, "size_zero",
             f"computed size is 0 — binding constraint: {binding}")
