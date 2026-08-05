@@ -947,8 +947,91 @@ def check_framework_isolation() -> tuple[bool, str]:
     return True, "one symbol, one book — enforced from both sides"
 
 
+#: Every site that must be direction-aware before a short may be taken, and the
+#: marker that proves it is. Textual because these are the CONSUMERS of
+#: `direction` — the failure being guarded against is a module that reads the
+#: field and does long-only arithmetic with it, which no import check can see.
+_SHORT_SPINE = [
+    ("exit ladder",      "intraday/exit_policy.py",        "D.gain_r(entry, ltp, risk, d)"),
+    ("stop comparison",  "intraday/exit_policy.py",        "D.is_better_price(ltp, sl, d)"),
+    ("cover deadline",   "intraday/exit_policy.py",        "intraday_short_cover_lead_min"),
+    ("invalidation",     "intraday/exit_policy.py",        "D.is_better_price(ltp, breached, d)"),
+    ("cost model",       "intraday/cost_model.py",         "D.reward_per_share(entry_price, target_price, direction)"),
+    ("allocator scorer", "allocation/scoring.py",          "D.validate(entry, stop, target, direction)"),
+    ("priors",           "allocation/scoring.py",          'f"{key}/SHORT"'),
+    ("outcome resolver", "intraday/outcomes.py",           "hi >= stop, lo <= tgt"),
+    ("outcome sign",     "intraday/outcomes.py",           "D.gain_pct(entry, exit_px, d)"),
+    ("setup levels",     "intraday/strategies/base.py",    "D.risk_per_share(self.entry, self.stop, self.direction)"),
+    # ── not yet built. The switch must stay off until these land. ──────────
+    ("market context",   "intraday/market_context.py",     "allow_shorts"),
+    ("structure gate",   "analysis/market_structure.py",   "def gate_short"),
+    ("excursion",        "intraday/engine.py",             "D.favourable_excursion"),
+    ("entry side",       "intraday/engine.py",             "D.entry_side"),
+    ("cover on squareoff", "intraday/engine.py",           "D.exit_side"),
+    ("shortability",     "intraday/shortability.py",       "def can_short"),
+]
+
+
+def check_shorts() -> tuple[bool, str]:
+    """
+    Is short selling coherent end-to-end, or merely switched on?
+
+    SHORTING IS A SIGN CONVENTION, NOT AN ENGINE. `direction` has been a field on
+    Setup and a column on intraday_setups since migration 014; every engine
+    hardcoded "LONG" and nothing read it. Eleven modules were therefore written
+    assuming the field could not vary, and each fails differently and silently:
+
+      · exit_policy computed risk = entry - stop, NEGATIVE for a short, fell
+        back to a 0.5% default and then reported a losing short as a winner —
+        a 2% adverse move read as +4.00R, which books a partial and trails the
+        stop the wrong way
+      · outcomes.resolve_day tested `lo <= stop`, true on the FIRST BAR when the
+        stop sits above entry, so every short resolved as an instant loss and
+        taught the learning loop that the engine was catastrophic
+      · scoring.score treated `stop >= entry` as incoherent, so the allocator
+        DECLINED every short before any engine's opinion was consulted
+
+    So the switch is not the capability. This check refuses to call shorting
+    healthy until every consumer of `direction` has been made to read it, and it
+    FAILS — rather than warns — if the switch is on while any site is missing.
+    A partially-converted spine is worse than no shorts at all, because the
+    long-only sites produce confident wrong numbers rather than errors.
+    """
+    from pathlib import Path
+    from config import cfg_bool
+    root = Path(__file__).parent.parent
+
+    done, missing = [], []
+    for label, rel, marker in _SHORT_SPINE:
+        f = root / rel
+        try:
+            src = f.read_text(encoding="utf-8")
+        except OSError:
+            missing.append(label)
+            continue
+        (done if marker in src else missing).append(label)
+
+    on = cfg_bool("intraday_allow_shorts", False)
+    if on and missing:
+        return False, (
+            f"intraday_allow_shorts is ON but {len(missing)} of "
+            f"{len(_SHORT_SPINE)} direction-aware sites are missing: "
+            f"{', '.join(missing[:6])}"
+            + (f" (+{len(missing) - 6} more)" if len(missing) > 6 else "")
+            + ". A half-converted spine does not refuse shorts, it MIS-PRICES "
+              "them — the long-only sites return confident wrong numbers rather "
+              "than errors. Turn the switch off until these land.")
+    if missing:
+        return True, (f"shorts OFF — spine {len(done)}/{len(_SHORT_SPINE)} complete, "
+                      f"still to build: {', '.join(missing[:4])}"
+                      + (f" (+{len(missing) - 4} more)" if len(missing) > 4 else ""))
+    return True, (f"shorts {'ON' if on else 'off'} — all {len(done)} direction-aware "
+                  f"sites present, exit ladder and outcome resolver included")
+
+
 CHECKS = [
     ("config",   "risk numbers contradict each other, or a switch does nothing", check_config,   False),
+    ("shorts",   "a short is taken while some module still does long-only arithmetic", check_shorts, False),
     ("governance", "a parameter can change itself, or an unmeasured layer ranks trades", check_governance, False),
     ("allocator", "the allocator can reach an order path despite its switches", check_allocator_isolation, False),
     ("hurdle",   "the allocator's bar can never be cleared, so the book goes quiet", check_allocator_hurdle, False),

@@ -115,7 +115,7 @@ def intraday_priors(sb) -> dict[str, Prior]:
     rows, off = [], 0
     while True:
         page = (sb.table("intraday_setups")
-                  .select("strategy,outcome,outcome_pct,entry,stop")
+                  .select("strategy,outcome,outcome_pct,entry,stop,direction")
                   .not_.is_("outcome_pct", "null")
                   .range(off, off + PAGE - 1).execute().data) or []
         rows += page
@@ -123,21 +123,50 @@ def intraday_priors(sb) -> dict[str, Prior]:
             break
         off += PAGE
 
+    # SEGMENTED BY DIRECTION, NOT POOLED.
+    #
+    # `stop < entry` excluded every short row outright, so a short engine would
+    # have accumulated detections forever and never acquired a prior — it would
+    # have sat permanently on the NEUTRAL fallback and been scored as though it
+    # had no history, however much it had.
+    #
+    # Pooling them instead would be worse than excluding them. A long and a
+    # short in the same name are not two samples of one distribution: they have
+    # different base rates (indices drift up, so the long side has a tailwind
+    # the short side pays for), different failure modes (a short squeezes, a
+    # long does not) and different tails. `outcome_pct` is also signed against
+    # the LONG convention by the resolver, so a short's realised R is its
+    # negation. Keyed as "ENGINE/SHORT" so the two never average together.
+    from intraday import direction as D
+
     by: dict[str, list[float]] = {}
     for r in rows:
         try:
             entry, stop = float(r.get("entry") or 0), float(r.get("stop") or 0)
-            risk_pct = (entry - stop) / entry * 100.0 if entry and stop and stop < entry else 0.0
+            d = D.normalise(r.get("direction"))
+            risk = D.risk_per_share(entry, stop, d) if entry else 0.0
+            risk_pct = risk / entry * 100.0 if risk else 0.0
             if risk_pct <= 0:
                 continue
-            by.setdefault(r["strategy"] or "?", []).append(float(r["outcome_pct"]) / risk_pct)
+            key = r["strategy"] or "?"
+            if D.is_short(d):
+                key = f"{key}/SHORT"
+            by.setdefault(key, []).append(float(r["outcome_pct"]) / risk_pct)
         except (TypeError, ValueError, ZeroDivisionError):
             continue
 
     out = {k: _dist(f"INTRADAY/{k}", v, floor) for k, v in by.items()}
     if rows:
-        allr = [x for v in by.values() for x in v]
-        out["INTRADAY/ALL"] = _dist("INTRADAY/ALL", allr, floor)
+        # The book-level fallback is ALSO split. `INTRADAY/ALL` is what a class
+        # with too few observations falls back to, so pooling shorts into it
+        # would contaminate the long fallback with a different distribution —
+        # the exact borrowing this module's own header forbids ("never borrowed
+        # from a neighbouring class"). A short with no prior falls back to the
+        # SHORT book, not to the book as a whole.
+        longs  = [x for k, v in by.items() if not k.endswith("/SHORT") for x in v]
+        shorts = [x for k, v in by.items() if k.endswith("/SHORT") for x in v]
+        out["INTRADAY/ALL"] = _dist("INTRADAY/ALL", longs, floor)
+        out["INTRADAY/ALL/SHORT"] = _dist("INTRADAY/ALL/SHORT", shorts, floor)
     return out
 
 
@@ -216,20 +245,34 @@ def expected_hold_days(sb, framework: str) -> tuple[float, int]:
 
 
 def score(entry: float, stop: float, target: float, qty: int, product: str,
-          prior: Prior, hold_days: float) -> dict:
+          prior: Prior, hold_days: float, direction: str = "LONG") -> dict:
     """
     One proposal, on the common scale. Pure arithmetic over in-memory data.
 
     `product` is a required positional argument on purpose — there is no default
     that is safe for both books.
+
+    `direction` defaults to LONG because every caller predating shorts is one.
+    The coherence test was `stop >= entry or target <= entry` — which is the
+    definition of a correctly constructed SHORT. So every short proposal
+    returned edge=None, and `policies.intraday_stopping` renders a None edge as
+    "not scoreable — levels incoherent or no prior" and DECLINEs it. Shorts
+    would have been refused by the allocator before any engine's opinion was
+    consulted, and the refusal would have read like a data problem rather than
+    a policy.
     """
     from intraday.cost_model import round_trip
+    from intraday import direction as D
 
-    if entry <= 0 or stop >= entry or target <= entry or qty <= 0:
-        return {"edge": None, "reason": "incoherent levels"}
+    if qty <= 0:
+        return {"edge": None, "reason": "incoherent levels — no position"}
+    ok, why = D.validate(entry, stop, target, direction)
+    if not ok:
+        return {"edge": None, "reason": f"incoherent levels — {why}"}
 
-    risk_pct = (entry - stop) / entry
-    r_target = (target - entry) / (entry - stop)
+    risk  = D.risk_per_share(entry, stop, direction)
+    risk_pct = risk / entry
+    r_target = D.reward_per_share(entry, target, direction) / risk
     friction = round_trip(entry, qty, product=product).total
     cost_r   = friction / (risk_pct * entry * qty)
 
