@@ -854,6 +854,67 @@ one, found only because closing it was attempted.
 
 ---
 
+## 4·9g — 05-Aug-2026: the market gate was never on the tick feed
+
+**The operator asked directly whether RISK_OFF's definition and interpretation
+had a gap.** The definition (below VWAP, below prev close, in the bottom 25%
+of the day's range — all three at once) is sound and predates Phase 4 by a
+week (§4·9e). The gap was not the definition. It was the data feeding it.
+
+**`self._index_ctx` was never on `watch_symbols()`.** The websocket subscribes
+to exactly that list; the index was not in it, so NIFTY 50 received zero live
+ticks all session. Its price came only from a one-off REST call inside
+`refresh_contexts()`, the 300-second slow timer — so the single gate that
+blocks or admits the ENTIRE 40-name book was, on every fast 15s cycle in
+between, reading a price snapshot up to five minutes old. Confirmed live:
+`INDEX_SYMBOL in watch_symbols()` was `False`.
+
+**Worse than ordinary staleness: this path was exempt from the staleness
+guard too.** `stale_contexts()` only inspects `self._contexts`, and the index
+lives in the separate `self._index_ctx` attribute — the same reason
+`apply_live_quotes()`'s per-symbol overlay loop never touched it either,
+despite that function's own docstring already describing index-specific
+behaviour ("the index fallback is preserved deliberately") for a case the
+code never actually reached.
+
+**Demonstrated the concrete failure mode**, not just the mechanism: using
+today's real day range (low 24497.95, high 24677.6, vwap 24567.4), a
+synthetic index price near the low classified `RISK_OFF` — correctly, and
+exactly what the account was actually seeing part of this session. A
+synthetic recovery to above VWAP, fed through the SAME unfixed code path,
+stayed `RISK_OFF` because `.ltp` never updates between refreshes. The whole
+book would have stayed wrongly blocked for up to five minutes after a genuine
+recovery, with nothing anywhere saying so.
+
+**Fixed, in three parts:**
+
+- `watch_symbols()` now includes `INDEX_SYMBOL`, so it subscribes and ticks.
+- `_refresh_index_ltp()`, called at the top of `evaluate_intraday_setups()`
+  before the gate is read, mutates `self._index_ctx.ltp` in place from the
+  live tick — UNCONDITIONALLY, not gated behind `intraday_quote_mode`, matching
+  how every ordinary symbol's `.ltp` is already updated unconditionally.
+  Mutating in place means `_allocate_shadow()`'s own `mkt.from_context()` call,
+  moments later in the SAME cycle, sees the fresh value with nothing threaded
+  through — both the intraday gate AND the allocator's regime bucketing were
+  reading the stale snapshot; both are fixed by the one write.
+- `apply_live_quotes()` now also overlays day-high/day-low/day-open/prev-close/
+  VWAP onto the index when quote mode is on, completing what its own comment
+  already implied. Day range moves far more slowly than LTP intraday, so this
+  is the smaller half of the fix — named as such rather than left unstated.
+
+**Verified:** re-ran the exact synthetic recovery above through the fixed
+path — `RISK_OFF` → `NEUTRAL` (`allow_longs=True`) on the very next tick,
+where the unfixed code stayed `RISK_OFF`. 16/16 health checks pass.
+
+**Found in passing, unrelated, and more urgent than this fix:** the daemon
+lease had stopped renewing — last renewal 09:44 UTC, now 15:33 IST, standby
+promotion had not occurred either. Flagged to the operator immediately, ahead
+of finishing this writeup. Verified separately: all 6 open positions still
+carry a live broker-side GTT, so a hard stop still fires with nothing running
+— what pauses is trailing-stop management, partial-booking and new entries.
+
+---
+
 ## 5·0 — THE BINDING NUMBER WAS WRONG
 
 **Checked against `PRODUCTION_DECISION.md`, `TRADING_METHODOLOGY_REVIEW.md` and

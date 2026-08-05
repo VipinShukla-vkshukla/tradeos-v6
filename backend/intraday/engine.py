@@ -320,6 +320,7 @@ class IntradayEngine:
         gate. So a zero or absent VWAP from the tick stream never overwrites the
         computed one.
         """
+        from intraday.market_context import INDEX_SYMBOL
         # Parity logging is independent of quote MODE being consumed: the whole
         # point is to compare the two BEFORE the live one is trusted, which means
         # it must run while quote mode is still off.
@@ -382,7 +383,69 @@ class IntradayEngine:
                 ctx.as_of = q.get("at") or now
                 ctx.live_fields = tuple(live)
                 touched += 1
+
+        # THE INDEX GETS THE SAME OVERLAY, FOR THE SAME REASON.
+        #
+        # self._index_ctx is not part of self._contexts — it is assembled and
+        # stored separately in refresh_contexts() — so the loop above never
+        # touched it, and this function's own docstring already anticipated
+        # index-specific behaviour ("the index fallback is preserved
+        # deliberately") for a case the code never actually reached. Day
+        # high/low move slowly enough that a 300s-stale range is a small
+        # error; see _refresh_index_ltp() for the more consequential half —
+        # LTP, refreshed unconditionally, not gated behind quote mode.
+        if feed is not None and self._index_ctx is not None:
+            q = feed.quote(INDEX_SYMBOL)
+            if q:
+                live = []
+                for field, key in (("day_high", "day_high"), ("day_low", "day_low"),
+                                   ("day_open", "day_open"), ("prev_close", "prev_close")):
+                    v = q.get(key)
+                    if v:
+                        setattr(self._index_ctx, field, float(v))
+                        live.append(field)
+                if q.get("vwap"):
+                    self._index_ctx.vwap = float(q["vwap"])
+                    live.append("vwap")
+                if live:
+                    self._index_ctx.as_of = q.get("at") or now
+                    self._index_ctx.live_fields = tuple(live)
+                    touched += 1
         return touched
+
+    def _refresh_index_ltp(self, prices: dict[str, float]) -> None:
+        """
+        Freshen self._index_ctx.ltp from the live tick, unconditionally.
+
+        WHY THIS EXISTS
+        ----------------
+        market_context.classify() gates the ENTIRE intraday book on the
+        index's state, and until this was added the index was not on
+        watch_symbols() at all — it never subscribed to the websocket, so it
+        never ticked. Its price came only from the one-off REST call inside
+        refresh_contexts(), the 300-second slow timer. Every fast-loop
+        decision in between read a snapshot that could be up to five minutes
+        old, silently — the same class of staleness the per-symbol
+        stale_contexts() guard exists to catch, except this one path was
+        exempt from that guard too, because self._index_ctx lives outside
+        self._contexts, which is the only dict that guard inspects.
+
+        UNCONDITIONAL, NOT GATED ON intraday_quote_mode. Every ordinary
+        symbol's ltp is set the same way, unconditionally, in this function's
+        per-symbol loop below — quote mode only gates the RANGE/VOLUME/VWAP
+        overlay, never the price itself. The index should be held to the same
+        standard: a live price does not require an opt-in switch.
+
+        Mutates self._index_ctx in place rather than replacing it, so the
+        existing prev_close/day_high/day_low/sector fields survive untouched
+        and every OTHER reader of self._index_ctx this cycle sees the update.
+        """
+        if self._index_ctx is None:
+            return
+        from intraday.market_context import INDEX_SYMBOL
+        px = prices.get(INDEX_SYMBOL)
+        if px:
+            self._index_ctx.ltp = float(px)
 
     def stale_contexts(self, max_age_s: float | None = None) -> dict[str, float | None]:
         """
@@ -412,10 +475,19 @@ class IntradayEngine:
         cheap resource, and swing plans were dropped from the price feed to
         protect a budget they never spent — a swing candidate is evaluated by
         decide(symbol, ltp), which needs a price and no bars at all.
+
+        THE INDEX IS INCLUDED, DELIBERATELY, FOR THE SAME REASON.
+        market_context.classify() gates every intraday entry on the index's
+        state — RISK_OFF blocks the whole 40-name book at once — yet the index
+        was never on this list, so it never ticked. Its price was refreshed
+        only on the 300s slow timer, meaning the single gate the whole book
+        depends on could be running on a snapshot up to five minutes stale,
+        silently, on every 15s cycle in between. See _refresh_index_ltp().
         """
+        from intraday.market_context import INDEX_SYMBOL
         return sorted({p["symbol"] for p in self.positions if p.get("symbol")} |
                       {c["symbol"] for c in self.candidates if c.get("symbol")} |
-                      set(self._universe))
+                      set(self._universe) | {INDEX_SYMBOL})
 
     def _log_swing_state(self, prices: dict) -> None:
         """One line per cycle: what swing is eligible for, and why not more."""
@@ -1528,6 +1600,12 @@ class IntradayEngine:
         if not st.can_enter:
             return []
 
+        # Freshen the index's LTP from the live tick BEFORE gating on it — see
+        # _refresh_index_ltp() for why this was missing. Mutates self._index_ctx
+        # in place, so _allocate_shadow()'s own mkt.from_context() call later in
+        # THIS SAME cycle sees the same fresh value without needing prices
+        # threaded through separately.
+        self._refresh_index_ltp(prices)
         mc = mkt.from_context(self._index_ctx)
         if not mc.allow_longs:
             if self._last_state.get("_market") != mc.state:
