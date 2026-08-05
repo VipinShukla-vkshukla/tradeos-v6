@@ -26,9 +26,10 @@ import { AIIntelTab } from '@/components/tabs/AIIntelTab';
 import { IntradayTab } from '@/components/tabs/IntradayTab';
 import { StrategyModeSwitch } from '@/components/core/StrategyModeSwitch';
 import { BrainEngineTab } from '@/components/tabs/BrainEngineTab';
+import { AllocatorTab } from '@/components/tabs/AllocatorTab';
 import { DataManagementTab } from '@/components/tabs/DataManagementTab';
 
-const CORE_TAB_IDS = new Set(['performance', 'positions', 'ai-intelligence', 'brain-engine', 'data-management']);
+const CORE_TAB_IDS = new Set(['performance', 'positions', 'ai-intelligence', 'brain-engine', 'data-management', 'allocator']);
 
 export default function Dashboard() {
   const [themeEditorOpen, setThemeEditorOpen] = useState(false);
@@ -154,6 +155,7 @@ export default function Dashboard() {
       case 'ai-intelligence': return <AIIntelTab />;
       case 'brain-engine':    return <BrainEngineTab />;
       case 'data-management': return <DataManagementWithGenerator />;
+      case 'allocator':       return <AllocatorTab />;
       default:                return null;
     }
   }, [activeTabId]);

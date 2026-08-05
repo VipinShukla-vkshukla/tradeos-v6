@@ -10,6 +10,11 @@ REM    tradeos backup     dump the system of record off-platform, then verify it
 REM    tradeos rollback   what Phase 4 has switched on, and what it was before
 REM    tradeos rollback off   every Phase 4 switch back to its pre-Phase-4 value
 REM    tradeos alloc      is the allocator ahead of greedy, and is there evidence yet
+REM    tradeos alloc today   today's allocation ledger, ordered by edge
+REM    tradeos expectancy    net R per trade, by product and clip size
+REM    tradeos expectancy reconcile FILE.xlsx   check it against a Zerodha P&L export
+REM    tradeos quote-parity   does the live feed agree with the historical one yet
+REM    tradeos quote-parity arm   start logging both, for one session
 REM    tradeos learn      weekly review — measures, proposes, changes nothing
 REM    tradeos learn show just read the open proposals
 REM    tradeos discover   look for engines that do not exist yet
@@ -49,6 +54,8 @@ if /i "%~1"=="health"   goto HEALTH
 if /i "%~1"=="backup"   goto BACKUP
 if /i "%~1"=="rollback" goto ROLLBACK
 if /i "%~1"=="alloc"    goto ALLOC
+if /i "%~1"=="expectancy" goto EXPECTANCY
+if /i "%~1"=="quote-parity" goto QUOTEPARITY
 if /i "%~1"=="learn"    goto LEARN
 if /i "%~1"=="discover" goto DISCOVER
 if /i "%~1"=="settings" goto SETTINGS
@@ -95,6 +102,12 @@ echo     L   Weekly review          what the evidence says to change
 echo     D   Discover engines       look for edges nothing covers
 echo     P   Open proposals         read what is waiting for a decision
 echo.
+echo   PHASE 4                      allocator, storage, evidence
+echo     A   Allocator report       ahead of greedy yet? disagreements so far
+echo     B   Backup now             dump the system of record off-platform
+echo     R   Rollback status        what Phase 4 has switched on, and its default
+echo     Q   Quote parity           does the live feed agree with the historical one
+echo.
 echo   ORACLE SERVER
 echo     8   Logs                   what the server is doing right now
 echo     9   Update                 git pull + restart there
@@ -123,6 +136,10 @@ if "%PICK%"=="7" goto IP
 if /i "%PICK%"=="L" goto LEARN
 if /i "%PICK%"=="D" goto DISCOVER
 if /i "%PICK%"=="P" goto PROPOSALS
+if /i "%PICK%"=="A" goto ALLOC
+if /i "%PICK%"=="B" goto BACKUP
+if /i "%PICK%"=="R" goto ROLLBACK
+if /i "%PICK%"=="Q" goto QUOTEPARITY
 if /i "%PICK%"=="E" goto EVENING
 if /i "%PICK%"=="K" goto STOP
 if "%PICK%"=="8" set "VCNACT=logs"
@@ -248,6 +265,19 @@ goto END
 REM  Status by default. Turning switches off is the thing you must ask for by
 REM  name, because it is the one that changes behaviour.
 if /i "%~2"=="off" (python -m tools.rollback --all-off) else (python -m tools.rollback --status)
+goto END
+
+:EXPECTANCY
+REM  The ledger by default. "reconcile FILE" checks it against what the broker
+REM  actually charged — Zerodha Console > Reports > P&L > Tradewise > download.
+if /i "%~2"=="reconcile" (python -m tools.expectancy_ledger --reconcile "%~3") else (python -m tools.expectancy_ledger)
+goto END
+
+:QUOTEPARITY
+REM  Report by default: does the live feed agree with the historical one over
+REM  the last session it was armed for. "arm" turns logging on for one session;
+REM  "disarm" turns it back off once you have read the report.
+if /i "%~2"=="arm" (python -m tools.quote_parity --arm) else if /i "%~2"=="disarm" (python -m tools.quote_parity --disarm) else (python -m tools.quote_parity)
 goto END
 
 :LEARN

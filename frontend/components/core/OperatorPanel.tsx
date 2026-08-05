@@ -48,6 +48,21 @@ const KEYS = [
   // Risk denominators. Not editable here — they are what the caps above MEAN.
   'risk_pct_per_trade', 'portfolio_max_total_risk_pct', 'intraday_max_position_pct',
   'max_position_pct',
+
+  // ── Phase 4 (05-Aug-2026) ──────────────────────────────────────────────
+  // Everything the go-live pass added or found. alloc_live_swing carries the
+  // same weight as {fw}_live_auto_entry above — it is the one switch here
+  // that decides whether the allocator can refuse a real-money entry — and
+  // is treated with the same two-click confirm.
+  'autonomy_phase',
+  'alloc_shadow_enabled', 'alloc_live_intraday', 'alloc_live_swing',
+  'alloc_max_slots', 'alloc_basket_recheck', 'alloc_hurdle_min_sample',
+  'overlay_expiry_enabled', 'overlay_vol_scaling_enabled',
+  'overlay_liquidity_enabled', 'overlay_liquidity_strict',
+  'governance_freeze_enabled', 'governance_require_oos',
+  'rank_weight_tier', 'rank_weight_conviction',
+  'storage_rolloff_enabled', 'storage_staging_rolloff_enabled', 'storage_fail_pct',
+  'sizing_max_cost_r', 'exit_runner_cap_enforced', 'intraday_quote_mode',
 ];
 
 async function writeKey(key: string, value: string, reason: string) {
@@ -377,6 +392,9 @@ export function OperatorPanel() {
           </Row>
         </div>
 
+        <Phase4Panel cfg={cfg} bool={bool} set={set} busy={busy}
+          confirm={confirm} setConfirm={setConfirm} />
+
         <div className="flex items-center justify-between text-[10px] text-muted-foreground">
           <span className="flex items-center gap-1.5">
             {saved ? (<><Check className="h-3 w-3 text-profit" />saved to system_config</>)
@@ -467,6 +485,208 @@ function RiskExposure({ cfg }: { cfg: Cfg }) {
         <code className="font-mono">tradeos settings</code> reports which of these controls
         currently does nothing, and what the week&apos;s evidence says each should be.
       </div>
+    </div>
+  );
+}
+
+/**
+ * The Phase 4 controls added in the go-live pass, 05-Aug-2026.
+ *
+ * WHY THIS IS A SEPARATE COMPONENT RATHER THAN MORE ROWS INLINE
+ * ---------------------------------------------------------------
+ * OperatorPanel already reads and writes through one KEYS array, one `set`,
+ * one re-read-after-write. This reuses all three via props rather than
+ * duplicating them — a second copy of `writeKey`/`load` here would be a
+ * second place for the "does the write stick" question to be answered
+ * differently, which is the exact class of drift this project keeps finding.
+ *
+ * alloc_live_swing GETS THE SAME TWO-CLICK CONFIRM AS GOING LIVE
+ * -----------------------------------------------------------------
+ * It is the one switch on this panel that can make the allocator refuse a
+ * real-money entry the greedy path would have taken. Everything else here is
+ * shadow, paper, or a pure risk-reducing gate (an overlay can only make a
+ * trade smaller or refuse it, never invent one) — this is the one that spends
+ * differently, not just less.
+ */
+function Phase4Panel({ cfg, bool, set, busy, confirm, setConfirm }: {
+  cfg: Cfg;
+  bool: (k: string) => boolean;
+  set: (key: string, value: string, reason: string) => Promise<void>;
+  busy: string | null;
+  confirm: string | null;
+  setConfirm: (v: string | null) => void;
+}) {
+  const num = (k: string) => cfg[k] ?? '';
+  const allocLiveSwing = bool('alloc_live_swing');
+  const convictionLive = Number(cfg['rank_weight_tier'] ?? 0) > 0
+                       || Number(cfg['rank_weight_conviction'] ?? 0) > 0;
+
+  return (
+    <div className="rounded-lg border border-border/50 p-3">
+      <div className="text-sm font-semibold mb-1 flex items-center gap-2">
+        <Shield className="h-4 w-4 text-muted-foreground" />
+        Phase 4 — allocation &amp; governance
+        <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-blue-500/20 text-blue-400">
+          autonomy phase {cfg['autonomy_phase'] ?? '?'}
+        </span>
+      </div>
+
+      {/* ── Allocator ──────────────────────────────────────────────────── */}
+      <div className="text-[11px] font-medium text-muted-foreground mt-2 mb-1">Allocator</div>
+      <Row label="Shadow recording"
+        hint="Scores every proposal and records the verdict. Changes nothing on its own — this is what the promotion evidence is built from.">
+        <Toggle on={bool('alloc_shadow_enabled')} disabled={busy !== null}
+          onChange={(v) => set('alloc_shadow_enabled', String(v),
+            v ? 'Operator panel' : 'Operator panel — WARNING: stops recording promotion evidence')} />
+      </Row>
+      <Row label="Live — intraday (paper)"
+        hint="The allocator can refuse an intraday setup. Costs nothing to be wrong: this book is simulated.">
+        <Toggle on={bool('alloc_live_intraday')} disabled={busy !== null}
+          onChange={(v) => set('alloc_live_intraday', String(v), 'Operator panel')} />
+      </Row>
+      <Row label="Live — swing (real money)"
+        hint="The allocator can refuse a swing entry decide() already approved. It can only SUBTRACT trades greedy would have taken, never add one — but read tools.allocator_report and tools.quote_parity after a session before turning this on.">
+        {confirm === 'alloc_live_swing' ? (
+          <div className="flex gap-1">
+            <button className="text-[10px] px-2 py-1 rounded bg-red-500 text-white"
+              onClick={() => set('alloc_live_swing', 'true', 'Operator panel: allocator live on swing')}>
+              Confirm
+            </button>
+            <button className="text-[10px] px-2 py-1 rounded border border-border"
+              onClick={() => setConfirm(null)}>Cancel</button>
+          </div>
+        ) : (
+          <Toggle on={allocLiveSwing} danger disabled={busy !== null}
+            onChange={(v) => v
+              ? setConfirm('alloc_live_swing')
+              : set('alloc_live_swing', 'false', 'Operator panel: allocator off swing')} />
+        )}
+      </Row>
+      <div className="grid grid-cols-2 gap-2 mt-1">
+        <div>
+          <div className="text-[10px] text-muted-foreground">Max slots/cycle</div>
+          <input type="number" defaultValue={num('alloc_max_slots')} disabled={busy !== null}
+            onBlur={(e) => { const v = e.target.value.trim();
+              if (v && v !== cfg['alloc_max_slots']) set('alloc_max_slots', v, 'Operator panel'); }}
+            className="w-full mt-0.5 bg-panel border border-border/50 rounded px-1.5 py-1 text-xs font-mono tabular-nums" />
+        </div>
+        <div>
+          <div className="text-[10px] text-muted-foreground">Hurdle min sample</div>
+          <input type="number" defaultValue={num('alloc_hurdle_min_sample')} disabled={busy !== null}
+            onBlur={(e) => { const v = e.target.value.trim();
+              if (v && v !== cfg['alloc_hurdle_min_sample']) set('alloc_hurdle_min_sample', v, 'Operator panel'); }}
+            className="w-full mt-0.5 bg-panel border border-border/50 rounded px-1.5 py-1 text-xs font-mono tabular-nums" />
+        </div>
+      </div>
+      <Row label="Basket recheck"
+        hint="Recheck sector caps across the allocator's OWN simultaneous picks, not just against what is already held.">
+        <Toggle on={bool('alloc_basket_recheck')} disabled={busy !== null}
+          onChange={(v) => set('alloc_basket_recheck', String(v), 'Operator panel')} />
+      </Row>
+
+      {/* ── Overlays: every one of these can only reduce a trade or refuse it ── */}
+      <div className="text-[11px] font-medium text-muted-foreground mt-3 mb-1">
+        Structural overlays <span className="font-normal">— none of these can enlarge a trade</span>
+      </div>
+      <Row label="Expiry day-type sizing"
+        hint="Sizes intraday down on settlement-dominated sessions. The day-type flag is a heuristic (~1-3 session error on the monthly flag) — tolerable because it only ever reduces size.">
+        <Toggle on={bool('overlay_expiry_enabled')} disabled={busy !== null}
+          onChange={(v) => set('overlay_expiry_enabled', String(v), 'Operator panel')} />
+      </Row>
+      <Row label="Volatility exposure scaling"
+        hint="Scales BOOK-LEVEL exposure down as India VIX rises. Bands are set from this account's own observed distribution.">
+        <Toggle on={bool('overlay_vol_scaling_enabled')} disabled={busy !== null}
+          onChange={(v) => set('overlay_vol_scaling_enabled', String(v), 'Operator panel')} />
+      </Row>
+      <Row label="Liquidity gate"
+        hint="Refuses a name that cannot be exited at plan, measured against its own traded value.">
+        <Toggle on={bool('overlay_liquidity_enabled')} disabled={busy !== null}
+          onChange={(v) => set('overlay_liquidity_enabled', String(v), 'Operator panel')} />
+      </Row>
+      {bool('overlay_liquidity_enabled') && (
+        <Row label="  ↳ strict on unknown liquidity"
+          hint="A name with no recorded traded value is refused rather than waved through.">
+          <Toggle on={bool('overlay_liquidity_strict')} disabled={busy !== null}
+            onChange={(v) => set('overlay_liquidity_strict', String(v), 'Operator panel')} />
+        </Row>
+      )}
+
+      {/* ── Governance ─────────────────────────────────────────────────── */}
+      <div className="text-[11px] font-medium text-muted-foreground mt-3 mb-1">Governance</div>
+      <Row label="Quarterly freeze"
+        hint="Parameter changes are refused inside a freeze window — the primary defence against fitting noise at 5-10 closed observations a week.">
+        <Toggle on={bool('governance_freeze_enabled')} disabled={busy !== null}
+          onChange={(v) => set('governance_freeze_enabled', String(v), 'Operator panel')} />
+      </Row>
+      <Row label="Require out-of-sample confirmation"
+        hint="A proposal must be confirmed in a LATER window than it was fitted in. Fit in N, confirm in N+1, act in N+2.">
+        <Toggle on={bool('governance_require_oos')} disabled={busy !== null}
+          onChange={(v) => set('governance_require_oos', String(v), 'Operator panel')} />
+      </Row>
+      <Row label="Conviction layer weight"
+        hint={convictionLive
+          ? '⚠ NON-ZERO: an unmeasured AI tier is back in the ranking. Restore only once tier-by-tier forward returns exist from the unbiased record.'
+          : 'Both weights are 0 — annotation only, pending tier-by-tier forward returns from the unbiased record.'}>
+        <div className="flex gap-1">
+          <input type="number" step="0.1" defaultValue={num('rank_weight_tier')} disabled={busy !== null}
+            title="rank_weight_tier"
+            onBlur={(e) => { const v = e.target.value.trim();
+              if (v && v !== cfg['rank_weight_tier']) set('rank_weight_tier', v, 'Operator panel'); }}
+            className={`w-14 bg-panel border rounded px-1.5 py-1 text-xs font-mono tabular-nums
+              ${convictionLive ? 'border-red-500/50' : 'border-border/50'}`} />
+          <input type="number" step="0.1" defaultValue={num('rank_weight_conviction')} disabled={busy !== null}
+            title="rank_weight_conviction"
+            onBlur={(e) => { const v = e.target.value.trim();
+              if (v && v !== cfg['rank_weight_conviction']) set('rank_weight_conviction', v, 'Operator panel'); }}
+            className={`w-14 bg-panel border rounded px-1.5 py-1 text-xs font-mono tabular-nums
+              ${convictionLive ? 'border-red-500/50' : 'border-border/50'}`} />
+        </div>
+      </Row>
+
+      {/* ── Storage ────────────────────────────────────────────────────── */}
+      <div className="text-[11px] font-medium text-muted-foreground mt-3 mb-1">Storage</div>
+      <Row label="Nightly roll-off"
+        hint="Archives history out of stock_data_daily so the database never reaches the ceiling that stops it accepting writes.">
+        <Toggle on={bool('storage_rolloff_enabled')} disabled={busy !== null}
+          onChange={(v) => set('storage_rolloff_enabled', String(v), 'Operator panel')} />
+      </Row>
+      <Row label="Staging prune"
+        hint="Prunes raw_prices and chartink_raw_data past 120 days — 33% of the database and 45% of its growth, read one day deep by everything that uses them.">
+        <Toggle on={bool('storage_staging_rolloff_enabled')} disabled={busy !== null}
+          onChange={(v) => set('storage_staging_rolloff_enabled', String(v), 'Operator panel')} />
+      </Row>
+      <Row label="Health FAILS above"
+        hint="Percentage of the 500 MB ceiling at which tools.health fails rather than warns. Writes stop at 100%.">
+        <div className="flex items-center gap-1">
+          <input type="number" defaultValue={num('storage_fail_pct')} disabled={busy !== null}
+            onBlur={(e) => { const v = e.target.value.trim();
+              if (v && v !== cfg['storage_fail_pct']) set('storage_fail_pct', v, 'Operator panel'); }}
+            className="w-14 bg-panel border border-border/50 rounded px-1.5 py-1 text-xs font-mono tabular-nums" />
+          <span className="text-[10px] text-muted-foreground">%</span>
+        </div>
+      </Row>
+
+      {/* ── Sizing & exits ─────────────────────────────────────────────── */}
+      <div className="text-[11px] font-medium text-muted-foreground mt-3 mb-1">Sizing &amp; exits</div>
+      <Row label="Friction gate (max cost, in R)"
+        hint={Number(cfg['sizing_max_cost_r'] ?? 0) > 0
+          ? 'ON — refuses a trade whose round-trip friction exceeds this multiple of its own risk. Measured 04-Aug-2026: this account’s CNC clips run 0.605-2.363R, so a cap below ~0.7 refuses nearly every delivery trade at current position sizes.'
+          : '0 = off. Measured friction at current CNC clip sizes (0.6-2.4R) means any cap worth setting would refuse nearly every swing trade — the clip size is the problem, not the gate. See migration 042.'}>
+        <input type="number" step="0.05" defaultValue={num('sizing_max_cost_r')} disabled={busy !== null}
+          onBlur={(e) => { const v = e.target.value.trim();
+            if (v && v !== cfg['sizing_max_cost_r']) set('sizing_max_cost_r', v, 'Operator panel'); }}
+          className="w-16 bg-panel border border-border/50 rounded px-1.5 py-1 text-xs font-mono tabular-nums" />
+      </Row>
+      <Row label="Runner cap enforced"
+        hint="Caps concurrent runners at exit_max_runners. Was computed and silently discarded until migration 031 — this switch is what makes it real.">
+        <Toggle on={bool('exit_runner_cap_enforced')} disabled={busy !== null}
+          onChange={(v) => set('exit_runner_cap_enforced', String(v), 'Operator panel')} />
+      </Row>
+      <Row label="Quote mode (live day range/volume)"
+        hint="Feeds live day range, volume and VWAP into the breakout conditions instead of a value up to 300s stale. Cross-check with tools.quote_parity after a session — day high/low must never read BEHIND the historical value.">
+        <Toggle on={bool('intraday_quote_mode')} disabled={busy !== null}
+          onChange={(v) => set('intraday_quote_mode', String(v), 'Operator panel')} />
+      </Row>
     </div>
   );
 }

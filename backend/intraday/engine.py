@@ -1205,6 +1205,23 @@ class IntradayEngine:
         if not sym or self._held_by_framework(sym, "SWING"):
             return
 
+        # THE ALLOCATOR'S VETO — the swing side of the same gate that protects
+        # intraday. This is the ONE choke point both act_on_candidates call
+        # sites (line ~1084 and ~1147) funnel through, so the veto lives here
+        # rather than being duplicated at each call site.
+        #
+        # A prior version of this migration wrote the veto directly into
+        # act_on_candidates and it silently did not land — an edit that never
+        # applied, caught only because nothing in this function referenced
+        # alloc_live_swing when it should have. Placing it in the one function
+        # that actually places an order is what makes that class of miss
+        # impossible: there is no second path to a swing fill that could have
+        # been missed.
+        ok, why = self.allocator_permits(sym, "CNC", "SWING")
+        if not ok:
+            logger.info(f"  {sym}: allocator declined swing entry — {why[:90]}")
+            return
+
         # Today's swing entries, counted from the BROKER LOG rather than from
         # this process, so a restart does not hand the day a fresh budget and
         # the laptop and the server cannot each take two.

@@ -389,6 +389,76 @@ constant, because M1's real shortfall instrumentation still does not exist.
 
 ---
 
+## 4·9b — 05-Aug-2026: the swing veto did not land, and Stage 10's dashboard
+
+**The operator asked directly whether the thing I said I "nearly got wrong"
+was actually fixed. It was half-fixed.** `allocator_permits()` existed and was
+called from the intraday path. The matching call in `act_on_candidates` — the
+swing side — had been written in the same turn but never actually landed in
+the file; an edit that silently did not apply, the same failure class as
+several already recorded here. `alloc_live_swing` would have set a database
+column and gated nothing, on the real-money book, and nothing would have said
+so.
+
+**Fixed at the actual choke point.** `_maybe_enter_swing` is the one function
+both `act_on_candidates` call sites funnel through before an order is placed —
+paper or live — so the veto lives there instead of being duplicated at each
+call site, which is what makes a repeat of this class of miss structurally
+harder: there is no second path to a swing fill that could go unguarded.
+
+**A new health check closes the gap that let it happen once.**
+`check_allocator_isolation` now asserts, by reading the source, that
+`allocator_permits(...)` is called from BOTH the intraday and swing paths by
+name — not merely that the function exists. Demonstrated failing by stripping
+the swing call site and confirming the check catches exactly that.
+
+**Stage 10's dashboard is built.** `AllocatorTab.tsx` — all four required
+views: today's ledger ordered by edge, the live hurdle against today's
+proposals, the storage gauge (red above 80%), and shadow-vs-greedy reduced to
+one number. The disagreement definition mirrors `tools/allocator_report.py`
+exactly: a TAKE with no matching position, or a DECLINE/DEFER with one.
+Verified against LIVE data during actual market hours — the dashboard's
+storage figure (41.0%) matched the backend's own to one decimal, and the
+ledger showed real symbols with real edge/hurdle/reason values matching
+`allocation/policies.py`'s own wording.
+
+`OperatorPanel.tsx` gained every CRITICAL Phase 4 switch — allocator, three
+overlays, governance, storage, sizing — with `alloc_live_swing` carrying the
+same two-click confirm as going live on a framework, because it is the one
+control on the new panel that can refuse a real-money entry.
+
+**A pre-existing, unrelated finding surfaced while wiring the dashboard's
+reads.** `frontend/.env.local`'s `NEXT_PUBLIC_SUPABASE_ANON_KEY` decodes to a
+`service_role` JWT, not the real anon key — meaning every browser-side query in
+this dashboard has run with full RLS bypass since the file was created,
+including migration 007's protection on `is_secret` config rows. **Contained**:
+the file is gitignored and was never committed, and no deployment config
+exists, so exposure is bounded to this machine. **Not fixed by this session** —
+it requires the operator to copy the real anon/public key from Supabase
+Settings → API, which is a credentials action outside what this session
+performs. The write path (`/api/config/[key]`) was already correctly
+architected with `SUPABASE_SERVICE_ROLE_KEY` as a server-only variable; only
+the read-side env value is wrong.
+
+**Two unrelated production issues, reported live by the operator, fixed in
+passing:**
+
+- `ai_thinking_enabled` had been set to `true` on 03-Aug, silently reopening
+  the exact failure `ai_router.py`'s own docstring documents — deepseek-v4-flash
+  spends its token budget on discarded reasoning and never emits the JSON.
+  Every batch of that night's step 19 hit `finish_reason=length`, three times,
+  640 seconds, zero output. Restored to `false`; `default_value` was also
+  `NULL` and is now recorded so `tools/rollback` has a known-good state.
+- `tradeos.cmd` had `alloc`, `backup` and `rollback` as typed subcommands but
+  **none of the three appeared in the interactive menu** — the surface the
+  operator, who is not a programmer, actually uses on double-click. Added a
+  PHASE 4 menu section (A/B/R/Q) plus two subcommands that did not exist at
+  all (`expectancy`, `quote-parity`). Verified: menu renders at 41 lines
+  (console is sized for 45), no letter or label collisions, all four dispatch
+  to the correct tool.
+
+---
+
 ## 5·0 — THE BINDING NUMBER WAS WRONG
 
 **Checked against `PRODUCTION_DECISION.md`, `TRADING_METHODOLOGY_REVIEW.md` and

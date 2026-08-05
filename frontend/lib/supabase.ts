@@ -199,6 +199,74 @@ export const queries = {
       score: number; reason: string;
     }>('intraday_universe', { order: { column: 'score', ascending: false }, limit }),
 
+  // ── Allocator (Phase 4, Stage 10) ────────────────────────────────────────
+  // Four views the master spec requires: today's ledger ordered by edge, the
+  // live hurdle against today's proposals, storage headroom, and shadow vs
+  // greedy reduced to one number. All four read allocation_decisions and
+  // v_storage_usage directly — no bespoke API route, same pattern as every
+  // other tab in this file.
+
+  /** Every verdict recorded today, newest first — the raw material for both
+   *  the ledger (sort by edge client-side) and the hurdle-vs-proposals view. */
+  getAllocationToday: (tradeDate: string) =>
+    queryTable<{
+      id: number; decided_at: string; trade_date: string; symbol: string;
+      framework: string; product: string; source: string | null;
+      verdict: string; reason: string | null;
+      entry: number | null; stop: number | null; target: number | null;
+      quantity: number | null; edge: number | null; e_r: number | null;
+      cost_r: number | null; hurdle: number | null;
+      prior_n: number | null; prior_below_floor: boolean | null;
+      native_rank: number | null; shadow: boolean; outcome_r: number | null;
+      outcome_note: string | null;
+    }>('allocation_decisions', {
+      filter: { trade_date: tradeDate },
+      order: { column: 'decided_at', ascending: false },
+      limit: 500,
+    }),
+
+  /** Every scored verdict in a window, for the shadow-vs-greedy reduction.
+   *  Mirrors tools/allocator_report.py's own definition, computed client-side
+   *  against getAllocationMatchablePositions so the two can never drift: a
+   *  TAKE with no matching position, or a DECLINE/DEFER with one, disagrees. */
+  getAllocationHistory: (sinceIso: string, limit = 2000) =>
+    queryTable<{
+      trade_date: string; symbol: string; product: string; framework: string;
+      verdict: string; outcome_r: number | null; shadow: boolean;
+    }>('allocation_decisions', {
+      filter: { trade_date: { gte: sinceIso } },
+      order: { column: 'trade_date', ascending: false },
+      limit,
+    }),
+
+  /** (symbol, product, entry_date) for every position opened in the window —
+   *  open or since closed. The ground truth for "did greedy take it", read
+   *  narrow on purpose rather than reusing the full-row position queries. */
+  getAllocationMatchablePositions: async (sinceIso: string) => {
+    const [open, closed] = await Promise.all([
+      queryTable<{ symbol: string; product: string | null; entry_date: string }>(
+        'open_positions', { select: 'symbol,product,entry_date', filter: { entry_date: { gte: sinceIso } } },
+      ),
+      queryTable<{ symbol: string; product: string | null; entry_date: string }>(
+        'closed_positions', { select: 'symbol,product,entry_date', filter: { entry_date: { gte: sinceIso } } },
+      ),
+    ]);
+    return [...(open.data ?? []), ...(closed.data ?? [])];
+  },
+
+  /** Storage headroom, from the view tools/health reads. Red above 80% is a
+   *  FAIL there, not a warning — the dashboard uses the same threshold.
+   *  Limit 200 rather than a display-sized number: tools.health pages through
+   *  every row to sum pct_of_free_tier, and summing only a "top N" slice here
+   *  would silently under-report the true total the moment the schema grows
+   *  past that N — the exact silent-undercount failure this project keeps
+   *  finding elsewhere. ~51 tables exist today; 200 is headroom, not a cap. */
+  getStorageUsage: () =>
+    queryTable<{
+      table_name: string; total_size: string; total_bytes: number;
+      approx_rows: number; pct_of_free_tier: number;
+    }>('v_storage_usage', { order: { column: 'total_bytes', ascending: false }, limit: 200 }),
+
   /** The intraday_* gates from system_config, so the UI shows the live phase. */
   getIntradayGates: async () => {
     const { data } = await queryTable<{ key: string; value: string }>(

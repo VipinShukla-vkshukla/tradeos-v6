@@ -693,10 +693,38 @@ def check_allocator_isolation() -> tuple[bool, str]:
                        f"shadow mode is NO LONGER SAFE on a live book, because the "
                        f"allocator can now reach execution regardless of its switches")
 
+    # THE SWITCH MUST BE CONSUMED, NOT MERELY SET.
+    #
+    # alloc_live_* originally appeared in exactly one place — writing a column
+    # value into allocation_decisions — and nothing read it. Flipping it would
+    # have produced a system REPORTING itself as live-allocating while the
+    # greedy path still chose every entry. That is this project's signature
+    # failure and it had already happened four times before this one.
+    #
+    # Worse, the first attempt to fix it wrote the swing veto into a function
+    # where the edit silently did not apply, so the switch was half-wired: live
+    # on intraday, inert on swing, and nothing said so. Both books are therefore
+    # asserted independently, by locating the actual call site rather than
+    # trusting that the function exists.
+    eng = (pkg.parent / "intraday/engine.py").read_text(encoding="utf-8")
+    if "def allocator_permits" not in eng:
+        return False, ("allocator_permits() is gone — alloc_live_* would set a "
+                       "database column and gate nothing, and the allocator would "
+                       "report itself live while the greedy path chose every entry")
+    missing = [book for book, call in
+               (("intraday", 'allocator_permits(st.symbol, "MIS", "INTRADAY")'),
+                ("swing",    'allocator_permits(sym, "CNC", "SWING")'))
+               if call not in eng]
+    if missing:
+        return False, (f"the allocator veto is not wired for {', '.join(missing)} — "
+                       f"alloc_live_{missing[0]} would be set and consumed by "
+                       f"nothing, which is a switch that lies about what it does")
+
     from config import cfg_bool
     live = [b for b in ("intraday", "swing") if cfg_bool(f"alloc_live_{b}", False)]
     mode = f"LIVE for {'+'.join(live)}" if live else "shadow only"
-    return True, f"allocation cannot import an order path ({mode})"
+    return True, (f"allocation cannot import an order path; veto wired for both "
+                  f"books ({mode})")
 
 
 CHECKS = [

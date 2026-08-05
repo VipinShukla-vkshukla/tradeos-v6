@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import {
-  TrendingUp, Briefcase, Brain, Cpu, Database,
+  TrendingUp, Briefcase, Brain, Cpu, Database, Scale,
   Plus, X, Edit2, Check, MoreHorizontal, LayoutGrid,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -26,6 +26,7 @@ const ICON_MAP: Record<string, React.ElementType> = {
   'ai-intelligence': Brain,
   'brain-engine':    Cpu,
   'data-management': Database,
+  'allocator':       Scale,
 };
 
 function TabButton({

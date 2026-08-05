@@ -275,4 +275,8 @@ export const CORE_TABS: TabConfig[] = [
   { id: 'ai-intelligence', name: 'AI Intelligence', icon: 'Brain', isCore: true, isVisible: true, order: 2, views: [] },
   { id: 'brain-engine', name: 'Brain Engine', icon: 'Cpu', isCore: true, isVisible: true, order: 3, views: [] },
   { id: 'data-management', name: 'Data Management', icon: 'Database', isCore: true, isVisible: true, order: 4, views: [] },
+  // Stage 10's operator surface: today's ledger, live hurdle, storage gauge,
+  // shadow-vs-greedy — the four views the master spec requires before the
+  // allocator can be judged from the dashboard rather than a terminal.
+  { id: 'allocator', name: 'Allocator', icon: 'Scale', isCore: true, isVisible: true, order: 5, views: [] },
 ];
