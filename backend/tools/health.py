@@ -893,6 +893,37 @@ def check_allocator_hurdle() -> tuple[bool, str]:
                        "intraday book, whose own governance allows "
                        "intraday_max_new_per_day, at one for the rest of the day")
 
+    # 4 — regime_bucket() must be reachable by the vocabulary it is ACTUALLY
+    #     called with, not only by the one its docstring was written against.
+    #
+    # 05-Aug-2026: this function was written to match the swing regime engine's
+    # SPACE-separated states ("RISK ON") but its only live caller
+    # (_allocate_shadow, via regime=mc.state) has always fed it the intraday
+    # market context's UNDERSCORE-separated states ("RISK_ON"). "RISK ON" in
+    # "RISK_ON" is False, so STRONG was unreachable from production for as long
+    # as this function existed — every bar was drawn from the WEAK bucket only,
+    # silently defeating the segmentation this module exists to provide.
+    #
+    # Exercised through the real function against the real value, not read from
+    # source: a check that only greps for a substring can be satisfied by a
+    # comment, same lesson as check #1 above.
+    if H.regime_bucket("RISK_ON") != "STRONG":
+        return False, (
+            "regime_bucket('RISK_ON') is not STRONG — the intraday market "
+            "context's own favourable state cannot reach the STRONG bucket. "
+            "This is the exact production call (_allocate_shadow passes "
+            "regime=mc.state, which is always the underscore-separated "
+            "vocabulary), so if this fails, STRONG is unreachable and the "
+            "hurdle's regime segmentation is silently pooling everything into "
+            "WEAK — the same failure shape as the units bug this check's "
+            "assertion #1 exists to catch, one level up")
+    if H.regime_bucket("TRENDING") != "STRONG":
+        return False, (
+            "regime_bucket('TRENDING') is not STRONG — the swing regime "
+            "engine's OWN STRONGEST STATE does not clear its own bucket "
+            "boundary. If this is failing, whatever match this function uses "
+            "is narrower than the vocabulary it is written against")
+
     from config import cfg_bool, cfg_int
     live = [b for b in ("intraday", "swing") if cfg_bool(f"alloc_live_{b}", False)]
     return True, (f"bar and edge share one definition; a cold start admits a "

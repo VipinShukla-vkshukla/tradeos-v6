@@ -102,9 +102,76 @@ def regime_bucket(regime: str | None) -> str:
     strongest line — RISK ON versus everything else — rather than at an invented
     threshold. A4 in the readiness review leaves this open precisely so it can be
     taken from the observed distribution instead of guessed.
+
+    TWO VOCABULARIES REACH THIS FUNCTION, AND THEY WERE NEVER THE SAME ONE — 05-Aug-2026
+    ----------------------------------------------------------------------------------
+    This function was written against the SWING regime engine's states
+    (`swing/compute/compute_regime.py`, `market_regime` table): five values,
+    SPACE-separated — TRENDING, RISK ON, NEUTRAL, RECOVERING, RISK OFF, computed
+    once a day with hysteresis.
+
+    But the only place this function is ever actually called —
+    `allocation/allocator.py:105`, fed from `intraday/engine.py`'s
+    `_allocate_shadow` with `regime=mc.state` — passes the INTRADAY market
+    context's state (`intraday/market_context.py`): four values,
+    UNDERSCORE-separated — RISK_ON, NEUTRAL, CAUTION, RISK_OFF, recomputed every
+    15 seconds from the index alone.
+
+    `"RISK ON" in "RISK_ON"` is False. The underscore is not a space. So in
+    every real cycle this system has ever run, `regime_bucket()` returned WEAK —
+    the STRONG branch was dead code, unreachable from its own call site. The
+    segmentation migration 044 built (STRONG vs WEAK arrival distributions for
+    the allocator's bar) was silently pooling everything into WEAK, which
+    defeats the purpose without breaking anything loudly enough to notice — the
+    same failure SHAPE as the units bug 044 itself fixed, one level up.
+
+    A second, independent defect sat in the same line: even fed the CORRECT
+    swing string, "TRENDING" — the regime engine's strongest state, stronger
+    than "RISK ON" — does not contain the substring "RISK ON" and returned WEAK.
+    Substring matching against a small closed vocabulary is exactly the kind of
+    check that looks like it works and is actually one enum value away from
+    silently not.
+
+    Fixed by naming every input value this function can actually receive,
+    instead of pattern-matching a string. Two closed sets, not one fuzzy one.
     """
-    r = (regime or "").upper()
-    return STRONG if ("RISK ON" in r or r in ("BULLISH", "RECOVERING")) else WEAK
+    r = (regime or "").strip().upper()
+
+    # Swing (space-separated, daily, from market_regime via compute_regime.py).
+    # TRENDING and RISK ON are both "the market is confirmed favourable" —
+    # RECOVERING is included because that was this function's behaviour before
+    # this fix (the docstring's own boundary is `stop <= RISK ON`, but the
+    # original code additionally special-cased RECOVERING as strong, and that
+    # boundary is preserved rather than silently narrowed).
+    if r in ("TRENDING", "RISK ON", "RECOVERING"):
+        return STRONG
+    if r in ("NEUTRAL", "RISK OFF"):
+        return WEAK
+
+    # Intraday (underscore-separated, every 15s, from market_context.py). Only
+    # RISK_ON is unambiguously favourable; CAUTION is already a reduced-size
+    # state and belongs with WEAK, not with strength.
+    if r == "RISK_ON":
+        return STRONG
+    if r in ("NEUTRAL", "CAUTION", "RISK_OFF"):
+        return WEAK
+
+    # Dead legacy labels from before the swing hysteresis engine existed —
+    # ai/providers/ml_regime_classifier.py's own legacy_map normalises these
+    # away before training for exactly this reason. "BULLISH" and "BEARISH"
+    # have not been a live regime value since; kept here, mapped rather than
+    # silently matched, so a value from an old row or an external caller still
+    # resolves to something defensible instead of falling through to WEAK by
+    # accident.
+    if r == "BULLISH":
+        return STRONG
+    if r == "BEARISH":
+        return WEAK
+
+    # Unrecognised — including "" and None — is WEAK, not STRONG. An unknown
+    # market is not evidence of strength, the same reasoning
+    # market_context.classify() uses for its own missing-data case.
+    return WEAK
 
 
 def hurdle(bucket: str, slots_left: int, minutes_left: int,
