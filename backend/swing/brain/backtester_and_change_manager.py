@@ -231,8 +231,23 @@ def run_backtests(signals: pd.DataFrame, quant_findings: list) -> list:
 # ═══════════════════════════════════════════════════════════════════════
 
 AUTO_APPLICABLE = {"THRESHOLD_CHANGE","ENGINE_WEIGHT","REGIME_WEIGHT","SCORE_WEIGHT_CHANGE"}
+
+# REVIEW_ONLY = no code path writes this type anywhere correctly. target_key
+# and proposed_value for these three are prose ("widen the stop or the
+# anchor", "build as SHADOW", a lifecycle verdict), not a system_config
+# key/value pair. Before this fix they had no branch in apply_proposal() and
+# fell through to the generic system_config upsert at the bottom of this
+# function, which would have written that prose into system_config under a
+# key like an engine name — a row nothing reads, silently. ENGINE_CANDIDATE
+# and ENGINE_LIFECYCLE additionally can never carry an out-of-sample
+# confirmation (see governance_allows): a candidate can't be confirmed before
+# it exists as SHADOW, and building it as SHADOW *is* the action being
+# approved here. Gating the acknowledgment behind evidence only the
+# acknowledgment can produce is the same shape as the RETIRE-floor bug this
+# project already fixed once.
 REVIEW_ONLY     = {"CODE_SUGGESTION","INSIGHT","SCRIPT_PATCH",
-                    "ENGINE_PERFORMANCE","CONSISTENCY_CONFLICT"}
+                    "ENGINE_PERFORMANCE","CONSISTENCY_CONFLICT",
+                    "ENGINE_CANDIDATE","ENGINE_PARAMETERS","ENGINE_LIFECYCLE"}
 
 
 def save_proposals(proposals: list, run_id: str) -> list:
@@ -474,6 +489,18 @@ def apply_proposal(proposal_id: int, reviewer: str = "brain_engine") -> bool:
     target_key  = p.get("target_key")
     new_value   = p.get("proposed_value")
 
+    # REVIEW_ONLY types never write to system_config or strategy_config — checked
+    # BEFORE governance, not after. The freeze/OOS gate below exists to stop a
+    # LIVE parameter moving on unconfirmed evidence; these types never move one,
+    # so gating them the same way blocks the acknowledgment for no protective
+    # reason. See the REVIEW_ONLY comment above for why this matters specifically
+    # for ENGINE_CANDIDATE.
+    if ptype in REVIEW_ONLY:
+        logger.info(f"Proposal {proposal_id} is {ptype} — acknowledged, no automated "
+                    f"action for this type. Diff/suggestion is in the proposal record "
+                    f"for you to apply manually.")
+        return True
+
     # ── The freeze window, and out-of-sample confirmation ───────────────────
     #
     # Applied HERE rather than in the approval UI because this is the single
@@ -487,18 +514,21 @@ def apply_proposal(proposal_id: int, reviewer: str = "brain_engine") -> bool:
     ok, why = governance_allows(p)
     if not ok:
         logger.error(f"Proposal {proposal_id} REFUSED: {why}")
-        try:
-            sb.table("brain_proposals").update(
-                {"status": "HELD", "review_note": why}).eq("id", proposal_id).execute()
-        except Exception:
-            pass
+        # review_note is not a real column on brain_proposals — nothing has ever
+        # added it. A bare update with it in the payload used to fail the WHOLE
+        # write (PostgREST rejects one unknown column and writes nothing), which
+        # silently left the row at whatever approve_proposal() had already set —
+        # APPROVED — even though it was refused and never applied. Proposal 188
+        # was found sitting in exactly that state. Strip-and-retry, same helper
+        # position_lifecycle already built for this failure mode, so status
+        # actually lands.
+        from control.position_lifecycle import _update_stripping_unknown
+        _update_stripping_unknown(
+            lambda payload: sb.table("brain_proposals").update(payload)
+                              .eq("id", proposal_id).execute(),
+            {"status": "HELD", "review_note": why},
+            f"brain_proposals/{proposal_id}")
         return False
-
-    if ptype in REVIEW_ONLY:
-        logger.info(f"Proposal {proposal_id} is {ptype} — acknowledged, no automated "
-                    f"action for this type. Diff/suggestion is in the proposal record "
-                    f"for you to apply manually.")
-        return True
 
     if ptype == "ENGINE_WEIGHT":
         regime  = p.get("regime") or (target_key.split(":")[0] if target_key else None)
