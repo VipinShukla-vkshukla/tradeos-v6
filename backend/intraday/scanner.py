@@ -50,6 +50,13 @@ from loguru import logger
 from config import get_supabase, cfg_float, cfg_int, cfg_bool, today_ist
 
 
+# Module-level, single-process cache — this daemon runs as one long-lived
+# process, and the underlying data (a fixed trading date's stock_data_daily
+# rows) does not change between one 300s slow-tick call and the next. See
+# symbols() and the warning dedup in _latest_date() for what each key guards.
+_cache: dict = {"date": None, "symbols": None, "warned_for": None}
+
+
 @dataclass
 class UniverseEntry:
     symbol: str
@@ -107,12 +114,19 @@ def _latest_date(sb) -> str | None:
             f"earlier date — the universe cannot be built. Check ingest_bhavcopy.")
         return None
 
-    logger.warning(
-        f"  scanner: {newest} carries no traded value (bhavcopy not in yet — "
-        f"a pipeline run dated today before the file publishes leaves value_cr "
-        f"null). Building the universe from {older[0]['date']} instead, which "
-        f"has it. Liquidity is a prior-session fact, so this is the correct "
-        f"input, not a degraded one.")
+    # ONCE per newest-date, not once per 300s call. This function is the cheap
+    # check symbols() runs every slow tick specifically so it does not have to
+    # repeat the expensive scan — but a warning that repeats unchanged every
+    # 5 minutes for a whole session reads as noise, or worse, as "still
+    # broken", when it is the same known, already-explained fact restated.
+    if _cache.get("warned_for") != newest:
+        logger.warning(
+            f"  scanner: {newest} carries no traded value (bhavcopy not in yet — "
+            f"a pipeline run dated today before the file publishes leaves value_cr "
+            f"null). Building the universe from {older[0]['date']} instead, which "
+            f"has it. Liquidity is a prior-session fact, so this is the correct "
+            f"input, not a degraded one.")
+        _cache["warned_for"] = newest
     return older[0]["date"]
 
 
@@ -231,6 +245,36 @@ def persist(entries: list[UniverseEntry], sb=None) -> None:
 
 
 def symbols(sb=None, limit: int | None = None) -> list[str]:
+    """
+    Cached on the resolved date, not on the wall clock.
+
+    Called every 300s from the slow timer. Its inputs — stock_data_daily for
+    whichever date _latest_date() resolves to — do not change between one
+    call and the next: that date is either today's close (fixed once the
+    session ends) or yesterday's (fixed all session, per _latest_date()'s own
+    fallback). So a full 499-row scan plus a 40-row upsert into
+    intraday_universe was running every 5 minutes, all day, to recompute a
+    result that could not have changed — confirmed by watching the log:
+    identical rejection counts on every cycle from open to now.
+
+    Not wrong, since an idempotent upsert of the same rows is harmless — but
+    real, avoidable load for zero benefit, and the kind of thing that reads as
+    "is this actually doing anything" from the log. _latest_date() is two
+    cheap queries; skip the expensive 499-row scan and the write whenever it
+    says nothing has moved.
+
+    The cache is intentionally invalidated only by the DATE changing (the
+    bhavcopy landing mid-session, or a new trading day) — not by a timer of
+    its own, because there is no cadence at which yesterday's close becomes
+    a different set of numbers.
+    """
+    sb = sb or get_supabase()
+    d = _latest_date(sb)
+    if d and d == _cache["date"] and _cache["symbols"] is not None:
+        return _cache["symbols"]
+
     u = build_universe(sb, limit)
     persist(u, sb)
-    return [e.symbol for e in u]
+    out = [e.symbol for e in u]
+    _cache["date"], _cache["symbols"] = d, out
+    return out
