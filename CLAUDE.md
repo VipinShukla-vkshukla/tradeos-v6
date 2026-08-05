@@ -5,8 +5,10 @@ repository. It exists so a new conversation starts with the design rather than
 re-deriving it, and so advice never contradicts decisions already made and paid
 for.
 
-**Read `USER_GUIDE.md` for how the system behaves, and `DESIGN_NOTES.md` for what
-is decided but unbuilt.** This file is the operating context around both.
+**Read `docs/0_SYSTEM_BLUEPRINT.md` first** — every engine, every guardrail, and
+how the pieces connect, in one page. **`USER_GUIDE.md`** for how the system
+behaves day to day, **`DESIGN_NOTES.md`** for what is decided but unbuilt. This
+file is the operating context around all three.
 `docs/TERMINOLOGY.md` disambiguates every regime/state vocabulary — read it
 before writing anything that compares a "regime" string, because at least two
 of these near-homophone systems have already collided silently once.
