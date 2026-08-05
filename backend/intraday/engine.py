@@ -31,6 +31,7 @@ from config import IST, get_supabase, cfg, cfg_bool, cfg_int, cfg_float, today_i
 from intraday.config import (is_market_open, gtt_enabled, orders_enabled,
                              autonomy_phase)
 from intraday.notifier import Notifier, Action
+from intraday import direction as D
 
 
 class IntradayEngine:
@@ -620,6 +621,46 @@ class IntradayEngine:
                     and (x.get("framework") or "SWING").upper() == fw)
                    for x in self.positions)
 
+    def _stock_row(self, symbol: str) -> dict:
+        """
+        The daily fundamentals row the shortability filter reads.
+
+        Cached per session and loaded ONCE for the whole universe rather than
+        per symbol per cycle: the filter runs inside the 15-second loop, and a
+        per-name query there would put ~40 round trips in front of exit
+        evaluation on live positions.
+
+        The date is chosen the way `scanner._latest_date` chooses it — by
+        whether the traded-value column is actually populated, not by max(date).
+        A pipeline run dated today before the bhavcopy publishes writes a row
+        with value_cr, delivery_pct and delivery_qty null, and reading a null
+        traded value as ZERO is what emptied the universe on 05-Aug. Missing data
+        and a failed test must not produce the same answer, so an unavailable row
+        returns {} and the filter's checks that depend on it are SKIPPED rather
+        than failed — the ones that matter most (runway, upper-band proxy) read
+        the live context and still run.
+        """
+        today = today_ist().isoformat()
+        if getattr(self, "_stock_rows_day", None) != today:
+            self._stock_rows_day, self._stock_rows = today, {}
+            try:
+                from intraday import scanner
+                ref = scanner._latest_date(self.sb)
+                if ref:
+                    rows = (self.sb.table("stock_data_daily")
+                            .select("symbol,value_cr,delivery_pct,asm_flag,fo_ban_flag")
+                            .eq("date", ref).execute().data) or []
+                    self._stock_rows = {r["symbol"]: r for r in rows}
+                    logger.debug(f"  shortability: {len(self._stock_rows)} rows from {ref}")
+            except Exception as e:
+                # Loud, because every check that reads this row is silently
+                # skipped when it is empty — and a short filter that skips its
+                # squeeze and liquidity checks is not the filter it claims to be.
+                logger.warning(f"  shortability: daily rows unavailable ({e}) — the "
+                               f"squeeze and liquidity checks will be SKIPPED. "
+                               f"Runway and the band proxy still apply.")
+        return self._stock_rows.get(symbol, {})
+
     def _other_framework_holding(self, symbol: str, framework: str) -> dict | None:
         """
         Is the OTHER book already in this name? Returns the position, or None.
@@ -900,8 +941,17 @@ class IntradayEngine:
             entry = float(p.get("entry_price") or 0)
             if not entry or not ltp:
                 return
-            pct = (ltp - entry) / entry * 100.0
-            hwm = max(float(p.get("high_water_mark") or entry), ltp)
+            # Signed IN THE POSITION'S FAVOUR. `(ltp - entry)/entry` is the price
+            # move, which for a short has the opposite sign to the P&L — so a
+            # short in profit recorded a negative pnl_pct, its MFE (a max) only
+            # ever captured its worst moment, and its MAE (a min) captured its
+            # best. Every excursion statistic inverted, silently, and the
+            # give-back rule that will eventually be calibrated on this data
+            # would have been calibrated on it backwards.
+            d = D.normalise(p.get("direction"))
+            pct = D.gain_pct(entry, ltp, d)
+            hwm = D.favourable_excursion(float(p.get("high_water_mark") or 0),
+                                         ltp, entry, d)
             mfe = max(float(p.get("max_favorable_excursion") or 0.0), pct)
             mae = min(float(p.get("max_adverse_excursion") or 0.0), pct)
 
@@ -1801,7 +1851,16 @@ class IntradayEngine:
         # threaded through separately.
         self._refresh_index_ltp(prices)
         mc = mkt.from_context(self._index_ctx)
-        if not mc.allow_longs:
+        # THE MARKET GATE IS NOW PER DIRECTION, NOT A SINGLE DOOR.
+        #
+        # `allow_longs` alone returned [] and skipped the whole scan — which in
+        # RISK_OFF is exactly the regime a short book exists to trade. The two
+        # flags are complements: RISK_OFF blocks longs and permits shorts, and
+        # RISK_ON does the reverse. Bailing out early only when NEITHER is
+        # permitted keeps the cheap exit for a genuinely untradeable tape while
+        # letting the scan run for whichever side the market is offering.
+        shorts_live = cfg_bool("intraday_allow_shorts", False) and mc.allow_shorts
+        if not mc.allow_longs and not shorts_live:
             if self._last_state.get("_market") != mc.state:
                 mkt.log_state(mc)
                 self._last_state["_market"] = mc.state
@@ -1866,6 +1925,33 @@ class IntradayEngine:
             if not best:
                 continue
 
+            # ── CAN THIS BE SHORTED, AND MORE TO THE POINT, COVERED? ────────
+            #
+            # Runs before conviction, cost or the allocator, because it is not a
+            # quality filter — it is a solvency filter. Every other gate here
+            # asks whether the trade is good. This one asks whether the position
+            # can be closed at all, and a "no" from it cannot be outweighed by
+            # any amount of edge.
+            #
+            # Two switches, both of which must be on: the master
+            # `intraday_allow_shorts`, and the market context actively
+            # confirming weakness. A short is refused by default in every state
+            # that is not RISK_OFF or CAUTION, including an unreadable index.
+            if best.is_short:
+                if not shorts_live:
+                    self._record_setup(best, st.phase, 0.0, "BLOCKED_SHORTS_OFF", 0)
+                    continue
+                from intraday import shortability
+                ok_sh, why_sh, notes = shortability.can_short(
+                    ctx, self._stock_row(sym),
+                    minutes_left=max(getattr(st, "minutes_to_close", 0) or 0, 0)
+                                 - cfg_int("intraday_short_cover_lead_min", 10))
+                best.meta["shortability"] = notes
+                if not ok_sh:
+                    self._record_setup(best, st.phase, 0.0, "BLOCKED_SHORTABILITY", 0)
+                    logger.info(f"      {sym}: short refused — {why_sh[:120]}")
+                    continue
+
             # ONE SYMBOL, ONE BOOK. The swing book got here first, so it owns
             # the name until it closes.
             #
@@ -1921,7 +2007,8 @@ class IntradayEngine:
             if cfg_bool("intraday_structure_gate", True) and ctx.bars:
                 from analysis.market_structure import gate_for_framework
                 ok_s, why_s, st_struct = gate_for_framework(
-                    "INTRADAY", [b.high for b in ctx.bars], [b.low for b in ctx.bars])
+                    "INTRADAY", [b.high for b in ctx.bars], [b.low for b in ctx.bars],
+                    direction=best.direction)
                 if not ok_s:
                     self._record_setup(best, st.phase, 0.0, "BLOCKED_STRUCTURE", 0)
                     continue
@@ -2202,8 +2289,13 @@ class IntradayEngine:
                 return
             if self._held_by_framework(st.symbol, "INTRADAY"):
                 return
-            f = paper_broker.simulate_fill(st.symbol, "BUY", qty, "LIMIT",
-                                           st.entry, st.entry,
+            # A SHORT OPENS WITH A SELL. Hardcoding "BUY" would have simulated
+            # the wrong leg: paper_broker fills a BUY at the worse side of the
+            # spread going UP, so a short's entry would have been modelled at a
+            # price better than reality on the wrong side, and its charges
+            # attributed to the entry leg rather than the exit one.
+            f = paper_broker.simulate_fill(st.symbol, D.entry_side(st.direction),
+                                           qty, "LIMIT", st.entry, st.entry,
                                            product=paper_broker.product_for("INTRADAY"))
             if not f.ok:
                 return
@@ -2247,10 +2339,30 @@ class IntradayEngine:
                 continue
             px = prices.get(p["symbol"]) or p.get("current_price")
             if not px:
+                # A SHORT WITH NO PRICE IS THE ONE CASE THAT MUST BE LOUD.
+                #
+                # A long left open by a missing price is an accidental overnight
+                # hold in a simulation — untidy, and it distorts the paper
+                # results. A short left open is the shape of the failure that in
+                # the live book becomes short delivery and an auction penalty of
+                # roughly 20% of the trade. Same code path, two very different
+                # consequences, so they do not get the same log level.
+                if D.is_short(p.get("direction")):
+                    logger.error(
+                        f"  ⚠ {p['symbol']}: SHORT could not be covered at square-off "
+                        f"— no price available. In the live book this is short "
+                        f"delivery and an auction penalty. Cover it by hand and "
+                        f"find out why the feed had no price for this name.")
                 continue
+            # `close_position` is the flattening leg — a BUY for a short. Named
+            # explicitly rather than left implicit so the intent survives the
+            # next person to read it.
             if paper_broker.close_position(
                     p["symbol"], float(px), "SQUARE_OFF",
-                    "intraday session ended — flat by design", self.sb):
+                    ("intraday session ended — covering the short"
+                     if D.is_short(p.get("direction")) else
+                     "intraday session ended — flat by design"),
+                    self.sb, side=D.exit_side(p.get("direction"))):
                 closed += 1
         if closed:
             logger.info(f"  📄 squared off {closed} paper intraday position(s)")

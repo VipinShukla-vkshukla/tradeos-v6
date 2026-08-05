@@ -197,7 +197,7 @@ def capacity(framework: str = "INTRADAY", sb=None) -> tuple[bool, str, float]:
 
 
 def close_position(symbol: str, exit_price: float, reason: str, detail: str,
-                   sb=None) -> bool:
+                   sb=None, side: str | None = None) -> bool:
     """
     Close a paper position through the SAME path a live one uses.
 
@@ -206,6 +206,12 @@ def close_position(symbol: str, exit_price: float, reason: str, detail: str,
     any of that here would give paper trades a different outcome record from
     live ones and make the two incomparable — which would defeat the only reason
     the simulation exists.
+
+    `side` is the leg that FLATTENS the position — SELL for a long, BUY to cover
+    a short. Accepted and recorded rather than assumed, because the closing leg
+    of a short is a buy and a simulation that models it as a sell prices the
+    spread on the wrong side. Optional so every existing caller is unchanged;
+    when omitted the shared path infers it from the position's own direction.
     """
     sb = sb or get_supabase()
     try:
@@ -214,10 +220,14 @@ def close_position(symbol: str, exit_price: float, reason: str, detail: str,
         if not rows:
             return False
         from control.position_lifecycle import _upsert_position, close_position as _close
-        ok = _close(sb, rows[0], float(exit_price), reason, detail,
+        row = rows[0]
+        leg = (side or ("BUY" if str(row.get("direction") or "LONG").upper() == "SHORT"
+                        else "SELL")).upper()
+        ok = _close(sb, row, float(exit_price), reason, detail,
                     today_ist().isoformat(), source="paper")
         if ok:
-            logger.success(f"  📄 PAPER CLOSED {symbol} @ {exit_price:.2f} — {reason}")
+            verb = "COVERED" if leg == "BUY" else "CLOSED"
+            logger.success(f"  📄 PAPER {verb} {symbol} @ {exit_price:.2f} — {reason}")
         return ok
     except Exception as e:
         logger.warning(f"  paper close failed for {symbol}: {e}")

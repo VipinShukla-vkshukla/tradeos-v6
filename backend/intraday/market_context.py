@@ -61,6 +61,28 @@ class MarketContext:
     vs_vwap_pct: float | None
     reason: str
 
+    # ── SHORTS ARE NOT THE MIRROR OF LONGS, AND THE DEFAULTS SAY SO ─────────
+    #
+    # Appended with defaults so the six positional constructions below keep
+    # working, and defaulted to REFUSE rather than to allow.
+    #
+    # For a long, an unknown market degrades to "allowed, smaller" — the loss is
+    # bounded and you can always sell. For a short it must degrade to "no". Two
+    # reasons, neither of them symmetric:
+    #
+    #   · The Indian cash market has an upward drift. Being long a random name
+    #     in a market you cannot read is a coin flip with a small edge in your
+    #     favour; being short one is the same flip with the edge against you.
+    #   · A short you cannot close is not a loss, it is a PENALTY. A name locked
+    #     at its upper circuit has buyers queued and no sellers, so there is no
+    #     price at which you can cover — you are carried to the close and into
+    #     the auction whatever your stop says.
+    #
+    # So `allow_shorts` is False wherever the market is not actively confirming
+    # weakness, including when the index feed is broken.
+    allow_shorts: bool = False
+    short_size_multiplier: float = 0.0
+
 
 def classify(index_ltp: float | None, index_vwap: float | None,
              index_prev_close: float | None, index_day_low: float | None = None,
@@ -98,18 +120,34 @@ def classify(index_ltp: float | None, index_vwap: float | None,
             f"index +{chg:.2f}% and above VWAP — longs are with the market")
 
     if not above_vwap and not above_prev and near_low:
+        # THE ONE STATE SHORTS ARE ACTUALLY FOR.
+        #
+        # The same correlation that makes six longs one bet here makes six
+        # shorts one bet WITH the market instead of against it. This is the
+        # regime a short book exists to trade, and it is exactly where the long
+        # book is switched off — so the two are complements, not duplicates.
+        #
+        # Size still is not full. Selloffs produce the sharpest counter-rallies
+        # in the session, and a short squeeze runs faster than any long
+        # unwind — the buying is forced, not discretionary.
         return MarketContext(
             RISK_OFF, False, 0.0, round(chg, 2),
             round(vs_vwap, 2) if vs_vwap is not None else None,
             f"index {chg:.2f}%, below VWAP and near session lows — no new longs. "
             f"Intraday correlation rises in selloffs, so six independent-looking "
-            f"setups would be one bet on the market")
+            f"setups would be one bet on the market. SHORTS are with the tape here",
+            True, cfg_float("mkt_short_size_risk_off", 0.6))
 
     if not above_vwap:
+        # Below VWAP but holding above yesterday — a market losing its grip
+        # rather than one that has lost it. Shorts allowed, smallest size: this
+        # is the state that most often resolves into an afternoon recovery, and
+        # a recovery is where shorts are squeezed rather than merely wrong.
         return MarketContext(
             CAUTION, True, cfg_float("mkt_size_caution", 0.35),
             round(chg, 2), round(vs_vwap, 2) if vs_vwap is not None else None,
-            f"index {chg:+.2f}% but under VWAP — minimal size only")
+            f"index {chg:+.2f}% but under VWAP — minimal size only, either way",
+            True, cfg_float("mkt_short_size_caution", 0.3))
 
     return MarketContext(
         NEUTRAL, True, cfg_float("mkt_size_neutral", 0.6),
