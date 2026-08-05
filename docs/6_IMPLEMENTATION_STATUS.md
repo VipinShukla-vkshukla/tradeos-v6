@@ -795,6 +795,65 @@ separate decision, and a larger one — the swing pipeline reads the same table.
 
 ---
 
+## 4·9f — 05-Aug-2026: the pooled bar was never pooled, and 955 rows were invisible to it
+
+**Found while building the operator's requested end-to-end proof, not while
+auditing.** The operator asked for direct confirmation that both books can
+find a setup, decide, size and book it in real time. RISK_OFF has held all
+session, so proving it required a synthetic proposal run through the REAL
+allocator rather than waiting for a live opportunity — and that synthetic
+run surfaced two live defects in §4·9d's own fix, four hours after it merged.
+
+**Defect 1 — the pooling fallback never pooled.** `_empirical_base()` built
+one Supabase query builder, called `.eq("regime_bucket", bucket)` on it for
+the bucketed attempt, then reused the SAME builder for the "pooled" retry,
+expecting the bucket filter to be gone. `supabase-py`'s builder mutates in
+place — `q is q.eq(...)` is `True` — so the filter was never gone. Every
+thin bucket fell straight to the cold-start bar instead of pooling across
+buckets, silently, and the `pooled_across_buckets` flag the function's own
+docstring promises could never once be `True`. Reproduced directly: INTRADAY's
+229 real scored rows for today measured `n=0` from `_empirical_base()`.
+
+**Defect 2 — PostgREST's 1000-row cap, the exact landmine this file already
+documents, hit again in new code.** The pooled query asked for
+`.limit(4000)`; the server returned at most 1000 regardless, silently. SWING's
+true population is 1955 rows; the query saw 1000 of them, in whatever order
+the server chose, and computed a 75th-percentile bar on that arbitrary slice
+rather than the population it claimed to summarise.
+
+**Fixed.** A fresh query builder per attempt, and a full `.range()` pagination
+loop matching the existing idiom in `allocation/scoring.py` and everywhere
+else in this codebase that already carries the 1000-row scar. Verified against
+the exact rows that exposed it: INTRADAY WEAK now reads `n=229,
+pooled_across_buckets=True`; SWING STRONG reads `n=1955` (not 1000).
+
+**Then the actual proof, end to end, on the corrected mechanism:**
+
+- A synthetic textbook opening-range breakout, fed through the REAL engine
+  registry (`evaluate_all`) — GAP fired with a clean, sensible setup: entry
+  511.0, stop 504.36, target 524.29, R:R 2.0, confidence 0.91.
+- Sizing, `liquidity_ok()`, `is_worth_taking()` — all passed on that setup.
+- The REAL `Allocator.select()`, against the LIVE corrected bar: a strong
+  synthetic proposal cleared it (TAKE), a deliberately mediocre one did not
+  (DECLINE) — on BOTH books, proving discrimination rather than a rubber
+  stamp. Total wall-clock for detection through allocator verdict: under 1s.
+- `paper_broker.simulate_fill()` — produced a realistic fill price and MIS
+  charges (₹1.94 on a 9-share clip).
+- `Notifier._format()` / `_should_send()` — message renders correctly, gate
+  passes for a first sighting; Telegram credentials confirmed present for
+  BOTH channels (resolves the open question from §4·9e about whether
+  delivery could even succeed).
+
+**What this does and does not prove.** Every stage of the pipeline is now
+individually verified against live code and, where relevant, live history —
+detection, sizing, gating, allocation, paper fill, alert formatting. What
+remains unproven is the same thing §4·9e already stated honestly: a REAL
+setup clearing every gate end to end, because RISK_OFF has not lifted since
+the fix landed. This finding does not close that gap — it closes a different
+one, found only because closing it was attempted.
+
+---
+
 ## 5·0 — THE BINDING NUMBER WAS WRONG
 
 **Checked against `PRODUCTION_DECISION.md`, `TRADING_METHODOLOGY_REVIEW.md` and

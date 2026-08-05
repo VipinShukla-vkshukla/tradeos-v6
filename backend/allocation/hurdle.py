@@ -85,6 +85,14 @@ from config import cfg, cfg_float, cfg_int, get_supabase, today_ist
 
 STRONG, WEAK = "STRONG", "WEAK"
 
+# PostgREST caps a response at 1000 rows regardless of a larger .limit() asked
+# for client-side — CLAUDE.md's own documented landmine, hit again here. A
+# single .limit(4000).execute() on a population of 1955 (this account's real
+# SWING count today) silently returned exactly 1000 of them, in whatever order
+# the server chose, and the 75th-percentile bar was computed on that arbitrary
+# slice rather than the population it claimed to be. Page, don't ask harder.
+PAGE = 1000
+
 
 def regime_bucket(regime: str | None) -> str:
     """
@@ -222,18 +230,52 @@ def _empirical_base(bucket: str, framework: str, sb=None) -> tuple[float, dict]:
     pooled = False
     try:
         sb = sb or get_supabase()
-        q = (sb.table("allocation_decisions")
-               .select("edge,framework,regime_bucket,trade_date")
-               .eq("framework", fw)
-               .gte("trade_date", since)
-               .not_.is_("edge", "null"))
-        rows = (q.eq("regime_bucket", bucket).limit(4000).execute().data) or []
+
+        # A FRESH BUILDER PER ATTEMPT, NOT ONE REUSED ACROSS BOTH.
+        #
+        # supabase-py's query builder mutates in place: q.eq(...) returns the
+        # SAME object it was called on, not a copy. `q is q.eq(...)` is True.
+        # The original code built one `q`, called `.eq("regime_bucket", ...)`
+        # on it for the bucketed attempt, then reused that same `q` for the
+        # "pooled" fallback expecting the bucket filter to be gone — it was
+        # never gone. The pooled retry silently re-ran the identical bucketed
+        # query, so a thin bucket fell straight to cold start on every call
+        # instead of pooling, and the "pooled_across_buckets" flag this
+        # function's own docstring promises has never once been able to be
+        # True. Two independent builders is the fix, not a workaround.
+        def base_query():
+            return (sb.table("allocation_decisions")
+                      .select("edge,framework,regime_bucket,trade_date")
+                      .eq("framework", fw)
+                      .gte("trade_date", since)
+                      .not_.is_("edge", "null"))
+
+        # PAGED, NOT .limit(4000). A single request asking for 4000 rows still
+        # gets at most 1000 back — PostgREST's own server-side cap, which a
+        # bigger client-side .limit() cannot raise. Confirmed on this account:
+        # 1955 real SWING rows, 1000 returned, the 75th percentile computed on
+        # whichever 1000 the server happened to return. A fresh builder every
+        # page for the same reason base_query() exists — .range() mutates too.
+        def fetch_all(filtered: bool) -> list:
+            out, off = [], 0
+            while True:
+                q = base_query()
+                if filtered:
+                    q = q.eq("regime_bucket", bucket)
+                page = q.range(off, off + PAGE - 1).execute().data or []
+                out += page
+                if len(page) < PAGE:
+                    break
+                off += PAGE
+            return out
+
+        rows = fetch_all(filtered=True)
         if len(rows) < floor:
             # Not enough in this bucket yet. Pooling across buckets is a weaker
             # answer than segmenting, and a far better one than a cold start —
             # but the verdict must record which it got.
             pooled = True
-            rows = (q.limit(4000).execute().data) or []
+            rows = fetch_all(filtered=False)
     except Exception as e:
         # LOUD. This is the failure that emptied the book: the same query threw
         # for a year of sessions behind logger.debug, and a silent fall-through
