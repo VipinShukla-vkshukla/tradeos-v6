@@ -71,7 +71,15 @@ const KEYS = [
   // marked with <P4/> rather than collected in a section of their own.
   'autonomy_phase',
   'alloc_shadow_enabled', 'alloc_live_intraday', 'alloc_live_swing',
-  'alloc_max_slots', 'alloc_basket_recheck', 'alloc_hurdle_min_sample',
+  'alloc_basket_recheck', 'alloc_hurdle_min_sample',
+  // 044. one_framework_per_symbol is the rule that keeps a single name out of
+  // both books at once — with it off, the 15:15 intraday square-off can sell
+  // into a multi-week swing thesis on the same shares. alloc_hurdle_cold_start
+  // is shown because an accidental 0.0 here refuses every proposal whose
+  // expected R merely fails to beat its own round trip, which is how the
+  // intraday book went a full session without a trade.
+  'one_framework_per_symbol', 'alloc_hurdle_cold_start',
+  'alloc_hurdle_lookback_days',
   'overlay_expiry_enabled', 'overlay_vol_scaling_enabled',
   'overlay_liquidity_enabled', 'overlay_liquidity_strict',
   'governance_freeze_enabled', 'governance_require_oos',
@@ -683,27 +691,75 @@ function SharedControls({ cfg, bool, set, busy }: {
           onChange={(v) => set('alloc_shadow_enabled', String(v),
             v ? 'Operator panel' : 'Operator panel — WARNING: stops recording promotion evidence')} />
       </Row>
-      <div className="grid grid-cols-2 gap-2 mt-1">
-        <div>
-          <div className="text-[10px] text-muted-foreground flex items-center gap-1">Max slots/cycle<P4 /></div>
-          {numField('alloc_max_slots')}
+      <div className="mt-1">
+        <div className="text-[10px] text-muted-foreground flex items-center gap-1">
+          Hurdle min sample<P4 />
         </div>
-        <div>
-          <div className="text-[10px] text-muted-foreground flex items-center gap-1">Hurdle min sample<P4 /></div>
-          {numField('alloc_hurdle_min_sample')}
-        </div>
+        {numField('alloc_hurdle_min_sample')}
       </div>
       <div className="text-[10px] text-muted-foreground mt-1">
-        <b>Max slots/cycle</b> is a shared ceiling on new entries today, counted across BOTH
-        books together — not per-book — and it also raises the hurdle as it fills, so the
-        last slot must clear a higher bar than the first. <b>Hurdle min sample</b> is how many
-        resolved outcomes an engine needs before the allocator trusts ITS OWN edge over the
-        shared cold-start prior.
+        <b>Hurdle min sample</b> is how many scored arrivals a book needs before the
+        allocator trusts its own measured bar over the permissive cold start.
+      </div>
+      {/* alloc_max_slots IS DELIBERATELY NOT SHOWN.
+          It used to be the slot budget, pooled across both books — which is
+          what let one swing entry in the morning eat the intraday book's
+          allowance for the rest of the session. Migration 044 replaced it
+          with each book's OWN swing_max_new_per_day / intraday_max_new_per_day,
+          and those are already editable in the two cards above. The key now
+          survives only as a fallback for a caller that passes no budget, and
+          the live engine always passes one. Rendering it here would put a knob
+          on screen that changes nothing — the failure this panel exists to
+          make impossible. */}
+      <div className="text-[10px] text-muted-foreground mt-1 border-l-2 border-border/40 pl-2">
+        The allocator&apos;s slot budget is <b>per book</b>, taken from
+        &quot;New positions/day&quot; in each card above — not a shared pool. It also
+        raises that book&apos;s bar as it fills, so the last slot must clear more than
+        the first.
       </div>
       <Row label="Basket recheck" tag={<P4 />}
         hint="Recheck sector caps across the allocator's OWN simultaneous picks, not just against what is already held.">
         <Toggle on={bool('alloc_basket_recheck')} disabled={busy !== null}
           onChange={(v) => set('alloc_basket_recheck', String(v), 'Operator panel')} />
+      </Row>
+
+      {/* The cold-start bar is the control that emptied the intraday book on
+          05-Aug, so it is shown rather than left to the config table. Kept as
+          TEXT, not a number input: blank and 0 mean opposite things here, and
+          a number input cannot express "unset". */}
+      <div className="text-[10px] text-muted-foreground mt-2 flex items-center gap-1">
+        Cold-start bar <span className="font-normal">— blank means permissive</span><P4 />
+      </div>
+      <input type="text" placeholder="(blank — permissive)"
+        defaultValue={num('alloc_hurdle_cold_start')} disabled={busy !== null}
+        onBlur={(e) => { const v = e.target.value.trim();
+          if (v !== (cfg['alloc_hurdle_cold_start'] ?? ''))
+            set('alloc_hurdle_cold_start', v, 'Operator panel'); }}
+        className="w-full mt-0.5 bg-panel border border-border/50 rounded px-1.5 py-1 text-xs font-mono tabular-nums" />
+      {(cfg['alloc_hurdle_cold_start'] ?? '').trim() !== '' && (
+        <div className="mt-1 text-[10px] text-amber-400">
+          A hard floor is set. The edge this is compared against already has costs
+          subtracted, so a value at or above 0 refuses every proposal whose expected R
+          does not beat its own round trip — which on the intraday book is all of them.
+          This is what emptied that book for a session on 05-Aug.
+        </div>
+      )}
+      <div className="mt-2">
+        <div className="text-[10px] text-muted-foreground flex items-center gap-1">
+          Hurdle lookback (days)<P4 />
+        </div>
+        {numField('alloc_hurdle_lookback_days')}
+      </div>
+
+      {/* One symbol, one book. Shared by definition — it is the rule about the
+          BOUNDARY between the two books, so it cannot sit inside either card. */}
+      <SubHead>Book isolation</SubHead>
+      <Row label="One book per symbol" tag={<P4 />}
+        hint="Whichever book reaches a name first owns it until it closes. Off, the swing and intraday books can both hold the same stock — the 15:15 square-off then sells into a multi-week thesis, the account carries one idea across two sizing models that cannot see each other, and the same move is scored twice by the learning loop.">
+        <Toggle on={bool('one_framework_per_symbol')} danger={!bool('one_framework_per_symbol')}
+          disabled={busy !== null}
+          onChange={(v) => set('one_framework_per_symbol', String(v),
+            v ? 'Operator panel' : 'Operator panel — WARNING: both books may hold one name')} />
       </Row>
 
       {/* ── Structural overlays that apply to both books. Expiry-day sizing

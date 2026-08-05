@@ -48,11 +48,20 @@ These are earned, not stylistic. Each one has a failure behind it.
 it, read the output, then say what happened. Six exit-path bugs surfaced in one
 day in July and every one was found by running something, not by reading it.
 
-**A check that cannot fail is not a check.** Four separate health checks were
+**A check that cannot fail is not a check.** Five separate health checks were
 found reporting green while the thing they watched was broken — a GTT check that
 could not see, a config check that read keys it never fetched, a quality audit
-checking its own output, and a token check reading a key that did not exist.
-Test that a check FAILS when it should.
+checking its own output, a token check reading a key that did not exist, and
+`check_selects`, which called `validate_selects.main()` without `strict=True`,
+read the return code it hardcodes to 0, and printed "every SELECT names columns
+that exist" over the top of its own error output. That last one is what let a
+select on a non-existent column survive into a live veto and empty the intraday
+book. Test that a check FAILS when it should.
+
+**A check that cannot PASS is the same defect wearing a different hat.** The
+allocator's bar could not be cleared by any setup at any hour, and every refusal
+looked exactly like an ordinary market. When you build a threshold, assert that
+a realistic input clears it — not only that a bad one does not.
 
 **Silent defaults are the enemy.** A config key nobody reads, a column nobody
 writes, a step that completes producing nothing — this is the dominant failure
@@ -112,7 +121,7 @@ apply. Re-reading buys nothing and costs the whole file.
 ## Before changing anything
 
 ```bash
-cd backend && python -m tools.health        # 10 checks, is anything broken
+cd backend && python -m tools.health        # 16 checks, is anything broken
 cd backend && python -m tools.simulate      # what BOTH books would do, writes nothing
 ```
 
@@ -149,6 +158,32 @@ both again. `simulate` is read-only and safe at any time.
   whatever it is given (8000→7999, 32000→32000, always `finish_reason=length`).
   Raising the budget never converges; `ai_thinking_enabled` is off for that
   reason. Read `finish_reason`, never infer truncation from a closing brace.
+- **A gate and the thing it gates must be the SAME QUANTITY.** `scoring.score()`
+  returns edge = net-of-cost expected R **per day**; `hurdle` compared it against
+  gross realised R **per trade**. Both are "R", neither is the same number. The
+  intraday book took zero trades for a full session and the logs read like a
+  quiet market. The bar is now a percentile of `allocation_decisions.edge` — the
+  same column the scorer writes — because that is the only construction under
+  which the two cannot drift apart again. Migration 044.
+- **A cold start must be PERMISSIVE, never 0.0.** A bar of zero looks neutral
+  and is not: the edge it is compared against already has costs subtracted, so
+  zero refuses every proposal whose expected R does not beat its own round trip.
+  On the intraday book that is all of them (prior +0.08R vs MIS cost +0.21R).
+  A component with no data must be indistinguishable from that component being
+  absent.
+- **One symbol, one book — and check it from BOTH sides.** Migration 028 made
+  two rows for one name *storable*. That is a storage guarantee and it was read
+  as a trading policy. Intraday refused any name swing held; swing never looked
+  at the intraday book, so real money could be committed on top of a paper
+  position — two exit ladders (15:15 square-off vs a 15-session time stop) on one
+  set of shares. `_other_framework_holding()`, called from both sides, health
+  check `books`. Switch: `one_framework_per_symbol`.
+- **Per-book caps are not a pooled cap.** `alloc_max_slots` (2, "across both
+  books") was subtracted from every position entered today in *either*
+  framework, so one swing entry capped the intraday book — governed by
+  `intraday_max_new_per_day` (4) — at one slot for the rest of the session, and
+  two capped it at zero, where `hurdle` returns an infinite bar. Each book
+  brings its own budget.
 
 ## Architecture — the actual data flow
 

@@ -80,16 +80,37 @@ def check_config() -> tuple[bool, str]:
 
 
 def check_selects() -> tuple[bool, str]:
+    """
+    Does every .select() name columns that exist?
+
+    STRICT IS NOT OPTIONAL HERE, AND THAT IS THE WHOLE FIX.
+
+    validate_selects.main(strict=False) returns `1 if (problems and strict)
+    else 0` — it LOGS every broken site and then reports success. This check
+    called it with no argument, read only the return code, and announced "every
+    SELECT names columns that exist" over the top of its own error output.
+
+    That is the fifth green-while-broken check found in this project, and it is
+    the one that mattered most: it is what let allocation/hurdle.py select
+    `regime_at_detection`, a column on no migration and written by no code,
+    survive all the way into a LIVE veto. PostgREST rejected the whole query,
+    the bare except swallowed it, the allocator fell back to its cold-start bar,
+    and the intraday book took zero trades while health read clean.
+
+    Demonstrated failing before it was demonstrated passing.
+    """
     from tools import validate_selects as vs
     buf = io.StringIO()
     with redirect_stdout(buf), redirect_stderr(buf):
-        rc = vs.main() if hasattr(vs, "main") else 0
+        rc = vs.main(strict=True)
     out = buf.getvalue()
     if rc:
         bad = [l.strip() for l in out.splitlines()
-               if "✗" in l or "missing" in l.lower()][:4]
-        return False, "; ".join(bad) or "validate_selects reported failures"
-    return True, "every SELECT names columns that exist"
+               if "no column(s)" in l or "does not exist" in l or "missing:" in l][:4]
+        return False, ("; ".join(bad) or "validate_selects reported failures") + \
+            " — PostgREST fails the WHOLE query on one unknown column, so each of "\
+            "these returns nothing at all rather than degrading"
+    return True, "every SELECT names columns that exist (checked strictly)"
 
 
 def check_broker_consistency() -> tuple[bool, str]:
@@ -727,10 +748,163 @@ def check_allocator_isolation() -> tuple[bool, str]:
                   f"books ({mode})")
 
 
+def check_allocator_hurdle() -> tuple[bool, str]:
+    """
+    Can the bar ever be cleared, and does an allocator with no data stand aside?
+
+    A CHECK THAT CANNOT PASS IS AS USELESS AS ONE THAT CANNOT FAIL, and on
+    05-Aug-2026 this system ran an entire session on one. `scoring.score()`
+    returns net-of-cost expected R per day; the hurdle was built from gross
+    realised R per trade. Different quantities, compared with `<`. Every
+    intraday setup was declined, all day, and nothing anywhere said the bar was
+    unclearable — the logs read like a market with no opportunities.
+
+    Three assertions, all behavioural rather than textual:
+
+      1. THE BAR AND THE EDGE COME FROM ONE DEFINITION. _empirical_base must
+         read the same column `_record` writes `score()`'s output into. Units
+         cannot drift when there is only one place the quantity is defined.
+      2. A COLD START MUST BE PERMISSIVE. With no history the allocator has no
+         opinion, and an allocator with no opinion must be indistinguishable
+         from no allocator — otherwise its first day in production is a
+         shutdown. Tested by actually scoring a proposal against a cold bar.
+      3. SLOTS ARE PER BOOK. Asserted at the call site by name, because the
+         pooled version silently capped the intraday book at the swing book's
+         morning.
+    """
+    import inspect
+    import re
+    from pathlib import Path
+    root = Path(__file__).parent.parent
+    pkg = root / "allocation"
+    if not pkg.exists():
+        return True, "allocation package not built yet"
+
+    from allocation import hurdle as H
+    from allocation import allocator as A
+    from allocation import policies as P
+
+    # 1 — one definition of the quantity, read by both sides.
+    #
+    # MATCHED AGAINST CODE, NOT PROSE. The first version of this check tested
+    # `"allocation_decisions" in source` and passed happily after the table was
+    # switched back to intraday_setups, because the docstring underneath still
+    # named the right one. An assertion a comment can satisfy is decoration.
+    # The docstring is stripped and the actual call expression is required.
+    def _code(fn) -> str:
+        src = inspect.getsource(fn)
+        doc = inspect.getdoc(fn)
+        if doc:
+            for line in doc.splitlines():
+                src = src.replace(line, "")
+        return src
+
+    base_src = _code(H._empirical_base)
+    rec_src  = _code(A.Allocator._record)
+    reads = re.findall(r'\.table\(\s*["\'](\w+)["\']', base_src)
+    if reads != ["allocation_decisions"]:
+        return False, (f"the hurdle reads its arrival distribution from "
+                       f"{reads or 'nothing'} rather than allocation_decisions — "
+                       f"it is being built from a different population than the one "
+                       f"scoring.score() writes into, which is how a bar denominated "
+                       f"in gross R per trade came to be compared against an edge "
+                       f"denominated in net R per day, and emptied the intraday book "
+                       f"for a full session")
+    if 'float(r["edge"])' not in base_src:
+        return False, ("the hurdle no longer reads the `edge` column itself — the "
+                       "bar and the proposals it judges must come from one "
+                       "definition of the quantity or they will drift apart again")
+    if '"edge": v.get("edge")' not in rec_src:
+        return False, ("allocation_decisions.edge is no longer written from the "
+                       "scorer's own output, so the hurdle's population and the "
+                       "proposals it judges are no longer the same quantity")
+
+    # 2 — the cold start must admit a proposal, not refuse one.
+    #     Exercised through the real hurdle and the real policy.
+    bar, inputs = H._cold_start(0, 40, "health check")
+    if bar != float("-inf") and bar > -1.0:
+        return False, (f"the cold-start bar is {bar}, which REFUSES a proposal whose "
+                       f"expected R merely fails to exceed it. With no history the "
+                       f"allocator must stand aside, not stand down — a bar of 0.0 "
+                       f"against a cost-netted edge declines every intraday setup, "
+                       f"because the measured prior (+0.08R) does not cover the MIS "
+                       f"round trip (+0.21R)")
+    probe = {"symbol": "HEALTHCHECK", "proposal": None, "edge": -0.13}
+    v = P.intraday_stopping([probe], bar, 1)[0]
+    if v["verdict"] != "TAKE":
+        return False, (f"a typical intraday setup (edge -0.13) is {v['verdict']} "
+                       f"against the cold-start bar {bar} — this is exactly the "
+                       f"state that took the intraday book to zero trades. "
+                       f"{v.get('reason')}")
+
+    # 3 — per-book slots, asserted at the call site.
+    eng = (root / "intraday/engine.py").read_text(encoding="utf-8")
+    if "slots_by_framework" not in eng:
+        return False, ("the allocator is still being given one pooled slot count "
+                       "for both books — a single swing entry then caps the "
+                       "intraday book, whose own governance allows "
+                       "intraday_max_new_per_day, at one for the rest of the day")
+
+    from config import cfg_bool, cfg_int
+    live = [b for b in ("intraday", "swing") if cfg_bool(f"alloc_live_{b}", False)]
+    return True, (f"bar and edge share one definition; a cold start admits a "
+                  f"typical setup; slots are per book "
+                  f"(swing {cfg_int('swing_max_new_per_day', 2)}, "
+                  f"intraday {cfg_int('intraday_max_new_per_day', 4)})"
+                  + (f"; veto LIVE for {'+'.join(live)}" if live else "; shadow only"))
+
+
+def check_framework_isolation() -> tuple[bool, str]:
+    """
+    Can one symbol end up in both books at once?
+
+    The rule "one symbol, one book" was written in two comment blocks and
+    implemented in one direction. Intraday skipped any name in `self.positions`;
+    swing checked only `_held_by_framework(sym, "SWING")`. So the PAPER book
+    refused to collide with the live one, and the LIVE book would buy a name the
+    paper book already held — real money layered on a simulated position, with a
+    15:15 square-off and a 15-session time stop pointed at the same shares.
+
+    Asserted by locating BOTH call sites by name, the same way the allocator
+    veto is asserted — because the previous failure here was not a missing
+    function, it was a function that existed and was called from only one side.
+    """
+    from pathlib import Path
+    root = Path(__file__).parent.parent
+    eng = (root / "intraday/engine.py").read_text(encoding="utf-8")
+
+    if "def _other_framework_holding" not in eng:
+        return False, ("_other_framework_holding() is gone — nothing stops the "
+                       "swing book buying a name the intraday book is already "
+                       "trading, and the two exit ladders then contradict each "
+                       "other on the same shares")
+    missing = [book for book, call in
+               (("intraday", '_other_framework_holding(sym, "INTRADAY")'),
+                ("swing",    '_other_framework_holding(sym, "SWING")'))
+               if call not in eng]
+    if missing:
+        return False, (f"the one-book-per-symbol rule is not enforced on the "
+                       f"{', '.join(missing)} side. This is the exact shape of the "
+                       f"original defect: the guard existed and only one book "
+                       f"called it, so collisions could only be created by the "
+                       f"book that was not checking")
+
+    from config import cfg_bool
+    if not cfg_bool("one_framework_per_symbol", True):
+        return False, ("one_framework_per_symbol is OFF — the swing and intraday "
+                       "books may both hold the same name. That is a deliberate "
+                       "operator choice, but it is not a state health can call "
+                       "healthy: the intraday square-off will sell into a swing "
+                       "thesis and the same move is scored twice by the learning loop")
+    return True, "one symbol, one book — enforced from both sides"
+
+
 CHECKS = [
     ("config",   "risk numbers contradict each other, or a switch does nothing", check_config,   False),
     ("governance", "a parameter can change itself, or an unmeasured layer ranks trades", check_governance, False),
     ("allocator", "the allocator can reach an order path despite its switches", check_allocator_isolation, False),
+    ("hurdle",   "the allocator's bar can never be cleared, so the book goes quiet", check_allocator_hurdle, False),
+    ("books",    "one symbol ends up in both frameworks with contradictory exits", check_framework_isolation, False),
     ("storage",  "the database stops accepting writes and the pipeline goes silent", check_storage, False),
     ("feed",     "decisions run on data of unknown age, or ticks arrive late",  check_feed_integrity, False),
     ("exits",    "an exit rule can sell without alerting, or fires from only one caller", check_exit_actions, False),

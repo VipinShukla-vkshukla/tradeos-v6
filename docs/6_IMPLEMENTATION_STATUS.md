@@ -9,7 +9,8 @@ Read this to know where the repository actually is against the frozen
 architecture, and which of the specification's claims did not survive contact
 with the live system.
 
-**Branch:** `phase4-allocator`. `main` untouched.
+**Branch:** `phase4-allocator`, then `claude/trade-os-phase-4-perf-7qt631`
+(§4·9c, the allocator veto that refused everything). `main` untouched.
 
 ---
 
@@ -546,10 +547,196 @@ unrelated to Phase 4 and unrelated to this fix. They were found while tracing
 this bug, not caused by it — out of scope here, but worth a line so they are
 not rediscovered as a surprise later.
 
-**Not yet done:** `OperatorPanel.tsx`'s hint text for these three switches
-still needs correcting to describe what is now actually true. That correction
-is folded into the grouped-view redesign the operator asked for next, rather
-than patched twice.
+**Done in the same pass:** `OperatorPanel.tsx`'s hint text for these three
+switches now describes what is actually true, as part of the grouped-view
+redesign — the panel is regrouped by SCOPE (Swing / Intraday / Shared) with a
+`P4` tag marking Phase 4 controls inline, replacing the separate "Phase 4"
+section that grouped by ship date. Expiry sizing sits in the Intraday card,
+volatility scaling and the liquidity gate in Shared, because that is what the
+traced call paths say. Control count conserved exactly: 30 switches and 16
+inputs before and after.
+---
+
+## 4·9d — 05-Aug-2026: the bar no setup could clear, and the guard one side called
+
+**Branch:** `claude/trade-os-phase-4-perf-7qt631`. Migration 044.
+
+**The operator reported it as a performance regression: since 043 went in, the
+intraday book had booked nothing all session, while swing booked one trade in
+the morning — and the same stock was being picked up by both frameworks.** Both
+symptoms are one event. 043 set `alloc_live_intraday` true and left
+`alloc_live_swing` false, so the allocator held a veto over exactly the book
+that went silent and none over the book that kept trading. That asymmetry is the
+fingerprint of the switch, not of the market.
+
+### The intraday book: three faults, stacked, each sufficient alone
+
+**1. The bar and the score were different quantities.** `scoring.score()`
+returns `edge = (E[R] - cost_R) / hold_days` — expected R, NET of costs, PER
+day. `hurdle._empirical_base` built its bar from `outcome_pct / risk_pct` over
+resolved detections — realised R, GROSS, per trade. Two different numbers
+compared with `<`. Reproduced against the real `hurdle`, `scoring` and
+`policies` modules on a population shaped like the live one (n=595):
+
+```
+  time  slots       bar      edge  verdict
+ 09:20      2    1.2008   -0.1252  DECLINE
+ 09:20      1    1.5009   -0.1252  DECLINE
+ 12:15      2    0.9807   -0.1252  DECLINE
+ 14:30      1    1.0137   -0.1252  DECLINE
+   any      0       inf   -0.1252  DECLINE
+```
+
+DECLINE at every hour, every slot count, every regime. Clearing the 09:20 bar
+required a prior mean of **+1.41R**; the measured prior for the entire intraday
+book is **+0.08R**, and no engine in it has ever been close.
+
+**2. The query never ran.** It selected `regime_at_detection` — a column on no
+migration, written by no code, appearing in exactly one place in the entire
+codebase. PostgREST rejects the whole request for one unknown column; a bare
+`except` swallowed it. **The "empirical bar" has never once been computed**, so
+every call fell through to the cold start.
+
+**3. The cold start refused as well.** It returned `0.0`, which reads as
+neutral and is not. The edge it is compared against already has costs
+subtracted, so `0.0` demands that every proposal beat its own round trip — and
+the intraday prior (+0.08R) does not cover the MIS round trip (+0.21R). This
+module's own docstring promises a cold start that AGREES with the live path *"so
+the plumbing is proved before it changes any opinion."* It did the exact
+opposite: an allocator with no data refused everything.
+
+### The check that should have caught fault 2 could not fail
+
+`tools/validate_selects.main()` ends `return 1 if (problems and strict) else 0`.
+`health.check_selects` called it as `vs.main()` — no argument — read only the
+return code, and printed its own success message over the top of the tool's
+error output. Demonstrated with one known-broken site:
+
+```
+  allocation/hurdle.py:122 — intraday_setups has no column(s): regime_at_detection
+  1 broken select site(s). Every one of them is a step that will fail completely.
+
+  return code = 0            <-- health reads ONLY this
+  health.check_selects() ->  ok=True, "every SELECT names columns that exist"
+```
+
+**This is the fifth green-while-broken check found in this project**, and the
+most expensive: it is what let a dead query reach a live veto. `check_selects`
+now passes `strict=True`, and was demonstrated failing before it was
+demonstrated passing.
+
+### The fix: the bar is read from where the quantity is defined
+
+`_empirical_base` now takes its arrival distribution from
+`allocation_decisions.edge` — the column `scoring.score()`'s own output is
+written into. This is not a convenience. It is the only construction under which
+the bar and the edge cannot drift apart again, because there is exactly one
+definition of the quantity and both sides of the `<` read it from there.
+
+The `bucket` and `framework` arguments now actually filter. They were accepted
+and ignored, so STRONG and WEAK returned an identical bar and swing proposals
+were priced against intraday detections — the pooled curve the module's own
+docstring spends a paragraph arguing against. Where a bucket is thin the query
+pools across buckets and **records that it pooled**, so a verdict never claims a
+segmentation it did not get.
+
+Verified after the fix, same modules, same method:
+
+```
+  cold start (no history)      bar = -inf    edge -0.13  ->  TAKE
+  with history (n=400)         bar = +0.346  edge -0.13  ->  DECLINE
+                               bar = +0.346  edge +0.45  ->  TAKE
+```
+
+The allocator now discriminates instead of refusing. A genuinely good setup
+clears; a mediocre one does not; and with nothing to go on it stands aside.
+
+### Slots were pooled across both books
+
+`alloc_max_slots` (2, *"across both books"*) was subtracted from every position
+entered today in EITHER framework. One swing entry in the morning therefore
+capped the intraday book — governed by `intraday_max_new_per_day` (4) — at a
+single slot for the rest of the session; two entries of any kind capped it at
+zero, where `hurdle()` returns an infinite bar. The same number was then passed
+to `swing_assignment` and `intraday_stopping` independently, so the pooled
+budget was never enforced jointly either. **Over-restrictive within a book,
+under-restrictive across them, and invisible in either book's own logs.** Each
+book now brings its own budget from its own configured cap.
+
+### Stale verdicts could veto
+
+`self._verdicts` was only ever assigned, at the end of `_allocate_shadow`, and
+every early return left the previous cycle's verdicts in place while
+`allocator_permits` kept reading them. A DECLINE issued at 09:20 could veto a
+different setup in the same name at 14:00 on arithmetic that no longer referred
+to it. Turning `alloc_shadow_enabled` off mid-session froze the last verdicts
+permanently, because that switch and `alloc_live_*` are read independently.
+Cleared first now, so no exit path carries one forward; an empty map fails open,
+which is the documented behaviour.
+
+### One symbol, one book — written twice, implemented once
+
+The rule appeared in two comment blocks and in one direction of code. Intraday
+skipped any name in `self.positions`. Swing called `_held_by_framework(sym,
+"SWING")`, which does not look at the intraday book at all — while its own
+comment block opened with *"checked across BOTH frameworks, not just swing"* and
+closed by saying an intraday tranche *"does not block this."* Those two
+sentences cannot both be true and the code implemented the second.
+
+**The asymmetry ran in the dangerous direction.** The PAPER book refused to
+collide with the live one; the LIVE book would buy a name the paper book was
+already trading. Real money layered on a simulated position — the worst of the
+four possible orientations, and the exact inverse of what §1 of `DESIGN_NOTES`
+intended. Held in both books at once: the 15:15 square-off sells into a
+15-session swing thesis on the same shares, ~a third of a ₹20,000 account sits
+on one idea across two sizing models that cannot see each other, and one price
+move is scored twice — once in `signal_log`, once in `intraday_setups`.
+
+`_other_framework_holding()` is called from both sides. Intraday refusals are
+recorded as `BLOCKED_CROSS_FRAMEWORK` rather than skipped silently, so the rule
+can be priced by the weekly review instead of guessed at. Switch:
+`one_framework_per_symbol`, default true.
+
+**This reverses the default `DESIGN_NOTES` §1 argues for, deliberately.** Core-
+and-satellite is real desk practice and remains the intent. It cannot happen
+while intraday is PAPER: `_maybe_open_paper` refuses to place a live intraday
+order at all, so the state that section was written to unlock has never once
+occurred. §1 now carries the three conditions for turning the switch back off.
+
+### Two new health checks, both demonstrated failing
+
+| Check | Asserts | Broken by |
+|---|---|---|
+| `hurdle` | bar and edge share one definition; a cold start ADMITS a typical setup; slots are per book | restoring the 0.0 cold start; pointing the population back at `intraday_setups`; stripping `slots_by_framework` |
+| `books` | `_other_framework_holding` exists AND is called from both sides; the switch is on | stripping the swing call site; setting `one_framework_per_symbol` false |
+
+Six injected breakages, six correct failures, and both pass on the restored
+tree. The first version of the `hurdle` check **passed** when the population was
+switched back — its assertion was satisfied by the docstring underneath. It now
+strips the docstring and matches the actual call expression. *An assertion a
+comment can satisfy is decoration.*
+
+### What went back off
+
+`alloc_live_intraday` → **FALSE**. The intraday book returns to the greedy path
+that was producing trades. The allocator keeps scoring and recording; it stops
+refusing. Promote it again only after `tools/allocator_report` reads sane on the
+corrected arithmetic — and expect a genuine cold start first, because
+`allocation_decisions` carries no `regime_bucket` rows yet.
+
+### Not verified in that session
+
+**No database credentials were available.** Every result above was produced by
+running the real modules against synthetic data shaped like the live
+population. `tools.validate_selects`, `tools.health` and `tools.simulate` were
+**never run against the live schema on this branch**, and the frontend changes
+were not compiled (`node_modules` absent). The mechanism is proven; the
+behaviour on the live book is not. That run is the merge gate.
+
+**Migration 044 must be applied BEFORE the code is deployed.**
+`allocator._record` now writes `regime_bucket`, and PostgREST fails the whole
+insert on one unknown column — the buffered flush would lose every verdict in
+the batch.
 
 ---
 
@@ -939,6 +1126,23 @@ should be re-read before they are built:
    now reports honestly for the first time. Stage 10's own precondition is not
    met.
 8. **Stages 5–9 are not started.** See §5c.
+9. **Migration 044 is written and NOT applied**, and it must be applied BEFORE
+   the §4·9c code is deployed — `allocator._record` writes `regime_bucket`, and
+   one unknown column fails the whole buffered insert. Until it runs,
+   `check_selects` will correctly flag `allocation_decisions.regime_bucket` as
+   missing; that is the check working, not the branch being broken.
+10. **§4·9c was verified without a database.** `tools.validate_selects
+    --strict`, `tools.health` and `tools.simulate` have never been run against
+    the live schema on that branch, and the frontend was not compiled. Run all
+    three after 044 and before merging — the two new checks (`hurdle`, `books`)
+    are the ones that matter.
+11. **`alloc_live_intraday` is OFF again** and should stay off for at least one
+    full session. Read `python -m tools.allocator_report` before promoting it:
+    the bar it reports will be a cold start until `allocation_decisions`
+    accumulates `regime_bucket` rows past `alloc_hurdle_min_sample` (40).
+12. **`one_framework_per_symbol` reverses the default `DESIGN_NOTES` §1 argues
+    for.** That is an operator decision, not a code decision. §1 carries the
+    three conditions for switching it back; the toggle is on the operator panel.
 
 ---
 

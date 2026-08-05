@@ -531,6 +531,64 @@ class IntradayEngine:
                     and (x.get("framework") or "SWING").upper() == fw)
                    for x in self.positions)
 
+    def _other_framework_holding(self, symbol: str, framework: str) -> dict | None:
+        """
+        Is the OTHER book already in this name? Returns the position, or None.
+
+        ONE SYMBOL, ONE BOOK — AND IT IS NOW ENFORCED IN BOTH DIRECTIONS.
+
+        The rule was written down twice and implemented once. The intraday side
+        skipped any symbol appearing in `self.positions`, which blocks a name the
+        swing book holds. The swing side called `_held_by_framework(sym,
+        "SWING")`, which does not look at the intraday book at all — and its own
+        comment block opens with "checked across BOTH frameworks, not just
+        swing" and closes by saying an intraday MIS tranche "does not block
+        this". Those two sentences cannot both be true, and the code implemented
+        the second one.
+
+        The asymmetry ran in the dangerous direction. Intraday, which is PAPER,
+        refused to touch a name swing held. Swing, which is REAL MONEY, would
+        buy a name the paper book was already trading. So the collision could
+        only ever be created by the live book, and only ever on top of a
+        simulated position — which is also the case nothing reconciles, because
+        one row is PAPER and one is LIVE and neither square-off knows about the
+        other.
+
+        WHY ONE BOOK PER NAME IS THE RIGHT POLICY HERE, not merely the tidy one:
+
+          · The exit ladders contradict each other. `exit_policy` flattens MIS
+            by 15:15; `position_lifecycle` runs a multi-week thesis with a
+            15-session time stop. Held together, the intraday square-off sells
+            into the swing plan's morning and the swing trail sits under an
+            intraday stop that has already fired.
+          · At Rs 20,000 it is concentration, not diversification. An intraday
+            setup is sized at up to 25% of capital and a swing plan takes its
+            own tranche; the same name in both books is a third of the account
+            on one thesis, and neither book's sizing knows about the other.
+          · The learning loop cannot attribute the result. `signal_log` scores
+            the swing signal, `intraday_setups` scores the detection, and one
+            price series produced both — so the same move is counted twice, once
+            in each book's expectancy.
+
+        Cross-framework was originally called "the opportunity" migration 028
+        unlocked. Migration 028 unlocked the KEY — two rows can coexist without
+        overwriting each other, which is what makes reconcile correct. That is a
+        storage guarantee, not a trading policy, and it was read as permission.
+
+        Switchable, because it is a policy and not a safety invariant, and the
+        operator is the one who trades the account.
+        """
+        if not cfg_bool("one_framework_per_symbol", True):
+            return None
+        fw = (framework or "INTRADAY").upper()
+        for x in self.positions:
+            if x.get("symbol") != symbol:
+                continue
+            other = (x.get("framework") or "SWING").upper()
+            if other and other != fw:
+                return x
+        return None
+
     def _held(self, symbol: str, product: str) -> bool:
         """
         Is this (symbol, product) already held?
@@ -1235,20 +1293,34 @@ class IntradayEngine:
             return
 
         sym = c.get("symbol")
-        # ONE SYMBOL, ONE BOOK — checked across BOTH frameworks, not just swing.
+        # ONE SYMBOL, ONE BOOK — AND THIS SIDE NOW ACTUALLY CHECKS BOTH.
         #
-        # open_positions is keyed on symbol alone, so a second entry in the same
-        # name would UPSERT over the first: entry price, stop, target, framework
-        # and the R baseline all replaced by whichever book bought last. A swing
-        # position silently becomes an intraday one, and the 15:15 square-off
-        # then sells a multi-week thesis because the row says INTRADAY.
-        #
-        # Whichever framework reaches a symbol first owns it until it closes.
-        # That is also the right risk answer at this account size: doubling into
-        # one name across two books concentrates far more than either intends.
-        # Swing is CNC by construction. An intraday MIS tranche in the same name
-        # is a different row and does not block this.
+        # Same framework: a second swing entry in a name already held. This is
+        # unconditional. open_positions is keyed on (symbol, product) since
+        # migration 028, so a same-book re-entry UPSERTs over the first — entry
+        # price, stop, target and the R baseline all replaced by whichever
+        # tranche bought last.
         if not sym or self._held_by_framework(sym, "SWING"):
+            return
+
+        # Other framework: the intraday book is already in this name. The
+        # comment that used to sit here claimed to check "across BOTH
+        # frameworks, not just swing" and then said an intraday MIS tranche
+        # "does not block this" — so the guard read as symmetric and was not.
+        # Real money could be committed on top of a paper intraday position
+        # while the paper book, which is the one that cannot lose anything,
+        # refused to do the reverse. See _other_framework_holding for why one
+        # book per name is the policy: two exit ladders that contradict each
+        # other, a third of the account on one thesis, and a move that gets
+        # counted twice in the learning loop.
+        other = self._other_framework_holding(sym, "SWING")
+        if other is not None:
+            logger.info(
+                f"  {sym}: the INTRADAY book holds this name "
+                f"({other.get('mode') or 'PAPER'}, "
+                f"{other.get('current_qty') or other.get('actual_qty')} "
+                f"@ {other.get('entry_price')}) — standing down rather than "
+                f"putting the swing book into the same thesis. One book per symbol")
             return
 
         # THE ALLOCATOR'S VETO — the swing side of the same gate that protects
@@ -1486,7 +1558,10 @@ class IntradayEngine:
 
         out = []
         for sym, ctx in (self._contexts or {}).items():
-            if any(p.get("symbol") == sym for p in self.positions):
+            # Already an intraday position in this name: nothing to decide, and
+            # no detection worth recording — it would be the same thesis at a
+            # later price. Skipped before the engines run, as it always was.
+            if self._held_by_framework(sym, "INTRADAY"):
                 continue
             if sym in stale:
                 continue
@@ -1517,6 +1592,27 @@ class IntradayEngine:
                         logger.debug(f"  shadow record failed for {s.strategy}: {e}")
 
             if not best:
+                continue
+
+            # ONE SYMBOL, ONE BOOK. The swing book got here first, so it owns
+            # the name until it closes.
+            #
+            # RECORDED, not skipped silently. This used to be a bare `continue`
+            # at the top of the loop and it is the single most confusing thing
+            # the two frameworks do to each other from the outside: the engines
+            # find a setup, say nothing, and the operator sees a name the
+            # scanner clearly liked produce no detection at all. A refusal that
+            # leaves no row is also a rule nobody can price — the weekly review
+            # cannot ask what standing down cost.
+            other = self._other_framework_holding(sym, "INTRADAY")
+            if other is not None:
+                self._record_setup(best, st.phase, 0.0, "BLOCKED_CROSS_FRAMEWORK", 0)
+                logger.info(
+                    f"      {sym}: {best.strategy} conf {best.confidence:.2f} — the "
+                    f"{(other.get('framework') or 'SWING').upper()} book already holds "
+                    f"this name ({other.get('current_qty') or other.get('actual_qty')} "
+                    f"@ {other.get('entry_price')}). One book per symbol; the intraday "
+                    f"square-off must not sell a multi-week thesis")
                 continue
 
             # One failure per name per day. Recorded rather than skipped
@@ -1898,6 +1994,21 @@ class IntradayEngine:
         put a network round trip in front of exit evaluation on live positions,
         which is the one latency this system cannot afford.
         """
+        # VERDICTS ARE SCOPED TO THE CYCLE THAT PRODUCED THEM.
+        #
+        # `self._verdicts` was only ever ASSIGNED, at the end of this function,
+        # and every path that returns early left the PREVIOUS cycle's verdicts
+        # in place — while allocator_permits kept reading them. A DECLINE issued
+        # at 09:20 against one setup would then veto a different setup in the
+        # same name at 14:00, on arithmetic that no longer referred to it. Worse,
+        # turning alloc_shadow_enabled off mid-session while alloc_live_* stayed
+        # on froze the last verdicts permanently, because those two switches are
+        # read independently.
+        #
+        # Cleared FIRST, so a stale verdict cannot survive any exit from here.
+        # An empty map fails open, which is the documented behaviour.
+        self._verdicts = {}
+
         if not cfg_bool("alloc_shadow_enabled", False):
             return
         if not entries and not setups:
@@ -1929,12 +2040,35 @@ class IntradayEngine:
 
         st = session_state()
         mc = mkt.from_context(self._index_ctx)
-        used = len([x for x in self.positions if str(x.get("entry_date") or "")[:10]
-                    == today_ist().isoformat()])
-        slots_left = max(cfg_int("alloc_max_slots", 2) - used, 0)
+
+        # SLOTS ARE PER BOOK, FROM EACH BOOK'S OWN CAP.
+        #
+        # This was `alloc_max_slots` (2, pooled) minus EVERY position entered
+        # today in EITHER framework. One swing entry in the morning therefore
+        # left the intraday book — which is governed by intraday_max_new_per_day
+        # (4) — with a single slot for the whole session, and two entries of any
+        # kind left it with none, at which point hurdle() returns an infinite
+        # bar and every setup is declined. Nothing in the intraday logs said so;
+        # the cap that bound was the swing book's morning.
+        #
+        # The two books do not share an entry budget in any other part of this
+        # system, and the allocator is an opportunity-cost optimiser, not a risk
+        # control — the risk controls are the per-book caps, the sector cap and
+        # the combined account guard, all of which still run. So each book
+        # brings its own number.
+        today = today_ist().isoformat()
+        swing_used = len([x for x in self.positions
+                          if (x.get("framework") or "SWING").upper() == "SWING"
+                          and str(x.get("entry_date") or "")[:10] == today])
+        swing_max = max(cfg_int("swing_max_new_per_day", 2), 1)
+        intra_max = max(cfg_int("intraday_max_new_per_day", 4), 1)
+        slots = {"SWING":    max(swing_max - swing_used, 0),
+                 "INTRADAY": max(intra_max - self._entries_today(), 0)}
 
         v = self._allocator.select(
-            props, regime=mc.state, slots_left=slots_left,
+            props, regime=mc.state,
+            slots_by_framework=slots,
+            max_slots_by_framework={"SWING": swing_max, "INTRADAY": intra_max},
             minutes_left=max(getattr(st, "minutes_to_close", 0) or 0, 0),
             open_positions=self.positions)
         takes = sum(1 for x in v if x["verdict"] == "TAKE")
@@ -1948,8 +2082,16 @@ class IntradayEngine:
         live_books = [b for b in ("intraday", "swing")
                       if cfg_bool(f"alloc_live_{b}", False)]
         mode = f"LIVE for {'+'.join(live_books)}" if live_books else "shadow"
+        bars = {x["proposal"].framework: (x.get("hurdle_inputs") or {})
+                for x in v}
+        detail = " · ".join(
+            f"{fw} slots {slots.get(fw, '?')} bar "
+            + ("cold start" if (i or {}).get("cold_start")
+               else f"{(i or {}).get('base')}"
+                    + (" POOLED" if (i or {}).get("pooled_across_buckets") else ""))
+            for fw, i in bars.items())
         logger.info(f"  allocator ({mode}): {len(v)} proposal(s) scored, "
-                    f"{takes} to take, {len(v)-takes} refused")
+                    f"{takes} to take, {len(v)-takes} refused — {detail}")
         return v
 
     def allocator_permits(self, symbol: str, product: str, framework: str) -> tuple[bool, str]:

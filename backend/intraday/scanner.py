@@ -63,9 +63,57 @@ class UniverseEntry:
 
 
 def _latest_date(sb) -> str | None:
+    """
+    The most recent date whose rows can actually answer a liquidity question.
+
+    NOT simply max(date). `value_cr`, `delivery_pct` and `delivery_qty` are the
+    only three columns on this table that come from the bhavcopy rather than
+    from computation, and the bhavcopy for a session is not published until
+    after that session closes. So a pipeline run made DURING market hours —
+    or any run given today's date before the file exists — writes a row with
+    all 83 computed indicators present and those three null.
+
+    That row is not wrong, it is incomplete. But max(date) selects it, and the
+    filter below reads a null traded value as ZERO traded value: on 05-Aug-2026
+    that rejected 472 of 499 names as illiquid, returned an empty universe, and
+    took the intraday book to zero setups for the whole session while every
+    health check stayed green. Missing data and a failed test are different
+    facts and must not produce the same answer.
+
+    So the date is chosen by whether the liquidity column is populated on it,
+    and a fallback is stated rather than silent.
+    """
     rows = (sb.table("stock_data_daily").select("date")
               .order("date", desc=True).limit(1).execute().data or [])
-    return rows[0]["date"] if rows else None
+    newest = rows[0]["date"] if rows else None
+    if not newest:
+        return None
+
+    # Does the newest date actually carry traded value? One probe, not a scan:
+    # the column is written for every symbol or for none, because it comes from
+    # a single bhavcopy join.
+    probe = (sb.table("stock_data_daily").select("date")
+               .eq("date", newest).not_.is_("value_cr", "null")
+               .limit(1).execute().data or [])
+    if probe:
+        return newest
+
+    older = (sb.table("stock_data_daily").select("date")
+               .lt("date", newest).not_.is_("value_cr", "null")
+               .order("date", desc=True).limit(1).execute().data or [])
+    if not older:
+        logger.error(
+            f"  scanner: {newest} has no traded-value data and neither does any "
+            f"earlier date — the universe cannot be built. Check ingest_bhavcopy.")
+        return None
+
+    logger.warning(
+        f"  scanner: {newest} carries no traded value (bhavcopy not in yet — "
+        f"a pipeline run dated today before the file publishes leaves value_cr "
+        f"null). Building the universe from {older[0]['date']} instead, which "
+        f"has it. Liquidity is a prior-session fact, so this is the correct "
+        f"input, not a degraded one.")
+    return older[0]["date"]
 
 
 def build_universe(sb=None, limit: int | None = None) -> list[UniverseEntry]:

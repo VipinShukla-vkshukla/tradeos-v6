@@ -47,6 +47,12 @@ interface AllocRow {
   entry: number | null; stop: number | null; target: number | null;
   quantity: number | null; edge: number | null; e_r: number | null;
   cost_r: number | null; hurdle: number | null;
+  // Recorded so a verdict can be re-derived (§19). cold_start distinguishes a
+  // null hurdle that means "permissive, no history" from one that means "no
+  // slots left, refusing everything" — opposite states, same null.
+  hurdle_inputs: { cold_start?: boolean; pooled_across_buckets?: boolean;
+                   base?: number | null; n?: number } | null;
+  regime_bucket: string | null;
   prior_n: number | null; prior_below_floor: boolean | null;
   native_rank: number | null; shadow: boolean; outcome_r: number | null;
   outcome_note: string | null;
@@ -136,10 +142,27 @@ export function AllocatorTab() {
   );
 
   // ── Live hurdle per book, from whatever today's rows actually used ───────
+  //
+  // A NULL HURDLE IS A STATE, NOT AN ABSENCE. This skipped nulls entirely, so
+  // a book running on the cold-start bar showed no row at all — indistinguishable
+  // from "the allocator has not run yet", which is the opposite meaning. null
+  // hurdle means the bar is not a finite number: either a permissive cold start
+  // (no history, taking everything) or no slots left (refusing everything). The
+  // two are as far apart as a bar can get, and both used to render as blank.
   const hurdles = useMemo(() => {
-    const byFw: Record<string, number> = {};
+    const byFw: Record<string, number | null> = {};
     for (const r of today) {
-      if (r.hurdle !== null && !(r.framework in byFw)) byFw[r.framework] = r.hurdle;
+      if (!(r.framework in byFw)) byFw[r.framework] = r.hurdle;
+    }
+    return byFw;
+  }, [today]);
+
+  // Is a book on a cold start? Read from the recorded inputs rather than
+  // inferred from the null, because "no slots left" is also null.
+  const coldStart = useMemo(() => {
+    const byFw: Record<string, boolean> = {};
+    for (const r of today) {
+      if (!(r.framework in byFw)) byFw[r.framework] = Boolean(r.hurdle_inputs?.cold_start);
     }
     return byFw;
   }, [today]);
@@ -210,7 +233,13 @@ export function AllocatorTab() {
           <div className="flex gap-3 px-3 py-2 mb-2 rounded border border-border/40 bg-panel/50 text-xs">
             <span className="text-muted-foreground">Live hurdle:</span>
             {Object.entries(hurdles).map(([fw, h]) => (
-              <span key={fw} className="font-mono">{fw} <b>{h.toFixed(4)}</b></span>
+              <span key={fw} className="font-mono">
+                {fw}{' '}
+                {h !== null ? <b>{h.toFixed(4)}</b>
+                  : coldStart[fw]
+                    ? <b className="text-amber-400" title="Too few scored arrivals to have an opinion. The bar is permissive and the greedy path is effectively in charge — which is the correct state for an allocator with no data.">cold start</b>
+                    : <b className="text-red-400" title="No slots left in this book's daily budget, so the bar is infinite and every proposal is refused.">no slots</b>}
+              </span>
             ))}
           </div>
         )}

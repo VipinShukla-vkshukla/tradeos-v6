@@ -78,10 +78,27 @@ class Allocator:
     def select(self, proposals: list[Proposal], *, regime: str = "NEUTRAL",
                slots_left: int = 0, minutes_left: int = 0,
                open_positions: list[dict] | None = None,
-               field: list[dict] | None = None) -> list[dict]:
+               field: list[dict] | None = None,
+               slots_by_framework: dict[str, int] | None = None,
+               max_slots_by_framework: dict[str, int] | None = None) -> list[dict]:
         """
         One cycle. Pure arithmetic over in-memory data — microseconds, no I/O
         beyond the prior cache, and no synchronous write anywhere.
+
+        SLOTS ARE PER BOOK. `slots_left` was one pooled number handed to both
+        policies, and it was wrong in both directions at once: the caller
+        computed it as `alloc_max_slots(2) - every position entered today in
+        EITHER book`, so a single swing entry in the morning capped the intraday
+        book — whose own governance allows four new positions a day — at one for
+        the rest of the session, and two entries of any kind capped it at zero.
+        Meanwhile the same number was passed to each policy independently, so
+        the "pooled" budget was never enforced jointly either: each book could
+        take up to it. Over-restrictive within a book, under-restrictive across
+        them, and invisible in either book's own logs.
+
+        Each book now brings its own budget, from its own configured cap.
+        `slots_left` remains as the fallback for callers that have not been
+        updated, so nothing silently loses its limit.
         """
         if not proposals:
             return []
@@ -92,7 +109,10 @@ class Allocator:
             book = [p for p in proposals if p.framework == fw]
             if not book:
                 continue
-            bar, inputs = H.hurdle(bucket, slots_left, minutes_left, fw, self.sb)
+            fw_slots = (slots_by_framework or {}).get(fw, slots_left)
+            fw_max   = (max_slots_by_framework or {}).get(fw)
+            bar, inputs = H.hurdle(bucket, fw_slots, minutes_left, fw, self.sb,
+                                   max_slots=fw_max)
             days, n_days = self._hold_days.get(fw, (1.0, 0))
 
             scored = []
@@ -104,11 +124,13 @@ class Allocator:
                                "hold_days_n": n_days})
 
             policy = P.swing_assignment if fw == "SWING" else P.intraday_stopping
-            verdicts = (policy(scored, bar, slots_left, field) if fw == "SWING"
-                        else policy(scored, bar, slots_left))
+            verdicts = (policy(scored, bar, fw_slots, field) if fw == "SWING"
+                        else policy(scored, bar, fw_slots))
             for v in verdicts:
-                v["hurdle"] = round(bar, 5) if bar != float("inf") else None
+                v["hurdle"] = (None if bar in (float("inf"), float("-inf"))
+                               else round(bar, 5))
                 v["hurdle_inputs"] = inputs
+                v["regime_bucket"] = bucket
             out += verdicts
 
         out = self._basket_recheck(out, open_positions or [])
@@ -206,6 +228,11 @@ class Allocator:
             "prior_below_floor": v.get("prior_floor"),
             "hurdle": v.get("hurdle"),
             "hurdle_inputs": json.dumps(v.get("hurdle_inputs") or {}, default=str),
+            # The bucket the bar was drawn for, as a COLUMN rather than only
+            # inside hurdle_inputs. _empirical_base segments the arrival
+            # distribution on it, and a segmentation that has to parse JSON to
+            # filter is one nobody will keep working.
+            "regime_bucket": v.get("regime_bucket"),
             "native_rank": p.native_rank,
             "shadow": not cfg_bool(f"alloc_live_{p.framework.lower()}", False),
             "meta": json.dumps(p.meta, default=str),
