@@ -740,6 +740,61 @@ the batch.
 
 ---
 
+## 4·9e — 05-Aug-2026: the intraday universe was empty, and the allocator was not why
+
+**Found while running the merge gate for §4·9d, not by looking for it.** The
+operator reported one symptom — no intraday paper trades since the morning —
+and §4·9d has a complete, verified explanation for it. That explanation was
+also, today, not the binding one. `tools.simulate` failed with
+`intraday universe is EMPTY` on a tree where the allocator was already fixed
+and `alloc_live_intraday` was already back to `false`.
+
+**Two independent faults produced one symptom.** This is the part worth
+recording: §4·9d's veto bug is real, reproduced and fixed, and had it been the
+only fault the book would still have taken zero trades today.
+
+**The mechanism.** `value_cr`, `delivery_pct` and `delivery_qty` are the only
+three of `stock_data_daily`'s 86 columns that come from the bhavcopy rather
+than from computation, and NSE does not publish a session's bhavcopy until
+after that session closes. A pipeline run carrying today's date before the file
+exists therefore writes a row with all 83 computed indicators present and those
+three null. Measured on RELIANCE, 05-Aug: 81 of 86 columns populated; the
+missing three are exactly those. On 04-Aug: 83 of 86, `value_cr` populated for
+499 of 499 symbols.
+
+`scanner._latest_date()` was `max(date)`, which selects that partial row, and
+the liquidity filter reads a null traded value as a traded value of **zero**.
+472 of 499 names were rejected as illiquid, the universe came back empty, and
+the seven engines ran on nothing. Every health check stayed green throughout,
+because an empty universe is not an error to anything that only asks whether
+the scan completed.
+
+**Missing data and a failed test are different facts.** That is the whole
+defect. `analysis.overlays.liquidity_ok()` already draws this distinction
+explicitly — it refuses a name whose traded value is unknown rather than
+scoring it as illiquid, and `overlay_liquidity_strict` is the switch that says
+which way unknown resolves. The scanner collapsed the two into one number.
+
+**Fixed** by choosing the date on whether it can answer the question being
+asked: `_latest_date()` now returns the most recent date that actually carries
+`value_cr`, falls back with a WARNING naming both dates and the reason, and
+returns None with an ERROR if no date has it. Liquidity is a prior-session
+fact, so reading it from the prior session is the correct input rather than a
+degraded one — stated in the code, because a silent fallback is how this
+class of bug survives.
+
+**Verified:** 0 → 40 symbols, with the rejection profile identical to this
+morning's run before the partial row landed (price 16, liquidity 100, movement
+1, delivery 5, flagged 11).
+
+**Still open for the operator.** Nothing here stops a pipeline run dated today
+from writing a partial row in the first place; the scanner now survives it
+rather than the row not existing. Whether `compute_indicators` should refuse to
+write the three bhavcopy columns' row at all before the file publishes is a
+separate decision, and a larger one — the swing pipeline reads the same table.
+
+---
+
 ## 5·0 — THE BINDING NUMBER WAS WRONG
 
 **Checked against `PRODUCTION_DECISION.md`, `TRADING_METHODOLOGY_REVIEW.md` and
