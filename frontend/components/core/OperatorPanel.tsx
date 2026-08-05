@@ -57,6 +57,14 @@ const KEYS = [
   'autonomy_phase',
   'alloc_shadow_enabled', 'alloc_live_intraday', 'alloc_live_swing',
   'alloc_max_slots', 'alloc_basket_recheck', 'alloc_hurdle_min_sample',
+  // 044. one_framework_per_symbol is the rule that keeps a single name out of
+  // both books at once — with it off, the 15:15 intraday square-off can sell
+  // into a multi-week swing thesis on the same shares. alloc_hurdle_cold_start
+  // is shown because an accidental 0.0 here refuses every proposal whose
+  // expected R merely fails to beat its own round trip, which is how the
+  // intraday book went a full session without a trade.
+  'one_framework_per_symbol', 'alloc_hurdle_cold_start',
+  'alloc_hurdle_lookback_days',
   'overlay_expiry_enabled', 'overlay_vol_scaling_enabled',
   'overlay_liquidity_enabled', 'overlay_liquidity_strict',
   'governance_freeze_enabled', 'governance_require_oos',
@@ -582,6 +590,33 @@ function Phase4Panel({ cfg, bool, set, busy, confirm, setConfirm }: {
         hint="Recheck sector caps across the allocator's OWN simultaneous picks, not just against what is already held.">
         <Toggle on={bool('alloc_basket_recheck')} disabled={busy !== null}
           onChange={(v) => set('alloc_basket_recheck', String(v), 'Operator panel')} />
+      </Row>
+
+      {/* ── 044. The two settings that took the intraday book to zero ─────── */}
+      <div className="text-[10px] text-muted-foreground mt-1">
+        Cold-start bar <span className="font-normal">— blank means permissive</span>
+      </div>
+      <input type="text" placeholder="(blank — permissive)"
+        defaultValue={num('alloc_hurdle_cold_start')} disabled={busy !== null}
+        onBlur={(e) => { const v = e.target.value.trim();
+          if (v !== (cfg['alloc_hurdle_cold_start'] ?? ''))
+            set('alloc_hurdle_cold_start', v, 'Operator panel'); }}
+        className="w-full mt-0.5 bg-panel border border-border/50 rounded px-1.5 py-1 text-xs font-mono tabular-nums" />
+      {(cfg['alloc_hurdle_cold_start'] ?? '').trim() !== '' && (
+        <div className="mt-1 text-[10px] text-amber-400">
+          A hard floor is set. The edge this is compared against already has costs
+          subtracted, so a value at or above 0 refuses every proposal whose expected R
+          does not beat its own round trip — which on the intraday book is all of them.
+          This is what emptied that book for a session on 05-Aug.
+        </div>
+      )}
+
+      <Row label="One book per symbol"
+        hint="Whichever book reaches a name first owns it until it closes. Off, the swing and intraday books can both hold the same stock — the 15:15 square-off then sells into a multi-week thesis, the account carries one idea across two sizing models that cannot see each other, and the same move is scored twice by the learning loop.">
+        <Toggle on={bool('one_framework_per_symbol')} danger={!bool('one_framework_per_symbol')}
+          disabled={busy !== null}
+          onChange={(v) => set('one_framework_per_symbol', String(v),
+            v ? 'Operator panel' : 'Operator panel — WARNING: both books may hold one name')} />
       </Row>
 
       {/* ── Overlays: every one of these can only reduce a trade or refuse it ── */}

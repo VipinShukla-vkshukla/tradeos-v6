@@ -92,6 +92,53 @@ double-sell (30 Jul) happened because the book and the broker disagreed about
 one tranche; two tranches on one symbol makes that failure mode richer. Fix
 confidence first, then add the capability.
 
+### STATUS, 05-Aug-2026 — the capability is real, the precondition is not
+
+**`one_framework_per_symbol` now defaults to TRUE, which turns this off.** That
+reverses the default this section argues for, so here is the reasoning rather
+than a silent flip. Migration 044; the switch is on the operator panel.
+
+The schema work above all landed and is correct — (symbol, product) is the right
+key, reconcile does apportion by product, and Kite does answer the attribution
+question directly. None of that is being undone. What was never true is the
+premise underneath the strategy:
+
+**Core-and-satellite requires two REAL tranches, and intraday is PAPER.**
+`_maybe_open_paper` refuses to place a live intraday order at all — "live
+auto-entry is deliberately not implemented here", and rightly so. So the state
+this section was written to unlock has never once occurred. What occurred
+instead is a LIVE CNC position sitting next to a SIMULATED MIS one in the same
+name. That is not a core with a satellite around it. It is real money whose
+risk is being measured against a trade that does not exist:
+
+- the paper tranche cannot hedge, add to, or scale out of the live one
+- `square_off_paper` flattens something the broker has never heard of
+- the account guard sees one position where the book shows two
+- and the learning loop scores one price move twice, once per book
+
+Three of this section's own listed risks are still unverified, and the third —
+"confirm a two-book day does not double-spend the account guard" — is the one
+that decides whether this is safe at ₹20,000.
+
+Worse, until 05-Aug the guard was only implemented on ONE side. Intraday refused
+any name the swing book held; swing never looked at the intraday book. So the
+collision could only ever be created by the live book, on top of a simulated
+position — the single worst orientation of the four possible ones, and the exact
+inverse of what "relax the same-symbol guard to same-symbol-same-product" (line
+75 above) was meant to produce.
+
+**Turn it back on when, and only when, all three hold:**
+
+1. intraday places real MIS orders (`intraday_live_auto_entry`, and the
+   implementation behind it that does not exist yet)
+2. a two-book day is shown not to double-spend the account guard — the
+   unverified risk above, tested rather than reasoned about
+3. sizing is computed across both books, so one name cannot take 25% from
+   intraday and its own swing tranche on top
+
+Until then the capability is enabled in name only, and what it actually delivers
+is the corruption it was designed to replace.
+
 ---
 
 ## 2. Discovering engines that do not exist yet

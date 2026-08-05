@@ -450,6 +450,73 @@ were taken under a cap of 5.
 
 The engines find setups. These four decide which ones are worth your money.
 
+**5. The allocator can refuse one — and on 05-Aug it refused all of them.**
+Phase 4 added a fifth rule on top of the four above: the allocator asks not "is
+this good enough" but "is this the best use of the entry I have left". When
+`alloc_live_intraday` is on it can veto a setup all four rules approved.
+
+It was promoted on 04-Aug and the intraday book took **zero trades the next
+session**, while swing — whose veto was still off — traded normally. Nothing
+reported an error. The log lines read like a market with no opportunities.
+
+Three faults, stacked, any one of which was enough:
+
+- **The bar and the score were different quantities.** The score is expected R
+  *after costs, per day*. The bar was built from realised R *before costs, per
+  trade*. A setup needed a prior mean of +1.41R to clear a bar of +1.20; the
+  best engine in the book has never had one.
+- **The bar's query never ran.** It read a column that does not exist. PostgREST
+  rejects the whole request for one unknown column, and the failure was
+  swallowed silently.
+- **The fallback refused too.** With no data the bar fell back to 0.0, which
+  sounds neutral. It is not: costs are already subtracted from the score, so 0.0
+  demands every setup beat its own round trip — and the intraday book's measured
+  edge (+0.08R) does not cover the MIS round trip (+0.21R).
+
+Fixed in migration 044. The bar is now read from the same column the scorer
+writes, so the two cannot drift apart again; with no history it stands aside
+instead of standing down; and each book gets its own slot budget rather than
+sharing a pool of two with swing — one swing entry in the morning used to cap
+intraday at a single trade for the rest of the day.
+
+**`alloc_live_intraday` is back OFF.** The intraday book is on the greedy path
+that was producing trades. Read `python -m tools.allocator_report` after a
+session and turn it back on only if the verdicts make sense.
+
+### One stock, one book
+
+If a name is in the swing book, intraday will not trade it, and now the reverse
+is true as well. `one_framework_per_symbol`, on by default.
+
+Until 05-Aug this was enforced in one direction only. The intraday book refused
+any name swing held; the swing book never checked intraday at all. So the
+system could put **real money into a stock the paper intraday book was already
+trading** — and only in that direction, which is the worst of the four.
+
+Held in both books at once, three things go wrong at your expense:
+
+- **The exits contradict each other.** The intraday square-off sells at 15:15;
+  the swing plan is a one-to-three-week thesis with a 15-session time stop.
+  Same shares, two ladders, and neither knows about the other.
+- **It is concentration wearing the clothes of diversification.** An intraday
+  setup is sized at up to 25% of capital and the swing plan takes its own
+  tranche. On ₹20,000 that is a third of the account on one idea, across two
+  sizing models that cannot see each other.
+- **The learning loop counts the move twice** — once in `signal_log` for the
+  swing signal and once in `intraday_setups` for the detection. Both books'
+  expectancy is then measured on the same price series.
+
+You will now see a `BLOCKED_CROSS_FRAMEWORK` row in `intraday_setups` when this
+fires, so you can see what standing down cost rather than wondering why a name
+the scanner clearly liked produced nothing.
+
+The design note in `DESIGN_NOTES.md` argues for the opposite — a swing core with
+an intraday tranche traded around it, which is genuine desk practice. That
+remains the intent. It cannot happen while intraday is PAPER: a simulated
+tranche next to a live holding is not a satellite, it is a live position whose
+risk is being measured against a trade that does not exist. Turn the switch off
+the day intraday places real orders, not before.
+
 ### Intraday exits
 
 `intraday/exit_policy.py`, in order:
@@ -516,8 +583,19 @@ Also confirms every CRITICAL key is read by at least one module.
 ### "Are my database reads valid?"
 
 ```bash
-cd backend && python -m tools.validate_selects
+cd backend && python -m tools.validate_selects --strict
 ```
+
+**Use `--strict`.** Without it the tool prints every broken read as an error and
+then exits 0 anyway. `tools/health.py` called it without the flag, read only the
+exit code, and reported "every SELECT names columns that exist" directly over
+the top of its own error output — which is how a read of a non-existent column
+survived long enough to silence the intraday book for a session. Health now
+passes `--strict`; run it that way by hand too.
+
+One unknown column does not degrade a query, it **kills** it. PostgREST rejects
+the whole request, so the step returns nothing at all and usually looks like a
+quiet day rather than a failure.
 
 ### Orders rejected: "IP (2402:e280:...) is not allowed"
 

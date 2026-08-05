@@ -216,6 +216,12 @@ export const queries = {
       entry: number | null; stop: number | null; target: number | null;
       quantity: number | null; edge: number | null; e_r: number | null;
       cost_r: number | null; hurdle: number | null;
+      // A null hurdle is ambiguous on its own: it is either a permissive cold
+      // start or an infinite bar with no slots left. hurdle_inputs.cold_start
+      // is what tells the two apart, so the tab must fetch it.
+      hurdle_inputs: { cold_start?: boolean; pooled_across_buckets?: boolean;
+                       base?: number | null; n?: number } | null;
+      regime_bucket: string | null;
       prior_n: number | null; prior_below_floor: boolean | null;
       native_rank: number | null; shadow: boolean; outcome_r: number | null;
       outcome_note: string | null;
