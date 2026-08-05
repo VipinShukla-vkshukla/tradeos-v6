@@ -33,7 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import TOTAL_CAPITAL, get_supabase, cfg_float
+from config import TOTAL_CAPITAL, get_supabase, cfg_float, capital_for
 
 BASE = Path(__file__).parent.parent
 
@@ -89,7 +89,16 @@ def check_coherence(sb=None) -> list[Finding]:
     out: list[Finding] = []
 
     risk_pct = _f(c.get("risk_pct_per_trade"), 1.0)
-    min_pos = cap * _f(c.get("portfolio_min_position_pct"), 3.0) / 100.0
+    min_pos_pct = _f(c.get("portfolio_min_position_pct"), 3.0) / 100.0
+
+    # Each book sizes against its OWN capital (config.capital_for) since the
+    # swing/intraday split — swing_capital/intraday_capital default to
+    # TOTAL_CAPITAL until set explicitly, so this is a no-op until they diverge.
+    # Checking both frameworks against the single pooled TOTAL_CAPITAL here was
+    # exactly the kind of drift the split was meant to prevent: intraday's caps
+    # would be validated against swing's real account instead of intraday's own
+    # (possibly much larger, paper) sleeve.
+    book_cap = {"swing": capital_for("SWING"), "intraday": capital_for("INTRADAY")}
 
     # The two frameworks size differently, and checking both against one model
     # is how intraday came to have no per-position fraction at all:
@@ -97,7 +106,8 @@ def check_coherence(sb=None) -> list[Finding]:
     #   intraday — intraday/engine.py: intraday_max_position_pct x market mult
     swing_pct = _f(c.get("max_position_pct"), 20.0)
     intra_pct = _f(c.get("intraday_max_position_pct"), 25.0)
-    sized = {"swing": cap * swing_pct / 100.0, "intraday": cap * intra_pct / 100.0}
+    sized = {"swing": book_cap["swing"] * swing_pct / 100.0,
+             "intraday": book_cap["intraday"] * intra_pct / 100.0}
 
     out.append(Finding("TOTAL_CAPITAL", "OK", f"₹{cap:,.0f}", None,
                        f"from .env — swing sizes to at most ₹{sized['swing']:,.0f} "
@@ -106,19 +116,21 @@ def check_coherence(sb=None) -> list[Finding]:
                        f"({risk_pct:g}%) per swing trade"))
 
     for fw in ("swing", "intraday"):
+        cap_fw = book_cap[fw]
+        min_pos = cap_fw * min_pos_pct
         sized_max = sized[fw]
         # A cap should bind on a BUG, not on normal sizing. 1.5x the largest
         # legal position is enough headroom for rounding and a chase, and still
         # far below anything that would empty the account.
-        want_order = round(min(sized_max * 1.5, cap * 0.5), -2)
+        want_order = round(min(sized_max * 1.5, cap_fw * 0.5), -2)
 
         k = f"{fw}_max_order_value"
         v = _f(c.get(k))
-        if v >= cap:
+        if v >= cap_fw:
             out.append(Finding(
                 k, "ERROR", f"₹{v:,.0f}", f"₹{want_order:,.0f}",
-                f"₹{v:,.0f} is {v / cap:.0%} of a ₹{cap:,.0f} account — this cap can "
-                f"never bind, so it protects nothing. Sizing tops out at "
+                f"₹{v:,.0f} is {v / cap_fw:.0%} of a ₹{cap_fw:,.0f} {fw} sleeve — this "
+                f"cap can never bind, so it protects nothing. Sizing tops out at "
                 f"₹{sized_max:,.0f}; the cap exists to catch a bug above that."))
         elif v > sized_max * 2.5:
             out.append(Finding(
@@ -133,23 +145,27 @@ def check_coherence(sb=None) -> list[Finding]:
         else:
             out.append(Finding(k, "OK", f"₹{v:,.0f}", None,
                                f"binds above normal sizing (₹{sized_max:,.0f}), "
-                               f"below the account"))
+                               f"below the {fw} sleeve"))
 
         # Daily notional: what could plausibly be committed in a day, capped at
-        # the account. Above capital it is decorative.
+        # this book's OWN sleeve. Deliberately allowed to sit BELOW
+        # want_order x n_orders — that product is the ceiling implied by the
+        # other two caps, not a target. A notional cap tighter than it is a
+        # real, independent choice ("cap total daily deployment even if no
+        # single order is oversized and the count is normal"), not redundancy.
         n_orders = _f(c.get(f"{fw}_max_orders_per_day"), 5)
         nk = f"{fw}_max_notional_per_day"
         nv = _f(c.get(nk))
-        want_notional = round(min(cap, want_order * max(n_orders, 1)), -2)
-        if nv > cap:
+        want_notional = round(min(cap_fw, want_order * max(n_orders, 1)), -2)
+        if nv > cap_fw:
             out.append(Finding(
                 nk, "ERROR", f"₹{nv:,.0f}", f"₹{want_notional:,.0f}",
-                f"₹{nv:,.0f} exceeds the whole ₹{cap:,.0f} account — it can never "
-                f"bind. A daily notional cap should stop the account being "
+                f"₹{nv:,.0f} exceeds the whole ₹{cap_fw:,.0f} {fw} sleeve — it can "
+                f"never bind. A daily notional cap should stop the sleeve being "
                 f"recycled repeatedly into a bad day."))
         else:
             out.append(Finding(nk, "OK", f"₹{nv:,.0f}", None,
-                               f"{nv / cap:.0%} of capital"))
+                               f"{nv / cap_fw:.0%} of the {fw} sleeve"))
 
     # Paper capital far above real capital makes paper results untransferable:
     # the simulation would take positions the real account could never fund.
