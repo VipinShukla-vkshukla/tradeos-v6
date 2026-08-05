@@ -143,28 +143,55 @@ def _update_stripping_unknown(write, payload: dict, what: str, _depth: int = 0):
         return None
 
 
-def _upsert_position(sb, row: dict):
+def _upsert_position(sb, row: dict, _depth: int = 0):
     """
-    Upsert on (symbol, product), falling back to symbol alone.
+    Upsert on (symbol, product), falling back to symbol alone — and, for any
+    column the schema does not have yet, dropping it and retrying rather
+    than failing the whole write.
 
-    The composite key arrives with migration 028. Code reaching production
-    before the migration would raise 42P10 on every write, and a position that
-    cannot be recorded is precisely the failure that causes a double sell — so
-    this degrades to the old key instead of failing, and says so once.
+    TWO INDEPENDENT SCHEMA-AHEAD-OF-DEPLOY GAPS, TWO PROTECTIONS.
+    The composite key (migration 028) already had one. A single new column
+    can break the same way: PostgREST fails the WHOLE statement on one
+    unknown column, and entry_order_id (migration 045) is exactly such a
+    column landing in code before the user has necessarily run the migration
+    that adds it — the normal order of events in this project. A position
+    that cannot be recorded is precisely the failure that causes a double
+    buy, which is the same reason the composite-key fallback exists.
+
+    RAISES rather than swallowing a write that still fails after stripping
+    what it can. _maybe_enter_swing() relies on an exception meaning "this
+    position is NOT recorded" to decide whether it is safe to retry —
+    silently returning as if the write succeeded when it did not is worse
+    than the column-stripping problem this is working around.
     """
     try:
-        return sb.table("open_positions").upsert(
-            row, on_conflict="symbol,product").execute()
+        try:
+            return sb.table("open_positions").upsert(
+                row, on_conflict="symbol,product").execute()
+        except Exception as e:
+            if "42P10" not in str(e) and "ON CONFLICT" not in str(e):
+                raise
+            global _WARNED_NO_COMPOSITE_KEY
+            if not _WARNED_NO_COMPOSITE_KEY:
+                logger.warning("  open_positions has no (symbol, product) key — apply "
+                               "migration 028. Falling back to symbol; one book per "
+                               "symbol until then.")
+                _WARNED_NO_COMPOSITE_KEY = True
+            return sb.table("open_positions").upsert(row, on_conflict="symbol").execute()
     except Exception as e:
-        if "42P10" not in str(e) and "ON CONFLICT" not in str(e):
-            raise
-        global _WARNED_NO_COMPOSITE_KEY
-        if not _WARNED_NO_COMPOSITE_KEY:
-            logger.warning("  open_positions has no (symbol, product) key — apply "
-                           "migration 028. Falling back to symbol; one book per "
-                           "symbol until then.")
-            _WARNED_NO_COMPOSITE_KEY = True
-        return sb.table("open_positions").upsert(row, on_conflict="symbol").execute()
+        msg = str(e)
+        # PGRST204: "Could not find the 'x' column of 'y' in the schema cache"
+        # 42703:    "column y.x does not exist"
+        m = (re.search(r"Could not find the '([^']+)' column", msg)
+             or re.search(r"column \"?(?:[\w.]+\.)?([\w]+)\"? does not exist", msg))
+        col = m.group(1) if m else None
+        if col and col in row and _depth < len(row):
+            logger.warning(f"  open_positions upsert: column '{col}' does not exist — "
+                           f"dropped it and retried so the other {len(row) - 1} field(s) "
+                           f"still land. A migration is probably unapplied.")
+            return _upsert_position(
+                sb, {k: v for k, v in row.items() if k != col}, _depth + 1)
+        raise
 
 
 _WARNED_NO_COMPOSITE_KEY = False

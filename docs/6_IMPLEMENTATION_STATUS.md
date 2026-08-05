@@ -915,6 +915,108 @@ carry a live broker-side GTT, so a hard stop still fires with nothing running
 
 ---
 
+## 4·9h — 05-Aug-2026: TMCV, and the gap that let a limit order become a phantom position
+
+**The operator caught this from the dashboard, not from any check here.**
+The Trade Log showed TMCV closed at a +Rs 124.44 gain; Kite showed no such
+trade had ever happened. Traced end to end against the live account rather
+than assumed:
+
+- Zero SELL order or trade for TMCV exists in Kite's order/trade book, ever.
+- TMCV is absent from current holdings entirely — not even a pending
+  settlement (t1_quantity) entry.
+- This system's OWN exit logic tried to sell it 260 times starting the very
+  next morning after the buy, every attempt refused: `broker shows 0 held`.
+
+**Root cause: `execution/order_manager.py.place()` returns success the
+moment Kite hands back an order_id.** That confirms the order was
+SUBMITTED, not that it FILLED. Swing entries are LIMIT day orders; a limit
+that never trades through its price simply expires unfilled at session
+close. `_maybe_enter_swing()` wrote the position to `open_positions` with
+`status='ACTIVE'` and `entry_price` set to the REQUESTED LIMIT PRICE
+immediately after submission — there was no fill-confirmation step
+anywhere in the path, for any swing entry, not just this one.
+
+**The corruption reached three tables, not one:**
+
+| Table | What was wrong |
+|---|---|
+| `closed_positions` | A fictitious closed trade, +Rs 124.44, `exit_reason_detail` honestly noting "no same-day SELL trade found — exit price approximated" — reconcile's own crude "in DB, not in Kite -> must be sold" heuristic, with nothing to actually sell |
+| `signal_log` (id 6052) | Marked `outcome='WIN'`, `outcome_pnl_pct=4.666`, `execution_status='COMPLETED'` — the exact columns the SEC engine's own lifecycle scoring reads |
+| `lessons` (id 800) | A fabricated rule — *"tighten trailing stop once MFE exceeds 1.5x, applies to SEC in auto"* — derived entirely from the phantom trade, already showing `times_applied: 4` in the AI decision-context loop before anyone looked |
+
+All three cleaned up: the closed-trade row deleted, `signal_log`'s four
+columns reverted to null, the lesson deleted. Verified clean afterward.
+
+**Fixed at the root, migration 045.** A new status, `PENDING_FILL`, sits
+between order submission and confirmed ownership:
+
+- `_maybe_enter_swing()` now writes `status='PENDING_FILL'` with
+  `entry_order_id`, not `'ACTIVE'`. Every existing reader of `open_positions`
+  already filters `status='ACTIVE'` (`position_lifecycle.py`'s own header
+  note: "every reader filters status='ACTIVE'") — so a PENDING_FILL row is
+  automatically invisible to exits, GTT sync, alerts, candidate ranking, AND
+  reconcile's "in DB, not in Kite -> sold" branch, with zero changes needed
+  to any of them. That last one is what makes the fix structural rather than
+  a second guess layered on the first: reconcile can no longer invent a sale
+  for a row it never considers a position in the first place.
+- `_resolve_pending_fills()`, new, runs on the 300s slow timer — one
+  `order_history()` call per pending row, never in the 15s decision loop.
+  `COMPLETE` promotes to `ACTIVE` with the REAL average fill price and
+  quantity (handling a partial fill correctly, not the requested size).
+  `REJECTED`/`CANCELLED` deletes the row — nothing was bought, so nothing
+  is recorded as bought. Anything still open is left exactly alone; an
+  unfilled limit order resting at its price is the normal state of an entry
+  that has not triggered, not a fault.
+- Fails toward inaction throughout: no broker session, a failed
+  `order_history()` call, or an ambiguous COMPLETE with no fill data all
+  leave the row exactly as it was, retried next cycle — never promoted and
+  never discarded on a guess.
+- A separate in-memory guard (`self._pending_fills`) stops the SAME symbol
+  being re-submitted on the next 15s cycle while its first order is still
+  unconfirmed — `self.positions` (loaded from `status='ACTIVE'` only)
+  cannot see a pending row, so `_held_by_framework()` alone would have missed
+  this. Rebuilt from the database on every `load_state()`, so a daemon
+  restart between submission and confirmation does not forget the attempt
+  and resubmit it.
+- New health check, `pending`: fails if any `PENDING_FILL` row has no
+  `entry_order_id`, or is dated to a PAST session — a day order cannot
+  legitimately still be open at the broker after its own session closed, so
+  survival past that boundary means `_resolve_pending_fills` could not
+  resolve it and a human needs to look. Demonstrated failing on a synthetic
+  stale row, then passing once removed.
+- `control.position_lifecycle._upsert_position` gained the SAME
+  column-stripping protection `_update_stripping_unknown` already gives
+  other writers in this file, applied here for the first time: a new column
+  landing in code before its migration is the normal order of deployment in
+  this project, and the previous version would have failed the WHOLE
+  position write — not just dropped `entry_order_id` — the moment this
+  code reached a database that had not yet run migration 045. Re-raises
+  rather than swallowing a write that still fails after stripping, because
+  `_maybe_enter_swing` depends on an exception to know a write did not
+  happen.
+
+**Scoped to entries only, deliberately.** The swing EXIT path's own comment
+already reasons through the opposite asymmetry correctly: an unfilled exit
+recorded as sold is corrected by the next reconcile against broker holdings,
+while a filled exit NOT recorded risks a double sell — real money gone, not
+a phantom row. That reasoning holds; the exit path was not touched.
+
+**Verified against live data, not just compiled:** the real KIMS buy order
+from this morning, re-run through the exact classification logic, correctly
+reads COMPLETE with the true fill price (802.50) and quantity — without
+touching the real position row. A malformed order_id raises inside Kite's
+own client and is caught by the surrounding `try/except`, leaving the row
+pending rather than crashing the resolution pass. 17/17 health checks pass,
+including the new one, demonstrated both failing (synthetic stale row) and
+passing (after removal).
+
+Migration 045 was already applied by the time this was verified — the fix
+is live, not merely written. Market is closed for the session; first real
+exercise is tomorrow's open.
+
+---
+
 ## 5·0 — THE BINDING NUMBER WAS WRONG
 
 **Checked against `PRODUCTION_DECISION.md`, `TRADING_METHODOLOGY_REVIEW.md` and

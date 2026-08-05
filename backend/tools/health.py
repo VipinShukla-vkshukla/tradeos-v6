@@ -283,6 +283,54 @@ def check_daemon() -> tuple[bool, str]:
                    f"during market hours — positions are unwatched")
 
 
+def check_pending_fills() -> tuple[bool, str]:
+    """
+    Is any entry stuck awaiting fill confirmation past when it should have
+    resolved?
+
+    05-Aug-2026: TMCV was submitted as a LIMIT day order, recorded as a live
+    position immediately, and never actually filled — nothing checked, so it
+    sat as a genuine-looking holding for two sessions before reconcile
+    invented a sale to explain its absence from Kite. The fix
+    (engine._resolve_pending_fills, on the slow timer) writes status=
+    'PENDING_FILL' at submission and only promotes to ACTIVE once Kite
+    confirms COMPLETE.
+
+    A row still PENDING_FILL from a PAST session cannot legitimately still be
+    OPEN at the broker — a day order resolves one way or another by the close
+    of the session it was placed in. Surviving past that boundary means
+    _resolve_pending_fills could not resolve it (no order_id, a broker call
+    that keeps failing, or Kite's order history has already rolled off) —
+    which needs a human, not another retry.
+
+    NOT a fault for a row still pending from TODAY'S session: an unfilled
+    LIMIT order resting at its price is the normal state of an entry that has
+    not triggered yet, for as long as the market is open.
+    """
+    from config import get_supabase, today_ist
+
+    sb = get_supabase()
+    rows = (sb.table("open_positions").select("symbol,entry_date,entry_order_id,synced_at")
+              .eq("status", "PENDING_FILL").execute().data or [])
+    if not rows:
+        return True, "no entries awaiting fill confirmation"
+
+    today = today_ist().isoformat()
+    stuck = [r for r in rows
+             if str(r.get("entry_date") or "")[:10] < today or not r.get("entry_order_id")]
+    if stuck:
+        names = ", ".join(f"{r['symbol']} (since {r.get('entry_date')})" for r in stuck[:5])
+        return False, (f"{len(stuck)} entry/entries stuck PENDING_FILL past their own "
+                       f"session, or missing an order_id to resolve against: {names}. "
+                       f"_resolve_pending_fills could not confirm these — check manually "
+                       f"against Kite and clear the row once you know what actually "
+                       f"happened.")
+
+    today_pending = [r["symbol"] for r in rows]
+    return True, (f"{len(rows)} entry/entries awaiting fill confirmation from today's "
+                  f"session, none overdue: {', '.join(today_pending)}")
+
+
 def check_simulate() -> tuple[bool, str]:
     """The slow one: run both frameworks end to end and confirm stages produce output."""
     from config import get_supabase
@@ -914,6 +962,7 @@ CHECKS = [
     ("data",     "decisions would run on stale inputs",                          check_data_freshness, False),
     ("broker",   "resting orders do not match the positions they protect",       check_broker_consistency, False),
     ("daemon",   "nothing is watching your positions right now",                 check_daemon,   False),
+    ("pending",  "an entry order that never filled is being tracked as a real position", check_pending_fills, False),
     ("learning", "engines are being judged on evidence that was never collected", check_learning_loop, False),
     ("simulate", "a stage completes while producing nothing",                    check_simulate, True),
 ]

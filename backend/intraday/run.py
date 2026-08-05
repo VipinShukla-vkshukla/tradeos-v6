@@ -259,6 +259,15 @@ def main(once: bool = False, dry: bool = False) -> None:
                 # Event data and AI advice — both too slow and too static for
                 # the fast loop, both purely advisory to it.
                 engine.refresh_advisory()
+                # Confirm every swing entry still awaiting a broker fill.
+                # Slow timer for the same reason as everything else here: a
+                # LIMIT order does not resolve faster than the exchange
+                # resolves it, and this is one order_history() call per
+                # pending row, not per cycle.
+                try:
+                    engine._resolve_pending_fills()
+                except Exception as e:
+                    logger.warning(f"  pending-fill resolution failed: {e}")
                 # Flush the allocator's verdict buffer HERE, on the slow timer,
                 # never in the 15-second cycle. Buffered writes that never flush
                 # leave silent holes in the promotion evidence, and the gate is

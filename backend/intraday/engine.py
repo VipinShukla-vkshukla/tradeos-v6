@@ -90,6 +90,12 @@ class IntradayEngine:
         # against read-after-write lag on the broker log — see
         # _maybe_enter_swing().
         self._entries_taken = 0
+        # symbol -> Kite order_id, for a BUY submitted but not yet confirmed
+        # filled. In-memory guard against re-submitting the same entry on the
+        # next 15s cycle; the DB row (status=PENDING_FILL, entry_order_id) is
+        # the durable copy this rebuilds from on a restart — see
+        # _maybe_enter_swing() and _resolve_pending_fills().
+        self._pending_fills: dict[str, str] = {}
 
     # ── state ───────────────────────────────────────────────────────────────
     def load_state(self) -> None:
@@ -111,6 +117,17 @@ class IntradayEngine:
             )
             active = all_rows
         self.positions = active
+
+        # Rebuild the pending-fill guard from the DB, not just from memory —
+        # a restart between placing an entry order and confirming its fill
+        # must not forget the entry was attempted, or the next cycle submits
+        # a second one for the same symbol. all_rows is already unfiltered by
+        # status, so this costs nothing extra.
+        self._pending_fills = {
+            r["symbol"]: r["entry_order_id"]
+            for r in all_rows
+            if (r.get("status") or "").upper() == "PENDING_FILL" and r.get("entry_order_id")
+        }
 
         try:
             latest = (self.sb.table("signal_output_daily").select("date")
@@ -1375,6 +1392,17 @@ class IntradayEngine:
         if not sym or self._held_by_framework(sym, "SWING"):
             return
 
+        # A BUY was already submitted for this symbol and has not yet been
+        # confirmed filled — do not submit a second one. _held_by_framework
+        # cannot see this on its own: it reads self.positions, which is
+        # loaded from status='ACTIVE' only, and an unconfirmed entry is
+        # deliberately NOT active yet (see _resolve_pending_fills). Without
+        # this separate guard, a limit order still sitting unfilled at the
+        # next 15s cycle would look exactly like "not held" and get bought
+        # again.
+        if sym in self._pending_fills:
+            return
+
         # Other framework: the intraday book is already in this name. The
         # comment that used to sit here claimed to check "across BOTH
         # frameworks, not just swing" and then said an intraday MIS tranche
@@ -1535,6 +1563,26 @@ class IntradayEngine:
         # Write it back IMMEDIATELY, for the reason the exit side learned the
         # hard way: an order placed and not recorded is re-derived and placed
         # again on the next cycle. PPLPHARMA sold twice that way.
+        #
+        # STATUS IS 'PENDING_FILL', NOT 'ACTIVE' — 05-Aug-2026.
+        #
+        # place() returning ok only means Kite accepted the order; a LIMIT day
+        # order that never trades through its price expires unfilled at
+        # session close, and nothing downstream of this call could tell the
+        # difference. TMCV was submitted, recorded as a live position with a
+        # GTT stop, and never actually bought — the exit logic spent the next
+        # session trying to sell shares that did not exist, and reconcile
+        # eventually invented a "sale" that corrupted signal_log's outcome
+        # columns and generated an AI-consumed lesson from a trade that never
+        # happened.
+        #
+        # PENDING_FILL is invisible to everything that matters until
+        # confirmed: every existing reader of this table already filters
+        # status='ACTIVE' (self.positions, GTT sync, exits, alerts, and
+        # reconcile's own "in DB, not in Kite" check), so this needed no
+        # changes anywhere else. _resolve_pending_fills(), on the slow timer,
+        # asks Kite what actually happened and promotes or removes the row —
+        # see that method for the COMPLETE / REJECTED / CANCELLED handling.
         try:
             # Local import: control.position_lifecycle imports this package, so
             # module scope would be circular. It was previously imported only
@@ -1545,7 +1593,8 @@ class IntradayEngine:
             from control.position_lifecycle import _upsert_position
             _upsert_position(self.sb, {
                 "symbol": sym, "mode": "LIVE", "framework": "SWING",
-                "product": "CNC", "status": "ACTIVE",
+                "product": "CNC", "status": "PENDING_FILL",
+                "entry_order_id": str(res.order_id),
                 "entry_date": today_ist().isoformat(), "entry_price": limit,
                 "actual_qty": qty, "current_qty": qty, "original_qty": qty,
                 "invested_value": round(limit * qty, 2),
@@ -1566,13 +1615,158 @@ class IntradayEngine:
                 "synced_at": datetime.now(IST).isoformat(),
             })
             self._entries_taken += 1
+            self._pending_fills[sym] = str(res.order_id)
             self.load_state()
-            logger.success(f"  🟢 AUTO-ENTRY {sym} {qty} @ ~{limit} "
-                           f"(order {res.order_id}) — {rationale or 'no rank'}")
+            logger.success(f"  🟡 ENTRY SUBMITTED {sym} {qty} @ ~{limit} "
+                           f"(order {res.order_id}) — {rationale or 'no rank'} "
+                           f"— awaiting fill confirmation")
         except Exception as e:
             logger.error(f"  {sym}: BOUGHT {qty} but the position row could not be "
                          f"written — {e}. It may be bought again next cycle. "
                          f"Reconcile against the broker NOW.")
+
+    def _resolve_pending_fills(self) -> None:
+        """
+        Ask Kite what actually happened to every entry still awaiting
+        confirmation, and promote or remove the row accordingly.
+
+        SLOW TIMER ONLY — one order_history() call per pending row, and there
+        are at most a handful of these on any given day (swing_max_new_per_day
+        is 2-4). Nothing here is time-critical: a fill that completed thirty
+        seconds ago is exactly as confirmable now as it will be at the next
+        15s tick, and Kite's order lifecycle does not need faster polling than
+        the rest of this engine's slow-timer work already runs at.
+
+        FAILS TOWARD "STILL PENDING", NEVER TOWARD A GUESS. No broker session,
+        no order_history response, or an ambiguous COMPLETE with no fill data
+        all leave the row exactly as it was — PENDING_FILL, invisible to
+        everything, retried next cycle. tools.health's stale-pending check
+        (not this function) is what surfaces a row that never resolves.
+        """
+        try:
+            rows = (self.sb.table("open_positions").select("*")
+                      .eq("status", "PENDING_FILL").execute().data or [])
+        except Exception as e:
+            logger.warning(f"  pending fills: could not read PENDING_FILL rows — {e}")
+            return
+        if not rows:
+            return
+
+        from kite import kite_client
+        kite = kite_client.get_kite()
+        if not kite:
+            return
+
+        for pos in rows:
+            sym = pos.get("symbol")
+            order_id = pos.get("entry_order_id")
+            if not order_id:
+                # Cannot be resolved by this path — pre-dates this fix, or was
+                # written by a caller that has not adopted it. Left for a
+                # human; tools.health's stale-pending check will surface it.
+                continue
+            try:
+                hist = kite.order_history(order_id)
+            except Exception as e:
+                logger.debug(f"  {sym}: order_history failed for {order_id} — {e}")
+                continue
+            if not hist:
+                # Kite exposes order history for the CURRENT trading day only
+                # (the same limit reconcile's old BROKER_EXIT guess ran into).
+                # A row that survives past that window cannot be resolved
+                # here either — left pending rather than guessed at.
+                continue
+
+            final  = hist[-1]              # order_history is chronological
+            status = (final.get("status") or "").upper()
+
+            if status == "COMPLETE":
+                filled_qty = int(final.get("filled_quantity") or 0)
+                avg_price  = float(final.get("average_price") or 0)
+                if filled_qty <= 0 or avg_price <= 0:
+                    logger.warning(
+                        f"  {sym}: order {order_id} reports COMPLETE with no "
+                        f"usable fill data ({filled_qty} @ {avg_price}) — "
+                        f"leaving PENDING_FILL rather than guessing")
+                    continue
+                self._promote_pending_fill(pos, filled_qty, avg_price)
+
+            elif status in ("REJECTED", "CANCELLED"):
+                self._discard_pending_fill(pos, status,
+                                           final.get("status_message") or "")
+
+            # Anything else — OPEN, TRIGGER PENDING, PUT ORDER REQ RECEIVED —
+            # is still live at the exchange. Nothing to do; check again next
+            # slow tick.
+
+    def _promote_pending_fill(self, pos: dict, filled_qty: int, avg_price: float) -> None:
+        """
+        Confirmed COMPLETE at the broker — this is now a real position.
+
+        filled_qty can be LESS than what was ordered, on a partial fill.
+        Kite's own settlement is the number every downstream P&L, R-multiple
+        and exit-sizing computation must read, not the order this engine
+        placed — so actual_qty/current_qty/invested_value are corrected here
+        to match it. The plan itself (stop, target) is untouched: it was
+        computed against the setup, not the fill size.
+        """
+        sym = pos.get("symbol")
+        try:
+            (self.sb.table("open_positions").update({
+                "status": "ACTIVE",
+                "entry_price": avg_price,
+                "actual_qty": filled_qty, "current_qty": filled_qty,
+                "original_qty": filled_qty,
+                "invested_value": round(avg_price * filled_qty, 2),
+                "current_price": avg_price, "high_water_mark": avg_price,
+                "synced_at": datetime.now(IST).isoformat(),
+            }).eq("symbol", sym).eq("product", pos.get("product") or "CNC")
+              .eq("status", "PENDING_FILL").execute())
+        except Exception as e:
+            logger.error(f"  {sym}: fill confirmed but the position row could "
+                         f"not be promoted to ACTIVE — {e}. Still PENDING_FILL; "
+                         f"will retry next cycle.")
+            return
+        self._pending_fills.pop(sym, None)
+        logger.success(f"  🟢 ENTRY CONFIRMED {sym} {filled_qty} @ {avg_price:.2f} — now live")
+        self.notifier.send(Action(
+            sym, "ENTRY_CONFIRMED",
+            f"Fill confirmed: {filled_qty} @ ₹{avg_price:.2f}",
+            f"Order {pos.get('entry_order_id')} completed at the broker. "
+            f"This position is now active and under management.",
+            ltp=avg_price, urgency="NORMAL",
+            framework=pos.get("framework") or "SWING"), force=True)
+
+    def _discard_pending_fill(self, pos: dict, status: str, message: str) -> None:
+        """
+        The order never became a position — REJECTED outright, or CANCELLED
+        (which includes a LIMIT day order that simply expired unfilled at
+        session close, exactly what happened to TMCV on 03-Aug).
+
+        Deleted, not closed at 0%. A closed-at-breakeven row still reads as a
+        real round trip that happened not to move — this one never existed.
+        """
+        sym = pos.get("symbol")
+        try:
+            (self.sb.table("open_positions").delete()
+               .eq("symbol", sym).eq("product", pos.get("product") or "CNC")
+               .eq("status", "PENDING_FILL").execute())
+        except Exception as e:
+            logger.error(f"  {sym}: entry {status} at the broker but the pending "
+                         f"row could not be removed — {e}. Remove manually; "
+                         f"nothing was actually bought.")
+            return
+        self._pending_fills.pop(sym, None)
+        logger.warning(f"  🔴 ENTRY DID NOT FILL — {sym} {status.lower()} at the "
+                       f"broker" + (f": {message[:100]}" if message else "")
+                       + ". Nothing was bought.")
+        self.notifier.send(Action(
+            sym, "ENTRY_NOT_FILLED",
+            f"Entry {status.lower()} — nothing was bought",
+            f"Order {pos.get('entry_order_id')} for {sym} did not fill"
+            + (f": {message[:150]}" if message else ".")
+            + " No position was opened; this symbol is free again next cycle.",
+            urgency="NORMAL", framework=pos.get("framework") or "SWING"), force=True)
 
     # ── intraday strategy engines ───────────────────────────────────────────
     def evaluate_intraday_setups(self, prices: dict[str, float]) -> list:
