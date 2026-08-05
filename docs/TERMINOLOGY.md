@@ -10,7 +10,7 @@ when they are not.
 
 One live bug was found and fixed by writing this document: `allocation/
 hurdle.py::regime_bucket()` was written against system #1's vocabulary below,
-but its only real caller has always fed it system #2's. See migration 047 and
+but its only real caller has always fed it system #2's. See migration 048 and
 §1/§2 for the detail. Everything else here is confirmed correct as of
 05-Aug-2026, or flagged as a naming collision without a behavioural bug behind
 it — read the "risk" column in the summary table before assuming a hit needs
@@ -106,7 +106,7 @@ substring must match character-for-character; a space and an underscore are
 different characters). So the `STRONG` branch was unreachable in every session
 this system has ever run in production. Migration 044's regime segmentation for
 the allocator's hurdle — the entire reason a bucket function exists — was
-silently collapsing to one bucket. Fixed in migration 047: `regime_bucket()`
+silently collapsing to one bucket. Fixed in migration 048: `regime_bucket()`
 now names both vocabularies' values explicitly rather than pattern-matching a
 substring across an assumed-shared format. Verified:
 
@@ -209,7 +209,7 @@ WEAK   STRONG
 Exists to segment the arrival distribution the allocator's hurdle is built
 from (§ see `allocation/hurdle.py::_empirical_base`) — a pooled curve is wrong
 in both regimes, so the bar is drawn separately for weak and strong sessions.
-This is the function that had the bug described in §1/§2. After migration 047
+This is the function that had the bug described in §1/§2. After migration 048
 it explicitly names every value both upstream vocabularies can produce, rather
 than pattern-matching a substring:
 
@@ -255,7 +255,7 @@ Nothing outside that one function performs this normalisation, which is why
 these three strings kept reappearing in comparison logic elsewhere — each
 place that checks for `"BULLISH"` was, in effect, re-deriving a mapping that
 already exists once, correctly, and not importing it. `regime_bucket()` and
-`regime_icon()` are now consistent with this table as of migration 047.
+`regime_icon()` are now consistent with this table as of migration 048.
 `ai/post_trade_analysis.py:417` was not touched — it's a grading tool
 (assigns a letter grade to a closed trade after the fact) rather than a
 live gate, so a dead comparison there costs a slightly-wrong grade on

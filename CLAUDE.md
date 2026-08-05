@@ -196,7 +196,7 @@ both again. `simulate` is read-only and safe at any time.
   regime_bucket()` was written against the swing vocabulary while its only
   caller fed it the intraday one — `"RISK ON" in "RISK_ON"` is `False` — so the
   STRONG bucket was unreachable in every session this ran. Full map, and why
-  each system stays separate: `docs/TERMINOLOGY.md`. Migration 047.
+  each system stays separate: `docs/TERMINOLOGY.md`. Migration 048.
 
 ## Architecture — the actual data flow
 

@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- TradeOS v7 — Migration 047: regime_bucket() could never reach STRONG
+-- TradeOS v7 — Migration 048: regime_bucket() could never reach STRONG
 -- ═══════════════════════════════════════════════════════════════════════════
 --
 -- Code-only defect, no schema change — this migration exists to record it in
@@ -73,7 +73,7 @@
 DO $$
 BEGIN
   RAISE NOTICE '';
-  RAISE NOTICE 'Migration 047: no schema change. Code fix in allocation/hurdle.py';
+  RAISE NOTICE 'Migration 048: no schema change. Code fix in allocation/hurdle.py';
   RAISE NOTICE '(regime_bucket) and alerts/send_alerts.py (regime_icon).';
   RAISE NOTICE '';
   RAISE NOTICE 'Verify with:';
