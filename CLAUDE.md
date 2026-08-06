@@ -7,8 +7,11 @@ for.
 
 **Read `docs/0_SYSTEM_BLUEPRINT.md` first** — every engine, every guardrail, and
 how the pieces connect, in one page. **`USER_GUIDE.md`** for how the system
-behaves day to day, **`DESIGN_NOTES.md`** for what is decided but unbuilt. This
-file is the operating context around all three.
+behaves day to day, **`DESIGN_NOTES.md`** for what is decided but unbuilt.
+**`knowledge_base/KNOWLEDGE_BASE.md`** for what trading *evidence* has shown so
+far — read it before a daily trading review, update it after (see
+`knowledge_base/REVIEW_PROMPT.md`). This file is the operating context around
+all four.
 `docs/TERMINOLOGY.md` disambiguates every regime/state vocabulary — read it
 before writing anything that compares a "regime" string, because at least two
 of these near-homophone systems have already collided silently once.
