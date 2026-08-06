@@ -80,7 +80,12 @@ def check_coherence(sb=None) -> list[Finding]:
             # checked but not fetched silently falls back to its default, and the
             # report then describes a configuration that is not the one running —
             # which is the same silent-default failure this tool exists to find.
-            "intraday_max_position_pct", "paper_max_open_positions"]
+            "intraday_max_position_pct", "paper_max_open_positions",
+            # Read by the sleeve-fits-the-account check below. intraday_capital
+            # is the operator's dashboard sleeve; intraday_trading_mode decides
+            # whether an oversized one is harmless (PAPER) or starves the swing
+            # book (LIVE).
+            "intraday_capital", "intraday_trading_mode"]
     c = _read(sb, keys)
     missing = [k for k in keys if k not in c]
     if missing:
@@ -114,6 +119,37 @@ def check_coherence(sb=None) -> list[Finding]:
                        f"({swing_pct:g}%), intraday to ₹{sized['intraday']:,.0f} "
                        f"({intra_pct:g}%), risking ₹{cap * risk_pct / 100:,.0f} "
                        f"({risk_pct:g}%) per swing trade"))
+
+    # DOES THE SLEEVE FIT INSIDE THE ACCOUNT — AND IF NOT, WHEN DOES THAT BITE?
+    #
+    # capital_for() hands swing the WHOLE account while intraday is PAPER,
+    # because a simulated position holds no rupees. That makes an oversized
+    # intraday_capital completely harmless today and fatal the moment intraday
+    # is switched LIVE: swing's sleeve becomes TOTAL_CAPITAL - intraday_capital,
+    # which goes to zero and refuses every entry.
+    #
+    # A ₹100,000 paper sleeve on a ₹30,000 account is a real, current example.
+    # It is deliberate — paper is sized bigger for realism — so this does not
+    # fail while intraday is paper. It says so plainly instead, because the day
+    # the switch flips is the day nobody re-reads a sizing key.
+    sleeve = _f(c.get("intraday_capital"), cap)
+    intraday_live = (c.get("intraday_trading_mode") or "PAPER").upper() == "LIVE"
+    if sleeve >= cap:
+        if intraday_live:
+            out.append(Finding(
+                "intraday_capital", "ERROR", f"₹{sleeve:,.0f}",
+                f"below ₹{cap:,.0f}",
+                f"intraday is LIVE and its sleeve is >= the whole ₹{cap:,.0f} "
+                f"account, so swing has ₹0 to size against and refuses EVERY "
+                f"entry. The two books cannot both spend the same rupee"))
+        else:
+            out.append(Finding(
+                "intraday_capital", "WARN", f"₹{sleeve:,.0f}",
+                f"below ₹{cap:,.0f} before going live",
+                f"harmless while intraday is PAPER — swing gets the full "
+                f"₹{cap:,.0f} because a simulated position reserves nothing. "
+                f"But switching intraday to LIVE with this value leaves swing "
+                f"₹{cap - sleeve:,.0f} and it will refuse every entry"))
 
     for fw in ("swing", "intraday"):
         cap_fw = book_cap[fw]

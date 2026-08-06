@@ -41,7 +41,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import cfg_float, cfg_int, cfg, TOTAL_CAPITAL
+from config import cfg_float, cfg_int, cfg, capital_for
 
 
 # Maximum share of DEPLOYED capital permitted in one sector, by regime.
@@ -162,7 +162,12 @@ def check_new_entry(
     any caller that does not pass it.
     """
     C       = load_constraints(regime)
-    capital = total_capital if total_capital is not None else TOTAL_CAPITAL
+    # The docstring above states every caller of this function today is the
+    # swing book, so the FALLBACK is swing's sleeve, not the pooled total. An
+    # intraday caller must pass total_capital explicitly, exactly as it must
+    # pass product=MIS. While intraday is PAPER the two numbers are identical,
+    # so this is a no-op today and correct on the day intraday goes live.
+    capital = total_capital if total_capital is not None else capital_for("SWING")
     summary = summarise_portfolio(open_positions)
     sec     = (sector or "unknown").lower()
     ind     = (industry or "").lower()

@@ -41,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
 from config import (
     get_supabase, today_ist, IST, DRY_RUN,
-    is_kill_switch_active, cfg, cfg_bool, cfg_float, TOTAL_CAPITAL,
+    is_kill_switch_active, cfg, cfg_bool, cfg_float, capital_for,
 )
 
 MARKET_OPEN  = dtime(9, 15)
@@ -144,7 +144,13 @@ def run(sb=None, trade_date: str | None = None, require_live: bool = True) -> di
 
         d = decide(
             c, prices.get(sym),
-            total_capital=TOTAL_CAPITAL,
+            # capital_for("SWING"), not the pooled TOTAL_CAPITAL: this monitor
+            # is the swing book, and once intraday goes LIVE its sleeve is not
+            # swing's to size against. While intraday is PAPER the two are the
+            # same number, so this changes nothing today and stops being wrong
+            # on the day the switch flips — which is the day nobody would think
+            # to re-check a sizing call in a monitor.
+            total_capital=capital_for("SWING"),
             open_positions=open_pos,
             regime=regime,
             min_rr=min_rr,

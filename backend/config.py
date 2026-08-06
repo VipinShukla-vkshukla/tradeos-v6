@@ -179,19 +179,75 @@ except ValueError:
     TOTAL_CAPITAL, CAPITAL_IS_FALLBACK = TOTAL_CAPITAL_FALLBACK, True
 
 
+_capital_warned: set = set()
+
+
 def capital_for(framework: str) -> float:
     """
     The capital ONE book sizes against — not the shared pool.
 
-    Defaults to TOTAL_CAPITAL for both, so a book with no sleeve configured
-    behaves exactly as it always has. Only diverges once swing_capital or
-    intraday_capital is explicitly set in system_config, which is how paper
-    intraday can be sized bigger for realism without ever touching what
-    swing's real, live orders size against — they are different config keys,
-    not a shared TOTAL_CAPITAL read by both. See swing_capital / intraday_capital.
+    A SLEEVE IS RESERVED ONLY WHEN IT IS REAL.
+
+    `intraday_capital` is the operator's fixed sleeve, set on the control
+    dashboard. It is static by design: it does not drift as positions open and
+    close, so the intraday book's sizing is the same on a full day as an empty
+    one.
+
+    Swing takes what is left — but what is left depends on whether the
+    intraday book is actually spending money:
+
+      intraday PAPER  swing sizes against the WHOLE account. A simulated
+                      position holds no rupees, so reserving a sleeve against
+                      it would idle real capital to ring-fence a book that
+                      cannot lose any. This is the state today.
+
+      intraday LIVE   swing sizes against TOTAL_CAPITAL - intraday_capital, so
+                      the two books can never commit the same rupee twice.
+
+    That conditional is the whole point. Subtracting a PAPER sleeve was the
+    behaviour that would have quietly shrunk the live book to fund a
+    simulation; handing swing the whole account once intraday goes live would
+    let both books spend it.
+
+    `swing_capital`, if explicitly set, overrides the derivation — the
+    dashboard may want an exact split rather than a remainder. It is validated
+    against the total rather than trusted, because two numbers that must sum
+    to a third are two chances to disagree.
     """
-    key = "intraday_capital" if (framework or "").upper() == "INTRADAY" else "swing_capital"
-    return cfg_float(key, TOTAL_CAPITAL)
+    fw = (framework or "").upper()
+    sleeve = cfg_float("intraday_capital", TOTAL_CAPITAL)
+
+    if fw == "INTRADAY":
+        return sleeve
+
+    explicit = cfg_float("swing_capital", -1.0)
+    if explicit >= 0:
+        return explicit
+
+    # PAPER is the default for anything not explicitly LIVE — the same rule
+    # execution.gates.trading_mode() applies, read directly here because
+    # importing gates from config would be circular.
+    intraday_live = (cfg("intraday_trading_mode", "PAPER") or "PAPER").upper() == "LIVE"
+    if not intraday_live:
+        return TOTAL_CAPITAL
+
+    remaining = TOTAL_CAPITAL - sleeve
+    if remaining <= 0:
+        # An intraday sleeve at or above the whole account leaves swing nothing
+        # to size with. Refusing to trade is the safe direction, but it must
+        # NOT look like an ordinary quiet day — that is the exact failure this
+        # project keeps finding. Latched so a per-candidate call cannot spam.
+        if "swing_starved" not in _capital_warned:
+            _capital_warned.add("swing_starved")
+            logger.error(
+                f"intraday_capital ₹{sleeve:,.0f} is >= TOTAL_CAPITAL "
+                f"₹{TOTAL_CAPITAL:,.0f} while intraday is LIVE, so the swing book "
+                f"has ₹0 to size against and will refuse EVERY entry. Lower "
+                f"intraday_capital on the control dashboard, or raise "
+                f"TOTAL_CAPITAL in .env."
+            )
+        return 0.0
+    return remaining
 
 # ── Supabase ─────────────────────────────────────────────────
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
