@@ -26,6 +26,7 @@ REM    tradeos ip         this machine's public IP for the Kite allowlist
 REM    tradeos server     validate the daemon server (run this ON the server)
 REM    tradeos vcn        live logs from the Oracle daemon
 REM    tradeos vcn fix    pull latest code there and restart it
+REM    tradeos vcn env    push THIS laptop's .env there, backing the old one up
 REM    tradeos vcn stop   stop the Oracle daemon
 REM    tradeos vcn status is it running, and on which commit
 REM    tradeos stop       set the kill switch — everything stops trading
@@ -114,6 +115,7 @@ echo.
 echo   ORACLE SERVER
 echo     8   Logs                   what the server is doing right now
 echo     9   Update                 git pull + restart there
+echo     0   Push .env              copy THIS laptop's .env there (backs up first)
 echo     N   Status                 running? on which commit?
 echo     X   Stop                   hand the book to this laptop
 echo.
@@ -148,6 +150,7 @@ if /i "%PICK%"=="E" goto EVENING
 if /i "%PICK%"=="K" goto STOP
 if "%PICK%"=="8" set "VCNACT=logs"
 if "%PICK%"=="9" set "VCNACT=fixc"
+if "%PICK%"=="0" set "VCNACT=envc"
 if /i "%PICK%"=="N" set "VCNACT=status"
 if /i "%PICK%"=="X" set "VCNACT=stopc"
 REM The four server options SET an action rather than jumping, so they all enter
@@ -190,8 +193,10 @@ REM those two produces an ssh call with an empty key and an empty host.
 if /i "%~2"=="fix"        goto VCNFIX
 if /i "%~2"=="stop"       goto VCNSTOP
 if /i "%~2"=="status"     goto VCNSTAT
+if /i "%~2"=="env"        goto VCNENV
 if /i "%VCNACT%"=="fixc"   goto VCNFIXC
 if /i "%VCNACT%"=="stopc"  goto VCNSTOPC
+if /i "%VCNACT%"=="envc"   goto VCNENVC
 if /i "%VCNACT%"=="status" goto VCNSTAT
 echo Streaming the Oracle daemon log — Ctrl+C to stop.
 echo   server %SRV%
@@ -242,6 +247,57 @@ goto END
 :VCNFIX
 echo Pulling latest code on %SRV% and restarting the daemon...
 ssh -i "%KEY%" ubuntu@%SRV% "cd ~/tradeos-v6 && git pull --ff-only && sudo systemctl restart tradeos-intraday && sleep 8 && systemctl is-active tradeos-intraday && journalctl -u tradeos-intraday -n 25 --no-pager"
+goto END
+
+:VCNENVC
+REM Confirmed form, reached from the MENU. Option 9 pulls CODE; .env is
+REM gitignored (it holds the Kite secret and the Supabase service key), so no
+REM git pull will ever carry it — which is how the laptop came to size against
+REM Rs 30,000 while the server used Rs 20,000 for the same live book.
+echo.
+echo   This OVERWRITES %SRV%'s backend\.env with this laptop's copy.
+echo   It contains API keys and tokens — you are pushing secrets to that host.
+echo   The current server .env is backed up first, and the daemon is NOT
+echo   restarted: .env is read once at import, so run option 9 afterwards.
+echo.
+set "OK="
+set /p "OK=Type y to proceed: "
+if /i not "%OK%"=="y" goto VCNCANCEL
+goto VCNENV
+
+:VCNENV
+REM %~dp0 is the folder THIS script lives in, with a trailing backslash. The
+REM path must not be relative to the current directory: running `scp backend\.env`
+REM from anywhere other than the repo root fails with "No such file or directory",
+REM which is exactly what happened from C:\Users\vkshu\Downloads.
+set "LOCALENV=%~dp0backend\.env"
+if not exist "%LOCALENV%" (
+  echo   Local .env not found at "%LOCALENV%" — nothing was sent.
+  goto END
+)
+REM Stamp the backup on the SERVER's clock, not this one. cmd.exe leaves $(...)
+REM alone and the remote bash expands it, so the date is the server's own.
+echo Backing up the server's current .env...
+ssh -i "%KEY%" ubuntu@%SRV% "cd ~/tradeos-v6/backend && cp .env .env.bak.$(date +%%F-%%H%%M%%S) && ls -1t .env.bak.* | head -3"
+if errorlevel 1 (
+  echo   Backup FAILED — .env was NOT replaced. Nothing on the server changed.
+  goto END
+)
+echo Copying this laptop's .env to %SRV%...
+scp -i "%KEY%" "%LOCALENV%" ubuntu@%SRV%:~/tradeos-v6/backend/.env
+if errorlevel 1 (
+  echo   Copy FAILED. The server still has its original .env — restore with:
+  echo     ssh -i "%KEY%" ubuntu@%SRV% "cd ~/tradeos-v6/backend && cp .env.bak.LATEST .env"
+  goto END
+)
+REM Verify by KEY NAMES and capital only. Never print the file: this runs in a
+REM console that gets screenshotted and pasted into chats.
+echo.
+echo Verifying (key names only, no secrets printed)...
+ssh -i "%KEY%" ubuntu@%SRV% "cd ~/tradeos-v6/backend && echo -n '  keys on server: ' && grep -cE '^[A-Z_]+=' .env && grep -E '^TOTAL_CAPITAL=' .env"
+echo.
+echo   Done. The running daemon still holds the OLD values — .env is read once
+echo   at import. Run option 9 to restart it there.
 goto END
 
 :SERVER
