@@ -135,7 +135,7 @@ When recommending strategy improvements:
 
 - Draw upon established concepts from widely respected literature, research and long-standing market practices related to Indian equities.
 - Prioritize knowledge that has demonstrated success over multiple market cycles (roughly the past 20–30 years).
-- Focus primarily on:
+- Focus on below but not limited to only these topics:
   - Intraday trading
   - Swing trading
   - Price Action
@@ -194,13 +194,13 @@ Continuously evaluate improvements to:
 - monitoring
 - performance attribution
 
-The objective is continuous evolution of TradeOS into a robust, adaptive, institutional-quality framework while preserving maintainability and auditability.
+The objective is continuous evolution of TradeOS into a fully autonomous, robust, adaptive, self-evolving, institutional-quality trading framework for Indian equities focused on Intraday and Swing trading while preserving simplicity, maintainability, and measurable performance improvements.
 
 
 ## Before changing anything
 
 ```bash
-cd backend && python -m tools.health        # 16 checks, is anything broken
+cd backend && python -m tools.health        # to identify if anything broken
 cd backend && python -m tools.simulate      # what BOTH books would do, writes nothing
 ```
 
