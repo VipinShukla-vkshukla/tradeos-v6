@@ -174,6 +174,46 @@ def regime_bucket(regime: str | None) -> str:
     return WEAK
 
 
+def _quantile(sorted_vals: list[float], q: float) -> float:
+    """`sorted_vals[q]` by fraction. Same indexing `_dist()` uses for p10/p90."""
+    if not sorted_vals:
+        return float("-inf")
+    q = max(0.0, min(q, 1.0))
+    return sorted_vals[min(int(q * len(sorted_vals)), len(sorted_vals) - 1)]
+
+
+def _effective_percentile(pct0: float, time_mult: float, scarcity: float,
+                          time_mult_max: float, scarcity_max: float,
+                          cap: float = 0.95) -> float:
+    """
+    Maps time/scarcity pressure to WHICH PERCENTILE of today's arrivals must be
+    cleared, instead of multiplying a base R number that may be tiny, zero, or
+    negative — 06-Aug-2026, the units-drift bug's sibling.
+
+    The 05-Aug fix already had to special-case a negative base because
+    multiplying it makes an already-loose bar LOOSER, backwards from the
+    intent. That special case is a symptom: an R number's sign and scale are
+    not comparable across sessions or regimes, so "multiply it by 1.6" was
+    never a meaningful operation. "Require the top X% of today's arrivals" is
+    meaningful regardless of whether arrivals are currently running positive
+    or negative, which is why this needs no sign-dependent branch at all.
+
+    `reach` is `time_mult * scarcity`, the same combined pressure the old
+    multiplicative bar used; `max_reach` is what it would be at the most
+    selective instant (full session ahead, one slot left). The percentile
+    interpolates from `pct0` (baseline, e.g. 0.75 — no particular pressure) up
+    to `cap` (e.g. 0.95 — as selective as this bar ever gets) linearly in that
+    reach. Clamped to never go BELOW `pct0`: patience must never lower the bar,
+    the same invariant the old code enforced by a different mechanism.
+    """
+    reach     = max(time_mult, 1.0) * max(scarcity, 1.0)
+    max_reach = max(time_mult_max, 1.0) * max(scarcity_max, 1.0)
+    if max_reach <= 1.0:
+        return pct0
+    frac = max(0.0, min((reach - 1.0) / (max_reach - 1.0), 1.0))
+    return max(pct0, min(pct0 + (cap - pct0) * frac, cap))
+
+
 def hurdle(bucket: str, slots_left: int, minutes_left: int,
            framework: str = "INTRADAY", sb=None,
            max_slots: int | None = None) -> tuple[float, dict]:
@@ -188,7 +228,7 @@ def hurdle(bucket: str, slots_left: int, minutes_left: int,
     denominator that had nothing to do with the numerator: an intraday book with
     4 of its 4 slots free scored as though it had already spent two of two.
     """
-    base, base_meta = _empirical_base(bucket, framework, sb)
+    base, base_meta, edges = _empirical_base(bucket, framework, sb)
 
     # No slot, no decision to make. Returned as an infinite bar rather than as a
     # special case so callers have one code path.
@@ -200,33 +240,47 @@ def hurdle(bucket: str, slots_left: int, minutes_left: int,
     # Time: a full session ahead means better is probably still coming.
     session_minutes = cfg_int("alloc_session_minutes", 360)
     time_frac = max(0.0, min(minutes_left / max(session_minutes, 1), 1.0))
-    time_mult = 1.0 + cfg_float("alloc_time_weight", 0.6) * time_frac
+    time_weight = cfg_float("alloc_time_weight", 0.6)
+    time_mult = 1.0 + time_weight * time_frac
 
     # Scarcity: the last slot is worth more than the first.
     max_slots = max(int(max_slots or cfg_int("alloc_max_slots", 2)), 1)
     slots_left = min(slots_left, max_slots)
-    scarcity  = 1.0 + cfg_float("alloc_scarcity_weight", 0.5) * (
-        (max_slots - slots_left) / max_slots)
+    scarcity_weight = cfg_float("alloc_scarcity_weight", 0.5)
+    scarcity = 1.0 + scarcity_weight * ((max_slots - slots_left) / max_slots)
 
-    # A PERMISSIVE BAR STAYS PERMISSIVE THROUGH THE MULTIPLIERS.
-    #
-    # The bar is multiplicative, which silently assumes it is positive. A cold
-    # start of -inf survives that; a NEGATIVE empirical base does not — -0.4
-    # scaled by 1.6 becomes -0.64, i.e. the multipliers make an already-loose
-    # bar LOOSER early in the session, which is backwards. Patience must never
-    # lower the bar, so the multipliers are applied to the distance above the
-    # break-even point rather than to the raw number.
+    pct0 = cfg_float("alloc_hurdle_percentile", 0.75)
+    eff_pct = None
+
     if base == float("-inf"):
+        # Cold start, permissive. Unaffected by time/scarcity on purpose — an
+        # allocator with no opinion must stay indistinguishable from no
+        # allocator, at any hour, with any number of slots left.
         bar = float("-inf")
-    elif base >= 0:
-        bar = base * time_mult * scarcity
+    elif edges:
+        # THE NORMAL CASE — a real arrival population exists. Percentile-space,
+        # see `_effective_percentile`.
+        time_mult_max = 1.0 + time_weight
+        scarcity_max  = 1.0 + scarcity_weight * ((max_slots - 1) / max_slots)
+        eff_pct = _effective_percentile(pct0, time_mult, scarcity,
+                                        time_mult_max, scarcity_max)
+        bar = _quantile(edges, eff_pct)
     else:
-        bar = base / (time_mult * scarcity)
+        # A DELIBERATELY-SET cold-start floor (`alloc_hurdle_cold_start`) with
+        # no population to build a percentile from — nothing to re-slice, so
+        # this preserves the original absolute-space scaling for exactly this
+        # one opt-in case, still guarded against a negative floor getting
+        # LOOSER under multiplication (05-Aug's fix).
+        if base >= 0:
+            bar = base * time_mult * scarcity
+        else:
+            bar = base / (time_mult * scarcity)
 
     return bar, {
         "base": None if base == float("-inf") else round(base, 5),
         "bucket": bucket,
         "time_mult": round(time_mult, 3), "scarcity_mult": round(scarcity, 3),
+        "effective_percentile": None if eff_pct is None else round(eff_pct, 4),
         "slots_left": slots_left, "max_slots": max_slots,
         "minutes_left": minutes_left, "framework": framework,
         **base_meta,
@@ -261,7 +315,8 @@ def _cold_start(n: int, floor: int, why: str) -> tuple[float, dict]:
                            "n": n, "sample_floor": floor, "note": why}
 
 
-def _empirical_base(bucket: str, framework: str, sb=None) -> tuple[float, dict]:
+def _empirical_base(bucket: str, framework: str, sb=None
+                    ) -> tuple[float, dict, list[float] | None]:
     """
     The base bar, from the arrival distribution the allocator itself recorded.
 
@@ -286,7 +341,13 @@ def _empirical_base(bucket: str, framework: str, sb=None) -> tuple[float, dict]:
     column is not yet populated the query falls back to pooled AND SAYS SO in
     the returned inputs, so a verdict never claims a segmentation it did not get.
 
-    Returns (base, meta). meta is recorded with the verdict.
+    Returns (base, meta, edges). meta is recorded with the verdict; `edges` is
+    the full sorted arrival population and is NOT part of meta — meta flows
+    into `allocation_decisions.hurdle_inputs` (JSON, persisted every verdict),
+    and a population that can run to thousands of rows has no business being
+    written into every single one of them. `edges` is `None` on a cold start,
+    exactly when there is no population to re-slice — `hurdle()` uses it to
+    pick a different percentile of the SAME data without a second query.
     """
     floor = cfg_int("alloc_hurdle_min_sample", 40)
     pct   = cfg_float("alloc_hurdle_percentile", 0.75)
@@ -350,7 +411,8 @@ def _empirical_base(bucket: str, framework: str, sb=None) -> tuple[float, dict]:
         logger.warning(f"  hurdle: the arrival distribution could not be read "
                        f"({str(e)[:90]}) — falling back to the cold-start bar. "
                        f"The allocator has NO empirical opinion this session.")
-        return _cold_start(0, floor, f"query failed: {str(e)[:60]}")
+        base, meta = _cold_start(0, floor, f"query failed: {str(e)[:60]}")
+        return base, meta, None
 
     edges = []
     for r in rows:
@@ -360,8 +422,9 @@ def _empirical_base(bucket: str, framework: str, sb=None) -> tuple[float, dict]:
             continue
 
     if len(edges) < floor:
-        return _cold_start(len(edges), floor,
-                           f"only {len(edges)} scored arrival(s) for {fw}")
+        base, meta = _cold_start(len(edges), floor,
+                                 f"only {len(edges)} scored arrival(s) for {fw}")
+        return base, meta, None
 
     edges.sort()
     base = edges[min(int(pct * len(edges)), len(edges) - 1)]
@@ -376,4 +439,4 @@ def _empirical_base(bucket: str, framework: str, sb=None) -> tuple[float, dict]:
     return float(base), {"cold_start": False, "n": len(edges),
                          "sample_floor": floor, "percentile": pct,
                          "pooled_across_buckets": pooled,
-                         "lookback_days": days, "population": "allocation_decisions.edge"}
+                         "lookback_days": days, "population": "allocation_decisions.edge"}, edges

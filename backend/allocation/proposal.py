@@ -100,6 +100,21 @@ def from_swing(decision, plan: dict | None = None) -> Proposal | None:
     not fall back to the plan's levels when decide() left one empty — an absent
     level means decide() could not size the trade, and inventing one here would
     manufacture a proposal the live path would never place.
+
+    `plan` IS EXPECTED TO BE A `signal_output_daily` ROW (or the equivalent
+    candidate dict `_allocate_shadow` builds from one) — 06-Aug-2026. It reads
+    `strategy`, never `strategy_source`: that name is real elsewhere in the
+    swing pipeline (screen_stocks.py writes it, compute_msl.py reads it), but
+    by the time a plan lands in `signal_output_daily` — the table this
+    function's only caller reads from — the column is `strategy`. Reading the
+    wrong key silently returned `None` every time, so `source` fell to the
+    literal fallback string "CONTINUATION" for every swing proposal ever
+    scored, regardless of which engine actually fired, and `native_rank`
+    (from `final_score`) was silently always 0.0. `swing_family()` maps the
+    real value (which is itself a '+'-joined combo of every engine that agreed
+    on the name, e.g. "CTL+SEC") to the same family key `scoring.swing_priors()`
+    now builds its buckets from — the SAME function on both sides, so the two
+    cannot drift back apart the way `signal_type` vs `strategy` just did.
     """
     if decision is None:
         return None
@@ -114,6 +129,8 @@ def from_swing(decision, plan: dict | None = None) -> Proposal | None:
     if None in (entry, stop, tgt) or not qty:
         return None
 
+    from allocation.scoring import swing_family as _swing_family
+
     p = Proposal(
         symbol      = decision.symbol,
         framework   = "SWING",
@@ -122,7 +139,7 @@ def from_swing(decision, plan: dict | None = None) -> Proposal | None:
         stop        = float(stop),
         target      = float(tgt),
         quantity    = int(qty),
-        source      = str((plan or {}).get("strategy_source") or "CONTINUATION"),
+        source      = _swing_family((plan or {}).get("strategy")),
         native_rank = float((plan or {}).get("final_score") or 0.0),
         # CNC by construction — this system does not short the delivery book,
         # and Indian cash-market rules make an unhedged retail short outside

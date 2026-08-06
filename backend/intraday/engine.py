@@ -2526,7 +2526,15 @@ class IntradayEngine:
         props = []
         for e in entries or []:
             d = e.get("decision") if isinstance(e, dict) else e
-            p = from_swing(d, e.get("plan") if isinstance(e, dict) else None)
+            # `evaluate_candidates` builds these dicts as {"candidate": c,
+            # "decision": d, "ltp": ..., "state": ...} — there has never been a
+            # "plan" key. `e.get("plan")` silently returned None on every call
+            # since the allocator was wired in, so from_swing's `strategy` and
+            # `final_score` reads always saw an empty dict: every swing
+            # Proposal's source fell to the "CONTINUATION" literal regardless
+            # of engine, and native_rank was always 0.0. `c` (the candidate,
+            # a signal_output_daily row) is what actually carries both fields.
+            p = from_swing(d, e.get("candidate") if isinstance(e, dict) else None)
             if p:
                 props.append(p)
         for s in setups or []:

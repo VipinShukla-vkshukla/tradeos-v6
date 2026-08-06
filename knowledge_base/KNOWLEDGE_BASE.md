@@ -1,6 +1,7 @@
 # TradeOS Knowledge Base — Living Document
 
-**Last updated:** 6 August 2026 (1 session of evidence)
+**Last updated:** 6 August 2026 (1 session of evidence, plus a direct
+`final_score` tercile measurement against the full historical sample)
 **Source reviews:** `daily/2026-08-06.md`
 
 Read this before starting a new day's review. Update it after, per the
@@ -33,6 +34,24 @@ contradiction.)*
   Next evidence needed: a session where slots are NOT the binding
   constraint, to see edge-vs-hurdle comparison do the work alone (so far
   only tested under slot pressure).
+
+- **`final_score` does not predict forward R within the CONTINUATION swing
+  family, on the full resolved sample measured so far.**
+  Measured 6 Aug directly against `signal_output_daily` (n=125 entered +
+  resolved CONTINUATION plans — CTL/SEC/TPO/SBS/VBD/RSB/IAD, alone or
+  combined). Mean R by `final_score` tercile: 0.516 / 0.491 / 0.511 — flat,
+  no monotonic separation. This was the direct test of whether the
+  allocator's swing prior should condition on `final_score` in addition to
+  engine identity (it was previously conditioning on neither — see
+  `docs/6_IMPLEMENTATION_STATUS.md`'s attribution-bug entry, 6 Aug); the
+  conditioning was NOT shipped on this evidence.
+  Confidence: Medium — a real, fairly large n, but the same survivorship-
+  in-time bias `scoring._swing_bias_warning()` already documents for the R
+  sample generally (fast winners resolve first in a young dataset) applies
+  here too. MOM (n=17) and RVS (n=5) were too thin to read anything into.
+  Next evidence needed: re-run `python -m allocation.scoring --tercile` as
+  the resolved sample grows, particularly once 15-session windows opened in
+  the last month have had time to close.
 
 ---
 

@@ -170,9 +170,74 @@ def intraday_priors(sb) -> dict[str, Prior]:
     return out
 
 
+# Swing engine -> family, matching docs/0_SYSTEM_BLUEPRINT.md §4: CTL, SEC,
+# TPO, SBS, VBD, RSB and IAD share family CONTINUATION; MOM, RVS, PEAD and ACC
+# are each split into their own family because the blueprint's own reason for
+# splitting them — a distinct evidence profile, tracked SHADOW/ACTIVE
+# separately — is exactly what pooling them back into CONTINUATION would erase.
+_SWING_FAMILY = {
+    "CTL": "CONTINUATION", "SEC": "CONTINUATION", "TPO": "CONTINUATION",
+    "SBS": "CONTINUATION", "VBD": "CONTINUATION", "RSB": "CONTINUATION",
+    "IAD": "CONTINUATION",
+    "MOM": "MOM", "RVS": "RVS", "PEAD": "PEAD", "ACC": "ACC",
+}
+
+
+def swing_family(strategy: str | None) -> str:
+    """
+    `strategy` (written as `strategy_source` earlier in the pipeline — see
+    `screen_stocks.py::run_sector_rotation` and friends) is a '+'-joined combo
+    of every engine that agreed on a name that day, e.g. "CTL+SEC" or
+    "CTL+MOM+SEC" — confirmed empirically against `signal_output_daily`:
+    dozens of distinct combo strings, most with single-digit counts, which is
+    too fine a grain for a stable prior on its own.
+
+    A combo stays CONTINUATION only if EVERY constituent is a CONTINUATION
+    engine. If any constituent belongs to a family the blueprint deliberately
+    isolated (MOM, RVS, PEAD, ACC), that family wins — a mixed signal must
+    never be silently diluted back into the pool it was split out of. Ties
+    among more than one non-CONTINUATION family (not observed in current
+    data) resolve alphabetically, deterministic rather than order-of-arrival.
+
+    Unrecognised or empty resolves to "ALL", the existing book-level fallback
+    key — never invented, matching this module's own rule for the R
+    distributions themselves.
+    """
+    parts = [p for p in (strategy or "").split("+") if p]
+    if not parts:
+        return "ALL"
+    families = {_SWING_FAMILY.get(p, "ALL") for p in parts}
+    families.discard("CONTINUATION")
+    if not families:
+        return "CONTINUATION"
+    if len(families) == 1:
+        return next(iter(families))
+    return sorted(families)[0]
+
+
 def swing_priors(sb) -> dict[str, Prior]:
     """
     R distributions from every daily plan's forward outcome, traded or not.
+
+    SEGMENTED BY ENGINE FAMILY (`swing_family(strategy)`), NOT `signal_type`.
+
+    06-Aug-2026: this function keyed its buckets on `signal_type`, which reads
+    as "which engine produced this" but is actually a WORKFLOW status —
+    confirmed against real data, its values are WATCH, BUY_CANDIDATE,
+    REENTRY_SETUP, AVOID_ENTRY_EVENT, MOMENTUM_CONTINUATION, never an engine
+    name. The real engine identity lives in the `strategy` column (CTL, SEC,
+    MOM, TPO, ... and their '+'-joined combos). This was invisible from the
+    allocator's own logs because it compounded with a second, independent bug
+    at the call site (`proposal.py::from_swing`, `intraday/engine.py`
+    `_allocate_shadow`): every swing Proposal's `source` was ALSO always the
+    literal fallback string "CONTINUATION" regardless of which engine fired,
+    so the class lookup `pri.get(f"SWING/{p.source}")` was `pri.get(
+    "SWING/CONTINUATION")` against a dict that never contained that key
+    either way — always missing, always falling through to the pooled
+    SWING/ALL prior, for every swing candidate, regardless of engine. Fixed
+    together: `from_swing` now reads `strategy` (not the never-populated
+    `strategy_source`) through `swing_family()`, the same function this uses
+    to build the keys it looks up.
 
     SEGMENTED BY WHETHER THE ENTRY LEVEL WAS REACHED, NOT POOLED.
 
@@ -191,7 +256,7 @@ def swing_priors(sb) -> dict[str, Prior]:
     rows, off = [], 0
     while True:
         page = (sb.table("signal_output_daily")
-                  .select("signal_type,outcome_category,outcome_return_pct,"
+                  .select("strategy,outcome_category,outcome_return_pct,"
                           "outcome_entered,entry_zone_high,planned_stop")
                   .not_.is_("outcome_category", "null")
                   .range(off, off + PAGE - 1).execute().data) or []
@@ -217,7 +282,8 @@ def swing_priors(sb) -> dict[str, Prior]:
             risk_pct = (entry - stop) / entry * 100.0
             if risk_pct <= 0:
                 continue
-            by.setdefault(r.get("signal_type") or "ALL", []).append(float(ret) / risk_pct)
+            by.setdefault(swing_family(r.get("strategy")), []).append(
+                float(ret) / risk_pct)
         except (TypeError, ValueError, ZeroDivisionError):
             continue
 
@@ -344,27 +410,33 @@ def tercile_report(sb=None) -> int:
     DIAGNOSTIC ONLY — not called from `swing_priors()`, not wired into the
     allocator, changes nothing. Run with `python -m allocation.scoring --tercile`.
 
-    Council Break 2 observed, correctly, that `swing_priors()` keys on
-    `signal_type` alone and discards `final_score` entirely — a CTL signal
-    scored 92 and one scored 41 land in the same bucket. Whether conditioning
-    on that score actually predicts anything is a separate, empirical
-    question, and `docs/TRADING_METHODOLOGY_REVIEW.md` already warns that
-    tercile-mining at this account's sample size produces spurious "material"
-    splits by chance. This prints the same population and floor logic
-    `swing_priors()` uses, split into `(signal_type, final_score tercile)`
-    instead of `signal_type` alone, so the terciles can be read by eye before
-    anyone changes how priors are keyed. If they don't visibly separate, the
-    right conclusion is that `final_score`'s hand-set weights
-    (`compute_msl.py::get_final_score_weights`) have not been validated
-    against forward outcomes — which is itself worth knowing — not that the
-    conditioning should ship anyway.
+    Council Break 2 observed, correctly, that priors discarded `final_score`
+    entirely. Whether conditioning on it actually predicts anything is a
+    separate, empirical question, and `docs/TRADING_METHODOLOGY_REVIEW.md`
+    already warns that tercile-mining at this account's sample size produces
+    spurious "material" splits by chance. This prints mean R for each
+    `(swing_family(strategy), final_score tercile)` bucket next to the pooled
+    per-family number, so the split can be read by eye before anyone
+    conditions priors on it.
+
+    MEASURED 06-Aug-2026, n=125 entered+resolved CONTINUATION plans (the
+    dominant family): tercile means were 0.5156 / 0.4910 / 0.5112 — FLAT, no
+    monotonic separation. `final_score`'s hand-set weights
+    (`compute_msl.py::get_final_score_weights`,
+    0.22/0.20/0.15/0.13/0.12/0.08/0.06/0.04) have never been validated
+    against forward outcomes, and this is the first time they were tested
+    against one: on this measurement they carry no information about forward
+    R once a plan has already entered. MOM and RVS showed n too small (17 and
+    5) to read anything into. Conclusion: the conditioning was NOT shipped.
+    Re-run this as the sample grows — a flat result at n=125 is evidence, not
+    a permanent verdict.
     """
     floor = cfg_int("priors_min_sample_swing", 30)
     sb = sb or get_supabase()
     rows, off = [], 0
     while True:
         page = (sb.table("signal_output_daily")
-                  .select("signal_type,outcome_return_pct,outcome_entered,"
+                  .select("strategy,outcome_return_pct,outcome_entered,"
                           "entry_zone_high,planned_stop,final_score")
                   .not_.is_("outcome_category", "null")
                   .range(off, off + PAGE - 1).execute().data) or []
@@ -373,7 +445,7 @@ def tercile_report(sb=None) -> int:
             break
         off += PAGE
 
-    triples: list[tuple[str, float, float]] = []   # (engine, final_score, R)
+    triples: list[tuple[str, float, float]] = []   # (family, final_score, R)
     for r in rows:
         if not r.get("outcome_entered"):
             continue
@@ -386,7 +458,7 @@ def tercile_report(sb=None) -> int:
             risk_pct = (entry - stop) / entry * 100.0
             if risk_pct <= 0:
                 continue
-            triples.append((r.get("signal_type") or "ALL", float(fs),
+            triples.append((swing_family(r.get("strategy")), float(fs),
                             float(ret) / risk_pct))
         except (TypeError, ValueError, ZeroDivisionError):
             continue
