@@ -251,9 +251,21 @@ def check_kite() -> tuple[bool, str]:
         rows = (sb.table("system_config").select("value")
                   .eq("key", "kite_allowlisted_ip").execute().data or [])
         rec = (rows[0]["value"] if rows else "") or ""
-        if rec and rec != ip:
-            return False, (f"public IP is {ip} but {rec} is allowlisted — order "
-                           f"placement will be REJECTED")
+        # TWO MACHINES, TWO IPs, ONE KEY.
+        #
+        # The laptop and the Oracle server run the same daemon from different
+        # addresses, and Zerodha's console accepts SEVERAL allowlisted IPs. A
+        # single-valued key cannot describe that: with the laptop's address
+        # recorded here, this check fails on the server — telling the operator
+        # that orders will be REJECTED on the one machine where they actually
+        # work. So the key is a comma-separated list and this asks for
+        # membership, not equality.
+        allowed = [p.strip() for p in rec.split(",") if p.strip()]
+        if allowed and ip not in allowed:
+            return False, (f"public IP is {ip} but only {', '.join(allowed)} "
+                           f"{'is' if len(allowed) == 1 else 'are'} recorded as "
+                           f"allowlisted — order placement will be REJECTED from "
+                           f"this machine")
     except Exception:
         pass
 
@@ -301,7 +313,7 @@ def check_kite() -> tuple[bool, str]:
                        f"— cannot confirm orders are accepted")
 
     return True, (f"session live for {prof.get('user_id')}"
-                  + (f", IPv4 {ip} == recorded kite_allowlisted_ip" if ip
+                  + (f", IPv4 {ip} is in recorded kite_allowlisted_ip" if ip
                      else ", IPv4 forced")
                   + ", no broker config rejection today")
 
