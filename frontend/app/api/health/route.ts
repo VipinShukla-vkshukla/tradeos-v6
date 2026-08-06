@@ -205,8 +205,27 @@ export async function GET() {
     // detection row behind it. Same guarantee, different table.
     const ID = P.filter((p) => (p.framework ?? '').toUpperCase() === 'INTRADAY');
     if (ID.length) {
+      // todayIST, NOT tradeDate. These are two different clocks and swapping
+      // them is why this warned all morning on 2026-08-06.
+      //
+      //   tradeDate  = max(stock_data_daily.date) — the last COMPLETED session,
+      //                because the bhavcopy only publishes after the close. It
+      //                is the right reference for the pipeline checks above,
+      //                which grade last night's output.
+      //   todayIST   = the session running NOW, which is what an OPEN intraday
+      //                position belongs to and what intraday_setups.trade_date
+      //                is stamped with.
+      //
+      // During any live session the two differ by a day, so every open intraday
+      // position was compared against YESTERDAY's detections and reported as an
+      // orphan. PNBHOUSING was in the 06-Aug TAKEN list the whole time.
+      //
+      // That makes it a check that cannot reach OK while the market is open —
+      // exactly the failure the comment above this block describes fixing for
+      // the swing equivalent, reintroduced here through the date instead of the
+      // filter.
       const { data: dets } = await sb.from('intraday_setups')
-        .select('symbol').eq('trade_date', tradeDate).eq('cost_verdict', 'TAKEN');
+        .select('symbol').eq('trade_date', todayIST).eq('cost_verdict', 'TAKEN');
       const seen = new Set((dets ?? []).map((d) => d.symbol as string));
       const orphan = ID.filter((p) => !seen.has(p.symbol as string));
       add({ id: 'pos_attrib_intraday', group: 'Positions', label: 'Intraday positions linked to a detection',
