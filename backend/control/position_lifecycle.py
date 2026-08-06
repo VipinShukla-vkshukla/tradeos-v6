@@ -801,7 +801,18 @@ def open_position_from_holding(sb, holding: dict, trade_date: str) -> bool:
 def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
                    detail: str, trade_date: str, source: str = "kite") -> bool:
     """Move an open position into closed_positions with full outcome metrics."""
+    # DIRECTION-AWARE, and this is the one place in the whole spine that was
+    # not. (exit_price - entry) * qty is a LONG's P&L; for a SHORT it is that
+    # P&L's exact negative, so every short closed through this function had
+    # its sign flipped — a real loss recorded as a gain. It went unnoticed
+    # because it could not fire: the intraday runway gate refused every short
+    # before this morning's fix, so SAPPHIRE (2026-08-06) is the first short
+    # this system has ever closed. A scan of all 102 rows in closed_positions
+    # for the short-shaped stop (planned_stop_at_entry > entry_price) found
+    # exactly that one match — the blast radius is one row.
+    from intraday import direction as D
     sym   = pos["symbol"]
+    d     = D.normalise(pos.get("direction"))
     entry = float(pos.get("entry_price") or 0)
     qty   = int(pos.get("current_qty") or pos.get("actual_qty") or 0)
     if not entry or not exit_price:
@@ -812,9 +823,10 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
     # recorded outcome reflects the whole trade, not just the final tranche.
     booked_qty   = int(pos.get("partial_booked_qty") or 0)
     booked_price = float(pos.get("partial_booked_price") or 0)
-    booked_pnl   = (booked_price - entry) * booked_qty if booked_qty and booked_price else 0.0
+    booked_pnl   = (D.sign(d) * (booked_price - entry) * booked_qty
+                    if booked_qty and booked_price else 0.0)
 
-    final_pnl    = (exit_price - entry) * qty
+    final_pnl    = D.sign(d) * (exit_price - entry) * qty
     # GROSS, deliberately. 70 trades closed before charges were recorded and
     # their costs cannot be reconstructed; redefining this column would make old
     # and new rows incomparable while looking identical. Charges are recorded
@@ -846,9 +858,15 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
     invested     = entry * total_qty
     pnl_pct      = round(realized_pnl / invested * 100, 3) if invested else 0.0
 
+    # risk_per_share, not the long-only `entry - stop0 if stop0 < entry`: that
+    # guard reads a short's correctly-placed stop (above entry, so
+    # entry - stop0 is negative) as invalid and discards it, rather than
+    # recognising the other side. risk_per_share returns 0.0 for a stop that
+    # is genuinely on the wrong side regardless of direction, which is the
+    # one case this must still refuse.
     stop0 = float(pos.get("planned_stop") or 0)
-    risk  = entry - stop0 if stop0 and stop0 < entry else None
-    r_mult = round((realized_pnl / total_qty) / risk, 3) if (risk and total_qty) else None
+    risk  = D.risk_per_share(entry, stop0, d)
+    r_mult = round((realized_pnl / total_qty) / risk, 3) if (risk > 0 and total_qty) else None
 
     hold_days = None
     try:
@@ -869,6 +887,10 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
         "mode":             pos.get("mode") or "LIVE",
         "framework":        pos.get("framework") or "SWING",
         "product":          pos.get("product") or "CNC",
+        # Migration 051. Without this a closed row cannot be told apart from a
+        # long after the fact — which is exactly why correcting SAPPHIRE's
+        # existing row needed the alert log instead of just reading the row.
+        "direction":        d,
         "intraday_strategy": pos.get("intraday_strategy"),
         "entry_date":       pos.get("entry_date"),
         "entry_price":      entry,
@@ -956,15 +978,33 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
                 if not prior:
                     raise
                 p0 = prior[0]
+                agg_pnl = float(p0.get("realized_pnl") or 0) + float(closed.get("realized_pnl") or 0)
+                # invested_value and pnl_pct were frozen at leg 1's own numbers
+                # here — this merge touched realized_pnl but not the two fields
+                # it is a percentage OF, so a two-leg SAPPHIRE showed a pnl_pct
+                # computed from HALF its true invested value. Aggregate both,
+                # the same way realized_pnl already was.
+                agg_inv = float(p0.get("invested_value") or 0) + float(closed.get("invested_value") or 0)
                 merged = {
-                    "realized_pnl": float(p0.get("realized_pnl") or 0) + float(closed.get("realized_pnl") or 0),
-                    "charges":      float(p0.get("charges") or 0) + float(closed.get("charges") or 0),
-                    "actual_qty":   int(p0.get("actual_qty") or 0) + int(closed.get("actual_qty") or 0),
+                    "realized_pnl":   agg_pnl,
+                    "charges":        float(p0.get("charges") or 0) + float(closed.get("charges") or 0),
+                    "actual_qty":     int(p0.get("actual_qty") or 0) + int(closed.get("actual_qty") or 0),
+                    "invested_value": round(agg_inv, 2),
+                    "pnl_pct":        round(agg_pnl / agg_inv * 100, 3) if agg_inv else None,
                     "exit_reason":  "MULTI_LEG",
                     "exit_reason_detail": (f"{p0.get('exit_reason')} then "
                                            f"{closed.get('exit_reason')} — two round trips "
                                            f"in {sym} on {closed.get('exit_date')}, aggregated"),
                 }
+                # r_multiple has no single denominator across two legs with
+                # different entries/stops, so there is no exact aggregate R —
+                # a qty-weighted blend of each leg's own R is the closest
+                # honest answer, and strictly better than the None a merge
+                # left behind before (leg 1's own R, silently dropped here).
+                r0, q0 = p0.get("r_multiple"), int(p0.get("actual_qty") or 0)
+                r1, q1 = closed.get("r_multiple"), int(closed.get("actual_qty") or 0)
+                if r0 is not None and r1 is not None and (q0 + q1):
+                    merged["r_multiple"] = round((float(r0) * q0 + float(r1) * q1) / (q0 + q1), 3)
                 sb.table("closed_positions").update(merged).eq("id", p0["id"]).execute()
                 logger.warning(f"  {sym}: second round trip today folded into the "
                                f"existing outcome row (total P&L "
@@ -976,6 +1016,17 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
                                "migration 025. Closing without the cost figure.")
                 sb.table("closed_positions").insert(
                     {k: v for k, v in closed.items() if k != "charges"}).execute()
+            elif "direction" in str(e):
+                # Ships ahead of its own migration on purpose: the P&L and R
+                # fixes above must not wait on a column, only the AUDIT TRAIL
+                # of which side each row was does. Degrades to recording the
+                # right numbers under the wrong-shaped schema, once, until
+                # migration 051 lands — never to the old sign-flipped math.
+                logger.warning("  closed_positions.direction is missing — apply "
+                               "migration 051. Closing without recording direction "
+                               "(the P&L and R above are still correct).")
+                sb.table("closed_positions").insert(
+                    {k: v for k, v in closed.items() if k != "direction"}).execute()
             else:
                 raise
         # KEYED ON (symbol, product), like every other write since migration 028.
@@ -1038,8 +1089,21 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
     #
     # Paper positions are closed by the exit engine and by square_off_paper(),
     # both of which know they are simulated.
+    #
+    # ACTIVE and CLOSING, not ACTIVE alone. intraday/engine.py writes
+    # status='CLOSING' the moment a live exit order is PLACED — optimistic,
+    # before the fill is confirmed, so the same exit is not re-derived and
+    # re-sent next cycle (see the comment where it is written). Nothing ever
+    # read CLOSING back out again: this function is the one place a sold
+    # position gets its Kite fill looked up and moved into closed_positions,
+    # and it only ever asked for ACTIVE. Three real positions — TRAVELFOOD,
+    # KIMS (2026-08-06) and BHEL (2026-08-03) — were sold, confirmed gone
+    # from holdings, and then permanently invisible to this function: not
+    # ACTIVE, so never reconciled; not in closed_positions, so no realized
+    # P&L was ever recorded for a real sale. Not a race that self-corrects —
+    # every reconcile since has skipped them the same way.
     db_rows = [r for r in ((sb.table("open_positions").select("*")
-                              .eq("status", "ACTIVE").execute().data) or [])
+                              .in_("status", ["ACTIVE", "CLOSING"]).execute().data) or [])
                if (r.get("mode") or "LIVE").upper() != "PAPER"]
 
     # A CNC BUY FILLED TODAY IS NOT IN holdings() YET.
