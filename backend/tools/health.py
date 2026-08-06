@@ -133,10 +133,11 @@ def check_broker_consistency() -> tuple[bool, str]:
     live = {r["symbol"] for r in rows if (r.get("mode") or "LIVE").upper() != "PAPER"}
     paper = {r["symbol"] for r in rows if (r.get("mode") or "LIVE").upper() == "PAPER"}
 
-    # Without a broker session list_gtts() returns {}, which is indistinguishable
-    # from "no stops exist" — and reporting every live position as unprotected
-    # when the truth is "cannot see" sends you hunting for a problem that may not
-    # be there. It also buries the real finding, which is that the session died.
+    # list_gtts() returns None — never {} — when it cannot confirm what is
+    # resting (no session, or the call failed). Reporting every live position
+    # as unprotected when the truth is "cannot see" sends you hunting for a
+    # problem that may not be there, and buries the real finding, which is
+    # that the session or the connection died.
     try:
         from kite import kite_client
         if not kite_client.get_kite():
@@ -147,10 +148,15 @@ def check_broker_consistency() -> tuple[bool, str]:
 
     try:
         from execution.gtt_manager import list_gtts
-        resting = set(list_gtts())
+        existing = list_gtts()
     except Exception as e:
         return True, f"could not read GTTs ({str(e)[:60]}) — broker session needed"
 
+    if existing is None:
+        return True, ("cannot verify — GTT list call failed. Resting GTTs are "
+                      "unaffected by this; fix the session/connectivity and re-check.")
+
+    resting = set(existing)
     problems = []
     for s in sorted(resting & paper):
         problems.append(f"{s}: REAL GTT for a PAPER position")
@@ -158,9 +164,22 @@ def check_broker_consistency() -> tuple[bool, str]:
         problems.append(f"{s}: GTT resting but no position")
     for s in sorted(live - resting):
         problems.append(f"{s}: live position with NO broker stop")
+    # set(existing) only sees SYMBOLS, never COUNT — a duplicate GTT on a
+    # symbol that is otherwise correctly protected is invisible to every
+    # comparison above this line. This is exactly what let 6 positions carry
+    # 12 live SELL GTTs on 2026-08-06 while this check reported a clean match
+    # ("6 GTT(s) match 6 live position(s)") — it was counting symbols, not GTTs.
+    for s, gs in sorted(existing.items()):
+        if len(gs) > 1:
+            problems.append(f"{s}: {len(gs)} duplicate GTTs resting (ids "
+                             f"{','.join(str(g.gtt_id) for g in gs)})")
     if problems:
-        return False, "; ".join(problems[:4])
-    return True, f"{len(resting)} GTT(s) match {len(live)} live position(s)"
+        shown = "; ".join(problems[:4])
+        if len(problems) > 4:
+            shown += f"; +{len(problems) - 4} more"
+        return False, shown
+    total = sum(len(gs) for gs in existing.values())
+    return True, f"{total} GTT(s) match {len(live)} live position(s)"
 
 
 def check_data_freshness() -> tuple[bool, str]:

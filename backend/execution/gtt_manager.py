@@ -62,18 +62,32 @@ def _kite():
     return kite_client.get_kite()
 
 
-def list_gtts() -> dict[str, GttState]:
-    """Active stop GTTs, keyed by symbol."""
+def list_gtts() -> dict[str, list[GttState]] | None:
+    """
+    Active stop GTTs, keyed by symbol, each list sorted tightest-stop-first.
+    None means the fetch could not be trusted — no session, or the call
+    failed — and callers MUST treat that as "unknown", never as "zero GTTs
+    exist". Collapsing unknown into empty is exactly what let a list-call
+    timeout re-place a stop that was already resting: on 2026-08-06 six
+    positions each grew a second live SELL GTT because this returned {}
+    instead of admitting it couldn't see anything, and every one of those
+    six placements then went through because the KITE SESSION ITSELF was
+    fine — only the one read had timed out.
+
+    A symbol can map to more than one entry. Kite has no uniqueness
+    constraint on GTTs, so a re-placed stop rests ALONGSIDE the old one, not
+    in place of it. sync() cancels everything after the first as a duplicate.
+    """
     kite = _kite()
     if not kite:
-        return {}
+        return None
     try:
         raw = kite.get_gtts() or []
     except Exception as e:
         logger.warning(f"  gtt: list failed — {e}")
-        return {}
+        return None
 
-    out: dict[str, GttState] = {}
+    out: dict[str, list[GttState]] = {}
     for g in raw:
         try:
             if (g.get("status") or "").lower() != "active":
@@ -88,10 +102,18 @@ def list_gtts() -> dict[str, GttState]:
             if orders and (orders[0].get("transaction_type") or "").upper() != "SELL":
                 continue
             if sym:
-                out[sym] = GttState(sym, int(g.get("id")), float(trig) if trig else None,
-                                    qty, g.get("status"))
+                out.setdefault(sym, []).append(
+                    GttState(sym, int(g.get("id")), float(trig) if trig else None,
+                             qty, g.get("status")))
         except Exception:
             continue
+
+    # Tightest trigger first — same rule as the ratchet below: of two stops
+    # resting on one position, the safer one (higher, for a SELL) is the one
+    # to treat as canonical. Newest id breaks a tie between equal triggers.
+    for sym in out:
+        out[sym].sort(key=lambda s: (s.trigger if s.trigger is not None else float("-inf"),
+                                     s.gtt_id or 0), reverse=True)
     return out
 
 
@@ -238,6 +260,19 @@ def sync(positions: list[dict], prices: dict[str, float], notifier=None) -> dict
     positions = real
 
     existing = list_gtts()
+    if existing is None:
+        # Cannot confirm what is already resting, so nothing this cycle is
+        # safe — not a placement (might duplicate), not a cancel (might drop
+        # real protection). Skip the whole cycle; sync() is called again on
+        # the next resync tick and tries fresh. See list_gtts()'s docstring
+        # for the 2026-08-06 incident this replaced.
+        logger.warning(f"  gtt: sync skipped — could not confirm what is already "
+                       f"resting, not safe to place or cancel this cycle "
+                       f"({len(positions)} position(s) deferred)")
+        result["skipped"] = len(positions)
+        result["errors"] += 1
+        return result
+
     min_move = cfg_float("gtt_resync_min_pct", 0.4) / 100.0
 
     for p in positions:
@@ -258,7 +293,20 @@ def sync(positions: list[dict], prices: dict[str, float], notifier=None) -> dict
             result["skipped"] += 1
             continue
 
-        cur = existing.get(sym)
+        cur_list = existing.get(sym) or []
+        cur = cur_list[0] if cur_list else None
+
+        # More than one active SELL GTT for a symbol we still hold is always
+        # a duplicate — Kite has no uniqueness constraint, so a re-placed
+        # stop rests ALONGSIDE the old one instead of replacing it. Keep the
+        # tightest (cur, index 0 after the sort in list_gtts()) and cancel
+        # the rest, regardless of whether cur itself needs any change below.
+        for extra in cur_list[1:]:
+            if extra.gtt_id and cancel_stop(extra.gtt_id, sym):
+                result["cancelled"] += 1
+                logger.warning(f"  gtt: {sym} had a duplicate stop resting "
+                               f"(id {extra.gtt_id}, trigger ₹{extra.trigger}) — cancelled")
+
         if cur is None:
             gid = place_stop(sym, qty, want, float(ltp))
             if gid:
@@ -293,10 +341,11 @@ def sync(positions: list[dict], prices: dict[str, float], notifier=None) -> dict
     # A GTT resting for a symbol no longer held is a live sell order against
     # stock that is not there — it must not be allowed to linger.
     held = {p.get("symbol") for p in positions}
-    for sym, g in existing.items():
-        if sym not in held and g.gtt_id:
-            if cancel_stop(g.gtt_id, sym):
-                result["cancelled"] += 1
+    for sym, gs in existing.items():
+        if sym not in held:
+            for g in gs:
+                if g.gtt_id and cancel_stop(g.gtt_id, sym):
+                    result["cancelled"] += 1
 
     return result
 

@@ -56,15 +56,22 @@ def intraday_stopping(scored: list[dict], bar: float, slots_left: int) -> list[d
             out.append({**p, "verdict": DECLINE,
                         "reason": "not scoreable — levels incoherent or no prior"})
             continue
-        if taken >= slots_left:
-            out.append({**p, "verdict": DECLINE,
-                        "reason": f"edge {edge:.4f} cleared the bar {bar:.4f} but "
-                                  f"the slots were already spent on better"})
-            continue
+        # Bar first, slots second. Checking slots first meant every proposal
+        # after the Nth-best was labelled "cleared the bar but slots were
+        # spent" even when it never cleared the bar at all — on 2026-08-06,
+        # AIAENG (edge 0.0123) and GLAXO (edge 0.0032) were both logged that
+        # way against a bar of 0.0406. The verdict was always right (DECLINE
+        # either way, since `taken` only advances on a real TAKE below); only
+        # the reason lied about which gate actually stopped it.
         if edge < bar:
             out.append({**p, "verdict": DECLINE,
                         "reason": f"edge {edge:.4f} below the bar {bar:.4f} — "
                                   f"better is likely still to arrive"})
+            continue
+        if taken >= slots_left:
+            out.append({**p, "verdict": DECLINE,
+                        "reason": f"edge {edge:.4f} cleared the bar {bar:.4f} but "
+                                  f"the slots were already spent on better"})
             continue
         out.append({**p, "verdict": TAKE,
                     "reason": f"edge {edge:.4f} clears the bar {bar:.4f}"})

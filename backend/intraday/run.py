@@ -346,6 +346,17 @@ if __name__ == "__main__":
     ap.add_argument("--dry", action="store_true", help="force DRY_RUN, no broker writes")
     ap.add_argument("--status", action="store_true", help="print gates and watch list")
     a = ap.parse_args()
+    if sys.platform == "win32":
+        # This only ever runs interactively on the laptop — the server runs
+        # the identical code under systemd, with no console to title. A named
+        # window is what makes an ACTIVE/STANDBY handoff something you can
+        # watch happen instead of reconstructing from two logs afterwards,
+        # which is how the 2026-08-06 lease handoff had to be diagnosed.
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetConsoleTitleW("LAPTOP - TradeOS Intraday")
+        except Exception:
+            pass
     if a.status:
         status()
     else:

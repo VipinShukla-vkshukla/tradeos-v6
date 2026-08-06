@@ -160,6 +160,12 @@ echo   "%PICK%" is not one of the choices. Nothing was started.
 goto END
 
 :BOTH
+REM Two windows, clearly titled, so ACTIVE/STANDBY is something you can watch
+REM happen instead of reconstructing afterwards from two separate logs on two
+REM machines — that reconstruction is what the 2026-08-06 lease handoff cost.
+if "%TRADEOS_SSH_KEY%"=="" (set "KEY=%USERPROFILE%\Downloads\ssh-key-2026-07-28.key") else (set "KEY=%TRADEOS_SSH_KEY%")
+if "%TRADEOS_SERVER_IP%"=="" (set "SRV=140.245.218.229") else (set "SRV=%TRADEOS_SERVER_IP%")
+start "SERVER - TradeOS (Oracle %SRV%)" cmd /k ssh -i "%KEY%" ubuntu@%SRV% "journalctl -u tradeos-intraday -n 60 -f --no-pager"
 python start_day.py --only both
 goto END
 

@@ -51,12 +51,26 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import IST, get_supabase, cfg_int
+from config import IST, get_supabase, cfg_int, cfg
 
 ACTIVE = "ACTIVE"
 STANDBY = "STANDBY"
 
 _INSTANCE_ID = f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
+
+
+def _is_primary() -> bool:
+    """
+    True on the machine named by intraday_lease_primary_host (migration 050).
+
+    Empty (the default) means no machine is preferred and both sides race
+    exactly as migration 023 originally designed — this key existing at all
+    must not change behaviour for anyone who has not set it. A hostname
+    match is a prefix match against socket.gethostname(), so a configured
+    'tradeos-vcn' matches that host with no exact-string fragility.
+    """
+    p = cfg("intraday_lease_primary_host", "").strip()
+    return bool(p) and socket.gethostname().lower().startswith(p.lower())
 
 
 @dataclass
@@ -92,9 +106,14 @@ def acquire(sb=None) -> LeaseState:
     second could briefly both believe they are active — which is why the holder
     id is re-checked on every renew, and the loser stands down as soon as it
     notices.
+
+    A configured primary (see _is_primary) skips the deference check below
+    entirely and always claims. Nothing else changes — same table, same TTL,
+    same upsert.
     """
     sb = sb or get_supabase()
     now = _now()
+    am_primary = _is_primary()
     try:
         rows = (sb.table("intraday_daemon_lease").select("*")
                   .eq("id", 1).execute().data or [])
@@ -107,7 +126,7 @@ def acquire(sb=None) -> LeaseState:
                        f"both will act.")
         return LeaseState(ACTIVE, _INSTANCE_ID, now, "no lease table")
 
-    if rows:
+    if rows and not am_primary:
         r = rows[0]
         holder = r.get("holder") or ""
         try:
@@ -136,7 +155,8 @@ def acquire(sb=None) -> LeaseState:
         logger.warning(f"  could not write lease: {e}")
         return LeaseState(ACTIVE, _INSTANCE_ID, now, "lease write failed — acting anyway")
 
-    return LeaseState(ACTIVE, _INSTANCE_ID, now, "lease acquired")
+    detail = "lease acquired — this host is the configured primary" if am_primary else "lease acquired"
+    return LeaseState(ACTIVE, _INSTANCE_ID, now, detail)
 
 
 def renew(sb=None) -> LeaseState:
@@ -145,14 +165,20 @@ def renew(sb=None) -> LeaseState:
 
     The second half matters: a daemon that paused long enough to lose its lease
     must NOT resume acting when it wakes up, because a standby has almost
-    certainly promoted itself by then.
+    certainly promoted itself by then — UNLESS this is the configured primary,
+    which reclaims here on the very next renew rather than waiting to be
+    restarted. That is the difference between "primary at startup" and
+    "primary" — without it, the 2026-08-06 stall (lease lost mid-run to a
+    starved loop, not lost at boot) would have left the server demoted until
+    someone manually restarted it.
     """
     sb = sb or get_supabase()
     now = _now()
+    am_primary = _is_primary()
     try:
         rows = (sb.table("intraday_daemon_lease").select("holder,expires_at")
                   .eq("id", 1).execute().data or [])
-        if rows and (rows[0].get("holder") or "") != _INSTANCE_ID:
+        if rows and not am_primary and (rows[0].get("holder") or "") != _INSTANCE_ID:
             return LeaseState(
                 STANDBY, rows[0].get("holder") or "?", None,
                 "another daemon holds the lease — standing down to avoid "
@@ -161,7 +187,8 @@ def renew(sb=None) -> LeaseState:
             "id": 1, "holder": _INSTANCE_ID, "hostname": socket.gethostname(),
             "expires_at": (now + timedelta(seconds=_ttl())).isoformat(),
         }, on_conflict="id").execute()
-        return LeaseState(ACTIVE, _INSTANCE_ID, now, "renewed")
+        detail = "renewed — configured primary" if am_primary else "renewed"
+        return LeaseState(ACTIVE, _INSTANCE_ID, now, detail)
     except Exception as e:
         # A transient database error must not hand the book to a standby that
         # may also be struggling. Keep acting; the lease will lapse on its own
