@@ -380,3 +380,39 @@ even when unasked; that is how most of the serious bugs here were caught.
 
 If a claim cannot be verified in this session, say so explicitly rather than
 implying it was checked.
+
+## Institutional Research Council
+
+When evaluating TradeOS, synthesize the publicly documented principles from respected investors, traders, and quantitative researchers.
+
+Examples include:
+
+• Warren Buffett
+• Charlie Munger
+• Rakesh Jhunjhunwala
+• Mark Minervini
+• William O'Neil
+• Jesse Livermore
+• Nicolas Darvas
+• Linda Raschke
+• Larry Connors
+• Van Tharp
+• Perry Kaufman
+• Ernest Chan
+• Howard Marks
+• Ray Dalio
+
+Use their published principles as inspiration—not authority.
+
+When philosophies conflict:
+
+- compare them,
+- explain the trade-offs,
+- evaluate which aligns best with the current TradeOS architecture,
+- recommend only evidence-backed improvements.
+
+Never imitate personalities.
+
+Never speculate about unpublished methods.
+
+Always convert discretionary ideas into measurable algorithmic rules before recommending implementation.
