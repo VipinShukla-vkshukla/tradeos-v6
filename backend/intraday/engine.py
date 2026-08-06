@@ -2533,7 +2533,29 @@ class IntradayEngine:
             props, regime=mc.state,
             slots_by_framework=slots,
             max_slots_by_framework={"SWING": swing_max, "INTRADAY": intra_max},
-            minutes_left=max(getattr(st, "minutes_to_close", 0) or 0, 0),
+            # THE SECOND INSTANCE OF THE SAME MISSING ATTRIBUTE, found while
+            # reading the fix for the first one.
+            #
+            # SessionState has `minutes_to_squareoff`. It has never had
+            # `minutes_to_close` — that is a module FUNCTION in
+            # intraday/session.py — so getattr's default was taken on every
+            # call since the allocator was first wired in (cbbefc4), and the
+            # allocator has always been told the session has 0 minutes left.
+            #
+            # hurdle() computes `time_frac = minutes_left / alloc_session_minutes`
+            # and `time_mult = 1 + alloc_time_weight * time_frac`. At
+            # minutes_left = 0 that is time_mult = 1.0, every cycle, forever —
+            # so the "bar is HIGH at 09:20 because five hours of arrivals
+            # remain, and LOW at 14:45 because an unspent slot earns nothing"
+            # half of the hurdle's own docstring has never once operated. The
+            # scarcity term still worked, which is why the bar still moved at
+            # all and nothing looked obviously dead.
+            #
+            # Uses the field that EXISTS on the object already in scope rather
+            # than importing a same-named function — the ambiguity between the
+            # two is what caused this, and reaching for the function here would
+            # preserve it.
+            minutes_left=max(st.minutes_to_squareoff or 0, 0),
             open_positions=self.positions)
         takes = sum(1 for x in v if x["verdict"] == "TAKE")
 

@@ -1030,12 +1030,57 @@ def check_allocator_hurdle() -> tuple[bool, str]:
             "boundary. If this is failing, whatever match this function uses "
             "is narrower than the vocabulary it is written against")
 
+    # 5 — the TIME half of the hurdle must actually vary with time.
+    #
+    # `hurdle()` has two terms: scarcity (fewer slots -> higher bar) and time
+    # (more session left -> higher bar, because better is probably still
+    # coming). The time term reads `minutes_left`, which _allocate_shadow
+    # sourced from `getattr(st, "minutes_to_close", 0)` — an attribute
+    # SessionState has never had. The getattr default was taken on every call
+    # since the allocator was wired in, so minutes_left was permanently 0,
+    # time_mult permanently 1.0, and half the hurdle's stated purpose has never
+    # operated. Scarcity still moved the bar, which is precisely why nothing
+    # looked broken.
+    #
+    # A marker grep cannot catch this and did not: the call site reads
+    # `minutes_left=...` and looks entirely correct. So this probes the NUMBER
+    # at two instants and requires it to differ — the same reasoning as
+    # assertion 4, which exercises regime_bucket rather than grepping for it.
+    _bar_early, _in_early = H.hurdle("STRONG", 4, 355, "INTRADAY", None, max_slots=4)
+    _bar_late,  _in_late  = H.hurdle("STRONG", 4, 20,  "INTRADAY", None, max_slots=4)
+    if _in_early["time_mult"] <= _in_late["time_mult"]:
+        return False, (
+            f"the hurdle's TIME term does not vary with time — time_mult is "
+            f"{_in_early['time_mult']} with a full session left and "
+            f"{_in_late['time_mult']} with 20 minutes to go. It must be HIGHER "
+            f"early, because an entry spent at 09:20 forecloses five hours of "
+            f"arrivals. If these are equal the caller is passing a constant, "
+            f"which is what a missing SessionState attribute silently produces")
+    # CODE ONLY, NOT COMMENTS. The first version of this grep matched the
+    # comment in engine.py that documents the bad pattern in order to warn
+    # against it — so a correctly-fixed file failed its own check. The mirror
+    # of assertion 1's lesson: an assertion a comment can satisfy is
+    # decoration, and one a comment can falsely TRIP is worse, because it
+    # trains the reader to ignore a red line.
+    eng_code = "\n".join(
+        l.split("#", 1)[0]
+        for l in (root / "intraday/engine.py").read_text(encoding="utf-8").splitlines())
+    if 'getattr(st, "minutes_to_close"' in eng_code:
+        return False, (
+            "intraday/engine.py still reads getattr(st, \"minutes_to_close\") — "
+            "SessionState has no such field (it is minutes_to_squareoff; "
+            "minutes_to_close is a module FUNCTION), so the default is taken "
+            "every call and the allocator is told the session has 0 minutes "
+            "left. Same defect that made every short's runway -10 minutes")
+
     from config import cfg_bool, cfg_int
     live = [b for b in ("intraday", "swing") if cfg_bool(f"alloc_live_{b}", False)]
     return True, (f"bar and edge share one definition; a cold start admits a "
                   f"typical setup; slots are per book "
                   f"(swing {cfg_int('swing_max_new_per_day', 2)}, "
-                  f"intraday {cfg_int('intraday_max_new_per_day', 4)})"
+                  f"intraday {cfg_int('intraday_max_new_per_day', 4)}); "
+                  f"time term varies ({_in_early['time_mult']} early vs "
+                  f"{_in_late['time_mult']} late)"
                   + (f"; veto LIVE for {'+'.join(live)}" if live else "; shadow only"))
 
 
