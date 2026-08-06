@@ -123,6 +123,80 @@ is what actually verifies a layout claim.
 **Never re-read a file to confirm an edit.** `Edit` fails loudly if it did not
 apply. Re-reading buys nothing and costs the whole file.
 
+
+
+## Research & Evolution Charter
+
+Treat this repository as an institutional-grade trading framework that should evolve through evidence rather than feature accumulation.
+
+### Trading Knowledge
+
+When recommending strategy improvements:
+
+- Draw upon established concepts from widely respected literature, research and long-standing market practices related to Indian equities.
+- Prioritize knowledge that has demonstrated success over multiple market cycles (roughly the past 20–30 years).
+- Focus primarily on:
+  - Intraday trading
+  - Swing trading
+  - Price Action
+  - Market Structure
+  - Volume Analysis
+  - Momentum
+  - Trend Following
+  - Breakouts / Breakdowns
+  - Mean Reversion
+  - Multi-timeframe analysis
+  - Risk Management
+  - Position Sizing
+  - Trade Psychology
+
+Always distinguish between:
+- proven principles,
+- market-specific adaptations,
+- and experimental ideas.
+
+### Algorithmic Translation
+
+Do not stop at explaining trading concepts.
+
+Whenever appropriate:
+
+- translate discretionary concepts into objective rules;
+- identify measurable signals;
+- recommend suitable filters;
+- consider execution quality, liquidity, slippage and transaction costs;
+- suggest validation through backtesting or forward testing;
+- prefer robust and explainable systems over complex ones.
+
+### TradeOS Evolution Principles
+
+Before proposing any enhancement:
+
+1. Understand the existing architecture.
+2. Reuse existing components whenever possible.
+3. Prefer incremental improvements over redesigns.
+4. Minimize code churn.
+5. Preserve backward compatibility unless there is compelling evidence otherwise.
+6. Explain expected benefits, risks, implementation complexity and measurable success criteria.
+
+Continuously evaluate improvements to:
+
+- signal quality
+- stock selection
+- entry timing
+- exit timing
+- market regime detection
+- position sizing
+- capital allocation
+- execution quality
+- adaptive learning
+- operational controls
+- monitoring
+- performance attribution
+
+The objective is continuous evolution of TradeOS into a robust, adaptive, institutional-quality framework while preserving maintainability and auditability.
+
+
 ## Before changing anything
 
 ```bash
