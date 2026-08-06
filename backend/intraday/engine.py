@@ -1554,8 +1554,26 @@ class IntradayEngine:
         # which liquidity_ok() already refuses by default.
         sctx = self._contexts.get(sym)
         from analysis.overlays import liquidity_ok
+        # FALL BACK TO THE DAILY ROW WHEN NO CONTEXT BUILT.
+        #
+        # A SymbolContext only exists for names refresh_contexts() reached this
+        # cycle — 42 of ~96 watched on 2026-08-06, because the bar fetch is
+        # rate-limited and its token lookup was timing out. Treating a missing
+        # context as unknown liquidity refused TECHM and ASHOKLEY, whose traded
+        # value was sitting in stock_data_daily the whole time (₹352 cr and
+        # ₹523 cr) — large caps blocked as possibly-illiquid by a data gap.
+        #
+        # _stock_row() is the right source anyway: it is loaded once per day for
+        # the entire universe (no extra query here), and it picks its date by
+        # whether value_cr is actually populated. It is also what the gate
+        # documents itself as wanting — the PREVIOUS session's traded value.
+        # An unavailable row still yields None, so genuinely unknown liquidity
+        # is still refused; only the false unknown is repaired.
+        vcr = sctx.value_cr if sctx else None
+        if not vcr:
+            vcr = (self._stock_row(sym) or {}).get("value_cr")
         liq_ok, liq_why = liquidity_ok(
-            {"value_cr": sctx.value_cr if sctx else None,
+            {"value_cr": vcr,
              "atr_pct": sctx.atr_pct_daily if sctx else None},
             planned_value=qty * ltp,
         )
@@ -1942,10 +1960,18 @@ class IntradayEngine:
                     self._record_setup(best, st.phase, 0.0, "BLOCKED_SHORTS_OFF", 0)
                     continue
                 from intraday import shortability
+                # NOT getattr(st, "minutes_to_close", 0). SessionState has no
+                # such field — it is minutes_to_squareoff, and minutes_to_close
+                # is a module function — so the default 0 was taken silently on
+                # every call, and every short saw a runway of 0 - 10 = -10 min.
+                # -10 >= 75 is false at every hour of every session, so no short
+                # has ever cleared this gate; the log read like a market with no
+                # shortable names. A getattr default is precisely what let a
+                # wrong attribute name look like a working call.
+                from intraday.session import minutes_to_cover_deadline
                 ok_sh, why_sh, notes = shortability.can_short(
                     ctx, self._stock_row(sym),
-                    minutes_left=max(getattr(st, "minutes_to_close", 0) or 0, 0)
-                                 - cfg_int("intraday_short_cover_lead_min", 10))
+                    minutes_left=minutes_to_cover_deadline())
                 best.meta["shortability"] = notes
                 if not ok_sh:
                     self._record_setup(best, st.phase, 0.0, "BLOCKED_SHORTABILITY", 0)

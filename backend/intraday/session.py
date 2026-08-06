@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -130,3 +130,39 @@ def minutes_to_close(now: datetime | None = None) -> int:
     now = now or datetime.now(IST)
     close_dt = now.replace(hour=15, minute=30, second=0, microsecond=0)
     return max(0, int((close_dt - now).total_seconds() // 60))
+
+
+def minutes_to_cover_deadline(now: datetime | None = None) -> int:
+    """
+    Minutes until a SHORT must already be covered.
+
+    THE ENTRY GATE AND THE EXIT LADDER MUST MEASURE THE SAME DEADLINE.
+
+    exit_policy fires EXIT_SQUAREOFF for a short at
+    `intraday_must_exit_time` minus `intraday_short_cover_lead_min` — 15:15
+    minus 10 = 15:05 as configured. If the entry gate asks "how long until
+    square-off?" instead, it is gating on a different instant than the one
+    that will actually force the cover, and the two drift apart the moment
+    either key is edited. So this reads the SAME two keys the exit reads.
+    That is the only construction under which they cannot disagree, and it is
+    the same reasoning as the hurdle/edge unification in migration 044.
+
+    Returns 0 rather than a negative number once the deadline has passed: a
+    caller comparing against a minimum runway wants "no runway", and every
+    such caller already treats 0 as refusal.
+    """
+    now = now or datetime.now(IST)
+    from config import cfg
+    lead = cfg_int("intraday_short_cover_lead_min", 10)
+    try:
+        hh, mm = (cfg("intraday_must_exit_time", "15:15") or "15:15").split(":")
+        must = now.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+    except (ValueError, TypeError):
+        # Same fallback the exit ladder uses, and say so — a malformed key must
+        # not silently move a deadline that decides whether a short is legal.
+        from loguru import logger
+        logger.warning("  intraday_must_exit_time is not HH:MM — cover deadline "
+                       "falling back to 15:15")
+        must = now.replace(hour=15, minute=15, second=0, microsecond=0)
+    deadline = must - timedelta(minutes=lead)
+    return max(0, int((deadline - now).total_seconds() // 60))

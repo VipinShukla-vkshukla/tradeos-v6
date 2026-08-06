@@ -58,9 +58,18 @@ def capital_status(sb=None, persist: bool = True) -> dict:
     sb = sb or get_supabase()
     now = datetime.now(IST).isoformat()
 
+    import socket
     out = {
         "configured":      round(TOTAL_CAPITAL, 2),
         "is_fallback":     CAPITAL_IS_FALLBACK,
+        # WHICH MACHINE believes this. TOTAL_CAPITAL comes from a per-machine
+        # .env, but it describes the ACCOUNT — one book, one number. Two hosts
+        # manage this account and on 2026-08-06 they disagreed: the laptop
+        # sized against ₹30,000 and the server against ₹20,000, so every
+        # position size depended on which daemon happened to hold the lease,
+        # and nothing anywhere compared the two. Recording the author is what
+        # makes the disagreement detectable at all.
+        "hostname":        socket.gethostname(),
         "broker_cash":     None,
         "broker_invested": None,
         "broker_total":    None,

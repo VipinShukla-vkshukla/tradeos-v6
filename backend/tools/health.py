@@ -340,12 +340,41 @@ def check_daemon() -> tuple[bool, str]:
     except Exception:
         return False, f"lease timestamp unreadable: {r.get('expires_at')}"
 
+    # DO THE TWO MACHINES AGREE ON THE SIZE OF THE ACCOUNT?
+    #
+    # TOTAL_CAPITAL is read from a per-machine .env, but it describes the one
+    # shared account. On 2026-08-06 the laptop had ₹30,000 and the server
+    # ₹20,000, both set explicitly (neither log carried the fallback warning),
+    # so every position size depended on which daemon held the lease — a 50%
+    # sizing difference on identical signals, with nothing comparing the two.
+    # capital_check records the author of its snapshot for exactly this.
+    split = ""
+    try:
+        import json as _json, socket as _sock
+        from config import TOTAL_CAPITAL as _mine
+        snap = (sb.table("system_config").select("value")
+                  .eq("key", "capital_snapshot").execute().data or [])
+        if snap:
+            s = _json.loads(snap[0]["value"] or "{}")
+            theirs, who = s.get("configured"), s.get("hostname")
+            if (theirs and who and who != _sock.gethostname()
+                    and abs(float(theirs) - float(_mine)) > 1.0):
+                split = (f" — ⚠ SPLIT BRAIN: '{who}' sizes against "
+                         f"₹{float(theirs):,.0f} but this machine uses "
+                         f"₹{float(_mine):,.0f}. One account, one number: whichever "
+                         f"daemon holds the lease decides every position size. "
+                         f"Fix TOTAL_CAPITAL in the other machine's .env")
+    except Exception:
+        pass
+
     if age < 0:
+        if split:
+            return False, f"monitor ALIVE on '{host}'{split}"
         return True, f"monitor ALIVE on '{host}' (lease valid {abs(age):.0f}s more)"
     if not in_session:
-        return True, f"no monitor — outside market hours (last ran on '{host}')"
+        return True, f"no monitor — outside market hours (last ran on '{host}'){split}"
     return False, (f"monitor on '{host}' STOPPED renewing {age / 60:.0f} min ago "
-                   f"during market hours — positions are unwatched")
+                   f"during market hours — positions are unwatched{split}")
 
 
 def check_pending_fills() -> tuple[bool, str]:
@@ -1161,11 +1190,51 @@ def check_shorts() -> tuple[bool, str]:
     except Exception as e:
         missing.append(f"open_positions.direction column ({str(e)[:60]})")
 
-    # +1 for the schema probe above, which is not one of the text markers and
-    # was never counted by len(_SHORT_SPINE) — without this, a message could
-    # say "N/N complete" in the same breath as naming something still missing,
-    # which is the exact contradiction a marker-only check would print.
-    total = len(_SHORT_SPINE) + 1
+    # THE SECOND ASSERTION THAT IS NOT A GREP: can the runway gate be CLEARED?
+    #
+    # A complete, direction-aware spine still takes zero shorts if the gate in
+    # front of it is unclearable. engine.py asked for
+    # `getattr(st, "minutes_to_close", 0)`; SessionState has no such field, so
+    # the default 0 was taken on every call and every short saw a runway of
+    # 0 - 10 = -10 minutes. -10 >= 75 is false at every hour of every session,
+    # so no short ever cleared it — and the log read like a market with no
+    # shortable names rather than like a broken gate. 523 refusals in one
+    # 46-minute stretch on 2026-08-06, all reporting the identical -10.
+    #
+    # Grepping cannot see this: every marker above was present and correct.
+    # So probe the actual number at a realistic mid-morning instant, and assert
+    # BOTH directions — a gate that always passes is as broken as one that
+    # never does, just less visibly.
+    try:
+        from datetime import datetime as _dt
+        from config import IST as _IST, cfg_int as _ci
+        from intraday.session import minutes_to_cover_deadline as _mtcd
+        need = _ci("intraday_short_min_runway_min", 75)
+        base = _dt.now(_IST)
+        early = _mtcd(base.replace(hour=10, minute=0, second=0, microsecond=0))
+        late  = _mtcd(base.replace(hour=15, minute=10, second=0, microsecond=0))
+        if early < need:
+            missing.append(
+                f"short runway gate is UNCLEARABLE — at 10:00 it reports "
+                f"{early} min against a {need} min minimum, so no short can "
+                f"ever be taken")
+        elif late >= need:
+            missing.append(
+                f"short runway gate never CLOSES — at 15:10 it still reports "
+                f"{late} min against a {need} min minimum, so a short could be "
+                f"opened with no time to cover")
+        else:
+            done.append(f"short runway clearable (10:00 → {early} min, "
+                        f"15:10 → {late} min, needs {need})")
+    except Exception as e:
+        missing.append(f"short runway gate not probeable ({str(e)[:60]})")
+
+    # +2 for the two probes above that are not text markers — the schema probe
+    # and the runway probe — neither counted by len(_SHORT_SPINE). Without this
+    # a message could say "N/N complete" in the same breath as naming something
+    # still missing, which is the exact contradiction a marker-only check would
+    # print.
+    total = len(_SHORT_SPINE) + 2
     on = cfg_bool("intraday_allow_shorts", False)
     if on and missing:
         return False, (
