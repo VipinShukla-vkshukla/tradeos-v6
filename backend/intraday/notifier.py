@@ -41,6 +41,19 @@ from loguru import logger
 from config import IST, cfg, cfg_int, get_supabase
 
 
+def _esc(s) -> str:
+    """
+    Escape a value for Telegram's HTML parse mode.
+
+    Only these three characters are special, and only &<> — quotes are not
+    escaped, because Telegram does not require it and doing so would turn every
+    apostrophe in an alert into &#x27; on Discord, which renders the raw entity.
+    """
+    return (str(s).replace("&", "&amp;")
+                  .replace("<", "&lt;")
+                  .replace(">", "&gt;"))
+
+
 @dataclass
 class Action:
     """One thing you may need to do, in a form every channel can render."""
@@ -132,10 +145,21 @@ class Notifier:
         # mechanism, but a label survives a misrouted webhook — and knowing
         # which system is talking is the whole point of the split.
         tag = (a.framework or "INTRADAY").upper()
-        lines = [f"{icon} <b>[{tag}] {a.kind.replace('_', ' ')} — {a.symbol}</b>",
-                 a.headline]
+
+        # This is sent with parse_mode=HTML, so every INTERPOLATED value must be
+        # escaped — only the <b>/<i> tags written literally here are markup.
+        #
+        # Unescaped, the one alert class guaranteed to contain a '<' is the one
+        # you cannot afford to lose: a long stop breach reads "ltp 177.85 <= sl
+        # 177.95", Telegram parses '<=' as a start tag and rejects the whole
+        # message with 400. On 2026-08-06 the SAIL and MUTHOOTFIN EXIT_STOP
+        # alerts were both dropped this way. A short breach reads '>=' and
+        # delivers fine, so this silently ate long stop-outs only.
+        esc = _esc
+        lines = [f"{icon} <b>[{tag}] {esc(a.kind.replace('_', ' '))} — {esc(a.symbol)}</b>",
+                 esc(a.headline)]
         if a.detail:
-            lines.append(a.detail)
+            lines.append(esc(a.detail))
         bits = []
         if a.ltp is not None:
             bits.append(f"LTP ₹{a.ltp:,.2f}")
@@ -210,8 +234,15 @@ class Notifier:
 
         if hook:
             try:
+                # Discord renders no HTML, so the tags become markdown AND the
+                # entities escaped for Telegram must be put back — otherwise a
+                # stop alert arrives reading "ltp 177.85 &lt;= sl 177.95".
+                # Order matters: unescape &amp; LAST, or "&amp;lt;" collapses
+                # into a "<" that was never in the original text.
                 md = (text.replace("<b>", "**").replace("</b>", "**")
-                          .replace("<i>", "_").replace("</i>", "_"))
+                          .replace("<i>", "_").replace("</i>", "_")
+                          .replace("&lt;", "<").replace("&gt;", ">")
+                          .replace("&amp;", "&"))
                 r = requests.post(hook, json={"content": md[:1900]}, timeout=10)
                 ok = (r.status_code in (200, 204)) or ok
             except Exception as e:

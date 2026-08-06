@@ -76,6 +76,25 @@ _recent: dict[str, datetime] = {}
 # whatever was wrong at the broker.
 _blocked: dict[str, str] = {}
 
+# The same, for causes that are not about a symbol AT ALL.
+#
+# An IP allowlist rejection, a bad api_key, a dead access_token — none of these
+# know what a symbol is. They kill EVERY order on the account, both books,
+# entries and exits alike. Latching them per (symbol, side) meant the account
+# was dead while the system reported one stuck name: on 2026-08-06 a KIMS
+# giveback exit was rejected for the IP, latched as "KIMS:SELL", and the log
+# said "nothing further will be attempted for this symbol" — true of the latch,
+# and a serious understatement of the situation. Every subsequent symbol would
+# have paid its own rejected round trip to learn the same thing.
+_blocked_account: str | None = None
+
+# Causes that are properties of the ACCOUNT or the APP, never of a symbol.
+_ACCOUNT_WIDE = (
+    "no ips configured", "allowed ips", "static ip",
+    "insufficient permission", "api_key", "access_token",
+    "not authorised", "not authorized",
+)
+
 
 def _product(kite, framework: str):
     """
@@ -182,6 +201,11 @@ def preflight(req: OrderRequest, sb=None, framework: str = "SWING") -> OrderResu
     # BEFORE any broker call — an order that cannot be placed should not cost a
     # holdings fetch and a margins fetch every cycle to discover that again.
     key = f"{req.symbol}:{req.side}"
+    if _blocked_account:
+        return OrderResult(False, None,
+                           f"ALL orders blocked for this session — "
+                           f"{_blocked_account[:140]}",
+                           "BROKER_CONFIG")
     if key in _blocked:
         return OrderResult(False, None,
                            f"blocked for this session — {_blocked[key][:140]}",
@@ -247,7 +271,22 @@ def preflight(req: OrderRequest, sb=None, framework: str = "SWING") -> OrderResu
                                    f"cannot sell {req.quantity} — broker shows {held} held",
                                    "INSUFFICIENT_HOLDING")
         else:
-            cash = float((kite_client.fetch_margins() or {}).get("available_cash") or 0)
+            # An EMPTY margins dict means the fetch failed — a real one always
+            # carries all four keys. Collapsing that into cash=0 produced
+            # "order value ₹5,800 exceeds available cash ₹0", which reads as a
+            # drained account and is really a 7-second read timeout: on
+            # 2026-08-06 the margins call timed out 13 times in three minutes
+            # during the same Kite blip that duplicated the GTTs. Refusing is
+            # still correct — capital you cannot see is capital you cannot size
+            # against — but it must say which of the two it is.
+            m = kite_client.fetch_margins()
+            if not m:
+                return OrderResult(False, None,
+                                   "could not read available cash from the broker — "
+                                   "refusing to size an order against unknown capital. "
+                                   "This is a broker/network failure, NOT a zero balance",
+                                   "BROKER_UNAVAILABLE")
+            cash = float(m.get("available_cash") or 0)
             if value > cash:
                 return OrderResult(False, None,
                                    f"order value ₹{value:,.0f} exceeds available cash ₹{cash:,.0f}",
@@ -364,24 +403,46 @@ def place(req: OrderRequest, sb=None, notifier=None,
         # allowlist error at any interval is pointless — it cannot succeed until
         # a human changes something at the broker — so it is latched off for the
         # session and reported once, loudly, instead of once every cycle.
-        permanent = any(s in msg.lower() for s in (
-            "no ips configured", "allowed ips", "static ip",
-            "insufficient permission", "api_key", "access_token",
-            "not authorised", "not authorized",
-        ))
-        if permanent:
+        global _blocked_account
+        account_wide = any(s in msg.lower() for s in _ACCOUNT_WIDE)
+        if account_wide:
+            _blocked_account = msg
             _blocked[key] = msg
+            n_live = _count_live_positions(sb)
             logger.error(
-                f"  order PERMANENTLY BLOCKED for {req.symbol} {req.side} — {msg[:160]}\n"
-                f"      This cannot succeed by retrying. Nothing further will be "
-                f"attempted for this symbol until the daemon restarts."
+                f"  EVERY ORDER ON THIS ACCOUNT IS NOW BLOCKED — {msg[:160]}\n"
+                f"      Rejected on {req.symbol} {req.side}, but this is an account-level\n"
+                f"      condition: it is not about {req.symbol}. No order for ANY symbol,\n"
+                f"      in EITHER book, can succeed until it is fixed at the broker —\n"
+                f"      INCLUDING EXITS. {n_live} live position(s) can currently be\n"
+                f"      protected only by their resting GTT stops.\n"
+                f"      Retrying cannot fix this. Fix it, then restart the daemon."
             )
         else:
             logger.error(f"  order FAILED {req.side} {req.quantity} {req.symbol}: {msg[:200]}")
+        permanent = account_wide
 
         _log(sb, req, "BLOCKED_PERMANENT" if permanent else "FAILED", None, msg[:300], framework)
         return OrderResult(False, None, msg,
                            "BROKER_CONFIG" if permanent else "BROKER_ERROR")
+
+
+def _count_live_positions(sb) -> int:
+    """
+    How many real positions are exposed by an account-wide order block.
+
+    Only used to make the block message concrete — "6 live position(s) can
+    currently be protected only by their resting GTT stops" is a sentence an
+    operator can act on; "orders are blocked" is not. Returns -1 rather than
+    raising, because a failure to COUNT must never swallow the report of the
+    block itself.
+    """
+    try:
+        rows = (sb.table("open_positions").select("symbol,mode")
+                  .eq("status", "ACTIVE").execute().data or [])
+        return sum(1 for r in rows if (r.get("mode") or "LIVE").upper() != "PAPER")
+    except Exception:
+        return -1
 
 
 def _log(sb, req: OrderRequest, action: str, order_id: str | None,

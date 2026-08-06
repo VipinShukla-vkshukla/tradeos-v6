@@ -256,8 +256,54 @@ def check_kite() -> tuple[bool, str]:
                            f"placement will be REJECTED")
     except Exception:
         pass
+
+    # THE BROKER'S OWN VERDICT, which is the only ground truth here.
+    #
+    # Everything above compares this machine's IP against a value the operator
+    # typed into system_config. That is a note-to-self, not the Zerodha
+    # developer console, and the two can disagree indefinitely with nothing to
+    # notice. On 2026-08-06 they did: kite_allowlisted_ip said 103.197.74.141,
+    # the live IP WAS 103.197.74.141, this check printed "IPv4 103.197.74.141
+    # matches allowlist" — and Zerodha rejected a live KIMS exit from that exact
+    # address, because the console did not actually hold it. A check comparing
+    # local bookkeeping against itself cannot fail.
+    #
+    # An order rejection is already recorded, by order_manager, in a table this
+    # check can read. So ask the broker's answer rather than our own.
+    try:
+        from config import today_ist
+        bad = (sb.table("intraday_broker_log")
+                 .select("ts,symbol,detail")
+                 .eq("action", "BLOCKED_PERMANENT")
+                 .gte("ts", str(today_ist()))
+                 .order("ts", desc=True).limit(1).execute().data or [])
+        if bad:
+            r = bad[0]
+            # ts is a timestamptz and PostgREST renders it in UTC. Printing that
+            # raw would show a rejection at "04:44" for something the operator
+            # watched happen at 10:14 — so convert to the clock they were
+            # actually looking at.
+            from datetime import datetime as _dt
+            from config import IST as _IST
+            try:
+                when = _dt.fromisoformat(
+                    str(r.get("ts")).replace("Z", "+00:00")).astimezone(_IST).strftime("%H:%M IST")
+            except Exception:
+                when = str(r.get("ts"))[:16]
+            return False, (
+                f"the BROKER rejected an order today ({r.get('symbol')} at "
+                f"{when}) with a configuration error, "
+                f"whatever this machine's IP says: "
+                f"\"{(r.get('detail') or '')[:90]}\" — orders are DEAD until "
+                f"this is fixed at the broker AND the daemon is restarted")
+    except Exception as e:
+        return False, (f"could not read the broker rejection log ({str(e)[:50]}) "
+                       f"— cannot confirm orders are accepted")
+
     return True, (f"session live for {prof.get('user_id')}"
-                  + (f", IPv4 {ip} matches allowlist" if ip else ", IPv4 forced"))
+                  + (f", IPv4 {ip} == recorded kite_allowlisted_ip" if ip
+                     else ", IPv4 forced")
+                  + ", no broker config rejection today")
 
 
 def check_daemon() -> tuple[bool, str]:
