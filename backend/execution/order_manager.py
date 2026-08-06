@@ -347,7 +347,13 @@ def place(req: OrderRequest, sb=None, notifier=None,
                 f"[PAPER] {req.side} {req.quantity} @ ₹{f.fill_price:,.2f}",
                 f"{req.reason}\nSimulated — no real order was placed. "
                 f"Charges ₹{f.charges:.2f}.",
-                ltp=f.fill_price, urgency="INFO"), force=True)
+                ltp=f.fill_price, urgency="INFO",
+                # This function ALREADY receives framework and uses it correctly
+                # three lines above (is_paper(framework)) — it was just never
+                # passed into the alert. Action.framework defaults to
+                # "INTRADAY", so a paper SWING order (should that mode ever be
+                # used) would silently alert to the intraday channel.
+                framework=framework), force=True)
         return OrderResult(f.ok, f.order_id, f.message,
                            None if f.ok else "PAPER_NOT_FILLED")
 
@@ -379,12 +385,22 @@ def place(req: OrderRequest, sb=None, notifier=None,
 
         if notifier:
             from intraday.notifier import Action
+            # THE LIVE-ORDER ALERT ROUTE, and it was carrying no framework at
+            # all. Every real BUY/SELL — swing or intraday, CRITICAL urgency —
+            # defaulted to Action.framework="INTRADAY" and went to the
+            # intraday Discord/Telegram channel regardless of which book it
+            # belonged to. TRAVELFOOD's SELL and GABRIEL's BUY on 2026-08-06
+            # were both swing orders tagged "[INTRADAY]" this way. framework
+            # is a parameter of THIS function already — preflight(), is_paper()
+            # and _product() three lines above all use it correctly. It just
+            # never reached the alert.
             notifier.send(Action(
                 req.symbol, f"ORDER_{req.side}",
                 f"{req.side} {req.quantity} @ ₹{req.price:,.2f}" if req.price
                 else f"{req.side} {req.quantity} at market",
                 f"{req.reason}\nOrder id {order_id}. Verify in Kite.",
-                ltp=req.price, urgency="CRITICAL"), force=True)
+                ltp=req.price, urgency="CRITICAL",
+                framework=framework), force=True)
 
         return OrderResult(True, str(order_id), "placed")
 

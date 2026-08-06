@@ -316,7 +316,17 @@ def sync(positions: list[dict], prices: dict[str, float], notifier=None) -> dict
                     notifier.send(Action(sym, "GTT_PLACED",
                                          f"Broker stop resting at ₹{want:.2f} for {qty} sh",
                                          "This stop now survives the daemon being off.",
-                                         ltp=float(ltp), urgency="INFO"))
+                                         ltp=float(ltp), urgency="INFO",
+                                         # Not a parameter to thread through — GTT is
+                                         # unconditionally swing. sync() already filtered
+                                         # to CNC, non-PAPER positions above (Kite GTTs
+                                         # are CNC/NRML only); no call into this module
+                                         # can ever be about an intraday position.
+                                         # Action.framework defaults to "INTRADAY", so
+                                         # omitting this sent every GTT alert — including
+                                         # GABRIEL's on 2026-08-06 — to the wrong Discord
+                                         # channel under the wrong tag.
+                                         framework="SWING"))
             else:
                 result["errors"] += 1
             continue
@@ -332,7 +342,8 @@ def sync(positions: list[dict], prices: dict[str, float], notifier=None) -> dict
                     notifier.send(Action(sym, "GTT_RAISED",
                                          f"Broker stop raised ₹{cur.trigger:.2f} → ₹{want:.2f}",
                                          f"{qty} sh protected. Risk reduced at the broker, not just in the book.",
-                                         ltp=float(ltp), urgency="INFO"))
+                                         ltp=float(ltp), urgency="INFO",
+                                         framework="SWING"))  # see GTT_PLACED above
             else:
                 result["errors"] += 1
         else:
