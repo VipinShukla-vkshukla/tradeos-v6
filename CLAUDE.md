@@ -207,6 +207,32 @@ cd backend && python -m tools.simulate      # what BOTH books would do, writes n
 After changing anything that touches positions, orders or reconciliation, run
 both again. `simulate` is read-only and safe at any time.
 
+## After changing anything — `python -m tools.verify`
+
+```bash
+cd backend && python -m tools.verify        # 35 offline logic checks, ~2s
+cd backend && python -m tools.verify --module direction_spine
+```
+
+**Run this instead of writing a throwaway verification script.** Every check in
+`backend/tests/` was once exactly that — written into a scratch directory, run
+once, lost at session end, and rewritten by the next session that touched the
+same code. Two defects shipped through that gap.
+
+No database, no broker, no network — pure arithmetic over in-memory objects,
+which is possible only because `evaluate_exit`, `score`, `is_worth_taking`,
+`classify` and the engines are all pure functions. Protect that property; a
+test that needs the live book belongs in `tools/health.py` instead.
+
+    health   asks the RUNNING SYSTEM questions   → is TODAY safe?
+    verify   asks the LOGIC questions            → is this CHANGE safe?
+
+Adding a check: expose `TESTS = [(name, fn)]` in a `tests/test_*.py` module and
+register it in `tools/verify.py::MODULES`. Use `cfg_ctx()` for anything reading
+`system_config` — it is a process-wide global and one test's switches will
+otherwise leak into the next. **Demonstrate the check FAILING before trusting
+it to pass.**
+
 ## Landmines, learned the hard way
 
 - **`open_positions` is keyed on `(symbol, product)`** since migration 028. Never

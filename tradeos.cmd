@@ -7,6 +7,7 @@ REM    tradeos both       swing + intraday, no prompt
 REM    tradeos check      verify readiness only, start nothing
 REM    tradeos health     run EVERY check and report what is broken
 REM    tradeos simulate   what BOTH books would do right now — writes nothing
+REM    tradeos verify     offline logic checks — no database, ~2s. Run after editing.
 REM    tradeos backup     dump the system of record off-platform, then verify it
 REM    tradeos rollback   what Phase 4 has switched on, and what it was before
 REM    tradeos rollback off   every Phase 4 switch back to its pre-Phase-4 value
@@ -54,6 +55,7 @@ cd /d "%~dp0backend"
 if /i "%~1"=="check"    goto CHECK
 if /i "%~1"=="health"   goto HEALTH
 if /i "%~1"=="simulate" goto SIMULATE
+if /i "%~1"=="verify"   goto VERIFY
 if /i "%~1"=="backup"   goto BACKUP
 if /i "%~1"=="rollback" goto ROLLBACK
 if /i "%~1"=="alloc"    goto ALLOC
@@ -77,12 +79,15 @@ if "%~1"==""            goto MENU
 goto START
 
 :MENU
-REM The grouped menu prints 36 lines and a default Windows console shows 25, so
-REM the first two groups scroll off before they can be read — which is exactly
-REM how the LEARN options came to look absent when they were present all along.
-REM Resizing costs one line and keeps the layout. Redirected because a console
+REM The grouped menu prints 45 lines plus the prompt, and a default Windows
+REM console shows 25 — so the first two groups scroll off before they can be
+REM read, which is exactly how the LEARN options came to look absent when they
+REM were present all along. Sized to 50 rather than 45: adding the Verify entry
+REM took the menu to exactly the old height, which is one line short once the
+REM "Choice [1]:" prompt is counted, and a menu whose header has just scrolled
+REM away is how this was missed the first time. Redirected because a console
 REM that cannot be resized (a terminal tab, ssh) should not print an error.
-mode con: cols=100 lines=45 >nul 2>&1
+mode con: cols=100 lines=50 >nul 2>&1
 cls
 echo.
 echo  ===========================================================
@@ -100,6 +105,7 @@ echo     5   Status                 live/paper, and where the monitor is
 echo     6   Health sweep           every check, find what is broken
 echo     7   IP                     this machine's, vs the Kite allowlist
 echo     S   Simulate               what BOTH books would do right now — writes nothing
+echo     V   Verify                 offline logic checks, no database (~2s)
 echo.
 echo   LEARN                        measures and proposes, changes nothing
 echo     L   Weekly review          what the evidence says to change
@@ -139,6 +145,7 @@ if "%PICK%"=="5" goto STATUS
 if "%PICK%"=="6" goto HEALTH
 if "%PICK%"=="7" goto IP
 if /i "%PICK%"=="S" goto SIMULATE
+if /i "%PICK%"=="V" goto VERIFY
 if /i "%PICK%"=="L" goto LEARN
 if /i "%PICK%"=="D" goto DISCOVER
 if /i "%PICK%"=="P" goto PROPOSALS
@@ -315,6 +322,14 @@ goto END
 
 :HEALTH
 python -m tools.health
+goto END
+
+:VERIFY
+REM  Offline. Needs no database, no broker session and no network — every check
+REM  is pure arithmetic over in-memory objects. That is what makes it cheap
+REM  enough to run after every edit, which is the point: `health` tells you
+REM  whether TODAY is safe, `verify` tells you whether a CHANGE is safe.
+python -m tools.verify
 goto END
 
 :SIMULATE
