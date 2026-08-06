@@ -955,9 +955,38 @@ class IntradayEngine:
             mfe = max(float(p.get("max_favorable_excursion") or 0.0), pct)
             mae = min(float(p.get("max_adverse_excursion") or 0.0), pct)
 
+            # R-MULTIPLE — the dashboard's primary unit, and never written here.
+            # control/position_lifecycle.py (SWING) writes r_multiple_current;
+            # nothing on the intraday side ever did, so every intraday position
+            # showed "Awaiting first price update" for its ENTIRE life, not
+            # just its opening seconds. Found via SAPPHIRE: 17 minutes open,
+            # already 0.1% off entry, still r_multiple_current=None.
+            #
+            # planned_stop, not active_sl, to match position_lifecycle's own
+            # choice — R is measured against the ORIGINAL risk, not a trailed
+            # one, or the number would compress every time the stop moves
+            # rather than only when the price does.
+            #
+            # risk_per_share returns 0.0 for a stop on the wrong side of entry
+            # (bad data or a position mid-repair) — that must read as unknown,
+            # not as "exactly at breakeven", so None is written explicitly
+            # rather than trusting gain_r's own 0.0 fallback for a zero risk.
+            stop = float(p.get("planned_stop") or 0)
+            risk = D.risk_per_share(entry, stop, d)
+            r_now = round(D.gain_r(entry, ltp, risk, d), 3) if risk > 0 else None
+
             # Only write when something actually moved, so a quiet position does
-            # not produce a database round trip every 15 seconds per name.
-            if (abs(hwm - float(p.get("high_water_mark") or 0)) < 0.005
+            # not produce a database round trip every 15 seconds per name. R is
+            # part of that comparison, not just the excursion stats — a
+            # position flat in raw percent terms can still have crossed an
+            # R-based exit rung, which is the transition this dashboard exists
+            # to surface.
+            prev_r = p.get("r_multiple_current")
+            r_moved = (r_now is None) != (prev_r is None) or (
+                r_now is not None and prev_r is not None
+                and abs(r_now - float(prev_r)) >= 0.01)
+            if (not r_moved
+                    and abs(hwm - float(p.get("high_water_mark") or 0)) < 0.005
                     and abs(mfe - float(p.get("max_favorable_excursion") or 0)) < 0.005
                     and abs(mae - float(p.get("max_adverse_excursion") or 0)) < 0.005):
                 return
@@ -966,7 +995,8 @@ class IntradayEngine:
                    "high_water_mark": round(hwm, 2),
                    "max_favorable_excursion": round(mfe, 3),
                    "max_adverse_excursion": round(mae, 3),
-                   "pnl_pct": round(pct, 3)}
+                   "pnl_pct": round(pct, 3),
+                   "r_multiple_current": r_now}
             self._update_position(p, upd)
             p.update(upd)
         except Exception as e:
