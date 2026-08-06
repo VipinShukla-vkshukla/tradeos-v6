@@ -78,7 +78,8 @@ const KEYS = [
   // is shown because an accidental 0.0 here refuses every proposal whose
   // expected R merely fails to beat its own round trip, which is how the
   // intraday book went a full session without a trade.
-  'one_framework_per_symbol', 'alloc_hurdle_cold_start',
+  'one_framework_per_symbol', 'intraday_allow_swing_held_symbols',
+  'alloc_hurdle_cold_start',
   'alloc_hurdle_lookback_days',
   'overlay_expiry_enabled', 'overlay_vol_scaling_enabled',
   'overlay_liquidity_enabled', 'overlay_liquidity_strict',
@@ -875,6 +876,12 @@ function SharedControls({ cfg, bool, set, busy }: {
           disabled={busy !== null}
           onChange={(v) => set('one_framework_per_symbol', String(v),
             v ? 'Operator panel' : 'Operator panel — WARNING: both books may hold one name')} />
+      </Row>
+      <Row label="Intraday may join a swing holding" tag={<P4 />}
+        hint="Layered under the switch above, which stays the master invariant — swing still refuses a name intraday holds, unconditionally. This only relaxes the other direction: when swing already holds a name, intraday may open a same-direction LONG paper satellite in it instead of standing down. The swing position is never touched. A SHORT intraday setup in a swing-held name is still refused regardless of this switch.">
+        <Toggle on={bool('intraday_allow_swing_held_symbols')}
+          disabled={busy !== null || !bool('one_framework_per_symbol')}
+          onChange={(v) => set('intraday_allow_swing_held_symbols', String(v), 'Operator panel')} />
       </Row>
 
       {/* ── Structural overlays that apply to both books. Expiry-day sizing

@@ -1126,7 +1126,31 @@ def check_framework_isolation() -> tuple[bool, str]:
                        "operator choice, but it is not a state health can call "
                        "healthy: the intraday square-off will sell into a swing "
                        "thesis and the same move is scored twice by the learning loop")
-    return True, "one symbol, one book — enforced from both sides"
+
+    # THE ASYMMETRIC CARVE-OUT — 06-Aug-2026. INTRADAY may now join a name
+    # SWING already holds (same direction only, `intraday_allow_swing_held_symbols`);
+    # SWING still refuses unconditionally, unchanged above. Checked separately
+    # because the two assertions above would not notice the helper vanishing,
+    # its call site being dropped, or its direction guard being silently removed.
+    if "def _intraday_may_join_swing_holding" not in eng:
+        return False, ("_intraday_may_join_swing_holding() is gone — if the "
+                       "INTRADAY call site above still lets a setup through "
+                       "after finding a SWING holding, nothing is deciding "
+                       "whether that's safe")
+    if "_intraday_may_join_swing_holding(other, best.direction)" not in eng:
+        return False, ("evaluate_intraday_setups no longer calls "
+                       "_intraday_may_join_swing_holding() at the cross-framework "
+                       "check — the carve-out logic exists but is disconnected")
+    fn_start = eng.index("def _intraday_may_join_swing_holding")
+    fn_body = eng[fn_start:fn_start + 1200]
+    if "is_short(direction)" not in fn_body:
+        return False, ("_intraday_may_join_swing_holding() no longer checks "
+                       "direction — a SHORT could join a name SWING holds LONG, "
+                       "which contradicts the swing thesis it is long on")
+
+    return True, ("one symbol, one book — enforced from both sides, with an "
+                  "explicit same-direction carve-out for INTRADAY joining a "
+                  "SWING holding")
 
 
 #: Every site that must be direction-aware before a short may be taken, and the

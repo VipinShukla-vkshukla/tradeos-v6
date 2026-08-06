@@ -55,7 +55,9 @@ MODULES = [
     ("direction spine",     "tests.test_direction_spine"),
     ("regime vocabulary",   "tests.test_regime_vocabulary"),
     ("allocator direction", "tests.test_allocator_direction"),
+    ("allocator priors",    "tests.test_allocator_priors"),
     ("short engine",        "tests.test_short_engine"),
+    ("book isolation",      "tests.test_book_isolation"),
 ]
 
 

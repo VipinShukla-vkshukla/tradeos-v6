@@ -339,6 +339,95 @@ def _swing_bias_warning(sb) -> None:
         pass
 
 
+def tercile_report(sb=None) -> int:
+    """
+    DIAGNOSTIC ONLY — not called from `swing_priors()`, not wired into the
+    allocator, changes nothing. Run with `python -m allocation.scoring --tercile`.
+
+    Council Break 2 observed, correctly, that `swing_priors()` keys on
+    `signal_type` alone and discards `final_score` entirely — a CTL signal
+    scored 92 and one scored 41 land in the same bucket. Whether conditioning
+    on that score actually predicts anything is a separate, empirical
+    question, and `docs/TRADING_METHODOLOGY_REVIEW.md` already warns that
+    tercile-mining at this account's sample size produces spurious "material"
+    splits by chance. This prints the same population and floor logic
+    `swing_priors()` uses, split into `(signal_type, final_score tercile)`
+    instead of `signal_type` alone, so the terciles can be read by eye before
+    anyone changes how priors are keyed. If they don't visibly separate, the
+    right conclusion is that `final_score`'s hand-set weights
+    (`compute_msl.py::get_final_score_weights`) have not been validated
+    against forward outcomes — which is itself worth knowing — not that the
+    conditioning should ship anyway.
+    """
+    floor = cfg_int("priors_min_sample_swing", 30)
+    sb = sb or get_supabase()
+    rows, off = [], 0
+    while True:
+        page = (sb.table("signal_output_daily")
+                  .select("signal_type,outcome_return_pct,outcome_entered,"
+                          "entry_zone_high,planned_stop,final_score")
+                  .not_.is_("outcome_category", "null")
+                  .range(off, off + PAGE - 1).execute().data) or []
+        rows += page
+        if len(page) < PAGE:
+            break
+        off += PAGE
+
+    triples: list[tuple[str, float, float]] = []   # (engine, final_score, R)
+    for r in rows:
+        if not r.get("outcome_entered"):
+            continue
+        entry, stop = r.get("entry_zone_high"), r.get("planned_stop")
+        ret, fs = r.get("outcome_return_pct"), r.get("final_score")
+        if None in (entry, stop, ret, fs):
+            continue                      # no stop or no score → excluded, not invented
+        try:
+            entry, stop = float(entry), float(stop)
+            risk_pct = (entry - stop) / entry * 100.0
+            if risk_pct <= 0:
+                continue
+            triples.append((r.get("signal_type") or "ALL", float(fs),
+                            float(ret) / risk_pct))
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+
+    logger.info("═" * 74)
+    logger.info("TERCILE REPORT — mean R by (engine, final_score tercile). DIAGNOSTIC ONLY.")
+    logger.info("Not wired into the live allocator or swing_priors(). Evidence for a decision,")
+    logger.info("not the decision.")
+    logger.info("═" * 74)
+
+    if not triples:
+        logger.error("  no entered plan has both a stop and a final_score — nothing to report")
+        return 1
+
+    by_engine: dict[str, list[tuple[float, float]]] = {}
+    for eng, fs, r in triples:
+        by_engine.setdefault(eng, []).append((fs, r))
+
+    for eng in sorted(by_engine):
+        pts = sorted(by_engine[eng])          # sorted by final_score
+        n = len(pts)
+        pooled = _dist(f"SWING/{eng}", [r for _, r in pts], floor)
+        logger.info("")
+        logger.info(f"── {eng} (n={n}) ──")
+        logger.info(f"  pooled: {pooled.describe()}")
+        if n < floor:
+            logger.warning(f"  too few observations for a tercile split "
+                           f"(n={n}, floor={floor} per bucket recommended)")
+            continue
+        t1, t2 = pts[n // 3][0], pts[(2 * n) // 3][0]
+        for label, vals in (
+            ("LOW",  [r for fs, r in pts if fs <= t1]),
+            ("MID",  [r for fs, r in pts if t1 < fs <= t2]),
+            ("HIGH", [r for fs, r in pts if fs > t2]),
+        ):
+            d = _dist(f"SWING/{eng}/{label}", vals, floor)
+            logger.info(f"  {label:<4}: {d.describe()}")
+
+    return 0
+
+
 def report() -> int:
     """Print every prior the system can currently justify, with its n."""
     sb = get_supabase()
@@ -372,4 +461,4 @@ def report() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(report())
+    sys.exit(tercile_report() if "--tercile" in sys.argv else report())

@@ -512,10 +512,26 @@ the scanner clearly liked produced nothing.
 
 The design note in `DESIGN_NOTES.md` argues for the opposite — a swing core with
 an intraday tranche traded around it, which is genuine desk practice. That
-remains the intent. It cannot happen while intraday is PAPER: a simulated
-tranche next to a live holding is not a satellite, it is a live position whose
-risk is being measured against a trade that does not exist. Turn the switch off
-the day intraday places real orders, not before.
+remains the intent. Full core-and-satellite (two REAL tranches) cannot happen
+while intraday is PAPER, and `one_framework_per_symbol` above stays ON as the
+master rule — swing still refuses a name intraday holds, unconditionally,
+exactly as described above.
+
+**06-Aug-2026 — a narrower, paper-only carve-out.** `intraday_allow_swing_held_symbols`
+(on by default) relaxes the *other* direction only: when swing already holds a
+name, intraday may now open a same-direction LONG paper satellite in it rather
+than standing down. The swing position is never touched — `open_positions` is
+keyed `(symbol, product)`, and `square_off_paper` only ever closes
+`framework=INTRADAY, mode=PAPER` rows, so the 15:15 flatten cannot reach the
+CNC leg. A SHORT intraday setup in a swing-held name is still refused
+unconditionally, switch or not — shorting your own swing thesis is the
+contradicted-exit-ladder risk this whole rule exists to prevent, not a
+satellite. Two things this does **not** yet do, on purpose: there is no combined
+per-symbol capital cap across the two books (each book still sizes only off its
+own sleeve), and the same price move now informs both books' learning loops
+within one symbol. Both are accepted while intraday stays PAPER — see
+`DESIGN_NOTES.md` #1 for the reasoning, and turn the switch off from the
+operator panel any time.
 
 ### Intraday exits
 

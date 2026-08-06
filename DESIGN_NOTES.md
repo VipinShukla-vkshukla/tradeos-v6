@@ -139,6 +139,54 @@ inverse of what "relax the same-symbol guard to same-symbol-same-product" (line
 Until then the capability is enabled in name only, and what it actually delivers
 is the corruption it was designed to replace.
 
+### STATUS, 06-Aug-2026 — a narrower carve-out, decided with the three preconditions in view
+
+The operator asked to lift the block in the one direction where it costs
+opportunity without (yet) risking real capital: let INTRADAY open a
+same-direction LONG paper satellite in a name SWING already holds, leaving
+SWING untouched. This is deliberately **not** the full reversal the 05-Aug
+note above declined — `one_framework_per_symbol` stays ON, and the SWING side
+of `_other_framework_holding` keeps refusing unconditionally. A new switch,
+`intraday_allow_swing_held_symbols` (default TRUE, migration 052), narrows
+only the INTRADAY side, and only for LONG.
+
+Checked against the three preconditions the 05-Aug note set for turning the
+capability back on generally:
+
+1. **"intraday places real MIS orders"** — still false. `intraday_live_auto_entry`
+   has no implementation. This is exactly why the correlated-real-money risk
+   the 05-Aug note is built around does not fire here: the swing leg is real,
+   the intraday leg is still fully simulated, so there is no scenario where a
+   losing day debits real capital twice for one name.
+2. **"a two-book day does not double-spend the account guard"** — not
+   re-verified for the general case; not required for this narrower one,
+   because intraday's own capital sleeve (`capital_for("INTRADAY")`) is
+   static and never reads what swing holds, so an intraday satellite cannot
+   itself cause swing's guard to under- or over-count. What it does NOT get
+   you: a joint per-symbol cap. Point 3 covers that gap directly.
+3. **"sizing is computed across both books"** — still not built. Accepted as
+   an open, monitored gap while intraday stays PAPER: the exposure that would
+   be at risk if this were real is a virtual number, not capital. The gap to
+   close before intraday_live_auto_entry ever ships is unchanged from 05-Aug.
+
+Two residual, non-capital risks are accepted explicitly rather than assumed
+away: the same price move now informs both books' learning populations
+within a single symbol (not new in kind — swing and intraday already
+overlap in universe — just now also true within one name), and the paper P&L
+this produces should be read knowing it is correlated with, not independent
+of, the swing thesis already in the name. Neither blocks the change; both are
+worth remembering when reading `intraday_setups` outcomes for a
+swing-held name.
+
+Direction asymmetry is enforced in code (`intraday/engine.py::_intraday_may_join_swing_holding`),
+not left as an operator discipline: a SHORT is refused regardless of the
+switch, because shorting a name the swing book is long is the same
+contradicted-thesis failure this section has argued against from the start,
+just self-inflicted rather than accidental. `tools/health.py`'s `books` check
+now asserts the helper exists, is wired to the call site, and still contains
+the direction guard — the same "assert by inspection, not by convention" the
+symmetric check upstream already uses.
+
 ---
 
 ## 2. Discovering engines that do not exist yet

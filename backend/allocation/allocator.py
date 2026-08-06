@@ -67,6 +67,24 @@ class Allocator:
             self.refresh_priors()
         pri = self._priors or {}
 
+        # A BELOW-FLOOR PRIOR IS STILL A `Prior` OBJECT, AND OBJECTS ARE
+        # TRUTHY. `pri.get(key) or pri.get(fallback)` therefore never falls
+        # through when `key` exists with even one observation — it falls
+        # through only when the key is ABSENT. `swing_priors()` populates a
+        # key for every `signal_type` with at least one row, below-floor or
+        # not, so a thin-but-present class prior (the exact case the
+        # docstring below describes as "a missing class prior falls back to
+        # the book") could never reach that fallback. `planned_stop` was only
+        # populated from 28-Jul-2026, so almost every swing engine bucket is
+        # currently below the 30-sample floor: every one of them resolved to
+        # a NEUTRAL prior (e_r = 0 - cost_r, always negative) instead of the
+        # book's own usable distribution, which can never clear a positive
+        # hurdle. `_usable()` checks the flag explicitly instead of relying
+        # on truthiness.
+        def _usable(key: str):
+            got = pri.get(key)
+            return got if got is not None and got.usable else None
+
         # SHORT PROPOSALS MUST NEVER FALL BACK TO THE LONG POPULATION.
         #
         # scoring.intraday_priors() keys a short engine's distribution as
@@ -82,16 +100,16 @@ class Allocator:
         # population that excludes every short ever observed, which is the
         # exact cross-class borrowing this docstring's own next line forbids.
         if (p.direction or "LONG").upper() == "SHORT":
-            return (pri.get(f"{p.framework}/{p.source}/SHORT")
-                    or pri.get(f"{p.framework}/ALL/SHORT")
+            return (_usable(f"{p.framework}/{p.source}/SHORT")
+                    or _usable(f"{p.framework}/ALL/SHORT")
                     or S._dist(f"{p.framework}/NONE/SHORT", [], floor=10**9))
 
-        # Most specific first, then the book, then neutral. A missing class
-        # prior is NOT borrowed from a neighbour — it falls back to the book's
-        # own distribution and is flagged, because an invented prior is
-        # indistinguishable from a measured one downstream.
-        return (pri.get(f"{p.framework}/{p.source}")
-                or pri.get(f"{p.framework}/ALL")
+        # Most specific first, then the book, then neutral. A missing OR
+        # below-floor class prior is NOT borrowed from a neighbour — it falls
+        # back to the book's own distribution and is flagged, because an
+        # invented prior is indistinguishable from a measured one downstream.
+        return (_usable(f"{p.framework}/{p.source}")
+                or _usable(f"{p.framework}/ALL")
                 or S._dist(f"{p.framework}/NONE", [], floor=10**9))
 
     # ── the decision ───────────────────────────────────────────────────────

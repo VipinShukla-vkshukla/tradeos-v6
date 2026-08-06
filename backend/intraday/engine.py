@@ -34,6 +34,33 @@ from intraday.notifier import Notifier, Action
 from intraday import direction as D
 
 
+def _intraday_may_join_swing_holding(other: dict | None, direction: str) -> bool:
+    """
+    True if an INTRADAY setup may proceed despite the name being held elsewhere.
+
+    Layered UNDER `one_framework_per_symbol`, which stays the master invariant
+    and is unaffected by this: the SWING side of `_other_framework_holding`
+    (evaluate_candidates, standing down when INTRADAY already holds a name)
+    keeps refusing unconditionally, exactly as before. This only narrows the
+    INTRADAY side of the same check — the one that used to refuse
+    unconditionally whenever SWING got to a name first.
+
+    A SHORT is refused regardless of the switch: shorting a name the swing
+    book is long reintroduces the "two exit ladders that contradict each
+    other" risk DESIGN_NOTES.md #1 warns about, and is not what
+    `intraday_allow_swing_held_symbols` is for. Only a SWING holding is ever
+    joinable — a name INTRADAY itself already holds is a different case
+    (duplicate entry) this function has no opinion on.
+    """
+    if other is None:
+        return True
+    if (other.get("framework") or "SWING").upper() != "SWING":
+        return False
+    if D.is_short(direction):
+        return False
+    return cfg_bool("intraday_allow_swing_held_symbols", True)
+
+
 class IntradayEngine:
     def __init__(self, sb=None, notifier: Notifier | None = None):
         self.sb = sb or get_supabase()
@@ -2020,14 +2047,23 @@ class IntradayEngine:
             # cannot ask what standing down cost.
             other = self._other_framework_holding(sym, "INTRADAY")
             if other is not None:
-                self._record_setup(best, st.phase, 0.0, "BLOCKED_CROSS_FRAMEWORK", 0)
-                logger.info(
-                    f"      {sym}: {best.strategy} conf {best.confidence:.2f} — the "
-                    f"{(other.get('framework') or 'SWING').upper()} book already holds "
-                    f"this name ({other.get('current_qty') or other.get('actual_qty')} "
-                    f"@ {other.get('entry_price')}). One book per symbol; the intraday "
-                    f"square-off must not sell a multi-week thesis")
-                continue
+                if _intraday_may_join_swing_holding(other, best.direction):
+                    logger.info(
+                        f"      {sym}: {best.strategy} conf {best.confidence:.2f} — SWING "
+                        f"already holds this name ({other.get('current_qty') or other.get('actual_qty')} "
+                        f"@ {other.get('entry_price')}); joining as a same-direction LONG "
+                        f"satellite (intraday_allow_swing_held_symbols). The swing position "
+                        f"is untouched — only this MIS tranche squares off at session end")
+                    # falls through to the gates below, no `continue`
+                else:
+                    self._record_setup(best, st.phase, 0.0, "BLOCKED_CROSS_FRAMEWORK", 0)
+                    logger.info(
+                        f"      {sym}: {best.strategy} conf {best.confidence:.2f} — the "
+                        f"{(other.get('framework') or 'SWING').upper()} book already holds "
+                        f"this name ({other.get('current_qty') or other.get('actual_qty')} "
+                        f"@ {other.get('entry_price')}). One book per symbol; the intraday "
+                        f"square-off must not sell a multi-week thesis")
+                    continue
 
             # One failure per name per day. Recorded rather than skipped
             # silently, so the weekly review can measure what this rule cost as
