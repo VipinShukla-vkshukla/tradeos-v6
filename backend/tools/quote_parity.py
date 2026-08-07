@@ -1,9 +1,10 @@
 """
-Do the websocket and the historical endpoint agree, before either is trusted?
+Do the websocket and the historical endpoint agree, before either is trusted
+— and do they STILL agree, for as long as anything is acting on it?
 
     python -m tools.quote_parity            report the divergence collected
-    python -m tools.quote_parity --arm      turn logging on for one session
-    python -m tools.quote_parity --disarm   turn it off again
+    python -m tools.quote_parity --arm      turn logging on
+    python -m tools.quote_parity --disarm   turn it off
 
 WHY PARITY BEFORE PROMOTION
 ---------------------------
@@ -13,14 +14,35 @@ endpoint about today's high is not a faster truth — it is a new bug with bette
 latency, and it would be wired directly into the breakout condition of every
 opening-range engine.
 
-So the two sources are logged side by side for one session and compared here.
-The two switches that consume them, `intraday_quote_mode_range` (day_open/
-day_high/day_low/volume) and `intraday_quote_mode_vwap` (vwap), stay off
-until this reports agreement for their own fields — 08-Aug-2026, measured
-independently after the two groups turned out to disagree (range clean,
-vwap FAULT). `prev_close` has no switch at all: it is time-invariant
-intraday, so a live overlay is never the fix for it regardless of what this
-reports — see intraday/engine.py::apply_live_quotes()'s docstring.
+So the two sources are logged side by side and compared here.
+
+ONE SESSION IS EVIDENCE, NOT A VERDICT — 08-Aug-2026. The first version of this
+told the operator to arm parity, run one session, and disarm once it read
+clean — a permanent decision frozen on whatever that one session's market did.
+A quiet range-bound Thursday and a fast Monday do not necessarily produce the
+same agreement, and nothing was left running to notice if they didn't. Parity
+logging is cheap (rate-limited to once per 300s per symbol, one batched write
+— see apply_live_quotes()), so there is no real reason to ever turn it off
+while either switch below is on. Recommended posture now: arm it, and leave
+it armed for as long as either switch is on. `tools.health`'s `quote_parity`
+check enforces this — it fails if a switch is on but logging is off, or if
+recent data has started disagreeing, so a regression on any later session
+gets caught by the check you are told to run before trading, not
+rediscovered by hand or, worse, not discovered at all.
+
+Two independent switches consume this: `intraday_quote_mode_range` (day_open/
+day_high/day_low/volume, measured clean 07-Aug-2026, recommended ON) and
+`intraday_quote_mode_vwap` (vwap, measured FAULT against the tolerances the
+engines that read it actually use — see `_vwap_engine_relevance` below,
+recommended OFF and not expected to flip soon, since the fault traces to a
+structural formula difference rather than staleness). Both stay off by
+default; both are cheap to leave in place either way, which is the point —
+revisiting either is a config flip once fresh data supports it, not a code
+change. `prev_close` has no switch at all, not "off by default" but no
+overlay code path — it is time-invariant intraday, so a live overlay is
+never the fix for it regardless of what this reports. All three fields stay
+measured here for visibility — see
+intraday/engine.py::apply_live_quotes()'s docstring.
 
 WHAT COUNTS AS AGREEMENT
 ------------------------
@@ -115,6 +137,65 @@ def record(sb, symbol: str, field: str, live, fetched) -> None:
     record_many(sb, [r for r in (compare(symbol, field, live, fetched),) if r])
 
 
+def range_verdict(rows: list[dict]) -> tuple[bool | None, str]:
+    """
+    OK/FAULT for day_high/day_low ONLY — the two fields intraday_quote_mode_range
+    actually gates. Pure, no I/O, so it is usable both by report() (the full
+    CLI breakdown of all fields) and by tools.health.check_quote_parity_freshness
+    (the ongoing check that quote mode, once enabled, keeps being re-verified
+    against CURRENT data rather than trusted forever on one session's numbers).
+    One ratchet definition, in one place, read by both.
+
+    None means no day_high/day_low rows were in what was passed in — a
+    distinct case from "verified clean", since the caller decides what that
+    means (report() says "no data yet"; health.py fails loudly, because ON
+    with nothing to verify against is not the same as verified).
+    """
+    by: dict[str, list[float]] = defaultdict(list)
+    for r in rows:
+        f = r.get("field")
+        if f in ("day_high", "day_low") and r.get("diff_pct") is not None:
+            by[f].append(float(r["diff_pct"]))
+    if not by:
+        return None, "no day_high/day_low comparisons in range"
+
+    bad = []
+    if "day_high" in by:
+        bad += [x for x in by["day_high"] if x < -0.05]
+    if "day_low" in by:
+        bad += [x for x in by["day_low"] if x > 0.05]
+    n = sum(len(v) for v in by.values())
+    if bad:
+        return False, f"{len(bad)} of {n} day_high/day_low comparisons behind"
+    return True, f"{n} day_high/day_low comparisons, all clean"
+
+
+def vwap_verdict(rows: list[dict]) -> tuple[bool | None, str]:
+    """
+    OK/FAULT for vwap against the TIGHTEST tolerance any engine that reads it
+    actually uses (VWAP_ENGINE_TOLERANCES), read live so an operator override
+    is respected — not the blanket 0.10% band, which answers a different
+    question. Same reuse rationale as range_verdict: one definition, shared by
+    report()'s detailed CLI breakdown (via _vwap_engine_relevance) and
+    tools.health's ongoing check, so intraday_quote_mode_vwap is held to the
+    same "verify against CURRENT data, not last week's" standard as range —
+    it just isn't expected to pass any time soon, for a structural reason
+    rather than a staleness one.
+    """
+    from config import cfg_float
+    diffs = [float(r["diff_pct"]) for r in rows
+             if r.get("field") == "vwap" and r.get("diff_pct") is not None]
+    if not diffs:
+        return None, "no vwap comparisons in range"
+    tightest = min(cfg_float(key, default) for key, default, _ in VWAP_ENGINE_TOLERANCES)
+    over = [x for x in diffs if abs(x) >= tightest]
+    n = len(diffs)
+    if over:
+        return False, (f"{len(over)} of {n} vwap comparisons crossed the tightest "
+                       f"engine tolerance ({tightest:.2f}%)")
+    return True, f"{n} vwap comparisons, all inside every engine's tolerance"
+
+
 def _vwap_engine_relevance(diffs: list[float]) -> None:
     """
     The 0.10% parity band is a generic "do these roughly agree" test. It does
@@ -197,33 +278,33 @@ def report(sb) -> int:
     if "vwap" in by:
         _vwap_engine_relevance(by["vwap"])
 
-    # Reported per switch, not as one blanket verdict — intraday_quote_mode_range
-    # and intraday_quote_mode_vwap are independently gated (08-Aug-2026) because
-    # the two groups measured differently: day_high/day_low held clean while
-    # vwap FAULTed. prev_close has no switch at all — see the module docstring.
+    # Reported per switch via range_verdict/vwap_verdict — the SAME functions
+    # tools.health's ongoing check calls, so a fresh re-run of this command
+    # and the check that runs before every trading session agree by
+    # construction, not by two copies of the same logic staying in sync.
     logger.info("")
-    range_fields = [f for f in ("day_high", "day_low") if f in field_ok]
-    range_ok = all(field_ok[f] for f in range_fields) if range_fields else None
+    range_ok, range_detail = range_verdict(rows)
     if range_ok:
-        logger.success("  RANGE (day_high/day_low) HOLDS. Safe to enable:")
+        logger.success(f"  RANGE: {range_detail}. Safe to enable — on THIS data:")
         logger.success("    UPDATE system_config SET value='true' "
                        "WHERE key='intraday_quote_mode_range';")
+        logger.info("    (keep parity logging armed after — see the module docstring)")
     elif range_ok is False:
-        logger.error("  RANGE (day_high/day_low) FAILS. Leave intraday_quote_mode_range off.")
+        logger.error(f"  RANGE: {range_detail}. Leave intraday_quote_mode_range off.")
     else:
-        logger.info("  RANGE (day_high/day_low) — no data collected yet.")
+        logger.info(f"  RANGE: {range_detail}.")
 
-    vwap_ok = field_ok.get("vwap")
+    vwap_ok, vwap_detail = vwap_verdict(rows)
     if vwap_ok:
-        logger.success("  VWAP HOLDS. Safe to enable:")
+        logger.success(f"  VWAP: {vwap_detail}. Safe to enable — on THIS data:")
         logger.success("    UPDATE system_config SET value='true' "
                        "WHERE key='intraday_quote_mode_vwap';")
     elif vwap_ok is False:
-        logger.error("  VWAP FAILS. Leave intraday_quote_mode_vwap off — this is a formula "
-                     "disagreement (tick VWAP vs bar-approximation VWAP), not just staleness; "
-                     "needs a reconciled definition, not a resync.")
+        logger.error(f"  VWAP: {vwap_detail}. Leave intraday_quote_mode_vwap off — this is "
+                     "a formula disagreement (tick VWAP vs bar-approximation VWAP), not "
+                     "staleness, so it is unlikely to clear on its own with more data.")
     else:
-        logger.info("  VWAP — no data collected yet.")
+        logger.info(f"  VWAP: {vwap_detail}.")
 
     if "prev_close" in field_ok and not field_ok["prev_close"]:
         logger.error("  PREV_CLOSE FAULTs, but has no switch — it is never live-overlaid "
@@ -231,10 +312,9 @@ def report(sb) -> int:
                      "lookup, not here.")
 
     logger.info("")
-    if range_ok or vwap_ok:
-        logger.info("  Once whichever switch(es) you enable have run a session, disarm "
-                    "the logging — it is meant for one session, not forever:")
-        logger.info("    python -m tools.quote_parity --disarm")
+    logger.info("  Whichever switch(es) are on, keep parity logging armed — this is a "
+                "point-in-time read of whatever data exists right now, not a permanent "
+                "verdict. tools.health re-checks it before every trading session.")
     return 0 if (range_ok is not False and vwap_ok is not False) else 1
 
 
@@ -243,9 +323,12 @@ def _set(sb, on: bool) -> int:
       .eq("key", "intraday_quote_parity_log").execute()
     logger.success(f"  parity logging {'ARMED' if on else 'disarmed'}")
     if on:
-        logger.info("  run one full session, then: python -m tools.quote_parity")
+        logger.info("  after a session or two: python -m tools.quote_parity")
         logger.info("  the daemon picks this up within 300s — it re-reads config on "
                     "its slow timer")
+        logger.info("  leave this armed for as long as intraday_quote_mode_range and/or "
+                    "_vwap might be on — it is cheap, and tools.health checks that it "
+                    "stayed armed")
     return 0
 
 
