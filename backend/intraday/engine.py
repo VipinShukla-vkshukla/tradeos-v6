@@ -600,6 +600,35 @@ class IntradayEngine:
         elif not left:
             logger.info(f"     daily entry budget spent ({taken}/{mx})")
 
+    def _log_intraday_state(self, setups: list) -> None:
+        """
+        One line per cycle: what intraday scanned and found — mirroring
+        _log_swing_state's own reason for existing.
+
+        07-Aug-2026: that function's docstring already records the ORIGINAL
+        shape of this problem — "the console showed the intraday engine scan
+        in detail and swing not at all" — and was added to fix it. Nobody
+        added the mirror once swing had its own heartbeat: intraday only
+        logs when a detection clears every gate (SETUP_*, BLOCKED_*), so a
+        quiet 15s cycle with nothing to report produces no line at all,
+        while swing's unconditional summary keeps printing every cycle
+        regardless. From outside, that reads as "only swing is running" —
+        confirmed live: several minutes of consecutive cycles with the swing
+        line repeating and nothing intraday-shaped between them, on a
+        session that was in fact scanning normally the whole time
+        (evaluate_intraday_setups runs unconditionally in cycle(), same as
+        evaluate_candidates). The absence of a line was never evidence of
+        anything; there was simply no line for "scanned, found nothing" to
+        be.
+        """
+        held = sum(1 for p in self.positions
+                   if (p.get("framework") or "SWING").upper() == "INTRADAY")
+        scanned = len(self._contexts or {})
+        names = [s["setup"].symbol for s in (setups or [])]
+        logger.info(f"  intraday: {held} held · {scanned} scanned · "
+                    f"{len(setups or [])} setup(s) this cycle "
+                    f"[{', '.join(names) or 'none'}]")
+
     def _failed_today(self) -> set:
         """
         Intraday names that already lost money today.
@@ -2780,6 +2809,11 @@ class IntradayEngine:
             self._log_swing_state(prices)
         except Exception as e:
             logger.debug(f"  swing summary failed: {e}")
+
+        try:
+            self._log_intraday_state(setups)
+        except Exception as e:
+            logger.debug(f"  intraday summary failed: {e}")
 
         self.square_off_paper(prices)
 
