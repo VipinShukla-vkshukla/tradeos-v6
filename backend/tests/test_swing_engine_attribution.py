@@ -65,6 +65,26 @@ def test_swing_family_empty_or_unknown_falls_back_to_all():
     assert swing_family("NOT_A_REAL_ENGINE") == "ALL"
 
 
+def test_swing_family_strips_a_legacy_parenthetical_annotation():
+    """
+    07-Aug-2026: closed_positions.strategy carries "CTL (Legacy)" for 21 of
+    75 historical SWING closes — 89% of the sample together with plain
+    "CTL" — and the un-stripped lookup resolved it to "ALL" instead of
+    CONTINUATION, the identical shape as the signal_type/strategy
+    column-confusion this file's own header documents. "CTL (Legacy)" is
+    CTL; the parenthetical is metadata about when it was labelled.
+    """
+    from allocation.scoring import swing_family
+    assert swing_family("CTL (Legacy)") == "CONTINUATION", (
+        f"got {swing_family('CTL (Legacy)')!r} — a legacy-labelled engine "
+        f"is falling out of its own family again")
+    assert swing_family("MOM (Legacy)") == "MOM", (
+        "the strip must be generic (any trailing parenthetical), not a "
+        "hardcoded alias for CTL alone")
+    assert swing_family("CTL (Legacy)+SEC") == "CONTINUATION"
+    assert swing_family("CTL (Legacy)+MOM") == "MOM"
+
+
 def test_from_swing_reads_strategy_and_final_score_from_the_candidate():
     """
     `plan` here is what `_allocate_shadow` now actually passes: the candidate
@@ -130,6 +150,8 @@ TESTS = [
      test_swing_family_mixed_combo_prefers_the_isolated_family),
     ("swing_family empty or unknown falls back to ALL",
      test_swing_family_empty_or_unknown_falls_back_to_all),
+    ("swing_family strips a legacy parenthetical annotation",
+     test_swing_family_strips_a_legacy_parenthetical_annotation),
     ("from_swing reads strategy and final_score from the candidate",
      test_from_swing_reads_strategy_and_final_score_from_the_candidate),
     ("from_swing resolves a non-CONTINUATION engine",

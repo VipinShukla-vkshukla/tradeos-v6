@@ -43,6 +43,24 @@ from allocation.proposal import Proposal
 TAKE, DEFER, DECLINE = P.TAKE, P.DEFER, P.DECLINE
 
 
+def _hold_days_for_proposal(framework: str, source: str, book_days: float, book_n: int,
+                            swing_by_family: dict[str, tuple[float, int]]
+                            ) -> tuple[float, int]:
+    """
+    Which (days, n) a proposal's edge divides by. SWING ONLY branches away
+    from the book-pooled figure — see allocation/swing_hold_days.py.
+
+    INTRADAY always returns (book_days, book_n) unchanged, regardless of
+    what `swing_by_family` holds — this is the one line that must never
+    move for that book, and it is proven never to by
+    test_swing_hold_days.py::test_intraday_is_never_affected_by_the_swing_
+    family_dict.
+    """
+    if framework != "SWING":
+        return book_days, book_n
+    return swing_by_family.get(source, (book_days, book_n))
+
+
 class Allocator:
     """Stateless per cycle apart from the write buffer and DEFER book."""
 
@@ -52,6 +70,12 @@ class Allocator:
         self._deferred: dict[tuple, dict] = {}
         self._priors: dict | None = None
         self._hold_days: dict[str, tuple[float, int]] = {}
+        # SWING ONLY — see allocation/swing_hold_days.py. Empty dict means
+        # "nothing measured yet", and select()'s lookup already falls back to
+        # the book-pooled self._hold_days["SWING"] whenever a family is
+        # absent, so an empty dict here behaves exactly as if this feature
+        # did not exist — the same fail-open shape as self._priors being None.
+        self._swing_hold_days_by_family: dict[str, tuple[float, int]] = {}
 
     # ── priors, refreshed on the slow timer rather than per cycle ──────────
     def refresh_priors(self) -> None:
@@ -59,6 +83,16 @@ class Allocator:
             self._priors = {**S.intraday_priors(self.sb), **S.swing_priors(self.sb)}
             for fw in ("SWING", "INTRADAY"):
                 self._hold_days[fw] = S.expected_hold_days(self.sb, fw)
+            # SWING ONLY. A failure here must not take down the book-pooled
+            # figure refreshed just above — caught separately so a broken
+            # per-family query degrades to the existing behaviour rather than
+            # losing this cycle's whole prior refresh over a swing-only add-on.
+            try:
+                from allocation.swing_hold_days import expected_hold_days_by_family
+                self._swing_hold_days_by_family = expected_hold_days_by_family(self.sb)
+            except Exception as e:
+                logger.warning(f"  allocator: swing per-family hold_days failed "
+                               f"({e}) — using the book-pooled figure for every family")
         except Exception as e:
             logger.warning(f"  allocator: prior refresh failed ({e}) — keeping previous")
 
@@ -182,10 +216,18 @@ class Allocator:
                 # prior or its cost was ever weighed, silently, because the
                 # DEFAULT direction absorbed the missing argument instead of
                 # raising.
+                # SWING ONLY — per-engine-family hold_days instead of the
+                # book-pooled figure, so a family whose setups genuinely take
+                # longer to resolve is not divided by the same divisor as one
+                # that resolves quickly. See allocation/swing_hold_days.py for
+                # the full reasoning, and _hold_days_for_proposal() above for
+                # the proof that INTRADAY's line is never touched.
+                p_days, p_n = _hold_days_for_proposal(
+                    fw, p.source, days, n_days, self._swing_hold_days_by_family)
                 sc = S.score(p.entry, p.stop, p.target, p.quantity, p.product,
-                             pri, days, direction=p.direction)
+                             pri, p_days, direction=p.direction)
                 scored.append({"proposal": p, "symbol": p.symbol, **sc,
-                               "hold_days_n": n_days})
+                               "hold_days_n": p_n})
 
             policy = P.swing_assignment if fw == "SWING" else P.intraday_stopping
             verdicts = (policy(scored, bar, fw_slots, field) if fw == "SWING"

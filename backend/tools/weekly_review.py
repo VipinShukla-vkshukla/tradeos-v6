@@ -43,7 +43,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import get_supabase, today_ist
+from config import cfg_float, cfg_int, get_supabase, today_ist
 
 # An engine is not judged below this many resolved outcomes. 25 detections in a
 # session looks like plenty and is one day of one market regime.
@@ -564,6 +564,166 @@ def review_ranking(sb, days: int = 30) -> None:
         logger.success(f"  ranking is separating winners by {top - bot:+.2f}R")
 
 
+def review_ai_tier_weight(sb) -> None:
+    """
+    Is ai_tier ready to leave the 0.0 weight it has sat at since 04-Aug-2026?
+
+    entry_ranking.score_plan()'s own comment states the exact unlock
+    condition: tier-by-tier forward returns from resolved outcomes, once
+    each tier clears a trustable sample — not a calendar date, not someone
+    remembering to ask. Operator's own request, 07-Aug-2026: "ensure it gets
+    picked at the right time in future." This is that check, run
+    automatically every week the review runs, so the question is re-asked
+    on its own schedule.
+
+    Same query shape as allocation.scoring.tercile_report's ai_tier section
+    (07-Aug-2026) — entered + resolved plans, R = outcome_return_pct /
+    ((entry_zone_high - planned_stop) / entry_zone_high * 100). Reused, not
+    re-derived, so the two can never quietly disagree about what "R" means.
+    """
+    _hdr("AI TIER WEIGHT — is rank_weight_tier ready to leave 0? (all resolved)")
+    from allocation.scoring import _dist
+
+    floor = 30   # Prior's own convention: "needs 30 observations to be trusted"
+    rows, off = [], 0
+    while True:
+        page = (sb.table("signal_output_daily")
+                  .select("outcome_return_pct,outcome_entered,"
+                          "entry_zone_high,planned_stop,ai_tier")
+                  .not_.is_("outcome_category", "null")
+                  .range(off, off + 1000 - 1).execute().data) or []
+        rows += page
+        if len(page) < 1000:
+            break
+        off += 1000
+
+    by_tier: dict[str, list[float]] = defaultdict(list)
+    for r in rows:
+        if not r.get("outcome_entered"):
+            continue
+        entry, stop, ret = r.get("entry_zone_high"), r.get("planned_stop"), r.get("outcome_return_pct")
+        if None in (entry, stop, ret):
+            continue
+        try:
+            entry, stop = float(entry), float(stop)
+            risk_pct = (entry - stop) / entry * 100.0
+            if risk_pct <= 0:
+                continue
+            tier = str(r.get("ai_tier") or "UNTIERED").upper()
+            by_tier[tier].append(float(ret) / risk_pct)
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+
+    needed = ("TIER_1", "TIER_2", "TIER_3")
+    priors = {t: _dist(f"AI_TIER/{t}", by_tier.get(t, []), floor) for t in needed}
+    for t in needed:
+        p = priors[t]
+        (logger.warning if p.below_floor else logger.info)(f"  {p.describe()}")
+
+    still_thin = [t for t in needed if priors[t].below_floor]
+    if still_thin:
+        logger.info(f"  not ready — {', '.join(still_thin)} still below the "
+                    f"{floor}-sample floor. Re-checked automatically next week; "
+                    f"leaving the weight at 0 until then.")
+        return
+
+    t1, t2, t3 = priors["TIER_1"].mean_r, priors["TIER_2"].mean_r, priors["TIER_3"].mean_r
+    min_sep = cfg_float("ai_tier_separation_min", 0.05)
+    if t1 > t2 > t3 and (t1 - t3) >= min_sep:
+        # PROPOSES THAT IT'S READY, NOT A SPECIFIC WEIGHT. How much to weight
+        # a signal is a calibration question this measurement alone cannot
+        # answer — proposing a precise number here would be the same
+        # "unpriced risk" the original demotion warned about, one level up.
+        _propose(sb, "AI_TIER_WEIGHT_READY", "rank_weight_tier",
+                 "0.0 (demoted 04-Aug-2026, pending validation)",
+                 "nonzero — needs calibration against this evidence",
+                 f"all three tiers cleared the {floor}-sample floor with a "
+                 f"monotonic separation: TIER_1 {t1:+.3f}R > TIER_2 {t2:+.3f}R > "
+                 f"TIER_3 {t3:+.3f}R — the AI's tier now carries measurable "
+                 f"signal on the full resolved record", "high")
+        logger.success(f"  READY: monotonic separation confirmed "
+                       f"(TIER_1 {t1:+.3f}R > TIER_2 {t2:+.3f}R > TIER_3 {t3:+.3f}R) "
+                       f"— proposal raised in brain_proposals")
+    else:
+        logger.info(f"  sample clears the floor but shows no clean separation "
+                    f"yet (TIER_1 {t1:+.3f}R, TIER_2 {t2:+.3f}R, TIER_3 {t3:+.3f}R, "
+                    f"need >= {min_sep:.2f}R gap, monotonic) — leaving the "
+                    f"weight at 0")
+
+
+def review_swing_family_maturity(sb) -> None:
+    """
+    Is any SWING family ready for Point 5's prerequisites (a position-
+    replacement mechanism)? SWING ONLY — reads signal_output_daily, a
+    concept intraday's same-day resolution model has no equivalent of.
+
+    tools/swing_family_maturity_audit.py is the on-demand report a human
+    reads; this is the same measurement wired into the automated weekly
+    pass so the question is re-asked on its own schedule — same reason
+    review_ai_tier_weight exists, same operator request: "ensure it gets
+    picked at the right time in future," this time for "is any family
+    mature enough to build the replacement mechanism against."
+
+    07-Aug-2026, the day this was built: CONTINUATION was the closest at
+    561 entered / 125 resolved (22%) — nowhere near the bar. MOM (5.6%
+    resolved) and RVS (10.4%) were far thinner. None qualified; this
+    exists so nobody has to pull that SQL by hand again to find out when
+    one finally does.
+    """
+    _hdr("SWING FAMILY MATURITY — ready for Point 5 prerequisites?")
+    from allocation.scoring import swing_family
+
+    rows, off = [], 0
+    while True:
+        page = (sb.table("signal_output_daily")
+                  .select("strategy,outcome_entered,outcome_category")
+                  .eq("outcome_entered", True)
+                  .range(off, off + 1000 - 1).execute().data) or []
+        rows += page
+        if len(page) < 1000:
+            break
+        off += 1000
+
+    if not rows:
+        logger.info("  no entered signals found — nothing to measure")
+        return
+
+    by_family: dict[str, dict] = defaultdict(lambda: {"entered": 0, "resolved": 0})
+    for r in rows:
+        fam = swing_family(r.get("strategy"))
+        d = by_family[fam]
+        d["entered"] += 1
+        if r.get("outcome_category") in ("TARGET", "STOP"):
+            d["resolved"] += 1
+
+    min_resolved = cfg_int("swing_maturity_min_resolved", 30)
+    min_pct = cfg_float("swing_maturity_min_resolved_pct", 60.0)
+
+    any_ready = False
+    for fam in sorted(by_family, key=lambda f: -by_family[f]["entered"]):
+        d = by_family[fam]
+        pct = d["resolved"] / d["entered"] * 100.0 if d["entered"] else 0.0
+        ready = d["resolved"] >= min_resolved and pct >= min_pct
+        logline = (f"  {fam:<14} entered={d['entered']:<6} "
+                   f"resolved={d['resolved']:<6} ({pct:.0f}%)")
+        if ready:
+            any_ready = True
+            logger.success(logline + "  READY")
+            _propose(sb, "SWING_FAMILY_MATURE", f"position_replacement/{fam}",
+                     "not built — Point 5 parked pending evidence",
+                     "prerequisites met, safe to scope replacement logic to this family",
+                     f"{fam}: {d['resolved']} of {d['entered']} entered signals "
+                     f"resolved ({pct:.0f}%) — clears the {min_resolved}-resolved / "
+                     f"{min_pct:.0f}% maturity bar for Point 5 prerequisite work",
+                     "high")
+        else:
+            logger.info(logline)
+
+    if not any_ready:
+        logger.info(f"  no family yet clears {min_resolved} resolved / "
+                    f"{min_pct:.0f}% — re-checked automatically next week")
+
+
 def show_open(sb) -> int:
     _hdr("OPEN PROPOSALS")
     try:
@@ -597,6 +757,8 @@ def main(show: bool = False) -> int:
     review_engines(sb)
     review_gates(sb)
     review_ranking(sb)
+    review_ai_tier_weight(sb)
+    review_swing_family_maturity(sb)
 
     # Refresh the aggregates the dashboard reads. performance_metrics had not
     # been written since 2026-05-12, which is why the Engine Leaderboard said
