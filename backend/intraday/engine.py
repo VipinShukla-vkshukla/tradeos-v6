@@ -61,6 +61,41 @@ def _intraday_may_join_swing_holding(other: dict | None, direction: str) -> bool
     return cfg_bool("intraday_allow_swing_held_symbols", True)
 
 
+def _legacy_rank_gate_blocks(here_total: float, field_totals: list[float],
+                             keep: int, alloc_live_swing: bool) -> bool:
+    """
+    True if entry_ranking's own top-N gate should veto this swing candidate.
+
+    Built 04-Aug-2026 as swing's ONLY ranking — "which of today's buyable
+    plans deserves the day's limited entries" (entry_ranking.py's own
+    docstring), reading final_score/AI-tier/timing/sector, over the day's
+    full candidate field. `swing_assignment`'s reservation mechanism, wired
+    live 07-Aug, now does the equivalent job over a DIFFERENT field (edge —
+    engine-family + regime-bucket historical R, cost-netted) and nothing
+    ties the two rankings' winners together.
+
+    Confirmed against real data the day this was found: the allocator's
+    edge-ranked TAKE winners (HEG, ACE, CHALET) were not in entry_ranking's
+    top-6 by score that same day, and the one candidate that WAS rank-
+    eligible (PIDILITIND) never had a high enough edge to win an allocator
+    slot. Both gates individually correct; together, on 07-Aug, they
+    admitted nothing — swing_max_new_per_day=3 logged "3 to take" from the
+    allocator on nearly every cycle and still finished the session at 0/3
+    entries used.
+
+    So: once the allocator is the live veto, its own ranking already
+    answered this question, and re-asking it here over an unrelated field is
+    not a second opinion — it never engages. This gate is the fallback for
+    whenever the allocator is off or still shadow-only, exactly the role it
+    has always had.
+    """
+    if alloc_live_swing:
+        return False
+    if not keep:
+        return False
+    return here_total < field_totals[keep - 1]
+
+
 class IntradayEngine:
     def __init__(self, sb=None, notifier: Notifier | None = None):
         self.sb = sb or get_supabase()
@@ -1650,47 +1685,42 @@ class IntradayEngine:
         if n_today >= max_new:
             return
 
-        # Rank against the whole day's field, not against arriving first.
+        # Rank against the whole day's field, not against arriving first —
+        # UNLESS the allocator is the one holding the veto, in which case IT
+        # is that ranking now, and gating on a second, disagreeing one is not
+        # a second opinion, it is a second, unrelated question.
         #
-        # Without this the loop takes whichever plan reaches its limit earliest
-        # in the session, and time-of-arrival is uncorrelated with quality. With
-        # only two entries a day it is the worst available tie-breaker. A plan
-        # outside today's top few is passed over — if it is still buyable later
-        # and the better ones never triggered, it will be back.
+        # This gate predates the allocator (04-Aug, vs the veto's 05-Aug) and
+        # was never revisited when swing_assignment's reservation mechanism
+        # went live (07-Aug, same review this comment is from). Confirmed
+        # against real data the day it was wired: the allocator's edge-ranked
+        # winners (HEG, ACE, CHALET — edge 0.052/0.052/0.053, comfortably
+        # above a bar of 0.048) were NOT in entry_ranking's top-6 by
+        # final_score/timing/sector that same day, and PIDILITIND — which WAS
+        # in that top-6 — never had a high enough edge to win an allocator
+        # slot either. Two rankings, over two different fields (edge is
+        # engine-family + regime-bucket historical R; rank is per-stock
+        # final_score/AI-tier/timing/sector), each internally coherent, with
+        # nothing guaranteeing their winners overlap — so swing_max_new_
+        # per_day=3 logged "3 to take" on nearly every cycle all day and
+        # still finished at 0/3 used.
+        #
+        # `here` is still computed either way — act_on_candidates' own
+        # rationale string below reads it, and a plan's rank stays worth
+        # recording even when it is not the gate.
         here = None
         try:
             from analysis.entry_ranking import score_plan, rank
             here = score_plan(c)
             field = rank(self.candidates)
             keep = min(max_new * 2, len(field))
-            if keep and here.total < field[keep - 1].total:
-                # INFO, not DEBUG — 07-Aug-2026. The DEBUG choice predates the
-                # allocator veto a few lines above, back when every buyable
-                # candidate reached this line (56 a cycle, drowning out
-                # everything else). The veto now returns early for anything
-                # the allocator did not mark TAKE, so only a handful of
-                # allocator-APPROVED candidates ever reach here — which makes
-                # this exactly the collision worth seeing: the allocator's
-                # edge-ranked TAKE and entry_ranking's score-ranked top-N are
-                # two different quantities over two different fields (edge is
-                # keyed on engine family + regime bucket; rank is per-stock
-                # final_score/timing/sector), with nothing that guarantees
-                # their winners overlap. Confirmed live: 07-Aug-2026 logged
-                # "3 to take" from the allocator on nearly every cycle all
-                # day, while this line — invisible at the deployed INFO level
-                # — silently vetoed some or all of them, and swing_max_new_
-                # per_day=3 finished the session at 0/3 used. The per-cycle
-                # summary reports WHO is rank-eligible; it never said an
-                # allocator-approved plan was the one this gate stopped.
-                logger.info(f"  {sym}: allocator approved, but rank {here.total:.0f} "
-                           f"is outside today's top {keep} — entry_ranking disagrees "
-                           f"with the allocator's edge ranking, standing down")
+            field_totals = [r.total for r in field]
+            if _legacy_rank_gate_blocks(here.total, field_totals, keep,
+                                       cfg_bool("alloc_live_swing", False)):
+                logger.info(f"  {sym}: rank {here.total:.0f} outside "
+                           f"today's top {keep}")
                 return
         except Exception as e:
-            # WARNING, not DEBUG — this path FAILS OPEN: an exception here
-            # skips the rank check entirely and lets the candidate through
-            # unranked, silently, which is a materially different situation
-            # from the ranking gate correctly vetoing one.
             logger.warning(f"  {sym}: ranking unavailable, entry proceeding "
                            f"WITHOUT the rank check — {e}")
 

@@ -67,6 +67,7 @@ MODULES = [
     ("swing reservation",   "tests.test_swing_reservation"),
     ("capital split",       "tests.test_capital_split"),
     ("paper capacity",      "tests.test_paper_capacity"),
+    ("swing rank collision", "tests.test_swing_rank_collision"),
 ]
 
 
