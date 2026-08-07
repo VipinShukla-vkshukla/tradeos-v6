@@ -56,6 +56,14 @@ const KEYS = [
   'swing_max_order_value', 'swing_max_orders_per_day', 'swing_max_notional_per_day',
   'swing_max_new_per_day', 'swing_alert_top_n',
   'intraday_max_new_per_day', 'intraday_alert_top_n',
+  // Max CONCURRENT positions — a different question from New positions/day
+  // above (that's a daily entry budget; this is a total-book-size ceiling).
+  // Swing is regime-scaled (07-Aug-2026 values: 6 risk-off / 7 neutral /
+  // 8 risk-on); intraday is one flat number. Neither was on this panel
+  // before, so check_new_entry() counting BOTH books' positions against
+  // swing's own cap went unnoticed for as long as it ran.
+  'max_positions_neutral', 'max_positions_risk_on', 'max_positions_risk_off',
+  'intraday_max_concurrent',
   'intraday_trading_mode', 'intraday_auto_exit', 'intraday_auto_entry',
   'intraday_live_auto_entry', 'intraday_strategies_enabled',
   'intraday_max_order_value', 'intraday_max_orders_per_day',
@@ -334,6 +342,10 @@ export function OperatorPanel() {
             // note below explains rather than leaving to be discovered.
             [`${fw}_max_new_per_day`, 'New positions/day'],
             [`${fw}_alert_top_n`, 'Alert top N'],
+            // Total book size, not a daily budget — how many this framework
+            // may hold OPEN at once, counting only its own positions.
+            [fw === 'swing' ? 'max_positions_neutral' : 'intraday_max_concurrent',
+             'Max concurrent positions'],
           ].map(([k, lbl]) => (
             <div key={k}>
               <div className="text-[10px] text-muted-foreground">{lbl}</div>
@@ -355,6 +367,16 @@ export function OperatorPanel() {
             price makes it, so alerts flow until {cfg['intraday_alert_top_n'] ?? 5}{' '}
             are sent, then only for one that beats the weakest so far. The bar
             rises through the session.</>
+          )}
+          {' '}<b>Max concurrent positions</b> is a book-size ceiling, not a
+          daily budget — counts only {fw}&apos;s own open positions.
+          {fw === 'swing' ? (
+            <> Regime-scaled: {cfg['max_positions_risk_off'] ?? 6} in
+            RISK_OFF, this number in NEUTRAL, {cfg['max_positions_risk_on'] ?? 8} in
+            RISK_ON — edit the other two directly in Control Room if they need
+            to change.</>
+          ) : (
+            <> One flat number, no regime scaling.</>
           )}
         </div>
 
