@@ -700,13 +700,15 @@ def open_position_from_holding(sb, holding: dict, trade_date: str) -> bool:
     # noise against noise and conclude the weights do not separate winners.
     # signal_output_daily is the immutable plan table and has all of them.
     entry_rationale = None
+    plan_row: dict = {}
     try:
         from analysis.entry_ranking import score_plan
         plan = (sb.table("signal_output_daily").select("*")
                   .eq("symbol", sym).lte("date", str(trade_date)[:10])
                   .order("date", desc=True).limit(1).execute().data or [])
         if plan:
-            rk = score_plan(plan[0])
+            plan_row = plan[0]
+            rk = score_plan(plan_row)
             entry_rationale = f"rank {rk.total:.0f} — {rk.why()}"
         else:
             logger.debug(f"  {sym}: no plan row to rank against")
@@ -765,10 +767,19 @@ def open_position_from_holding(sb, holding: dict, trade_date: str) -> bool:
         "signal_date":       sig.get("date"),
         "signal_subtype":    sig.get("signal_subtype"),
         "entry_signal_type": sig.get("signal_type"),
-        "entry_timing_type": sig.get("entry_timing_type"),
+        # SOURCED FROM plan_row (signal_output_daily), NOT sig (signal_log) —
+        # 07-Aug-2026. `sig` carries the attribution keys but not reliably the
+        # eight columns score_plan() weighs (see the comment above this
+        # function on why entry_rationale itself had to be re-fetched from
+        # signal_output_daily rather than trusted from sig). Confirmed live:
+        # PPLPHARMA's reconciled row had entry_timing_type populated from
+        # sig, CIPLA's and ETERNAL's did not, on the same code path — an
+        # inconsistency that reading from the immutable plan table the way
+        # entry_rationale already does removes rather than papers over.
+        "entry_timing_type": plan_row.get("entry_timing_type") or sig.get("entry_timing_type"),
         "lifecycle_at_entry": sig.get("lifecycle"),
         "regime_at_entry":   sig.get("regime"),
-        "sector_rank_at_entry": sig.get("sector_rank_at_entry"),
+        "sector_rank_at_entry": plan_row.get("sector_rank_at_entry") or sig.get("sector_rank_at_entry"),
         "entry_rationale":   entry_rationale,
         "max_favorable_excursion": 0.0,
         "max_adverse_excursion":   0.0,
