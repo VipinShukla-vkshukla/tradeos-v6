@@ -14,8 +14,13 @@ latency, and it would be wired directly into the breakout condition of every
 opening-range engine.
 
 So the two sources are logged side by side for one session and compared here.
-The switch that consumes them, `intraday_quote_mode`, stays off until this
-reports agreement.
+The two switches that consume them, `intraday_quote_mode_range` (day_open/
+day_high/day_low/volume) and `intraday_quote_mode_vwap` (vwap), stay off
+until this reports agreement for their own fields — 08-Aug-2026, measured
+independently after the two groups turned out to disagree (range clean,
+vwap FAULT). `prev_close` has no switch at all: it is time-invariant
+intraday, so a live overlay is never the fix for it regardless of what this
+reports — see intraday/engine.py::apply_live_quotes()'s docstring.
 
 WHAT COUNTS AS AGREEMENT
 ------------------------
@@ -124,7 +129,7 @@ def report(sb) -> int:
     logger.info("")
     logger.info(f"  {'field':<12} {'n':>5} {'median':>9} {'mean':>9} {'worst':>9}  verdict")
 
-    verdict_ok = True
+    field_ok: dict[str, bool] = {}
     for field in sorted(by):
         d = by[field]
         med, mean = statistics.median(d), statistics.fmean(d)
@@ -137,31 +142,59 @@ def report(sb) -> int:
             behind = [x for x in d if x < -0.05]
             note = (f"OK ({len(behind)} behind)" if not behind
                     else f"FAULT - live high behind on {len(behind)} of {len(d)}")
-            verdict_ok &= not behind
+            field_ok[field] = not behind
         elif field in RATCHET_DOWN:
             behind = [x for x in d if x > 0.05]
             note = (f"OK ({len(behind)} behind)" if not behind
                     else f"FAULT - live low behind on {len(behind)} of {len(d)}")
-            verdict_ok &= not behind
+            field_ok[field] = not behind
         else:
             bad = [x for x in d if abs(x) > 0.10]
             note = "OK" if not bad else f"FAULT - {len(bad)} of {len(d)} beyond 0.10%"
-            verdict_ok &= not bad
+            field_ok[field] = not bad
 
         log = logger.info if note.startswith(("OK", "not scored")) else logger.error
         log(f"  {field:<12} {len(d):>5} {med:>8.3f}% {mean:>8.3f}% {worst:>8.3f}%  {note}")
 
+    # Reported per switch, not as one blanket verdict — intraday_quote_mode_range
+    # and intraday_quote_mode_vwap are independently gated (08-Aug-2026) because
+    # the two groups measured differently: day_high/day_low held clean while
+    # vwap FAULTed. prev_close has no switch at all — see the module docstring.
     logger.info("")
-    if verdict_ok:
-        logger.success("  PARITY HOLDS. Quote mode is safe to enable:")
-        logger.success("    UPDATE system_config SET value='true' WHERE key='intraday_quote_mode';")
-        logger.info("  Then disarm the logging — it is meant for one session, not forever:")
+    range_fields = [f for f in ("day_high", "day_low") if f in field_ok]
+    range_ok = all(field_ok[f] for f in range_fields) if range_fields else None
+    if range_ok:
+        logger.success("  RANGE (day_high/day_low) HOLDS. Safe to enable:")
+        logger.success("    UPDATE system_config SET value='true' "
+                       "WHERE key='intraday_quote_mode_range';")
+    elif range_ok is False:
+        logger.error("  RANGE (day_high/day_low) FAILS. Leave intraday_quote_mode_range off.")
+    else:
+        logger.info("  RANGE (day_high/day_low) — no data collected yet.")
+
+    vwap_ok = field_ok.get("vwap")
+    if vwap_ok:
+        logger.success("  VWAP HOLDS. Safe to enable:")
+        logger.success("    UPDATE system_config SET value='true' "
+                       "WHERE key='intraday_quote_mode_vwap';")
+    elif vwap_ok is False:
+        logger.error("  VWAP FAILS. Leave intraday_quote_mode_vwap off — this is a formula "
+                     "disagreement (tick VWAP vs bar-approximation VWAP), not just staleness; "
+                     "needs a reconciled definition, not a resync.")
+    else:
+        logger.info("  VWAP — no data collected yet.")
+
+    if "prev_close" in field_ok and not field_ok["prev_close"]:
+        logger.error("  PREV_CLOSE FAULTs, but has no switch — it is never live-overlaid "
+                     "regardless. The fix is in refresh_contexts()'s stock_data_daily "
+                     "lookup, not here.")
+
+    logger.info("")
+    if range_ok or vwap_ok:
+        logger.info("  Once whichever switch(es) you enable have run a session, disarm "
+                    "the logging — it is meant for one session, not forever:")
         logger.info("    python -m tools.quote_parity --disarm")
-        return 0
-    logger.error("  PARITY FAILS. Leave intraday_quote_mode off.")
-    logger.error("  A live field that disagrees with the fetched one would be wired "
-                 "straight into every opening-range breakout condition.")
-    return 1
+    return 0 if (range_ok is not False and vwap_ok is not False) else 1
 
 
 def _set(sb, on: bool) -> int:

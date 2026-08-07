@@ -780,7 +780,9 @@ def check_feed_integrity() -> tuple[bool, str]:
 
     from config import cfg_float, cfg_bool
     age  = cfg_float("intraday_context_max_age_s", 420.0)
-    mode = "QUOTE" if cfg_bool("intraday_quote_mode", False) else "LTP"
+    quote_on = (cfg_bool("intraday_quote_mode_range", False)
+                or cfg_bool("intraday_quote_mode_vwap", False))
+    mode = "QUOTE" if quote_on else "LTP"
     return True, (f"tick handler is I/O-free, staleness guard active at {age:.0f}s, "
                   f"feed mode {mode}")
 

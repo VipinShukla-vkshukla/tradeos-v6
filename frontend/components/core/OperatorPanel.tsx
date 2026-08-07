@@ -94,7 +94,8 @@ const KEYS = [
   'governance_freeze_enabled', 'governance_require_oos',
   'rank_weight_tier', 'rank_weight_conviction',
   'storage_rolloff_enabled', 'storage_staging_rolloff_enabled', 'storage_fail_pct',
-  'sizing_max_cost_r', 'exit_runner_cap_enforced', 'intraday_quote_mode',
+  'sizing_max_cost_r', 'exit_runner_cap_enforced',
+  'intraday_quote_mode_range', 'intraday_quote_mode_vwap',
   // Capital sleeves (config.capital_for) and the real-account figure they are
   // split from — written by control/capital_check.py, not guessable client-side.
   'swing_capital', 'intraday_capital', 'capital_snapshot',
@@ -547,10 +548,15 @@ export function OperatorPanel() {
               <Toggle on={bool('overlay_expiry_enabled')} disabled={busy !== null}
                 onChange={(v) => set('overlay_expiry_enabled', String(v), 'Operator panel')} />
             </Row>
-            <Row label="Quote mode (live day range/volume)" tag={<P4 />}
-              hint="Feeds live day range, volume and VWAP into the breakout conditions instead of a value up to 300s stale. Cross-check with tools.quote_parity after a session — day high/low must never read BEHIND the historical value.">
-              <Toggle on={bool('intraday_quote_mode')} disabled={busy !== null}
-                onChange={(v) => set('intraday_quote_mode', String(v), 'Operator panel')} />
+            <Row label="Quote mode — day range/volume" tag={<P4 />}
+              hint="Feeds live day_open/day_high/day_low/volume into the breakout conditions instead of a value up to 300s stale. Measured 07-Aug-2026 via tools.quote_parity: day_high/day_low held clean across 2880 comparisons (0 behind). Independent of the VWAP switch below — prev_close is never live-overlaid regardless of either.">
+              <Toggle on={bool('intraday_quote_mode_range')} disabled={busy !== null}
+                onChange={(v) => set('intraday_quote_mode_range', String(v), 'Operator panel')} />
+            </Row>
+            <Row label="Quote mode — VWAP" tag={<P4 />}
+              hint="Feeds live tick-weighted VWAP (Kite's average_traded_price) instead of the bar-approximation VWAP. Measured 07-Aug-2026: FAULT, 7 of 2880 beyond 0.10%, worst -0.39% — the two sides are different formulas, not the same number at different ages, so this needs a reconciled definition validated before enabling, not just a resync. Re-run tools.quote_parity before flipping this on.">
+              <Toggle on={bool('intraday_quote_mode_vwap')} disabled={busy !== null}
+                onChange={(v) => set('intraday_quote_mode_vwap', String(v), 'Operator panel')} />
             </Row>
 
             <SubHead>Allocator</SubHead>

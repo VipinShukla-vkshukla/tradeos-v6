@@ -107,7 +107,8 @@ class PriceFeed:
         Returns True when the value changed, so the caller knows to re-issue
         set_mode.
         """
-        want = (cfg_bool("intraday_quote_mode", False)
+        want = (cfg_bool("intraday_quote_mode_range", False)
+                or cfg_bool("intraday_quote_mode_vwap", False)
                 or cfg_bool("intraday_quote_parity_log", False))
         changed = want != self._capture_quote
         self._capture_quote = want
