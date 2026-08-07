@@ -1,8 +1,8 @@
 # TradeOS Knowledge Base — Living Document
 
-**Last updated:** 6 August 2026 (1 session of evidence, plus a direct
+**Last updated:** 7 August 2026 (2 sessions of evidence, plus a direct
 `final_score` tercile measurement against the full historical sample)
-**Source reviews:** `daily/2026-08-06.md`
+**Source reviews:** `daily/2026-08-06.md`, `daily/2026-08-07.md`
 
 Read this before starting a new day's review. Update it after, per the
 workflow in `README.md`. An item's confidence should track its sample
@@ -25,15 +25,6 @@ contradiction.)*
   claim.
   Next evidence needed: 2-3 more live give-back triggers to confirm the
   exit price consistently beats the alternative of riding to the stop.
-
-- **The swing allocator enforces slot scarcity correctly — declines a
-  qualifying edge only while a better candidate holds the slot, admits it
-  once a slot frees.**
-  Sessions: 6 Aug (n=1 — GABRIEL).
-  Confidence: Medium.
-  Next evidence needed: a session where slots are NOT the binding
-  constraint, to see edge-vs-hurdle comparison do the work alone (so far
-  only tested under slot pressure).
 
 - **`final_score` does not predict forward R within the CONTINUATION swing
   family, on the full resolved sample measured so far.**
@@ -64,13 +55,36 @@ contradiction.)*
   the order itself is placed.**
   Sessions: 6 Aug (n=1 — KIMS + TRAVELFOOD SELL both blocked by IP
   allowlist; TRAVELFOOD's give-back guard re-fired 4x over 20 minutes
-  without landing).
+  without landing). 7 Aug: no swing exit fired, so no order was attempted
+  — hypothesis untested, not confirmed or refuted, this session.
   Confidence: Low-medium — one session, but the failure mode matches a
   known category (`deploy/validate_server.py`'s own warning about
   ephemeral Oracle IPs).
   Next evidence needed: whether this recurs on sessions with a
   confirmed-stable IP, to separate "one-off network hiccup" from
   "allowlist genuinely needs a standing pre-market check."
+
+- **The swing allocator's "slots spent" decline reflects real slot
+  scarcity — DEMOTED from Validated Rules, 7 Aug.**
+  Sessions: 6 Aug (n=1 — GABRIEL: slots genuinely occupied by two held
+  positions, freed when they closed, admitted immediately after). 7 Aug
+  (n=1 — the opposite texture: 25 distinct qualifying candidates declined
+  all day citing "slots spent," while the daily counter sat at 0/3 used
+  the entire session — no slot was ever actually occupied. The
+  `allocation_decisions` audit table additionally disagreed with the live
+  veto on 5 of those symbols, recording a TAKE the engine log never acted
+  on.)
+  Confidence: Downgraded from Medium to Low — 6 Aug validated the rule
+  under slot-genuinely-full conditions only; 7 Aug shows a second,
+  contradictory texture under slot-genuinely-empty conditions. Both
+  sessions are real; the rule as originally stated does not yet explain
+  both.
+  Next evidence needed: whether `_verdicts` (the live veto's input) and
+  `allocation_decisions` (the audit table) are computed from the same
+  pass — flagged as a same-day investigation item, not resolved yet. A
+  third session's texture (full slots vs. empty-but-declining) would also
+  help separate "two real regimes" from "one bug that looks like two
+  regimes."
 
 ---
 
@@ -80,7 +94,9 @@ contradiction.)*
 review knows to keep watching, not to re-derive from scratch.)*
 
 - **SDN (short family) engine viability.**
-  Sessions: 6 Aug (n=2 trades, both losses — first day live).
+  Sessions: 6 Aug (n=2 trades, both losses — first day live). 7 Aug: +3
+  trades (BLUESTARCO TARGET_HIT +1.33R — first SDN win; COFORGE and
+  HINDCOPPER small losses). Running total ~5-6 legs, 1 win.
   Needed before any verdict: ~20 resolved outcomes across ≥10 sessions
   (this project's own `MIN_SAMPLE`/`MIN_SESSIONS` standard from
   `tools/weekly_review.py`).
@@ -146,6 +162,9 @@ still supports the bet, rather than re-deriving the original decision.)*
   mechanism above is actually close to what they've been doing regardless.
   If the re-measurement still shows RVS negative, that is the point to
   revisit this decision, not a fixed calendar date.
+  **7 Aug check: zero new resolved outcomes** — no swing exits and no
+  VCE/RNG intraday closes that session. Explicitly checked and empty, not
+  skipped.
 
 ---
 
@@ -163,3 +182,7 @@ they bound what the rules above can even be tested against.)*
   standby/dashboard-only per `deploy/README.md`. Confirm its IP is
   currently allowlisted before trusting live automated exits — see the
   IP-allowlist hypothesis above.
+- `paper_starting_capital` (₹1,00,000) also exceeds `validate_config`'s
+  1.5x-of-real-capital threshold (tripped 8 Aug's diagnostic run) — same
+  shape as the `intraday_capital` item above, on a second config key. Not
+  urgent (safe while paper), but two keys now carry this pattern.
