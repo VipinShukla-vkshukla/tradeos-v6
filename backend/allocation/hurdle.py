@@ -73,6 +73,7 @@ a paragraph arguing against.
 
 from __future__ import annotations
 
+import statistics
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -80,7 +81,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import cfg, cfg_float, cfg_int, get_supabase, today_ist
+from config import cfg, cfg_bool, cfg_float, cfg_int, get_supabase, today_ist
 
 
 STRONG, WEAK = "STRONG", "WEAK"
@@ -373,7 +374,7 @@ def _empirical_base(bucket: str, framework: str, sb=None
         # True. Two independent builders is the fix, not a workaround.
         def base_query():
             return (sb.table("allocation_decisions")
-                      .select("edge,framework,regime_bucket,trade_date")
+                      .select("symbol,edge,framework,regime_bucket,trade_date")
                       .eq("framework", fw)
                       .gte("trade_date", since)
                       .not_.is_("edge", "null"))
@@ -414,16 +415,48 @@ def _empirical_base(bucket: str, framework: str, sb=None
         base, meta = _cold_start(0, floor, f"query failed: {str(e)[:60]}")
         return base, meta, None
 
+    raw_n = 0
     edges = []
     for r in rows:
         try:
             edges.append(float(r["edge"]))
+            raw_n += 1
         except (TypeError, ValueError, KeyError):
             continue
 
+    # DEDUPLICATION — 07-Aug-2026, OFF by default for BOTH books, decided
+    # per-framework so a change to one never touches the other's live bar.
+    #
+    # One row per (proposal, 15-second cycle), no dedup by symbol or day: a
+    # candidate that sits near its entry zone for hours contributes hundreds
+    # of near-identical edge values to the very population its own bar gets
+    # compared against. Confirmed live, SWING, 07-Aug-2026: ten different
+    # symbols each logged 548-600 rows in a single session — widespread
+    # repetition across many names, not a couple of outliers, which
+    # complicates rather than simply confirms the original hypothesis. See
+    # tools/hurdle_population_audit.py for the actual p75/p95 delta this
+    # produces before trusting either reading of it.
+    #
+    # Intraday setups are minutes long, not hours — the same mechanism is
+    # expected to inflate its population less, but "expected" is not
+    # "measured", which is why this defaults OFF there too rather than
+    # inheriting swing's evidence.
+    dedup = cfg_bool(f"alloc_hurdle_dedup_{fw.lower()}", False)
+    if dedup:
+        by_symbol_day: dict[tuple, list[float]] = {}
+        for r in rows:
+            try:
+                e = float(r["edge"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            key = (r.get("symbol"), r.get("trade_date"))
+            by_symbol_day.setdefault(key, []).append(e)
+        edges = [statistics.fmean(v) for v in by_symbol_day.values()]
+
     if len(edges) < floor:
         base, meta = _cold_start(len(edges), floor,
-                                 f"only {len(edges)} scored arrival(s) for {fw}")
+                                 f"only {len(edges)} scored arrival(s) for {fw}"
+                                 + (" (deduplicated)" if dedup else ""))
         return base, meta, None
 
     edges.sort()
@@ -436,7 +469,8 @@ def _empirical_base(bucket: str, framework: str, sb=None
     # which is a second, hidden cost charge. The percentile is the bar; the
     # relative comparison is what selects, and `scoring.score()` has already
     # taken the costs out once.
-    return float(base), {"cold_start": False, "n": len(edges),
+    return float(base), {"cold_start": False, "n": len(edges), "raw_n": raw_n,
+                         "deduplicated": dedup,
                          "sample_floor": floor, "percentile": pct,
                          "pooled_across_buckets": pooled,
                          "lookback_days": days, "population": "allocation_decisions.edge"}, edges

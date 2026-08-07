@@ -88,9 +88,14 @@ def audit(framework: str, days: int, sb=None) -> None:
     sb = sb or get_supabase()
     since = (today_ist() - timedelta(days=max(days, 1))).isoformat()
 
+    from config import cfg_bool
+    live = cfg_bool(f"alloc_hurdle_dedup_{framework.lower()}", False)
+
     rows = _fetch_all(sb, framework, since)
     logger.info("=" * 78)
     logger.info(f"HURDLE POPULATION AUDIT — {framework}, since {since}")
+    logger.info(f"  alloc_hurdle_dedup_{framework.lower()} is currently "
+                f"{'ON — live bar already uses the deduplicated column below' if live else 'OFF — live bar uses the raw column below, unchanged from main'}")
     logger.info("=" * 78)
 
     if not rows:
