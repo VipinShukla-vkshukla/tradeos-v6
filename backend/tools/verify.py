@@ -65,6 +65,7 @@ MODULES = [
     ("short engine",        "tests.test_short_engine"),
     ("book isolation",      "tests.test_book_isolation"),
     ("swing reservation",   "tests.test_swing_reservation"),
+    ("capital split",       "tests.test_capital_split"),
 ]
 
 
