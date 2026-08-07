@@ -83,6 +83,13 @@ REGISTRY: dict[str, tuple[str, str]] = {
                            "job (brain_sunday_chain.yml), not part of the intraday daemon"),
     "backend/tools/verify.py": (
         NO_RUNTIME_IMPACT, "test registration only, not imported by the live daemon"),
+    "backend/tools/swing_intraday_impact_audit.py": (
+        NO_RUNTIME_IMPACT, "this file — standalone CLI audit, not imported by "
+                           "intraday/run.py or engine.py. Missing from its own "
+                           "registry until the merge review that runs this tool "
+                           "for the first time caught it — the exact class of gap "
+                           "this file exists to catch in EVERYTHING ELSE, so it "
+                           "gets fixed here rather than waived."),
 }
 
 
