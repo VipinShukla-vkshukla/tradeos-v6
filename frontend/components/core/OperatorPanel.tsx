@@ -98,6 +98,19 @@ const KEYS = [
   // Capital sleeves (config.capital_for) and the real-account figure they are
   // split from — written by control/capital_check.py, not guessable client-side.
   'swing_capital', 'intraday_capital', 'capital_snapshot',
+  // The paper book's OWN, separate capacity numbers — execution/paper_broker.py
+  // ::capacity() checks these independently of intraday_capital/intraday_max_
+  // concurrent above. 07-Aug-2026: found completely invisible on this panel
+  // while governing real behaviour — paper_starting_capital sat at Rs 20,000
+  // against an intraday_capital of Rs 1,00,000, silently capping deployment at
+  // a fifth of what the operator believed was available, with no way to see it
+  // here. Rendered next to their intraday_* counterparts with a drift warning
+  // rather than left to disagree unnoticed a second time.
+  'paper_max_open_positions', 'paper_starting_capital',
+  // Gates SDN (and any future short engine) at the entry point, before market
+  // context even gets a vote — cfg_bool default is False, so an unset row is
+  // a silent, total block on every short. Was not on this panel at all.
+  'intraday_allow_shorts',
 ];
 
 async function writeKey(key: string, value: string, reason: string) {
@@ -477,6 +490,64 @@ export function OperatorPanel() {
               <Toggle on={bool('intraday_news_gate_enabled')} disabled={busy !== null}
                 onChange={(v) => set('intraday_news_gate_enabled', String(v), 'Operator panel')} />
             </Row>
+            <Row label="Allow shorts"
+              hint="Master switch for SDN and any short engine — off blocks every short before market context even gets a vote. On still requires the index to confirm weakness (RISK_OFF or CAUTION); this does not make shorts fire in an uptrend, it only allows them when the regime agrees.">
+              <Toggle on={bool('intraday_allow_shorts')} disabled={busy !== null}
+                onChange={(v) => set('intraday_allow_shorts', String(v), 'Operator panel')} />
+            </Row>
+
+            <SubHead>Paper capacity — what &quot;fully deployed&quot; means right now</SubHead>
+            {(() => {
+              const orderVal   = Number(cfg['intraday_max_order_value'] ?? 0) || 0;
+              const concurrent = Number(cfg['intraday_max_concurrent'] ?? 0) || 0;
+              const paperMax   = Number(cfg['paper_max_open_positions'] ?? 0) || 0;
+              const paperCap   = Number(cfg['paper_starting_capital'] ?? 0) || 0;
+              const bindingCount = paperMax > 0 && (concurrent === 0 || paperMax < concurrent)
+                ? paperMax : concurrent;
+              const bySlots  = orderVal * bindingCount;
+              const capDeploy = paperCap > 0 ? Math.min(bySlots, paperCap) : bySlots;
+              return (
+                <div className="text-[10px] text-muted-foreground mb-2 rounded border border-border/30 p-2">
+                  At today&apos;s settings: up to <b>{bindingCount || '?'}</b> positions of up to{' '}
+                  <b>₹{orderVal.toLocaleString('en-IN')}</b> each — roughly{' '}
+                  <b>₹{capDeploy.toLocaleString('en-IN')}</b> deployable at once, out of the{' '}
+                  ₹{Number(cfg['intraday_capital'] ?? 0).toLocaleString('en-IN')} sleeve.
+                  {' '}This is a CEILING, not a target — it only fills when real setups clear
+                  every gate above; nothing here forces a trade to reach it.
+                </div>
+              );
+            })()}
+            <div className="grid grid-cols-2 gap-2 mb-1">
+              <div>
+                <div className="text-[10px] text-muted-foreground">
+                  Paper max open positions
+                </div>
+                {numField('paper_max_open_positions', 'Operator panel: paper capacity')}
+              </div>
+              <div>
+                <div className="text-[10px] text-muted-foreground">
+                  Paper starting capital
+                </div>
+                {numField('paper_starting_capital', 'Operator panel: paper capacity')}
+              </div>
+            </div>
+            {Number(cfg['paper_max_open_positions'] ?? 0) !== Number(cfg['intraday_max_concurrent'] ?? 0) && (
+              <div className="text-[10px] text-amber-500 mb-1">
+                ⚠ Paper max open positions ({cfg['paper_max_open_positions'] ?? '—'}) does not
+                match Max concurrent positions ({cfg['intraday_max_concurrent'] ?? '—'}) above —
+                execution/paper_broker.py checks BOTH independently, so whichever is smaller
+                silently wins. Set them equal unless the difference is deliberate.
+              </div>
+            )}
+            {Number(cfg['paper_starting_capital'] ?? 0) !== Number(cfg['intraday_capital'] ?? 0) && (
+              <div className="text-[10px] text-amber-500 mb-2">
+                ⚠ Paper starting capital ({cfg['paper_starting_capital']
+                  ? `₹${Number(cfg['paper_starting_capital']).toLocaleString('en-IN')}` : '—'}) does
+                not match the Capital sleeve above ({cfg['intraday_capital']
+                  ? `₹${Number(cfg['intraday_capital']).toLocaleString('en-IN')}` : '—'}) — total
+                paper deployment is capped at the SMALLER of the two, regardless of per-trade sizing.
+              </div>
+            )}
 
             <SubHead>Structural overlay</SubHead>
             <Row label="Expiry day-type sizing" tag={<P4 />}
@@ -614,11 +685,19 @@ function CapitalSplit({ cfg, totalCapital, onApplied }: {
   cfg: Cfg; totalCapital: number; onApplied: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  let snap: { as_of?: string; severity?: string } = {};
+  let snap: { as_of?: string; severity?: string; broker_total?: number;
+              gap?: number; gap_pct?: number; message?: string } = {};
   try { snap = JSON.parse(cfg['capital_snapshot'] ?? '{}'); } catch { /* none yet */ }
   const asOf = snap.as_of
     ? new Date(snap.as_of).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' })
     : null;
+  // `totalCapital` (the prop) is capital_snapshot.configured — i.e. TOTAL_CAPITAL,
+  // the number sizing actually uses. It is NOT the broker's real balance, and
+  // labelling it "Real account" said otherwise: capital_check.py computes the
+  // true broker figure and a gap against it every run, and until now this panel
+  // never showed either. 07-Aug-2026: that gap was Rs 3,410 (11%) live.
+  const brokerTotal = Number(snap.broker_total ?? 0) || null;
+  const gapMaterial = Math.abs(Number(snap.gap_pct ?? 0)) >= 3;
 
   const apply = async (swingPct: number) => {
     setBusy(true);
@@ -644,13 +723,30 @@ function CapitalSplit({ cfg, totalCapital, onApplied }: {
       <div className="text-[10px] text-muted-foreground mb-2">
         Splits sizing capital between the two books so one can never draw the other
         down — swing holding capital for 1–3 weeks does not shrink what intraday
-        sizes against, or vice versa. Real account <b>{rs(totalCapital)}</b>
+        sizes against, or vice versa. Configured total <b>{rs(totalCapital)}</b>
         {asOf ? ` as of ${asOf}` : ''}
-        {snap.severity === 'UNKNOWN' ? ' (no live Kite session — last known figure)' : ''}.
+        {snap.severity === 'UNKNOWN' ? ' (no live Kite session — last known figure)' : ''} —
+        this is the number sizing actually uses (TOTAL_CAPITAL), set on the server,
+        not editable here.
         A split here only changes real-money exposure once a book&apos;s own
         &quot;Auto-entry with real money&quot; switch is on — paper sizing reads it
         immediately either way, harmlessly.
       </div>
+      {brokerTotal !== null && (
+        <div className={`text-[10px] mb-2 rounded border p-2 ${
+          gapMaterial ? 'border-amber-500/50 text-amber-500' : 'border-border/30 text-muted-foreground'}`}>
+          Broker actually holds <b>{rs(brokerTotal)}</b>
+          {gapMaterial && snap.gap !== undefined && (
+            <> — {snap.gap! < 0 ? 'short by' : 'ahead by'} <b>{rs(Math.abs(snap.gap!))}</b>
+            {' '}({Math.abs(Number(snap.gap_pct ?? 0)).toFixed(0)}%)</>
+          )}
+          {gapMaterial ? '. New entries are sized against the configured total above, '
+            + 'not this figure — a gap this size risks orders being rejected at the '
+            + 'broker for insufficient funds. Update TOTAL_CAPITAL on the server, or '
+            + 'fund the account, to close it.'
+            : '. Close enough to the configured total that sizing is not at risk.'}
+        </div>
+      )}
       <div className="flex items-center gap-3 text-[11px] mb-2">
         <span>Currently: swing <b className="font-mono">{rs(curSwing)}</b></span>
         <span className="text-muted-foreground">·</span>
