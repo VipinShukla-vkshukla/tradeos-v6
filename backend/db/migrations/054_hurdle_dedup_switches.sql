@@ -27,10 +27,20 @@ VALUES
    'Master controls', 'allocation/hurdle.py', 'bool', 'false', 'MEDIUM'),
   ('alloc_hurdle_dedup_intraday', 'false',
    'Same mechanism as alloc_hurdle_dedup_swing, scoped to INTRADAY only. '
-   'Intraday setups are minutes long rather than hours, so the same '
-   'repetition-inflation is expected to be smaller there -- but expected is '
-   'not measured. Keep this off (intraday''s live behaviour unchanged) '
-   'until tools/hurdle_population_audit.py --framework INTRADAY has been '
-   'run and reviewed on its own evidence, not inherited from swing''s.',
+   'MEASURED 07-Aug-2026 (tools/hurdle_population_audit.py --framework '
+   'INTRADAY, n=346 raw / 35 deduplicated, ~9.9x inflation): dedup moved the '
+   'bar the OPPOSITE way from SWING -- p75 -1.329R -> -0.900R, p95 -0.110R '
+   '-> -0.031R, both STRICTER, not looser. Cause: on intraday, the rows that '
+   'repeat most are near-miss setups re-logged every 15s while they hover '
+   'without triggering, which inflates the BAD tail of the raw population; '
+   'dedup removes that and the bar rises. This is a structural property of '
+   'how candidates are generated (which rows dwell longest), not a small-'
+   'sample artifact, so accumulating more of the same kind of trades is not '
+   'expected to flip it. VERDICT: do not enable. Intraday already runs on a '
+   'thin edge net of MIS cost (see the cold-start landmine in CLAUDE.md) and '
+   'a stricter bar makes that worse. Re-measure with this same tool only if '
+   'the ENGINE MIX changes materially (new engine added/matured, or a change '
+   'to how long marginal setups stay live before being dropped) -- not on a '
+   'volume/time basis alone.',
    'Master controls', 'allocation/hurdle.py', 'bool', 'false', 'MEDIUM')
 ON CONFLICT (key) DO NOTHING;
