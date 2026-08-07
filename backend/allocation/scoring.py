@@ -43,6 +43,7 @@ because it is indistinguishable from a measured one downstream.
 
 from __future__ import annotations
 
+import re
 import statistics
 import sys
 from dataclasses import dataclass, field
@@ -202,8 +203,22 @@ def swing_family(strategy: str | None) -> str:
     Unrecognised or empty resolves to "ALL", the existing book-level fallback
     key — never invented, matching this module's own rule for the R
     distributions themselves.
+
+    A trailing parenthetical annotation is stripped before the lookup —
+    found 07-Aug-2026, closed_positions.strategy carrying "CTL (Legacy)" for
+    21 of 75 historical SWING closes (89% of the sample together with plain
+    "CTL"), which `_SWING_FAMILY.get()` cannot match as written and which
+    resolved to "ALL" instead of CONTINUATION — a real family's engine
+    silently falling out of its own bucket, the identical shape as the
+    signal_type/strategy column-confusion bug this module's own swing_
+    priors() docstring already documents. "CTL (Legacy)" is CTL; the
+    parenthetical is metadata about WHEN it was labelled, not a different
+    engine. Generic strip (any trailing "(...)"), not a hardcoded alias list,
+    so a future "SEC (Legacy)" or similar is not a second silent miss.
     """
-    parts = [p for p in (strategy or "").split("+") if p]
+    strip_paren = lambda p: re.sub(r"\s*\([^)]*\)\s*$", "", p).strip()
+    parts = [strip_paren(p) for p in (strategy or "").split("+") if p]
+    parts = [p for p in parts if p]
     if not parts:
         return "ALL"
     families = {_SWING_FAMILY.get(p, "ALL") for p in parts}
