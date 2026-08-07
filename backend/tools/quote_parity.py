@@ -59,6 +59,22 @@ SCORED = ("day_high", "day_low", "vwap", "prev_close")
 RATCHET_UP   = ("day_high",)
 RATCHET_DOWN = ("day_low",)
 
+# The blanket 0.10% parity band answers "do the two sources roughly agree",
+# not "does this matter to the engines that read vwap". Those engines gate on
+# distance from vwap directly, at tolerances of their own — some tighter than
+# 0.10%. This is the question that actually decides whether
+# intraday_quote_mode_vwap is safe: of the comparisons collected, how many
+# would have moved a real engine's boundary by more than its own precision
+# requires. (config key, engine file, what it gates)
+VWAP_ENGINE_TOLERANCES = (
+    ("vwr_stop_buffer_pct",         0.08, "vwap_reclaim.py — stop distance below swing low"),
+    ("intraday_short_stop_buffer_pct", 0.12, "short_distribution.py — stop distance above vwap"),
+    ("pbk_stop_buffer_pct",         0.15, "pullback.py — stop distance below vwap"),
+    ("pbk_touch_tol_pct",           0.25, "pullback.py — 'touched vwap' band"),
+    ("intraday_short_vwap_near_pct", 0.35, "short_distribution.py — 'near vwap' band"),
+    ("vwr_max_extension_pct",       0.45, "vwap_reclaim.py — max extension past vwap gate"),
+)
+
 
 def compare(symbol: str, field: str, live, fetched) -> dict | None:
     """
@@ -97,6 +113,28 @@ def record_many(sb, rows: list[dict]) -> int:
 def record(sb, symbol: str, field: str, live, fetched) -> None:
     """Single-row convenience, kept for callers outside the hot path."""
     record_many(sb, [r for r in (compare(symbol, field, live, fetched),) if r])
+
+
+def _vwap_engine_relevance(diffs: list[float]) -> None:
+    """
+    The 0.10% parity band is a generic "do these roughly agree" test. It does
+    not answer whether a disagreement is big enough to flip a decision an
+    engine actually makes — that depends on each engine's own tolerance, which
+    is sometimes tighter than 0.10%. This reports, for each one, how many of
+    the collected comparisons exceeded it — read live so an operator override
+    is respected rather than the hardcoded default silently going stale.
+    """
+    from config import cfg_float
+    logger.info("")
+    logger.info("  vwap vs the engines that actually gate on it "
+               "(live tolerance, not the blanket 0.10% band above):")
+    for key, default, where in VWAP_ENGINE_TOLERANCES:
+        tol = cfg_float(key, default)
+        over = [x for x in diffs if abs(x) >= tol]
+        pct = len(over) / len(diffs) * 100.0 if diffs else 0.0
+        note = "clear" if not over else f"{len(over)} of {len(diffs)} ({pct:.1f}%) could flip this"
+        log = logger.info if not over else logger.warning
+        log(f"    {key:<32} {tol:>5.2f}%  {where:<48} {note}")
 
 
 def report(sb) -> int:
@@ -155,6 +193,9 @@ def report(sb) -> int:
 
         log = logger.info if note.startswith(("OK", "not scored")) else logger.error
         log(f"  {field:<12} {len(d):>5} {med:>8.3f}% {mean:>8.3f}% {worst:>8.3f}%  {note}")
+
+    if "vwap" in by:
+        _vwap_engine_relevance(by["vwap"])
 
     # Reported per switch, not as one blanket verdict — intraday_quote_mode_range
     # and intraday_quote_mode_vwap are independently gated (08-Aug-2026) because

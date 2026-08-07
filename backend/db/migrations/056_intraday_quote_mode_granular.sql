@@ -11,9 +11,13 @@
 -- vwap values onto every breakout condition since that migration ran.
 --
 -- This migration:
---   1. Turns the old switch OFF. Nothing reads it after this branch's code
---      change (intraday/engine.py, intraday/price_feed.py); left in place
---      rather than deleted so its own row still carries this history.
+--   1. DELETES the old switch. Nothing reads it after this branch's code
+--      change (intraday/engine.py, intraday/price_feed.py, health.py,
+--      quote_parity.py, the operator panel) -- confirmed by grep across the
+--      whole repo before writing this. A row nothing reads is exactly the
+--      kind of artifact that misleads the next person who inspects
+--      system_config directly and assumes it still controls something.
+--      Not a behaviour change: it was already superseded in-process by (2).
 --   2. Adds two new switches, BOTH DEFAULT FALSE — day range/volume and vwap,
 --      decided independently. This is a conservative landing: applying this
 --      migration alone restores intraday to the same "no live overlay, REST-
@@ -28,12 +32,20 @@
 -- Recommended sequence after applying:
 --   UPDATE system_config SET value='true' WHERE key='intraday_quote_mode_range';
 --   -- (day_high/day_low/day_open/volume only -- these passed parity clean)
--- Leave intraday_quote_mode_vwap off until a reconciled VWAP formula is
--- validated -- the live tick VWAP and the bar-approximation VWAP are two
--- different definitions, not the same number measured at different times.
+-- Leave intraday_quote_mode_vwap off. 08-Aug-2026: checked the measured vwap
+-- diffs against what the engines that actually read vwap require, not just
+-- the blanket 0.10% parity band -- vwap_reclaim.py's stop buffer
+-- (vwr_stop_buffer_pct, 0.08%) and short_distribution.py's stop buffer
+-- (intraday_short_stop_buffer_pct, 0.12%) are BOTH tighter than the measured
+-- worst-case gap (-0.39%), and vwap_reclaim.py also gates on a hard
+-- ltp > vwap / close < vwap crossing with no tolerance band at all. A
+-- formula swap this size can flip those decisions, not just relabel them.
+-- tools/quote_parity.py's report() now prints exactly how many collected
+-- comparisons would have crossed each engine's own tolerance --
+-- re-run it after a logging session and use THAT number, not this comment,
+-- to decide.
 
-UPDATE public.system_config
-   SET value = 'false', updated_at = now()
+DELETE FROM public.system_config
  WHERE key = 'intraday_quote_mode';
 
 INSERT INTO public.system_config
