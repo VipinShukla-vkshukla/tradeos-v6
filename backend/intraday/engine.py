@@ -1664,14 +1664,35 @@ class IntradayEngine:
             field = rank(self.candidates)
             keep = min(max_new * 2, len(field))
             if keep and here.total < field[keep - 1].total:
-                # DEBUG, not INFO. With 56 candidates this line fired dozens of
-                # times a cycle and buried everything else, while saying the
-                # same thing each time. The per-cycle swing summary below
-                # reports the same fact once, with the names that ARE eligible.
-                logger.debug(f"  {sym}: rank {here.total:.0f} outside today's top {keep}")
+                # INFO, not DEBUG — 07-Aug-2026. The DEBUG choice predates the
+                # allocator veto a few lines above, back when every buyable
+                # candidate reached this line (56 a cycle, drowning out
+                # everything else). The veto now returns early for anything
+                # the allocator did not mark TAKE, so only a handful of
+                # allocator-APPROVED candidates ever reach here — which makes
+                # this exactly the collision worth seeing: the allocator's
+                # edge-ranked TAKE and entry_ranking's score-ranked top-N are
+                # two different quantities over two different fields (edge is
+                # keyed on engine family + regime bucket; rank is per-stock
+                # final_score/timing/sector), with nothing that guarantees
+                # their winners overlap. Confirmed live: 07-Aug-2026 logged
+                # "3 to take" from the allocator on nearly every cycle all
+                # day, while this line — invisible at the deployed INFO level
+                # — silently vetoed some or all of them, and swing_max_new_
+                # per_day=3 finished the session at 0/3 used. The per-cycle
+                # summary reports WHO is rank-eligible; it never said an
+                # allocator-approved plan was the one this gate stopped.
+                logger.info(f"  {sym}: allocator approved, but rank {here.total:.0f} "
+                           f"is outside today's top {keep} — entry_ranking disagrees "
+                           f"with the allocator's edge ranking, standing down")
                 return
         except Exception as e:
-            logger.debug(f"  ranking unavailable for {sym}: {e}")
+            # WARNING, not DEBUG — this path FAILS OPEN: an exception here
+            # skips the rank check entirely and lets the candidate through
+            # unranked, silently, which is a materially different situation
+            # from the ranking gate correctly vetoing one.
+            logger.warning(f"  {sym}: ranking unavailable, entry proceeding "
+                           f"WITHOUT the rank check — {e}")
 
         qty = int(getattr(d, "qty", 0) or 0)
         if qty <= 0:
