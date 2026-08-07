@@ -437,7 +437,7 @@ def tercile_report(sb=None) -> int:
     while True:
         page = (sb.table("signal_output_daily")
                   .select("strategy,outcome_return_pct,outcome_entered,"
-                          "entry_zone_high,planned_stop,final_score")
+                          "entry_zone_high,planned_stop,final_score,ai_tier")
                   .not_.is_("outcome_category", "null")
                   .range(off, off + PAGE - 1).execute().data) or []
         rows += page
@@ -445,7 +445,7 @@ def tercile_report(sb=None) -> int:
             break
         off += PAGE
 
-    triples: list[tuple[str, float, float]] = []   # (family, final_score, R)
+    triples: list[tuple[str, float, float, str]] = []   # (family, final_score, R, ai_tier)
     for r in rows:
         if not r.get("outcome_entered"):
             continue
@@ -459,7 +459,7 @@ def tercile_report(sb=None) -> int:
             if risk_pct <= 0:
                 continue
             triples.append((swing_family(r.get("strategy")), float(fs),
-                            float(ret) / risk_pct))
+                            float(ret) / risk_pct, r.get("ai_tier") or "UNTIERED"))
         except (TypeError, ValueError, ZeroDivisionError):
             continue
 
@@ -474,7 +474,7 @@ def tercile_report(sb=None) -> int:
         return 1
 
     by_engine: dict[str, list[tuple[float, float]]] = {}
-    for eng, fs, r in triples:
+    for eng, fs, r, _tier in triples:
         by_engine.setdefault(eng, []).append((fs, r))
 
     for eng in sorted(by_engine):
@@ -496,6 +496,18 @@ def tercile_report(sb=None) -> int:
         ):
             d = _dist(f"SWING/{eng}/{label}", vals, floor)
             logger.info(f"  {label:<4}: {d.describe()}")
+
+    # Same population, sliced by ai_decision_engine's tier instead of
+    # final_score. Pooled across engine families — splitting by both would
+    # starve every bucket at this sample size.
+    logger.info("")
+    logger.info("── mean R by ai_tier, pooled across engines ──")
+    by_tier: dict[str, list[float]] = {}
+    for _eng, _fs, r, tier in triples:
+        by_tier.setdefault(tier, []).append(r)
+    for tier in sorted(by_tier):
+        d = _dist(f"SWING/TIER/{tier}", by_tier[tier], floor)
+        (logger.warning if d.below_floor else logger.info)(f"  {tier:<14}: {d.describe()}")
 
     return 0
 
