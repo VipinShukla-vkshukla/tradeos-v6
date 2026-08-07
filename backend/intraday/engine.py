@@ -378,7 +378,8 @@ class IntradayEngine:
 
     def apply_live_quotes(self, feed) -> int:
         """
-        Overlay live day range, volume and VWAP onto the contexts. Per cycle.
+        Overlay live day range, volume and prev_close onto the contexts. Per
+        cycle. VWAP is a separate, independently-gated overlay — see below.
 
         WHY THIS EXISTS. refresh_contexts() runs on the 300-second timer because
         the historical endpoint is rate-limited; the decision loop runs every 15
@@ -399,6 +400,35 @@ class IntradayEngine:
         pinned at CAUTION forever — a gate that can never say RISK_ON is not a
         gate. So a zero or absent VWAP from the tick stream never overwrites the
         computed one.
+
+        TWO SWITCHES, BOTH DEFAULT ON — 08-Aug-2026, migration 056.
+        `intraday_quote_mode_range` gates day_open/day_high/day_low/volume/
+        prev_close; `intraday_quote_mode_vwap` gates vwap on its own. Both
+        default to the same 'true' migration 043 already set for the single
+        switch this replaces — this is a REGROUPING for independent control
+        and ongoing verification, not a behaviour change from what has been
+        live since Phase 4. tools/quote_parity.py's `check_quote_parity`
+        (tools/health.py) now watches both continuously, so if either one
+        ever does need turning off, that gets caught by the check run before
+        every trading session rather than left to be noticed by hand.
+
+        PREV_CLOSE'S PLACE IN THIS. It measured FAULT against refresh_contexts()
+        (worst -4.18%), but the live side here is Kite's own broker-reported
+        previous close, and the fetched side is `stock_data_daily` via a
+        global, not per-symbol, row LIMIT that can silently resolve to a
+        stale multi-day-old close for a thin symbol. The more likely
+        direction is that the live tick is CORRECTING the fetched side's bug,
+        not disagreeing with a correct one — so it stays in the overlay
+        rather than being pulled out on an unconfirmed guess about which side
+        is wrong. The stock_data_daily query itself is a separate, still-open
+        bug, unrelated to whether this overlay runs.
+
+        VWAP'S FAULT IS A DIFFERENT SHAPE — a formula difference (live tick
+        VWAP vs refresh_contexts()'s bar-approximation), not a staleness gap,
+        so some disagreement is structural and expected rather than a sign
+        either side is simply wrong. Kept on to match current behaviour;
+        `_vwap_engine_relevance`/`vwap_verdict` in tools/quote_parity.py are
+        what would tell you if it starts moving a real engine decision.
         """
         from intraday.market_context import INDEX_SYMBOL
         # 07-Aug-2026: `now` was read at three points below (the parity-log
@@ -439,10 +469,17 @@ class IntradayEngine:
                         q = feed.quote(sym)
                         if not q:
                             continue
+                        # Bar-summed volume is the "fetched" side of the
+                        # comparison — quote_parity.py already reports it
+                        # unscored (see SCORED there), but nothing computed a
+                        # fetched value to log it against until now, so it was
+                        # documented as logged and never actually collected.
+                        bar_vol = sum(b.volume for b in ctx.bars) if ctx.bars else None
                         for field, fetched in (("day_high", ctx.day_high),
                                                ("day_low", ctx.day_low),
                                                ("vwap", ctx.vwap),
-                                               ("prev_close", ctx.prev_close)):
+                                               ("prev_close", ctx.prev_close),
+                                               ("volume", bar_vol)):
                             row = quote_parity.compare(sym, field, q.get(field), fetched)
                             if row:
                                 batch.append(row)
@@ -450,27 +487,35 @@ class IntradayEngine:
                 except Exception as e:
                     logger.debug(f"  parity logging skipped: {e}")
 
-        if not cfg_bool("intraday_quote_mode", False):
+        range_on = cfg_bool("intraday_quote_mode_range", False)
+        vwap_on = cfg_bool("intraday_quote_mode_vwap", False)
+        if not (range_on or vwap_on):
             return 0
         touched = 0
+
+        def _overlay(ctx, q) -> list[str]:
+            live = []
+            if range_on:
+                for field, key in (("day_high", "day_high"), ("day_low", "day_low"),
+                                   ("day_open", "day_open"), ("prev_close", "prev_close")):
+                    v = q.get(key)
+                    if v:
+                        setattr(ctx, field, float(v))
+                        live.append(field)
+                if q.get("volume"):
+                    ctx.session_volume = float(q["volume"])
+                    live.append("volume")
+            # Never let a zero VWAP through — see the index note above.
+            if vwap_on and q.get("vwap"):
+                ctx.vwap = float(q["vwap"])
+                live.append("vwap")
+            return live
+
         for sym, ctx in (self._contexts or {}).items():
             q = feed.quote(sym) if feed else None
             if not q:
                 continue
-            live = []
-            for field, key in (("day_high", "day_high"), ("day_low", "day_low"),
-                               ("day_open", "day_open"), ("prev_close", "prev_close")):
-                v = q.get(key)
-                if v:
-                    setattr(ctx, field, float(v))
-                    live.append(field)
-            if q.get("volume"):
-                ctx.session_volume = float(q["volume"])
-                live.append("volume")
-            # Never let a zero VWAP through — see the index note above.
-            if q.get("vwap"):
-                ctx.vwap = float(q["vwap"])
-                live.append("vwap")
+            live = _overlay(ctx, q)
             if live:
                 ctx.as_of = q.get("at") or now
                 ctx.live_fields = tuple(live)
@@ -489,16 +534,7 @@ class IntradayEngine:
         if feed is not None and self._index_ctx is not None:
             q = feed.quote(INDEX_SYMBOL)
             if q:
-                live = []
-                for field, key in (("day_high", "day_high"), ("day_low", "day_low"),
-                                   ("day_open", "day_open"), ("prev_close", "prev_close")):
-                    v = q.get(key)
-                    if v:
-                        setattr(self._index_ctx, field, float(v))
-                        live.append(field)
-                if q.get("vwap"):
-                    self._index_ctx.vwap = float(q["vwap"])
-                    live.append("vwap")
+                live = _overlay(self._index_ctx, q)
                 if live:
                     self._index_ctx.as_of = q.get("at") or now
                     self._index_ctx.live_fields = tuple(live)

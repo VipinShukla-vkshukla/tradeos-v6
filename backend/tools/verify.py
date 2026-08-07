@@ -72,6 +72,7 @@ MODULES = [
     ("ai tier weight review", "tests.test_ai_tier_weight_review"),
     ("swing hold days",      "tests.test_swing_hold_days"),
     ("swing family maturity review", "tests.test_swing_family_maturity_review"),
+    ("quote parity verdicts",  "tests.test_quote_parity"),
 ]
 
 

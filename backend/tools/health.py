@@ -780,9 +780,87 @@ def check_feed_integrity() -> tuple[bool, str]:
 
     from config import cfg_float, cfg_bool
     age  = cfg_float("intraday_context_max_age_s", 420.0)
-    mode = "QUOTE" if cfg_bool("intraday_quote_mode", False) else "LTP"
+    quote_on = (cfg_bool("intraday_quote_mode_range", False)
+                or cfg_bool("intraday_quote_mode_vwap", False))
+    mode = "QUOTE" if quote_on else "LTP"
     return True, (f"tick handler is I/O-free, staleness guard active at {age:.0f}s, "
                   f"feed mode {mode}")
+
+
+def check_quote_parity() -> tuple[bool, str]:
+    """
+    If quote mode is live, is anyone still checking it agrees with reality?
+
+    08-Aug-2026. tools/quote_parity.py's original guidance was: arm logging,
+    run one session, and if it read clean, enable the switch and disarm the
+    logging. That is a verdict frozen on whatever ONE session's market did —
+    a quiet day and a fast one do not necessarily produce the same
+    day_high/day_low or vwap agreement, and disarming meant nothing was left
+    running to notice if a later session disagreed. This is the check that
+    closes that gap: it fails if a switch is on but nobody is watching, or if
+    RANGE (day_high/day_low, clean at baseline) has actually regressed.
+
+    VWAP AND PREV_CLOSE FAULTING IS NOT, BY ITSELF, A FAILURE HERE. Both were
+    already measured FAULT on 07-Aug and both switches were kept ON anyway —
+    vwap because the gap is a structural formula difference, not staleness;
+    prev_close because the live side is more likely correcting a
+    stock_data_daily bug than causing one (see
+    intraday/engine.py::apply_live_quotes()'s docstring). Failing this check
+    every single day on an accepted, expected condition is the exact "check
+    that can never pass" trap CLAUDE.md warns about — it gets read once,
+    ignored forever, and stops meaning anything. So both are reported in the
+    detail string for visibility, never as the reason this returns False.
+    RANGE is different: it measured clean, so any fault there is new
+    information, not a re-statement of what was already known and accepted.
+    """
+    from config import cfg_bool, get_supabase, today_ist
+    from datetime import timedelta
+
+    range_on = cfg_bool("intraday_quote_mode_range", False)
+    vwap_on  = cfg_bool("intraday_quote_mode_vwap", False)
+    if not (range_on or vwap_on):
+        return True, "quote mode is off — nothing live to verify"
+
+    on_names = "+".join(n for n, on in (("range", range_on), ("vwap", vwap_on)) if on)
+    if not cfg_bool("intraday_quote_parity_log", False):
+        return False, (f"intraday_quote_mode_{on_names} is ON but intraday_quote_parity_log "
+                       f"is OFF — no ongoing check that today's feed still agrees with the "
+                       f"historical endpoint; today's numbers could differ from whatever "
+                       f"session this was last verified against")
+
+    sb = get_supabase()
+    cutoff = (today_ist() - timedelta(days=5)).isoformat()
+    try:
+        rows = (sb.table("intraday_quote_parity")
+                  .select("field,diff_pct,ts")
+                  .gte("ts", cutoff)
+                  .execute().data or [])
+    except Exception as e:
+        return False, f"could not read intraday_quote_parity: {e}"
+
+    if not rows:
+        return False, (f"intraday_quote_mode_{on_names} is ON and logging is armed, but no "
+                       f"comparisons in the last 5 days — armed does not mean collecting; "
+                       f"confirm the daemon actually picked up the config change")
+
+    from tools.quote_parity import range_verdict, vwap_verdict
+    # RANGE is the only one that can fail this check — it measured clean at
+    # baseline, so a fault now is new. VWAP is reported but never blocking —
+    # see the docstring for why failing on an already-accepted condition
+    # would make this check impossible to ever pass.
+    notes = []
+    if range_on:
+        ok, detail = range_verdict(rows)
+        if ok is False:
+            return False, (f"RANGE REGRESSED — {detail}. day_high/day_low measured clean "
+                           f"on 07-Aug; this is new, worth investigating before trusting "
+                           f"intraday_quote_mode_range further.")
+        notes.append(f"range: {detail}")
+    if vwap_on:
+        _, detail = vwap_verdict(rows)
+        notes.append(f"vwap: {detail}")
+
+    return True, "checked against last 5 days: " + "; ".join(notes)
 
 
 def check_governance() -> tuple[bool, str]:
@@ -1343,6 +1421,7 @@ CHECKS = [
     ("books",    "one symbol ends up in both frameworks with contradictory exits", check_framework_isolation, False),
     ("storage",  "the database stops accepting writes and the pipeline goes silent", check_storage, False),
     ("feed",     "decisions run on data of unknown age, or ticks arrive late",  check_feed_integrity, False),
+    ("quote_parity", "a live quote-mode field drifted from the historical endpoint and nobody is watching", check_quote_parity, False),
     ("exits",    "an exit rule can sell without alerting, or fires from only one caller", check_exit_actions, False),
     ("costs",    "charges are priced off a stale or wrong-product rate",         check_cost_rates, False),
     ("selects",  "a query reads a column the schema no longer has",              check_selects,  False),
