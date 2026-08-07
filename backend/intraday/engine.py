@@ -366,6 +366,18 @@ class IntradayEngine:
         computed one.
         """
         from intraday.market_context import INDEX_SYMBOL
+        # 07-Aug-2026: `now` was read at three points below (the parity-log
+        # interval check, and as_of on both the per-symbol and index overlays)
+        # and assigned at NONE of them — this function has never had a local
+        # `now`. Every call with intraday_quote_parity_log on raised
+        # NameError at the very first reference, before the intraday_quote_mode
+        # branch below it was ever reached, and cycle()'s outer
+        # `except Exception: logger.debug(...)` swallowed it below normal log
+        # level. Both switches have read TRUE in system_config since 04-Aug;
+        # the live overlay itself has run zero times since, which is why
+        # intraday_quote_parity — logged from inside the very block this
+        # crashed in — has zero rows despite three days of market sessions.
+        now = datetime.now(IST)
         # Parity logging is independent of quote MODE being consumed: the whole
         # point is to compare the two BEFORE the live one is trusted, which means
         # it must run while quote mode is still off.

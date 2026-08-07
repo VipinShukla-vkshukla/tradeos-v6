@@ -58,6 +58,7 @@ MODULES = [
     ("allocator priors",    "tests.test_allocator_priors"),
     ("swing engine attribution", "tests.test_swing_engine_attribution"),
     ("hurdle percentile",   "tests.test_hurdle_percentile"),
+    ("apply live quotes",   "tests.test_apply_live_quotes"),
     ("short engine",        "tests.test_short_engine"),
     ("book isolation",      "tests.test_book_isolation"),
 ]
