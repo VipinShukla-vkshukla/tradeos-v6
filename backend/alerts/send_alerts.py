@@ -1336,16 +1336,30 @@ def build_position_block(
         upd = p.get("ai_action_updated_at")
         if upd:
             try:
+                # `datetime` (module) shadows the stdlib class if imported
+                # unaliased in a file this size, so this aliases it to `_dt` —
+                # but IST was never imported here and the two lines below kept
+                # referencing the unaliased `datetime` and a bare `IST` that no
+                # scope in this function ever bound. Silently caught by the
+                # bare `except: pass` below, so age_note — the annotation this
+                # exact block exists to attach, so a two-day-old "protect your
+                # gain" advisory is never mistaken for today's — never once
+                # computed. Found by pyflakes (undefined name), not by seeing
+                # it fail, because it never logged anything when it did.
                 from datetime import datetime as _dt
+                from config import IST
                 when = _dt.fromisoformat(str(upd).replace("Z", "+00:00"))
                 if when.tzinfo is None:
                     when = IST.localize(when)
-                days = (datetime.now(IST).date() - when.astimezone(IST).date()).days
+                days = (_dt.now(IST).date() - when.astimezone(IST).date()).days
                 if days >= 1:
                     age_note = (f" <i>({days}d old — from "
                                 f"{when.astimezone(IST):%d %b}, P&amp;L was different then)</i>")
-            except Exception:
-                pass
+            except Exception as e:
+                # Was a bare `pass` — the NameError above was silent at every
+                # log level for as long as it existed. Logged now so the NEXT
+                # time this block breaks, it is findable without pyflakes.
+                logger.debug(f"  AI advisory age note skipped: {e}")
         else:
             age_note = " <i>(undated)</i>"
 

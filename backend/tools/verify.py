@@ -51,6 +51,7 @@ from loguru import logger
 #: path guards the book that holds real money and the only track record this
 #: system owns — if it fails, nothing below it matters.
 MODULES = [
+    ("static analysis",     "tests.test_static_analysis"),
     ("long path unchanged", "tests.test_long_path_unchanged"),
     ("direction spine",     "tests.test_direction_spine"),
     ("regime vocabulary",   "tests.test_regime_vocabulary"),

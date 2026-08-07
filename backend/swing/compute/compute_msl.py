@@ -378,40 +378,19 @@ def load_data(sb, today: str, mode: str) -> dict:
     msl_map = {r["symbol"]: r for r in (msl_rows or [])}
     logger.info(f"  Source table: {source_table} ({len(msl_map)} symbols)")
 
-    # In shadow mode, merge screener metadata (strategy_source, composite_score) into msl_map
-    # without overwriting Sheet fields (company_name, sector, notes, etc.)
-    if mode == "shadow" and screener_rows:
-        # ── INGEST_SHEETS MERGE (remove this block when ingest_sheets is retired) ──
-        _sheet_rows = (
-            sb.table("master_shortlist")
-            .select("*")
-            .eq("date", today)
-            .eq("compute_source", "ingest_sheets")
-            .execute().data
-        )
-        _added = 0
-        for r in (_sheet_rows or []):
-            sym = r.get("symbol")
-            if sym and sym not in msl_map:
-                msl_map[sym] = r
-                _added += 1
-        if _added:
-            logger.info(f"  ingest_sheets: {_added} symbols merged into msl_map")
-        # ── END INGEST_SHEETS MERGE ─────────────────────────────────────────────────
-        screener_map = {r["symbol"]: r for r in screener_rows}
-        added = 0
-        for sym, sr in screener_map.items():
-            if sym in msl_map:
-                # Only update screener-owned fields
-                msl_map[sym]["strategy_source"] = sr.get("strategy_source") or msl_map[sym].get("strategy_source")
-                msl_map[sym]["composite_score"] = sr.get("composite_score") or msl_map[sym].get("composite_score")
-            else:
-                # Screener found a new symbol not yet in master_shortlist
-                msl_map[sym] = sr
-                added += 1
-        if added:
-            logger.info(f"  Screener added {added} new symbols not in master_shortlist")
-
+    # REMOVED — 07-Aug-2026. This block merged screener metadata into msl_map
+    # "in shadow mode", but referenced `screener_rows`, a name with NO
+    # assignment anywhere in this file — found by pyflakes, not by reaching
+    # it live. `mode` defaults to "shadow" (line ~2594) and is reachable via
+    # `--mode shadow` on the CLI, so any invocation that took that default —
+    # or that flag — would have crashed the entire MSL computation step with
+    # NameError. It never has in production: compute_msl_mode has read "full"
+    # in system_config since 11-Apr-2026. But this file's OWN header docstring
+    # already states the fact that made the branch unreachable-by-design:
+    # "The shadow/hybrid transition modes and their msl_computed target were
+    # retired in migration 008." A retired mode with a live crash in its only
+    # code path is a landmine, not a feature — removed rather than repaired,
+    # since there is no surviving producer of screener_rows to repair it with.
     symbols = list(msl_map.keys())
     if not symbols:
         logger.error("No MSL symbols found")
@@ -2591,7 +2570,12 @@ def main():
     sb    = get_supabase()
     today = str(today_ist())
     # BUG #1 FIX: mode resolved HERE — load_data receives it and does NOT re-read cfg
-    mode  = cfg("compute_msl_mode", "shadow")
+    # Default is "full", not "shadow" — 07-Aug-2026. Shadow (and hybrid) were
+    # retired in migration 008 per this file's own header docstring; defaulting
+    # to a retired mode when the config row is ever absent is the same silent-
+    # default risk CLAUDE.md's rules exist for, independent of the crash that
+    # used to live in shadow's only code path (removed above).
+    mode  = cfg("compute_msl_mode", "full")
     if os.getenv("COMPUTE_MSL_MODE_OVERRIDE"):
         mode = os.getenv("COMPUTE_MSL_MODE_OVERRIDE")
 
