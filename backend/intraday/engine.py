@@ -1737,6 +1737,19 @@ class IntradayEngine:
                 **_sig,
                 "sector": c.get("sector"), "source": "auto_entry",
                 "entry_rationale": rationale,
+                # SAME GAP AS entry_rationale ABOVE, TWO MORE COMPONENTS —
+                # 07-Aug-2026. Neither field was written here, so neither ever
+                # reached closed_positions (close_position() at :921/:924 was
+                # always carrying forward None). entry_ranking.score_plan()
+                # weights entry_timing_type (rank_weight_timing) and
+                # sector_rank_at_entry (rank_weight_sector) same as it weights
+                # the rank that entry_rationale fixed — "a check that cannot
+                # fail is not a check" applies to a weighted component exactly
+                # as much as to the composite rank itself. Confirmed present on
+                # signal_output_daily (final_snapshot.py writes both under
+                # these exact names) before adding, not assumed.
+                "entry_timing_type": c.get("entry_timing_type"),
+                "sector_rank_at_entry": c.get("sector_rank_at_entry"),
                 "synced_at": datetime.now(IST).isoformat(),
             })
             self._entries_taken += 1
