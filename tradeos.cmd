@@ -30,6 +30,7 @@ REM    tradeos vcn fix    pull latest code there and restart it
 REM    tradeos vcn env    push THIS laptop's .env there, backing the old one up
 REM    tradeos vcn stop   stop the Oracle daemon
 REM    tradeos vcn status is it running, and on which commit
+REM    tradeos vcn savelog [YYYY-MM-DD]   pull that day's Oracle log into backend\logs
 REM    tradeos stop       set the kill switch — everything stops trading
 REM    tradeos evening    run the swing pipeline by hand
 REM
@@ -124,6 +125,7 @@ echo     9   Update                 git pull + restart there
 echo     0   Push .env              copy THIS laptop's .env there (backs up first)
 echo     N   Status                 running? on which commit?
 echo     X   Stop                   hand the book to this laptop
+echo     G   Save log               pull today's Oracle log into backend\logs
 echo.
 echo   OTHER
 echo     E   Evening pipeline       run the swing pipeline by hand
@@ -160,6 +162,7 @@ if "%PICK%"=="9" set "VCNACT=fixc"
 if "%PICK%"=="0" set "VCNACT=envc"
 if /i "%PICK%"=="N" set "VCNACT=status"
 if /i "%PICK%"=="X" set "VCNACT=stopc"
+if /i "%PICK%"=="G" set "VCNACT=savelog"
 REM The four server options SET an action rather than jumping, so they all enter
 REM through :VCN — the only place the ssh key and host are resolved. Without this
 REM line they set the variable and fall through to "not one of the choices",
@@ -201,10 +204,12 @@ if /i "%~2"=="fix"        goto VCNFIX
 if /i "%~2"=="stop"       goto VCNSTOP
 if /i "%~2"=="status"     goto VCNSTAT
 if /i "%~2"=="env"        goto VCNENV
+if /i "%~2"=="savelog"    goto VCNSAVELOG
 if /i "%VCNACT%"=="fixc"   goto VCNFIXC
 if /i "%VCNACT%"=="stopc"  goto VCNSTOPC
 if /i "%VCNACT%"=="envc"   goto VCNENVC
 if /i "%VCNACT%"=="status" goto VCNSTAT
+if /i "%VCNACT%"=="savelog" goto VCNSAVELOG
 echo Streaming the Oracle daemon log — Ctrl+C to stop.
 echo   server %SRV%
 echo.
@@ -244,6 +249,27 @@ goto END
 :VCNSTAT
 echo Oracle daemon status on %SRV%...
 ssh -i "%KEY%" ubuntu@%SRV% "systemctl is-active tradeos-intraday; echo '--- commit ---'; cd ~/tradeos-v6 && git log --oneline -1; echo '--- next timer ---'; systemctl list-timers tradeos-intraday.timer --no-pager | head -3"
+goto END
+
+:VCNSAVELOG
+REM Pulls that day's already-written daemon log — backend/logs/tradeos_YYYY-MM-DD.log
+REM on the server, the exact file config.py's loguru sink writes all session and
+REM finalises the moment the daemon self-exits at 15:40 — down to THIS laptop's
+REM backend\logs. Read-only, so no confirmation gate, same as Status above.
+REM Defaults to today; `tradeos vcn savelog YYYY-MM-DD` backfills a specific day
+REM — the server keeps every day's file, this laptop only has what was fetched.
+set "WANT=%~3"
+if "%WANT%"=="" for /f %%D in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd"') do set "WANT=%%D"
+if not exist "%~dp0backend\logs" mkdir "%~dp0backend\logs"
+set "LOCALLOG=%~dp0backend\logs\tradeos_%WANT%.log"
+echo Pulling %WANT%'s log from %SRV%...
+scp -i "%KEY%" ubuntu@%SRV%:~/tradeos-v6/backend/logs/tradeos_%WANT%.log "%LOCALLOG%"
+if errorlevel 1 (
+  echo   Could not fetch tradeos_%WANT%.log from %SRV% — check the date, or whether
+  echo   the daemon ran that day.
+  goto END
+)
+echo   Saved to "%LOCALLOG%"
 goto END
 
 :VCNSTOP
@@ -419,5 +445,8 @@ goto END
 
 :END
 echo.
-pause
+REM TRADEOS_UNATTENDED is set only by the scheduled savelog pull (Task
+REM Scheduler has no console to press a key on) — an interactive run, typed
+REM or via the menu, always still pauses so the output is not lost.
+if not defined TRADEOS_UNATTENDED pause
 endlocal
