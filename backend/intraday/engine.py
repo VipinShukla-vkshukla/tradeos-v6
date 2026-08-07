@@ -1043,6 +1043,19 @@ class IntradayEngine:
             risk = D.risk_per_share(entry, stop, d)
             r_now = round(D.gain_r(entry, ltp, risk, d), 3) if risk > 0 else None
 
+            # RUPEE P&L — the frontend's primary displayed figure
+            # (PositionsTab reads p.unrealized_pnl directly), and until now
+            # only ever written once a day by manage_open_positions() at EOD.
+            # This loop already refreshed pnl_pct live every cycle, so the
+            # dashboard showed a live percentage next to a rupee figure frozen
+            # since the previous evening's batch run — for BOTH books, since
+            # this function serves swing and intraday positions alike. Signed
+            # with D.sign so a SHORT's P&L moves the correct way; LONG is
+            # unaffected (sign=+1).
+            qty = int(p.get("current_qty") or p.get("actual_qty") or 0)
+            unrealized_pnl = round(D.sign(d) * (ltp - entry) * qty, 2)
+            current_value = round(ltp * qty, 2)
+
             # Only write when something actually moved, so a quiet position does
             # not produce a database round trip every 15 seconds per name. R is
             # part of that comparison, not just the excursion stats — a
@@ -1053,13 +1066,17 @@ class IntradayEngine:
             r_moved = (r_now is None) != (prev_r is None) or (
                 r_now is not None and prev_r is not None
                 and abs(r_now - float(prev_r)) >= 0.01)
-            if (not r_moved
+            prev_pnl = p.get("unrealized_pnl")
+            pnl_moved = prev_pnl is None or abs(unrealized_pnl - float(prev_pnl)) >= 0.01
+            if (not r_moved and not pnl_moved
                     and abs(hwm - float(p.get("high_water_mark") or 0)) < 0.005
                     and abs(mfe - float(p.get("max_favorable_excursion") or 0)) < 0.005
                     and abs(mae - float(p.get("max_adverse_excursion") or 0)) < 0.005):
                 return
 
             upd = {"current_price": round(ltp, 2),
+                   "current_value": current_value,
+                   "unrealized_pnl": unrealized_pnl,
                    "high_water_mark": round(hwm, 2),
                    "max_favorable_excursion": round(mfe, 3),
                    "max_adverse_excursion": round(mae, 3),
