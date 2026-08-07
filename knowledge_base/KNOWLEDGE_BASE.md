@@ -111,6 +111,44 @@ rule that was believed to hold — not simply because a trade lost.)*
 
 ---
 
+## Watching Against Prior Evidence
+
+*(Deliberate operator decisions made KNOWING the existing measurement points
+the other way — not oversights, not "not enough data yet." Tracked
+separately so the next review can ask specifically whether the new evidence
+still supports the bet, rather than re-deriving the original decision.)*
+
+- **MOM and RVS (swing) and VCE and RNG (intraday) promoted from SHADOW to
+  ACTIVE, 07-Aug-2026, against their own measured track record.**
+  Evidence at time of promotion: RVS 42% win / **−0.49%** avg forward return
+  (negative, n=4,747 detections); MOM 50% / +0.05% (barely positive); VCE
+  E[R] −0.94%; RNG E[R] −1.38%. All four were shadowed FOR these numbers, not
+  for a thin sample.
+  Mechanism found alongside the decision: MOM/RVS had actually been
+  functionally ACTIVE the whole time regardless of the documented SHADOW
+  status — `strategy_config` carries lifecycle in two disagreeing places
+  (outer column vs nested `params.lifecycle`), and the code path that gates
+  capital (`engine_registry.load_registry()`) reads the nested one, which was
+  never updated when the 04-Aug demotion set the outer column. So the "SHADOW"
+  demotion had a real hole in it that this promotion also happens to close —
+  the promotion is a deliberate choice, the field-consistency fix is a
+  separate, incidental correctness fix riding along with it.
+  Confidence this was the right call: unmeasured — this is the bet, not a
+  verdict on it. Real capital exposure differs by book: swing (MOM/RVS) is
+  LIVE, real money, `alloc_live_swing=true`; intraday (VCE/RNG) is PAPER
+  only, zero capital risk, and additionally protected by `alloc_live_intraday`
+  now being live (a weak candidate still has to clear the cost-netted edge
+  hurdle regardless of lifecycle).
+  Next evidence needed: re-run the win-rate/forward-return measurement
+  (`docs/6_IMPLEMENTATION_STATUS.md`'s methodology) after these four have
+  accumulated resolved outcomes UNDER ACTIVE status specifically — the old
+  numbers describe what they did as SHADOW/UNDER-DEMOTED, which per the
+  mechanism above is actually close to what they've been doing regardless.
+  If the re-measurement still shows RVS negative, that is the point to
+  revisit this decision, not a fixed calendar date.
+
+---
+
 ## Standing Operational Watch Items
 
 *(Not trading rules — infrastructure facts worth carrying forward because

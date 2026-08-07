@@ -106,10 +106,25 @@ family can be split again if the evidence ever demands it.
 | VBD | Velocity Burst Detector — single-day 3–6% move, institutional confirm |
 | RSB | Relative Strength Breakout — RS leader coiling near resistance |
 | IAD | Institutional Accumulation — quiet delivery + RS + volume expansion |
-| MOM | Momentum Continuation — own family, **shadowed** |
-| RVS | Reversal Setup — SMA50 bounce, RSI turning up — own family, **shadowed** |
+| MOM | Momentum Continuation — own family, **ACTIVE** (promoted 07-Aug-2026) |
+| RVS | Reversal Setup — SMA50 bounce, RSI turning up — own family, **ACTIVE** (promoted 07-Aug-2026) |
 | PEAD | Post-earnings drift, delivery-confirmed — Stage 8, **ACTIVE** |
 | ACC | Accumulation via delivery-% persistence — Stage 8, **ACTIVE** |
+
+**MOM/RVS promotion, 07-Aug-2026 — read before trusting either at face value.**
+Both were demoted to SHADOW on measured underperformance (n=4,747 detections,
+`docs/6_IMPLEMENTATION_STATUS.md`'s win-rate table: RVS 42% win / **−0.49%**
+average forward return — negative; MOM 50% / +0.05% — barely positive,
+against TPO's 74%/+2.41%). The demotion never actually took effect: `strategy_
+config` carries the lifecycle in TWO places — an outer column and a nested
+`params.lifecycle` — and only the outer one was updated on 04-Aug.
+`engine_registry.load_registry()` reads the nested one, so both engines had
+been functionally ACTIVE the entire time regardless of the documented SHADOW
+status. Promoted here to make that state deliberate and consistent on both
+fields rather than silently accidental — an operator decision made WITH the
+negative RVS evidence in view, not a data gap being closed. See
+`engine_lifecycle_log` for the audit trail and `knowledge_base/KNOWLEDGE_
+BASE.md` for the watch item.
 
 **Intraday — `intraday/strategies/registry.py`:**
 
@@ -118,11 +133,20 @@ family can be split again if the evidence ever demands it.
 | ORB | ORB | Opening-range breakout, first 15 min |
 | GAP | ORB | Overnight repricing that holds |
 | PDL | ORB | Prior-day level, break and retest |
-| VCE | VCE | Compression releasing — **shadowed** |
+| VCE | VCE | Compression releasing — **ACTIVE** (promoted 07-Aug-2026, paper-only) |
 | PBK | VWR | First pullback in a trend day |
 | VWR | VWR | Fade and reclaim of the day's VWAP |
-| RNG | RNG | Low of a proven range — **shadowed** |
+| RNG | RNG | Low of a proven range — **ACTIVE** (promoted 07-Aug-2026, paper-only) |
 | **SDN** | **SDN** | **SHORT-only.** VWAP rejection, the failed-breakout trap, range breakdown — `intraday_engine_sdn_lifecycle`, currently `SHADOW`/`ACTIVE` per the operator's own switch |
+
+**VCE/RNG promotion, 07-Aug-2026.** Also measured-negative (E[R] −0.94% and
+−1.38% respectively) — promoted anyway, deliberately, on the grounds that
+intraday is paper-only (`intraday_live_auto_entry` has no implementation, so
+zero real-capital risk) and that `alloc_live_intraday` is now live, so a weak
+individual VCE/RNG candidate still has to clear the same cost-netted edge
+hurdle as everything else rather than being taken on lifecycle alone.
+Single-source config keys (`intraday_engine_vce_lifecycle`,
+`intraday_engine_rng_lifecycle`) — no dual-field issue like MOM/RVS had.
 
 Structural overlays (`analysis/overlays.py`) sit above all of these and can
 only ever shrink or refuse a trade, never invent one: expiry day-type sizing,
