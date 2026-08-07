@@ -98,15 +98,15 @@ const KEYS = [
   // Capital sleeves (config.capital_for) and the real-account figure they are
   // split from — written by control/capital_check.py, not guessable client-side.
   'swing_capital', 'intraday_capital', 'capital_snapshot',
-  // The paper book's OWN, separate capacity numbers — execution/paper_broker.py
-  // ::capacity() checks these independently of intraday_capital/intraday_max_
-  // concurrent above. 07-Aug-2026: found completely invisible on this panel
-  // while governing real behaviour — paper_starting_capital sat at Rs 20,000
-  // against an intraday_capital of Rs 1,00,000, silently capping deployment at
-  // a fifth of what the operator believed was available, with no way to see it
-  // here. Rendered next to their intraday_* counterparts with a drift warning
-  // rather than left to disagree unnoticed a second time.
-  'paper_max_open_positions', 'paper_starting_capital',
+  // The paper book's own position-count cap — execution/paper_broker.py::
+  // capacity() checks this independently of intraday_max_concurrent above, so
+  // whichever is smaller silently wins. Was completely invisible on this panel
+  // while governing real behaviour; rendered next to intraday_max_concurrent
+  // with a drift warning rather than left to disagree unnoticed a second time.
+  // (paper_starting_capital, the other half of this same gap, was removed
+  // 07-Aug-2026 — capacity() now reads intraday_capital directly, so there is
+  // no second capital number left to expose here.)
+  'paper_max_open_positions',
   // Gates SDN (and any future short engine) at the entry point, before market
   // context even gets a vote — cfg_bool default is False, so an unset row is
   // a silent, total block on every short. Was not on this panel at all.
@@ -501,7 +501,13 @@ export function OperatorPanel() {
               const orderVal   = Number(cfg['intraday_max_order_value'] ?? 0) || 0;
               const concurrent = Number(cfg['intraday_max_concurrent'] ?? 0) || 0;
               const paperMax   = Number(cfg['paper_max_open_positions'] ?? 0) || 0;
-              const paperCap   = Number(cfg['paper_starting_capital'] ?? 0) || 0;
+              // execution/paper_broker.py::capacity() reads capital_for('INTRADAY')
+              // directly as of 07-Aug-2026 — the SAME number as the "Capital" field
+              // above, not a second one. It used to read its own paper_starting_
+              // capital key, set independently and silently capping deployment at
+              // whatever it happened to hold (Rs 20,000, once, against a Rs 1,00,000
+              // sleeve) — removed rather than left to drift again.
+              const paperCap = Number(cfg['intraday_capital'] ?? 0) || 0;
               const bindingCount = paperMax > 0 && (concurrent === 0 || paperMax < concurrent)
                 ? paperMax : concurrent;
               const bySlots  = orderVal * bindingCount;
@@ -511,41 +517,27 @@ export function OperatorPanel() {
                   At today&apos;s settings: up to <b>{bindingCount || '?'}</b> positions of up to{' '}
                   <b>₹{orderVal.toLocaleString('en-IN')}</b> each — roughly{' '}
                   <b>₹{capDeploy.toLocaleString('en-IN')}</b> deployable at once, out of the{' '}
-                  ₹{Number(cfg['intraday_capital'] ?? 0).toLocaleString('en-IN')} sleeve.
+                  ₹{paperCap.toLocaleString('en-IN')} Capital sleeve above (one number now —
+                  raising Capital raises this ceiling too, nothing separate to keep in sync).
                   {' '}This is a CEILING, not a target — it only fills when real setups clear
                   every gate above; nothing here forces a trade to reach it.
                 </div>
               );
             })()}
-            <div className="grid grid-cols-2 gap-2 mb-1">
-              <div>
-                <div className="text-[10px] text-muted-foreground">
-                  Paper max open positions
-                </div>
-                {numField('paper_max_open_positions', 'Operator panel: paper capacity')}
+            <div>
+              <div className="text-[10px] text-muted-foreground">
+                Paper max open positions
               </div>
-              <div>
-                <div className="text-[10px] text-muted-foreground">
-                  Paper starting capital
-                </div>
-                {numField('paper_starting_capital', 'Operator panel: paper capacity')}
+              <div className="w-40">
+                {numField('paper_max_open_positions', 'Operator panel: paper capacity')}
               </div>
             </div>
             {Number(cfg['paper_max_open_positions'] ?? 0) !== Number(cfg['intraday_max_concurrent'] ?? 0) && (
-              <div className="text-[10px] text-amber-500 mb-1">
+              <div className="text-[10px] text-amber-500 mt-1 mb-2">
                 ⚠ Paper max open positions ({cfg['paper_max_open_positions'] ?? '—'}) does not
                 match Max concurrent positions ({cfg['intraday_max_concurrent'] ?? '—'}) above —
                 execution/paper_broker.py checks BOTH independently, so whichever is smaller
                 silently wins. Set them equal unless the difference is deliberate.
-              </div>
-            )}
-            {Number(cfg['paper_starting_capital'] ?? 0) !== Number(cfg['intraday_capital'] ?? 0) && (
-              <div className="text-[10px] text-amber-500 mb-2">
-                ⚠ Paper starting capital ({cfg['paper_starting_capital']
-                  ? `₹${Number(cfg['paper_starting_capital']).toLocaleString('en-IN')}` : '—'}) does
-                not match the Capital sleeve above ({cfg['intraday_capital']
-                  ? `₹${Number(cfg['intraday_capital']).toLocaleString('en-IN')}` : '—'}) — total
-                paper deployment is capped at the SMALLER of the two, regardless of per-trade sizing.
               </div>
             )}
 

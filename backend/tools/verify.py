@@ -66,6 +66,7 @@ MODULES = [
     ("book isolation",      "tests.test_book_isolation"),
     ("swing reservation",   "tests.test_swing_reservation"),
     ("capital split",       "tests.test_capital_split"),
+    ("paper capacity",      "tests.test_paper_capacity"),
 ]
 
 

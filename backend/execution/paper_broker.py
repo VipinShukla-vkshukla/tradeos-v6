@@ -44,7 +44,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import cfg, IST, get_supabase, cfg_float, cfg_int, today_ist
+from config import cfg, IST, get_supabase, cfg_float, cfg_int, today_ist, capital_for
 
 
 @dataclass
@@ -166,17 +166,30 @@ def capacity(framework: str = "INTRADAY", sb=None) -> tuple[bool, str, float]:
     """
     Is there room for another paper position?
 
-    Returns (allowed, reason, cash_left). Paper capital is notional and separate
-    from the real account, so a simulation is not constrained by cash that is
-    already deployed live — otherwise the paper run would silently stop taking
-    setups for reasons that have nothing to do with whether they were good.
+    Returns (allowed, reason, cash_left). Capital is config.capital_for(framework)
+    — the SAME sleeve the live sizing formula reads, not a second number that can
+    silently drift from it. Until 07-Aug-2026 this read its own `paper_starting_
+    capital` key instead: introduced 31-Jul-2026, before capital_for()'s book-
+    sleeve mechanism existed at all (05/06-Aug), and never migrated once it did.
+    Concretely, that gap meant a ₹20,000 paper_starting_capital sat next to an
+    intraday_capital of ₹1,00,000 — the dashboard's "Capital" field — silently
+    capping paper deployment at a fifth of what the operator could see was
+    configured, with no warning either number was even involved.
 
-    Concentration is still enforced. A simulation that opens forty positions
-    tests nothing about a system that can hold four, and its results would not
-    transfer to the account it is meant to inform.
+    capital_for() already keeps paper capital notional and separate from the
+    real account (swing sizes against the whole account while intraday stays
+    PAPER — see its own docstring), so nothing about that isolation is lost by
+    reading it here instead of a parallel key.
+
+    Concentration is still enforced, scoped to THIS book only — deployed value
+    from the OTHER framework's paper positions must not eat into this book's
+    cap. Pooling that sum was the same shape as every other book-pooling bug
+    found this session (alloc_max_slots, check_new_entry); harmless today only
+    because swing has never run in PAPER mode, exactly like those others were
+    harmless only until the condition that exposed them arrived.
     """
     sb = sb or get_supabase()
-    cap = cfg_float("paper_starting_capital", 100000.0)
+    cap = capital_for(framework)
     max_open = cfg_int("paper_max_open_positions", 5)
     try:
         rows = (sb.table("open_positions")
@@ -186,7 +199,7 @@ def capacity(framework: str = "INTRADAY", sb=None) -> tuple[bool, str, float]:
         return False, f"could not read paper book: {e}", 0.0
 
     mine = [r for r in rows if (r.get("framework") or "").upper() == framework.upper()]
-    deployed = sum(float(r.get("invested_value") or 0) for r in rows)
+    deployed = sum(float(r.get("invested_value") or 0) for r in mine)
     left = cap - deployed
 
     if len(mine) >= max_open:
