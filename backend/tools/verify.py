@@ -71,6 +71,7 @@ MODULES = [
     ("hurdle dedup",         "tests.test_hurdle_dedup"),
     ("ai tier weight review", "tests.test_ai_tier_weight_review"),
     ("swing hold days",      "tests.test_swing_hold_days"),
+    ("swing family maturity review", "tests.test_swing_family_maturity_review"),
 ]
 
 

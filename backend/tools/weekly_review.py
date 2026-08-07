@@ -43,7 +43,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import cfg_float, get_supabase, today_ist
+from config import cfg_float, cfg_int, get_supabase, today_ist
 
 # An engine is not judged below this many resolved outcomes. 25 detections in a
 # session looks like plenty and is one day of one market regime.
@@ -651,6 +651,79 @@ def review_ai_tier_weight(sb) -> None:
                     f"weight at 0")
 
 
+def review_swing_family_maturity(sb) -> None:
+    """
+    Is any SWING family ready for Point 5's prerequisites (a position-
+    replacement mechanism)? SWING ONLY — reads signal_output_daily, a
+    concept intraday's same-day resolution model has no equivalent of.
+
+    tools/swing_family_maturity_audit.py is the on-demand report a human
+    reads; this is the same measurement wired into the automated weekly
+    pass so the question is re-asked on its own schedule — same reason
+    review_ai_tier_weight exists, same operator request: "ensure it gets
+    picked at the right time in future," this time for "is any family
+    mature enough to build the replacement mechanism against."
+
+    07-Aug-2026, the day this was built: CONTINUATION was the closest at
+    561 entered / 125 resolved (22%) — nowhere near the bar. MOM (5.6%
+    resolved) and RVS (10.4%) were far thinner. None qualified; this
+    exists so nobody has to pull that SQL by hand again to find out when
+    one finally does.
+    """
+    _hdr("SWING FAMILY MATURITY — ready for Point 5 prerequisites?")
+    from allocation.scoring import swing_family
+
+    rows, off = [], 0
+    while True:
+        page = (sb.table("signal_output_daily")
+                  .select("strategy,outcome_entered,outcome_category")
+                  .eq("outcome_entered", True)
+                  .range(off, off + 1000 - 1).execute().data) or []
+        rows += page
+        if len(page) < 1000:
+            break
+        off += 1000
+
+    if not rows:
+        logger.info("  no entered signals found — nothing to measure")
+        return
+
+    by_family: dict[str, dict] = defaultdict(lambda: {"entered": 0, "resolved": 0})
+    for r in rows:
+        fam = swing_family(r.get("strategy"))
+        d = by_family[fam]
+        d["entered"] += 1
+        if r.get("outcome_category") in ("TARGET", "STOP"):
+            d["resolved"] += 1
+
+    min_resolved = cfg_int("swing_maturity_min_resolved", 30)
+    min_pct = cfg_float("swing_maturity_min_resolved_pct", 60.0)
+
+    any_ready = False
+    for fam in sorted(by_family, key=lambda f: -by_family[f]["entered"]):
+        d = by_family[fam]
+        pct = d["resolved"] / d["entered"] * 100.0 if d["entered"] else 0.0
+        ready = d["resolved"] >= min_resolved and pct >= min_pct
+        logline = (f"  {fam:<14} entered={d['entered']:<6} "
+                   f"resolved={d['resolved']:<6} ({pct:.0f}%)")
+        if ready:
+            any_ready = True
+            logger.success(logline + "  READY")
+            _propose(sb, "SWING_FAMILY_MATURE", f"position_replacement/{fam}",
+                     "not built — Point 5 parked pending evidence",
+                     "prerequisites met, safe to scope replacement logic to this family",
+                     f"{fam}: {d['resolved']} of {d['entered']} entered signals "
+                     f"resolved ({pct:.0f}%) — clears the {min_resolved}-resolved / "
+                     f"{min_pct:.0f}% maturity bar for Point 5 prerequisite work",
+                     "high")
+        else:
+            logger.info(logline)
+
+    if not any_ready:
+        logger.info(f"  no family yet clears {min_resolved} resolved / "
+                    f"{min_pct:.0f}% — re-checked automatically next week")
+
+
 def show_open(sb) -> int:
     _hdr("OPEN PROPOSALS")
     try:
@@ -685,6 +758,7 @@ def main(show: bool = False) -> int:
     review_gates(sb)
     review_ranking(sb)
     review_ai_tier_weight(sb)
+    review_swing_family_maturity(sb)
 
     # Refresh the aggregates the dashboard reads. performance_metrics had not
     # been written since 2026-05-12, which is why the Engine Leaderboard said
