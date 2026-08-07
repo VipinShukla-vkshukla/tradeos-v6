@@ -55,11 +55,19 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import TOTAL_CAPITAL, cfg, cfg_float, get_supabase, today_ist
+from config import TOTAL_CAPITAL, capital_for, cfg, cfg_float, get_supabase, today_ist
 from tools.weekly_review import (MIN_SAMPLE, MIN_SESSIONS, _RUN_ID,
                                  _tradeable_floor, dedupe_setups)
 
+# TOTAL_CAPITAL is the whole real account — right denominator for account-wide
+# figures (section 3's proposed cross-book controls, the both-books worst case).
+# Since the capital split (config.capital_for), swing and intraday no longer
+# share one number — engine.py sizes intraday off capital_for("INTRADAY"), not
+# TOTAL_CAPITAL, and this file using C for both was exactly the "check that
+# computes against the wrong figure" pattern this project keeps finding.
 C = TOTAL_CAPITAL
+C_SWING = capital_for("SWING")
+C_INTRADAY = capital_for("INTRADAY")
 
 
 @dataclass
@@ -94,14 +102,14 @@ def _g(key, d):
 def risk_exposure(sb) -> dict:
     rpt = _g("risk_pct_per_trade", 1.0)
     heat_cap_pct = _g("portfolio_max_total_risk_pct", 6.0)
-    per_trade = C * rpt / 100.0
-    heat_cap = C * heat_cap_pct / 100.0
+    per_trade = C_SWING * rpt / 100.0
+    heat_cap = C_SWING * heat_cap_pct / 100.0
 
     logger.info("")
     logger.info("═" * 78)
     logger.info("1 · RISK EXPOSURE — what the current settings actually put at stake")
     logger.info("═" * 78)
-    logger.info(f"  capital                        Rs {C:>9,.0f}")
+    logger.info(f"  capital (swing sleeve)         Rs {C_SWING:>9,.0f}")
     logger.info(f"  risk_pct_per_trade  {rpt:>4.1f}%      Rs {per_trade:>9,.0f}   "
                 f"<- THIS is where the per-trade number comes from")
     logger.info(f"     enforced in analysis/portfolio_constraints.py: "
@@ -131,7 +139,7 @@ def risk_exposure(sb) -> dict:
     logger.info(f"    {'':<22}{sum(x[2] for x in rows):>9,.0f}{'':>8}{heat:>10,.0f}")
     logger.info("")
     tag = "OK" if heat <= heat_cap else "OVER THE CAP"
-    logger.info(f"  open heat Rs {heat:,.0f} ({heat / C:.1%} of capital) against a "
+    logger.info(f"  open heat Rs {heat:,.0f} ({heat / C_SWING:.1%} of capital) against a "
                 f"Rs {heat_cap:,.0f} cap ({heat_cap_pct}%) — {tag}, "
                 f"Rs {heat_cap - heat:,.0f} of headroom")
 
@@ -186,7 +194,7 @@ def panel_recs(sb, setups: list, closed: list) -> list[Rec]:
 
     # ── SWING: per order ────────────────────────────────────────────────────
     sv = _g("swing_max_order_value", 4000)
-    rpt_rs = C * _g("risk_pct_per_trade", 1.0) / 100.0
+    rpt_rs = C_SWING * _g("risk_pct_per_trade", 1.0) / 100.0
     implied = sv * swing_stop / 100.0
     out.append(Rec(
         key="swing_max_order_value", label="Swing · Per order", book="SWING",
@@ -223,7 +231,7 @@ def panel_recs(sb, setups: list, closed: list) -> list[Rec]:
         key="swing_max_notional_per_day", label="Swing · Notional/day", book="SWING",
         current=f"{snot:,.0f}", suggested=f"{by_new:,.0f}",
         binds="DEAD — cannot bind",
-        implication=f"{snot / C:.0%} of the account, but only Rs {by_new:,.0f} is reachable",
+        implication=f"{snot / C_SWING:.0%} of the account, but only Rs {by_new:,.0f} is reachable",
         evidence=(f"per order Rs {sv:,.0f} x new positions/day {sn:.0f} = "
                   f"Rs {by_new:,.0f}, which is below the Rs {snot:,.0f} notional cap, "
                   f"so notional/day can never bind either. Two of the three swing "
@@ -235,19 +243,24 @@ def panel_recs(sb, setups: list, closed: list) -> list[Rec]:
         current=f"{sn:.0f}", suggested=f"{sn:.0f} (hold)",
         binds="BINDS — this is the real swing cap",
         implication=(f"{sn:.0f} x Rs {sv:,.0f} = Rs {by_new:,.0f} of new exposure "
-                     f"({by_new / C:.0%} of capital), about "
+                     f"({by_new / C_SWING:.0%} of capital), about "
                      f"Rs {sn * min(implied, rpt_rs):,.0f} of new risk per day"),
         evidence=(f"the only swing daily cap that can be reached. At "
                   f"Rs {rpt_rs:,.0f} of risk per trade this puts "
-                  f"{sn * rpt_rs / C:.1%} of capital at stake per day, which sits "
+                  f"{sn * rpt_rs / C_SWING:.1%} of capital at stake per day, which sits "
                   f"inside the {_g('portfolio_max_total_risk_pct', 6.0):.0f}% total "
                   f"heat cap after two days of entries"),
         confident=True, priority=3))
 
-    # ── INTRADAY: per order — does it bind at all? ──────────────────────────
+    # ── INTRADAY: per order — WHICH of the two terms in engine.py's min() wins? ──
+    # Two symmetric failure modes, one min(). The pct_budget < iv branch below
+    # existed; its mirror did not, and C itself was TOTAL_CAPITAL (the swing
+    # sleeve) rather than capital_for("INTRADAY") — so the exact case live on
+    # 07-Aug-2026 (iv=10,000 vs the real ceiling of ipp% of the 100,000
+    # intraday sleeve) went undetected by the one tool built to catch this.
     iv = _g("intraday_max_order_value", 6000)
     ipp = _g("intraday_max_position_pct", 25.0)
-    pct_budget = C * ipp / 100.0
+    pct_budget = C_INTRADAY * ipp / 100.0
     if pct_budget < iv:
         out.append(Rec(
             key="intraday_max_order_value", label="Intraday · Per order",
@@ -256,13 +269,36 @@ def panel_recs(sb, setups: list, closed: list) -> list[Rec]:
             binds="DEAD — cannot bind",
             implication=(f"the panel says Rs {iv:,.0f} but the real ceiling is "
                          f"Rs {pct_budget:,.0f}"),
-            evidence=(f"engine.py sizes on min(TOTAL_CAPITAL x "
+            evidence=(f"engine.py sizes on min(capital_for('INTRADAY') x "
                       f"intraday_max_position_pct x market multiplier, "
                       f"max_order_value). intraday_max_position_pct is {ipp:.0f}% = "
                       f"Rs {pct_budget:,.0f}, so the Rs {iv:,.0f} panel control never "
                       f"binds and moving it changes nothing until it drops below "
                       f"Rs {pct_budget:,.0f}. A switch that does nothing is the "
                       f"failure this project fights hardest"),
+            confident=True, priority=1))
+    elif iv < pct_budget:
+        i_sizes = [_f(r.get("entry_price")) * _f(r.get("actual_qty")) for r in closed
+                  if (r.get("framework") or "").upper() == "INTRADAY"
+                  and _f(r.get("entry_price")) and _f(r.get("actual_qty"))]
+        size_evidence = (f"Median realised size confirms it: Rs {st.median(i_sizes):,.0f} "
+                         f"median, Rs {max(i_sizes):,.0f} the largest of {len(i_sizes)} "
+                         f"closed intraday trades, both clustered against the Rs "
+                         f"{iv:,.0f} ceiling, not the {ipp:.0f}% one" if i_sizes else
+                         f"No closed intraday trades in the lookback window to confirm "
+                         f"realised sizing against")
+        out.append(Rec(
+            key="intraday_max_position_pct", label="Intraday · Max position %",
+            book="INTRADAY",
+            current=f"{ipp:.0f}% (Rs {pct_budget:,.0f})", suggested=f"raise Per order to ~{pct_budget:,.0f}, or hold",
+            binds="DEAD — cannot bind",
+            implication=(f"the panel implies up to Rs {pct_budget:,.0f} per position, "
+                         f"but the real ceiling is Rs {iv:,.0f}"),
+            evidence=(f"same min() as above, other direction: intraday_max_order_value "
+                      f"(Rs {iv:,.0f}) is smaller than {ipp:.0f}% of capital "
+                      f"(Rs {pct_budget:,.0f}), so the flat per-order cap always wins — "
+                      f"intraday_max_position_pct currently has no effect on sizing at "
+                      f"all. {size_evidence}"),
             confident=True, priority=1))
 
     # Names the sizing cannot buy at all.
@@ -304,12 +340,12 @@ def panel_recs(sb, setups: list, closed: list) -> list[Rec]:
         book="INTRADAY",
         current=f"{inot:,.0f}", suggested=f"{by_new_i:,.0f}",
         binds=("BINDS" if binding_i[1] == "notional/day" else "dead"),
-        implication=f"{inot / C:.0%} of the account in MIS positions in one day",
-        evidence=(f"real per-position budget is Rs {real_per:,.0f} (the {ipp:.0f}% "
-                  f"rule, not the Rs {iv:,.0f} panel figure), so "
-                  f"{inw:.0f} new positions reach Rs {by_new_i:,.0f}. Setting "
-                  f"notional/day to that makes the panel state the true ceiling "
-                  f"instead of one 2x higher"),
+        implication=f"{inot / C_INTRADAY:.0%} of the account in MIS positions in one day",
+        evidence=(f"real per-position budget is Rs {real_per:,.0f} "
+                  f"({'the flat Per order cap, not the ' + f'{ipp:.0f}% rule' if real_per == iv else f'the {ipp:.0f}% rule, not the flat Per order cap'} "
+                  f"of Rs {pct_budget:,.0f}), so {inw:.0f} new positions reach "
+                  f"Rs {by_new_i:,.0f}. Setting notional/day to that makes the panel "
+                  f"state the true ceiling instead of one further off"),
         confident=True, priority=2))
 
     # ── Alert top N, from how many setups a session actually produces ───────
