@@ -378,9 +378,8 @@ class IntradayEngine:
 
     def apply_live_quotes(self, feed) -> int:
         """
-        Overlay live day range and volume onto the contexts. Per cycle. VWAP is
-        a separate, independently-gated overlay — see below. `prev_close` is
-        NEVER overlaid — see below.
+        Overlay live day range, volume and prev_close onto the contexts. Per
+        cycle. VWAP is a separate, independently-gated overlay — see below.
 
         WHY THIS EXISTS. refresh_contexts() runs on the 300-second timer because
         the historical endpoint is rate-limited; the decision loop runs every 15
@@ -402,29 +401,34 @@ class IntradayEngine:
         gate. So a zero or absent VWAP from the tick stream never overwrites the
         computed one.
 
-        TWO SWITCHES, NOT ONE — 08-Aug-2026, tools/quote_parity.py measured the
-        two halves separately and they disagreed: day_high/day_low/day_open
-        parity held cleanly (0 behind), but vwap and prev_close both FAULTed
-        (vwap worst -0.39%, prev_close worst -4.18%). A single switch meant
-        promoting the two clean fields required promoting the two faulty ones
-        alongside them. `intraday_quote_mode_range` gates day_open/day_high/
-        day_low/volume; `intraday_quote_mode_vwap` gates vwap on its own, since
-        it failed for a DIFFERENT reason than staleness — the live tick VWAP
-        and refresh_contexts()'s bar-approximation VWAP are two different
-        formulas, not the same number measured at different times, so this
-        needs a validated reconciliation before it is ever worth enabling, not
-        just a resync.
+        TWO SWITCHES, BOTH DEFAULT ON — 08-Aug-2026, migration 056.
+        `intraday_quote_mode_range` gates day_open/day_high/day_low/volume/
+        prev_close; `intraday_quote_mode_vwap` gates vwap on its own. Both
+        default to the same 'true' migration 043 already set for the single
+        switch this replaces — this is a REGROUPING for independent control
+        and ongoing verification, not a behaviour change from what has been
+        live since Phase 4. tools/quote_parity.py's `check_quote_parity`
+        (tools/health.py) now watches both continuously, so if either one
+        ever does need turning off, that gets caught by the check run before
+        every trading session rather than left to be noticed by hand.
 
-        PREV_CLOSE IS NEVER OVERLAID, under either switch or any future one.
-        Unlike the other five fields it is not time-sensitive — a previous
-        session's close cannot change intraday, so a live overlay buys zero
-        benefit even when accurate. Its FAULT in the parity run traces to
-        refresh_contexts()'s own stock_data_daily lookup (a global, not
-        per-symbol, row LIMIT that can silently resolve to a stale multi-day-
-        old close for a thin symbol) — a correctness bug in the fetched side,
-        which a live overlay would only paper over for the fields it happens to
-        touch, not fix. Left out of scope here; still measured every cycle by
-        the parity batch below so the underlying bug stays visible.
+        PREV_CLOSE'S PLACE IN THIS. It measured FAULT against refresh_contexts()
+        (worst -4.18%), but the live side here is Kite's own broker-reported
+        previous close, and the fetched side is `stock_data_daily` via a
+        global, not per-symbol, row LIMIT that can silently resolve to a
+        stale multi-day-old close for a thin symbol. The more likely
+        direction is that the live tick is CORRECTING the fetched side's bug,
+        not disagreeing with a correct one — so it stays in the overlay
+        rather than being pulled out on an unconfirmed guess about which side
+        is wrong. The stock_data_daily query itself is a separate, still-open
+        bug, unrelated to whether this overlay runs.
+
+        VWAP'S FAULT IS A DIFFERENT SHAPE — a formula difference (live tick
+        VWAP vs refresh_contexts()'s bar-approximation), not a staleness gap,
+        so some disagreement is structural and expected rather than a sign
+        either side is simply wrong. Kept on to match current behaviour;
+        `_vwap_engine_relevance`/`vwap_verdict` in tools/quote_parity.py are
+        what would tell you if it starts moving a real engine decision.
         """
         from intraday.market_context import INDEX_SYMBOL
         # 07-Aug-2026: `now` was read at three points below (the parity-log
@@ -490,13 +494,10 @@ class IntradayEngine:
         touched = 0
 
         def _overlay(ctx, q) -> list[str]:
-            # NOTE: prev_close is deliberately absent from this field list —
-            # see the docstring above. It is never overlaid regardless of
-            # either switch.
             live = []
             if range_on:
                 for field, key in (("day_high", "day_high"), ("day_low", "day_low"),
-                                   ("day_open", "day_open")):
+                                   ("day_open", "day_open"), ("prev_close", "prev_close")):
                     v = q.get(key)
                     if v:
                         setattr(ctx, field, float(v))

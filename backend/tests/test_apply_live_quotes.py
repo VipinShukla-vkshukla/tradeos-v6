@@ -19,17 +19,19 @@ armed the whole time.
 
 WHAT THIS ALSO CATCHES — 08-Aug-2026 (the range/vwap split)
 --------------------------------------------------------------
-tools/quote_parity.py measured the six overlaid fields separately and found
-day_high/day_low/day_open held clean while vwap and prev_close both FAULTed.
-A single `intraday_quote_mode` switch could not promote the clean fields
-without also promoting the faulty ones. `intraday_quote_mode_range` and
-`intraday_quote_mode_vwap` are now independent, and `prev_close` is removed
-from the overlay entirely (it is time-invariant intraday, so a live overlay
-was never the right fix for its FAULT — that traces to a correctness bug in
-refresh_contexts()'s own stock_data_daily lookup). These tests assert the
-isolation directly: range-on-vwap-off touches range fields only, vwap-on-
-range-off touches vwap only, and prev_close never moves under any
-combination.
+tools/quote_parity.py measured the six overlaid fields separately.
+`intraday_quote_mode_range` (day_open/day_high/day_low/volume/prev_close)
+and `intraday_quote_mode_vwap` (vwap) are now independent switches instead
+of one, BOTH DEFAULT TRUE — matching what the single switch this replaces
+already had live since Phase 4, not a new judgment call. prev_close stays
+in the range group deliberately: its FAULT traces to a suspected bug in
+refresh_contexts()'s own stock_data_daily lookup on the FETCHED side, and
+the live value (the broker's own reported previous close) more likely
+corrects that than causes a new problem, so pulling it out of the overlay
+on an unconfirmed guess would have been a regression, not a fix. These
+tests assert the isolation directly: range-on-vwap-off touches range
+fields (including prev_close) but not vwap; vwap-on-range-off touches vwap
+only, leaving prev_close untouched at its old value.
 """
 
 from __future__ import annotations
@@ -66,7 +68,7 @@ def _ctx(symbol: str):
 
 _LIVE_TICK = {
     "day_high": 103.5, "day_low": 98.7, "day_open": 100.0,
-    "prev_close": 111.0,  # deliberately far off — must never land regardless
+    "prev_close": 111.0,  # deliberately far from the context's 98.0, to prove it moved
     "volume": 12345.0, "vwap": 101.1,
 }
 
@@ -95,10 +97,14 @@ def test_range_on_vwap_off_touches_range_fields_only():
         assert ctx.day_low == 98.7
         assert ctx.day_open == 100.0
         assert ctx.session_volume == 12345.0
+        assert ctx.prev_close == 111.0, (
+            "prev_close is grouped under range (08-Aug-2026) — it must overlay "
+            "when range is on")
         assert ctx.vwap == 100.2, (
             f"vwap switch is OFF but vwap moved to {ctx.vwap} — the two "
             f"switches are not actually independent")
         assert "vwap" not in ctx.live_fields
+        assert "prev_close" in ctx.live_fields
 
 
 def test_vwap_on_range_off_touches_vwap_only():
@@ -113,22 +119,11 @@ def test_vwap_on_range_off_touches_vwap_only():
         assert ctx.day_high == 101.0, (
             f"range switch is OFF but day_high moved to {ctx.day_high} — the "
             f"two switches are not actually independent")
+        assert ctx.prev_close == 98.0, (
+            f"prev_close is {ctx.prev_close} — it is grouped under range, not "
+            f"vwap, so it must not move when only the vwap switch is on")
         assert ctx.session_volume is None, "volume is grouped under range, must stay off"
         assert "day_high" not in ctx.live_fields
-
-
-def test_prev_close_never_overlays_under_any_combination():
-    """The field removed entirely — must not move even with both switches on."""
-    with cfg_ctx({"intraday_quote_mode_range": "true",
-                  "intraday_quote_mode_vwap": "true"}):
-        eng = _engine()
-        eng._contexts = {"RELIANCE": _ctx("RELIANCE")}
-        feed = _FakeFeed({"RELIANCE": _LIVE_TICK})
-        eng.apply_live_quotes(feed)
-        ctx = eng._contexts["RELIANCE"]
-        assert ctx.prev_close == 98.0, (
-            f"prev_close is {ctx.prev_close}, the live tick's 111.0 landed — "
-            f"prev_close must never be overlaid, live or not")
         assert "prev_close" not in ctx.live_fields
 
 
@@ -209,8 +204,6 @@ TESTS = [
      test_range_on_vwap_off_touches_range_fields_only),
     ("vwap on / range off touches vwap only",
      test_vwap_on_range_off_touches_vwap_only),
-    ("prev_close never overlays under any combination",
-     test_prev_close_never_overlays_under_any_combination),
     ("both switches off touches nothing",
      test_both_switches_off_touches_nothing),
     ("apply_live_quotes still works with parity logging off",

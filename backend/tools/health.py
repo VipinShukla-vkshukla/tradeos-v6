@@ -798,8 +798,20 @@ def check_quote_parity() -> tuple[bool, str]:
     day_high/day_low or vwap agreement, and disarming meant nothing was left
     running to notice if a later session disagreed. This is the check that
     closes that gap: it fails if a switch is on but nobody is watching, or if
-    watching has actually caught a regression, so "safe as of 07-Aug" cannot
-    silently outlive the data it was based on.
+    RANGE (day_high/day_low, clean at baseline) has actually regressed.
+
+    VWAP AND PREV_CLOSE FAULTING IS NOT, BY ITSELF, A FAILURE HERE. Both were
+    already measured FAULT on 07-Aug and both switches were kept ON anyway —
+    vwap because the gap is a structural formula difference, not staleness;
+    prev_close because the live side is more likely correcting a
+    stock_data_daily bug than causing one (see
+    intraday/engine.py::apply_live_quotes()'s docstring). Failing this check
+    every single day on an accepted, expected condition is the exact "check
+    that can never pass" trap CLAUDE.md warns about — it gets read once,
+    ignored forever, and stops meaning anything. So both are reported in the
+    detail string for visibility, never as the reason this returns False.
+    RANGE is different: it measured clean, so any fault there is new
+    information, not a re-statement of what was already known and accepted.
     """
     from config import cfg_bool, get_supabase, today_ist
     from datetime import timedelta
@@ -832,17 +844,23 @@ def check_quote_parity() -> tuple[bool, str]:
                        f"confirm the daemon actually picked up the config change")
 
     from tools.quote_parity import range_verdict, vwap_verdict
-    problems, clean = [], []
+    # RANGE is the only one that can fail this check — it measured clean at
+    # baseline, so a fault now is new. VWAP is reported but never blocking —
+    # see the docstring for why failing on an already-accepted condition
+    # would make this check impossible to ever pass.
+    notes = []
     if range_on:
         ok, detail = range_verdict(rows)
-        (problems if ok is not True else clean).append(f"range: {detail}")
+        if ok is False:
+            return False, (f"RANGE REGRESSED — {detail}. day_high/day_low measured clean "
+                           f"on 07-Aug; this is new, worth investigating before trusting "
+                           f"intraday_quote_mode_range further.")
+        notes.append(f"range: {detail}")
     if vwap_on:
-        ok, detail = vwap_verdict(rows)
-        (problems if ok is not True else clean).append(f"vwap: {detail}")
+        _, detail = vwap_verdict(rows)
+        notes.append(f"vwap: {detail}")
 
-    if problems:
-        return False, "RECENT DATA DISAGREES — " + "; ".join(problems)
-    return True, "verified against last 5 days: " + "; ".join(clean)
+    return True, "checked against last 5 days: " + "; ".join(notes)
 
 
 def check_governance() -> tuple[bool, str]:

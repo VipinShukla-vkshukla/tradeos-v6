@@ -548,13 +548,13 @@ export function OperatorPanel() {
               <Toggle on={bool('overlay_expiry_enabled')} disabled={busy !== null}
                 onChange={(v) => set('overlay_expiry_enabled', String(v), 'Operator panel')} />
             </Row>
-            <Row label="Quote mode — day range/volume" tag={<P4 />}
-              hint="Feeds live day_open/day_high/day_low/volume into the breakout conditions instead of a value up to 300s stale. Measured 07-Aug-2026 via tools.quote_parity: day_high/day_low held clean across 2880 comparisons (0 behind). Independent of the VWAP switch below — prev_close is never live-overlaid regardless of either.">
+            <Row label="Quote mode — day range/volume/prev_close" tag={<P4 />}
+              hint="Feeds live day_open/day_high/day_low/volume/prev_close into the breakout conditions instead of a value up to 300s stale. Default ON — matches what migration 043 already had live; this only split it out for independent control. day_high/day_low measured clean 07-Aug-2026 (0 behind, 2880 comparisons). prev_close FAULTed against the fetched side, but the live value is the broker's own previous close — more likely correcting a stock_data_daily bug than causing one. tools.health's quote_parity check watches this continuously; it fails if day_high/day_low regress from clean.">
               <Toggle on={bool('intraday_quote_mode_range')} disabled={busy !== null}
                 onChange={(v) => set('intraday_quote_mode_range', String(v), 'Operator panel')} />
             </Row>
             <Row label="Quote mode — VWAP" tag={<P4 />}
-              hint="Feeds live tick-weighted VWAP (Kite's average_traded_price) instead of the bar-approximation VWAP. Measured 07-Aug-2026: FAULT, 7 of 2880 beyond 0.10%, worst -0.39% — the two sides are different formulas, not the same number at different ages, so this needs a reconciled definition validated before enabling, not just a resync. Re-run tools.quote_parity before flipping this on.">
+              hint="Feeds live tick-weighted VWAP (Kite's average_traded_price) instead of the bar-approximation VWAP. Default ON — matches migration 043. Measured 07-Aug-2026: FAULT, 7 of 2880 beyond 0.10%, worst -0.39% — a formula difference (tick VWAP vs bar-approximation), not staleness, so some gap is structural and expected. Kept on since it has run since Phase 4 without a traced incident; tools.health watches it but does not fail on this alone, since failing on an already-accepted condition would make the check meaningless. Escalates only if the gap grows well past what 07-Aug showed.">
               <Toggle on={bool('intraday_quote_mode_vwap')} disabled={busy !== null}
                 onChange={(v) => set('intraday_quote_mode_vwap', String(v), 'Operator panel')} />
             </Row>

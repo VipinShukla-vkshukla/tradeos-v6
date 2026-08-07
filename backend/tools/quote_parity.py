@@ -31,18 +31,23 @@ gets caught by the check you are told to run before trading, not
 rediscovered by hand or, worse, not discovered at all.
 
 Two independent switches consume this: `intraday_quote_mode_range` (day_open/
-day_high/day_low/volume, measured clean 07-Aug-2026, recommended ON) and
-`intraday_quote_mode_vwap` (vwap, measured FAULT against the tolerances the
-engines that read it actually use — see `_vwap_engine_relevance` below,
-recommended OFF and not expected to flip soon, since the fault traces to a
-structural formula difference rather than staleness). Both stay off by
-default; both are cheap to leave in place either way, which is the point —
-revisiting either is a config flip once fresh data supports it, not a code
-change. `prev_close` has no switch at all, not "off by default" but no
-overlay code path — it is time-invariant intraday, so a live overlay is
-never the fix for it regardless of what this reports. All three fields stay
-measured here for visibility — see
-intraday/engine.py::apply_live_quotes()'s docstring.
+day_high/day_low/volume/prev_close) and `intraday_quote_mode_vwap` (vwap).
+Both DEFAULT TRUE — matching what migration 043 already set for the single
+switch this replaces, so splitting them changes nothing live by itself.
+day_high/day_low measured clean 07-Aug-2026; vwap measured FAULT against the
+tolerances the engines that read it actually use (see
+`_vwap_engine_relevance` below); prev_close measured FAULT against the
+fetched side too, but the live value there is the broker's own reported
+previous close, more likely correcting a bug in refresh_contexts()'s
+stock_data_daily lookup than causing one — see
+intraday/engine.py::apply_live_quotes()'s docstring for the full reasoning
+on both. Neither FAULT is being acted on by turning its switch off: vwap's
+gap is structural (a formula difference, not staleness) and has been live
+without a traced incident since Phase 4; turning it off on one session's
+measurement would be exactly the frozen-verdict problem this module exists
+to stop making. What DOES change: both are now independently revisitable —
+a config flip once evidence supports it, not a code change — and both are
+watched continuously rather than checked once and trusted forever.
 
 WHAT COUNTS AS AGREEMENT
 ------------------------
@@ -282,40 +287,44 @@ def report(sb) -> int:
     # tools.health's ongoing check calls, so a fresh re-run of this command
     # and the check that runs before every trading session agree by
     # construction, not by two copies of the same logic staying in sync.
+    # Both switches default TRUE (matching what migration 043 already had
+    # live) — this is now a REVIEW signal, not a gate before first enabling.
     logger.info("")
     range_ok, range_detail = range_verdict(rows)
     if range_ok:
-        logger.success(f"  RANGE: {range_detail}. Safe to enable — on THIS data:")
-        logger.success("    UPDATE system_config SET value='true' "
-                       "WHERE key='intraday_quote_mode_range';")
-        logger.info("    (keep parity logging armed after — see the module docstring)")
+        logger.success(f"  RANGE: {range_detail}. Consistent with intraday_quote_mode_range "
+                       f"staying ON.")
     elif range_ok is False:
-        logger.error(f"  RANGE: {range_detail}. Leave intraday_quote_mode_range off.")
+        logger.error(f"  RANGE: {range_detail}. This is new — day_high/day_low measured "
+                     "clean on 07-Aug; worth turning intraday_quote_mode_range off and "
+                     "investigating before trusting it further.")
     else:
         logger.info(f"  RANGE: {range_detail}.")
 
     vwap_ok, vwap_detail = vwap_verdict(rows)
     if vwap_ok:
-        logger.success(f"  VWAP: {vwap_detail}. Safe to enable — on THIS data:")
-        logger.success("    UPDATE system_config SET value='true' "
-                       "WHERE key='intraday_quote_mode_vwap';")
+        logger.success(f"  VWAP: {vwap_detail}. Currently reading better than the 07-Aug "
+                       f"measurement.")
     elif vwap_ok is False:
-        logger.error(f"  VWAP: {vwap_detail}. Leave intraday_quote_mode_vwap off — this is "
-                     "a formula disagreement (tick VWAP vs bar-approximation VWAP), not "
-                     "staleness, so it is unlikely to clear on its own with more data.")
+        logger.warning(f"  VWAP: {vwap_detail}. Consistent with the 07-Aug measurement — a "
+                       "formula difference, not staleness, and intraday_quote_mode_vwap is "
+                       "kept ON on the reasoning that this has run since Phase 4 without a "
+                       "traced incident. Not an escalation by itself; escalates if the rate "
+                       "climbs well past what 07-Aug showed.")
     else:
         logger.info(f"  VWAP: {vwap_detail}.")
 
     if "prev_close" in field_ok and not field_ok["prev_close"]:
-        logger.error("  PREV_CLOSE FAULTs, but has no switch — it is never live-overlaid "
-                     "regardless. The fix is in refresh_contexts()'s stock_data_daily "
-                     "lookup, not here.")
+        logger.warning("  PREV_CLOSE FAULTs against the fetched side, as on 07-Aug — kept ON "
+                       "under intraday_quote_mode_range on the reasoning that the live value "
+                       "(broker-reported) more likely corrects a stock_data_daily bug than "
+                       "causes one. That bug itself is still open and unrelated to this switch.")
 
     logger.info("")
     logger.info("  Whichever switch(es) are on, keep parity logging armed — this is a "
                 "point-in-time read of whatever data exists right now, not a permanent "
                 "verdict. tools.health re-checks it before every trading session.")
-    return 0 if (range_ok is not False and vwap_ok is not False) else 1
+    return 0 if (range_ok is not False) else 1
 
 
 def _set(sb, on: bool) -> int:
