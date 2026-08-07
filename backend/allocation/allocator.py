@@ -62,6 +62,24 @@ class Allocator:
         except Exception as e:
             logger.warning(f"  allocator: prior refresh failed ({e}) — keeping previous")
 
+    def score_hypothetical(self, symbol: str, entry: float, stop: float, target: float,
+                           qty: int, product: str, source: str,
+                           native_rank: float = 0.0, direction: str = "LONG") -> float | None:
+        """
+        Edge for a plan that has not triggered yet, same pipeline as a live one.
+
+        Feeds swing_assignment()'s reservation field: an untriggered candidate
+        needs to be compared against the bar in the same units as a triggered
+        proposal, which means the same prior lookup and the same cost model,
+        not an approximation.
+        """
+        pri = self._prior_for(Proposal(symbol=symbol, framework="SWING", product=product,
+                                       entry=entry, stop=stop, target=target, quantity=qty,
+                                       source=source, native_rank=native_rank, direction=direction))
+        days, _ = self._hold_days.get("SWING", (1.0, 0))
+        return S.score(entry, stop, target, qty, product, pri, days,
+                       direction=direction).get("edge")
+
     def _prior_for(self, p: Proposal):
         if self._priors is None:
             self.refresh_priors()

@@ -567,7 +567,7 @@ class IntradayEngine:
                 continue
             try:
                 d = decide(c, float(ltp), total_capital=capital_for("SWING"),
-                           open_positions=self.positions,
+                           open_positions=self._swing_positions(),
                            vol_mult=self._overlay_vol_mult)
             except Exception:
                 continue
@@ -860,6 +860,19 @@ class IntradayEngine:
             logger.debug(f"  entries-today count failed, assuming budget spent: {e}")
             return self._entry_cap()
 
+    def _swing_positions(self) -> list[dict]:
+        """
+        Only this book's own holdings. check_new_entry()'s caps — position
+        count, sector, industry, open-risk budget — are scoped to swing by
+        the function's own docstring ("every caller today is the swing
+        book"), but every call site here passed self.positions unfiltered:
+        an intraday PAPER position was consuming a swing slot. 5 real swing
+        holdings plus 2 intraday paper ones read as "7/7 slots used" and
+        refused every swing candidate today, regardless of how many swing
+        slots were actually free.
+        """
+        return [p for p in self.positions if (p.get("framework") or "SWING").upper() == "SWING"]
+
     def context_symbols(self) -> list[str]:
         """
         What needs BARS, which is the genuinely expensive list.
@@ -1122,6 +1135,11 @@ class IntradayEngine:
             cash = None
 
         out = []
+        # Every decision this cycle, not just the buyable/approaching subset
+        # `out` keeps — _allocate_shadow reads this to build the allocator's
+        # reservation field, which needs the whole watch list (decide() already
+        # prices and sizes every candidate; WAIT ones just weren't kept before).
+        self._all_swing_decisions = []
         for c in self.candidates:
             sym = c.get("symbol")
             ltp = prices.get(sym)
@@ -1130,9 +1148,10 @@ class IntradayEngine:
             if any(p.get("symbol") == sym for p in self.positions):
                 continue  # already held
             d = decide(c, float(ltp), total_capital=capital_for("SWING"),
-                       open_positions=self.positions, regime=regime,
+                       open_positions=self._swing_positions(), regime=regime,
                        max_chase_pct=c.get("ai_max_chase_pct") or None,
                        available_cash=cash, vol_mult=self._overlay_vol_mult)
+            self._all_swing_decisions.append({"candidate": c, "decision": d})
             if d.action in ("BUY_NOW", "CHASE_LIMIT"):
                 out.append({"candidate": c, "decision": d, "ltp": float(ltp),
                             "state": "BUYABLE"})
@@ -2644,33 +2663,60 @@ class IntradayEngine:
         slots = {"SWING":    max(swing_max - swing_used, 0),
                  "INTRADAY": max(intra_max - self._entries_today(), 0)}
 
+        # THE SECOND INSTANCE OF THE SAME MISSING ATTRIBUTE, found while
+        # reading the fix for the first one.
+        #
+        # SessionState has `minutes_to_squareoff`. It has never had
+        # `minutes_to_close` — that is a module FUNCTION in
+        # intraday/session.py — so getattr's default was taken on every
+        # call since the allocator was first wired in (cbbefc4), and the
+        # allocator has always been told the session has 0 minutes left.
+        #
+        # hurdle() computes `time_frac = minutes_left / alloc_session_minutes`
+        # and `time_mult = 1 + alloc_time_weight * time_frac`. At
+        # minutes_left = 0 that is time_mult = 1.0, every cycle, forever —
+        # so the "bar is HIGH at 09:20 because five hours of arrivals
+        # remain, and LOW at 14:45 because an unspent slot earns nothing"
+        # half of the hurdle's own docstring has never once operated. The
+        # scarcity term still worked, which is why the bar still moved at
+        # all and nothing looked obviously dead.
+        minutes_left = max(st.minutes_to_squareoff or 0, 0)
+
+        # swing_assignment()'s reservation field, built and unused since it was
+        # written: `select()` never received a `field` kwarg, so swing has run
+        # as a pure stopping rule its whole life — arrivals judged one at a
+        # time, no memory of a better untriggered plan elsewhere in the field.
+        # decide() already prices and sizes every watched candidate every
+        # cycle (evaluate_candidates() just discarded the WAIT ones); this
+        # reuses that, plus the allocator's own scoring, so an untriggered
+        # plan is measured in the same edge units as a triggered one.
+        from allocation import policies as swing_policies
+        from allocation.scoring import swing_family
+        triggered_syms = {p.symbol for p in props if p.framework == "SWING"}
+        field = []
+        for item in getattr(self, "_all_swing_decisions", []):
+            c, d = item["candidate"], item["decision"]
+            if d.symbol in triggered_syms:
+                field.append({"symbol": d.symbol, "triggered": True})
+                continue
+            if None in (d.entry, d.stop, d.target) or not d.qty:
+                continue   # decide() could not size it — excluded, not invented
+            edge = self._allocator.score_hypothetical(
+                d.symbol, d.entry, d.stop, d.target, d.qty, "CNC",
+                swing_family(c.get("strategy")), native_rank=float(c.get("final_score") or 0.0))
+            if edge is None:
+                continue
+            pt = swing_policies.p_trigger(d.dist_to_zone_pct, minutes_left, c.get("atr_pct"))
+            if pt is None:
+                continue
+            field.append({"symbol": d.symbol, "triggered": False, "edge": edge, "p_trigger": pt})
+
         v = self._allocator.select(
             props, regime=mc.state,
             slots_by_framework=slots,
             max_slots_by_framework={"SWING": swing_max, "INTRADAY": intra_max},
-            # THE SECOND INSTANCE OF THE SAME MISSING ATTRIBUTE, found while
-            # reading the fix for the first one.
-            #
-            # SessionState has `minutes_to_squareoff`. It has never had
-            # `minutes_to_close` — that is a module FUNCTION in
-            # intraday/session.py — so getattr's default was taken on every
-            # call since the allocator was first wired in (cbbefc4), and the
-            # allocator has always been told the session has 0 minutes left.
-            #
-            # hurdle() computes `time_frac = minutes_left / alloc_session_minutes`
-            # and `time_mult = 1 + alloc_time_weight * time_frac`. At
-            # minutes_left = 0 that is time_mult = 1.0, every cycle, forever —
-            # so the "bar is HIGH at 09:20 because five hours of arrivals
-            # remain, and LOW at 14:45 because an unspent slot earns nothing"
-            # half of the hurdle's own docstring has never once operated. The
-            # scarcity term still worked, which is why the bar still moved at
-            # all and nothing looked obviously dead.
-            #
-            # Uses the field that EXISTS on the object already in scope rather
-            # than importing a same-named function — the ambiguity between the
-            # two is what caused this, and reaching for the function here would
-            # preserve it.
-            minutes_left=max(st.minutes_to_squareoff or 0, 0),
+            minutes_left=minutes_left,
+            field=field,
             open_positions=self.positions)
         takes = sum(1 for x in v if x["verdict"] == "TAKE")
 
