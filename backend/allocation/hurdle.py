@@ -399,12 +399,6 @@ def _empirical_base(bucket: str, framework: str, sb=None
             return out
 
         rows = fetch_all(filtered=True)
-        if len(rows) < floor:
-            # Not enough in this bucket yet. Pooling across buckets is a weaker
-            # answer than segmenting, and a far better one than a cold start —
-            # but the verdict must record which it got.
-            pooled = True
-            rows = fetch_all(filtered=False)
     except Exception as e:
         # LOUD. This is the failure that emptied the book: the same query threw
         # for a year of sessions behind logger.debug, and a silent fall-through
@@ -414,15 +408,6 @@ def _empirical_base(bucket: str, framework: str, sb=None
                        f"The allocator has NO empirical opinion this session.")
         base, meta = _cold_start(0, floor, f"query failed: {str(e)[:60]}")
         return base, meta, None
-
-    raw_n = 0
-    edges = []
-    for r in rows:
-        try:
-            edges.append(float(r["edge"]))
-            raw_n += 1
-        except (TypeError, ValueError, KeyError):
-            continue
 
     # DEDUPLICATION — 07-Aug-2026, OFF by default for BOTH books, decided
     # per-framework so a change to one never touches the other's live bar.
@@ -442,16 +427,47 @@ def _empirical_base(bucket: str, framework: str, sb=None
     # "measured", which is why this defaults OFF there too rather than
     # inheriting swing's evidence.
     dedup = cfg_bool(f"alloc_hurdle_dedup_{fw.lower()}", False)
-    if dedup:
+
+    def _extract(rowset: list) -> list[float]:
+        if not dedup:
+            out = []
+            for r in rowset:
+                try:
+                    out.append(float(r["edge"]))
+                except (TypeError, ValueError, KeyError):
+                    continue
+            return out
         by_symbol_day: dict[tuple, list[float]] = {}
-        for r in rows:
+        for r in rowset:
             try:
                 e = float(r["edge"])
             except (TypeError, ValueError, KeyError):
                 continue
             key = (r.get("symbol"), r.get("trade_date"))
             by_symbol_day.setdefault(key, []).append(e)
-        edges = [statistics.fmean(v) for v in by_symbol_day.values()]
+        return [statistics.fmean(v) for v in by_symbol_day.values()]
+
+    # THE FLOOR CHECK MUST RUN ON WHAT WILL ACTUALLY BE USED, NOT ON THE RAW
+    # ROW COUNT — 10-Aug-2026. Before this, "enough rows in this bucket?" was
+    # decided on raw_n (one row per 15s cycle), then dedup collapsed that same
+    # bucket's rows down to one-per-symbol-per-day AFTER the pool-or-segment
+    # decision had already been made. A bucket with 600+ raw rows from a
+    # handful of lingering candidates passed the raw check, segmented, then
+    # deduped down to 31 distinct symbol-days — below the 40-sample floor —
+    # with no path left to try pooling across buckets, so it fell straight to
+    # a cold start. Cold start returns bar=-inf: EVERY candidate clears it.
+    # Caught turning on alloc_hurdle_dedup_intraday for the first time, live,
+    # before the next cycle could act on it; reverted within the same minute.
+    # Fix: extract (raw or deduped, per the switch) BEFORE the floor check,
+    # and pool on THAT count, exactly mirroring what the raw-only code already
+    # did for the un-deduplicated case.
+    raw_n = len(rows)
+    edges = _extract(rows)
+    if len(edges) < floor:
+        pooled = True
+        rows = fetch_all(filtered=False)
+        raw_n = len(rows)
+        edges = _extract(rows)
 
     if len(edges) < floor:
         base, meta = _cold_start(len(edges), floor,
