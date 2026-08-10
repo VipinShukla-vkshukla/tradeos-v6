@@ -31,7 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import IST, cfg_int, get_supabase, get_system_config, is_kill_switch_active
+from config import IST, cfg_int, get_supabase, get_system_config, is_kill_switch_active, today_ist
 from intraday.config import (is_trading_session, is_market_open, is_holiday,
                              autonomy_phase, gtt_enabled, orders_enabled,
                              eval_interval_s, gtt_sync_interval_s, poll_interval_s)
@@ -268,6 +268,21 @@ def main(once: bool = False, dry: bool = False) -> None:
                     engine._resolve_pending_fills()
                 except Exception as e:
                     logger.warning(f"  pending-fill resolution failed: {e}")
+                # The exit side of the same problem. intraday/engine.py writes
+                # status='CLOSING' the moment a live SELL is placed — optimistic,
+                # before the fill is confirmed — and nothing ever read that status
+                # back out again until 10-Aug-2026: reconcile_with_broker() existed,
+                # already contained an 06-Aug fix for exactly this, and was never
+                # called from anywhere the daemon actually runs. Three real sales
+                # (TRAVELFOOD, KIMS, BHEL) went permanently invisible to P&L before;
+                # ETERNAL and CIPLA did the same today before this line existed.
+                # CNC-only by the function's own filter — an intraday MIS fill, if
+                # intraday ever goes live, is untouched by it.
+                try:
+                    from control.position_lifecycle import reconcile_with_broker
+                    reconcile_with_broker(sb, today_ist().isoformat())
+                except Exception as e:
+                    logger.warning(f"  broker reconciliation failed: {e}")
                 # Flush the allocator's verdict buffer HERE, on the slow timer,
                 # never in the 15-second cycle. Buffered writes that never flush
                 # leave silent holes in the promotion evidence, and the gate is

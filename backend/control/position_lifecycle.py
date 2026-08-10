@@ -1113,9 +1113,20 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
     # ACTIVE, so never reconciled; not in closed_positions, so no realized
     # P&L was ever recorded for a real sale. Not a race that self-corrects —
     # every reconcile since has skipped them the same way.
+    # CNC ONLY. holdings() is delivery-only (see hold_map above) — an MIS
+    # position never appears there, live or dead, so "not in holdings = sold"
+    # is not wrong-but-approximate for MIS, it is inapplicable. mode!=PAPER
+    # already excludes every intraday row today because intraday is 100%
+    # PAPER — but that is a coincidence of intraday not being live yet, not a
+    # guarantee. The day intraday goes LIVE its rows would carry mode='LIVE'
+    # too, and without this filter this function would read every open MIS
+    # position as "vanished from holdings" and close it mid-session. Filtered
+    # explicitly rather than relying on the paper/live axis to keep doing it
+    # by accident.
     db_rows = [r for r in ((sb.table("open_positions").select("*")
                               .in_("status", ["ACTIVE", "CLOSING"]).execute().data) or [])
-               if (r.get("mode") or "LIVE").upper() != "PAPER"]
+               if (r.get("mode") or "LIVE").upper() != "PAPER"
+               and (r.get("product") or "CNC").upper() == "CNC"]
 
     # A CNC BUY FILLED TODAY IS NOT IN holdings() YET.
     #
