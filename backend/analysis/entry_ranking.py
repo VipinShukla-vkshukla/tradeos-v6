@@ -100,9 +100,35 @@ def score_plan(p: dict) -> Ranked:
     reasons: list[str] = []
 
     # ── base: the screener's own composite ──────────────────────────────────
+    #
+    # WEIGHTED AND CENTERED 10-Aug-2026, end to end.
+    #
+    # Every component below this one is a delta from a neutral midpoint,
+    # scaled into single digits, gated by its own cfg_float weight.
+    # final_score alone was added at its full 0-100 magnitude with NO weight
+    # at all, so a screener score of 80 contributed +80 points by itself —
+    # more than every other component in this function combined — regardless
+    # of what R:R, timing or the AI review said about the same plan. That
+    # was never "the screener matters most", it was an accounting error: the
+    # term was never put on the same scale as its peers.
+    #
+    # The KB's own tercile measurement (knowledge_base/KNOWLEDGE_BASE.md,
+    # 6-Aug) found final_score flat against forward R — mean R by tercile
+    # 0.516 / 0.491 / 0.511, no monotonic separation, n=125 resolved
+    # CONTINUATION plans (CTL/SEC/TPO/SBS/VBD/RSB/IAD). Centered here at 50
+    # — the same mid-band boundary compute_msl itself scores against — and
+    # weighted low by default: enough to still break a tie between two
+    # otherwise-equal plans, not enough to let a screener score outrank a
+    # live R:R or an AI tier the way the unweighted raw value used to.
+    #
+    # Medium confidence, single family, per the KB's own caveat. Raise
+    # rank_weight_screener toward 1.0 only if a later tercile re-run (KB:
+    # "re-run python -m allocation.scoring --tercile as the resolved sample
+    # grows") finds separation; drop it to 0.0 if it stays flat.
     base = _f(p.get("final_score"), _f(p.get("score"), 50.0))
-    comp["screener"] = base
-    reasons.append(f"screener {base:.0f}")
+    bp = (base - 50.0) / 5.0 * cfg_float("rank_weight_screener", 0.3)
+    comp["screener"] = bp
+    reasons.append(f"screener {base:.0f} {bp:+.0f}")
 
     # ── the conviction layer: ANNOTATION, not a ranking input ───────────────
     #

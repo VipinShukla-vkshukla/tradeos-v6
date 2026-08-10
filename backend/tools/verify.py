@@ -84,6 +84,7 @@ MODULES = [
     ("taken reconciliation",   "tests.test_taken_reconciliation"),
     ("paper entry verdicts",   "tests.test_paper_entry_verdicts"),
     ("benchmark snapshot",     "tests.test_benchmark"),
+    ("screener weight",        "tests.test_screener_weight"),
 ]
 
 
