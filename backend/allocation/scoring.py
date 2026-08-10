@@ -117,7 +117,8 @@ def intraday_priors(sb) -> dict[str, Prior]:
     rows, off = [], 0
     while True:
         page = (sb.table("intraday_setups")
-                  .select("strategy,outcome,outcome_pct,entry,stop,direction,cost_verdict")
+                  .select("strategy,outcome,outcome_pct,entry,stop,direction,"
+                          "cost_verdict,cost_pct")
                   .not_.is_("outcome_pct", "null")
                   .range(off, off + PAGE - 1).execute().data) or []
         rows += page
@@ -192,7 +193,38 @@ def intraday_priors(sb) -> dict[str, Prior]:
             key = r["strategy"] or "?"
             if D.is_short(d):
                 key = f"{key}/SHORT"
-            r_mult = float(r["outcome_pct"]) / risk_pct
+            # ── THE PRIOR MUST BE GROSS; score() IS WHAT CHARGES THE COST ────
+            #
+            # `outcomes.resolve_day` writes `outcome_pct = gain_pct - cost_pct`
+            # — already NET of the round trip. `score()` then computes
+            # `e_r = prior.mean_r - cost_r`, subtracting the identical quantity
+            # a SECOND time (`cost_r = friction / (risk_pct * entry * qty)` is
+            # `cost_pct / risk_pct` in R units — same number, different
+            # spelling). This module's own header states the intended formula:
+            # E[R] = expectation over the EMPIRICAL R distribution - cost_R.
+            # That wants a GROSS distribution minus one charge.
+            #
+            # IT WAS NOT UNIFORM, WHICH IS WHY IT SURVIVED. `_record_setup` is
+            # passed `rt.pct_of_position` only on the TAKEN / REJECTED_COST /
+            # ALLOCATOR_DECLINED paths; every other verdict passes a literal
+            # 0.0. So refused rows were GROSS (charged once, correctly) and
+            # gate-passed rows were NET (charged twice) — and the old prior was
+            # dominated by refused rows, so the double charge stayed a minority
+            # effect that never showed up as an obvious constant offset.
+            #
+            # `priors_intraday_taken_only` selects exactly the gate-passed
+            # rows, so it would have turned that minority effect into a
+            # SYSTEMATIC one: every observation double-charged, every intraday
+            # edge pushed ~cost_r more negative, and with the new absolute
+            # floor above that means a book that refuses everything. The two
+            # changes had to land together.
+            #
+            # Reconstructed rather than backfilled: adding the row's own
+            # `cost_pct` back recovers the gross figure exactly, needs no
+            # migration over historical rows, and is a no-op on the rows that
+            # were already gross (cost_pct = 0).
+            gross_pct = float(r["outcome_pct"]) + float(r.get("cost_pct") or 0)
+            r_mult = gross_pct / risk_pct
             by.setdefault(key, []).append(r_mult)
             if (r.get("cost_verdict") or "").upper() == "TAKEN":
                 by_taken.setdefault(key, []).append(r_mult)

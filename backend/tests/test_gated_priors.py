@@ -176,7 +176,47 @@ def test_the_prior_dict_is_keyed_the_way_the_allocator_looks_it_up():
     assert orb.key == "INTRADAY/ORB" and vwr.key == "INTRADAY/VWR"
 
 
+def test_the_cost_is_charged_once_not_twice():
+    """`outcomes.resolve_day` writes outcome_pct ALREADY NET of the round trip
+    (`pct - cost`), and `score()` then subtracts the identical quantity again as
+    cost_r. The prior must therefore be reconstructed GROSS, or every gate-passed
+    observation is double-charged.
+
+    This survived because it was not uniform: `_record_setup` receives a real
+    cost_pct only on the TAKEN / REJECTED_COST / ALLOCATOR_DECLINED paths and a
+    literal 0.0 everywhere else, so refused rows were gross and gate-passed rows
+    were net. Selecting TAKEN rows — which is what priors_intraday_taken_only
+    does — turns a minority effect into a systematic one, which with the new
+    absolute floor means a book that refuses everything. The two changes had to
+    land together, and this is the check that says so."""
+    from allocation.scoring import intraday_priors
+    # risk_pct is 1.0%, so an R of exactly 1.0 gross was recorded as
+    # outcome_pct = 1.0 - 0.21 = 0.79 net.
+    rows = [{**_row("ORB", 0.79, "TAKEN"), "cost_pct": 0.21}] * 40
+    with cfg_ctx({"priors_min_sample_intraday": "30",
+                  "priors_intraday_taken_only": "true"}):
+        p = intraday_priors(_SB(rows))["INTRADAY/ORB"]
+    assert abs(p.mean_r - 1.0) < 1e-9, (
+        f"mean_r {p.mean_r:+.4f} — expected +1.0 gross. score() subtracts "
+        f"cost_r itself, so a net prior charges the round trip twice")
+
+
+def test_rows_without_a_cost_pct_are_unchanged():
+    """Refused rows carry cost_pct = 0 and were already gross. Adding zero back
+    must be a no-op, or the reconstruction breaks the majority of the table."""
+    from allocation.scoring import intraday_priors
+    rows = [{**_row("ORB", 1.0, "BLOCKED_STRUCTURE"), "cost_pct": 0}] * 40
+    with cfg_ctx({"priors_min_sample_intraday": "30",
+                  "priors_intraday_taken_only": "false"}):
+        p = intraday_priors(_SB(rows))["INTRADAY/ORB"]
+    assert abs(p.mean_r - 1.0) < 1e-9, f"mean_r {p.mean_r}"
+
+
 TESTS = [
+    ("the cost is charged once, not twice",
+     test_the_cost_is_charged_once_not_twice),
+    ("rows without a cost_pct are unchanged",
+     test_rows_without_a_cost_pct_are_unchanged),
     ("the prior dict is keyed the way the allocator looks it up",
      test_the_prior_dict_is_keyed_the_way_the_allocator_looks_it_up),
     ("refused detections do not drag the prior down",
