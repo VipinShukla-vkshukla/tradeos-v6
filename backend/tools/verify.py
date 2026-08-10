@@ -76,6 +76,7 @@ MODULES = [
     ("allocator edge floor",   "tests.test_edge_floor"),
     ("gated intraday priors",  "tests.test_gated_priors"),
     ("setup dedup rehydration", "tests.test_setup_rehydration"),
+    ("replay candidate dedup", "tests.test_replay_dedup"),
 ]
 
 

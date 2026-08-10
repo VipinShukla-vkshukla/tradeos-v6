@@ -72,7 +72,7 @@ def _fetch_setups(sb, since: str) -> list[dict]:
     rows, off = [], 0
     while True:
         page = (sb.table("intraday_setups")
-                .select("trade_date,symbol,strategy,entry,stop,target,direction,"
+                .select("id,trade_date,symbol,strategy,entry,stop,target,direction,"
                         "outcome,outcome_pct,cost_verdict,cost_pct,meta")
                 .gte("trade_date", since)
                 .not_.is_("outcome_pct", "null")
@@ -82,6 +82,54 @@ def _fetch_setups(sb, since: str) -> list[dict]:
             break
         off += PAGE
     return rows
+
+
+def _dedupe_candidates(rows: list[dict]) -> list[dict]:
+    """
+    One row per (symbol, engine) PER SESSION — not one row per 15s cycle.
+
+    WHY THIS EXISTS. A setup that lingers near its zone gets re-logged every
+    cycle it is re-evaluated: this project's own dedup-inflation finding
+    (migration 054, "10 symbols each logged 548-600 rows in a single session")
+    is the SWING side of the identical mechanism. `_setup_is_new()` already
+    stops a repeat TAKEN write, but ALLOCATOR_DECLINED legitimately recurs —
+    a hovering setup can be declined a dozen times as price drifts past the
+    0.35% dedup threshold each time.
+
+    That is fatal to a RETROSPECTIVE ranking specifically, even though it is
+    harmless to the live system. Live only ever gets ONE real shot at a given
+    lingering setup — it triggers on some cycle or it never does. This tool
+    gathers a whole session's rows and ranks them as if each were an
+    independent opportunity; without collapsing duplicates, one real setup
+    that lingered can occupy several of the top-`cap` slots at once, counting
+    its single real outcome multiple times and crowding out setups that only
+    ever got logged once. `08-05` in the first run of this tool had 502
+    "candidates" against a ~40-symbol universe — that is duplicate near-miss
+    rows, not 502 independent detections.
+
+    RESOLUTION, PER (symbol, strategy, trade_date): if any row for the group
+    was actually TAKEN, that row IS the trade — keep only it, since its
+    entry/outcome are what a live position would have carried. Otherwise keep
+    the row with the highest `id` (chronologically last), which is the most
+    current picture of that setup's price and edge before the group's fate
+    was decided.
+
+    DELIBERATELY NOT APPLIED TO THE PRIOR-BUILDING POPULATION (`history` in
+    `replay()`). `scoring.intraday_priors()` reads `intraday_setups` with no
+    such dedup — the live prior is built on exactly this duplicated
+    population, bugs and all. Deduping history here would compare the NEW
+    policy against a cleaner population than production actually uses, which
+    is a different, unfair kind of advantage in the other direction.
+    """
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for r in rows:
+        groups[(r.get("symbol"), r.get("strategy"))].append(r)
+
+    out = []
+    for _, grp in groups.items():
+        taken = [g for g in grp if (g.get("cost_verdict") or "").upper() == "TAKEN"]
+        out.append(taken[0] if taken else max(grp, key=lambda g: g.get("id") or 0))
+    return out
 
 
 def _r_of(row: dict, gross: bool) -> float | None:
@@ -196,9 +244,10 @@ def replay(days: int, sb=None) -> int:
         # a setup refused by the structure or event gate never became a
         # proposal, and crediting the allocator with declining it would be
         # measuring a decision it never made.
-        cands = [r for r in todays
-                 if (r.get("cost_verdict") or "").upper()
-                 in ("TAKEN", "ALLOCATOR_DECLINED")]
+        raw_cands = [r for r in todays
+                    if (r.get("cost_verdict") or "").upper()
+                    in ("TAKEN", "ALLOCATOR_DECLINED")]
+        cands = _dedupe_candidates(raw_cands)
         if not history or not cands:
             continue
 
@@ -244,7 +293,7 @@ def replay(days: int, sb=None) -> int:
             tot[label]["n"] += len(takes)
             tot[label]["r"] += sum(realised)
             tot[label]["wins"] += sum(1 for x in realised if x > 0)
-        per_session.append((d, len(cands), row))
+        per_session.append((d, len(raw_cands), len(cands), row))
 
     if not per_session:
         logger.error("  no session had both prior history and allocator-visible "
@@ -252,17 +301,18 @@ def replay(days: int, sb=None) -> int:
         return 1
 
     logger.info("")
-    logger.info("  " + "-" * 76)
-    logger.info(f"  {'session':<12}{'cands':>6}"
+    logger.info("  " + "-" * 88)
+    logger.info(f"  {'session':<12}{'raw':>6}{'dedup':>7}"
                 f"{'OLD bar':>10}{'OLD n':>7}{'OLD R':>8}"
                 f"{'NEW bar':>10}{'NEW n':>7}{'NEW R':>8}")
-    logger.info("  " + "-" * 76)
-    for d, nc, row in per_session:
+    logger.info("  " + "-" * 88)
+    for d, raw_n, nc, row in per_session:
         o, n = row["OLD"], row["NEW"]
-        logger.info(f"  {d:<12}{nc:>6}"
+        flag = "  <- duplicate-inflated" if raw_n > nc * 3 else ""
+        logger.info(f"  {d:<12}{raw_n:>6}{nc:>7}"
                     f"{o['bar']:>10.4f}{o['n']:>7}{o['r']:>8.2f}"
-                    f"{n['bar']:>10.4f}{n['n']:>7}{n['r']:>8.2f}")
-    logger.info("  " + "-" * 76)
+                    f"{n['bar']:>10.4f}{n['n']:>7}{n['r']:>8.2f}{flag}")
+    logger.info("  " + "-" * 88)
 
     o, n = tot["OLD"], tot["NEW"]
     for label, t in (("OLD", o), ("NEW", n)):
