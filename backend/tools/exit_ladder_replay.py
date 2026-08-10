@@ -72,8 +72,19 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
 from config import get_supabase, cfg_float, today_ist
 
+# IMPORTED, NOT REDEFINED — 10-Aug-2026. This module originally carried its
+# own MIN_RISK_PCT = 0.15 copy. tools.exit_audit later grew a SECOND guard
+# (MAX_PLAUSIBLE_R) after the first one turned out not to explain the actual
+# corrupted rows on this account's real data — the near-zero-risk hypothesis
+# was wrong for them. Redefining the constant here would have meant this
+# tool silently kept running the superseded, incomplete guard while
+# exit_audit moved on, which is exactly the "two definitions of one idea
+# drift apart" failure this codebase has hit before (regime_bucket() against
+# two vocabularies, the intraday prior's key prefix). One definition, in
+# exit_audit, imported here.
+from tools.exit_audit import MIN_RISK_PCT, MAX_PLAUSIBLE_R
+
 PAGE = 1000
-MIN_RISK_PCT = 0.15   # matches tools.exit_audit's sanity floor — see there
 
 
 def _f(v):
@@ -87,7 +98,7 @@ def _rows(sb, since: str) -> list[dict]:
     out, off = [], 0
     while True:
         page = (sb.table("closed_positions")
-                .select("trade_date,symbol,entry_price,direction,r_multiple,"
+                .select("symbol,entry_price,direction,r_multiple,"
                         "exit_reason,max_favorable_excursion,planned_stop_at_entry,"
                         "framework,entry_date")
                 .eq("framework", "INTRADAY")
@@ -126,6 +137,13 @@ def replay(days: int, giveback_pct: float, giveback_min_r: float, sb=None) -> in
 
         is_short = (r.get("direction") or "LONG").upper() == "SHORT"
         peak_r = ((entry - mfe) if is_short else (mfe - entry)) / risk
+        # Same symptom-based net as tools.exit_audit — a plausible risk
+        # distance is not sufficient on its own; see that module's guard for
+        # why (the risk-only guard did not explain this account's real
+        # corrupted rows).
+        if abs(peak_r) > MAX_PLAUSIBLE_R:
+            unmeasurable += 1
+            continue
 
         rec = {"symbol": r.get("symbol"), "reason": r.get("exit_reason") or "?",
                "actual_r": actual_r, "peak_r": peak_r}

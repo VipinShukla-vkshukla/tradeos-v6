@@ -51,6 +51,13 @@ from config import get_supabase
 
 PAGE = 1000
 
+# MODULE LEVEL, NOT LOCAL — 10-Aug-2026. tools/exit_ladder_replay.py imports
+# both of these rather than redefining them, after this project's own
+# repeated lesson about one idea drifting into two definitions. See the
+# guard's own comment inside audit_closed() for why there are two of them.
+MIN_RISK_PCT = 0.15
+MAX_PLAUSIBLE_R = 15.0
+
 
 def _rows(sb, table: str, cols: str) -> list[dict]:
     out, off = [], 0
@@ -172,9 +179,27 @@ def audit_closed(sb, book: str | None) -> None:
     # `planned_stop_at_entry` and can be sound even when the entry-time column
     # is not. Dropping a row's realised R because its entry-stop snapshot is
     # bad would throw away good data for a reason that never touched it.
-    MIN_RISK_PCT = 0.15
 
-    recs, excluded = [], 0
+    # ── A SECOND, SYMPTOM-BASED GUARD — 10-Aug-2026, same session ───────────
+    #
+    # THE FIRST GUARD (above) DID NOT WORK. Re-run against the real book after
+    # shipping it: the SAME rows produced the SAME corrupted numbers, to three
+    # decimal places (-20.228, -143.636, +164.433, -109.340), unchanged. That
+    # means `risk_pct` for these specific rows was NOT below MIN_RISK_PCT —
+    # the diagnosis of "a near-zero planned_stop_at_entry" was a guess that
+    # turned out to be wrong for this data, caught only by checking the real
+    # output rather than trusting the fix once it imported cleanly. This
+    # project's own rule, applied to its own tooling: verify, never assert.
+    #
+    # Rather than guess a second time, this guard doesn't need to know the
+    # cause. |mfe_r| over MAX_PLAUSIBLE_R is not reachable by any real
+    # intraday or swing move against a real stop, whatever produced the
+    # number — a symptom-based net catches it regardless of which column
+    # turns out to be wrong. RAW INPUTS ARE NOW PRINTED for anything this
+    # catches, specifically so the actual cause becomes visible on the next
+    # run instead of staying a guess.
+
+    recs, excluded, implausible = [], 0, []
     for r in rows:
         entry = _f(r.get("entry_price"))
         realised = _f(r.get("r_multiple"))
@@ -190,8 +215,16 @@ def audit_closed(sb, book: str | None) -> None:
                 mae = _f(r.get("max_adverse_excursion"))
                 # Excursions are stored as PRICES. Convert to R in the trade's
                 # own favour, so a short that fell is positive.
-                mfe_r = ((entry - mfe) if is_short else (mfe - entry)) / risk if mfe else None
-                mae_r = ((mae - entry) if is_short else (entry - mae)) / risk if mae else None
+                cand_mfe = ((entry - mfe) if is_short else (mfe - entry)) / risk if mfe else None
+                cand_mae = ((mae - entry) if is_short else (entry - mae)) / risk if mae else None
+                if (cand_mfe is not None and abs(cand_mfe) > MAX_PLAUSIBLE_R) or \
+                   (cand_mae is not None and abs(cand_mae) > MAX_PLAUSIBLE_R):
+                    implausible.append({"symbol": r.get("symbol"), "entry": entry,
+                                        "stop": stop, "risk_pct": risk / entry * 100.0,
+                                        "mfe": mfe, "mae": mae,
+                                        "mfe_r": cand_mfe, "mae_r": cand_mae})
+                else:
+                    mfe_r, mae_r = cand_mfe, cand_mae
             else:
                 excluded += 1
         recs.append({"fw": (r.get("framework") or "SWING").upper(),
@@ -201,13 +234,19 @@ def audit_closed(sb, book: str | None) -> None:
     if excluded:
         logger.warning(
             f"  {excluded} closed trade(s) have planned_stop_at_entry under "
-            f"{MIN_RISK_PCT}% of entry price — not a real stop for either book, "
-            f"and dividing a genuine price swing by it would produce an R number "
-            f"in the hundreds (measured on the first run of this tool: SWING's "
-            f"BROKER_EXIT rows averaged MFE -20.228R; several INTRADAY exit "
-            f"reasons showed |MFE R| over 100). realised R is kept for these "
-            f"rows — it comes from a different column, computed at close time "
-            f"— only their capture/overrun contribution is dropped.")
+            f"{MIN_RISK_PCT}% of entry price — excluded from capture/overrun "
+            f"(realised R is kept; it comes from a different column).")
+    if implausible:
+        logger.warning(
+            f"  {len(implausible)} closed trade(s) produced |R| over "
+            f"{MAX_PLAUSIBLE_R} despite a PLAUSIBLE stop distance — the "
+            f"near-zero-risk hypothesis does not explain these. Raw values, "
+            f"for diagnosis:")
+        for x in implausible[:10]:
+            logger.warning(
+                f"    {x['symbol'] or '?':<12} entry={x['entry']:.2f} "
+                f"stop={x['stop']:.2f} (risk {x['risk_pct']:.2f}%) "
+                f"mfe={x['mfe']} mae={x['mae']}  -> mfe_r={x['mfe_r']} mae_r={x['mae_r']}")
 
     if not recs:
         logger.warning("  closed positions exist but none carry both a planned stop "

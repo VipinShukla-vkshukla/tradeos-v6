@@ -103,6 +103,33 @@ def test_a_plausible_stop_still_produces_capture():
     assert risk_pct > 0.15, f"a real 0.6% stop must clear the sanity floor, got {risk_pct}"
 
 
+def test_a_plausible_stop_with_an_implausible_mfe_is_still_caught():
+    """THE FAILURE THAT MADE THIS SECOND GUARD NECESSARY. The risk-based guard
+    alone was re-run against the real book and produced the SAME corrupted
+    numbers as before, unchanged to three decimal places -- the near-zero-risk
+    hypothesis did not explain the actual data. This is the case it missed: a
+    perfectly plausible 3% stop, but an MFE that implies a 50R move, which no
+    real intraday or swing position reaches. The symptom-based cap must catch
+    this regardless of what produced it."""
+    from tools.exit_audit import audit_closed
+    # entry=100, stop=97 (3% risk -- clears MIN_RISK_PCT easily), mfe=250
+    # (implies peak_r = 150/3 = 50, far past MAX_PLAUSIBLE_R)
+    rows = [_row(100.0, 97.0, 250.0, 95.0, r_mult=0.3)]
+    out = _captured_logs(lambda: audit_closed(_SB(rows), "SWING"))
+    assert "over 15.0" in out and "PLAUSIBLE stop distance" in out, (
+        f"a plausible-risk, implausible-magnitude row was not flagged: {out!r}")
+
+
+def test_raw_values_are_printed_for_implausible_rows():
+    """The whole point of the second guard is to make the actual cause
+    visible, not just the fact that a row is wrong."""
+    from tools.exit_audit import audit_closed
+    rows = [_row(100.0, 97.0, 250.0, 95.0, r_mult=0.3)]
+    out = _captured_logs(lambda: audit_closed(_SB(rows), "SWING"))
+    assert "entry=100" in out and "stop=97" in out, (
+        f"raw diagnostic values missing from output: {out!r}")
+
+
 TESTS = [
     ("a near-zero stop is excluded from excursion stats",
      test_a_near_zero_stop_is_excluded_from_excursion_stats),
@@ -110,4 +137,8 @@ TESTS = [
      test_realised_r_survives_exclusion),
     ("a plausible stop still produces capture",
      test_a_plausible_stop_still_produces_capture),
+    ("a plausible stop with an implausible MFE is still caught",
+     test_a_plausible_stop_with_an_implausible_mfe_is_still_caught),
+    ("raw values are printed for implausible rows",
+     test_raw_values_are_printed_for_implausible_rows),
 ]
