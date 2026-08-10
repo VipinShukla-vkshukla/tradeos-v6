@@ -142,25 +142,72 @@ def audit_closed(sb, book: str | None) -> None:
         logger.warning(f"  no closed positions{' for ' + book if book else ''}")
         return
 
-    recs = []
+    # ── A DEGENERATE RISK DENOMINATOR MUST NOT BE AVERAGED IN — 10-Aug-2026 ──
+    #
+    # `risk = abs(entry - planned_stop_at_entry)`, and dividing a real price
+    # swing by a near-zero risk produces an R number in the hundreds. First
+    # live run of this tool: SWING's 7 BROKER_EXIT rows averaged MFE -20.228R,
+    # and several INTRADAY exit reasons showed |MFE R| in the hundreds
+    # (-143.636, +164.433, -109.340) — none of those are physically reachable
+    # in a session against a real stop, and every one of them shares the same
+    # signature: a `planned_stop_at_entry` sitting implausibly close to entry.
+    #
+    # BROKER_EXIT is the tell for the SWING case: a position reconciled from
+    # Kite holdings rather than opened through decide()'s own planning path
+    # never had a real stop computed for it, so the column likely holds a
+    # placeholder. Whatever the exact cause on the intraday side, the fix is
+    # the same either way — a stop distance under MIN_RISK_PCT of entry is not
+    # a real stop for either book (this account's tightest MEASURED intraday
+    # stop across all seven engines is 0.43%, per tools.engine_scorecard), so
+    # anything tighter is data, not risk, and must be excluded from the
+    # capture/overrun arithmetic rather than silently blended into the mean —
+    # exactly the "check that cannot fail" failure shape this project keeps
+    # finding, one level up: a STATISTIC that cannot be wrong is not one.
+    #
+    # Excluded rows are counted and reported, not dropped silently. AND ONLY
+    # THE EXCURSION FIELDS ARE EXCLUDED — `r_multiple` is not recomputed here;
+    # it is read as stored, and `_upsert_position`/`_close_position` derive it
+    # from `pos["planned_stop"]`, the position's CURRENT (possibly trailed)
+    # stop at close time, which is a DIFFERENT column from
+    # `planned_stop_at_entry` and can be sound even when the entry-time column
+    # is not. Dropping a row's realised R because its entry-stop snapshot is
+    # bad would throw away good data for a reason that never touched it.
+    MIN_RISK_PCT = 0.15
+
+    recs, excluded = [], 0
     for r in rows:
         entry = _f(r.get("entry_price"))
-        stop = _f(r.get("planned_stop_at_entry"))
         realised = _f(r.get("r_multiple"))
-        if not entry or not stop or realised is None:
+        if not entry or realised is None:
             continue
-        risk = abs(entry - stop)
-        if risk <= 0:
-            continue
-        is_short = (r.get("direction") or "LONG").upper() == "SHORT"
-        mfe, mae = _f(r.get("max_favorable_excursion")), _f(r.get("max_adverse_excursion"))
-        # Excursions are stored as PRICES. Convert to R in the trade's own
-        # favour, so a short that fell is positive.
-        mfe_r = (((entry - mfe) if is_short else (mfe - entry)) / risk) if mfe else None
-        mae_r = (((mae - entry) if is_short else (entry - mae)) / risk) if mae else None
+        stop = _f(r.get("planned_stop_at_entry"))
+        mfe_r = mae_r = None
+        if stop:
+            risk = abs(entry - stop)
+            if risk > 0 and (risk / entry * 100.0) >= MIN_RISK_PCT:
+                is_short = (r.get("direction") or "LONG").upper() == "SHORT"
+                mfe = _f(r.get("max_favorable_excursion"))
+                mae = _f(r.get("max_adverse_excursion"))
+                # Excursions are stored as PRICES. Convert to R in the trade's
+                # own favour, so a short that fell is positive.
+                mfe_r = ((entry - mfe) if is_short else (mfe - entry)) / risk if mfe else None
+                mae_r = ((mae - entry) if is_short else (entry - mae)) / risk if mae else None
+            else:
+                excluded += 1
         recs.append({"fw": (r.get("framework") or "SWING").upper(),
                      "reason": r.get("exit_reason") or "?",
                      "r": realised, "mfe_r": mfe_r, "mae_r": mae_r})
+
+    if excluded:
+        logger.warning(
+            f"  {excluded} closed trade(s) have planned_stop_at_entry under "
+            f"{MIN_RISK_PCT}% of entry price — not a real stop for either book, "
+            f"and dividing a genuine price swing by it would produce an R number "
+            f"in the hundreds (measured on the first run of this tool: SWING's "
+            f"BROKER_EXIT rows averaged MFE -20.228R; several INTRADAY exit "
+            f"reasons showed |MFE R| over 100). realised R is kept for these "
+            f"rows — it comes from a different column, computed at close time "
+            f"— only their capture/overrun contribution is dropped.")
 
     if not recs:
         logger.warning("  closed positions exist but none carry both a planned stop "
