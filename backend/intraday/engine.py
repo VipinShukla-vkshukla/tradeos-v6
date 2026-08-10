@@ -669,7 +669,12 @@ class IntradayEngine:
             logger.info(f"     {buyable} buyable but none in today's top {keep} — "
                         f"waiting for a ranked name rather than taking the first")
         elif not left:
-            logger.info(f"     daily entry budget spent ({taken}/{mx})")
+            # "swing:" prefixed explicitly -- this line prints right above
+            # _log_intraday_state's own summary every cycle, and intraday has
+            # its own, completely independent budget check (see
+            # _maybe_enter_intraday's "intraday daily entry budget spent").
+            # Unlabelled, the two looked like one shared gate from the console.
+            logger.info(f"     swing: daily entry budget spent ({taken}/{mx})")
 
     def _log_intraday_state(self, setups: list) -> None:
         """
