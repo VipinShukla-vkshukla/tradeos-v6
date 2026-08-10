@@ -84,11 +84,34 @@ def test_the_books_never_sum_to_more_than_total_capital_once_live():
 
 def test_oversized_sleeve_starves_swing_to_zero_not_negative():
     """The guardrail config.py's own docstring describes: refuse loudly
-    rather than let swing size against negative capital."""
+    rather than let swing size against negative capital.
+
+    THE WARNING IS CAPTURED, NOT LET LOOSE — 10-Aug-2026. This test sets
+    intraday LIVE on purpose to make `capital_for` emit its starvation ERROR,
+    and that ERROR was printing into every `tools.verify` run. The operator
+    read a green 150/150 with a red "intraday_capital >= TOTAL_CAPITAL while
+    intraday is LIVE" in the middle of it and reasonably took it for a live
+    misconfiguration; the live config has intraday on PAPER and is fine.
+
+    An ERROR line inside a PASSING run is not a harmless cosmetic issue — it
+    is how a reader is trained to scroll past red text, which is exactly the
+    habit that lets a real failure hide. Suppressed for the duration of the
+    assertion only, so the guard is still exercised and still proven to fire.
+    """
+    from loguru import logger
     from config import capital_for
+    import config as _cfg
+    _cfg._capital_warned.discard("swing_starved")
+    logger.disable("config")
+    try:
+        with _total_capital(30000.0), cfg_ctx({"intraday_capital": "100000",
+                                                "intraday_trading_mode": "LIVE"}):
+            starved = capital_for("SWING")
+    finally:
+        logger.enable("config")
     with _total_capital(30000.0), cfg_ctx({"intraday_capital": "100000",
                                             "intraday_trading_mode": "LIVE"}):
-        assert capital_for("SWING") == 0.0, (
+        assert starved == 0.0, (
             f"an intraday sleeve >= the whole account, while LIVE, must "
             f"leave swing exactly 0 (refuse every entry), got "
             f"{capital_for('SWING')} — a negative sleeve would be worse "
