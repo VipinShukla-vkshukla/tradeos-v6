@@ -88,9 +88,39 @@ def reconcile(days: int, sb=None) -> int:
                        "trade_date,symbol,strategy,cost_verdict",
                        "trade_date", since)
     taken = [r for r in all_setups if (r.get("cost_verdict") or "").upper() == "TAKEN"]
-    declined = {(r.get("symbol"), r.get("strategy"), str(r.get("trade_date") or "")[:10])
-               for r in all_setups
-               if (r.get("cost_verdict") or "").upper() == "ALLOCATOR_DECLINED"}
+
+    # THREE BUCKETS, NOT TWO — 10-Aug-2026, after engine.py's fix. A
+    # "TAKEN but never opened" setup can now have a LATER row explaining it in
+    # one of two DIFFERENT ways, plus a third bucket for a genuine gap in the
+    # trail:
+    #   ALLOCATOR_DECLINED   the allocator vetoed it — opportunity cost, by
+    #                        design, and its hypothetical outcome belongs in
+    #                        the prior (excluding it would be circular: a
+    #                        prior conditioned only on allocator-approved
+    #                        rows reinforces whatever it already believes).
+    #   BLOCKED_*            an OPERATIONAL reason downstream of the
+    #                        allocator — concurrency, daily budget, paper
+    #                        capacity, an already-held race, a failed fill,
+    #                        or a bare exception. `_maybe_open_paper` now
+    #                        records every one of these explicitly; before
+    #                        this fix they were exactly this tool's original
+    #                        27-of-60 "unexplained" reading.
+    #                        Excluded from the prior on purpose (see
+    #                        scoring.py) is NOT what happens here — these
+    #                        rows are hypothetically resolved the same as any
+    #                        other, which is correct: the setup itself was
+    #                        never wrong, only unlucky on capacity.
+    #   (neither)            still genuinely unexplained. After this fix that
+    #                        should trend toward zero; anything remaining
+    #                        here is either older data from before the fix
+    #                        shipped, or a path this fix still missed.
+    by_key: dict[tuple, str] = {}
+    for r in all_setups:
+        v = (r.get("cost_verdict") or "").upper()
+        if v in ("TAKEN", "SHADOW"):
+            continue
+        by_key[(r.get("symbol"), r.get("strategy"),
+               str(r.get("trade_date") or "")[:10])] = v
 
     opened_syms: dict[str, set] = defaultdict(set)
     for table, date_col in (("open_positions", "entry_date"),
@@ -132,64 +162,62 @@ def reconcile(days: int, sb=None) -> int:
     logger.info(f"  TOTAL: {total_taken} distinct TAKEN symbol-days, "
                f"{total_opened} matched to a real position ({overall:.0f}%)")
 
-    # ── THE GAP HAS TWO POSSIBLE EXPLANATIONS, AND THEY MEAN OPPOSITE
-    # THINGS — 10-Aug-2026, second pass on this same reconciliation. ────────
-    #
-    # A "TAKEN but never opened" setup either:
-    #   (a) has a LATER row for the same (symbol, engine, day) with
-    #       cost_verdict='ALLOCATOR_DECLINED' — the allocator saw it and
-    #       vetoed it. That is BY DESIGN, not a defect: it is the allocator
-    #       doing its job, and its hypothetical resolved outcome belongs in
-    #       the prior population precisely because a prior conditioned only
-    #       on rows the allocator already approved would be circular —
-    #       reinforcing whatever it already believed rather than measuring
-    #       against the full field the cost gate actually produced.
-    #   (b) has NO such row — it cleared the cost gate and then simply never
-    #       became a position, for a reason this table cannot see:
-    #       intraday_max_concurrent/intraday_max_new_per_day capacity,
-    #       paper_broker.capacity() refusing, a cross-framework hold, or an
-    #       exception swallowed by _maybe_open_paper's own try/except. That
-    #       IS worth investigating — these are opportunities the system's
-    #       own gates liked that were lost for operational reasons having
-    #       nothing to do with the trade's quality.
-    #
-    # Reported separately because the correct response to a large (a) is "the
-    # prior is working as intended, look elsewhere" and the correct response
-    # to a large (b) is "find out why paper entries are being dropped."
+    # Reported in three lines because the correct response to each is
+    # different: a large ALLOCATOR_DECLINED count says "the prior is working
+    # as intended, look elsewhere"; a large BLOCKED_* count says "there is an
+    # operational leak, and now it has a name"; anything still with neither
+    # is the residue this fix did not explain.
     unmatched = [(sym, eng, d) for d in by_day for sym, eng in by_day[d]
                 if sym not in opened_syms.get(d, set())]
-    explained = sum(1 for k in unmatched if k in declined)
-    unexplained = len(unmatched) - explained
+    verdict_counts: dict[str, int] = defaultdict(int)
+    still_unexplained = 0
+    for k in unmatched:
+        v = by_key.get(k)
+        if v:
+            verdict_counts[v] += 1
+        else:
+            still_unexplained += 1
+
+    allocator_n = verdict_counts.get("ALLOCATOR_DECLINED", 0)
+    blocked_n = sum(n for v, n in verdict_counts.items() if v != "ALLOCATOR_DECLINED")
 
     logger.info("")
-    logger.info(f"  Of the {len(unmatched)} that did not open: "
-               f"{explained} have a matching ALLOCATOR_DECLINED row (the "
-               f"allocator vetoed them — by design), {unexplained} have "
-               f"NEITHER a position NOR an ALLOCATOR_DECLINED row (unexplained "
-               f"by this table alone).")
+    logger.info(f"  Of the {len(unmatched)} that did not open:")
+    logger.info(f"    {allocator_n:>4}  ALLOCATOR_DECLINED — the allocator vetoed them, by design")
+    if blocked_n:
+        for v, n in sorted(verdict_counts.items(), key=lambda kv: -kv[1]):
+            if v != "ALLOCATOR_DECLINED":
+                logger.info(f"    {n:>4}  {v}")
+    logger.info(f"    {still_unexplained:>4}  still genuinely unexplained "
+               f"(no verdict row at all beyond TAKEN)")
 
     if overall < 60:
-        if unexplained > explained:
+        if still_unexplained > allocator_n + blocked_n:
             logger.warning(
-                f"  The gap is DOMINATED BY UNEXPLAINED losses ({unexplained} "
-                f"of {len(unmatched)}), not allocator vetoes. This points at "
-                f"an OPERATIONAL leak — capacity limits, paper_broker "
-                f"refusals, or a silently swallowed exception in "
-                f"_maybe_open_paper — not at the prior's population choice. "
-                f"Worth checking intraday_max_concurrent / "
-                f"intraday_max_new_per_day against how many positions were "
-                f"actually open on the worst days, and the daemon log for "
-                f"'paper skip' or 'paper entry failed' lines.")
+                f"  Most of the gap ({still_unexplained} of {len(unmatched)}) "
+                f"still has no verdict row at all. Either this data predates "
+                f"the BLOCKED_* fix in intraday/engine.py, or a path this fix "
+                f"missed still exists — check the daemon is running the "
+                f"current code before assuming the latter.")
+        elif blocked_n > allocator_n:
+            logger.warning(
+                f"  The gap is DOMINATED BY OPERATIONAL blocks ({blocked_n} "
+                f"of {len(unmatched)}), not allocator vetoes — see the "
+                f"breakdown above for which one. These are opportunities the "
+                f"system's own gates liked, lost for reasons unrelated to "
+                f"trade quality; each BLOCKED_* reason above names exactly "
+                f"which control to look at.")
         else:
             logger.warning(
                 f"  The gap is MOSTLY explained by allocator vetoes "
-                f"({explained} of {len(unmatched)}) — the allocator is doing "
-                f"its job. This does NOT by itself mean the prior population "
-                f"is wrong: including allocator-vetoed rows' hypothetical "
-                f"outcomes is the non-circular choice. If engine_scorecard "
-                f"still disagrees with the real book after this, the next "
-                f"question is whether the allocator's OWN vetoes are "
-                f"well-calibrated, not whether the prior's population is.")
+                f"({allocator_n} of {len(unmatched)}) — the allocator is "
+                f"doing its job. This does NOT by itself mean the prior "
+                f"population is wrong: including allocator-vetoed rows' "
+                f"hypothetical outcomes is the non-circular choice. If "
+                f"engine_scorecard still disagrees with the real book after "
+                f"this, the next question is whether the allocator's OWN "
+                f"vetoes are well-calibrated, not whether the prior's "
+                f"population is.")
     else:
         logger.success(
             f"  {overall:.0f}% of TAKEN detections became a real position — "

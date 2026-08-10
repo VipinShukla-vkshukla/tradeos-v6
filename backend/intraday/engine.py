@@ -2561,7 +2561,8 @@ class IntradayEngine:
             # simulation measures exits but never a full round trip, and a
             # system judged only on how it leaves trades tells you nothing
             # about which trades it should have entered.
-            self._maybe_open_paper(st, qty, mc)
+            self._maybe_open_paper(st, qty, mc, phase=s["phase"],
+                                   cost_pct=s.get("cost_pct") or 0.0)
 
             if not self._intraday_alert_worthy(st):
                 logger.info(f"      {st.symbol}: {st.strategy} conf {st.confidence:.2f} "
@@ -2614,15 +2615,36 @@ class IntradayEngine:
         drift = cfg_float("intraday_setup_dedup_pct", 0.35) / 100.0
         return bool(prev_entry and abs(s.entry - prev_entry) / prev_entry > drift)
 
-    def _maybe_open_paper(self, st, qty: int, mc) -> None:
+    def _maybe_open_paper(self, st, qty: int, mc, phase: str = "?",
+                          cost_pct: float = 0.0) -> None:
         """
         Simulate the entry, so the paper book contains real round trips.
 
         Gated on capacity as well as the usual rails: a simulation that opens
         forty positions tests nothing about a system that can hold five, and its
         results would not transfer to the account it exists to inform.
+
+        EVERY REFUSAL BELOW IS RECORDED — 10-Aug-2026. This function used to be
+        the one place in the whole cost/allocator/capacity chain that refused a
+        setup silently: BLOCKED_SHORTABILITY, BLOCKED_STRUCTURE, VETOED_AI,
+        ALLOCATOR_DECLINED and every other gate upstream write a row explaining
+        themselves, but a setup that cleared ALL of them and then hit a
+        concurrency cap, a daily budget, a paper-broker capacity refusal, a
+        race against `_held_by_framework`, a failed fill, or a bare exception
+        simply vanished. `tools/taken_reconciliation.py` measured the result on
+        this account: 27 of 85 TAKEN detections across 10 sessions had NEITHER
+        a real position NOR an ALLOCATOR_DECLINED row — a setup that passed
+        every quality gate and the allocator's own opportunity-cost check, and
+        then disappeared with no trace of why. That is exactly the "a refusal
+        that leaves no row is a rule nobody can price" failure this file's own
+        cross-framework guard was written to stop, one level deeper in the
+        same function.
         """
         from execution.gates import is_paper
+
+        def _blocked(verdict: str) -> None:
+            self._record_setup(st, phase, cost_pct, verdict, 0)
+
         # Two switches, mirroring control/paper_entry.py for swing.
         # intraday_auto_entry says whether setups are taken at all;
         # intraday_live_auto_entry says whether that may spend real money.
@@ -2630,6 +2652,7 @@ class IntradayEngine:
         # them as on, and they did nothing, which is the same class of failure as
         # swing_auto_entry before it was wired.
         if not cfg_bool("intraday_auto_entry", True):
+            _blocked("BLOCKED_AUTO_ENTRY_OFF")
             return
 
         # How many NEW intraday positions today. Distinct from
@@ -2652,29 +2675,35 @@ class IntradayEngine:
                         if (p.get("framework") or "").upper() == "INTRADAY"])
         if open_now >= cfg_int("intraday_max_concurrent",
                                cfg_int("intraday_max_new_per_day", 4)):
+            _blocked("BLOCKED_CONCURRENCY")
             return
         if self._entries_today() >= cfg_int("intraday_max_new_per_day", 4):
             logger.info(f"  {st.symbol}: intraday daily entry budget spent "
                         f"({self._entries_today()}) — no more new risk today")
+            _blocked("BLOCKED_DAILY_BUDGET")
             return
         if not is_paper("INTRADAY"):
             if not cfg_bool("intraday_live_auto_entry", False):
                 logger.info(f"  {st.symbol}: INTRADAY is LIVE and "
                             f"intraday_live_auto_entry is off — alerting only")
+                _blocked("BLOCKED_LIVE_AUTO_ENTRY_OFF")
                 return
             # Live auto-entry is deliberately not implemented here. Committing
             # capital on a single live tick is the highest-variance action this
             # system can take, and it is not one to enable by flipping a switch.
             logger.warning(f"  {st.symbol}: live auto-entry is not implemented — "
                            f"entries stay manual. Alerting only.")
+            _blocked("BLOCKED_LIVE_NOT_IMPLEMENTED")
             return
         try:
             from execution import paper_broker
             allowed, why, _left = paper_broker.capacity("INTRADAY", self.sb)
             if not allowed:
                 logger.info(f"  📄 paper skip {st.symbol} — {why}")
+                _blocked("BLOCKED_PAPER_CAPACITY")
                 return
             if self._held_by_framework(st.symbol, "INTRADAY"):
+                _blocked("BLOCKED_ALREADY_HELD")
                 return
             # A SHORT OPENS WITH A SELL. Hardcoding "BUY" would have simulated
             # the wrong leg: paper_broker fills a BUY at the worse side of the
@@ -2685,6 +2714,8 @@ class IntradayEngine:
                                            qty, "LIMIT", st.entry, st.entry,
                                            product=paper_broker.product_for("INTRADAY"))
             if not f.ok:
+                logger.info(f"  📄 fill failed {st.symbol} — {f.message}")
+                _blocked("BLOCKED_FILL_FAILED")
                 return
             from intraday.exit_policy import invalidation_level_from
             inv_level, inv_note = invalidation_level_from(st)
@@ -2709,6 +2740,13 @@ class IntradayEngine:
             self.load_state()
         except Exception as e:
             logger.warning(f"  paper entry failed for {st.symbol}: {e}")
+            # A FIXED verdict string, not the exception folded into it — every
+            # other reader of this column (taken_reconciliation, engine_
+            # scorecard, the priors) does an exact match against cost_verdict,
+            # and a dynamic value would silently stop matching any of them.
+            # The detail belongs in meta, same as ai_note/event_note elsewhere.
+            st.meta["exception"] = str(e)[:200]
+            _blocked("BLOCKED_EXCEPTION")
 
     def square_off_paper(self, prices: dict) -> int:
         """
