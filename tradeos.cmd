@@ -8,6 +8,14 @@ REM    tradeos check      verify readiness only, start nothing
 REM    tradeos health     run EVERY check and report what is broken
 REM    tradeos simulate   what BOTH books would do right now — writes nothing
 REM    tradeos verify     offline logic checks — no database, ~2s. Run after editing.
+REM    tradeos regression verify + allocator replay + exit ladder replay, in one — run
+REM                       this after every code change, before benchmark
+REM    tradeos regression 15   same, over the last 15 days instead of the default 10
+REM    tradeos benchmark  snapshot / compare the live book's actual state — see
+REM                       "APPLE TO APPLE COMPARISON" below
+REM    tradeos benchmark snapshot "label"   record today's state under a label
+REM    tradeos benchmark compare  diff the two most recent snapshots (or pass two paths)
+REM    tradeos backfill   score any past intraday session the daemon never resolved
 REM    tradeos backup     dump the system of record off-platform, then verify it
 REM    tradeos rollback   what Phase 4 has switched on, and what it was before
 REM    tradeos rollback off   every Phase 4 switch back to its pre-Phase-4 value
@@ -18,10 +26,10 @@ REM    tradeos expectancy reconcile FILE.xlsx   check it against a Zerodha P&L e
 REM    tradeos quote-parity   does the live feed agree with the historical one yet
 REM    tradeos quote-parity arm   start logging both, for one session
 REM    tradeos learn      weekly review — measures, proposes, changes nothing
-REM    tradeos learn show just read the open proposals
+REM    tradeos learn show just read the open proposals (same as "tradeos proposals")
 REM    tradeos discover   look for engines that do not exist yet
 REM    tradeos settings   which Control Room switches this week's evidence supports
-REM    tradeos proposals  read what is waiting for a decision
+REM    tradeos proposals  read what is waiting for a decision (same as "tradeos learn show")
 REM    tradeos status     what is live, what is paper, what is off
 REM    tradeos ip         this machine's public IP for the Kite allowlist
 REM    tradeos server     validate the daemon server (run this ON the server)
@@ -41,6 +49,36 @@ REM  Mode changes are separate from the daily launch on purpose: you launch
 REM  every morning but promote a framework to live once, and folding a rare,
 REM  consequential decision into a daily routine is how it gets made by accident.
 REM
+REM  APPLE TO APPLE COMPARISON — how to trust a code change before it trades
+REM  -------------------------------------------------------------------------
+REM  Two different questions, two different tools. Run both, in this order,
+REM  every time a change touches trading logic:
+REM
+REM    1. tradeos regression            BEFORE the change (confirm the branch
+REM                                      you're starting from is clean)
+REM    2. tradeos benchmark snapshot "before <what you're about to change>"
+REM    3.   ... make the code change ...
+REM    4. tradeos regression            AFTER the change (did it break any of
+REM                                      the 220+ offline checks or the two
+REM                                      walk-forward replays?)
+REM    5. tradeos benchmark snapshot "after <what you changed>"
+REM    6. tradeos benchmark compare     diffs the two most recent snapshots —
+REM                                      no filenames to remember or paste
+REM
+REM  `regression` is the LOGIC half: does the code still do what 220+ pinned
+REM  checks say it should, and does a walk-forward replay over real historical
+REM  detections still come out the way it did. It needs no live trading to have
+REM  happened since the last run.
+REM
+REM  `benchmark` is the STATE half: what does the REAL book actually look like
+REM  right now — open positions, closed-trade win rate and R, per-engine
+REM  standings — read straight from closed_positions, the same ledger the
+REM  dashboard reads. It answers "did anything change", not "why" — a
+REM  benchmark diff alone cannot tell a real behaviour change from two ordinary
+REM  sessions of new trades between snapshots, which is exactly why step 1/4
+REM  comes first: regression isolates the POLICY's effect on fixed historical
+REM  data, benchmark only ever shows you today's live, moving book.
+REM
 REM  DOUBLE-CLICK asks which framework to run today, then does everything for
 REM  that choice in one go. Typing a subcommand skips the prompt, so scripts and
 REM  habits both keep working.
@@ -57,6 +95,8 @@ if /i "%~1"=="check"    goto CHECK
 if /i "%~1"=="health"   goto HEALTH
 if /i "%~1"=="simulate" goto SIMULATE
 if /i "%~1"=="verify"   goto VERIFY
+if /i "%~1"=="regression" goto REGRESSION
+if /i "%~1"=="benchmark" goto BENCHMARK
 if /i "%~1"=="backup"   goto BACKUP
 if /i "%~1"=="rollback" goto ROLLBACK
 if /i "%~1"=="alloc"    goto ALLOC
@@ -83,12 +123,14 @@ goto START
 REM The grouped menu prints 45 lines plus the prompt, and a default Windows
 REM console shows 25 — so the first two groups scroll off before they can be
 REM read, which is exactly how the LEARN options came to look absent when they
-REM were present all along. Sized to 50 rather than 45: adding the Verify entry
-REM took the menu to exactly the old height, which is one line short once the
-REM "Choice [1]:" prompt is counted, and a menu whose header has just scrolled
-REM away is how this was missed the first time. Redirected because a console
-REM that cannot be resized (a terminal tab, ssh) should not print an error.
-mode con: cols=100 lines=50 >nul 2>&1
+REM were present all along. Sized to 52 rather than 45: adding the Verify entry
+REM took the menu to exactly 50, one line short once the "Choice [1]:" prompt
+REM is counted, and a menu whose header has just scrolled away is how this was
+REM missed the first time. Adding Regression and Benchmark took it to 52 —
+REM bump this again if another line is ever added, by the same margin.
+REM Redirected because a console that cannot be resized (a terminal tab, ssh)
+REM should not print an error.
+mode con: cols=100 lines=52 >nul 2>&1
 cls
 echo.
 echo  ===========================================================
@@ -107,6 +149,8 @@ echo     6   Health sweep           every check, find what is broken
 echo     7   IP                     this machine's, vs the Kite allowlist
 echo     S   Simulate               what BOTH books would do right now — writes nothing
 echo     V   Verify                 offline logic checks, no database (~2s)
+echo     T   Regression check       verify + both walk-forward replays, in one
+echo     M   Benchmark              snapshot / compare the live book — apple to apple
 echo.
 echo   LEARN                        measures and proposes, changes nothing
 echo     L   Weekly review          what the evidence says to change
@@ -148,6 +192,8 @@ if "%PICK%"=="6" goto HEALTH
 if "%PICK%"=="7" goto IP
 if /i "%PICK%"=="S" goto SIMULATE
 if /i "%PICK%"=="V" goto VERIFY
+if /i "%PICK%"=="T" goto REGRESSION
+if /i "%PICK%"=="M" goto BENCHMARK
 if /i "%PICK%"=="L" goto LEARN
 if /i "%PICK%"=="D" goto DISCOVER
 if /i "%PICK%"=="P" goto PROPOSALS
@@ -358,6 +404,54 @@ REM  whether TODAY is safe, `verify` tells you whether a CHANGE is safe.
 python -m tools.verify
 goto END
 
+:REGRESSION
+REM  The LOGIC half of "did this change break anything" — see the APPLE TO
+REM  APPLE COMPARISON block at the top of this file for the full workflow.
+REM  Chains tools.verify, tools.allocator_replay and tools.exit_ladder_replay
+REM  in one run; the two replay steps are SKIPPED (not failed) without
+REM  database credentials, same distinction tools.health already draws.
+REM  `tradeos regression 15` runs the replay window over 15 days instead of
+REM  the default 10.
+if not "%~2"=="" (python -m tools.regression_check --days %~2) else (python -m tools.regression_check)
+goto END
+
+:BENCHMARK
+REM  The STATE half — what the real book actually looks like right now,
+REM  ground-truth from closed_positions, the same ledger the dashboard reads.
+REM  Not a backtest; see tools/benchmark.py's own docstring for the
+REM  distinction from `regression` above.
+if /i "%~2"=="snapshot" goto BENCH_SNAPSHOT
+if /i "%~2"=="compare"  goto BENCH_COMPARE
+goto BENCH_HELP
+
+:BENCH_SNAPSHOT
+REM  %~3 is the label, quoted so a multi-word one survives — "tradeos
+REM  benchmark snapshot before the VWR fix" would otherwise pass only
+REM  "before" and silently drop the rest.
+python -m tools.benchmark snapshot --label "%~3"
+goto END
+
+:BENCH_COMPARE
+REM  Bare "tradeos benchmark compare" auto-picks the two most recent
+REM  snapshots — passing two literal empty strings through instead (what
+REM  cmd.exe would do with unset %~3/%~4) would break tools.benchmark's own
+REM  nargs="?" default, so the no-args case is dispatched separately here.
+if "%~3"=="" (python -m tools.benchmark compare) else (python -m tools.benchmark compare "%~3" "%~4")
+goto END
+
+:BENCH_HELP
+echo.
+echo   "tradeos benchmark" needs to know which of two things you want:
+echo.
+echo     tradeos benchmark snapshot "label text"     record today's state
+echo     tradeos benchmark compare                   diff the two most recent snapshots
+echo     tradeos benchmark compare fileA.json fileB.json   diff two specific ones
+echo.
+echo   See the APPLE TO APPLE COMPARISON block at the top of this file (open
+echo   tradeos.cmd in a text editor) for when to run each step.
+echo.
+goto END
+
 :SIMULATE
 REM Read-only. Runs the same engines, gates and sizing both books use live —
 REM writes nothing to system_config or open_positions. Paired with `health` as
@@ -396,7 +490,12 @@ if /i "%~2"=="arm" (python -m tools.quote_parity --arm) else if /i "%~2"=="disar
 goto END
 
 :LEARN
-if /i "%~2"=="show" (python -m tools.weekly_review --show) else (python -m tools.weekly_review)
+if /i "%~2"=="show" goto LEARN_SHOW
+python -m tools.weekly_review
+goto END
+
+:LEARN_SHOW
+python -m tools.weekly_review --show
 goto END
 
 :DISCOVER
@@ -415,8 +514,13 @@ python -m intraday.outcomes --backfill
 goto END
 
 :PROPOSALS
-python -m tools.weekly_review --show
-goto END
+REM  Same read-only view as "tradeos learn show" — kept as its own command
+REM  name because the menu treats "read what's waiting" and "run the weekly
+REM  review" as different actions even though today they call the same
+REM  underlying tool. DEDUPED 10-Aug-2026: this used to repeat the exact
+REM  `python -m tools.weekly_review --show` line LEARN_SHOW already has —
+REM  one command now, two names into it.
+goto LEARN_SHOW
 
 :STATUS
 python control_panel.py

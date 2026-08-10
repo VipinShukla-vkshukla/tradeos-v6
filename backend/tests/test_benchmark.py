@@ -138,6 +138,45 @@ def test_snapshot_round_trips_through_json():
     assert restored["swing"]["open"]["open_count"] == 1
 
 
+def test_two_most_recent_picks_the_latest_pair_oldest_first():
+    """The `tradeos benchmark compare` auto-detect path (10-Aug-2026, wired
+    into tradeos.cmd) — snapshot before, snapshot after, compare with no
+    arguments. Must return (older, newer), not the reverse — a swapped pair
+    would print the diff backwards."""
+    import os
+    import tempfile
+    import time
+    from pathlib import Path
+    from tools.benchmark import _two_most_recent
+
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        (d / "20260810_090000_before.json").write_text("{}")
+        time.sleep(0.01)
+        (d / "20260810_150000_after.json").write_text("{}")
+        older_path = str(d / "20260810_090000_before.json")
+        newer_path = str(d / "20260810_150000_after.json")
+        # Filesystem mtime resolution can be coarse; force the ordering
+        # explicitly rather than trusting the sleep alone.
+        now = time.time()
+        os.utime(older_path, (now - 10, now - 10))
+        os.utime(newer_path, (now, now))
+        pair = _two_most_recent(d)
+    assert pair == (older_path, newer_path)
+
+
+def test_two_most_recent_returns_none_with_fewer_than_two_snapshots():
+    import tempfile
+    from pathlib import Path
+    from tools.benchmark import _two_most_recent
+
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        assert _two_most_recent(d) is None
+        (d / "only_one.json").write_text("{}")
+        assert _two_most_recent(d) is None
+
+
 def test_compare_runs_end_to_end_on_real_files(tmp_path=None):
     """Smoke test through the actual CLI-facing compare() function, using
     real files on disk -- the code path the operator actually runs."""
@@ -172,4 +211,8 @@ TESTS = [
      test_snapshot_round_trips_through_json),
     ("compare runs end to end on real files",
      test_compare_runs_end_to_end_on_real_files),
+    ("two most recent picks the latest pair, oldest first",
+     test_two_most_recent_picks_the_latest_pair_oldest_first),
+    ("two most recent returns None with fewer than two snapshots",
+     test_two_most_recent_returns_none_with_fewer_than_two_snapshots),
 ]

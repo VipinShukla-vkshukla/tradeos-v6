@@ -232,6 +232,16 @@ def compare(path_a: str, path_b: str) -> int:
     return 0
 
 
+def _two_most_recent(bench_dir: Path) -> tuple[str, str] | None:
+    """The last two snapshots written to `bench_dir`, oldest first (so the
+    result reads as A -> B, before -> after) — or None if fewer than two
+    exist. Pure enough to unit test without going through argparse."""
+    files = sorted(bench_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
+    if len(files) < 2:
+        return None
+    return str(files[-2]), str(files[-1])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -242,8 +252,10 @@ def main() -> int:
     sp.add_argument("--out", default=None)
 
     cp = sub.add_parser("compare", help="diff two snapshots")
-    cp.add_argument("file_a")
-    cp.add_argument("file_b")
+    cp.add_argument("file_a", nargs="?", default=None,
+                    help="omit both to auto-compare the two most recent "
+                         "snapshots in benchmarks/")
+    cp.add_argument("file_b", nargs="?", default=None)
 
     a = ap.parse_args()
     if a.cmd == "snapshot":
@@ -256,7 +268,26 @@ def main() -> int:
         out.write_text(json.dumps(data, indent=2))
         logger.success(f"  saved: {out}")
         return 0
-    return compare(a.file_a, a.file_b)
+
+    fa, fb = a.file_a, a.file_b
+    if fa is None or fb is None:
+        # THE APPLE-TO-APPLE WORKFLOW IN ONE COMMAND: snapshot before,
+        # snapshot after, then `compare` with no arguments. Requiring the
+        # operator to go find and paste two timestamped filenames back is
+        # exactly the kind of friction that turns a step nobody skips into
+        # a step somebody eventually does.
+        pair = _two_most_recent(BENCH_DIR)
+        if pair is None:
+            logger.error(
+                f"  fewer than 2 snapshots in {BENCH_DIR} — nothing to "
+                f"auto-compare. Run `snapshot` twice (before and after the "
+                f"change), or pass two file paths explicitly.")
+            return 1
+        fa, fb = pair
+        logger.info(f"  no files given — comparing the two most recent snapshots:\n"
+                   f"    A: {fa}\n    B: {fb}\n"
+                   f"  (pass two paths explicitly if that is not the pair you meant)")
+    return compare(fa, fb)
 
 
 if __name__ == "__main__":
