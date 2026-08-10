@@ -51,13 +51,25 @@ class _SB:
     def table(self, name): return _FakeQuery(self._rows)
 
 
+_SEQ = iter(range(1, 10_000_000))
+
+
 def _row(strategy, outcome_pct, verdict, direction="LONG", entry=100.0, stop=99.0):
-    """risk_pct is 1.0% by construction, so outcome_pct IS the R multiple."""
+    """risk_pct is 1.0% by construction, so outcome_pct IS the R multiple.
+
+    Each call gets a UNIQUE (symbol, trade_date) so these rows survive
+    `priors_intraday_dedup` as independent observations — that dedup collapses
+    on (symbol, engine, day), and a helper that emitted a constant identity
+    would silently turn every multi-row fixture below into a sample of one.
+    Tests that specifically exercise duplication override `symbol` explicitly.
+    """
     if direction == "SHORT":
         entry, stop = 100.0, 101.0
+    i = next(_SEQ)
     return {"strategy": strategy, "outcome": None, "outcome_pct": outcome_pct,
             "entry": entry, "stop": stop, "direction": direction,
-            "cost_verdict": verdict}
+            "cost_verdict": verdict,
+            "symbol": f"SYM{i}", "trade_date": "2026-08-05"}
 
 
 def test_refused_detections_do_not_drag_the_prior_down():
@@ -65,9 +77,9 @@ def test_refused_detections_do_not_drag_the_prior_down():
     was strongly negative; it must now reflect the trades that were actually
     takeable."""
     from allocation.scoring import intraday_priors
-    rows = ([_row("ORB", 1.0, "TAKEN")] * 40
-            + [_row("ORB", -2.0, "BLOCKED_STRUCTURE")] * 120
-            + [_row("ORB", -2.0, "REJECTED_COST")] * 80)
+    rows = ([_row("ORB", 1.0, "TAKEN") for _ in range(40)]
+            + [_row("ORB", -2.0, "BLOCKED_STRUCTURE") for _ in range(120)]
+            + [_row("ORB", -2.0, "REJECTED_COST") for _ in range(80)])
     with cfg_ctx({"priors_min_sample_intraday": "30",
                   "priors_intraday_taken_only": "true"}):
         p = intraday_priors(_SB(rows))["INTRADAY/ORB"]
@@ -81,8 +93,8 @@ def test_switch_off_restores_the_old_population():
     """The pre-10-Aug behaviour must remain reachable, and must be the thing
     that reproduces the defect — a switch that changes nothing is not a switch."""
     from allocation.scoring import intraday_priors
-    rows = ([_row("ORB", 1.0, "TAKEN")] * 40
-            + [_row("ORB", -2.0, "BLOCKED_STRUCTURE")] * 200)
+    rows = ([_row("ORB", 1.0, "TAKEN") for _ in range(40)]
+            + [_row("ORB", -2.0, "BLOCKED_STRUCTURE") for _ in range(200)])
     with cfg_ctx({"priors_min_sample_intraday": "30",
                   "priors_intraday_taken_only": "false"}):
         p = intraday_priors(_SB(rows))["INTRADAY/ORB"]
@@ -96,8 +108,8 @@ def test_a_young_engine_falls_back_rather_than_going_neutral():
     from an engine that simply has not been funded often yet — and dropping to
     NEUTRAL would silently re-price it at exactly 0 - cost_r."""
     from allocation.scoring import intraday_priors
-    rows = ([_row("VCE", 0.5, "TAKEN")] * 5
-            + [_row("VCE", -0.4, "BELOW_CONVICTION")] * 60)
+    rows = ([_row("VCE", 0.5, "TAKEN") for _ in range(5)]
+            + [_row("VCE", -0.4, "BELOW_CONVICTION") for _ in range(60)])
     with cfg_ctx({"priors_min_sample_intraday": "30",
                   "priors_intraday_taken_only": "true"}):
         p = intraday_priors(_SB(rows))["INTRADAY/VCE"]
@@ -112,8 +124,8 @@ def test_the_short_book_fallback_is_gated_too():
     on the raw population would put the contaminated prior back underneath
     exactly the engines too young to have escaped it."""
     from allocation.scoring import intraday_priors
-    rows = ([_row("SDN", 1.0, "TAKEN", "SHORT")] * 40
-            + [_row("SDN", -2.0, "VETOED_AI", "SHORT")] * 150)
+    rows = ([_row("SDN", 1.0, "TAKEN", "SHORT") for _ in range(40)]
+            + [_row("SDN", -2.0, "VETOED_AI", "SHORT") for _ in range(150)])
     with cfg_ctx({"priors_min_sample_intraday": "30",
                   "priors_intraday_taken_only": "true"}):
         priors = intraday_priors(_SB(rows))
@@ -126,8 +138,8 @@ def test_longs_and_shorts_still_never_pool_together():
     """The gating must not quietly undo the direction split — a long and a short
     in the same name are not two samples of one distribution."""
     from allocation.scoring import intraday_priors
-    rows = ([_row("ORB", 1.0, "TAKEN")] * 40
-            + [_row("SDN", -1.0, "TAKEN", "SHORT")] * 40)
+    rows = ([_row("ORB", 1.0, "TAKEN") for _ in range(40)]
+            + [_row("SDN", -1.0, "TAKEN", "SHORT") for _ in range(40)])
     with cfg_ctx({"priors_min_sample_intraday": "30",
                   "priors_intraday_taken_only": "true"}):
         priors = intraday_priors(_SB(rows))
@@ -153,8 +165,8 @@ def test_the_prior_dict_is_keyed_the_way_the_allocator_looks_it_up():
     from allocation.allocator import Allocator
     from allocation.proposal import Proposal
 
-    rows = ([_row("ORB", 2.0, "TAKEN")] * 40
-            + [_row("VWR", -2.0, "TAKEN")] * 40)
+    rows = ([_row("ORB", 2.0, "TAKEN") for _ in range(40)]
+            + [_row("VWR", -2.0, "TAKEN") for _ in range(40)])
     with cfg_ctx({"priors_min_sample_intraday": "30",
                   "priors_intraday_taken_only": "true"}):
         priors = intraday_priors(_SB(rows))
@@ -192,7 +204,7 @@ def test_the_cost_is_charged_once_not_twice():
     from allocation.scoring import intraday_priors
     # risk_pct is 1.0%, so an R of exactly 1.0 gross was recorded as
     # outcome_pct = 1.0 - 0.21 = 0.79 net.
-    rows = [{**_row("ORB", 0.79, "TAKEN"), "cost_pct": 0.21}] * 40
+    rows = [{**_row("ORB", 0.79, "TAKEN"), "cost_pct": 0.21} for _ in range(40)]
     with cfg_ctx({"priors_min_sample_intraday": "30",
                   "priors_intraday_taken_only": "true"}):
         p = intraday_priors(_SB(rows))["INTRADAY/ORB"]
@@ -205,7 +217,7 @@ def test_rows_without_a_cost_pct_are_unchanged():
     """Refused rows carry cost_pct = 0 and were already gross. Adding zero back
     must be a no-op, or the reconstruction breaks the majority of the table."""
     from allocation.scoring import intraday_priors
-    rows = [{**_row("ORB", 1.0, "BLOCKED_STRUCTURE"), "cost_pct": 0}] * 40
+    rows = [{**_row("ORB", 1.0, "BLOCKED_STRUCTURE"), "cost_pct": 0} for _ in range(40)]
     with cfg_ctx({"priors_min_sample_intraday": "30",
                   "priors_intraday_taken_only": "false"}):
         p = intraday_priors(_SB(rows))["INTRADAY/ORB"]
@@ -229,4 +241,45 @@ TESTS = [
      test_the_short_book_fallback_is_gated_too),
     ("longs and shorts still never pool together",
      test_longs_and_shorts_still_never_pool_together),
+]
+
+
+def test_a_lingering_setup_counts_once_not_once_per_cycle():
+    """`intraday_setups` holds a row per (setup, evaluation cycle). Measured on
+    the live table: RNG's entire n=11 prior was ONE setup counted eleven times,
+    and PDL cleared the 30-sample floor on eight real trades. `n` is a claim
+    about INDEPENDENT observations, and duplication makes it false — while also
+    weighting whichever setup lingered longest most heavily, which is not
+    independent of outcome."""
+    from allocation.scoring import intraday_priors
+    rows = ([{**_row("RNG", -1.0, "TAKEN"), "symbol": "X", "trade_date": "2026-08-05"} for _ in range(11)]
+            + [{**_row("RNG", 1.0, "TAKEN"), "symbol": f"D{i}", "trade_date": "2026-08-05"}
+               for i in range(4)])
+    with cfg_ctx({"priors_min_sample_intraday": "3",
+                  "priors_intraday_taken_only": "true",
+                  "priors_intraday_dedup": "true"}):
+        p = intraday_priors(_SB(rows))["INTRADAY/RNG"]
+    assert p.n == 5, f"n {p.n} — expected 5 distinct setups, not 15 rows"
+    assert p.mean_r > 0, f"mean_r {p.mean_r} — one lingering loser outvoted four winners"
+
+
+def test_dedup_keeps_distinct_symbols_and_days_apart():
+    """The key is (symbol, engine, day). Same setup on two different days is
+    two observations; two symbols on one day is two observations."""
+    from allocation.scoring import intraday_priors
+    rows = [{**_row("ORB", 1.0, "TAKEN"), "symbol": "A", "trade_date": "2026-08-05"},
+            {**_row("ORB", 1.0, "TAKEN"), "symbol": "A", "trade_date": "2026-08-06"},
+            {**_row("ORB", 1.0, "TAKEN"), "symbol": "B", "trade_date": "2026-08-05"}]
+    with cfg_ctx({"priors_min_sample_intraday": "3",
+                  "priors_intraday_taken_only": "true",
+                  "priors_intraday_dedup": "true"}):
+        p = intraday_priors(_SB(rows))["INTRADAY/ORB"]
+    assert p.n == 3, f"n {p.n} — distinct setups were merged"
+
+
+TESTS += [
+    ("a lingering setup counts once, not once per cycle",
+     test_a_lingering_setup_counts_once_not_once_per_cycle),
+    ("dedup keeps distinct symbols and days apart",
+     test_dedup_keeps_distinct_symbols_and_days_apart),
 ]

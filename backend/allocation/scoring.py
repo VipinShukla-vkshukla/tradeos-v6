@@ -180,6 +180,65 @@ def intraday_priors(sb) -> dict[str, Prior]:
     # number came from, per this module's "never borrowed silently" rule.
     taken_only = cfg_bool("priors_intraday_taken_only", True)
 
+    # ── ONE SETUP IS ONE OBSERVATION, NOT ONE PER 15s CYCLE — 10-Aug-2026 ────
+    #
+    # `intraday_setups` carries a row per (setup, evaluation cycle): a setup
+    # lingering near its level is re-recorded whenever its entry drifts past
+    # the 0.35% `intraday_setup_dedup_pct` threshold, and `_setup_is_new` does
+    # NOT prevent this for a repeat TAKEN — it only suppresses an identical
+    # restatement. Measured on the live table:
+    #
+    #     engine   rows the prior counted   distinct setups   meanR     deduped
+    #     ORB               234                    23         +0.089    -0.215
+    #     VWR               137                    30         +0.205    -0.040
+    #     PDL                56                     8         -0.804    -0.094
+    #     SDN                26                     9         +0.756    +0.187
+    #     RNG                11                     1         -1.000    -1.000
+    #
+    # `n` is a claim about INDEPENDENT observations and every one of those was
+    # false. RNG's entire "n=11" is one setup counted eleven times; PDL cleared
+    # the 30-sample floor on eight real trades. There is no reading under which
+    # that is correct — it corrupts the floor decision, the standard error, and
+    # the mean simultaneously, because a setup that lingers longest gets the
+    # most votes and lingering is not independent of outcome.
+    #
+    # WORST OF ALL, IT FLIPS SIGNS ON THE TWO HIGHEST-VOLUME ENGINES. ORB and
+    # VWR both read positive inflated and negative deduplicated. That is what
+    # made the per-engine key fix above look like a regression when replayed:
+    # the fix correctly made per-engine priors REACHABLE for the first time,
+    # and what it reached was duplicate-driven noise that ranked ORB and VWR
+    # above a zero floor they do not actually clear. Before the key fix
+    # everything fell through to the pooled book distribution, which averaged
+    # across engines and partly washed the duplication out — so the bug was
+    # masked by a second bug.
+    #
+    # Collapsed to the MEAN per (symbol, engine, day), the same key
+    # `tools/allocator_replay.py::_dedupe_candidates` uses, so the prior and
+    # any replay of it count the same population the same way.
+    #
+    # NOT applicable to `swing_priors()`: it reads `signal_output_daily`, which
+    # the evening pipeline writes once per symbol per day by construction.
+    if cfg_bool("priors_intraday_dedup", True):
+        collapsed: dict[tuple, list[dict]] = {}
+        for r in rows:
+            collapsed.setdefault(
+                (r.get("symbol"), r.get("strategy"), r.get("trade_date")), []).append(r)
+        deduped = []
+        for grp in collapsed.values():
+            # A group's verdict is TAKEN if the setup was EVER taken that day —
+            # the trade happened, and the near-miss rows that preceded it are
+            # restatements of the same decision, not separate refusals.
+            taken = [g for g in grp if (g.get("cost_verdict") or "").upper() == "TAKEN"]
+            src = taken or grp
+            base = dict(src[0])
+            vals = [(float(g["outcome_pct"]), float(g.get("cost_pct") or 0))
+                    for g in src if g.get("outcome_pct") is not None]
+            if vals:
+                base["outcome_pct"] = statistics.fmean(v[0] for v in vals)
+                base["cost_pct"] = statistics.fmean(v[1] for v in vals)
+            deduped.append(base)
+        rows = deduped
+
     by: dict[str, list[float]] = {}
     by_taken: dict[str, list[float]] = {}
     for r in rows:
