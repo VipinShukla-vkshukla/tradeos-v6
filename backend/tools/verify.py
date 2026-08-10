@@ -81,6 +81,7 @@ MODULES = [
     ("exit audit sanity",      "tests.test_exit_audit_sanity"),
     ("intraday giveback calibrated", "tests.test_intraday_giveback"),
     ("exit ladder replay",     "tests.test_exit_ladder_replay"),
+    ("taken reconciliation",   "tests.test_taken_reconciliation"),
 ]
 
 
