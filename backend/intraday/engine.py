@@ -2984,6 +2984,47 @@ class IntradayEngine:
             return True, "no allocator verdict — failing open"
         if v["verdict"] == "TAKE":
             return True, v.get("reason") or "allocator selected it"
+
+        # ── THE FLOOR MUST NOT CREATE AN ABSORBING STATE — 10-Aug-2026 ──────
+        #
+        # `alloc_edge_absolute_floor` refuses any proposal whose expected R
+        # does not cover its own round trip. Correct for real capital. On a
+        # PAPER book it is a trap, and the replay proved it: across 10
+        # sessions the floored policy took ZERO trades.
+        #
+        # Zero trades means zero new TAKEN rows. `priors_intraday_taken_only`
+        # builds every prior FROM TAKEN rows. So the prior freezes at whatever
+        # it was the day the floor engaged, and no amount of engine
+        # improvement can ever show up in it — the book cannot demonstrate it
+        # got better because it is not allowed to try. Once negative, silent
+        # forever. That is this project's own "a check that cannot pass"
+        # failure, one level up: a GATE that cannot be cleared.
+        #
+        # The floor's purpose is to protect capital. A paper book has none.
+        # So: LIVE books are blocked, PAPER books explore and are RECORDED.
+        #
+        # "BUT A SIMULATION MUST BEHAVE LIKE THE LIVE SYSTEM." It does, and
+        # this is why the carve-out is honest rather than a fudge: BOTH
+        # verdicts are written for every proposal — the allocator's DECLINE
+        # goes to `allocation_decisions` exactly as it would live, and the
+        # exploration trade goes to `intraday_setups`. So the live-equivalent
+        # P&L ("what the floor would have saved") is computable exactly, at
+        # any time, from data already on disk. The simulation measures BOTH
+        # systems at once, which is strictly more information than measuring
+        # the blocked one and learning nothing.
+        #
+        # `alloc_floor_blocks_paper` flips it back for anyone who wants the
+        # paper book to mirror the live block exactly and accept the freeze.
+        floor_declined = ((v.get("hurdle_inputs") or {}).get("absolute_floor_applied")
+                          and v["verdict"] != "DEFER")
+        if floor_declined and not cfg_bool("alloc_floor_blocks_paper", False):
+            from execution.gates import is_paper
+            if is_paper(framework):
+                return True, (f"below the absolute floor, but {framework} is PAPER "
+                              f"— taken as EXPLORATION so the prior keeps learning; "
+                              f"the DECLINE is recorded and the live-equivalent "
+                              f"book excludes it")
+
         return False, v.get("reason") or f"allocator returned {v['verdict']}"
 
     def _record_setup(self, s, phase: str, cost_pct: float, verdict: str, qty: int) -> None:
