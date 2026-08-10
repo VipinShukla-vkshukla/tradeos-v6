@@ -1,8 +1,9 @@
 # TradeOS Knowledge Base — Living Document
 
-**Last updated:** 7 August 2026 (2 sessions of evidence, plus a direct
+**Last updated:** 10 August 2026 (3 sessions of evidence, plus a direct
 `final_score` tercile measurement against the full historical sample)
-**Source reviews:** `daily/2026-08-06.md`, `daily/2026-08-07.md`
+**Source reviews:** `daily/2026-08-06.md`, `daily/2026-08-07.md`,
+`daily/2026-08-10.md`
 
 Read this before starting a new day's review. Update it after, per the
 workflow in `README.md`. An item's confidence should track its sample
@@ -18,13 +19,13 @@ contradiction.)*
 
 - **The give-back guard protects real profit rather than letting a winner
   round-trip.**
-  Sessions: 6 Aug (n=1 live occurrence — KIMS, TRAVELFOOD).
-  Confidence: Medium-high — backed by the codebase's own 70-trade
-  historical study (24/28 losing swing trades had been >0.5% in profit
-  first); 6 Aug is the first LIVE confirmation, not the origin of the
-  claim.
-  Next evidence needed: 2-3 more live give-back triggers to confirm the
-  exit price consistently beats the alternative of riding to the stop.
+  Sessions: 6 Aug (n=1 — KIMS, TRAVELFOOD), 10 Aug (n=1 — ETERNAL, peaked
+  +4.41%, gave back 53%, exited +2.06%). Now n=3 live occurrences across
+  2 sessions.
+  Confidence: High — three live confirmations, all the same shape,
+  backed by the codebase's own 70-trade historical study.
+  Next evidence needed: none pressing — this can be treated as settled
+  unless a future session contradicts it.
 
 - **`final_score` does not predict forward R within the CONTINUATION swing
   family, on the full resolved sample measured so far.**
@@ -55,36 +56,34 @@ contradiction.)*
   the order itself is placed.**
   Sessions: 6 Aug (n=1 — KIMS + TRAVELFOOD SELL both blocked by IP
   allowlist; TRAVELFOOD's give-back guard re-fired 4x over 20 minutes
-  without landing). 7 Aug: no swing exit fired, so no order was attempted
-  — hypothesis untested, not confirmed or refuted, this session.
-  Confidence: Low-medium — one session, but the failure mode matches a
-  known category (`deploy/validate_server.py`'s own warning about
-  ephemeral Oracle IPs).
-  Next evidence needed: whether this recurs on sessions with a
-  confirmed-stable IP, to separate "one-off network hiccup" from
-  "allowlist genuinely needs a standing pre-market check."
+  without landing). 7 Aug: no swing exit fired, untested. 10 Aug (n=1 —
+  ETERNAL + CIPLA SELLs both succeeded cleanly, zero IP blocks, GTT
+  cancel + re-entry inside the same 20-second window).
+  Confidence: Low-medium → **Medium** — one failure, one clean success;
+  early lean toward "6 Aug was a one-off," not yet confirmed.
+  Next evidence needed: one more clean session to move this toward
+  Validated, or a recurrence to move it the other way — currently 1-1.
 
 - **The swing allocator's "slots spent" decline reflects real slot
   scarcity — DEMOTED from Validated Rules, 7 Aug.**
-  Sessions: 6 Aug (n=1 — GABRIEL: slots genuinely occupied by two held
-  positions, freed when they closed, admitted immediately after). 7 Aug
-  (n=1 — the opposite texture: 25 distinct qualifying candidates declined
-  all day citing "slots spent," while the daily counter sat at 0/3 used
-  the entire session — no slot was ever actually occupied. The
-  `allocation_decisions` audit table additionally disagreed with the live
-  veto on 5 of those symbols, recording a TAKE the engine log never acted
-  on.)
-  Confidence: Downgraded from Medium to Low — 6 Aug validated the rule
-  under slot-genuinely-full conditions only; 7 Aug shows a second,
-  contradictory texture under slot-genuinely-empty conditions. Both
-  sessions are real; the rule as originally stated does not yet explain
-  both.
-  Next evidence needed: whether `_verdicts` (the live veto's input) and
-  `allocation_decisions` (the audit table) are computed from the same
-  pass — flagged as a same-day investigation item, not resolved yet. A
-  third session's texture (full slots vs. empty-but-declining) would also
-  help separate "two real regimes" from "one bug that looks like two
-  regimes."
+  Sessions: 6 Aug (n=1 — GABRIEL: slots genuinely occupied, freed, admitted
+  immediately after). 7 Aug (n=1 — the opposite texture: 25 candidates
+  declined all day citing "slots spent" while the counter sat at 0/3 used
+  all session; `allocation_decisions` disagreed with the live veto on 5
+  symbols). 10 Aug (n=1 — clean again: two give-back/stall exits freed two
+  slots, three fresh candidates (SCI, AUBANK, VIJAYA) admitted inside the
+  same ~20-second window, counter correctly read 3/3 by close).
+  Confidence: Low → **Medium** — 2 of 3 sessions now show the mechanism
+  working exactly as designed; the 7 Aug anomaly is looking more like an
+  outlier than a standing pattern, but it is still unexplained, not
+  outvoted, so this stays short of Validated.
+  Next evidence needed: the `_verdicts`-vs-`allocation_decisions`
+  reconciliation from 7 Aug is still open — a majority of clean sessions
+  doesn't retire that investigation. DEVYANI's 10 Aug allocator numbers
+  also didn't fully reconcile against `CLAUDE.md`'s account of the same
+  trade (see `daily/2026-08-10.md` Item 2) — a related, still-open
+  bookkeeping question about whether `allocation_decisions` reliably
+  reflects what the live engine actually decided.
 
 ---
 
@@ -94,12 +93,20 @@ contradiction.)*
 review knows to keep watching, not to re-derive from scratch.)*
 
 - **SDN (short family) engine viability.**
-  Sessions: 6 Aug (n=2 trades, both losses — first day live). 7 Aug: +3
-  trades (BLUESTARCO TARGET_HIT +1.33R — first SDN win; COFORGE and
-  HINDCOPPER small losses). Running total ~5-6 legs, 1 win.
+  Sessions: 6 Aug (n=2, both losses). 7 Aug: +3 (BLUESTARCO win, COFORGE +
+  HINDCOPPER losses). 10 Aug: +3 (SONACOMS win +1.00R; KAYNES −0.98R;
+  DEVYANI −0.81R, 99-second invalidation — see Section 2 of
+  `daily/2026-08-10.md` for the unreconciled allocator-numbers caveat on
+  this specific trade). Running total ~8-9 legs, 2 wins.
   Needed before any verdict: ~20 resolved outcomes across ≥10 sessions
   (this project's own `MIN_SAMPLE`/`MIN_SESSIONS` standard from
   `tools/weekly_review.py`).
+
+- **CIPLA-style stall exit (swing, 11 sessions never clearing 0.5R).**
+  Sessions: 10 Aug (n=1 — CIPLA, exited +0.089R rather than let a dead
+  slot sit).
+  Needed before any verdict: a second confirming session, same bar the
+  give-back guard cleared on its way to Validated.
 
 - **Whether `swing_max_new_per_day` is too conservative.**
   Sessions: 6 Aug (n=1 — slot count was the binding constraint on 11 of 17
@@ -165,6 +172,14 @@ still supports the bet, rather than re-deriving the original decision.)*
   **7 Aug check: zero new resolved outcomes** — no swing exits and no
   VCE/RNG intraday closes that session. Explicitly checked and empty, not
   skipped.
+  **10 Aug check: still zero resolved outcomes, but first activity.** SCI
+  entered live under `strategy: MOM` — first MOM position since promotion,
+  unresolved. VCE showed heavy allocator-veto activity (32 raw
+  ALLOCATOR_DECLINED instances) under the now-live `alloc_live_intraday`
+  enforcement — the promotion's own stated protection for a weak candidate
+  visibly firing — but zero VCE trades reached `closed_positions`. Still
+  nothing to verdict on win rate or forward return; noting the mechanism
+  is engaged, not idle.
 
 ---
 
