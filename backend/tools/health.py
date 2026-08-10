@@ -1491,6 +1491,74 @@ def check_shorts() -> tuple[bool, str]:
                   f"sites present, exit ladder and outcome resolver included")
 
 
+
+def check_stops_holding() -> tuple[bool, str]:
+    """
+    Is any OPEN position already past the stop it was given?
+
+    THE GAP THIS CLOSES — 10-Aug-2026. The operator saw GABRIEL sitting at
+    -5.47% from entry and still held, and could not tell from the outside
+    whether that was an ordinary drawdown inside a wide stop or a stop that
+    should have fired and did not. Nothing in this file distinguished those
+    two cases, and they demand opposite responses: the first is the system
+    working, the second is real money bleeding through a broken exit.
+
+    `check_broker_consistency` asks whether a GTT EXISTS for each position. It
+    does not ask whether price has already gone through it. A resting order at
+    the right price and an exit that actually fired are different claims, and
+    the failure mode in between them — order accepted, never triggered, price
+    kept going — is exactly the shape this project has hit before with a
+    broker-side rejection that every readiness check passed.
+
+    Judged against `active_sl` where present (it moves with trails) and
+    `planned_stop` otherwise. A position with NO stop recorded fails too: an
+    exit rule with no level to compare against cannot fire at all.
+    """
+    from config import get_supabase
+    sb = get_supabase()
+    rows = (sb.table("open_positions")
+            .select("symbol,framework,direction,entry_price,current_price,"
+                    "planned_stop,active_sl,status")
+            .execute().data) or []
+    live = [r for r in rows if (r.get("status") or "").upper() == "ACTIVE"]
+    if not live:
+        return True, "no open positions to check"
+
+    def _f(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    breached, nostop = [], []
+    for r in live:
+        entry, now = _f(r.get("entry_price")), _f(r.get("current_price"))
+        stop = _f(r.get("active_sl")) or _f(r.get("planned_stop"))
+        if not entry or not now:
+            continue
+        if not stop:
+            nostop.append(r.get("symbol") or "?")
+            continue
+        is_short = (r.get("direction") or "LONG").upper() == "SHORT"
+        through = (now > stop) if is_short else (now < stop)
+        if through:
+            pct = ((entry - now) if is_short else (now - entry)) / entry * 100.0
+            breached.append(f"{r.get('symbol')} {pct:+.2f}% (stop {stop:g}, now {now:g})")
+
+    if breached or nostop:
+        parts = []
+        if breached:
+            parts.append("PAST ITS STOP AND STILL OPEN: " + ", ".join(breached[:6]))
+        if nostop:
+            parts.append("NO STOP RECORDED: " + ", ".join(nostop[:6]))
+        return False, ("; ".join(parts)
+                       + ". A stop that does not fire is an absent stop, not a wide "
+                         "one. Check the GTT rests at that price and that "
+                         "evaluate_exit is reached for this book "
+                         "(tools.exit_audit --open-only shows every position).")
+    return True, f"all {len(live)} open position(s) are on the correct side of their stop"
+
+
 CHECKS = [
     ("config",   "risk numbers contradict each other, or a switch does nothing", check_config,   False),
     ("shorts",   "a short is taken while some module still does long-only arithmetic", check_shorts, False),
@@ -1507,6 +1575,7 @@ CHECKS = [
     ("kite",     "no broker session, or the IP is not allowlisted",              check_kite,     False),
     ("data",     "decisions would run on stale inputs",                          check_data_freshness, False),
     ("broker",   "resting orders do not match the positions they protect",       check_broker_consistency, False),
+    ("stops",    "an open position is trading past the stop that should have closed it", check_stops_holding, False),
     ("daemon",   "nothing is watching your positions right now",                 check_daemon,   False),
     ("pending",  "an entry order that never filled is being tracked as a real position", check_pending_fills, False),
     ("learning", "engines are being judged on evidence that was never collected", check_learning_loop, False),
