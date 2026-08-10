@@ -67,13 +67,25 @@ class VwapReclaim:
         if ctx.ltp <= ctx.vwap:
             return None
 
-        # The reclaim must be recent, not something that happened an hour ago.
-        if recent[-1].close < ctx.vwap or recent[-2].close > ctx.vwap:
-            # Current bar must be above and the prior one below — the crossing
-            # itself. Anything else is chasing an established move.
-            if not (recent[-1].close > ctx.vwap and any(
-                    b.close < ctx.vwap for b in recent[-4:-1])):
-                return None
+        # The reclaim must be recent, not something that happened several
+        # bars back. Current bar must be above and the PRIOR bar below — the
+        # crossing itself.
+        #
+        # FIXED 10-Aug-2026 (engine_scorecard: n=34, gross -0.059R, "NO EDGE —
+        # signal problem"). The previous version of this check was strictly
+        # looser than its own comment claimed: whenever the compound OR fired
+        # for any reason OTHER than the last bar still being below VWAP, it
+        # fell through to `any(b.close < ctx.vwap for b in recent[-4:-1])` —
+        # true whenever ANY of the three bars before the last one was below
+        # VWAP, which is almost always true given min_below already requires
+        # 3+ below-VWAP bars in the wider 12-bar lookback. Traced by hand: a
+        # bar sequence [98, 98, 99, 101, 102, 103] (VWAP=100) — a reclaim that
+        # happened THREE bars ago — passed this gate every time, which is
+        # exactly "chasing an established move", the failure mode the
+        # docstring already names. A strict single-bar crossing is the only
+        # check that matches what the comment has always said it does.
+        if not (recent[-1].close > ctx.vwap and recent[-2].close < ctx.vwap):
+            return None
 
         reclaim_pct = (ctx.ltp - ctx.vwap) / ctx.vwap * 100.0
         if reclaim_pct > cfg_float("vwr_max_extension_pct", 0.45):
@@ -100,8 +112,27 @@ class VwapReclaim:
         # Target the day's high — the level the stock already proved it can
         # reach — rather than an abstract multiple, falling back to R when the
         # high is too close to be worth the trip.
+        #
+        # FIXED 10-Aug-2026 (same engine_scorecard finding as the freshness
+        # check above). This used to take whichever of the two was LARGER —
+        # so on the common shape here, a reclaim as the SECOND, smaller leg
+        # off a high already made earlier in the session, by_r (2R past the
+        # current price) exceeds day_high and silently became the target: a
+        # level the stock had never actually traded at, past a genuinely
+        # proven one. exit_policy.py's `use_setup_target` rule exits AT this
+        # field when reached — target it never touches is a trade that rides
+        # the give-back guard down instead of banking the move it actually
+        # had, which is this project's own recurring finding this session
+        # ("profits are very small even for paper intraday"). Now day_high is
+        # the target whenever it clears a minimum worthwhile distance; only
+        # when the stock is already at/through its high — nothing proven left
+        # to reach for — does the R-multiple stand in.
         by_r = ctx.ltp + risk * cfg_float("vwr_target_r", 2.0)
-        target = max(by_r, (ctx.day_high or 0) * 1.001) if ctx.day_high else by_r
+        min_worthwhile = ctx.ltp + risk * cfg_float("vwr_min_target_r", 1.0)
+        if ctx.day_high and ctx.day_high * 1.001 >= min_worthwhile:
+            target = ctx.day_high * 1.001
+        else:
+            target = by_r
 
         conf = 0.45
         vr = ctx.volume_ratio()

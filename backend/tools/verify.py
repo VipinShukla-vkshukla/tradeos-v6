@@ -86,6 +86,7 @@ MODULES = [
     ("benchmark snapshot",     "tests.test_benchmark"),
     ("screener weight",        "tests.test_screener_weight"),
     ("intraday universe live rerank", "tests.test_universe_rerank"),
+    ("vwap reclaim refinement", "tests.test_vwap_reclaim"),
 ]
 
 
