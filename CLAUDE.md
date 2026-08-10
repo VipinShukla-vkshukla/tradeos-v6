@@ -279,6 +279,56 @@ it to pass.**
   On the intraday book that is all of them (prior +0.08R vs MIS cost +0.21R).
   A component with no data must be indistinguishable from that component being
   absent.
+- **"No opinion" and "measured bad" must not give the same answer.** The rule
+  above is about an ABSENT population and it has a mirror image that cost real
+  money on 10-Aug-2026. `hurdle()` is a percentile of `allocation_decisions.
+  edge`, which is a purely RELATIVE question — "better than what else is
+  arriving?" — and a percentile of an all-negative population is negative. The
+  bar then DECAYS toward that base as the session runs out (`time_mult` → 1.0),
+  so willingness to take a measured loser RISES with the certainty that it is
+  one. The intraday STRONG bucket's bar sat at −1.09359; DEVYANI/SDN cleared it
+  at edge −1.0935, by 0.00009, and closed 99 seconds later at −0.813R. `edge`
+  is expected R NET of the round trip, so `alloc_edge_absolute_floor` (0.0,
+  migration 057) now clamps the FINAL bar — after the multipliers, never the
+  percentile base, which would be the double cost charge `_empirical_base`
+  correctly warns about. Cold starts stay exempt.
+- **A prior must be built from the trades you would TAKE, not every detection.**
+  `scoring.intraday_priors()` read every resolved `intraday_setups` row,
+  including `BLOCKED_STRUCTURE`/`REJECTED_COST`/`VETOED_AI`/`BELOW_CONVICTION`.
+  On 10-Aug that was 127 rows of which 15 were TAKEN, so the prior pricing each
+  new candidate was ~88% trades the system had deliberately refused. That
+  INVERTS the learning loop: every gate that works pushes more bad outcomes
+  into the prior, lowering every future edge, lowering the bar (a percentile of
+  that same scored population), admitting worse trades. The better the gates
+  get, the more negative the system believes itself to be.
+  `priors_intraday_taken_only`. Refused rows are still resolved and kept — they
+  are how opportunity cost is measured; they are just not what prices a
+  candidate that passed the gates they failed.
+- **A dict key and the key its consumer looks up are two different claims.**
+  `intraday_priors()` returned `{"ORB": Prior(key="INTRADAY/ORB", ...)}` — the
+  Prior's own field carried the prefix, the dictionary did not — while
+  `Allocator._prior_for()` looks up `"INTRADAY/ORB"`. Only `INTRADAY/ALL` and
+  `INTRADAY/ALL/SHORT` matched, because those two were written with the prefix.
+  So **no intraday engine was ever scored on its own prior**; every proposal
+  fell through to the pooled book distribution, and the per-engine
+  segmentation the function builds so carefully never once reached the
+  allocator. It is also why the 10-Aug edge distribution was degenerate: with
+  one shared prior, `edge` varies only through `cost_r`, so 141 DECLINEs
+  averaged −1.0937 against 1 TAKE at −1.0935. `swing_priors()` had the
+  identical shape. Assert through the CONSUMER's lookup, never by eye.
+- **A bucket may not be its own evidence.** `regime_bucket()`'s STRONG branch
+  was unreachable until the 05-Aug vocabulary fix, so STRONG had no history.
+  On 10-Aug it crossed the 40-sample floor at 13:12 on rows the allocator had
+  written that same morning, and from then on its bar was the 75th percentile
+  of its own output. Segmentation now requires rows from PRIOR trading days;
+  today's still count toward the percentile once that right is earned.
+- **A daemon restart used to lower the bar.** `_setup_is_new`'s dedup map lived
+  only in memory, so a mid-session restart re-recorded the whole morning into
+  `intraday_setups` — the population priors are built from — and re-inflated
+  the arrival population `hurdle()` takes its percentile of.
+  `_rehydrate_recorded()`, called once at startup from `run.py`. Note it keys
+  on `meta.sub_engine` (the ENGINE), not the `strategy` column (the FAMILY),
+  because that is what `_setup_is_new` compares.
 - **One symbol, one book — and check it from BOTH sides.** Migration 028 made
   two rows for one name *storable*. That is a storage guarantee and it was read
   as a trading policy. Intraday refused any name swing held; swing never looked

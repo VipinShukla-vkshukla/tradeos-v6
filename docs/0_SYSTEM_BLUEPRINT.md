@@ -202,6 +202,21 @@ regime (`regime_bucket()`, now direction- and vocabulary-correct after the
 a cold start: an allocator with no history must be indistinguishable from no
 allocator at all.
 
+**It is also floored, since 10-Aug-2026 (migration 057).** A percentile is a
+relative answer, and a percentile of an all-negative arrival population is
+still negative — so the bar admitted proposals the scorer had itself measured
+as losing, and got *more* permissive as the session ran out because the bar
+decays toward its base. `alloc_edge_absolute_floor` (0.0) clamps the final bar
+so a proposal whose expected R does not cover its own round trip can never
+clear it, whatever else is arriving. Cold starts stay exempt: "no opinion" is
+not the same claim as "measured bad". Two paired fixes landed with it — the
+intraday prior is now built from gate-passed detections rather than from every
+detection including the refused ones (`priors_intraday_taken_only`), and the
+per-engine priors are reachable by the allocator for the first time (the dict
+was keyed `"ORB"` while the lookup asked for `"INTRADAY/ORB"`, so every
+proposal had been scored off one pooled book distribution). See `CLAUDE.md`'s
+landmine list for the measured evidence behind each.
+
 ---
 
 ## 7. The guardrails

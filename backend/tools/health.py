@@ -1151,15 +1151,94 @@ def check_allocator_hurdle() -> tuple[bool, str]:
             "every call and the allocator is told the session has 0 minutes "
             "left. Same defect that made every short's runway -10 minutes")
 
-    from config import cfg_bool, cfg_int
+    from config import cfg_bool, cfg_int, cfg_float
+
+    # 7 — A BAR THAT IS TOO LOW IS THE SAME DEFECT AS ONE THAT IS TOO HIGH.
+    #
+    # Everything above this point asks whether the bar can be CLEARED. Nothing
+    # asked whether it can be cleared by a trade that loses money, and on
+    # 10-Aug-2026 it was: the INTRADAY STRONG bucket's bar settled at -1.09359,
+    # DEVYANI/SDN cleared it at edge -1.0935 — by 0.00009 — and closed 99
+    # seconds later at -0.813R. Across that bucket, DECLINEd proposals averaged
+    # -1.0937 and TAKEn ones -1.0935: two ten-thousandths of separation across
+    # 142 proposals, which is not a decision, it is a coin flip on rounding.
+    #
+    # This project's own paired rule: a check that cannot fail is not a check,
+    # and a check that cannot pass is the same defect wearing a different hat.
+    # This check had only ever been written for one of those two directions.
+    floor_edge = cfg_float("alloc_edge_absolute_floor", 0.0)
+    _bar_neg, _in_neg = H.hurdle("STRONG", 4, 20, "INTRADAY", None, max_slots=4)
+    if _bar_neg != float("-inf") and _bar_neg < floor_edge:
+        return False, (
+            f"the live INTRADAY bar is {_bar_neg:.5f}, below the absolute floor "
+            f"{floor_edge}. `edge` is expected R NET of the round trip, so a "
+            f"negative bar admits proposals the scorer itself has measured as "
+            f"losing money — and because the bar DECAYS toward its base as the "
+            f"session runs out, the system gets MORE willing to take them the "
+            f"less time they have to work. Cold starts are exempt (no opinion "
+            f"is not the same claim as measured-bad); this is not a cold start")
+
+    # 8 — the floor must actually be reachable by the code path, not just
+    #     configured. Probed through the real hurdle on a synthetic all-negative
+    #     population, because assertion 7 passes trivially on a day when the
+    #     live population happens to be healthy.
+    class _NegSB:
+        """An arrival population that is entirely negative — the exact shape
+        INTRADAY had on 10-Aug-2026."""
+        def table(self, name):
+            rows = [{"edge": -1.0 - i * 0.001, "framework": "INTRADAY",
+                     "regime_bucket": "STRONG", "symbol": f"S{i}",
+                     "trade_date": "2026-08-01"} for i in range(200)]
+            return _StubQuery(rows)
+
+    _bar_probe, _in_probe = H.hurdle("STRONG", 4, 20, "INTRADAY", _NegSB(), max_slots=4)
+    if _bar_probe < floor_edge:
+        return False, (
+            f"against an all-negative arrival population the bar came back "
+            f"{_bar_probe:.5f}, under the floor {floor_edge} — the absolute "
+            f"floor is not being applied. This is the 10-Aug DEVYANI path: a "
+            f"percentile of a losing distribution is still a losing number, and "
+            f"without this clamp the allocator ranks losses against each other "
+            f"and calls the least-bad one a TAKE")
+    if not _in_probe.get("absolute_floor_applied"):
+        return False, (
+            "the bar cleared the floor on an all-negative population without "
+            "`absolute_floor_applied` being set — the verdict would record no "
+            "trace of the clamp, and a decision that cannot be reconstructed "
+            "is a defect (§19)")
+
     live = [b for b in ("intraday", "swing") if cfg_bool(f"alloc_live_{b}", False)]
     return True, (f"bar and edge share one definition; a cold start admits a "
                   f"typical setup; slots are per book "
                   f"(swing {cfg_int('swing_max_new_per_day', 2)}, "
                   f"intraday {cfg_int('intraday_max_new_per_day', 4)}); "
                   f"time term varies ({_in_early['time_mult']} early vs "
-                  f"{_in_late['time_mult']} late)"
+                  f"{_in_late['time_mult']} late); "
+                  f"bar floored at {floor_edge} so a measured-losing proposal "
+                  f"cannot clear it"
                   + (f"; veto LIVE for {'+'.join(live)}" if live else "; shadow only"))
+
+
+class _StubQuery:
+    """Minimal PostgREST-shaped stub for check_allocator_hurdle's probe."""
+    def __init__(self, rows):
+        self._rows = rows
+
+    def select(self, *a, **k): return self
+    def eq(self, *a, **k): return self
+    def gte(self, *a, **k): return self
+    def is_(self, *a, **k): return self
+
+    @property
+    def not_(self): return self
+
+    def range(self, start, end):
+        return _StubExec(self._rows[start:end + 1])
+
+
+class _StubExec:
+    def __init__(self, rows): self.data = rows
+    def execute(self): return self
 
 
 def check_framework_isolation() -> tuple[bool, str]:

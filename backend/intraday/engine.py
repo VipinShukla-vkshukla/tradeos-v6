@@ -121,6 +121,8 @@ class IntradayEngine:
         # whether a name moves enough today to pay for a round trip.
         self._universe: list[str] = []
         # symbol:strategy -> (entry, verdict) already recorded this session.
+        # REHYDRATED FROM THE DATABASE, NOT STARTED EMPTY — see
+        # _rehydrate_recorded(). A restart used to hand the day a blank map.
         self._recorded: dict[str, tuple[float, str]] = {}
         # Event awareness and AI advice, both refreshed on the SLOW timer.
         # The AI in particular can never sit in the fast loop: step 19's
@@ -161,6 +163,74 @@ class IntradayEngine:
         self._pending_fills: dict[str, str] = {}
 
     # ── state ───────────────────────────────────────────────────────────────
+    def _rehydrate_recorded(self) -> None:
+        """
+        Rebuild the setup-dedup map from today's already-persisted rows.
+
+        WHY A RESTART USED TO MAKE THE ALLOCATOR'S BAR WORSE — 10-Aug-2026.
+
+        `_setup_is_new` exists because the loop runs every 15 seconds and a
+        setup valid at 11:00 is still valid at 11:00:15; without it CONCOR/PDL
+        was written four times in two minutes. But the map it consults lived
+        only in memory, so `systemd` restarting the daemon mid-session handed
+        the day a blank one and every setup already recorded that morning
+        counted as new again. Observed live on 10-Aug: the service restarted
+        at 13:11:57 and the very next AI review went from 11 setups to 31.
+
+        That is not merely duplicate rows. `intraday_setups` is the population
+        `scoring.intraday_priors()` builds every engine's prior from, and
+        `allocation_decisions` is the population `hurdle()` takes its
+        percentile of — so a restart re-inflates both, and a re-inflated
+        arrival population LOWERS the bar. A daemon restart was quietly making
+        the allocator more permissive for the rest of the session.
+
+        THE KEY IS THE ENGINE, THE COLUMN IS THE FAMILY. `_record_setup`
+        deliberately writes `strategy = family` so the learning loop groups on
+        the family (ORB's 30 detections become the family's 230), and keeps the
+        engine that actually fired in `meta.sub_engine`. But `_setup_is_new`
+        keys on `s.strategy`, the ENGINE. Rehydrating off the `strategy` column
+        alone would therefore build keys like "PAYTM:ORB" (family) that the
+        live dedup test — asking about "PAYTM:GAP" (engine) — never matches,
+        and the rehydration would silently do nothing while reporting a count.
+        So `meta.sub_engine` is preferred and the column is only the fallback.
+
+        Reads only today's rows. Failure is non-fatal and LOUD: an empty map is
+        the old behaviour, which is survivable, but it must not be reached
+        silently.
+        """
+        try:
+            rows = (self.sb.table("intraday_setups")
+                    .select("symbol,strategy,entry,cost_verdict,meta")
+                    .eq("trade_date", today_ist().isoformat())
+                    .execute().data) or []
+            for r in rows:
+                sym = r.get("symbol")
+                if not sym:
+                    continue
+                meta = r.get("meta")
+                if isinstance(meta, str):
+                    try:
+                        meta = json.loads(meta)
+                    except (ValueError, TypeError):
+                        meta = {}
+                engine = (meta or {}).get("sub_engine") or r.get("strategy")
+                if not engine:
+                    continue
+                try:
+                    entry = float(r.get("entry") or 0)
+                except (TypeError, ValueError):
+                    continue
+                self._recorded[f"{sym}:{engine}"] = (entry, r.get("cost_verdict") or "")
+            if rows:
+                logger.info(f"  setup dedup: rehydrated {len(self._recorded)} "
+                            f"symbol:engine key(s) from today's rows")
+        except Exception as e:
+            logger.warning(
+                f"  setup dedup: could not rehydrate today's recorded setups "
+                f"({str(e)[:90]}) — starting empty. Detections already written "
+                f"this session may be recorded a second time, which inflates "
+                f"both the prior population and the allocator's arrival bar.")
+
     def load_state(self) -> None:
         """Re-read positions and candidates. Cheap; called on a slow timer."""
         # status is 'ACTIVE', matching control/position_lifecycle. Filtering on
@@ -2194,9 +2264,24 @@ class IntradayEngine:
             # `intraday_allow_shorts`, and the market context actively
             # confirming weakness. A short is refused by default in every state
             # that is not RISK_OFF or CAUTION, including an unreadable index.
+            #
+            # THE VERDICT NAMES WHICH OF THE TWO SAID NO — 10-Aug-2026.
+            # `shorts_live` is an AND of a config switch and a market state,
+            # and the single verdict "BLOCKED_SHORTS_OFF" reported both as the
+            # switch. On 10-Aug that produced 27 BLOCKED_SHORTS_OFF rows while
+            # `intraday_allow_shorts` was true and `intraday_engine_sdn_
+            # lifecycle` was ACTIVE — the refusals were the index being risk-on
+            # (mc.allow_shorts False), which is the SDN engine working exactly
+            # as designed. Anyone reading that histogram concluded shorting was
+            # switched off and went looking for a config bug that did not
+            # exist. Two causes, two names: one is a standing operator
+            # decision, the other is today's tape.
             if best.is_short:
                 if not shorts_live:
-                    self._record_setup(best, st.phase, 0.0, "BLOCKED_SHORTS_OFF", 0)
+                    self._record_setup(
+                        best, st.phase, 0.0,
+                        "BLOCKED_SHORTS_OFF" if not cfg_bool("intraday_allow_shorts", False)
+                        else "BLOCKED_SHORTS_MARKET", 0)
                     continue
                 from intraday import shortability
                 # NOT getattr(st, "minutes_to_close", 0). SessionState has no
@@ -2227,6 +2312,30 @@ class IntradayEngine:
             # scanner clearly liked produce no detection at all. A refusal that
             # leaves no row is also a rule nobody can price — the weekly review
             # cannot ask what standing down cost.
+            # THE TERMINAL CHECK RUNS BEFORE THE ANNOUNCEMENT — 10-Aug-2026.
+            #
+            # The satellite-join notice below used to print BEFORE the
+            # re-entry guard, so a name that had already lost money today
+            # produced this pair, every cycle, for hours:
+            #
+            #   MANAPPURAM: VWR conf 0.51 — ... joining as a same-direction
+            #                                  LONG satellite ...
+            #   MANAPPURAM: VWR conf 0.51 — already lost money in this name
+            #                                  today, standing down
+            #
+            # An announcement of an entry that the very next line refuses. It
+            # is not merely noise: read live, it says the book is joining a
+            # swing position when it is doing nothing of the kind, and it
+            # repeated twice a minute across the whole session. `_failed_today`
+            # is cached per session, terminal, and cheaper than the holding
+            # lookup, so it belongs first on both counts.
+            if cfg_bool("intraday_block_reentry_after_loss", True) \
+                    and sym in self._failed_today():
+                self._record_setup(best, st.phase, 0.0, "BLOCKED_REENTRY", 0)
+                logger.info(f"      {sym}: {best.strategy} conf {best.confidence:.2f} "
+                            f"— already lost money in this name today, standing down")
+                continue
+
             other = self._other_framework_holding(sym, "INTRADAY")
             if other is not None:
                 if _intraday_may_join_swing_holding(other, best.direction):
@@ -2246,16 +2355,6 @@ class IntradayEngine:
                         f"@ {other.get('entry_price')}). One book per symbol; the intraday "
                         f"square-off must not sell a multi-week thesis")
                     continue
-
-            # One failure per name per day. Recorded rather than skipped
-            # silently, so the weekly review can measure what this rule cost as
-            # well as what it saved — a guard nobody can audit is a guess.
-            if cfg_bool("intraday_block_reentry_after_loss", True) \
-                    and sym in self._failed_today():
-                self._record_setup(best, st.phase, 0.0, "BLOCKED_REENTRY", 0)
-                logger.info(f"      {sym}: {best.strategy} conf {best.confidence:.2f} "
-                            f"— already lost money in this name today, standing down")
-                continue
 
             # Event gate BEFORE cost: a results-day setup is not a pricing
             # question, and computing a position size for a trade that must not
@@ -2827,10 +2926,34 @@ class IntradayEngine:
             f"{fw} slots {slots.get(fw, '?')} bar "
             + ("cold start" if (i or {}).get("cold_start")
                else f"{(i or {}).get('base')}"
-                    + (" POOLED" if (i or {}).get("pooled_across_buckets") else ""))
+                    + (" POOLED" if (i or {}).get("pooled_across_buckets") else "")
+                    + (" FLOORED@0" if (i or {}).get("absolute_floor_applied") else ""))
             for fw, i in bars.items())
         logger.info(f"  allocator ({mode}): {len(v)} proposal(s) scored, "
                     f"{takes} to take, {len(v)-takes} refused — {detail}")
+
+        # A BOOK THAT STANDS DOWN MUST SAY WHY, LOUDLY — 10-Aug-2026.
+        #
+        # The absolute edge floor can legitimately refuse an entire session's
+        # proposals: if every candidate's net-of-cost expected R is negative,
+        # taking none of them is the correct answer, not a malfunction. But
+        # "correct" and "obvious from the console" are different properties,
+        # and a quiet book has been misread as a broken one in this project
+        # more than once. So when the floor is the thing doing the refusing,
+        # the line says so in the operator's terms rather than leaving them to
+        # infer it from a bar that reads 0.0.
+        for fw, i in bars.items():
+            if (i or {}).get("absolute_floor_applied") and not any(
+                    x["verdict"] == "TAKE" and x["proposal"].framework == fw for x in v):
+                logger.warning(
+                    f"  {fw}: every proposal this cycle was refused by the ABSOLUTE "
+                    f"EDGE FLOOR, not by a market judgement. The measured "
+                    f"{fw.lower()} population is currently negative "
+                    f"(unclamped bar {(i or {}).get('base')}), so every candidate's "
+                    f"expected R is below its own round trip. Standing down is the "
+                    f"correct answer to that — but if this persists for a full "
+                    f"session, the prior is the thing to investigate "
+                    f"(tools/expectancy_ledger.py), not the bar.")
         return v
 
     def allocator_permits(self, symbol: str, product: str, framework: str) -> tuple[bool, str]:

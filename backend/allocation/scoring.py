@@ -52,7 +52,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import cfg_float, cfg_int, get_supabase
+from config import cfg_bool, cfg_float, cfg_int, get_supabase
 
 
 PAGE = 1000
@@ -85,7 +85,7 @@ class Prior:
 
 
 def _dist(key: str, values: list[float], floor: int,
-          trigger_rate: float | None = None) -> Prior:
+          trigger_rate: float | None = None, note: str = "") -> Prior:
     if len(values) < floor:
         return Prior(key, len(values), 0.0, 0.0, float("nan"), 0.0, 0.0,
                      trigger_rate, True,
@@ -100,6 +100,7 @@ def _dist(key: str, values: list[float], floor: int,
         p10      = s[int(0.10 * (len(s) - 1))],
         p90      = s[int(0.90 * (len(s) - 1))],
         trigger_rate = trigger_rate,
+        note     = note,
     )
 
 
@@ -116,7 +117,7 @@ def intraday_priors(sb) -> dict[str, Prior]:
     rows, off = [], 0
     while True:
         page = (sb.table("intraday_setups")
-                  .select("strategy,outcome,outcome_pct,entry,stop,direction")
+                  .select("strategy,outcome,outcome_pct,entry,stop,direction,cost_verdict")
                   .not_.is_("outcome_pct", "null")
                   .range(off, off + PAGE - 1).execute().data) or []
         rows += page
@@ -140,7 +141,46 @@ def intraday_priors(sb) -> dict[str, Prior]:
     # negation. Keyed as "ENGINE/SHORT" so the two never average together.
     from intraday import direction as D
 
+    # ── THE PRIOR IS ABOUT TRADES, NOT ABOUT DETECTIONS — 10-Aug-2026 ───────
+    #
+    # `intraday_setups` holds EVERY detection with a resolved outcome,
+    # including the ones the safety gates threw out: BLOCKED_STRUCTURE,
+    # REJECTED_COST, VETOED_AI, BELOW_CONVICTION, BLOCKED_LIQUIDITY. On
+    # 10-Aug-2026 that was 127 rows of which 15 were TAKEN — so the prior that
+    # priced every new candidate was ~88% composed of trades the system had
+    # deliberately REFUSED.
+    #
+    # That inverts the learning loop. Every gate that WORKS pushes more bad
+    # outcomes into the prior, which lowers the expected R of every future
+    # candidate, which lowers the allocator's bar (a percentile of that same
+    # scored population), which admits worse trades. The better the gates get,
+    # the more negative the system believes itself to be. Measured live: the
+    # INTRADAY book's TAKE population went from E[edge] +0.1705 on 07-Aug to
+    # -0.5458/-1.0935 on 10-Aug while the ENGINES were producing 2.5x more
+    # candidates, and a -1.09-edge short was taken and lost 0.813R in 99s.
+    #
+    # The question a prior must answer is "if I take a trade from this engine,
+    # what R should I expect" — so the sample is trades this system would
+    # take, i.e. the ones that cleared every gate. `cost_verdict = 'TAKEN'` is
+    # exactly that marker. A setup later refused by the ALLOCATOR still counts:
+    # `_record_setup` writes a fresh row when a verdict changes, so its TAKEN
+    # row remains, and allocator refusal is opportunity cost, not a safety
+    # veto. Refused detections are NOT discarded from the database — they stay
+    # the rarest asset this architecture has, for measuring what standing down
+    # cost. They are simply not the population that prices a candidate which
+    # has already passed every gate they failed.
+    #
+    # PER-ENGINE FALLBACK, NOT ALL-OR-NOTHING. A young engine with few TAKEN
+    # rows falls back to its full detection history rather than losing its
+    # prior entirely and dropping to NEUTRAL — a fabricated prior is worse
+    # than no prior, but so is throwing away real evidence from an engine that
+    # simply has not been funded often yet. The fallback is FLAGGED in the
+    # Prior's note so `describe()` and the audit tools say which sample a
+    # number came from, per this module's "never borrowed silently" rule.
+    taken_only = cfg_bool("priors_intraday_taken_only", True)
+
     by: dict[str, list[float]] = {}
+    by_taken: dict[str, list[float]] = {}
     for r in rows:
         try:
             entry, stop = float(r.get("entry") or 0), float(r.get("stop") or 0)
@@ -152,11 +192,50 @@ def intraday_priors(sb) -> dict[str, Prior]:
             key = r["strategy"] or "?"
             if D.is_short(d):
                 key = f"{key}/SHORT"
-            by.setdefault(key, []).append(float(r["outcome_pct"]) / risk_pct)
+            r_mult = float(r["outcome_pct"]) / risk_pct
+            by.setdefault(key, []).append(r_mult)
+            if (r.get("cost_verdict") or "").upper() == "TAKEN":
+                by_taken.setdefault(key, []).append(r_mult)
         except (TypeError, ValueError, ZeroDivisionError):
             continue
 
-    out = {k: _dist(f"INTRADAY/{k}", v, floor) for k, v in by.items()}
+    def _prior_for(key: str, all_vals: list[float]) -> Prior:
+        if not taken_only:
+            return _dist(f"INTRADAY/{key}", all_vals, floor)
+        gated = by_taken.get(key, [])
+        if len(gated) >= floor:
+            return _dist(f"INTRADAY/{key}", gated, floor,
+                         note=f"gate-passed sample ({len(gated)} TAKEN of "
+                              f"{len(all_vals)} detections)")
+        return _dist(f"INTRADAY/{key}", all_vals, floor,
+                     note=f"FALLBACK to all detections — only {len(gated)} "
+                          f"TAKEN row(s), under the {floor} floor")
+
+    # ── THE DICT KEY MUST BE THE KEY THE ALLOCATOR LOOKS UP — 10-Aug-2026 ───
+    #
+    # This dict was built as `{k: _dist(f"INTRADAY/{k}", ...)}` — the Prior's
+    # OWN `.key` field carried the "INTRADAY/" prefix, but the dictionary was
+    # keyed on the bare engine name. `Allocator._prior_for()` looks up
+    # `f"{p.framework}/{p.source}"`, i.e. "INTRADAY/ORB", which never matched
+    # "ORB". The only two entries that DID match were `INTRADAY/ALL` and
+    # `INTRADAY/ALL/SHORT`, because those two were written with the prefix.
+    #
+    # So EVERY intraday proposal ever scored — ORB, GAP, PDL, VCE, PBK, VWR,
+    # RNG, SDN — fell through to the book-wide pooled distribution, and the
+    # per-engine segmentation this function builds so carefully (and whose
+    # docstring forbids "borrowing from a neighbouring class") never once
+    # reached the allocator.
+    #
+    # This is what made the 10-Aug edge distribution degenerate. With one
+    # shared prior, `edge = (prior.mean_r - cost_r) / max(hold_days, 0.5)`
+    # varies only through `cost_r` — which moves only with position size and
+    # stop distance — so 141 DECLINEd proposals averaged -1.0937 against 1
+    # TAKEn at -1.0935. The allocator was not failing to discriminate between
+    # engines; it had never been given the numbers with which to try.
+    #
+    # A below-floor prior still falls back to the book via `_usable()`, so this
+    # only promotes engines that have genuinely earned a sample of their own.
+    out = {f"INTRADAY/{k}": _prior_for(k, v) for k, v in by.items()}
     if rows:
         # The book-level fallback is ALSO split. `INTRADAY/ALL` is what a class
         # with too few observations falls back to, so pooling shorts into it
@@ -164,10 +243,25 @@ def intraday_priors(sb) -> dict[str, Prior]:
         # the exact borrowing this module's own header forbids ("never borrowed
         # from a neighbouring class"). A short with no prior falls back to the
         # SHORT book, not to the book as a whole.
+        #
+        # THE BOOK-LEVEL FALLBACKS TAKE THE GATED SAMPLE TOO — and this is the
+        # pair that actually mattered on 10-Aug. SDN sits below
+        # `priors_min_sample_intraday` (~6 legs against a floor of 30), so it
+        # falls back to `INTRADAY/ALL/SHORT`, which means that pool — not SDN's
+        # own record — is the number that priced DEVYANI at edge -1.0935.
+        # Leaving these two on the raw detection population while every named
+        # engine used the gated one would have put the contaminated prior back
+        # underneath precisely the engines too young to have escaped it.
         longs  = [x for k, v in by.items() if not k.endswith("/SHORT") for x in v]
         shorts = [x for k, v in by.items() if k.endswith("/SHORT") for x in v]
-        out["INTRADAY/ALL"] = _dist("INTRADAY/ALL", longs, floor)
-        out["INTRADAY/ALL/SHORT"] = _dist("INTRADAY/ALL/SHORT", shorts, floor)
+        # _prior_for() reads by_taken[key], so the pooled keys need pooled
+        # gated samples registered under the same names before it is called.
+        by_taken["ALL"] = [x for k, v in by_taken.items()
+                           if not k.endswith("/SHORT") and k != "ALL" for x in v]
+        by_taken["ALL/SHORT"] = [x for k, v in by_taken.items()
+                                 if k.endswith("/SHORT") for x in v]
+        out["INTRADAY/ALL"] = _prior_for("ALL", longs)
+        out["INTRADAY/ALL/SHORT"] = _prior_for("ALL/SHORT", shorts)
     return out
 
 
@@ -302,7 +396,16 @@ def swing_priors(sb) -> dict[str, Prior]:
         except (TypeError, ValueError, ZeroDivisionError):
             continue
 
-    out = {k: _dist(f"SWING/{k}", v, floor, trigger) for k, v in by.items()}
+    # PREFIXED, for the same reason as intraday_priors() — see the block there.
+    # `Allocator._prior_for()` looks up "SWING/CONTINUATION"; this dict was
+    # keyed "CONTINUATION", so every swing family prior missed and fell through
+    # to "SWING/ALL". That is the second half of the attribution bug recorded
+    # for 06-Aug in docs/6_IMPLEMENTATION_STATUS.md: the buckets were fixed to
+    # key on engine family instead of the workflow-status `signal_type` column,
+    # but the allocator still could not reach the corrected buckets, so the
+    # knowledge base's "it was previously conditioning on neither" stayed true
+    # of engine identity even after that fix landed.
+    out = {f"SWING/{k}": _dist(f"SWING/{k}", v, floor, trigger) for k, v in by.items()}
     allr = [x for v in by.values() for x in v]
     out["SWING/ALL"] = _dist("SWING/ALL", allr, floor, trigger)
     return out

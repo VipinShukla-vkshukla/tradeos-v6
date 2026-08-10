@@ -277,6 +277,53 @@ def hurdle(bucket: str, slots_left: int, minutes_left: int,
         else:
             bar = base / (time_mult * scarcity)
 
+    # ── THE BAR MAY NEVER FALL BELOW ZERO EXPECTED R — 10-Aug-2026 ──────────
+    #
+    # WHAT HAPPENED. On 10-Aug the INTRADAY book scored 262 proposals and the
+    # STRONG bucket's bar settled at -1.09359. DEVYANI/SDN was scored at edge
+    # -1.0935 and TAKEN — clearing the bar by 0.00009 — then closed 99 seconds
+    # later at -0.813R. Across that whole bucket the DECLINEd proposals
+    # averaged edge -1.0937 and the TAKEn ones -1.0935: a separation of two
+    # ten-thousandths across 142 proposals. The allocator was not choosing
+    # between trades, it was slicing a degenerate negative distribution at its
+    # own 75th percentile and calling the top slice a decision.
+    #
+    # WHY A PERCENTILE ALONE CANNOT CATCH THIS. `hurdle()` asks a purely
+    # RELATIVE question — "is this better than what else is arriving?" — and a
+    # percentile of an all-negative population is still negative. Worse, the
+    # bar then DECAYS toward that negative base as the session runs out
+    # (time_mult -> 1.0), so the system's willingness to take a measurably
+    # losing trade RISES with the certainty that it is losing. That is sound
+    # for a positive population — an unspent slot earns nothing, so take what
+    # you can get at 14:45 — and exactly inverted for a negative one, because
+    # the alternative to a negative-edge trade is not zero, it is BETTER than
+    # zero: you keep the round trip. This file's own project rule says it —
+    # "no trade costs nothing while a mediocre one costs 0.21% plus the risk."
+    #
+    # WHY THIS IS NOT THE "SECOND, HIDDEN COST CHARGE" `_empirical_base`
+    # WARNS AGAINST. That comment is about flooring the BASE — the percentile
+    # itself — which would compound with the time/scarcity multipliers and
+    # demand a proposal beat its costs by the full percentile on top. This
+    # floors the FINAL BAR instead, after every multiplier has been applied.
+    # `edge = e_r / max(hold_days, 0.5)` and `e_r = prior.mean_r - cost_r`, and
+    # max(hold_days, 0.5) is always positive, so sign(edge) == sign(e_r):
+    # `edge > 0` means precisely `expected R exceeds the round trip`, charged
+    # once. When the population is healthy and positive this floor never binds
+    # and the percentile does all the selecting, exactly as before.
+    #
+    # THE COLD START IS DELIBERATELY EXEMPT. "No opinion" and "measured bad"
+    # are different claims and must not produce the same answer. An allocator
+    # with no history must stay indistinguishable from no allocator at all
+    # (see `_cold_start`), and the gates that ARE safety controls — cost,
+    # structure, event, conviction, liquidity — have all already run and none
+    # of them fails open. A measured-negative population is evidence; an empty
+    # one is not.
+    floored = False
+    if bar not in (float("inf"), float("-inf")):
+        floor_edge = cfg_float("alloc_edge_absolute_floor", 0.0)
+        if bar < floor_edge:
+            bar, floored = floor_edge, True
+
     return bar, {
         "base": None if base == float("-inf") else round(base, 5),
         "bucket": bucket,
@@ -284,6 +331,7 @@ def hurdle(bucket: str, slots_left: int, minutes_left: int,
         "effective_percentile": None if eff_pct is None else round(eff_pct, 4),
         "slots_left": slots_left, "max_slots": max_slots,
         "minutes_left": minutes_left, "framework": framework,
+        "absolute_floor_applied": floored,
         **base_meta,
     }
 
@@ -461,13 +509,50 @@ def _empirical_base(bucket: str, framework: str, sb=None
     # Fix: extract (raw or deduped, per the switch) BEFORE the floor check,
     # and pool on THAT count, exactly mirroring what the raw-only code already
     # did for the un-deduplicated case.
+    # ── A BUCKET MAY NOT BE ITS OWN EVIDENCE — 10-Aug-2026 ──────────────────
+    #
+    # `regime_bucket()`'s STRONG branch was unreachable dead code until the
+    # 05-Aug vocabulary fix ("RISK ON" in "RISK_ON" is False), so the STRONG
+    # bucket has almost no history inside the lookback window: 07-Aug logged
+    # ZERO STRONG rows. On 10-Aug the index turned risk-on and 142 proposals
+    # landed in that empty bucket. Watch what the live log did with it:
+    #
+    #   13:08:22   INTRADAY slots 8 bar -1.07428 POOLED   <40 rows, pooled
+    #   13:12:31   INTRADAY slots 8 bar -1.09359          >=40 rows, segmented
+    #
+    # Between those two cycles the bucket crossed the 40-sample floor ON ROWS
+    # THE ALLOCATOR ITSELF HAD WRITTEN IN THE PRECEDING THREE HOURS, and from
+    # that moment its bar was the 75th percentile of its own morning output.
+    # A closed loop with no external anchor: whatever it decided at 09:30
+    # became the standard it judged 13:30 against. That is what produced the
+    # 0.0002 TAKE/DECLINE separation the absolute floor above now backstops.
+    #
+    # SEGMENTATION NOW REQUIRES SETTLED EVIDENCE — rows from PRIOR trading
+    # days. Today's rows still COUNT toward the percentile once a bucket has
+    # earned the right to segment (they are genuine arrivals, and "is better
+    # still to arrive today" is the question the bar is asking); they simply
+    # cannot be what grants that right. A bucket whose only evidence is the
+    # session currently being decided must pool across buckets instead, which
+    # is a weaker answer than segmenting and a far better one than grading its
+    # own homework.
+    #
+    # Unconditional rather than switched: a bucket bootstrapping itself is a
+    # defect, not a policy, and a switch here would only be a way to turn the
+    # defect back on.
+    today_s = today_ist().isoformat()
+
+    def _settled(rowset: list) -> list:
+        return [r for r in rowset if str(r.get("trade_date") or "") < today_s]
+
     raw_n = len(rows)
     edges = _extract(rows)
-    if len(edges) < floor:
+    settled_n = len(_extract(_settled(rows)))
+    if settled_n < floor:
         pooled = True
         rows = fetch_all(filtered=False)
         raw_n = len(rows)
         edges = _extract(rows)
+        settled_n = len(_extract(_settled(rows)))
 
     if len(edges) < floor:
         base, meta = _cold_start(len(edges), floor,
@@ -486,6 +571,7 @@ def _empirical_base(bucket: str, framework: str, sb=None
     # relative comparison is what selects, and `scoring.score()` has already
     # taken the costs out once.
     return float(base), {"cold_start": False, "n": len(edges), "raw_n": raw_n,
+                         "settled_n": settled_n,
                          "deduplicated": dedup,
                          "sample_floor": floor, "percentile": pct,
                          "pooled_across_buckets": pooled,

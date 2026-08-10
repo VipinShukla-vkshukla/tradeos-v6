@@ -108,6 +108,12 @@ def main(once: bool = False, dry: bool = False) -> None:
                        "stops renewing.")
 
     engine.load_state()
+    # ONCE, AT STARTUP — not on the slow timer with load_state(). This carries
+    # today's already-persisted detections into the in-memory dedup map so a
+    # mid-session restart does not re-record the whole morning, which would
+    # re-inflate both the prior population and the allocator's arrival bar.
+    # See IntradayEngine._rehydrate_recorded().
+    engine._rehydrate_recorded()
     engine.refresh_universe()
     symbols = engine.watch_symbols()
     if not symbols:

@@ -73,6 +73,9 @@ MODULES = [
     ("swing hold days",      "tests.test_swing_hold_days"),
     ("swing family maturity review", "tests.test_swing_family_maturity_review"),
     ("quote parity verdicts",  "tests.test_quote_parity"),
+    ("allocator edge floor",   "tests.test_edge_floor"),
+    ("gated intraday priors",  "tests.test_gated_priors"),
+    ("setup dedup rehydration", "tests.test_setup_rehydration"),
 ]
 
 
