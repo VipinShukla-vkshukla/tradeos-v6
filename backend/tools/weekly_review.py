@@ -724,6 +724,78 @@ def review_swing_family_maturity(sb) -> None:
                     f"{min_pct:.0f}% — re-checked automatically next week")
 
 
+def review_swing_reservation_engagement(sb, days: int = 14) -> None:
+    """
+    Is swing_assignment()'s reservation ever actually reserving a slot?
+
+    Wired live 07-Aug-2026 (allocation/policies.py::swing_assignment) to stop
+    swing spending its last slot on a marginal trigger when a materially
+    better untriggered plan was likely to touch its zone later the same day.
+    "Materially better" is gated by two thresholds — alloc_reserve_edge_
+    multiple (an untriggered plan must beat the CURRENT bar by this factor)
+    and alloc_reserve_min_p_trigger (must be at least this likely to trigger
+    today) — chosen as reasonable-sounding defaults (1.35, 0.35) with no
+    recorded measurement behind either number.
+
+    10-Aug-2026: checked directly against real data — across every swing
+    decision since the mechanism went live (2 full sessions, 1,000 rows),
+    zero DEFER verdicts. Loosened alloc_reserve_edge_multiple to 1.15 the
+    same day, an operator-authorised judgement call, not a backtested
+    optimum — there was no way to backtest it, because the untriggered
+    "field" a reservation is judged against is computed fresh in memory
+    each cycle and never persisted, only allocation_decisions' TAKE/DECLINE
+    rows are queryable after the fact.
+
+    So this is the follow-up that measurement couldn't be: watch the DEFER
+    rate going forward under whatever alloc_reserve_edge_multiple is
+    currently set to, and say so plainly if it is still never engaging —
+    that's real evidence the multiple needs loosening further, not another
+    guess.
+    """
+    _hdr("SWING RESERVATION — is the multiple actually engaging?")
+    since = (today_ist() - timedelta(days=days)).isoformat()
+    rows = []
+    off = 0
+    while True:
+        page = (sb.table("allocation_decisions").select("verdict")
+                  .eq("framework", "SWING").gte("trade_date", since)
+                  .range(off, off + 1000 - 1).execute().data) or []
+        rows += page
+        if len(page) < 1000:
+            break
+        off += 1000
+
+    total = len(rows)
+    if total == 0:
+        logger.info(f"  no swing decisions in the last {days}d — nothing to measure")
+        return
+
+    defers = sum(1 for r in rows if r.get("verdict") == "DEFER")
+    rate = defers / total * 100.0
+    mult = cfg_float("alloc_reserve_edge_multiple", 1.15)
+    logger.info(f"  {total} decision(s) over {days}d · {defers} DEFER "
+                f"({rate:.1f}%) · alloc_reserve_edge_multiple={mult}")
+
+    min_sample = cfg_int("swing_reservation_min_sample", 300)
+    if defers == 0 and total >= min_sample:
+        _propose(sb, "SWING_RESERVATION_INERT", "alloc_reserve_edge_multiple",
+                 str(mult),
+                 f"lower than {mult} — reconsider, evidence-backed this time",
+                 (f"{total} swing decisions over the last {days}d, zero DEFER "
+                  f"verdicts under alloc_reserve_edge_multiple={mult}. The "
+                  f"reservation mechanism has never once held a slot at this "
+                  f"threshold — functionally identical to no reservation at "
+                  f"all. Worth a further, smaller step down, this time with "
+                  f"a real sample behind the number"),
+                 "medium")
+    elif defers == 0:
+        logger.info(f"     0 DEFER so far, but only {total} of {min_sample} "
+                    f"needed for that to mean anything — no proposal yet")
+    else:
+        logger.success(f"     engaging — {defers} slot(s) held for a better "
+                       f"plan rather than spent on the first one to clear the bar")
+
+
 def show_open(sb) -> int:
     _hdr("OPEN PROPOSALS")
     try:
@@ -759,6 +831,7 @@ def main(show: bool = False) -> int:
     review_ranking(sb)
     review_ai_tier_weight(sb)
     review_swing_family_maturity(sb)
+    review_swing_reservation_engagement(sb)
 
     # Refresh the aggregates the dashboard reads. performance_metrics had not
     # been written since 2026-05-12, which is why the Engine Leaderboard said
