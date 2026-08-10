@@ -1,29 +1,34 @@
 """
-A degenerate risk denominator must not be averaged into capture/overrun
-(10-Aug-2026).
+max_favorable_excursion/max_adverse_excursion are PERCENTAGES, already
+direction-signed — not prices (10-Aug-2026, third pass, root cause found).
 
 WHAT THIS CATCHES
 -----------------
-The first live run of `tools/exit_audit.py` reported SWING's 7 BROKER_EXIT
-rows averaging MFE -20.228R, and several INTRADAY exit reasons showing |MFE R|
-over 100 (-143.636, +164.433, -109.340). None of those are physically
-reachable in a session against a real stop — every one shares the same
-signature: `planned_stop_at_entry` sitting implausibly close to `entry_price`,
-so a genuine price swing divided by a near-zero risk produces triple-digit R.
+Two earlier passes at this bug both guessed at the cause and were wrong. The
+first assumed a near-zero `planned_stop_at_entry` (a data problem on specific
+rows); re-run against the real book, the SAME rows produced the SAME corrupted
+numbers, unchanged to three decimals, proving that theory false. The second
+added a symptom-based magnitude cap and printed raw values instead of guessing
+again — and the raw values solved it immediately: KIMS showed entry=802.50,
+mfe=2.15. A value of 2.15 next to an entry of 802.50 cannot be a price.
 
-BROKER_EXIT is the tell: a position reconciled from Kite holdings rather than
-opened through decide()'s own planning path never had a real stop computed for
-it. The fix excludes those rows from the excursion arithmetic while KEEPING
-their realised R, because r_multiple is read from a different column
-(computed by control/position_lifecycle.py from the position's CURRENT stop at
-close time, not the entry-time snapshot this tool reads) and can be sound even
-when planned_stop_at_entry is not.
+Confirmed against the WRITER, not just the symptom:
+`intraday/engine.py::_track_excursion` computes
+`pct = D.gain_pct(entry, ltp, d)` and stores `max(prior, pct)` — a PERCENTAGE,
+and `D.gain_pct` is already direction-adjusted ("signed in the position's
+favour", its own docstring). This tool's old formula treated the column as an
+absolute price AND re-applied a direction flip to a value already flipped
+once — wrong twice over. Correct formula: `mfe_r = mfe_pct / risk_pct`, no
+direction branch, because the sign is already correct however the position
+was structured.
+
+Pinned against the operator's own real, previously-misread rows so a
+regression here is caught against production shapes, not just synthetic ones.
 """
 
 from __future__ import annotations
 
 import io
-from contextlib import redirect_stdout
 
 from loguru import logger
 
@@ -44,12 +49,14 @@ class _SB:
     def table(self, name): return _Q(self._rows)
 
 
-def _row(entry, stop, mfe, mae, r_mult, reason="TARGET_HIT", direction="LONG",
-        fw="SWING"):
-    return {"symbol": "X", "framework": fw, "direction": direction,
+def _row(entry, stop, mfe_pct, mae_pct, r_mult, reason="TARGET_HIT",
+        direction="LONG", fw="SWING", symbol="X"):
+    """mfe_pct/mae_pct are PERCENTAGES, already signed in the trade's favour —
+    matching what intraday/engine.py::_track_excursion actually writes."""
+    return {"symbol": symbol, "framework": fw, "direction": direction,
             "entry_price": entry, "exit_price": None, "r_multiple": r_mult,
-            "exit_reason": reason, "max_favorable_excursion": mfe,
-            "max_adverse_excursion": mae, "planned_stop_at_entry": stop,
+            "exit_reason": reason, "max_favorable_excursion": mfe_pct,
+            "max_adverse_excursion": mae_pct, "planned_stop_at_entry": stop,
             "realized_pnl": None, "charges": None}
 
 
@@ -63,82 +70,93 @@ def _captured_logs(fn) -> str:
     return sink.getvalue()
 
 
-def test_a_near_zero_stop_is_excluded_from_excursion_stats():
-    """entry=1554.80, a placeholder stop 1 rupee away (0.06% — the BROKER_EXIT
-    shape), and a real mfe of 85 rupees away. Undexcluded this produces an
-    ~85R capture number; the guard must drop it from mfe_r/mae_r while KEEPING
-    its r_multiple."""
+def test_a_near_zero_stop_is_still_excluded_from_excursion_stats():
+    """The FIRST guard (risk-denominator) still matters on its own terms —
+    a stop 0.06% from entry is not a real stop for either book, whatever the
+    excursion columns say."""
     from tools.exit_audit import audit_closed
-    rows = [_row(1554.80, 1553.80, 1640.0, 1550.0, r_mult=0.49)]
+    rows = [_row(1554.80, 1553.80, 5.4, -0.3, r_mult=0.49)]
     out = _captured_logs(lambda: audit_closed(_SB(rows), "SWING"))
-    assert "excluded" in out.lower() or "1 closed trade" in out
+    assert "excluded from capture" in out.lower() or "1 closed trade" in out
 
 
 def test_realised_r_survives_exclusion():
-    """The excluded row's r_multiple must still count toward winners/losers —
-    it comes from a different column and the entry-time stop being bad says
-    nothing about whether it is correct."""
+    """Realised R must not depend on the excursion guard at all — it is read
+    from a different column, computed at close time."""
     from tools.exit_audit import _f
-    from tools import exit_audit as EA
-
-    rows = [_row(1554.80, 1553.80, 1640.0, 1550.0, r_mult=0.49)]
-
-    recs = []
-    for r in rows:
-        entry = _f(r.get("entry_price"))
-        realised = _f(r.get("r_multiple"))
-        recs.append(realised)
-    assert recs == [0.49], "realised R must not depend on the excursion guard"
+    rows = [_row(1554.80, 1553.80, 5.4, -0.3, r_mult=0.49)]
+    recs = [_f(r.get("r_multiple")) for r in rows]
+    assert recs == [0.49]
 
 
-def test_a_plausible_stop_still_produces_capture():
-    """A real 0.9% intraday stop with a real excursion must NOT be excluded —
-    the guard's floor (0.15%) must sit comfortably below any genuine engine
-    stop (measured minimum 0.43% across all seven engines)."""
-    from tools.exit_audit import _f
-
-    entry, stop, mfe = 133.46, 134.26, 131.00   # a real SDN-shaped short
-    risk = abs(entry - stop)
-    risk_pct = risk / entry * 100.0
-    assert risk_pct > 0.15, f"a real 0.6% stop must clear the sanity floor, got {risk_pct}"
-
-
-def test_a_plausible_stop_with_an_implausible_mfe_is_still_caught():
-    """THE FAILURE THAT MADE THIS SECOND GUARD NECESSARY. The risk-based guard
-    alone was re-run against the real book and produced the SAME corrupted
-    numbers as before, unchanged to three decimal places -- the near-zero-risk
-    hypothesis did not explain the actual data. This is the case it missed: a
-    perfectly plausible 3% stop, but an MFE that implies a 50R move, which no
-    real intraday or swing position reaches. The symptom-based cap must catch
-    this regardless of what produced it."""
+def test_kims_the_row_that_exposed_the_bug():
+    """The operator's own real, previously-misread row. Under the OLD (price)
+    formula this produced mfe_r=-36.46. Under the CORRECT (percentage)
+    formula it must land near +0.786R — a completely ordinary swing
+    excursion, comfortably inside MAX_PLAUSIBLE_R, and NOT flagged."""
     from tools.exit_audit import audit_closed
-    # entry=100, stop=97 (3% risk -- clears MIN_RISK_PCT easily), mfe=250
-    # (implies peak_r = 150/3 = 50, far past MAX_PLAUSIBLE_R)
-    rows = [_row(100.0, 97.0, 250.0, 95.0, r_mult=0.3)]
+    rows = [_row(802.50, 780.55, 2.15, -0.673, r_mult=0.487,
+                reason="BROKER_EXIT", symbol="KIMS")]
     out = _captured_logs(lambda: audit_closed(_SB(rows), "SWING"))
-    assert "over 15.0" in out and "PLAUSIBLE stop distance" in out, (
-        f"a plausible-risk, implausible-magnitude row was not flagged: {out!r}")
+    assert "KIMS" not in out, f"a sane real trade was flagged as implausible: {out!r}"
+    assert "STILL produced" not in out
+
+
+def test_bhel_a_second_real_row_with_a_wide_stop():
+    """entry=407.40, stop=383.89 (5.77% risk), mfe=0.466%, mae=-0.098%. Under
+    the correct formula this is a barely-moved position (~0.08R peak) against
+    a wide stop -- ordinary, not implausible."""
+    from tools.exit_audit import audit_closed
+    rows = [_row(407.40, 383.89, 0.466, -0.098, r_mult=0.487,
+                reason="BROKER_EXIT", symbol="BHEL")]
+    out = _captured_logs(lambda: audit_closed(_SB(rows), "SWING"))
+    assert "BHEL" not in out, f"a sane real trade was flagged as implausible: {out!r}"
+
+
+def test_coforge_a_real_short_shaped_row():
+    """entry=1769.90, stop=1794.45 (stop ABOVE entry -- a short). mfe=0.209%,
+    mae=-0.701%, both ALREADY signed in the trade's favour per D.gain_pct's
+    own convention -- no direction branch needed or wanted here."""
+    from tools.exit_audit import audit_closed
+    rows = [_row(1769.90, 1794.45, 0.209, -0.701, r_mult=0.1,
+                direction="SHORT", fw="INTRADAY", symbol="COFORGE")]
+    out = _captured_logs(lambda: audit_closed(_SB(rows), "INTRADAY"))
+    assert "COFORGE" not in out, f"a sane real short was flagged as implausible: {out!r}"
+
+
+def test_a_genuinely_absurd_percentage_is_still_caught():
+    """The safety net must still fire on data that is absurd EVEN under the
+    correct percentage interpretation -- a 250% favourable excursion is not
+    reachable by any real position, price-unit confusion or not."""
+    from tools.exit_audit import audit_closed
+    rows = [_row(100.0, 97.0, 250.0, -95.0, r_mult=0.3)]
+    out = _captured_logs(lambda: audit_closed(_SB(rows), "SWING"))
+    assert "STILL produced" in out and "over 15.0" in out, (
+        f"a genuinely absurd percentage was not flagged: {out!r}")
 
 
 def test_raw_values_are_printed_for_implausible_rows():
-    """The whole point of the second guard is to make the actual cause
-    visible, not just the fact that a row is wrong."""
+    """Diagnosis, not just detection -- the raw percentage values must be
+    visible, since that is exactly what solved this bug the first time."""
     from tools.exit_audit import audit_closed
-    rows = [_row(100.0, 97.0, 250.0, 95.0, r_mult=0.3)]
+    rows = [_row(100.0, 97.0, 250.0, -95.0, r_mult=0.3)]
     out = _captured_logs(lambda: audit_closed(_SB(rows), "SWING"))
-    assert "entry=100" in out and "stop=97" in out, (
-        f"raw diagnostic values missing from output: {out!r}")
+    assert "mfe_pct=250" in out, f"raw percentage values missing from output: {out!r}"
 
 
 TESTS = [
-    ("a near-zero stop is excluded from excursion stats",
-     test_a_near_zero_stop_is_excluded_from_excursion_stats),
+    ("a near-zero stop is still excluded from excursion stats",
+     test_a_near_zero_stop_is_still_excluded_from_excursion_stats),
     ("realised R survives exclusion",
      test_realised_r_survives_exclusion),
-    ("a plausible stop still produces capture",
-     test_a_plausible_stop_still_produces_capture),
-    ("a plausible stop with an implausible MFE is still caught",
-     test_a_plausible_stop_with_an_implausible_mfe_is_still_caught),
+    ("KIMS -- the row that exposed the bug",
+     test_kims_the_row_that_exposed_the_bug),
+    ("BHEL -- a second real row with a wide stop",
+     test_bhel_a_second_real_row_with_a_wide_stop),
+    ("COFORGE -- a real short-shaped row",
+     test_coforge_a_real_short_shaped_row),
+    ("a genuinely absurd percentage is still caught",
+     test_a_genuinely_absurd_percentage_is_still_caught),
     ("raw values are printed for implausible rows",
      test_raw_values_are_printed_for_implausible_rows),
 ]

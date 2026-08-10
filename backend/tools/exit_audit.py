@@ -180,25 +180,31 @@ def audit_closed(sb, book: str | None) -> None:
     # is not. Dropping a row's realised R because its entry-stop snapshot is
     # bad would throw away good data for a reason that never touched it.
 
-    # ── A SECOND, SYMPTOM-BASED GUARD — 10-Aug-2026, same session ───────────
+    # ── THE ACTUAL ROOT CAUSE — 10-Aug-2026, third pass, now VERIFIED ───────
     #
-    # THE FIRST GUARD (above) DID NOT WORK. Re-run against the real book after
-    # shipping it: the SAME rows produced the SAME corrupted numbers, to three
-    # decimal places (-20.228, -143.636, +164.433, -109.340), unchanged. That
-    # means `risk_pct` for these specific rows was NOT below MIN_RISK_PCT —
-    # the diagnosis of "a near-zero planned_stop_at_entry" was a guess that
-    # turned out to be wrong for this data, caught only by checking the real
-    # output rather than trusting the fix once it imported cleanly. This
-    # project's own rule, applied to its own tooling: verify, never assert.
+    # The operator ran this tool with the symptom-based guard printing raw
+    # values, and the raw values SOLVED it. KIMS: entry=802.50, mfe=2.15,
+    # risk=2.74%. mfe=2.15 next to an entry of 802.50 cannot be a price — this
+    # code was reading `max_favorable_excursion` as an absolute price and
+    # computing `(mfe - entry) / risk`, which reproduces the exact broken
+    # number reported: (2.15 - 802.50) / (802.50 * 0.0274) = -36.46, matching
+    # the operator's own output to two decimals.
     #
-    # Rather than guess a second time, this guard doesn't need to know the
-    # cause. |mfe_r| over MAX_PLAUSIBLE_R is not reachable by any real
-    # intraday or swing move against a real stop, whatever produced the
-    # number — a symptom-based net catches it regardless of which column
-    # turns out to be wrong. RAW INPUTS ARE NOW PRINTED for anything this
-    # catches, specifically so the actual cause becomes visible on the next
-    # run instead of staying a guess.
-
+    # Confirmed against the WRITER, not just the symptom:
+    # `intraday/engine.py::_track_excursion`, the only place this column is
+    # written: `pct = D.gain_pct(entry, ltp, d); mfe = max(prior, pct)`. The
+    # column is a PERCENTAGE, and `D.gain_pct` is ALREADY DIRECTION-ADJUSTED
+    # ("signed IN THE POSITION'S FAVOUR" — its own docstring) — a short's
+    # favourable price fall is already stored positive. So `(mfe - entry)/risk`
+    # was wrong twice over: dividing a percentage as if it were a price
+    # difference, AND then this code's own `is_short` branch re-flipping a
+    # sign the stored value had already flipped once.
+    #
+    # THE FIRST TWO GUARDS BOTH SURVIVE, DEMOTED TO A SAFETY NET. Neither was
+    # the actual bug, but a magnitude cap costs nothing to keep and this
+    # project's own house rule (§ "a check that cannot fail is not a check")
+    # argues for defence in depth over deleting a check just because the code
+    # it was written against turned out not to be the cause.
     recs, excluded, implausible = [], 0, []
     for r in rows:
         entry = _f(r.get("entry_price"))
@@ -209,19 +215,21 @@ def audit_closed(sb, book: str | None) -> None:
         mfe_r = mae_r = None
         if stop:
             risk = abs(entry - stop)
-            if risk > 0 and (risk / entry * 100.0) >= MIN_RISK_PCT:
-                is_short = (r.get("direction") or "LONG").upper() == "SHORT"
-                mfe = _f(r.get("max_favorable_excursion"))
-                mae = _f(r.get("max_adverse_excursion"))
-                # Excursions are stored as PRICES. Convert to R in the trade's
-                # own favour, so a short that fell is positive.
-                cand_mfe = ((entry - mfe) if is_short else (mfe - entry)) / risk if mfe else None
-                cand_mae = ((mae - entry) if is_short else (entry - mae)) / risk if mae else None
+            risk_pct = risk / entry * 100.0 if risk > 0 else 0.0
+            if risk > 0 and risk_pct >= MIN_RISK_PCT:
+                mfe_pct = _f(r.get("max_favorable_excursion"))
+                mae_pct = _f(r.get("max_adverse_excursion"))
+                # ALREADY A PERCENTAGE, ALREADY SIGNED IN THE TRADE'S FAVOUR —
+                # see the header above. No direction branch: `D.gain_pct` did
+                # that once already when the value was written, and doing it
+                # again here would flip a sign that is already correct.
+                cand_mfe = (mfe_pct / risk_pct) if mfe_pct else None
+                cand_mae = (mae_pct / risk_pct) if mae_pct else None
                 if (cand_mfe is not None and abs(cand_mfe) > MAX_PLAUSIBLE_R) or \
                    (cand_mae is not None and abs(cand_mae) > MAX_PLAUSIBLE_R):
                     implausible.append({"symbol": r.get("symbol"), "entry": entry,
-                                        "stop": stop, "risk_pct": risk / entry * 100.0,
-                                        "mfe": mfe, "mae": mae,
+                                        "stop": stop, "risk_pct": risk_pct,
+                                        "mfe_pct": mfe_pct, "mae_pct": mae_pct,
                                         "mfe_r": cand_mfe, "mae_r": cand_mae})
                 else:
                     mfe_r, mae_r = cand_mfe, cand_mae
@@ -238,15 +246,16 @@ def audit_closed(sb, book: str | None) -> None:
             f"(realised R is kept; it comes from a different column).")
     if implausible:
         logger.warning(
-            f"  {len(implausible)} closed trade(s) produced |R| over "
-            f"{MAX_PLAUSIBLE_R} despite a PLAUSIBLE stop distance — the "
-            f"near-zero-risk hypothesis does not explain these. Raw values, "
+            f"  {len(implausible)} closed trade(s) STILL produced |R| over "
+            f"{MAX_PLAUSIBLE_R} even after the percentage-unit fix — this is "
+            f"the safety net firing, not the expected path. Raw values, "
             f"for diagnosis:")
         for x in implausible[:10]:
             logger.warning(
                 f"    {x['symbol'] or '?':<12} entry={x['entry']:.2f} "
                 f"stop={x['stop']:.2f} (risk {x['risk_pct']:.2f}%) "
-                f"mfe={x['mfe']} mae={x['mae']}  -> mfe_r={x['mfe_r']} mae_r={x['mae_r']}")
+                f"mfe_pct={x['mfe_pct']} mae_pct={x['mae_pct']}  "
+                f"-> mfe_r={x['mfe_r']} mae_r={x['mae_r']}")
 
     if not recs:
         logger.warning("  closed positions exist but none carry both a planned stop "

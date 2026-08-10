@@ -11,12 +11,13 @@ is no path-dependency: the historical row already IS the answer for "what if
 this policy had chosen it."
 
 An exit-ladder change is not that. `closed_positions` stores only SUMMARY
-excursion numbers — max_favorable_excursion (the single best price reached)
-and the realised r_multiple (however the position actually closed) — not the
-bar-by-bar price path. So this tool cannot re-run the state machine
-(`evaluate_intraday_exit`) tick by tick against history; it can only ESTIMATE
-what a different give-back threshold would have captured, using the peak and
-the actual outcome as bounds.
+excursion numbers — `high_water_mark` (the single best price reached, the same
+column the LIVE give-back guard itself reads) and the realised r_multiple
+(however the position actually closed) — not the bar-by-bar price path. So
+this tool cannot re-run the state machine (`evaluate_intraday_exit`) tick by
+tick against history; it can only ESTIMATE what a different give-back
+threshold would have captured, using the peak and the actual outcome as
+bounds.
 
 THE ESTIMATE, PRECISELY
 ------------------------
@@ -71,17 +72,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
 from config import get_supabase, cfg_float, today_ist
+from intraday import direction as D
 
-# IMPORTED, NOT REDEFINED — 10-Aug-2026. This module originally carried its
-# own MIN_RISK_PCT = 0.15 copy. tools.exit_audit later grew a SECOND guard
-# (MAX_PLAUSIBLE_R) after the first one turned out not to explain the actual
-# corrupted rows on this account's real data — the near-zero-risk hypothesis
-# was wrong for them. Redefining the constant here would have meant this
-# tool silently kept running the superseded, incomplete guard while
-# exit_audit moved on, which is exactly the "two definitions of one idea
-# drift apart" failure this codebase has hit before (regime_bucket() against
-# two vocabularies, the intraday prior's key prefix). One definition, in
-# exit_audit, imported here.
+# IMPORTED, NOT REDEFINED — 10-Aug-2026. See tools.exit_audit's own header for
+# why there are two guards and why they live in one place. Kept as the
+# defensive backstop even after the real bug (below) was found and fixed.
 from tools.exit_audit import MIN_RISK_PCT, MAX_PLAUSIBLE_R
 
 PAGE = 1000
@@ -99,7 +94,7 @@ def _rows(sb, since: str) -> list[dict]:
     while True:
         page = (sb.table("closed_positions")
                 .select("symbol,entry_price,direction,r_multiple,"
-                        "exit_reason,max_favorable_excursion,planned_stop_at_entry,"
+                        "exit_reason,high_water_mark,planned_stop_at_entry,"
                         "framework,entry_date")
                 .eq("framework", "INTRADAY")
                 .gte("entry_date", since)
@@ -124,10 +119,10 @@ def replay(days: int, giveback_pct: float, giveback_min_r: float, sb=None) -> in
         entry = _f(r.get("entry_price"))
         stop = _f(r.get("planned_stop_at_entry"))
         actual_r = _f(r.get("r_multiple"))
-        mfe = _f(r.get("max_favorable_excursion"))
+        hwm = _f(r.get("high_water_mark"))
         if not entry or actual_r is None:
             continue
-        if not stop or not mfe:
+        if not stop or not hwm:
             unmeasurable += 1
             continue
         risk = abs(entry - stop)
@@ -135,12 +130,23 @@ def replay(days: int, giveback_pct: float, giveback_min_r: float, sb=None) -> in
             unmeasurable += 1
             continue
 
-        is_short = (r.get("direction") or "LONG").upper() == "SHORT"
-        peak_r = ((entry - mfe) if is_short else (mfe - entry)) / risk
-        # Same symptom-based net as tools.exit_audit — a plausible risk
-        # distance is not sufficient on its own; see that module's guard for
-        # why (the risk-only guard did not explain this account's real
-        # corrupted rows).
+        # USES THE SAME FUNCTION THE LIVE GIVE-BACK GUARD READS — 10-Aug-2026.
+        #
+        # The first version of this tool used `max_favorable_excursion`
+        # (`intraday/engine.py::_track_excursion` writes it as a PERCENTAGE,
+        # already direction-signed) as if it were a price, and re-applied a
+        # direction flip on top of a sign that was already correct — wrong
+        # twice over. See tools.exit_audit's header for the full story; that
+        # module fixed the same bug by dividing correctly.
+        #
+        # This tool switches to `high_water_mark` instead — a raw PRICE,
+        # exactly what `intraday/exit_policy.py`'s live give-back guard reads
+        # (`hwm_px = float(pos.get("high_water_mark") or 0)`), through the
+        # SAME `D.gain_r()` this line calls. That makes peak_r here provably
+        # identical to what the live rung would compute, not a second
+        # implementation of the same arithmetic that could drift from it.
+        d = D.normalise(r.get("direction"))
+        peak_r = D.gain_r(entry, hwm, risk, d)
         if abs(peak_r) > MAX_PLAUSIBLE_R:
             unmeasurable += 1
             continue
