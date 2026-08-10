@@ -115,6 +115,30 @@ def test_no_taken_rows_is_reported_not_crashed():
     assert code == 1
 
 
+def test_allocator_declined_rows_are_explained_not_flagged_as_a_leak():
+    """A TAKEN setup with a matching ALLOCATOR_DECLINED row for the same
+    (symbol, engine, day) is EXPLAINED -- the allocator vetoed it, which is
+    by design. This must be counted separately from a genuine operational
+    leak, not blended into one undifferentiated gap number."""
+    from tools.taken_reconciliation import reconcile
+    setups = [_setup("2026-08-05", "A", "ORB", "TAKEN"),
+              _setup("2026-08-05", "A", "ORB", "ALLOCATOR_DECLINED")]
+    code = reconcile(days=10, sb=_SB(setups))
+    assert code == 0
+
+
+def test_an_unexplained_gap_is_distinguished_from_an_explained_one():
+    """A TAKEN setup with NO matching ALLOCATOR_DECLINED row and no real
+    position is the genuinely concerning case -- capacity, broker refusal,
+    or a swallowed exception, not the allocator doing its job."""
+    from tools.taken_reconciliation import reconcile
+    setups = [_setup("2026-08-05", "A", "ORB", "TAKEN"),   # explained (declined)
+              _setup("2026-08-05", "A", "ORB", "ALLOCATOR_DECLINED"),
+              _setup("2026-08-05", "B", "VWR", "TAKEN")]    # unexplained
+    code = reconcile(days=10, sb=_SB(setups))
+    assert code == 0
+
+
 TESTS = [
     ("a large gap is detected and warned",
      test_a_large_gap_is_detected_and_warned),
@@ -126,4 +150,8 @@ TESTS = [
      test_closed_positions_also_count_as_opened),
     ("no TAKEN rows is reported, not crashed",
      test_no_taken_rows_is_reported_not_crashed),
+    ("allocator-declined rows are explained, not flagged as a leak",
+     test_allocator_declined_rows_are_explained_not_flagged_as_a_leak),
+    ("an unexplained gap is distinguished from an explained one",
+     test_an_unexplained_gap_is_distinguished_from_an_explained_one),
 ]

@@ -84,9 +84,13 @@ def reconcile(days: int, sb=None) -> int:
     sb = sb or get_supabase()
     since = (today_ist() - timedelta(days=days)).isoformat()
 
-    taken = _rows(sb, "intraday_setups", "trade_date,symbol,strategy,cost_verdict",
-                 "trade_date", since)
-    taken = [r for r in taken if (r.get("cost_verdict") or "").upper() == "TAKEN"]
+    all_setups = _rows(sb, "intraday_setups",
+                       "trade_date,symbol,strategy,cost_verdict",
+                       "trade_date", since)
+    taken = [r for r in all_setups if (r.get("cost_verdict") or "").upper() == "TAKEN"]
+    declined = {(r.get("symbol"), r.get("strategy"), str(r.get("trade_date") or "")[:10])
+               for r in all_setups
+               if (r.get("cost_verdict") or "").upper() == "ALLOCATOR_DECLINED"}
 
     opened_syms: dict[str, set] = defaultdict(set)
     for table, date_col in (("open_positions", "entry_date"),
@@ -127,17 +131,65 @@ def reconcile(days: int, sb=None) -> int:
     overall = (total_opened / total_taken * 100) if total_taken else 0
     logger.info(f"  TOTAL: {total_taken} distinct TAKEN symbol-days, "
                f"{total_opened} matched to a real position ({overall:.0f}%)")
+
+    # ── THE GAP HAS TWO POSSIBLE EXPLANATIONS, AND THEY MEAN OPPOSITE
+    # THINGS — 10-Aug-2026, second pass on this same reconciliation. ────────
+    #
+    # A "TAKEN but never opened" setup either:
+    #   (a) has a LATER row for the same (symbol, engine, day) with
+    #       cost_verdict='ALLOCATOR_DECLINED' — the allocator saw it and
+    #       vetoed it. That is BY DESIGN, not a defect: it is the allocator
+    #       doing its job, and its hypothetical resolved outcome belongs in
+    #       the prior population precisely because a prior conditioned only
+    #       on rows the allocator already approved would be circular —
+    #       reinforcing whatever it already believed rather than measuring
+    #       against the full field the cost gate actually produced.
+    #   (b) has NO such row — it cleared the cost gate and then simply never
+    #       became a position, for a reason this table cannot see:
+    #       intraday_max_concurrent/intraday_max_new_per_day capacity,
+    #       paper_broker.capacity() refusing, a cross-framework hold, or an
+    #       exception swallowed by _maybe_open_paper's own try/except. That
+    #       IS worth investigating — these are opportunities the system's
+    #       own gates liked that were lost for operational reasons having
+    #       nothing to do with the trade's quality.
+    #
+    # Reported separately because the correct response to a large (a) is "the
+    # prior is working as intended, look elsewhere" and the correct response
+    # to a large (b) is "find out why paper entries are being dropped."
+    unmatched = [(sym, eng, d) for d in by_day for sym, eng in by_day[d]
+                if sym not in opened_syms.get(d, set())]
+    explained = sum(1 for k in unmatched if k in declined)
+    unexplained = len(unmatched) - explained
+
     logger.info("")
+    logger.info(f"  Of the {len(unmatched)} that did not open: "
+               f"{explained} have a matching ALLOCATOR_DECLINED row (the "
+               f"allocator vetoed them — by design), {unexplained} have "
+               f"NEITHER a position NOR an ALLOCATOR_DECLINED row (unexplained "
+               f"by this table alone).")
+
     if overall < 60:
-        logger.warning(
-            f"  Only {overall:.0f}% of TAKEN detections became a real position. "
-            f"tools.engine_scorecard and the gated prior both build their "
-            f"population from TAKEN rows regardless of whether a position "
-            f"followed — if the phantom majority resolves differently from "
-            f"the real trades, every downstream edge number is measuring a "
-            f"population the live book never actually risked money on. This "
-            f"is the most likely explanation for a scorecard/replay verdict "
-            f"disagreeing with the dashboard's own realised P&L.")
+        if unexplained > explained:
+            logger.warning(
+                f"  The gap is DOMINATED BY UNEXPLAINED losses ({unexplained} "
+                f"of {len(unmatched)}), not allocator vetoes. This points at "
+                f"an OPERATIONAL leak — capacity limits, paper_broker "
+                f"refusals, or a silently swallowed exception in "
+                f"_maybe_open_paper — not at the prior's population choice. "
+                f"Worth checking intraday_max_concurrent / "
+                f"intraday_max_new_per_day against how many positions were "
+                f"actually open on the worst days, and the daemon log for "
+                f"'paper skip' or 'paper entry failed' lines.")
+        else:
+            logger.warning(
+                f"  The gap is MOSTLY explained by allocator vetoes "
+                f"({explained} of {len(unmatched)}) — the allocator is doing "
+                f"its job. This does NOT by itself mean the prior population "
+                f"is wrong: including allocator-vetoed rows' hypothetical "
+                f"outcomes is the non-circular choice. If engine_scorecard "
+                f"still disagrees with the real book after this, the next "
+                f"question is whether the allocator's OWN vetoes are "
+                f"well-calibrated, not whether the prior's population is.")
     else:
         logger.success(
             f"  {overall:.0f}% of TAKEN detections became a real position — "
