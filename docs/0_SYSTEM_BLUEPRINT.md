@@ -30,7 +30,7 @@ this codebase's discipline exists to protect it.
 | Mode | **LIVE** — real orders | **PAPER** — simulated fills, real decision logic |
 | Product | CNC (never MIS) | MIS |
 | Capital sleeve | `swing_capital` (`config.capital_for("SWING")`) | `intraday_capital` (`config.capital_for("INTRADAY")`) |
-| Universe | ~60 plans from the evening pipeline | own 40-symbol scanner, own criteria |
+| Universe | ~60 plans from the evening pipeline | own 40-symbol scanner, own criteria, live-reranked every 15s from a 120-name bench by relative volume (`scanner.live_rerank`, 10-Aug-2026) |
 | Entry decided by | `analysis/trade_decision.py::decide()` | `intraday/engine.py::evaluate_intraday_setups()` |
 | Exit decided by | `control/position_lifecycle.py` | `intraday/exit_policy.py` |
 | Direction | LONG only (cash delivery) | LONG and SHORT |

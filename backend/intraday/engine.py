@@ -120,6 +120,11 @@ class IntradayEngine:
         # a one-to-three-week thesis, which predicts almost nothing about
         # whether a name moves enough today to pay for a round trip.
         self._universe: list[str] = []
+        # The wider LTP-only candidate pool self._universe is re-ranked from
+        # every 15s cycle — see rerank_universe_live(). Rebuilt on the slow
+        # timer alongside self._universe; a list of scanner.UniverseEntry,
+        # not symbols, because live_rerank() needs each entry's avg_vol_20d.
+        self._bench: list = []
         # symbol:strategy -> (entry, verdict) already recorded this session.
         # REHYDRATED FROM THE DATABASE, NOT STARTED EMPTY — see
         # _rehydrate_recorded(). A restart used to hand the day a blank map.
@@ -681,11 +686,20 @@ class IntradayEngine:
         only on the 300s slow timer, meaning the single gate the whole book
         depends on could be running on a snapshot up to five minutes stale,
         silently, on every 15s cycle in between. See _refresh_index_ltp().
+
+        THE BENCH IS INCLUDED TOO, NOT JUST self._universe — 10-Aug-2026. A
+        websocket subscription is nearly free (Kite allows 3000 instruments);
+        without it, a bench name outside today's static top 40 would never
+        tick at all, and rerank_universe_live() would have nothing live to
+        promote it on. This is the one line that turns the daily universe
+        from "yesterday's list, replayed" into something that can actually
+        notice a name moving today.
         """
         from intraday.market_context import INDEX_SYMBOL
         return sorted({p["symbol"] for p in self.positions if p.get("symbol")} |
                       {c["symbol"] for c in self.candidates if c.get("symbol")} |
-                      set(self._universe) | {INDEX_SYMBOL})
+                      set(self._universe) |
+                      {e.symbol for e in self._bench} | {INDEX_SYMBOL})
 
     def _log_swing_state(self, prices: dict) -> None:
         """One line per cycle: what swing is eligible for, and why not more."""
@@ -1092,17 +1106,58 @@ class IntradayEngine:
                 self._pending_review = []
 
     def refresh_universe(self) -> int:
-        """Rebuild the intraday universe. Daily input, so refreshed on the slow timer."""
+        """
+        Rebuild the intraday universe and its live-rerank bench. Daily input
+        (stock_data_daily), so the underlying scan is on the slow timer —
+        see scanner.universe() for why that is cheap even called every 300s.
+
+        self._universe itself is then re-ranked continuously between slow
+        ticks by rerank_universe_live(), called every 15s from cycle(). This
+        call re-seeds it from the static score whenever the bench itself
+        changes (a new date, or the first call of the session) — the correct
+        starting point before any live tick has arrived to say otherwise.
+        """
         if not cfg_bool("intraday_strategies_enabled", True):
             self._universe = []
+            self._bench = []
             return 0
         try:
             from intraday import scanner
-            self._universe = scanner.symbols(self.sb)
+            self._bench = scanner.universe(self.sb)
+            limit = cfg_int("intraday_max_universe", 40)
+            self._universe = [e.symbol for e in self._bench[:limit]]
         except Exception as e:
             logger.warning(f"  universe refresh failed: {e}")
             self._universe = []
+            self._bench = []
         return len(self._universe)
+
+    def rerank_universe_live(self, feed) -> None:
+        """
+        Re-rank self._universe from the bench using LIVE relative volume.
+        Called every 15s from cycle() — cheap, since scanner.live_rerank() is
+        pure arithmetic over ticks the websocket is already carrying (no DB,
+        no historical_data call), which is exactly why the ranking can run on
+        this loop while the expensive part (bars, in refresh_contexts()) stays
+        on the 300s timer. See scanner.py's "LIVE RE-RANK" module docstring
+        section for the full reasoning.
+
+        A symbol promoted in here has no bars until the next slow tick picks
+        it up via context_symbols() — a bounded, deliberate lag, not a bug;
+        widening watch_symbols() to the bench is what let it start ticking at
+        all rather than being invisible for the rest of the session.
+        """
+        if not self._bench or feed is None:
+            return
+        try:
+            from intraday import scanner
+            from intraday.config import minutes_since_open
+            quotes = {e.symbol: feed.quote(e.symbol) for e in self._bench}
+            limit = cfg_int("intraday_max_universe", 40)
+            self._universe = scanner.live_rerank(
+                self._bench, quotes, minutes_since_open(), limit)
+        except Exception as e:
+            logger.debug(f"  live universe re-rank skipped: {e}")
 
     # ── evaluation ──────────────────────────────────────────────────────────
     def evaluate_positions(self, prices: dict[str, float]) -> list[dict]:
@@ -3118,6 +3173,14 @@ class IntradayEngine:
                 # A failed overlay must leave the fetched context in place, not
                 # take the cycle down. The staleness guard still applies.
                 logger.debug(f"  live quote overlay skipped: {e}")
+
+        # Re-rank the intraday universe from live relative volume, every
+        # cycle. Cheap (pure arithmetic over already-ticking quotes) and has
+        # no immediate effect within THIS cycle — self._universe is only read
+        # by watch_symbols()/context_symbols(), both consumed on the 300s
+        # slow timer — so doing this here, before anything else, means the
+        # slow timer always sees whatever the freshest 15s of ticks implied.
+        self.rerank_universe_live(feed)
 
         pos_actions = self.evaluate_positions(prices)
         self.act_on_positions(pos_actions)

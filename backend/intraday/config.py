@@ -51,6 +51,25 @@ def is_market_open(now: datetime | None = None) -> bool:
     return MARKET_OPEN <= now.time() <= MARKET_CLOSE
 
 
+def minutes_since_open(now: datetime | None = None) -> float:
+    """
+    Elapsed session minutes, clamped to [0, session length].
+
+    Used to scale a 20-day average volume down to "expected volume BY NOW" —
+    at 09:20 a stock is not behind because it has traded only 5 minutes'
+    worth of its usual day. Before the open this is 0 (no live signal yet,
+    not a negative one); after the close it holds at the full session length
+    rather than growing, so a post-close read cannot manufacture a rising
+    RVOL out of elapsed wall-clock time.
+    """
+    now = now or now_ist()
+    open_dt = datetime.combine(now.date(), MARKET_OPEN, tzinfo=now.tzinfo)
+    close_dt = datetime.combine(now.date(), MARKET_CLOSE, tzinfo=now.tzinfo)
+    session_len = (close_dt - open_dt).total_seconds() / 60.0
+    elapsed = (now - open_dt).total_seconds() / 60.0
+    return max(0.0, min(elapsed, session_len))
+
+
 def is_holiday(sb=None) -> bool:
     try:
         sb = sb or get_supabase()

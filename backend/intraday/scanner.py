@@ -36,6 +36,30 @@ Not ambition — websocket and API budget. Every symbol costs a subscription slo
 and, more expensively, one historical_data call per context refresh. Forty names
 is comfortable; five hundred would exhaust the rate limit on the first refresh
 and leave every engine reasoning about stale bars.
+
+LIVE RE-RANK — 10-Aug-2026
+---------------------------
+Everything above this point is PRIOR-DAY data (stock_data_daily), computed
+once and cached until the calendar date changes. That is correct for the
+tradability/liquidity/movement/quality FILTER — those are slow-moving facts —
+but it means the RANKING was frozen at yesterday's close too: a stock that
+went quiet today kept its slot for the whole session, and a stock outside
+yesterday's top 40 that started moving hard at 10am was never seen at all,
+because nothing was subscribed to it.
+
+`universe()` now returns a wider BENCH (intraday_universe_bench_size, default
+120 — LTP/quote subscription only, no bars, so it costs websocket capacity
+Kite prices at up to 3000 instruments, not the rate-limited historical_data
+budget the 40-cap exists to protect) and `live_rerank()` re-scores that bench
+every 15-second cycle against LIVE relative volume — ticks the socket is
+already carrying, zero extra API calls. The 40 names that actually get bars
+(context_symbols(), the expensive resource) are picked from whichever
+re-ranked top-40 is current when the 300-second slow timer next runs, so the
+ranking updates on the loop the operator asked for (15s) while the budget it
+was built to protect stays on the cadence it was built to protect it on
+(300s). A symbol with no live tick yet keeps its static score unchanged
+rather than being penalised — "no live signal" and "measured dead today"
+must not produce the same answer.
 """
 
 from __future__ import annotations
@@ -53,8 +77,11 @@ from config import get_supabase, cfg_float, cfg_int, cfg_bool, today_ist
 # Module-level, single-process cache — this daemon runs as one long-lived
 # process, and the underlying data (a fixed trading date's stock_data_daily
 # rows) does not change between one 300s slow-tick call and the next. See
-# symbols() and the warning dedup in _latest_date() for what each key guards.
-_cache: dict = {"date": None, "symbols": None, "warned_for": None}
+# universe() and the warning dedup in _latest_date() for what each key guards.
+# "bench" holds the FULL ranked pool (see universe()); symbols() is a plain
+# slice of it, so there is exactly one stock_data_daily scan per date, not
+# one for the static top-N and a second for the live-rerank bench.
+_cache: dict = {"date": None, "bench": None, "warned_for": None}
 
 
 @dataclass
@@ -67,6 +94,10 @@ class UniverseEntry:
     sector: str
     score: float
     reason: str
+    # Prior-day average volume (shares), the baseline live_rerank() scales by
+    # elapsed session time to ask "is TODAY'S volume unusual". 0.0 (not None)
+    # when absent, so downstream arithmetic never has to special-case a NULL.
+    avg_vol_20d: float = 0.0
 
 
 def _latest_date(sb) -> str | None:
@@ -170,6 +201,7 @@ def build_universe(sb=None, limit: int | None = None) -> list[UniverseEntry]:
         atr   = float(r.get("atr_pct") or 0)
         deliv = r.get("delivery_pct")
         deliv = float(deliv) if deliv is not None else None
+        avg_vol = float(r.get("avg_vol_20d") or 0)
 
         if not sym or close < min_price:
             rejected["price"] += 1
@@ -208,6 +240,7 @@ def build_universe(sb=None, limit: int | None = None) -> list[UniverseEntry]:
             sector=r.get("sector") or "", score=score,
             reason=f"ATR {atr:.2f}% · ₹{value:.0f}cr/day"
                    + (f" · {deliv:.0f}% delivery" if deliv is not None else ""),
+            avg_vol_20d=avg_vol,
         ))
 
     out.sort(key=lambda e: -e.score)
@@ -244,8 +277,11 @@ def persist(entries: list[UniverseEntry], sb=None) -> None:
         logger.debug(f"  scanner: universe persist skipped — {ex}")
 
 
-def symbols(sb=None, limit: int | None = None) -> list[str]:
+def universe(sb=None) -> list[UniverseEntry]:
     """
+    Today's full qualifying pool, ranked by static score — the BENCH
+    live_rerank() promotes from, wider than the intraday_max_universe cap.
+
     Cached on the resolved date, not on the wall clock.
 
     Called every 300s from the slow timer. Its inputs — stock_data_daily for
@@ -270,11 +306,68 @@ def symbols(sb=None, limit: int | None = None) -> list[str]:
     """
     sb = sb or get_supabase()
     d = _latest_date(sb)
-    if d and d == _cache["date"] and _cache["symbols"] is not None:
-        return _cache["symbols"]
+    if d and d == _cache["date"] and _cache["bench"] is not None:
+        return _cache["bench"]
 
-    u = build_universe(sb, limit)
-    persist(u, sb)
-    out = [e.symbol for e in u]
-    _cache["date"], _cache["symbols"] = d, out
-    return out
+    bench_size = max(cfg_int("intraday_universe_bench_size", 120),
+                     cfg_int("intraday_max_universe", 40))
+    entries = build_universe(sb, bench_size)
+    _cache["date"], _cache["bench"] = d, entries
+
+    # The persisted daily snapshot stays exactly what it always was — the
+    # static top-N, not the wider bench — so intraday_universe's schema and
+    # every existing reader of it (review tooling, discover_engines) see no
+    # change at all.
+    top = entries[:cfg_int("intraday_max_universe", 40)]
+    persist(top, sb)
+    return entries
+
+
+def symbols(sb=None, limit: int | None = None) -> list[str]:
+    """The static top-`limit` symbols by score — a slice of universe()."""
+    limit = limit or cfg_int("intraday_max_universe", 40)
+    return [e.symbol for e in universe(sb)[:limit]]
+
+
+def live_rerank(bench: list[UniverseEntry], quotes: dict[str, dict],
+                minutes: float, limit: int) -> list[str]:
+    """
+    Re-rank the bench by live relative volume, blended with each entry's
+    static score, and return the top `limit` symbols. PURE — no I/O, so this
+    is cheap enough to run every 15-second cycle, which is the point: the
+    static score alone is a full trading day stale by the time it matters.
+
+    `quotes` is symbol -> PriceFeed.quote() (or None/{} for a name with no
+    live tick yet — quote mode off, or the name simply has not ticked). A
+    missing or zero live volume leaves that entry's score UNCHANGED rather
+    than penalising it to the bottom: "no live signal yet" and "measured
+    dead today" are different facts, the same distinction the allocator's
+    cold-start floor already draws for the same reason.
+
+    Before the open (minutes <= 0) or with the switch off, this is a no-op —
+    the static ranking stands, exactly as it always has.
+    """
+    if not bench:
+        return []
+    if minutes <= 0 or not cfg_bool("intraday_universe_live_rerank", True):
+        return [e.symbol for e in bench[:limit]]
+
+    live_weight = cfg_float("intraday_rerank_live_weight", 0.4)
+    rvol_cap = cfg_float("intraday_rvol_cap", 3.0)
+    session_minutes = 375.0  # 09:15 -> 15:30 IST
+
+    scored: list[tuple[float, str]] = []
+    for e in bench:
+        blended = e.score
+        q = quotes.get(e.symbol) if quotes else None
+        vol = q.get("volume") if q else None
+        if vol and e.avg_vol_20d > 0:
+            expected = e.avg_vol_20d * (min(minutes, session_minutes) / session_minutes)
+            if expected > 0:
+                rvol = vol / expected
+                live_score = min(1.0, rvol / rvol_cap) if rvol_cap > 0 else 0.0
+                blended = (1 - live_weight) * e.score + live_weight * live_score
+        scored.append((blended, e.symbol))
+
+    scored.sort(key=lambda t: -t[0])
+    return [sym for _, sym in scored[:limit]]
