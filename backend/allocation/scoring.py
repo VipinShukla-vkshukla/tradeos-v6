@@ -104,7 +104,7 @@ def _dist(key: str, values: list[float], floor: int,
     )
 
 
-def intraday_priors(sb) -> dict[str, Prior]:
+def intraday_priors(sb, rows: list[dict] | None = None) -> dict[str, Prior]:
     """
     Per-engine R distributions from every detection, taken or refused.
 
@@ -112,8 +112,23 @@ def intraday_priors(sb) -> dict[str, Prior]:
     rarest asset: 595 detections on 04-Aug-2026, 595 resolved. `outcome_pct` is
     the realised move; dividing by the setup's own risk turns it into R so the
     two books share a scale.
+
+    `rows` LETS A CALLER SUPPLY THE POPULATION INSTEAD OF FETCHING IT — the I/O
+    is the only thing separating this function from a pure one, and separating
+    them is what lets `tools/allocator_replay.py` walk forward through history
+    while still calling THIS function rather than its own copy of it.
+
+    That parameter exists because the copy was written and immediately caused
+    the failure it was always going to cause: the replay tool reimplemented
+    this logic in `_priors_from()`, the 10-Aug prior-deduplication fix landed
+    here, and the tool's next run produced byte-identical output because it had
+    never been reading this function at all. A tool that measures a change must
+    execute the changed code. Same rule as `decide()` and `evaluate_exit()`:
+    never reimplement a decision, import it.
     """
     floor = cfg_int("priors_min_sample_intraday", 30)
+    if rows is not None:
+        return _intraday_priors_from_rows(list(rows), floor)
     rows, off = [], 0
     while True:
         page = (sb.table("intraday_setups")
@@ -125,7 +140,12 @@ def intraday_priors(sb) -> dict[str, Prior]:
         if len(page) < PAGE:
             break
         off += PAGE
+    return _intraday_priors_from_rows(rows, floor)
 
+
+def _intraday_priors_from_rows(rows: list[dict], floor: int) -> dict[str, Prior]:
+    """The whole of intraday_priors() except the fetch. Pure, so a replay can
+    hand it a walk-forward slice and get the identical arithmetic."""
     # SEGMENTED BY DIRECTION, NOT POOLED.
     #
     # `stop < entry` excluded every short row outright, so a short engine would

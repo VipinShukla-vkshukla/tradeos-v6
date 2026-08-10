@@ -94,3 +94,48 @@ TESTS = [
     ("a single row is unaffected",
      test_a_single_row_is_unaffected),
 ]
+
+
+def test_the_replay_executes_the_LIVE_prior_function():
+    """THE FAILURE THAT MADE THIS CHECK NECESSARY.
+
+    `allocator_replay` originally reimplemented `intraday_priors()` in a local
+    `_priors_from()`. The prior-deduplication fix landed in scoring.py and the
+    tool's very next run produced byte-identical output — same -9.94R, same
+    bars — because it had never been executing that function. A tool that
+    measures a change must run the changed code.
+
+    Asserted by MONKEYPATCHING the live function and requiring the tool's NEW
+    path to observe it. A grep for the import would pass on a file that
+    imports and then ignores it; this cannot."""
+    from unittest.mock import patch
+    from tools import allocator_replay as AR
+
+    sentinel = {"INTRADAY/ALL": object()}
+    with patch("allocation.scoring.intraday_priors", return_value=sentinel) as m:
+        got = AR._new_priors([{"strategy": "ORB"}], 30)
+    assert m.called, "the NEW path did not call scoring.intraday_priors()"
+    assert got is sentinel, "the NEW path did not return what the live function gave it"
+
+
+def test_the_legacy_baseline_does_NOT_track_the_live_function():
+    """The OLD baseline must stay frozen — it is the fixed reference point the
+    comparison is against. If it tracked scoring.py, every future fix would
+    move both sides and the tool would always report 'no change'."""
+    from unittest.mock import patch
+    from tools import allocator_replay as AR
+
+    rows = [{"strategy": "ORB", "direction": "LONG", "entry": 100.0, "stop": 99.0,
+             "outcome_pct": 0.5, "cost_pct": 0.21, "cost_verdict": "TAKEN",
+             "symbol": "A", "trade_date": "2026-08-05"}]
+    with patch("allocation.scoring.intraday_priors",
+               side_effect=AssertionError("legacy must not call the live function")):
+        AR._legacy_priors(rows, 30)   # must not raise
+
+
+TESTS += [
+    ("the replay executes the LIVE prior function",
+     test_the_replay_executes_the_LIVE_prior_function),
+    ("the legacy baseline does NOT track the live function",
+     test_the_legacy_baseline_does_NOT_track_the_live_function),
+]

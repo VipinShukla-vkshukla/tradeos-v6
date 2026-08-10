@@ -149,43 +149,56 @@ def _r_of(row: dict, gross: bool) -> float | None:
         return None
 
 
-def _priors_from(rows: list[dict], gated: bool, gross: bool,
-                 floor: int) -> dict[str, S.Prior]:
-    """Rebuild the two prior regimes from an explicit row set.
+def _new_priors(rows: list[dict], floor: int) -> dict[str, S.Prior]:
+    """
+    THE LIVE FUNCTION, on a walk-forward slice. Not a copy of it.
 
-    Mirrors `scoring.intraday_priors()` on a caller-supplied population so the
-    walk-forward slice can be controlled. The OLD regime is reproduced by its
-    two defining defects — ungated population, and only the pooled key
-    reachable — rather than by calling an older copy of the function.
+    The first version of this tool reimplemented `intraday_priors()` here. The
+    prior-deduplication fix then landed in scoring.py and this tool's next run
+    produced BYTE-IDENTICAL output — because it had never been executing that
+    function at all, so the change it existed to measure was invisible to it.
+    A tool that measures a change must run the changed code; this project's own
+    rule about `decide()` and `evaluate_exit()` applies to measurement code
+    exactly as it applies to trading code.
+
+    `intraday_priors(sb=None, rows=...)` skips its own fetch and runs the
+    identical arithmetic — gating, gross reconstruction, per-(symbol, engine,
+    day) dedup, per-engine keys, the book-level fallbacks — over whatever
+    population it is handed.
+    """
+    return S.intraday_priors(None, rows=rows)
+
+
+def _legacy_priors(rows: list[dict], floor: int) -> dict[str, S.Prior]:
+    """
+    The pre-10-Aug baseline, FROZEN ON PURPOSE.
+
+    This one IS a deliberate second implementation, and the only one in this
+    file, because it must not track scoring.py: it reproduces the behaviour
+    being replaced so the comparison has a fixed reference point. Its three
+    defining defects, all now fixed upstream:
+
+      · population = every resolved detection, not gate-passed ones
+      · per-engine keys unreachable (dict keyed "ORB", lookup asks
+        "INTRADAY/ORB"), so only the pooled book entries ever matched
+      · outcome_pct used as-is, i.e. already net of the round trip, which
+        score() then charges a second time
+      · no per-(symbol, engine, day) dedup, so a lingering setup votes once
+        per evaluation cycle
     """
     by: dict[str, list[float]] = defaultdict(list)
-    by_taken: dict[str, list[float]] = defaultdict(list)
     for r in rows:
-        rv = _r_of(r, gross)
+        rv = _r_of(r, gross=False)
         if rv is None:
             continue
         key = r.get("strategy") or "?"
         if D.is_short(D.normalise(r.get("direction"))):
             key = f"{key}/SHORT"
         by[key].append(rv)
-        if (r.get("cost_verdict") or "").upper() == "TAKEN":
-            by_taken[key].append(rv)
-
-    src = by_taken if gated else by
-    out: dict[str, S.Prior] = {}
-    if gated:
-        for k, v in by.items():
-            pool = by_taken.get(k, [])
-            out[f"INTRADAY/{k}"] = S._dist(f"INTRADAY/{k}",
-                                           pool if len(pool) >= floor else v, floor)
-    longs = [x for k, v in src.items() if not k.endswith("/SHORT") for x in v]
-    shorts = [x for k, v in src.items() if k.endswith("/SHORT") for x in v]
-    if not longs and not shorts:
-        longs = [x for k, v in by.items() if not k.endswith("/SHORT") for x in v]
-        shorts = [x for k, v in by.items() if k.endswith("/SHORT") for x in v]
-    out["INTRADAY/ALL"] = S._dist("INTRADAY/ALL", longs, floor)
-    out["INTRADAY/ALL/SHORT"] = S._dist("INTRADAY/ALL/SHORT", shorts, floor)
-    return out
+    longs = [x for k, v in by.items() if not k.endswith("/SHORT") for x in v]
+    shorts = [x for k, v in by.items() if k.endswith("/SHORT") for x in v]
+    return {"INTRADAY/ALL": S._dist("INTRADAY/ALL", longs, floor),
+            "INTRADAY/ALL/SHORT": S._dist("INTRADAY/ALL/SHORT", shorts, floor)}
 
 
 def _lookup(priors: dict, source: str, is_short: bool, floor: int) -> S.Prior:
@@ -254,7 +267,8 @@ def replay(days: int, sb=None) -> int:
         row = {}
         for label, gated, gross, use_floor in (("OLD", False, False, False),
                                                ("NEW", True, True, True)):
-            priors = _priors_from(history, gated, gross, floor_n)
+            priors = (_new_priors(history, floor_n) if gated
+                      else _legacy_priors(history, floor_n))
             # The bar is a percentile of THIS session's scored arrivals, which
             # is what hurdle() does live (`allocation_decisions.edge`). The
             # walk-forward split is on the PRIOR, which is the thing that
