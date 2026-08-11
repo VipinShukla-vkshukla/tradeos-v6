@@ -211,6 +211,45 @@ def fetch_fo_ban() -> list[dict] | None:
         return None
 
 
+def _dedup_by_symbol_and_list_type(rows: list[dict]) -> list[dict]:
+    """
+    Collapse rows sharing (symbol, list_type) into one, merging `stage`
+    labels rather than silently dropping one.
+
+    WHY THIS EXISTS — 11-Aug-2026, the exact failure that made this
+    necessary: safety_lists is keyed on (symbol, list_type), one row per
+    symbol per list. NSE's ASM API returns TWO separate sub-lists
+    ("longterm" and "shortterm"), and fetch_asm() merges every sub-key's
+    items into one flat list — deliberately, so a symbol under either
+    framework is caught — but without deduplicating. A symbol under BOTH
+    frameworks at once (real and apparently not rare — DCI, this date)
+    produces two {"symbol": "DCI", "list_type": "ASM", ...} rows from ONE
+    fetch. Those collide on insert even into a freshly-deleted table,
+    because both duplicates land in the SAME batch — "duplicate key value
+    violates unique constraint safety_lists_pkey" is two rows from the same
+    run disagreeing with each other, not a stale row from a previous one.
+
+    Keeps every stage seen (comma-joined) rather than the arbitrary
+    survivor a naive dict-overwrite would leave, and the earliest
+    listed_date (the symbol has been under surveillance since then,
+    regardless of which framework's timestamp is later).
+    """
+    merged: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        key = (r.get("symbol"), r.get("list_type"))
+        if key not in merged:
+            merged[key] = dict(r)
+            continue
+        existing = merged[key]
+        stages = [s for s in (existing.get("stage"), r.get("stage")) if s]
+        if stages:
+            existing["stage"] = ",".join(sorted(set(stages)))
+        if r.get("listed_date") and (not existing.get("listed_date")
+                                      or r["listed_date"] < existing["listed_date"]):
+            existing["listed_date"] = r["listed_date"]
+    return list(merged.values())
+
+
 def update_stock_data_flags(sb, asm_syms: set[str], ban_syms: set[str], today: str):
     """
     Mirror ASM/GSM/FO_BAN flags into stock_data_daily for today.
@@ -265,40 +304,84 @@ def main():
             logger.info(f"  {r['list_type']}: {r['symbol']} (stage={r['stage']}, listed_date={r['listed_date']}, ingested_at={r['ingested_at']})")
         return {"status": "dry_run", "asm": len(asm_rows), "gsm": len(gsm_rows), "fo_ban": len(ban_rows)}
 
-    try:
-        # Only wipe+replace the list_types whose fetch actually succeeded today.
-        # A failed ASM/GSM fetch (common — Akamai bot detection) must NEVER
-        # delete yesterday's real surveillance entries just because the F&O
-        # ban CSV (a separate, more reliable source) happened to come through.
-        if asm_ok or gsm_ok:
+    # ASM/GSM and F&O-ban are written in SEPARATE try blocks, deliberately.
+    #
+    # 11-Aug-2026: one exception in the ASM/GSM write used to abort the
+    # WHOLE function via one shared try/except — including the F&O ban
+    # write and update_stock_data_flags() further down, both entirely
+    # independent of ASM/GSM's outcome. That run fetched F&O ban fine ("F&O
+    # Ban: 2" in the log) but never wrote it: safety_lists.FO_BAN sat 5 days
+    # stale while the exception from the ASM/GSM step propagated past it.
+    # "One misbehaving part must not stop the others" — same principle as
+    # registry.py's evaluate_all() applies here as much as it does there.
+    asm_gsm_ok, fo_ban_write_ok = False, False
+    asm_gsm_error = fo_ban_error = None
+
+    if asm_ok or gsm_ok:
+        try:
             types_to_clear = [t for t, ok in (("ASM", asm_ok), ("GSM", gsm_ok), ("ASM_SHORTTERM", asm_ok)) if ok]
             sb.table("safety_lists").delete().in_("list_type", types_to_clear).execute()
-            rows_to_insert = asm_rows + gsm_rows
+            # Deduplicated on (symbol, list_type) — see _dedup_by_symbol_and_
+            # list_type's own docstring for the exact collision this closes
+            # (a symbol under both NSE's longterm AND shortterm ASM
+            # frameworks at once, merged into two rows by fetch_asm()).
+            # upsert() on top is defence in depth: idempotent against any
+            # OTHER duplicate shape this hasn't anticipated, not a reason to
+            # skip the dedup (an unmerged duplicate would still silently
+            # drop one stage's information via last-write-wins).
+            rows_to_insert = _dedup_by_symbol_and_list_type(asm_rows + gsm_rows)
             for i in range(0, len(rows_to_insert), 200):
-                sb.table("safety_lists").insert(rows_to_insert[i:i+200]).execute()
-        else:
-            logger.warning("ASM+GSM fetch both failed — leaving existing ASM/GSM safety_lists rows untouched")
+                sb.table("safety_lists").upsert(
+                    rows_to_insert[i:i+200], on_conflict="symbol,list_type").execute()
+            asm_gsm_ok = True
+        except Exception as e:
+            asm_gsm_error = str(e)
+            logger.error(f"Failed to save ASM/GSM safety lists: {e}")
+    else:
+        logger.warning("ASM+GSM fetch both failed — leaving existing ASM/GSM safety_lists rows untouched")
 
-        if ban_ok:
+    if ban_ok:
+        try:
+            ban_rows_dedup = _dedup_by_symbol_and_list_type(ban_rows)
             sb.table("safety_lists").delete().eq("list_type", "FO_BAN").execute()
-            for i in range(0, len(ban_rows), 200):
-                sb.table("safety_lists").insert(ban_rows[i:i+200]).execute()
-        else:
-            logger.warning("F&O ban fetch failed — leaving existing FO_BAN safety_lists rows untouched")
+            for i in range(0, len(ban_rows_dedup), 200):
+                sb.table("safety_lists").upsert(
+                    ban_rows_dedup[i:i+200], on_conflict="symbol,list_type").execute()
+            fo_ban_write_ok = True
+        except Exception as e:
+            fo_ban_error = str(e)
+            logger.error(f"Failed to save F&O ban safety list: {e}")
+    else:
+        logger.warning("F&O ban fetch failed — leaving existing FO_BAN safety_lists rows untouched")
 
-        # Also mirror flags into stock_data_daily
-        asm_syms = {r["symbol"] for r in asm_rows + gsm_rows}
-        ban_syms = {r["symbol"] for r in ban_rows}
-        update_stock_data_flags(sb, asm_syms, ban_syms, today)
+    # Mirrors into stock_data_daily regardless of whether the OTHER list's
+    # write failed — this reads whatever DID get written above, not what
+    # was merely fetched, so a failed write correctly does not mark a flag
+    # for a symbol that never made it into safety_lists.
+    try:
+        asm_syms = {r["symbol"] for r in asm_rows + gsm_rows} if asm_gsm_ok else set()
+        ban_syms = {r["symbol"] for r in ban_rows} if fo_ban_write_ok else set()
+        if asm_syms or ban_syms:
+            update_stock_data_flags(sb, asm_syms, ban_syms, today)
+    except Exception as e:
+        logger.warning(f"stock_data_daily flag mirror skipped: {e}")
 
+    if asm_gsm_ok and fo_ban_write_ok:
         logger.success(f"Safety lists saved: {len(all_rows)} entries written "
                         f"(asm_ok={asm_ok} gsm_ok={gsm_ok} ban_ok={ban_ok})")
-        return {"status": "ok", "asm": len(asm_rows), "gsm": len(gsm_rows), "fo_ban": len(ban_rows),
-                "asm_ok": asm_ok, "gsm_ok": gsm_ok, "ban_ok": ban_ok}
+        status = "ok"
+    elif asm_gsm_ok or fo_ban_write_ok:
+        logger.warning(
+            f"Safety lists PARTIALLY saved — asm_gsm_write={'ok' if asm_gsm_ok else asm_gsm_error} "
+            f"| fo_ban_write={'ok' if fo_ban_write_ok else fo_ban_error}")
+        status = "partial"
+    else:
+        status = "error"
 
-    except Exception as e:
-        logger.error(f"Failed to save safety lists: {e}")
-        return {"status": "error", "error": str(e)}
+    return {"status": status, "asm": len(asm_rows), "gsm": len(gsm_rows), "fo_ban": len(ban_rows),
+            "asm_ok": asm_ok, "gsm_ok": gsm_ok, "ban_ok": ban_ok,
+            "asm_gsm_write_ok": asm_gsm_ok, "fo_ban_write_ok": fo_ban_write_ok,
+            "asm_gsm_error": asm_gsm_error, "fo_ban_error": fo_ban_error}
 
 
 if __name__ == "__main__":

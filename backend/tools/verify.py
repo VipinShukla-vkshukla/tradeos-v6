@@ -95,6 +95,8 @@ MODULES = [
     ("runway refusal summary", "tests.test_runway_refusal_summary"),
     ("runway requeue", "tests.test_runway_requeue"),
     ("gap down bounce engine", "tests.test_gap_down_bounce"),
+    ("ingest asm gsm dedup and isolation", "tests.test_ingest_asm_gsm"),
+    ("data quality resolved alert", "tests.test_data_quality_resolved_alert"),
     ("partial book quantity sync", "tests.test_partial_book_quantity_sync"),
     ("stale token alerting", "tests.test_token_alerting"),
     ("regime-aware engine fit (shipped inert)", "tests.test_regime_fit"),
