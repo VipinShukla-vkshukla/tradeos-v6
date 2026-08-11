@@ -28,8 +28,36 @@ from tests import cfg_ctx
 
 
 class _FakeQuery:
+    """A fake that HONOURS the select string, because PostgREST does.
+
+    It did not, and that is the only reason a real defect survived every test
+    in this module. `intraday_priors()` dedups on (symbol, strategy,
+    trade_date) but its SELECT named neither `symbol` nor `trade_date`; the
+    live fetch therefore returned rows where `r.get("symbol")` is None for
+    every row, every observation of one engine collapsed into a single
+    (None, strategy, None) group, and every prior in the system fell to n=1
+    -- under the sample floor, so NEUTRAL, so `edge` reduced to -cost_r
+    uniformly for every proposal. On the real book that was 3,066 resolved
+    rows and 410 genuine opportunities being read as 7.
+
+    Every test below built its own rows WITH those keys and passed happily,
+    because a fake that ignores the projection cannot express the one claim
+    that mattered: that the function reads only what it asked the database
+    for. Projecting here makes all of them assert it at once, which is worth
+    more than one dedicated test would be -- there is no way to add a column
+    to the dedup key later and not have this catch it.
+    """
+
     def __init__(self, rows): self._rows = rows
-    def select(self, *a, **k): return self
+
+    def select(self, *a, **k):
+        cols = ",".join(str(x) for x in a)
+        if not cols or "*" in cols:
+            return self
+        want = {c.strip() for c in cols.split(",") if c.strip()}
+        self._rows = [{k: v for k, v in r.items() if k in want} for r in self._rows]
+        return self
+
     def eq(self, *a, **k): return self
     def gte(self, *a, **k): return self
     def is_(self, *a, **k): return self

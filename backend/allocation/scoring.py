@@ -132,8 +132,22 @@ def intraday_priors(sb, rows: list[dict] | None = None) -> dict[str, Prior]:
     rows, off = [], 0
     while True:
         page = (sb.table("intraday_setups")
-                  .select("strategy,outcome,outcome_pct,entry,stop,direction,"
-                          "cost_verdict,cost_pct")
+                  # symbol and trade_date are NOT decoration: they are two of
+                  # the three fields _intraday_priors_from_rows() dedups on.
+                  # Omitted, r.get() returns None for both, every row of one
+                  # engine collapses into ONE (None, strategy, None) group,
+                  # and every prior in the system drops to n=1 -- below
+                  # priors_min_sample_intraday, so NEUTRAL, so edge == -cost_r
+                  # for every proposal, uniformly. Measured on the live book
+                  # 11-Aug-2026: 3,066 resolved rows / 410 real opportunities
+                  # became 7. The unit tests never saw it because they build
+                  # their own rows WITH these keys; only the fetch was wrong.
+                  # test_priors_survive_the_production_select_string() now
+                  # runs this function through a fetch that honours the
+                  # select string, which is the only place the two can be
+                  # compared.
+                  .select("symbol,trade_date,strategy,outcome,outcome_pct,"
+                          "entry,stop,direction,cost_verdict,cost_pct")
                   .not_.is_("outcome_pct", "null")
                   .range(off, off + PAGE - 1).execute().data) or []
         rows += page
