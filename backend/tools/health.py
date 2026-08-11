@@ -1566,6 +1566,72 @@ def check_stops_holding() -> tuple[bool, str]:
     return True, f"all {len(live)} open position(s) are on the correct side of their stop"
 
 
+def check_quantity_fields() -> tuple[bool, str]:
+    """
+    Do current_qty, actual_qty and kite_qty agree, for every open position?
+
+    THE GAP THIS CLOSES — 11-Aug-2026. PPLPHARMA booked 5 of 11 shares on
+    10-Aug. The write that recorded it touched current_qty alone (6,
+    correctly) and left actual_qty/kite_qty at the pre-partial 11 — and
+    they STAYED there, confirmed against the live broker holding a day
+    later (6 real shares, 11 in both mirror columns). The reason it never
+    self-corrected: reconcile's own "already matches" fast path
+    (position_lifecycle.py) compared ONLY current_qty against the broker,
+    found agreement (current_qty was already right), and declared
+    reconcile_status=MATCHED without ever looking at the other two fields.
+    The dashboard's mismatch banner is gated on reconcile_status !=
+    'MATCHED', so a false MATCHED did not just miss the drift — it
+    actively hid it, on the exact row an operator would otherwise have
+    seen it on.
+
+    Both write paths are now fixed to keep all three fields together
+    (engine.py's BOOK_PARTIAL, both PAPER and LIVE; position_lifecycle.py's
+    reconcile fast path as a second line of defence). This check is the
+    THIRD line: it does not trust either fix to keep working — it directly
+    asks the only question that matters, on every open position, every
+    time health runs. A future code path that repeats the same mistake
+    (updates current_qty without its mirrors) is caught here regardless of
+    which file it lives in.
+    """
+    from config import get_supabase
+    sb = get_supabase()
+    rows = (sb.table("open_positions")
+            .select("symbol,framework,mode,status,current_qty,actual_qty,"
+                    "kite_qty,reconcile_status")
+            .eq("status", "ACTIVE").execute().data) or []
+    if not rows:
+        return True, "no open positions to check"
+
+    def _i(v):
+        try:
+            return int(float(v))
+        except (TypeError, ValueError):
+            return None
+
+    drifted = []
+    for r in rows:
+        cur, act, kite = _i(r.get("current_qty")), _i(r.get("actual_qty")), _i(r.get("kite_qty"))
+        vals = [v for v in (cur, act, kite) if v is not None]
+        if len(vals) >= 2 and len(set(vals)) > 1:
+            drifted.append(
+                f"{r.get('symbol')} [{r.get('framework')}]: current_qty={cur} "
+                f"actual_qty={act} kite_qty={kite} "
+                f"(reconcile_status={r.get('reconcile_status')})")
+
+    if drifted:
+        shown = "; ".join(drifted[:5])
+        if len(drifted) > 5:
+            shown += f"; +{len(drifted) - 5} more"
+        return False, (shown + ". These three columns must always agree — a "
+                       "partial book or a reconcile pass that updates one "
+                       "without the others leaves the dashboard's own "
+                       "mismatch banner blind to real drift (it is gated on "
+                       "reconcile_status, which a stale mirror field can "
+                       "report as MATCHED). Run control.position_lifecycle's "
+                       "reconcile to resync from the broker.")
+    return True, f"current_qty/actual_qty/kite_qty agree on all {len(rows)} open position(s)"
+
+
 CHECKS = [
     ("config",   "risk numbers contradict each other, or a switch does nothing", check_config,   False),
     ("shorts",   "a short is taken while some module still does long-only arithmetic", check_shorts, False),
@@ -1583,6 +1649,7 @@ CHECKS = [
     ("data",     "decisions would run on stale inputs",                          check_data_freshness, False),
     ("broker",   "resting orders do not match the positions they protect",       check_broker_consistency, False),
     ("stops",    "an open position is trading past the stop that should have closed it", check_stops_holding, False),
+    ("qty_fields", "current_qty/actual_qty/kite_qty silently disagree, hiding drift from the dashboard", check_quantity_fields, False),
     ("daemon",   "nothing is watching your positions right now",                 check_daemon,   False),
     ("pending",  "an entry order that never filled is being tracked as a real position", check_pending_fills, False),
     ("learning", "engines are being judged on evidence that was never collected", check_learning_loop, False),

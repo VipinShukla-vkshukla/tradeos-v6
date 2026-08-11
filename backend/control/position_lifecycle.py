@@ -1061,6 +1061,35 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
         return False
 
 
+def _mirror_qty_drift(pos: dict, br_qty: int) -> dict:
+    """
+    PURE. Which of actual_qty/kite_qty disagree with the broker's real
+    quantity, extracted out of reconcile_with_broker()'s "current_qty
+    already matches" fast path so it is testable without that function's
+    kite_client/holdings/multi-table I/O (11-Aug-2026).
+
+    Only called from the branch where current_qty ALREADY equals br_qty —
+    this is deliberately not a general "does everything match" check, it
+    is specifically the second half of that question: current_qty being
+    right does not mean actual_qty and kite_qty are too, and a write path
+    that shrinks current_qty alone (engine.py's BOOK_PARTIAL, before this
+    session's fix) can leave them stuck at a stale value indefinitely,
+    because the ONLY branch that ever re-reads the broker for this
+    position is the one this function guards — and it used to stop
+    looking the moment current_qty agreed.
+
+    Returns a patch dict containing only the fields that actually need to
+    change — empty when both already agree, so a caller can use `if drift`
+    to decide whether anything happened.
+    """
+    drift = {}
+    if int(pos.get("actual_qty") or 0) != br_qty:
+        drift["actual_qty"] = br_qty
+    if int(pos.get("kite_qty") or 0) != br_qty:
+        drift["kite_qty"] = br_qty
+    return drift
+
+
 def reconcile_with_broker(sb, trade_date: str) -> dict:
     """
     Kite holdings are the truth. Bring open_positions into agreement.
@@ -1326,14 +1355,42 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
             # weeks ago still reported "QTY_INCREASED — Kite shows 15, book
             # shows 15" on the dashboard: a broker alarm contradicted by the
             # very numbers printed next to it.
-            if pos.get("reconcile_status") != "MATCHED" and not DRY_RUN:
-                try:
-                    _patch_position(sb, pos, {
-                        "reconcile_status":   "MATCHED",
-                        "last_reconciled_at": datetime.now(IST).isoformat(),
-                    })
-                except Exception as e:
-                    logger.warning(f"  {sym}: reconcile clear failed: {e}")
+            #
+            # ALSO RE-SYNCS actual_qty/kite_qty HERE, NOT JUST current_qty —
+            # 11-Aug-2026. This branch used to check ONLY current_qty against
+            # the broker and, on agreement, write nothing but the status —
+            # correct as far as it went, but current_qty is not the only
+            # column that claims to hold the broker's quantity. A BOOK_PARTIAL
+            # fill (engine.py) shrinks current_qty directly and is the reason
+            # this branch is even reachable with db_qty==br_qty in the first
+            # place — PPLPHARMA booked 5 of 11 on 10-Aug, current_qty went to
+            # 6, the broker's real holding was also 6, so this branch declared
+            # MATCHED... while actual_qty and kite_qty, never touched by that
+            # write, sat at the pre-partial 11 PERMANENTLY, because the one
+            # path that could have corrected them concluded there was nothing
+            # to correct. The dashboard's own mismatch banner is gated on
+            # reconcile_status != 'MATCHED', so a false MATCHED here is not a
+            # cosmetic miss — it is the thing that made kite_qty=11 sitting
+            # next to current_qty=6 invisible. engine.py's BOOK_PARTIAL write
+            # is fixed to keep all three fields together from now on; this is
+            # the second line of defence for any other path that repeats that
+            # mistake, and for rows already-drifted before that fix landed.
+            drift = _mirror_qty_drift(pos, br_qty)
+            if pos.get("reconcile_status") != "MATCHED" or drift:
+                if not DRY_RUN:
+                    try:
+                        _patch_position(sb, pos, {
+                            **drift,
+                            "reconcile_status":   "MATCHED",
+                            "last_reconciled_at": datetime.now(IST).isoformat(),
+                        })
+                        if drift:
+                            logger.info(f"  {sym}: actual_qty/kite_qty resynced "
+                                       f"to {br_qty} (current_qty already agreed "
+                                       f"with the broker; the mirror fields had "
+                                       f"not) — {drift}")
+                    except Exception as e:
+                        logger.warning(f"  {sym}: reconcile clear failed: {e}")
             continue
         action = "QTY_REDUCED" if br_qty < db_qty else "QTY_INCREASED"
 

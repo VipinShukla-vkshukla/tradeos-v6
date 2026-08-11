@@ -1648,6 +1648,16 @@ class IntradayEngine:
                 try:
                     upd = {
                         "current_qty": max(0, left),
+                        # actual_qty/kite_qty ALSO SET HERE — 11-Aug-2026. This
+                        # write used to touch current_qty alone. There is no
+                        # broker for a paper fill to correct these two from
+                        # afterward (reconcile skips PAPER rows by design), so
+                        # leaving them stale here was PERMANENT, not a window —
+                        # a paper PPLPHARMA-shaped position would carry a wrong
+                        # kite_qty for the rest of its life. See the live path
+                        # below for the fuller trace of why this matters.
+                        "actual_qty": max(0, left),
+                        "kite_qty": max(0, left),
                         "partial_booked_qty": int(p.get("partial_booked_qty") or 0) + qty,
                         "partial_booked_price": ltp,
                     }
@@ -1696,6 +1706,35 @@ class IntradayEngine:
                     left = int(p.get("current_qty") or p.get("actual_qty") or 0) - qty
                     upd = {
                         "current_qty": max(0, left),
+                        # actual_qty/kite_qty ALSO SET HERE, OPTIMISTICALLY,
+                        # THE SAME WAY current_qty ALREADY IS — 11-Aug-2026.
+                        #
+                        # This write used to touch current_qty alone.
+                        # PPLPHARMA booked 5 of 11 on 10-Aug: current_qty
+                        # correctly went to 6, but actual_qty and kite_qty
+                        # stayed at 11 — and STAYED WRONG, confirmed live a
+                        # day later (broker holding: 6; DB actual_qty/
+                        # kite_qty: still 11). The reason it never
+                        # self-corrected is the reconcile "already matches"
+                        # fast path (position_lifecycle.py): it compares
+                        # current_qty against the broker, found them equal
+                        # (6 == 6, since current_qty was ALREADY right), and
+                        # — reasonably, given only one pair was ever checked
+                        # — concluded there was nothing left to fix. It set
+                        # reconcile_status=MATCHED without ever looking at
+                        # actual_qty/kite_qty, which is exactly what let the
+                        # dashboard's own mismatch banner (gated on
+                        # reconcile_status != 'MATCHED') stay silent while
+                        # kite_qty (11) and current_qty (6) visibly
+                        # disagreed on the same row. Fixed at both ends: this
+                        # write no longer lets the three fields diverge in
+                        # the first place, and reconcile's fast path
+                        # (position_lifecycle.py) now checks all three
+                        # before declaring MATCHED, as a second line of
+                        # defence for any other write path that repeats this
+                        # mistake.
+                        "actual_qty": max(0, left),
+                        "kite_qty": max(0, left),
                         "partial_booked_qty": int(p.get("partial_booked_qty") or 0) + qty,
                         "partial_booked_price": limit,
                     }

@@ -293,6 +293,38 @@ they bound what the rules above can even be tested against.)*
   standby/dashboard-only per `deploy/README.md`. Confirm its IP is
   currently allowlisted before trusting live automated exits — see the
   IP-allowlist hypothesis above.
+  **11-Aug: this is live right now, not hypothetical.** `tools.health`'s
+  `kite` check reports the current public IP as `103.197.74.243`, but only
+  `103.197.75.33` is recorded as allowlisted — every order placement will
+  be REJECTED until this is fixed. Not something this session can fix (it
+  requires updating the Kite Connect app's allowed IP list on Zerodha's
+  side); flagged here so it is not lost.
+- **11-Aug — a partial book left `actual_qty`/`kite_qty` permanently stale,
+  hiding real drift behind a false `reconcile_status=MATCHED`.**
+  PPLPHARMA booked 5 of 11 shares on 10-Aug. The write recorded it
+  (`intraday/engine.py::_auto_exit`, `BOOK_PARTIAL`) touched `current_qty`
+  alone (6, correctly) and left `actual_qty`/`kite_qty` at the pre-partial
+  11. Confirmed against the live broker holding a full day later: 6 real
+  shares, DB still showing 11 in both mirror columns. It never
+  self-corrected because `control.position_lifecycle`'s reconcile
+  "already matches" fast path compared ONLY `current_qty` against the
+  broker, found agreement, and declared `reconcile_status=MATCHED`
+  without ever checking the other two — and the dashboard's own mismatch
+  banner is gated on `reconcile_status != 'MATCHED'`, so the false
+  MATCHED did not just miss the drift, it hid a real one on the same row.
+  Fixed at three levels: the `BOOK_PARTIAL` write itself (both PAPER and
+  LIVE paths) now keeps all three fields together;
+  `position_lifecycle.py`'s reconcile fast path (`_mirror_qty_drift()`)
+  now re-syncs the mirrors even when `current_qty` alone already agrees;
+  and `tools.health`'s new `qty_fields` check directly asks whether the
+  three fields agree, on every open position, every run — the automated
+  safety net asked for, independent of which future code path might
+  repeat the mistake. The frontend (`PositionsTab.tsx`) also gained a
+  "Booked N @ ₹X (+₹Y)" line — realised profit from a partial was
+  previously invisible on an open position's card until the whole
+  position eventually closed. Live PPLPHARMA row corrected
+  (`actual_qty`/`kite_qty` 11 → 6) after confirming the true value against
+  the broker directly.
 - **11-Aug addendum — resolved, but not the way it looked.** `paper_starting_
   capital` (₹1,00,000) tripping `validate_config`'s 1.5x threshold turned
   out not to be a value problem: `execution.paper_broker.capacity()`

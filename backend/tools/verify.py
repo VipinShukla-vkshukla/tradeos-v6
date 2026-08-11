@@ -90,6 +90,7 @@ MODULES = [
     ("bars built from ticks", "tests.test_bar_builder"),
     ("rr weight reduced on tercile evidence", "tests.test_rr_weight"),
     ("entry reserve", "tests.test_entry_reserve"),
+    ("partial book quantity sync", "tests.test_partial_book_quantity_sync"),
     ("stale token alerting", "tests.test_token_alerting"),
     ("regime-aware engine fit (shipped inert)", "tests.test_regime_fit"),
     ("brain_proposals walk-forward backtest", "tests.test_proposal_backtest"),

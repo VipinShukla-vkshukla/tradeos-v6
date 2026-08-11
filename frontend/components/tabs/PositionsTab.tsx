@@ -115,6 +115,22 @@ function PositionCard({ p, policy }: { p: OpenPosition; policy: ExitPolicy }) {
     && heldDays >= policy.exit_time_stop_days - 3
     && (p.r_multiple_current ?? 0) < policy.exit_time_stop_min_r;
 
+  // REALISED-SO-FAR, COMPUTED HERE RATHER THAN LEFT INVISIBLE — 11-Aug-2026.
+  // unrealized_pnl (above) is deliberately only the gain on shares STILL
+  // held — correct by its own name, but a partial book locks in a real
+  // profit that then has nowhere to show on an open position's card until
+  // the WHOLE position eventually closes, which for a multi-week swing
+  // hold can be a long wait. PPLPHARMA booked 5 of 11 shares on 10-Aug for
+  // +10.57% and, until this, that gain was genuinely invisible on this
+  // card — only current_qty×unrealized on the remaining 6 shares showed.
+  // LONG-ONLY: this card has no direction field to read (OpenPosition
+  // does not carry one), matching the rest of this component, which is
+  // itself long-only throughout — not something this specific fix takes on.
+  const hasPartial = (p.partial_booked_qty ?? 0) > 0 && p.partial_booked_price != null;
+  const realizedPartialPnl = hasPartial
+    ? (p.partial_booked_price! - entry) * p.partial_booked_qty!
+    : 0;
+
   return (
     <div className={`border rounded-xl p-4 ${s.border} ${s.bg}`}>
       <div className="flex items-start justify-between gap-3">
@@ -162,6 +178,15 @@ function PositionCard({ p, policy }: { p: OpenPosition; policy: ExitPolicy }) {
           <div className={`text-sm font-mono ${pct >= 0 ? 'text-profit' : 'text-loss'}`}>
             {pct >= 0 ? '+' : ''}{pct.toFixed(1)}%
           </div>
+          {/* Unrealised is only the remaining shares — this is the other
+              half, and without it a booked profit is invisible until the
+              whole position eventually closes. */}
+          {hasPartial && (
+            <div className="text-[10px] text-muted-foreground font-mono mt-0.5"
+              title={`${p.partial_booked_qty} share(s) booked @ ₹${p.partial_booked_price!.toFixed(2)}`}>
+              +{formatCurrency(realizedPartialPnl)} booked
+            </div>
+          )}
         </div>
       </div>
 
@@ -219,6 +244,14 @@ function PositionCard({ p, policy }: { p: OpenPosition; policy: ExitPolicy }) {
         <div className="mt-2 flex items-center gap-1.5 text-xs text-yellow-400">
           <Clock className="h-3 w-3" />
           {heldDays}d held and under {policy.exit_time_stop_min_r}R — time stop fires at {policy.exit_time_stop_days}d
+        </div>
+      )}
+      {hasPartial && (
+        <div className="mt-2 flex items-center gap-1.5 text-xs text-profit">
+          <CheckCircle className="h-3 w-3" />
+          Booked {p.partial_booked_qty} @ ₹{p.partial_booked_price!.toFixed(2)}
+          {' '}({realizedPartialPnl >= 0 ? '+' : ''}{formatCurrency(realizedPartialPnl)}) —
+          {' '}{p.current_qty ?? p.actual_qty ?? 0} share(s) still open
         </div>
       )}
       {/* Only warn when the quantities genuinely disagree. reconcile_status can
