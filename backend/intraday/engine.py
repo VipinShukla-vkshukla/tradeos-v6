@@ -96,6 +96,86 @@ def _legacy_rank_gate_blocks(here_total: float, field_totals: list[float],
     return here_total < field_totals[keep - 1]
 
 
+def _runway_refusal_summary(runway_refused: list[str], out: list[dict]) -> str | None:
+    """
+    Pure. What to tell the operator when one or more shorts were refused on
+    runway this cycle — and, in the same cycle, what WAS actionable instead.
+
+    Runway refusals are about the clock, not the market: can_short()'s cover-
+    deadline check says nothing about whether the tape is offering anything,
+    but a run of "short refused — N min to the cover deadline" lines in the
+    console reads exactly like a dead market. Pointing at the long setups the
+    SAME cycle produced turns that into "here is what to look at instead"
+    rather than a dead end — the entry-side twin of exit_policy.py's runway-
+    tighten rung, which does the equivalent for a short already open.
+
+    Returns None when there is nothing to say, so the caller can log
+    unconditionally without an extra `if runway_refused:` at the call site.
+    """
+    if not runway_refused:
+        return None
+    longs_fired = sum(1 for s in out if not s["setup"].is_short)
+    if longs_fired:
+        return (f"      {len(runway_refused)} short(s) refused on runway this "
+               f"cycle ({', '.join(runway_refused)}) — {longs_fired} long "
+               f"setup(s) fired in the same cycle, unaffected by the cover deadline")
+    return (f"      {len(runway_refused)} short(s) refused on runway this "
+           f"cycle ({', '.join(runway_refused)}) — no long setups fired "
+           f"either; the quiet stretch is not runway-specific")
+
+
+def _parse_runway_refusals(rows: list[dict]) -> list[dict]:
+    """
+    Pure. Filters raw intraday_setups rows (cost_verdict=BLOCKED_SHORTABILITY)
+    down to the ones refused specifically for RUNWAY — not circuit-band,
+    squeeze or liquidity, which share the same verdict bucket but are about
+    the STOCK, not the clock, and have no "try again tomorrow" story.
+
+    Matches on the same "cover deadline" phrase _runway_refusal_summary()
+    already keys on for the live per-cycle line, so the two cannot classify
+    the same refusal differently.
+    """
+    out = []
+    for r in rows:
+        meta = r.get("meta")
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {}
+        meta = meta or {}
+        if "cover deadline" in (meta.get("shortability_reason") or ""):
+            out.append(r)
+    return out
+
+
+def _gap_continuation_shorts(runway_rows: list[dict], y_closes: dict[str, float],
+                             today_opens: dict[str, float]) -> list[str]:
+    """
+    Pure. Which of yesterday's runway-refused shorts gapped down again at
+    today's open — the most conservative revalidation available: the tape is
+    still confirming the thesis, not merely "detected yesterday and never
+    disproven". Anything looser (re-running the engine cold, a bare
+    reminder) is a different bet than this checks.
+
+    y_closes / today_opens: symbol -> price. A symbol missing either price
+    is skipped rather than guessed at — no data is not evidence either way.
+    """
+    out, seen = [], set()
+    for row in runway_rows:
+        sym = row.get("symbol")
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        yclose = y_closes.get(sym)
+        opn = today_opens.get(sym)
+        if not yclose or not opn:
+            continue
+        if opn < yclose:   # gapped down, continuing the weakness the short wanted
+            out.append(sym)
+    return out
+
+
 class IntradayEngine:
     def __init__(self, sb=None, notifier: Notifier | None = None):
         self.sb = sb or get_supabase()
@@ -104,6 +184,11 @@ class IntradayEngine:
         self.candidates: list[dict] = []
         self._policy = None
         self._intraday_policy = None
+        # Live trend/deterioration evidence for held SWING positions — see
+        # refresh_trend_context(). Kept separate from self._policy (the exit
+        # RULES, loaded once) because this is EVIDENCE, refreshed on its own
+        # cadence and merged into self._policy["_trend_ctx"] on every refresh.
+        self._trend_ctx: dict = {}
         self._last_state: dict[str, str] = {}
         # Bar history per symbol, assembled once per cycle and shared by all
         # seven engines — seven engines each fetching their own history would
@@ -745,6 +830,161 @@ class IntradayEngine:
                 f"from ticks alone (beyond the {cfg_int('intraday_max_universe', 40)} "
                 f"historical_data names), {bench_only_new} new this cycle")
         return touched
+
+    def refresh_trend_context(self) -> int:
+        """
+        Live evidence for assess_trend()'s runner/deterioration checks on
+        every held SWING position — refreshed on the slow timer, not once a
+        day.
+
+        UNTIL NOW. policy["_trend_ctx"] was populated only inside
+        manage_open_positions(), which per its own comment is "only ever
+        written once a day... at EOD" (see engine.py's apply_live_quotes
+        docstring, which already pointed at that line). This class's live
+        15s loop calls evaluate_exit() every cycle, all session, with a
+        policy dict that never carried this key — grep confirms zero other
+        references to `_trend_ctx` anywhere in this file before this method.
+        So target_decision()'s runner conversion and deterioration_check()'s
+        "thesis broke while in profit" exit were both blind for the entire
+        trading day, every day.
+
+        NEITHER FIRED INCORRECTLY. TrendQuality.has_evidence requires
+        checks >= exit_runner_min_checks (default 3); zero live evidence
+        means has_evidence is False, and target_decision() explicitly banks
+        rather than runs when that is true ("no evidence is a reason to
+        bank, not a reason to run"). So the gap was silent and safe, not
+        dangerous — but it meant a position hitting 3R at 11am was ALWAYS
+        banked, never run, no matter how strong the actual trend was,
+        because the evidence to say otherwise only ever existed
+        retroactively, after the position had usually already been closed.
+
+        Reuses load_signal_context() verbatim — the same pure fetch
+        manage_open_positions() already trusts — rather than a second
+        implementation that could quietly disagree with it. Also attaches
+        dist_vwap_live from the live tick VWAP already sitting in
+        self._contexts (apply_live_quotes(), every 15s) — the one vote in
+        assess_trend()'s list that is genuinely live rather than a
+        faster-refreshed snapshot of last night's numbers.
+
+        Behind its own switch, DEFAULT OFF. This changes which live SWING
+        exits fire — a position can now legitimately convert to a runner,
+        or exit early on deterioration, during market hours, neither of
+        which could happen before. That is a money-moving behaviour change
+        on the LIVE book, so it waits for an explicit flip like everything
+        else in this class, not a default-on "fix".
+        """
+        if not cfg_bool("exit_live_trend_ctx", False):
+            return 0
+
+        symbols = sorted({p["symbol"] for p in self.positions
+                          if (p.get("framework") or "SWING").upper() == "SWING"
+                          and p.get("symbol")})
+        if not symbols:
+            self._trend_ctx = {}
+            if self._policy is not None:
+                self._policy["_trend_ctx"] = self._trend_ctx
+            return 0
+
+        try:
+            from control.exit_rules import load_signal_context
+            ctx = load_signal_context(self.sb, symbols)
+        except Exception as e:
+            logger.warning(f"  trend context unavailable ({e}) — runners and "
+                           f"deterioration exits abstain this cycle")
+            ctx = {}
+
+        # The one live vote: today's price against today's session VWAP,
+        # already flowing through self._contexts every 15s (apply_live_quotes).
+        # Written onto the SAME dict assess_trend() reads, matching the
+        # pattern load_signal_context() already uses for _structure_highs/lows.
+        for sym, row in ctx.items():
+            c = self._contexts.get(sym)
+            if c and c.ltp and getattr(c, "vwap", None):
+                row["dist_vwap_live"] = round((c.ltp - c.vwap) / c.vwap * 100.0, 3)
+
+        self._trend_ctx = ctx
+        if self._policy is not None:
+            self._policy["_trend_ctx"] = ctx
+
+        missing = [s for s in symbols if s not in ctx]
+        if missing:
+            logger.warning(f"  no live trend context for {len(missing)}/{len(symbols)} "
+                           f"position(s): {', '.join(missing)} — runner/deterioration "
+                           f"checks abstain for these this cycle")
+        return len(ctx)
+
+    def requeue_runway_refused_shorts(self) -> list[str]:
+        """
+        Once per session, in the OPENING phase (09:15-09:30, when a fresh
+        short obviously clears the 75-minute runway requirement): pull
+        yesterday's runway-refused shorts and re-seed the ones that gapped
+        down again into TODAY's universe.
+
+        RE-SEEDS THE UNIVERSE, NOT THE ORDER. This only adds symbols back to
+        self._universe so evaluate_intraday_setups() looks at them again
+        THROUGH THE FULL PIPELINE — structure, cost, AI, allocator, and
+        can_short() itself, all unchanged. No entry path here bypasses the
+        allocator (FR5, docs/1_PHASE4_ARCHITECTURE.md) — this only decides
+        what gets LOOKED at again, never what gets taken.
+
+        GAP-DOWN CONTINUATION ONLY — see _gap_continuation_shorts(). A
+        refused-then-quiet name is not re-seeded; only one where the tape
+        itself kept confirming the thesis overnight.
+
+        Behind its own switch, DEFAULT OFF — unmeasured against this book's
+        own outcomes yet, ships inert until an operator arms it, same
+        posture as every other new consequential piece this session.
+        """
+        if not cfg_bool("intraday_requeue_runway_refused", False):
+            return []
+        from intraday.session import phase_at, OPENING
+        from config import today_ist
+        now = datetime.now(IST)
+        if phase_at(now) != OPENING:
+            return []
+        today = today_ist().isoformat()
+        if self._last_state.get("_runway_requeue_date") == today:
+            return []  # already run once this session
+        self._last_state["_runway_requeue_date"] = today
+
+        yesterday = (today_ist() - timedelta(days=1)).isoformat()
+        try:
+            rows = (self.sb.table("intraday_setups").select("symbol,meta")
+                      .eq("trade_date", yesterday)
+                      .eq("cost_verdict", "BLOCKED_SHORTABILITY")
+                      .execute().data or [])
+        except Exception as e:
+            logger.warning(f"  runway requeue: could not read yesterday's refusals ({e})")
+            return []
+
+        runway_rows = _parse_runway_refusals(rows)
+        if not runway_rows:
+            return []
+
+        symbols = sorted({r["symbol"] for r in runway_rows if r.get("symbol")})
+        try:
+            y_rows = (self.sb.table("stock_data_daily").select("symbol,close")
+                        .eq("date", yesterday).in_("symbol", symbols)
+                        .execute().data or [])
+            y_closes = {r["symbol"]: float(r["close"]) for r in y_rows if r.get("close")}
+        except Exception as e:
+            logger.warning(f"  runway requeue: could not read yesterday's closes ({e})")
+            return []
+
+        today_opens = {sym: c.day_open for sym, c in (self._contexts or {}).items()
+                       if c.day_open}
+        matched = _gap_continuation_shorts(runway_rows, y_closes, today_opens)
+        if matched:
+            self._universe = sorted(set(self._universe) | set(matched))
+            logger.info(
+                f"  runway requeue: {len(matched)} of {len(symbols)} yesterday's "
+                f"runway-refused short(s) gapped down again at today's open — "
+                f"back in today's universe, ample runway now: {', '.join(matched)}")
+        elif symbols:
+            logger.info(
+                f"  runway requeue: {len(symbols)} runway-refused short(s) from "
+                f"yesterday, none gapped down again — not re-seeded")
+        return matched
 
     def _refresh_index_ltp(self, prices: dict[str, float]) -> None:
         """
@@ -2473,6 +2713,12 @@ class IntradayEngine:
                 + " — no new entries on those names until the next refresh")
 
         out = []
+        # Symbols refused specifically for runway (can_short()'s cover-deadline
+        # check), not for quality — the entry-side twin of the runway-tighten
+        # rung in exit_policy.py. Tracked so the end-of-cycle line can point at
+        # what WAS actionable in the same cycle instead of six refusals in a
+        # row reading like a dead market. See the summary below the loop.
+        runway_refused: list[str] = []
         for sym, ctx in (self._contexts or {}).items():
             # Already an intraday position in this name: nothing to decide, and
             # no detection worth recording — it would be the same thesis at a
@@ -2556,8 +2802,23 @@ class IntradayEngine:
                     minutes_left=minutes_to_cover_deadline())
                 best.meta["shortability"] = notes
                 if not ok_sh:
+                    # Persisted, not just logged — requeue_runway_refused_shorts()
+                    # reads this back tomorrow to tell a runway refusal apart
+                    # from a circuit-band/squeeze/liquidity one, both filed
+                    # under the same BLOCKED_SHORTABILITY verdict. Without it,
+                    # meta carried only `notes` (the checks that PASSED before
+                    # the one that failed), never the failure reason itself.
+                    best.meta["shortability_reason"] = why_sh
                     self._record_setup(best, st.phase, 0.0, "BLOCKED_SHORTABILITY", 0, mc_state=(mc.state if mc else None))
                     logger.info(f"      {sym}: short refused — {why_sh[:120]}")
+                    # "cover deadline" is the literal phrase can_short() uses
+                    # for the runway check specifically (shortability.py) —
+                    # distinct from the circuit-band/squeeze/liquidity refusals
+                    # the same function can also return, which are about the
+                    # STOCK, not the clock, and have no "try again tomorrow"
+                    # story the way a runway refusal does.
+                    if "cover deadline" in why_sh:
+                        runway_refused.append(sym)
                     continue
 
             # ONE SYMBOL, ONE BOOK. The swing book got here first, so it owns
@@ -2757,6 +3018,11 @@ class IntradayEngine:
         # same risk is strictly better, and a stable second key also stops two
         # equally-rated setups from swapping places between ticks.
         out.sort(key=lambda s: (s["setup"].confidence, s["setup"].rr), reverse=True)
+
+        msg = _runway_refusal_summary(runway_refused, out)
+        if msg:
+            logger.info(msg)
+
         return out
 
     def _intraday_alert_worthy(self, st) -> bool:

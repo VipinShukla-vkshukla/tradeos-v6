@@ -42,7 +42,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
 from config import IST, cfg, cfg_bool, cfg_float, cfg_int
-from intraday.session import phase_at, SQUARE_OFF, CLOSED, minutes_to_close
+from intraday.session import (phase_at, SQUARE_OFF, CLOSED, minutes_to_close,
+                              minutes_to_cover_deadline)
 from intraday import direction as D
 
 
@@ -68,6 +69,15 @@ def load_intraday_policy() -> dict:
         "cost_buffer_pct":    cfg_float("intraday_breakeven_cost_pct", 0.21),
         # Give-back guard. OFF by default — see the note in evaluate_intraday_exit.
         "giveback_pct":       cfg_float("intraday_giveback_pct", 0.0),
+        # Runway-aware tightening for OPEN shorts. OFF by default, same
+        # reasoning as giveback_pct just above: never measured against this
+        # book's own outcomes yet, so it ships inert until an operator arms
+        # it. See rung 6b in evaluate_intraday_exit. Reuses
+        # intraday_short_min_runway_min — the SAME number can_short() gates
+        # NEW entries on — rather than a second key that could drift from it.
+        "short_runway_tighten_enabled": cfg_bool("intraday_short_runway_tighten_enabled", False),
+        "short_runway_min":            cfg_int("intraday_short_min_runway_min", 75),
+        "short_runway_tighten_floor_pct": cfg_float("intraday_short_runway_tighten_floor_pct", 40.0),
         #
         # min_r LOWERED 1.0 -> 0.5, 11-Aug-2026, from the closed book's own
         # MFE quantiles (tools.exit_ladder_replay / direct query,
@@ -382,6 +392,45 @@ def evaluate_intraday_exit(pos: dict, ltp: float, policy: dict,
                            f"(locks {D.gain_r(entry, trail, risk, d):+.2f}R)"),
                 "new_sl": round(trail, 2), "book_qty": 0,
             }
+
+    # ── 6b. RUNWAY-AWARE TIGHTENING for open SHORTS, as the cover deadline
+    #        approaches ──────────────────────────────────────────────────────
+    #
+    # can_short() refuses a NEW short once minutes_to_cover_deadline() drops
+    # below intraday_short_min_runway_min (75) — an uncovered short goes to
+    # the auction session. That gate protects ENTRIES. It says nothing about
+    # a short already open: today, one rides its full stop width right up to
+    # rung 1's hard EXIT_SQUAREOFF and is then closed at whatever price the
+    # market happens to be at that instant — the exact forced, worst-possible
+    # -moment exit the runway gate exists to avoid on the entry side.
+    #
+    # So the same number gates both sides. Once an OPEN short has less than
+    # intraday_short_min_runway_min left before its own cover deadline, its
+    # stop tightens continuously toward the live price rather than waiting
+    # for the deadline to force a market exit — linear from full risk width
+    # at `need` minutes left down to short_runway_tighten_floor_pct of it at
+    # zero (rung 1 fires at zero anyway, so this never has to reach zero risk
+    # on its own). Checked AFTER the ordinary trail so a short already
+    # trailing tightly is never loosened back out by this rung —
+    # is_better_price(tightened, sl, d) below enforces that either way, the
+    # same invariant every other rung in this ladder holds.
+    if (D.is_short(d) and policy.get("short_runway_tighten_enabled")
+            and policy.get("short_runway_min")):
+        need = policy["short_runway_min"]
+        deadline_min_left = minutes_to_cover_deadline(now)
+        if 0 < deadline_min_left < need:
+            floor_frac = policy["short_runway_tighten_floor_pct"] / 100.0
+            frac = floor_frac + (1.0 - floor_frac) * (deadline_min_left / need)
+            tightened = ltp - D.sign(d) * risk * frac
+            if D.is_better_price(tightened, sl, d):
+                return {
+                    "action": "TRAIL_SL", "reason": "RUNWAY_TIGHTEN",
+                    "detail": (f"{deadline_min_left} min to the cover deadline (a fresh "
+                               f"entry needs {need}) — tightening to {frac:.0%} of risk "
+                               f"width rather than riding the full stop into a forced "
+                               f"square-off ({gain_pct:+.2f}%, {gain_r:+.2f}R)"),
+                    "new_sl": round(tightened, 2), "book_qty": 0,
+                }
 
     # ── 7. Time stop, in MINUTES ────────────────────────────────────────────
     # A position that has gone nowhere is holding capital and attention that a

@@ -98,15 +98,25 @@ def test_setup_properties_match_the_original_formulae():
         assert approx(s.rr, (103.0 - 100.0) / (100.0 - 99.0), 1e-9)
 
 
-def test_the_seven_long_engines_are_still_registered():
+def test_the_eight_long_engines_are_still_registered():
+    """
+    Was "the seven long engines" until 11-Aug-2026, when GDB (Gap-Down
+    Bounce, brain_proposals#190) was added as an eighth — a deliberate,
+    reviewed change, not a regression this guard should have caught. Updated
+    count, same purpose: nothing about adding a new engine (or the earlier
+    short work) may silently disturb the existing long engines or reshuffle
+    their families.
+    """
     from intraday.strategies.registry import _ALL, family_of
     with cfg_ctx():
         longs = [e for e in _ALL if e.name != "SDN"]
-        assert len(longs) == 7, \
-            f"expected the 7 original engines, found {[e.name for e in longs]}"
-        # Families must not have been reshuffled by the short work.
+        assert len(longs) == 8, \
+            f"expected the 8 long engines, found {[e.name for e in longs]}"
+        # Families must not have been reshuffled by the short work, or by GDB.
         assert family_of("GAP") == "ORB", "GAP left the ORB family"
         assert family_of("PBK") == "VWR", "PBK left the VWR family"
+        assert family_of("GDB") == "GDB", \
+            "GDB should start in its own family until proven, same as VCE/RNG"
         assert family_of("SDN") == "SDN", \
             "SDN was merged into a long family — a short and a long in the same " \
             "structure have different base rates and must never average together"
@@ -130,6 +140,6 @@ TESTS = [
     ("close_position(side=) stays optional",     test_close_position_side_is_optional),
     ("exit ladder on an untagged (legacy) row",  test_exit_ladder_on_a_row_with_no_direction_key),
     ("Setup risk/reward/rr formulae",            test_setup_properties_match_the_original_formulae),
-    ("the seven long engines still registered",  test_the_seven_long_engines_are_still_registered),
+    ("the eight long engines still registered",  test_the_eight_long_engines_are_still_registered),
     ("shorts off by default",                    test_shorts_are_off_by_default),
 ]
