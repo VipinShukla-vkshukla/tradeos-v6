@@ -89,7 +89,7 @@ MODULES = [
     ("vwap reclaim refinement", "tests.test_vwap_reclaim"),
     ("bars built from ticks", "tests.test_bar_builder"),
     ("rr weight reduced on tercile evidence", "tests.test_rr_weight"),
-    ("entry pacing", "tests.test_entry_pacing"),
+    ("entry reserve", "tests.test_entry_reserve"),
     ("stale token alerting", "tests.test_token_alerting"),
     ("regime-aware engine fit (shipped inert)", "tests.test_regime_fit"),
     ("brain_proposals walk-forward backtest", "tests.test_proposal_backtest"),

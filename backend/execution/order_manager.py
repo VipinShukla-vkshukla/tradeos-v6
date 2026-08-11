@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -172,74 +172,62 @@ def _today_totals(sb, framework: str = "SWING") -> tuple[int, float, float]:
                 float(TOTAL_CAPITAL))
 
 
-def _last_entry_at(sb, framework: str = "SWING") -> datetime | None:
-    """
-    Wall-clock time of the most recent BUY placed today for `framework`, or
-    None if none yet today.
-
-    WHY THIS EXISTS — 11-Aug-2026. _today_totals() answers "how many" and
-    that is a COUNT-only budget: on 10-Aug three swing entries fired
-    09:36:12, 09:36:24, 09:37:03 — 51 seconds apart — because a count-only
-    check reads 0/3, then 1/3, then 2/3 and calls each one "budget
-    available". The whole day's swing risk was committed in under a minute,
-    at the open, on a ranking built from the least reliable minutes of the
-    session, and nothing was left for anything better that showed up later.
-    This is the PACE half of the budget — see swing_entry_min_gap_minutes
-    in engine.py::_maybe_enter_swing, which refuses an entry that arrives
-    too soon after the last one rather than only counting how many there
-    have been.
-
-    Sourced from the same table and the same restart-survives reasoning as
-    _today_totals(): an in-process last-entry timestamp would reset to None
-    on every restart and admit the very next candidate with no gap at all,
-    the identical failure _today_totals()'s own docstring already names for
-    counts.
-    """
+def parse_hhmm(s: str) -> time | None:
+    """'10:30' -> time(10, 30). None on anything unparseable, so a bad
+    config value degrades to "no cutoff" rather than a crash."""
     try:
-        start = datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0)
-        rows = (sb.table("intraday_broker_log").select("ts,action,framework,side")
-                  .eq("channel", "ORDER").gte("ts", start.isoformat())
-                  .execute().data or [])
-        fw = (framework or "SWING").upper()
-        placed = [r for r in rows if r.get("action") == "PLACED"]
-        mine = [r for r in placed if (r.get("framework") or fw).upper() == fw]
-        buys = [r for r in mine if (r.get("side") or "").upper() == "BUY"]
-        if not buys:
-            return None
-        latest = max(buys, key=lambda r: str(r.get("ts") or ""))
-        ts = latest.get("ts")
-        if not ts:
-            return None
-        if isinstance(ts, str):
-            return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(IST)
-        return ts
-    except Exception as e:
-        # Unknown recency must not read as "long ago" — that would PERMIT an
-        # entry a real gap should have blocked. Report "just now" so the gap
-        # gate refuses rather than silently admits on a failed read, the
-        # same fail-strict direction _today_totals() takes above.
-        logger.warning(f"  order: could not read last entry time — {e}")
-        return datetime.now(IST)
+        h, m = str(s).strip().split(":")
+        return time(int(h), int(m))
+    except (ValueError, AttributeError):
+        return None
 
 
-def entry_paced(last_at: datetime | None, now: datetime,
-                gap_minutes: float) -> tuple[bool, float]:
+def entry_reserved(n_today: int, now: datetime, max_before_cutoff: int,
+                   cutoff: time | None) -> tuple[bool, str]:
     """
-    PURE — the actual pacing decision, factored out of _maybe_enter_swing()
-    and _maybe_open_paper() so it is testable without standing up either
-    function's full precondition chain (allocator veto, held-by-framework,
-    live-auto-entry, ...).
+    PURE — replaces entry_paced() (11-Aug-2026, same day it shipped).
 
-    Returns (blocked, elapsed_minutes). blocked is False whenever
-    gap_minutes <= 0 (pacing off) or last_at is None (nothing to pace
-    against — the first entry of the day is never gated) or enough time has
-    actually elapsed. elapsed_minutes is always returned, even when not
-    blocked, so a caller can log it either way.
+    entry_paced() blocked any entry arriving within a fixed gap of the LAST
+    one, regardless of quality. Checked against the actual 10-Aug sequence
+    it was built from, that was wrong: AUBANK (09:36:24) and SCI (09:36:26)
+    were not two candidates racing a stale counter — the allocator scored 8
+    proposals together at 09:36:23 ("3 to take, 5 refused") and picked both
+    of them, in ONE joint, opportunity-cost-aware decision, as two of that
+    day's three best trades. A 20-minute gap would have let AUBANK through
+    and then refused SCI for 20 minutes for no reason at all — overriding a
+    decision the allocator had already made well, at zero benefit. (The
+    third slot, VIJAYA, genuinely DID need to out-compete rivals across
+    three separate allocator passes over the next ~40 seconds before
+    winning it at 09:37:03 — the rising bar was already doing that job
+    correctly on its own.)
+
+    What actually went wrong on 10-Aug was not "two entries too close
+    together" — it was that ALL THREE of the day's slots were spent on a
+    single snapshot of the first ~21 minutes (itself mostly a symptom of
+    the Kite token being stale until then), leaving nothing for the
+    remaining ~5.5 hours regardless of what showed up. This targets THAT
+    directly: a cap on how many of today's entries may land before a
+    cutoff clock time, with NO restriction on how close together they are
+    otherwise. Two, or three, genuinely good candidates that clear the
+    allocator's bar in the same scoring pass — before OR after the cutoff
+    — are taken together exactly as the allocator decided; only a FOURTH
+    early one, arriving separately, would ever be refused.
+
+    Returns (blocked, why). blocked is False whenever max_before_cutoff is
+    0/None (reserve off) or cutoff is None (unparseable config, same fail-
+    open-on-bad-config posture as elsewhere in this module) or `now` is
+    already past the cutoff — the reserve has no opinion at all once the
+    session has had a chance to show its character.
     """
-    if gap_minutes <= 0 or last_at is None:
-        return False, float("inf") if last_at is None else 0.0
-    elapsed = (now - last_at).total_seconds() / 60.0
-    return elapsed < gap_minutes, elapsed
+    if not max_before_cutoff or max_before_cutoff <= 0 or cutoff is None:
+        return False, ""
+    if now.time() >= cutoff:
+        return False, ""
+    if n_today >= max_before_cutoff:
+        return True, (f"{n_today} already taken before "
+                      f"{cutoff.strftime('%H:%M')} — reserving the rest of "
+                      f"the budget for later in the session")
+    return False, ""
 
 
 def preflight(req: OrderRequest, sb=None, framework: str = "SWING") -> OrderResult:

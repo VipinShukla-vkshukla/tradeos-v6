@@ -1150,41 +1150,6 @@ class IntradayEngine:
             logger.debug(f"  entries-today count failed, assuming budget spent: {e}")
             return self._entry_cap()
 
-    def _last_intraday_entry_at(self) -> datetime | None:
-        """
-        Wall-clock time of the most recent TAKEN intraday setup today, or
-        None if none yet — the intraday equivalent of
-        execution.order_manager._last_entry_at(), which cannot be reused
-        directly because intraday runs in PAPER and paper fills do not
-        write to intraday_broker_log's ORDER channel.
-
-        Sourced from intraday_setups.ts, the same table and the same
-        cost_verdict='TAKEN' population _entries_today()'s sibling counting
-        logic and the whole learning loop already treat as this book's
-        record of what actually happened — not intraday_broker_log, which
-        _entries_today()'s own docstring already explains is a LIVE-only
-        log that reads 0 on every cycle of every paper session.
-        """
-        try:
-            today = today_ist().isoformat()
-            rows = (self.sb.table("intraday_setups").select("ts")
-                      .eq("trade_date", today).eq("cost_verdict", "TAKEN")
-                      .order("ts", desc=True).limit(1).execute().data or [])
-            if not rows:
-                return None
-            ts = rows[0].get("ts")
-            if not ts:
-                return None
-            if isinstance(ts, str):
-                return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(IST)
-            return ts
-        except Exception as e:
-            # Same fail-strict direction as order_manager._last_entry_at():
-            # unknown recency must not read as "long ago", which would
-            # PERMIT an entry a real gap should have blocked.
-            logger.debug(f"  intraday: could not read last entry time — {e}")
-            return datetime.now(IST)
-
     def _swing_positions(self) -> list[dict]:
         """
         Only this book's own holdings. check_new_entry()'s caps — position
@@ -2016,29 +1981,39 @@ class IntradayEngine:
         if n_today >= max_new:
             return
 
-        # PACE, NOT JUST COUNT — 11-Aug-2026. n_today >= max_new answers "how
-        # many"; it says nothing about "how recently", and three entries
-        # 51 seconds apart on 10-Aug read as budget available at every one
-        # of them (0/3, 1/3, 2/3). The whole day's swing risk was committed
-        # in under a minute, at the open — the least reliable minutes of the
-        # session to be ranking anything in — with nothing left for a better
-        # plan that might have shown up at 12:00 or 14:00.
+        # A RESERVE, NOT A GAP — 11-Aug-2026, replacing the gap-based
+        # pacing shipped earlier the same day. That version blocked any
+        # entry arriving within a fixed window of the LAST one, and on the
+        # actual 10-Aug sequence it was built from, that was the wrong
+        # rule: the allocator scored 8 proposals together at 09:36:23 ("3
+        # to take, 5 refused") and picked AUBANK and SCI as two of that
+        # day's three best trades IN THE SAME JOINT DECISION, two seconds
+        # apart. A gap would have let AUBANK through and refused SCI for
+        # 20 minutes for no reason — overriding a decision the allocator
+        # had already made well, at zero benefit. What actually went wrong
+        # was that all THREE of the day's slots were spent on a single
+        # snapshot of the first ~21 minutes (itself mostly a symptom of
+        # the Kite token being stale until then), leaving nothing for the
+        # remaining ~5.5 hours. See order_manager.entry_reserved()'s own
+        # docstring for the full trace.
         #
-        # gap_min=0 restores exactly today's behaviour (count-only), the
-        # rollback lever if this ever blocks an entry that should have gone
-        # through. The FIRST entry of the day is never gated — there is no
-        # "too soon after" a last entry that does not exist yet.
-        gap_min = cfg_float("swing_entry_min_gap_minutes", 20.0)
-        if gap_min > 0:
-            from execution.order_manager import _last_entry_at, entry_paced
-            last_at = _last_entry_at(self.sb, "SWING")
-            blocked, elapsed_min = entry_paced(last_at, datetime.now(IST), gap_min)
-            if blocked:
-                logger.info(
-                    f"  {sym}: swing entry paced — last entry {elapsed_min:.1f} "
-                    f"min ago, {gap_min:.0f} min required between entries "
-                    f"— budget is there, timing is not")
-                return
+        # This caps how many of TODAY's entries may land before a cutoff
+        # clock time — no restriction at all on how close together they
+        # are otherwise, before OR after the cutoff. Two or three
+        # candidates the allocator approves together in one pass are taken
+        # together exactly as it decided; only a separate, EARLY entry
+        # beyond the reserved count is refused.
+        #
+        # max_before=0 (or an unparseable cutoff) restores exactly
+        # count-only behaviour, the rollback lever. The FIRST entry of the
+        # day is never gated by this at cutoffs that leave room for it.
+        from execution.order_manager import entry_reserved, parse_hhmm
+        reserve_n = cfg_int("swing_max_entries_before_time", 1)
+        cutoff = parse_hhmm(cfg("swing_entries_time_cutoff", "10:30"))
+        blocked, why = entry_reserved(n_today, datetime.now(IST), reserve_n, cutoff)
+        if blocked:
+            logger.info(f"  {sym}: swing entry reserved — {why}")
+            return
 
         # Rank against the whole day's field, not against arriving first —
         # UNLESS the allocator is the one holding the veto, in which case IT
@@ -2927,32 +2902,34 @@ class IntradayEngine:
             _blocked("BLOCKED_DAILY_BUDGET")
             return
 
-        # PACE, NOT JUST COUNT — 11-Aug-2026, mirroring the same fix on the
-        # swing side (_maybe_enter_swing) and for the same reason: a count-
-        # only budget cannot see several entries clustering in a short
-        # window and calls each one "budget available" right up until the
-        # last slot goes. Tighter than swing's default (5 min vs 20) because
-        # intraday setups are inherently more time-sensitive — an ORB or a
-        # VWAP reclaim that is genuinely still valid five minutes later is
-        # not being denied much, while five separate names clearing their
-        # gates in the same 15s cycle (a volatile open, a news spike) are
-        # more likely to be one correlated market move than five independent
-        # opportunities.
+        # A RESERVE, NOT A GAP — 11-Aug-2026, replacing the same day's
+        # gap-based pacing. See order_manager.entry_reserved()'s docstring
+        # and _maybe_enter_swing's own comment for the full reasoning: a
+        # fixed minimum gap between entries blocks candidates the allocator
+        # already approved TOGETHER, in one joint scoring pass, purely
+        # because of arrival timing — overriding a decision that was
+        # already opportunity-cost-aware, at zero benefit.
         #
-        # gap_min=0 restores exactly today's behaviour. The first take of
-        # the day is never gated.
-        gap_min = cfg_float("intraday_entry_min_gap_minutes", 5.0)
-        if gap_min > 0:
-            from execution.order_manager import entry_paced
-            last_at = self._last_intraday_entry_at()
-            blocked, elapsed_min = entry_paced(last_at, datetime.now(IST), gap_min)
-            if blocked:
-                logger.info(
-                    f"  {st.symbol}: intraday entry paced — last entry "
-                    f"{elapsed_min:.1f} min ago, {gap_min:.0f} min required "
-                    f"— budget is there, timing is not")
-                _blocked("BLOCKED_ENTRY_PACED")
-                return
+        # DEFAULT OFF (0) FOR INTRADAY, DELIBERATELY, UNLIKE SWING'S 1. Two
+        # reasons swing's evidence does not transfer here: (1) no verified
+        # intraday incident of the SAME failure — the direct check
+        # (intraday_setups timing) is contaminated by pre-dedup duplicate
+        # rows and closed_positions has no entry-clock-time column, so this
+        # was left unmeasured rather than guessed at; (2) ORB-family
+        # engines are STRUCTURALLY supposed to cluster shortly after the
+        # opening range closes — an early reserve would fight a genuine
+        # feature of that engine, not a bug, without evidence it is needed.
+        # Raise intraday_max_entries_before_time above 0 only with the same
+        # kind of evidence swing's default was built on.
+        from execution.order_manager import entry_reserved, parse_hhmm
+        reserve_n = cfg_int("intraday_max_entries_before_time", 0)
+        cutoff = parse_hhmm(cfg("intraday_entries_time_cutoff", "10:00"))
+        blocked, why = entry_reserved(self._entries_today(), datetime.now(IST),
+                                      reserve_n, cutoff)
+        if blocked:
+            logger.info(f"  {st.symbol}: intraday entry reserved — {why}")
+            _blocked("BLOCKED_ENTRY_RESERVED")
+            return
         if not is_paper("INTRADAY"):
             if not cfg_bool("intraday_live_auto_entry", False):
                 logger.info(f"  {st.symbol}: INTRADAY is LIVE and "

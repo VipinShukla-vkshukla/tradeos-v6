@@ -203,10 +203,30 @@ review knows to keep watching, not to re-derive from scratch.)*
 
 ## Rules That Did Not Work
 
-*(None yet. An item lands here only once evidence actively contradicts a
-rule that was believed to hold — not simply because a trade lost.)*
+*(An item lands here only once evidence actively contradicts a rule that
+was believed to hold — not simply because a trade lost.)*
 
-- *(empty as of 6 Aug 2026)*
+- **A minimum wall-clock gap between entries, to stop the day's whole
+  budget being spent in one burst — replaced same-day by a count-before-
+  cutoff reserve, 11-Aug-2026.**
+  Built on a real incident (10-Aug: three swing entries in ~40 seconds)
+  but the wrong mechanism for it. Checked against the actual sequence
+  before merging: the allocator scored 8 proposals together at 09:36:23
+  ("3 to take, 5 refused") and picked AUBANK and SCI as two of that day's
+  three best trades in ONE joint, opportunity-cost-aware decision, two
+  seconds apart. A 20-minute gap would have let AUBANK through and
+  refused SCI for 20 minutes for no reason — overriding a decision the
+  allocator had already made well, at zero benefit. The actual failure
+  was that all three slots were spent on a single snapshot of the first
+  ~21 minutes (itself mostly a symptom of the Kite token being stale
+  until then), not that entries arrived close together.
+  Caught by the operator asking, before merge, whether a gap would cost
+  genuine simultaneous opportunities — not by this session's own testing,
+  which had verified the mechanism did what it was built to do without
+  questioning whether what it was built to do was the right thing.
+  Replaced with `entry_reserved()` — a cap on how many entries may land
+  before a cutoff clock time, with no restriction on how close together
+  they are otherwise. See `execution/order_manager.py`.
 
 ---
 
