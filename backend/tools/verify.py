@@ -92,6 +92,7 @@ MODULES = [
     ("entry pacing", "tests.test_entry_pacing"),
     ("stale token alerting", "tests.test_token_alerting"),
     ("regime-aware engine fit (shipped inert)", "tests.test_regime_fit"),
+    ("brain_proposals walk-forward backtest", "tests.test_proposal_backtest"),
 ]
 
 

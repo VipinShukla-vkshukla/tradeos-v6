@@ -277,3 +277,17 @@ they bound what the rules above can even be tested against.)*
   1.5x-of-real-capital threshold (tripped 8 Aug's diagnostic run) — same
   shape as the `intraday_capital` item above, on a second config key. Not
   urgent (safe while paper), but two keys now carry this pattern.
+- `brain_proposals.backtest_result` has existed since the table was
+  created and, confirmed by direct query 11-Aug-2026, had never once been
+  populated (0 of 54 rows). `tools/proposal_backtest.py`
+  (`tradeos proposals-backtest`) now fills it, but only for proposals
+  shaped as a real `system_config` key with two literal values — run
+  against the live backlog the same day, 0 of 48 PENDING proposals were in
+  that shape (43 `CODE_SUGGESTION`, the rest `ENGINE_CANDIDATE`/
+  `ENGINE_LIFECYCLE`/`ENGINE_PARAMETERS`/prose). The infrastructure works;
+  today's actual backlog does not yet contain anything for it to test.
+  Worth steering `weekly_review.py`/`discover_engines.py` toward emitting
+  `CONFIG_VALUE`-shaped proposals (a real key, a literal before/after) when
+  the underlying finding allows it, specifically so future proposals land
+  in the testable shape rather than needing a human to translate prose
+  into a concrete change first.

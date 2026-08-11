@@ -98,6 +98,7 @@ if /i "%~1"=="verify"   goto VERIFY
 if /i "%~1"=="regression" goto REGRESSION
 if /i "%~1"=="benchmark" goto BENCHMARK
 if /i "%~1"=="token-check" goto TOKENCHECK
+if /i "%~1"=="proposals-backtest" goto PROPOSALSBACKTEST
 if /i "%~1"=="backup"   goto BACKUP
 if /i "%~1"=="rollback" goto ROLLBACK
 if /i "%~1"=="alloc"    goto ALLOC
@@ -533,6 +534,17 @@ REM  underlying tool. DEDUPED 10-Aug-2026: this used to repeat the exact
 REM  `python -m tools.weekly_review --show` line LEARN_SHOW already has —
 REM  one command now, two names into it.
 goto LEARN_SHOW
+
+:PROPOSALSBACKTEST
+REM  Gives every PENDING brain_proposals row a walk-forward backtest and
+REM  writes backtest_result -- the column that has existed on this table
+REM  since it was created and, until 11-Aug-2026, had never once been
+REM  populated. NEVER touches status/applied_at -- deciding APPROVED/
+REM  REJECTED stays a human call; this only supplies the evidence.
+REM    tradeos proposals-backtest              write results
+REM    tradeos proposals-backtest --dry-run    compute and print only
+if /i "%~2"=="--dry-run" (python -m tools.proposal_backtest --dry-run) else (python -m tools.proposal_backtest)
+goto END
 
 :STATUS
 python control_panel.py

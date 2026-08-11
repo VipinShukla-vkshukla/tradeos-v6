@@ -77,6 +77,11 @@ MARKET HOURS  (intraday/run.py, one process, BOTH books)
 WEEKLY  (brain_sunday_chain.yml)
   weekly_review    engines, gates, ranking → brain_proposals
   discover_engines refused-but-right + moved-but-unseen → brain_proposals
+
+ON DEMAND  (tradeos proposals-backtest)
+  proposal_backtest  walk-forward per PENDING proposal → backtest_result
+                      (only for a real config key with two literal values;
+                      everything else is marked NOT_TESTABLE, not skipped)
 ```
 
 **Decision reuse is load-bearing, not a style choice.** `decide()` and
