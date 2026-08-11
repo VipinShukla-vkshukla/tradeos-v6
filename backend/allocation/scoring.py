@@ -755,6 +755,126 @@ def tercile_report(sb=None) -> int:
     return 0
 
 
+def rr_tercile_report(sb=None) -> int:
+    """
+    DIAGNOSTIC ONLY — not called from `swing_priors()` or `entry_ranking.py`,
+    changes nothing. Run with `python -m allocation.scoring --rr-tercile`.
+
+    THE QUESTION THIS ANSWERS. Migration 060 (10-Aug-2026) rescaled
+    entry_ranking.score_plan()'s `final_score` term from an unweighted
+    0-100 magnitude down to a centered, weighted delta, on the strength of
+    `tercile_report()`'s finding that final_score does not separate forward
+    R (0.516/0.491/0.511, n=125). That rescale left `implied_rr` — the R:R
+    term, `rr = _f(p.get("implied_rr")) or _f(p.get("expected_r"))` — as the
+    single largest-magnitude component in the function by a wide margin
+    (clamped at rank_rr_cap=4.0, weight 1.0 by default, so it swings roughly
+    -12..+20 points against every other term's single digits). No forward-R
+    measurement had ever been run on THAT term before this rescale shipped
+    — the KB's own evidence base was silent on the thing the ranking was
+    left dominated by. This is that measurement, using the exact same
+    methodology and exact same population as `tercile_report()` so the two
+    numbers are directly comparable.
+
+    THE FALLBACK IS REPLICATED DELIBERATELY. entry_ranking.py does not read
+    implied_rr alone — it falls back to expected_r when implied_rr is null —
+    and testing implied_rr in isolation would measure a different quantity
+    than what the ranking function actually consumes. `_rr_value()` below is
+    the same fallback chain, so this measures the CODE PATH, not just one of
+    its inputs.
+    """
+    floor = cfg_int("priors_min_sample_swing", 30)
+    sb = sb or get_supabase()
+    rows, off = [], 0
+    while True:
+        page = (sb.table("signal_output_daily")
+                  .select("strategy,outcome_return_pct,outcome_entered,"
+                          "entry_zone_high,planned_stop,implied_rr,expected_r,"
+                          "ai_tier")
+                  .not_.is_("outcome_category", "null")
+                  .range(off, off + PAGE - 1).execute().data) or []
+        rows += page
+        if len(page) < PAGE:
+            break
+        off += PAGE
+
+    def _rr_value(r: dict) -> float | None:
+        # Mirrors analysis.entry_ranking.score_plan()'s own fallback chain
+        # exactly — see that function's "reward per unit of risk" section.
+        for key in ("implied_rr", "expected_r"):
+            v = r.get(key)
+            if v is not None:
+                try:
+                    fv = float(v)
+                    if fv:
+                        return fv
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    triples: list[tuple[str, float, float]] = []   # (family, rr, realised_R)
+    skipped_no_rr = 0
+    for r in rows:
+        if not r.get("outcome_entered"):
+            continue
+        entry, stop = r.get("entry_zone_high"), r.get("planned_stop")
+        ret = r.get("outcome_return_pct")
+        rr = _rr_value(r)
+        if rr is None:
+            skipped_no_rr += 1
+            continue
+        if None in (entry, stop, ret):
+            continue                      # no stop or no outcome → excluded, not invented
+        try:
+            entry, stop = float(entry), float(stop)
+            risk_pct = (entry - stop) / entry * 100.0
+            if risk_pct <= 0:
+                continue
+            triples.append((swing_family(r.get("strategy")), rr,
+                            float(ret) / risk_pct))
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+
+    logger.info("═" * 74)
+    logger.info("RR TERCILE REPORT — mean R by (engine, implied_rr/expected_r tercile).")
+    logger.info("DIAGNOSTIC ONLY. Not wired into the live allocator or entry_ranking.py.")
+    logger.info("Evidence for a decision, not the decision.")
+    logger.info("═" * 74)
+
+    if not triples:
+        logger.error("  no entered plan has both a stop and an implied_rr/expected_r "
+                     "— nothing to report")
+        return 1
+    if skipped_no_rr:
+        logger.info(f"  {skipped_no_rr} entered plan(s) had neither implied_rr nor "
+                    f"expected_r — excluded, not treated as zero")
+
+    by_engine: dict[str, list[tuple[float, float]]] = {}
+    for eng, rr, r in triples:
+        by_engine.setdefault(eng, []).append((rr, r))
+
+    for eng in sorted(by_engine):
+        pts = sorted(by_engine[eng])          # sorted by rr
+        n = len(pts)
+        pooled = _dist(f"SWING/{eng}/RR", [r for _, r in pts], floor)
+        logger.info("")
+        logger.info(f"── {eng} (n={n}) ──")
+        logger.info(f"  pooled: {pooled.describe()}")
+        if n < floor:
+            logger.warning(f"  too few observations for a tercile split "
+                           f"(n={n}, floor={floor} per bucket recommended)")
+            continue
+        t1, t2 = pts[n // 3][0], pts[(2 * n) // 3][0]
+        for label, vals in (
+            ("LOW",  [r for rr, r in pts if rr <= t1]),
+            ("MID",  [r for rr, r in pts if t1 < rr <= t2]),
+            ("HIGH", [r for rr, r in pts if rr > t2]),
+        ):
+            d = _dist(f"SWING/{eng}/RR/{label}", vals, floor)
+            logger.info(f"  {label:<4}: {d.describe()}")
+
+    return 0
+
+
 def report() -> int:
     """Print every prior the system can currently justify, with its n."""
     sb = get_supabase()
@@ -788,4 +908,9 @@ def report() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(tercile_report() if "--tercile" in sys.argv else report())
+    if "--tercile" in sys.argv:
+        sys.exit(tercile_report())
+    elif "--rr-tercile" in sys.argv:
+        sys.exit(rr_tercile_report())
+    else:
+        sys.exit(report())

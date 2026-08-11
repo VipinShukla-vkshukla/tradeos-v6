@@ -9,17 +9,17 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, get_supabase, today_ist, logger
+from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, get_supabase, today_ist, logger
 
 import requests
 
 def send_message(text: str, parse_mode: str = "HTML") -> bool:
     """Send a message to your Telegram chat."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         logger.debug("Telegram not configured — skipping message")
         return False
     try:
-        url  = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        url  = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         resp = requests.post(url, json={
             "chat_id":    TELEGRAM_CHAT_ID,
             "text":       text,
@@ -121,11 +121,11 @@ def process_telegram_commands():
     Poll Telegram for /approve or /reject commands.
     Called from run_pipeline.py in Phase 3.
     """
-    if not TELEGRAM_BOT_TOKEN:
+    if not TELEGRAM_TOKEN:
         return
 
     try:
-        url  = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+        url  = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
         resp = requests.get(url, timeout=10)
         updates = resp.json().get("result", [])
 

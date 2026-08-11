@@ -87,6 +87,10 @@ MODULES = [
     ("screener weight",        "tests.test_screener_weight"),
     ("intraday universe live rerank", "tests.test_universe_rerank"),
     ("vwap reclaim refinement", "tests.test_vwap_reclaim"),
+    ("bars built from ticks", "tests.test_bar_builder"),
+    ("rr weight reduced on tercile evidence", "tests.test_rr_weight"),
+    ("entry pacing", "tests.test_entry_pacing"),
+    ("stale token alerting", "tests.test_token_alerting"),
 ]
 
 

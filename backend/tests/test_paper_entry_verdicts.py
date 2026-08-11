@@ -42,9 +42,23 @@ class _FakeSetup:
 
 
 class _RecordingSB:
-    """Captures every _record_setup insert without touching a real database."""
+    """
+    Captures every _record_setup insert without touching a real database.
+
+    ALSO ANSWERS READS AS "NO ROWS", NOT AS A FAILURE — 11-Aug-2026. Every
+    test in this file represents a fresh engine with nothing recorded yet,
+    which is exactly what an empty read should mean. Before select/eq/
+    order/limit existed here, IntradayEngine._last_intraday_entry_at()'s own
+    query chain hit an AttributeError on this fake and its fail-strict
+    except clause returned "just now" — which then paced (blocked) every
+    entry in this file, for a reason none of these tests were about. A fake
+    that cannot represent "no rows yet" cannot be told apart from one that
+    is broken, and the entry-pacing gate proved that the hard way the first
+    time it ran against this file.
+    """
     def __init__(self):
         self.inserted: list[dict] = []
+        self.data: list = []
 
     def table(self, name):
         assert name == "intraday_setups"
@@ -53,6 +67,11 @@ class _RecordingSB:
     def insert(self, row):
         self.inserted.append(row)
         return self
+
+    def select(self, *a, **k): return self
+    def eq(self, *a, **k): return self
+    def order(self, *a, **k): return self
+    def limit(self, *a, **k): return self
 
     def execute(self):
         return self

@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
 from config import IST, cfg_bool
+from intraday.bar_builder import BarBuilder
 
 
 class PriceFeed:
@@ -50,6 +51,10 @@ class PriceFeed:
         self._at: dict[str, datetime] = {}
         self._quote: dict[str, dict] = {}
         self._lock = threading.Lock()
+        # Minute bars built from this feed's own ticks — see bar_builder.py
+        # for why. Independent lock, independent of quote mode: an LTP-only
+        # tick still has a price to fold into a bar, just not a volume.
+        self._bars = BarBuilder()
         self._ticker = None
         self._connected = False
         self._token_to_symbol: dict[int, str] = {}
@@ -78,6 +83,18 @@ class PriceFeed:
         with self._lock:
             q = self._quote.get(symbol)
             return dict(q) if q else None
+
+    def bars(self, symbol: str, since: datetime | None = None) -> list:
+        """
+        Minute bars for `symbol`, built live from this feed's own tick
+        stream — see bar_builder.py for why this exists and what it does
+        not replace. Empty until enough ticks have arrived to close at
+        least one minute bucket; never raises.
+        """
+        return self._bars.closed_bars(symbol, since=since)
+
+    def bar_count(self, symbol: str) -> int:
+        return self._bars.bar_count(symbol)
 
     def age_seconds(self, symbol: str) -> float | None:
         with self._lock:
@@ -177,6 +194,14 @@ class PriceFeed:
                     if not sym or not px:
                         continue
                     self._set(sym, float(px))
+                    # O(1), no I/O — see bar_builder.py. Unconditional (not
+                    # gated on _capture_quote below): an LTP-only tick still
+                    # has a price worth folding into a bar, it just carries
+                    # no volume_traded to size it with. Building bars from
+                    # ticks is a strict addition of information either way.
+                    self._bars.record_tick(
+                        sym, float(px), datetime.now(IST),
+                        cum_volume=t.get("volume_traded"))
                     # A plain attribute read — no config lookup, no I/O. The flag
                     # is recomputed on the slow timer by _refresh_capture_flags.
                     if not self._capture_quote:

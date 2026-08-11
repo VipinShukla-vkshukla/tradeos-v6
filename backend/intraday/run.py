@@ -140,6 +140,11 @@ def main(once: bool = False, dry: bool = False) -> None:
     last_state = 0.0
     last_beat = 0.0
     last_poll = 0.0
+    # Alerted once per stretch of blindness, not once per cycle — see
+    # kite.token_manager.should_alert_now(). Reset alongside blind_cycles
+    # itself whenever prices resume, so a LATER stretch (WiFi drops again
+    # at 13:00) can alert again.
+    token_alert_sent = False
 
     try:
         while True:
@@ -200,6 +205,7 @@ def main(once: bool = False, dry: bool = False) -> None:
                     engine.load_state()
                 elif prices:
                     blind_cycles = 0
+                    token_alert_sent = False
                     sync = (now - last_gtt >= gtt_sync_interval_s())
                     result = engine.cycle(prices, sync_gtt=sync, feed=feed)
                     if sync:
@@ -223,6 +229,29 @@ def main(once: bool = False, dry: bool = False) -> None:
                     blind_cycles += 1
                     logger.warning(f"  no prices yet — skipping evaluation "
                                    f"({blind_cycles} cycle(s))")
+
+                    # A PUSH NOTIFICATION, NOT JUST A LOG LINE — 11-Aug-2026.
+                    # On 10-Aug this WARNING printed every cycle for 21
+                    # minutes at the open before anyone noticed, because
+                    # nobody was watching the log live. should_alert_now()
+                    # fires this exactly once per stretch of blindness
+                    # (reset above whenever prices resume), and
+                    # alert_if_stale() itself no-ops silently if the token
+                    # actually is valid — so this is safe to call on ANY
+                    # blindness, not just a token problem specifically; a
+                    # websocket blip with a fine token sends nothing.
+                    # Regardless of was_active: a stale broker token affects
+                    # every instance identically, unlike the lease handoff
+                    # below, which is about machine-specific capability.
+                    from kite.token_manager import should_alert_now, alert_if_stale
+                    threshold = cfg_int("intraday_token_alert_after_cycles", 4)
+                    if should_alert_now(blind_cycles, threshold, token_alert_sent):
+                        if alert_if_stale(
+                                f"Intraday daemon: no live prices for "
+                                f"{blind_cycles} cycles (~{blind_cycles * 15}s).",
+                                sb=sb):
+                            token_alert_sent = True
+
                     if was_active and blind_cycles >= cfg_int("intraday_blind_cycles_before_standdown", 8):
                         logger.error(f"  {blind_cycles} cycles with no prices while ACTIVE — "
                                      f"releasing the lease so a standby that CAN see "
@@ -230,6 +259,7 @@ def main(once: bool = False, dry: bool = False) -> None:
                         lease.release(sb)
                         was_active = False
                         blind_cycles = 0
+                        token_alert_sent = False
                 last_eval = now
 
             # Reload positions/candidates periodically so a fill reported through

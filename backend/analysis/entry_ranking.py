@@ -173,6 +173,37 @@ def score_plan(p: dict) -> Ranked:
     # implied_rr is the live figure; expected_r is the plan's own estimate.
     # Preferring the live one matters because a plan that has already run is a
     # worse trade than it was when written, and only implied_rr knows that.
+    #
+    # WEIGHT REDUCED 1.0 -> 0.4, 11-Aug-2026, on the same kind of evidence
+    # that moved rank_weight_screener (migration 060): this term was the
+    # single largest-magnitude component left in the function once
+    # final_score was rescaled, and had never itself been tested against
+    # forward R. allocation.scoring.rr_tercile_report() ran the identical
+    # tercile methodology tercile_report() used for final_score, on the
+    # exact fallback chain this line reads (implied_rr, else expected_r):
+    #
+    #   n=188 resolved CONTINUATION plans (larger than final_score's n=125)
+    #   LOW rr tercile:  mean R +0.561 (n=63)
+    #   MID rr tercile:  mean R +0.439 (n=79)
+    #   HIGH rr tercile: mean R +0.448 (n=46)
+    #
+    # No monotonic positive separation — if anything the LOW tercile
+    # outperformed HIGH, the opposite of what full weight on this term
+    # assumes. The gap (LOW-HIGH ≈ 0.11) is within roughly one combined
+    # standard error, so this is NOT strong evidence the relationship is
+    # truly inverted — but it is a second, independent failure (after
+    # final_score) of a component to show the positive relationship its
+    # weight implied, and a plausible mechanism for why: every plan reaching
+    # this ranking already cleared generate_signals.py's own minimum-R:R
+    # entry gate, so the residual variation ABOVE that gate is exactly the
+    # KIMS 19.67 kind of noise the rr_cap below already exists to contain —
+    # more of it is not obviously more edge.
+    #
+    # Reduced, not zeroed: unlike final_score's opaque composite, reward:risk
+    # has first-principles grounding this measurement did not disprove, only
+    # failed to confirm at this sample size. Medium confidence — re-run
+    # `python -m allocation.scoring --rr-tercile` as the resolved sample
+    # grows, the same standing instruction final_score carries in the KB.
     rr = _f(p.get("implied_rr")) or _f(p.get("expected_r"))
     if rr:
         # CLAMPED, because an unbounded reward term lets one implausible number
@@ -187,7 +218,7 @@ def score_plan(p: dict) -> Ranked:
         # Above the cap the difference stops mattering anyway: 4R and 19R are
         # both "more than enough", and what separates them is noise in the stop.
         rr_cap = cfg_float("rank_rr_cap", 4.0)
-        rp = (min(rr, rr_cap) - 1.5) * 8.0 * cfg_float("rank_weight_rr", 1.0)
+        rp = (min(rr, rr_cap) - 1.5) * 8.0 * cfg_float("rank_weight_rr", 0.4)
         comp["rr"] = rp
         reasons.append(f"R:R {rr:.2f}{'(capped)' if rr > rr_cap else ''} {rp:+.0f}")
 

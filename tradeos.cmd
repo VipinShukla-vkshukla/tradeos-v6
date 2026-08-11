@@ -97,6 +97,7 @@ if /i "%~1"=="simulate" goto SIMULATE
 if /i "%~1"=="verify"   goto VERIFY
 if /i "%~1"=="regression" goto REGRESSION
 if /i "%~1"=="benchmark" goto BENCHMARK
+if /i "%~1"=="token-check" goto TOKENCHECK
 if /i "%~1"=="backup"   goto BACKUP
 if /i "%~1"=="rollback" goto ROLLBACK
 if /i "%~1"=="alloc"    goto ALLOC
@@ -394,6 +395,17 @@ goto END
 
 :HEALTH
 python -m tools.health
+goto END
+
+:TOKENCHECK
+REM  Sends ONE Telegram alert with the Zerodha login link if the Kite token
+REM  is currently invalid; does nothing if it is fine. Does not log in for
+REM  you — see kite/token_manager.py's top docstring for why not. Meant for
+REM  a scheduled task run once before market open, e.g. Windows Task
+REM  Scheduler at 08:45 IST:
+REM    schtasks /create /tn "TradeOS token check" /sc daily /st 08:45 ^
+REM      /tr "\"%~dp0tradeos.cmd\" token-check"
+python -m kite.token_manager --check-and-alert
 goto END
 
 :VERIFY

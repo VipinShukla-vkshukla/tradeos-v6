@@ -111,9 +111,20 @@ class IntradayEngine:
         # engines disagree about the same bar.
         self._contexts: dict = {}
         self._index_ctx = None
+        # symbol -> latest stock_data_daily row, for the FULL bench (not just
+        # context_symbols()'s 40) — refreshed alongside self._contexts in
+        # refresh_contexts(). merge_live_bars() uses this to give a
+        # tick-only, bench-only context its prev_close/prev_high/prev_low/
+        # atr_pct/avg_volume_20d without spending a historical_data call.
+        self._daily_ref: dict = {}
         # Epoch-ish sentinel so the first cycle logs parity immediately rather
         # than waiting a full interval for the first sample.
         self._last_parity_at = datetime.fromtimestamp(0, IST)
+        # Throttles merge_live_bars()'s own summary line to the same 300s
+        # cadence as the parity log above, for the same reason: it runs
+        # every 15s cycle and logging on every one would be noise, not
+        # visibility. See merge_live_bars().
+        self._last_bars_log_at = datetime.fromtimestamp(0, IST)
         self._allocator = None
         # The intraday universe, selected on its OWN criteria. Until this
         # existed the engines only saw swing shortlist names — stocks chosen for
@@ -356,18 +367,29 @@ class IntradayEngine:
         # Daily reference levels come from the table the swing pipeline already
         # maintains. Re-deriving prev_high/prev_low from the broker would be a
         # second source of truth for a number stock_data_daily already holds.
+        #
+        # WIDENED TO THE FULL BENCH, NOT JUST context_symbols() — 11-Aug-2026.
+        # This is one Supabase select with a longer IN() list, not one call
+        # per symbol like historical_data() — it is not the resource
+        # intraday_max_universe exists to protect. merge_live_bars() reads
+        # self._daily_ref to give a bench-only, tick-built context its
+        # prev_close/prev_high/prev_low/atr_pct/avg_volume_20d without
+        # spending a single extra historical_data call.
+        ref_symbols = sorted(set(symbols) | {e.symbol for e in (self._bench or [])})
         prev: dict = {}
         try:
             hist = (self.sb.table("stock_data_daily")
-                      .select("symbol,date,high,low,close,atr_pct,volume,value_cr")
-                      .in_("symbol", symbols)
-                      .order("date", desc=True).limit(len(symbols) * 3)
+                      .select("symbol,date,high,low,close,atr_pct,volume,"
+                              "value_cr,sector")
+                      .in_("symbol", ref_symbols)
+                      .order("date", desc=True).limit(len(ref_symbols) * 3)
                       .execute().data or [])
             for r in hist:
                 if r["symbol"] not in prev and str(r["date"]) < today.isoformat():
                     prev[r["symbol"]] = r
         except Exception as e:
             logger.debug(f"  contexts: prev-day levels unavailable — {e}")
+        self._daily_ref = prev
 
         for key, meta in (tokens or {}).items():
             sym = key.split(":", 1)[1]
@@ -614,6 +636,114 @@ class IntradayEngine:
                     self._index_ctx.as_of = q.get("at") or now
                     self._index_ctx.live_fields = tuple(live)
                     touched += 1
+        return touched
+
+    def merge_live_bars(self, feed) -> int:
+        """
+        Extend today's bars for every BENCH name from the tick stream, not
+        just the intraday_max_universe (40) that get historical_data() bars
+        on the 300s timer. See bar_builder.py for the mechanism.
+
+        THE CORE FIX — 11-Aug-2026. refresh_contexts() ties bar availability
+        to intraday_max_universe because historical_data() is rate limited.
+        feed.bars() is not — it is built from ticks the socket already
+        carries, at zero incremental API cost — so it can cover the full
+        bench (intraday_universe_bench_size, 120 by default) without
+        touching that budget at all. This is what turns
+        scanner.live_rerank() (10-Aug) from "reshuffle which 40 get to
+        matter, on a 300s delay" into "every bench name is actually
+        watchable within one 15s cycle of it starting to move" — the
+        constraint the 11-Aug institutional review identified as binding
+        selection quality more than engine logic did.
+
+        TWO CASES, ONE LOOP:
+          - a symbol already has a context (it is one of the 40 in
+            context_symbols()) — append any live-built minute bars newer
+            than what refresh_contexts() gave it. Scalar fields (day_high/
+            day_low/vwap) are apply_live_quotes()'s job, not this one's;
+            this touches only the bars LIST.
+          - a symbol is bench-only (outside the top 40, so refresh_contexts()
+            never built it a context at all) — build one from live bars plus
+            the cheap daily-reference row already fetched for the whole
+            bench in refresh_contexts() (self._daily_ref). Gated on
+            intraday_min_live_bars_for_context (default 5) so a name that
+            started ticking thirty seconds ago is correctly "not enough
+            bars yet" — the same guard the historical side already applies
+            (`len(raw) < 5: continue`).
+
+        Every engine keeps reading ctx.bars exactly as before; nothing about
+        the Setup contract changes. A symbol that never accumulates enough
+        live bars (illiquid, or the session just started) simply keeps
+        whatever refresh_contexts() gave it, or nothing — no engine runs on
+        a partial view, same as today.
+        """
+        if feed is None or not cfg_bool("intraday_live_bars_enabled", True):
+            return 0
+        from intraday.strategies.base import SymbolContext
+
+        min_bars = cfg_int("intraday_min_live_bars_for_context", 5)
+        touched = 0
+        bench_only_new = 0
+
+        for entry in (self._bench or []):
+            sym = entry.symbol
+            live = feed.bars(sym)
+            if not live:
+                continue
+
+            ctx = self._contexts.get(sym)
+            if ctx is not None:
+                existing_ts = {b.ts for b in ctx.bars}
+                new = [b for b in live if b.ts not in existing_ts]
+                if new:
+                    ctx.bars = sorted(ctx.bars + new, key=lambda b: b.ts)
+                    touched += 1
+                continue
+
+            # Bench-only: refresh_contexts() never built this symbol a
+            # context (it is outside the top intraday_max_universe today).
+            if len(live) < min_bars:
+                continue
+            ref = self._daily_ref.get(sym) or {}
+            ltp = feed.get(sym) or live[-1].close
+            tv = sum(((b.high + b.low + b.close) / 3.0) * b.volume for b in live)
+            vol = sum(b.volume for b in live)
+            vwap = ((tv / vol) if vol else
+                    sum((b.high + b.low + b.close) / 3.0 for b in live) / len(live))
+            self._contexts[sym] = SymbolContext(
+                symbol=sym, ltp=float(ltp), bars=live, vwap=vwap,
+                day_open=live[0].open,
+                day_high=max(b.high for b in live),
+                day_low=min(b.low for b in live),
+                prev_close=float(ref.get("close") or 0) or None,
+                prev_high=float(ref.get("high") or 0) or None,
+                prev_low=float(ref.get("low") or 0) or None,
+                atr_pct_daily=float(ref.get("atr_pct") or 0) or None,
+                avg_volume_20d=float(ref.get("volume") or 0) or None,
+                value_cr=float(ref.get("value_cr") or 0) or None,
+                sector=ref.get("sector") or "",
+                as_of=datetime.now(IST),
+                live_fields=("bars",),
+            )
+            touched += 1
+            bench_only_new += 1
+
+        # THROTTLED, NOT PER-CYCLE — this function runs every 15s and a line
+        # every cycle would be noise. Logged UNCONDITIONALLY at the interval
+        # (including when the count is 0) rather than only when something
+        # happened: a check that only speaks when it has good news to report
+        # is not distinguishable from a check that stopped running at all.
+        now = datetime.now(IST)
+        interval = cfg_float("intraday_context_refresh_s", 300.0)
+        if (now - self._last_bars_log_at).total_seconds() >= interval:
+            self._last_bars_log_at = now
+            bench_only_live = sum(
+                1 for c in self._contexts.values()
+                if c.live_fields == ("bars",))
+            logger.info(
+                f"  live bars: {bench_only_live} bench-only context(s) built "
+                f"from ticks alone (beyond the {cfg_int('intraday_max_universe', 40)} "
+                f"historical_data names), {bench_only_new} new this cycle")
         return touched
 
     def _refresh_index_ltp(self, prices: dict[str, float]) -> None:
@@ -1019,6 +1149,41 @@ class IntradayEngine:
             # system take worse trades. Assume the budget is spent instead.
             logger.debug(f"  entries-today count failed, assuming budget spent: {e}")
             return self._entry_cap()
+
+    def _last_intraday_entry_at(self) -> datetime | None:
+        """
+        Wall-clock time of the most recent TAKEN intraday setup today, or
+        None if none yet — the intraday equivalent of
+        execution.order_manager._last_entry_at(), which cannot be reused
+        directly because intraday runs in PAPER and paper fills do not
+        write to intraday_broker_log's ORDER channel.
+
+        Sourced from intraday_setups.ts, the same table and the same
+        cost_verdict='TAKEN' population _entries_today()'s sibling counting
+        logic and the whole learning loop already treat as this book's
+        record of what actually happened — not intraday_broker_log, which
+        _entries_today()'s own docstring already explains is a LIVE-only
+        log that reads 0 on every cycle of every paper session.
+        """
+        try:
+            today = today_ist().isoformat()
+            rows = (self.sb.table("intraday_setups").select("ts")
+                      .eq("trade_date", today).eq("cost_verdict", "TAKEN")
+                      .order("ts", desc=True).limit(1).execute().data or [])
+            if not rows:
+                return None
+            ts = rows[0].get("ts")
+            if not ts:
+                return None
+            if isinstance(ts, str):
+                return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(IST)
+            return ts
+        except Exception as e:
+            # Same fail-strict direction as order_manager._last_entry_at():
+            # unknown recency must not read as "long ago", which would
+            # PERMIT an entry a real gap should have blocked.
+            logger.debug(f"  intraday: could not read last entry time — {e}")
+            return datetime.now(IST)
 
     def _swing_positions(self) -> list[dict]:
         """
@@ -1850,6 +2015,30 @@ class IntradayEngine:
         max_new = cfg_int("swing_max_new_per_day", 2)
         if n_today >= max_new:
             return
+
+        # PACE, NOT JUST COUNT — 11-Aug-2026. n_today >= max_new answers "how
+        # many"; it says nothing about "how recently", and three entries
+        # 51 seconds apart on 10-Aug read as budget available at every one
+        # of them (0/3, 1/3, 2/3). The whole day's swing risk was committed
+        # in under a minute, at the open — the least reliable minutes of the
+        # session to be ranking anything in — with nothing left for a better
+        # plan that might have shown up at 12:00 or 14:00.
+        #
+        # gap_min=0 restores exactly today's behaviour (count-only), the
+        # rollback lever if this ever blocks an entry that should have gone
+        # through. The FIRST entry of the day is never gated — there is no
+        # "too soon after" a last entry that does not exist yet.
+        gap_min = cfg_float("swing_entry_min_gap_minutes", 20.0)
+        if gap_min > 0:
+            from execution.order_manager import _last_entry_at, entry_paced
+            last_at = _last_entry_at(self.sb, "SWING")
+            blocked, elapsed_min = entry_paced(last_at, datetime.now(IST), gap_min)
+            if blocked:
+                logger.info(
+                    f"  {sym}: swing entry paced — last entry {elapsed_min:.1f} "
+                    f"min ago, {gap_min:.0f} min required between entries "
+                    f"— budget is there, timing is not")
+                return
 
         # Rank against the whole day's field, not against arriving first —
         # UNLESS the allocator is the one holding the veto, in which case IT
@@ -2737,6 +2926,33 @@ class IntradayEngine:
                         f"({self._entries_today()}) — no more new risk today")
             _blocked("BLOCKED_DAILY_BUDGET")
             return
+
+        # PACE, NOT JUST COUNT — 11-Aug-2026, mirroring the same fix on the
+        # swing side (_maybe_enter_swing) and for the same reason: a count-
+        # only budget cannot see several entries clustering in a short
+        # window and calls each one "budget available" right up until the
+        # last slot goes. Tighter than swing's default (5 min vs 20) because
+        # intraday setups are inherently more time-sensitive — an ORB or a
+        # VWAP reclaim that is genuinely still valid five minutes later is
+        # not being denied much, while five separate names clearing their
+        # gates in the same 15s cycle (a volatile open, a news spike) are
+        # more likely to be one correlated market move than five independent
+        # opportunities.
+        #
+        # gap_min=0 restores exactly today's behaviour. The first take of
+        # the day is never gated.
+        gap_min = cfg_float("intraday_entry_min_gap_minutes", 5.0)
+        if gap_min > 0:
+            from execution.order_manager import entry_paced
+            last_at = self._last_intraday_entry_at()
+            blocked, elapsed_min = entry_paced(last_at, datetime.now(IST), gap_min)
+            if blocked:
+                logger.info(
+                    f"  {st.symbol}: intraday entry paced — last entry "
+                    f"{elapsed_min:.1f} min ago, {gap_min:.0f} min required "
+                    f"— budget is there, timing is not")
+                _blocked("BLOCKED_ENTRY_PACED")
+                return
         if not is_paper("INTRADAY"):
             if not cfg_bool("intraday_live_auto_entry", False):
                 logger.info(f"  {st.symbol}: INTRADAY is LIVE and "
@@ -3173,6 +3389,13 @@ class IntradayEngine:
                 # A failed overlay must leave the fetched context in place, not
                 # take the cycle down. The staleness guard still applies.
                 logger.debug(f"  live quote overlay skipped: {e}")
+            try:
+                self.merge_live_bars(feed)
+            except Exception as e:
+                # Same contract as the quote overlay above: a failed merge
+                # leaves whatever bars refresh_contexts() last gave a symbol
+                # in place rather than taking the cycle down.
+                logger.debug(f"  live bar merge skipped: {e}")
 
         # Re-rank the intraday universe from live relative volume, every
         # cycle. Cheap (pure arithmetic over already-ticking quotes) and has

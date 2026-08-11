@@ -21,7 +21,6 @@ account. The daily step here is a single tap on a link.
 DAILY FLOW (about 15 seconds)
 -----------------------------
   1. `python -m kite.token_manager --login-url` prints the Zerodha login URL.
-     The morning Telegram brief also includes it whenever the token is stale.
   2. Open it, log in. Zerodha redirects to your registered redirect URL with
      `?request_token=XXXX` in the query string.
   3. `python -m kite.token_manager --exchange XXXX`
@@ -29,6 +28,27 @@ DAILY FLOW (about 15 seconds)
 
 Everything downstream (sl_monitor, position_lifecycle, execution_engine)
 calls get_access_token() and degrades gracefully when it returns None.
+
+BEING TOLD, NOT JUST DISCOVERING IT — 11-Aug-2026
+--------------------------------------------------
+A stale token used to be silent until an operator happened to read the
+logs: on 10-Aug the token had been unrefreshed since Friday, and the daemon
+spent the first 21 minutes of the session logging "no prices yet" as a
+routine WARNING before anyone noticed. Two things now say so out loud
+instead:
+
+  `python -m kite.token_manager --check-and-alert`
+      Sends ONE Telegram message with the login link if the token is
+      currently invalid, and does nothing if it is fine. Meant for a
+      scheduled task run once before market open (e.g. Windows Task
+      Scheduler at 08:45 IST) — `tradeos.cmd token-check` runs the same
+      command. This is a NOTIFICATION only; nothing here logs in for you,
+      for the reason above.
+
+  intraday/run.py's daemon loop
+      Calls alert_if_stale() once a stretch of blindness crosses
+      intraday_token_alert_after_cycles (default 4 cycles, ~1 minute) — a
+      push notification instead of a log line nobody is watching live.
 """
 
 from __future__ import annotations
@@ -321,6 +341,82 @@ def is_token_valid() -> bool:
     return get_access_token() is not None
 
 
+def should_alert_now(blind_cycles: int, threshold: int, already_sent: bool) -> bool:
+    """
+    PURE. True exactly once per stretch of blindness — the cycle
+    `blind_cycles` first reaches `threshold`, provided nothing has been sent
+    yet for this stretch. Factored out of intraday/run.py's loop so the
+    "alert exactly once, not every cycle" logic is testable without a
+    websocket, a broker session, or Telegram.
+    """
+    return blind_cycles >= threshold and not already_sent
+
+
+def alert_if_stale(reason_prefix: str = "", sb=None) -> bool:
+    """
+    Send ONE alert (Telegram and/or Discord, whichever the SWING channel has
+    credentials for — see below) with the login link if the token is
+    currently invalid. Returns True if actually sent, False if the token is
+    fine or no channel is configured.
+
+    WHY THIS EXISTS — 11-Aug-2026. On 10-Aug the token had been stale since
+    04:33 IST on 07-Aug (a Friday token, unrefreshed across the weekend) and
+    nothing surfaced that until an operator happened to read the log after
+    the fact — the daemon logged "no prices yet" as a plain WARNING every
+    15s cycle for 21 minutes at the open, which is exactly the kind of line
+    that is easy to miss in a wall of routine output and impossible to miss
+    as a phone notification.
+
+    This module deliberately does NOT automate the Zerodha login itself —
+    see this file's own top docstring for why (storing a password and TOTP
+    seed hands an unattended script full trading authority). This closes
+    the other half of the gap: making sure the operator is TOLD, promptly
+    and unmissably, when the one manual step is needed — both proactively
+    (see --check-and-alert, meant for a scheduled pre-market run) and
+    reactively (intraday/run.py calls this once a stretch of blindness
+    crosses intraday_token_alert_after_cycles).
+
+    ROUTED THROUGH intraday.notifier.Notifier, NOT A BESPOKE SENDER — this
+    module's first version called control.telegram_bot.send_message(), which
+    turned out to be DEAD CODE at the time: that module imported a name,
+    TELEGRAM_BOT_TOKEN, that config.py has never exported (config.py's own
+    constant is TELEGRAM_TOKEN — the mismatch was between the module
+    attribute and the identically-spelled ENV VAR it reads FROM), so
+    importing it raised on every call and nothing had ever sent through it.
+    Nothing else in the codebase called it either, confirmed by grep before
+    relying on it here — since fixed alongside this (control/telegram_bot.py
+    now imports cleanly), but Notifier remains the right choice regardless:
+    it is the path every other intraday alert this session actually fires
+    through — same multi-channel fan-out (Telegram + Discord), same
+    credential resolution, same dashboard row. framework="SWING" because a
+    broker session outage is a whole-account event, not intraday-specific,
+    and the SWING channel is what falls back to alerts.send_alerts'
+    alert_channel-gated senders when no dedicated webhook is set — the path
+    most likely to be actually configured.
+
+    Never raises — an alert failing to send must not affect whatever loop
+    called this, the same "never raises" contract get_access_token() itself
+    carries.
+    """
+    try:
+        if is_token_valid():
+            return False
+        from intraday.notifier import Notifier, Action
+        url = get_login_url() if KITE_API_KEY else "KITE_API_KEY is not set — check .env"
+        detail = (f"{reason_prefix} " if reason_prefix else "") + (
+            f"Log in (about 15 seconds): {url}")
+        notifier = Notifier(sb) if sb is not None else Notifier()
+        action = Action(
+            symbol="KITE", kind="TOKEN_EXPIRED",
+            headline="No live prices until you log in again",
+            detail=detail, urgency="CRITICAL", framework="SWING",
+        )
+        return bool(notifier.send(action, force=True))
+    except Exception as e:
+        logger.debug(f"  token_manager: stale-token alert failed — {e}")
+        return False
+
+
 def token_status() -> dict:
     """Structured status for the morning brief and the data-quality monitor."""
     token    = _get_config(TOKEN_KEY)
@@ -342,6 +438,10 @@ if __name__ == "__main__":
     ap.add_argument("--exchange",  metavar="REQUEST_TOKEN",
                     help="Exchange a request_token for an access_token")
     ap.add_argument("--status",    action="store_true", help="Show current token status")
+    ap.add_argument("--check-and-alert", action="store_true",
+                    help="Send a Telegram alert with the login link if the "
+                         "token is currently invalid; silent if it is fine. "
+                         "For a scheduled pre-market run.")
     args = ap.parse_args()
 
     if args.login_url:
@@ -368,5 +468,13 @@ if __name__ == "__main__":
         st = token_status()
         for k, v in st.items():
             print(f"  {k:<12} {v}")
+    elif args.check_and_alert:
+        if alert_if_stale():
+            print("  Token invalid — Telegram alert sent.")
+        elif is_token_valid():
+            print("  Token valid — nothing to do.")
+        else:
+            print("  Token invalid, but the alert could not be sent — "
+                  "check TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID in .env.")
     else:
         ap.print_help()

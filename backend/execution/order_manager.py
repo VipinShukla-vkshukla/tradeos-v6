@@ -172,6 +172,76 @@ def _today_totals(sb, framework: str = "SWING") -> tuple[int, float, float]:
                 float(TOTAL_CAPITAL))
 
 
+def _last_entry_at(sb, framework: str = "SWING") -> datetime | None:
+    """
+    Wall-clock time of the most recent BUY placed today for `framework`, or
+    None if none yet today.
+
+    WHY THIS EXISTS — 11-Aug-2026. _today_totals() answers "how many" and
+    that is a COUNT-only budget: on 10-Aug three swing entries fired
+    09:36:12, 09:36:24, 09:37:03 — 51 seconds apart — because a count-only
+    check reads 0/3, then 1/3, then 2/3 and calls each one "budget
+    available". The whole day's swing risk was committed in under a minute,
+    at the open, on a ranking built from the least reliable minutes of the
+    session, and nothing was left for anything better that showed up later.
+    This is the PACE half of the budget — see swing_entry_min_gap_minutes
+    in engine.py::_maybe_enter_swing, which refuses an entry that arrives
+    too soon after the last one rather than only counting how many there
+    have been.
+
+    Sourced from the same table and the same restart-survives reasoning as
+    _today_totals(): an in-process last-entry timestamp would reset to None
+    on every restart and admit the very next candidate with no gap at all,
+    the identical failure _today_totals()'s own docstring already names for
+    counts.
+    """
+    try:
+        start = datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0)
+        rows = (sb.table("intraday_broker_log").select("ts,action,framework,side")
+                  .eq("channel", "ORDER").gte("ts", start.isoformat())
+                  .execute().data or [])
+        fw = (framework or "SWING").upper()
+        placed = [r for r in rows if r.get("action") == "PLACED"]
+        mine = [r for r in placed if (r.get("framework") or fw).upper() == fw]
+        buys = [r for r in mine if (r.get("side") or "").upper() == "BUY"]
+        if not buys:
+            return None
+        latest = max(buys, key=lambda r: str(r.get("ts") or ""))
+        ts = latest.get("ts")
+        if not ts:
+            return None
+        if isinstance(ts, str):
+            return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(IST)
+        return ts
+    except Exception as e:
+        # Unknown recency must not read as "long ago" — that would PERMIT an
+        # entry a real gap should have blocked. Report "just now" so the gap
+        # gate refuses rather than silently admits on a failed read, the
+        # same fail-strict direction _today_totals() takes above.
+        logger.warning(f"  order: could not read last entry time — {e}")
+        return datetime.now(IST)
+
+
+def entry_paced(last_at: datetime | None, now: datetime,
+                gap_minutes: float) -> tuple[bool, float]:
+    """
+    PURE — the actual pacing decision, factored out of _maybe_enter_swing()
+    and _maybe_open_paper() so it is testable without standing up either
+    function's full precondition chain (allocator veto, held-by-framework,
+    live-auto-entry, ...).
+
+    Returns (blocked, elapsed_minutes). blocked is False whenever
+    gap_minutes <= 0 (pacing off) or last_at is None (nothing to pace
+    against — the first entry of the day is never gated) or enough time has
+    actually elapsed. elapsed_minutes is always returned, even when not
+    blocked, so a caller can log it either way.
+    """
+    if gap_minutes <= 0 or last_at is None:
+        return False, float("inf") if last_at is None else 0.0
+    elapsed = (now - last_at).total_seconds() / 60.0
+    return elapsed < gap_minutes, elapsed
+
+
 def preflight(req: OrderRequest, sb=None, framework: str = "SWING") -> OrderResult:
     """
     Every reason this order must not be sent. Cheap, and checked in order of severity.

@@ -1,7 +1,8 @@
 # TradeOS Knowledge Base — Living Document
 
-**Last updated:** 10 August 2026 (3 sessions of evidence, plus a direct
-`final_score` tercile measurement against the full historical sample)
+**Last updated:** 11 August 2026 (3 sessions of evidence, plus direct
+`final_score` and `implied_rr` tercile measurements against the full
+historical sample)
 **Source reviews:** `daily/2026-08-06.md`, `daily/2026-08-07.md`,
 `daily/2026-08-10.md`
 
@@ -44,6 +45,36 @@ contradiction.)*
   Next evidence needed: re-run `python -m allocation.scoring --tercile` as
   the resolved sample grows, particularly once 15-session windows opened in
   the last month have had time to close.
+
+- **`implied_rr` (falling back to `expected_r`) shows no monotonic positive
+  relationship with forward R within the CONTINUATION swing family, on the
+  full resolved sample measured so far.**
+  Measured 11 Aug directly against `signal_output_daily` (n=188 entered +
+  resolved CONTINUATION plans — a larger sample than the `final_score`
+  measurement above), using the identical fallback chain
+  `entry_ranking.score_plan()` itself reads. Mean R by rr tercile:
+  LOW +0.561 (n=63) / MID +0.439 (n=79) / HIGH +0.448 (n=46) — not flat like
+  `final_score`, but INVERTED: the plans with the lowest claimed R:R
+  outperformed the plans with the highest. This was the direct test of
+  whether `rank_weight_rr` (silently defaulting to 1.0 — no `system_config`
+  row existed for it before this measurement) deserved to be the
+  single largest-magnitude component left in `score_plan()` once
+  `final_score` was rescaled (migration 060). It did not: `rank_weight_rr`
+  was reduced 1.0 → 0.4 on this evidence (code default in
+  `analysis/entry_ranking.py`, registered in migration 065).
+  Confidence: Medium — n=188 is a real, fairly large sample, but the
+  LOW-vs-HIGH gap (≈0.11R) is within roughly one combined standard error, so
+  this is evidence AGAINST the assumed positive relationship, not proof of a
+  true inverse one. A plausible mechanism: every plan reaching this ranking
+  already cleared `generate_signals.py`'s own minimum-R:R entry gate, so the
+  residual variation above that gate may be dominated by the same kind of
+  stop/target noise `rank_rr_cap` already exists to contain (the KIMS 19.67
+  case) rather than by real edge. The same survivorship-in-time bias noted
+  for `final_score` applies here too.
+  Next evidence needed: re-run `python -m allocation.scoring --rr-tercile`
+  as the resolved sample grows. If the inversion strengthens rather than
+  flattens, that argues for reducing `rank_weight_rr` further; if it
+  flattens toward zero, 0.4 or higher becomes defensible again.
 
 ---
 
