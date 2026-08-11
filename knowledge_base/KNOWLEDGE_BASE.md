@@ -1,10 +1,10 @@
 # TradeOS Knowledge Base — Living Document
 
-**Last updated:** 11 August 2026 (3 sessions of evidence, plus direct
+**Last updated:** 11 August 2026 (4 sessions of evidence, plus direct
 `final_score` and `implied_rr` tercile measurements against the full
 historical sample)
 **Source reviews:** `daily/2026-08-06.md`, `daily/2026-08-07.md`,
-`daily/2026-08-10.md`
+`daily/2026-08-10.md`, `daily/2026-08-11.md`
 
 Read this before starting a new day's review. Update it after, per the
 workflow in `README.md`. An item's confidence should track its sample
@@ -42,6 +42,13 @@ contradiction.)*
   rung the old floor could engage on.
   Confidence: Medium — n=27 is real but still thin, the same caveat
   migration 059 itself carried. Re-run the replay as the sample grows.
+  **11-Aug, same session, first live confirmation.** RKFORGE (MFE 0.504R)
+  and MCX (MFE 1.587R) both triggered the recalibrated guard — the first
+  real trade to test the LOW end of the new range specifically (RKFORGE
+  would never have engaged the guard under the old 1.0R floor). Exit was
+  essentially flat (−0.02R), so this doesn't prove the recalibration
+  "saved" money here, only that it engages where the underlying data said
+  it should.
 
 - **`final_score` does not predict forward R within the CONTINUATION swing
   family, on the full resolved sample measured so far.**
@@ -139,6 +146,12 @@ contradiction.)*
   early lean toward "6 Aug was a one-off," not yet confirmed.
   Next evidence needed: one more clean session to move this toward
   Validated, or a recurrence to move it the other way — currently 1-1.
+  **11-Aug: still 1-1, untested for a second session** — zero swing exits,
+  no order attempted. Separately (not the same thing): `tools.health`
+  confirms the IP-allowlist mismatch itself is still live and unresolved
+  as of this evening — see Standing Operational Watch Items. The
+  hypothesis stays untested; the underlying risk it is about has not gone
+  away.
 
 - **The swing allocator's "slots spent" decline reflects real slot
   scarcity — DEMOTED from Validated Rules, 7 Aug.**
@@ -173,7 +186,9 @@ review knows to keep watching, not to re-derive from scratch.)*
   HINDCOPPER losses). 10 Aug: +3 (SONACOMS win +1.00R; KAYNES −0.98R;
   DEVYANI −0.81R, 99-second invalidation — see Section 2 of
   `daily/2026-08-10.md` for the unreconciled allocator-numbers caveat on
-  this specific trade). Running total ~8-9 legs, 2 wins.
+  this specific trade). Running total ~8-9 legs, 2 wins. **11 Aug: first
+  quiet session** — 25 setups detected, zero taken or closed. Sample
+  unchanged.
   Needed before any verdict: ~20 resolved outcomes across ≥10 sessions
   (this project's own `MIN_SAMPLE`/`MIN_SESSIONS` standard from
   `tools/weekly_review.py`).
@@ -276,6 +291,12 @@ still supports the bet, rather than re-deriving the original decision.)*
   visibly firing — but zero VCE trades reached `closed_positions`. Still
   nothing to verdict on win rate or forward return; noting the mechanism
   is engaged, not idle.
+  **11 Aug: first resolved VCE outcome since promotion.** ATHERENERG
+  closed −0.35R via `SETUP_INVALIDATED` (MFE only 0.053 — never got going).
+  n=0 → n=1. Nowhere near enough to read against VCE's pre-promotion E[R]
+  of −0.94%, but the first real data point. MOM/RVS still zero resolved
+  (SCI, MANAPPURAM both remain open). RNG: detection only (9 raw), no
+  closes.
 
 ---
 
@@ -299,6 +320,10 @@ they bound what the rules above can even be tested against.)*
   be REJECTED until this is fixed. Not something this session can fix (it
   requires updating the Kite Connect app's allowed IP list on Zerodha's
   side); flagged here so it is not lost.
+  **11-Aug reconfirmation: still unresolved.** `tools.health`'s 17:40 IST
+  run today shows the identical mismatch. Two sessions running now with
+  zero swing exits to actually test it against — the risk hasn't
+  decreased, it just hasn't been exercised.
 - **11-Aug — a partial book left `actual_qty`/`kite_qty` permanently stale,
   hiding real drift behind a false `reconcile_status=MATCHED`.**
   PPLPHARMA booked 5 of 11 shares on 10-Aug. The write recorded it
