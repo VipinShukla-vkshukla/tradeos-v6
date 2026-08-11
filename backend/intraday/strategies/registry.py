@@ -33,6 +33,7 @@ from intraday.strategies.prev_day_levels import PrevDayLevelRetest
 from intraday.strategies.squeeze import SqueezeExpansion
 from intraday.strategies.range_fade import RangeFade
 from intraday.strategies.short_distribution import ShortDistribution
+from intraday.strategies.gap_down_bounce import GapDownBounce
 
 # Ordered by family so the coverage is visible: three that pay when a level
 # breaks, one that pays when a trend continues, two that pay when nothing
@@ -47,6 +48,7 @@ _ALL = [
     VwapReclaim(),            # VWR — fade and reclaim of the day's average
     RangeFade(),              # RNG — the low of a proven range
     ShortDistribution(),      # SDN — the short family: VWAP rejection, trap, breakdown
+    GapDownBounce(),          # GDB — brain_proposals#190; SHADOW until scored, see its own module docstring
 ]
 
 
@@ -102,6 +104,7 @@ FAMILIES = {
     # different tails — pooling their detections would average away the only
     # thing worth measuring about either.
     "SDN": "SDN",     # SHORT: VWAP rejection · failed-breakout trap · range breakdown
+    "GDB": "GDB",     # shadowed; new engine from brain_proposals#190, own family until proven
 }
 
 

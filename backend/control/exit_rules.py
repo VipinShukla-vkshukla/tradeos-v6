@@ -193,6 +193,25 @@ def assess_trend(sig: dict, pos: dict | None = None) -> TrendQuality:
         else:
             against.append(f"sector rank {srank:.0f} — rotating out")
 
+    # ── Live: is price still above today's session VWAP, right now? ─────────
+    #
+    # Every check above reads a signal_output_daily/stock_data_daily row —
+    # last night's snapshot, however often this dict gets refreshed. This is
+    # the one vote that is actually live: `dist_vwap_live` is attached by
+    # intraday/engine.py::refresh_trend_context() from the tick VWAP
+    # apply_live_quotes() already overlays onto self._contexts every 15s
+    # (Kite's own average_traded_price, not a recomputation — see
+    # tools/quote_parity.py for the measured accuracy, ~0.08%). Absent
+    # entirely when the caller does not attach it (EOD callers, or the live
+    # switch off), so this degrades to exactly today's behaviour by default.
+    dvwap = _f("dist_vwap_live")
+    if dvwap is not None:
+        checks += 1
+        if dvwap > 0:
+            for_.append(f"live price +{dvwap:.2f}% above session VWAP")
+        else:
+            against.append(f"live price {dvwap:.2f}% below session VWAP")
+
     if checks == 0:
         return TrendQuality(0.5, "INTACT",
                             ["no trend data available — neither confirming nor "

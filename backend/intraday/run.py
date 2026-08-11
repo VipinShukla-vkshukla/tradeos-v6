@@ -292,6 +292,14 @@ def main(once: bool = False, dry: bool = False) -> None:
                 # once a minute, and the historical endpoint is rate-limited far
                 # more tightly than quotes.
                 engine.refresh_contexts()
+                # Live evidence for the runner/deterioration exit checks —
+                # see refresh_trend_context(). Same slow timer as everything
+                # else here; off by default (exit_live_trend_ctx).
+                engine.refresh_trend_context()
+                # Yesterday's runway-refused shorts that gapped down again —
+                # see requeue_runway_refused_shorts(). Self-gated to run once,
+                # only in the OPENING phase; off by default.
+                engine.requeue_runway_refused_shorts()
                 # Event data and AI advice — both too slow and too static for
                 # the fast loop, both purely advisory to it.
                 engine.refresh_advisory()
