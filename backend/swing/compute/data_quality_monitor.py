@@ -879,6 +879,41 @@ def _send_error_alert(errors: list, warnings: list):
         logger.warning(f"Quality Telegram alert failed: {ex}")
 
 
+def _send_resolved_alert(prior_errors: list[dict], td: str) -> None:
+    """
+    The follow-up message that never existed — 11-Aug-2026.
+
+    A cron run failed, alerted with real ERRORs, and was manually rerun
+    successfully the same evening. data_anomalies correctly reset to clean
+    (see main()'s delete-then-insert), but nothing told TELEGRAM — the
+    ERROR message stayed the last word in the operator's chat, correct when
+    sent, silently wrong by the time it was read, indistinguishable from a
+    problem still outstanding without opening Supabase to check by hand.
+
+    Fires ONLY on the transition (errors before, none now) — never on an
+    ordinary already-clean run, which has nothing new to report and should
+    stay silent, the same restraint _send_error_alert already has for WARN-
+    only runs.
+    """
+    try:
+        from alerts.send_alerts import send_message
+    except ImportError:
+        logger.warning("Quality: cannot import send_message from send_alerts — skipping resolved alert")
+        return
+
+    names = ", ".join(sorted({e["check_name"] for e in prior_errors if e.get("check_name")}))
+    lines = [
+        "✅ <b>Pipeline Quality — Resolved</b>", "",
+        f"A rerun for {td} cleared the earlier error(s): {names}",
+        "No error currently outstanding for today's pipeline — the prior "
+        "🔴 alert above is superseded.",
+    ]
+    try:
+        send_message("\n".join(lines))
+    except Exception as ex:
+        logger.warning(f"Quality resolved-alert Telegram send failed: {ex}")
+
+
 # ── Dedup guard ───────────────────────────────────────────────────────────────
 
 def _already_logged_today(sb, td):
@@ -1004,6 +1039,24 @@ def main(phase: str = "all"):
     # what every reader already assumes. The deletion also matters when a re-run
     # produces NO anomalies: without it, a resolved problem stays on the board
     # forever, and a board that shows resolved problems stops being read.
+    #
+    # THAT FIXES THE DATABASE. IT DOES NOT FIX TELEGRAM — 11-Aug-2026.
+    #
+    # A cron run failed (C01/C06 ERROR), alerted, and was manually rerun
+    # successfully the same evening. data_anomalies correctly went back to
+    # clean the moment the rerun's checks passed — this table has meant
+    # "the latest verdict" since the fix above. But the operator's LAST
+    # Telegram message was still the original error report, because
+    # _send_error_alert() only ever fires `if errors:` — a clean rerun has
+    # nothing to report and correctly stays silent, which reads identically
+    # to "nobody checked". Read PRIOR errors before the delete below wipes
+    # them, so a run that clears them can say so explicitly.
+    try:
+        prior_errors = (sb.table("data_anomalies").select("check_name")
+                          .eq("date", td).eq("severity", "ERROR").execute().data or [])
+    except Exception:
+        prior_errors = []
+
     anomalies = [r for r in results if r["severity"] in ("WARN", "ERROR")]
     try:
         sb.table("data_anomalies").delete().eq("date", td).execute()
@@ -1022,11 +1075,16 @@ def main(phase: str = "all"):
     except Exception as e:
         logger.warning(f"data_anomalies write failed: {e}")
 
-    # Telegram: fire on any ERROR; include WARN summary
+    # Telegram: fire on any ERROR; include WARN summary. Fire the RESOLVED
+    # follow-up only on the opposite transition — this run clean, a prior
+    # one today was not — never on an ordinary already-clean run, which has
+    # nothing new to say.
     errors   = [r for r in results if r["severity"] == "ERROR"]
     warnings = [r for r in results if r["severity"] == "WARN"]
     if errors:
         _send_error_alert(errors, warnings)
+    elif prior_errors:
+        _send_resolved_alert(prior_errors, td)
 
     logger.success(
         f"Quality v5 [{phase}]: ✅{ok_n} OK | ⚠️{warn_n} WARN | 🔴{err_n} ERROR | "
