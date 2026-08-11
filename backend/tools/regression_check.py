@@ -47,6 +47,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# WINDOWS CONSOLE ENCODING — 11-Aug-2026, this tool's own responsibility,
+# not inherited for free. config.py carries the identical line (with the
+# identical comment) because every OTHER tool imports config for its actual
+# values and picks up the fix as a side effect. This script needs none of
+# config's values — it only shells out to other tools via subprocess — so
+# it never imported config and never got the fix: print(out) below crashed
+# with UnicodeEncodeError on the rupee sign the FIRST TIME captured output
+# from a child process (which DOES import config, and prints ₹ safely on
+# its own stdout) got relayed through this one's un-reconfigured stdout.
+# Explicit here rather than `import config` purely for the side effect,
+# which would make this fix invisible to the next person reading this file.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # cp1252 can't print ₹/✓/—
+
 from loguru import logger
 
 
@@ -66,10 +80,27 @@ def _run(label: str, args: list[str], db_dependent: bool) -> tuple[bool, bool]:
     logger.info("=" * 74)
     logger.info(f"  {label}")
     logger.info("=" * 74)
+    # encoding="utf-8" IS NOT OPTIONAL ON WINDOWS — 11-Aug-2026. text=True
+    # alone decodes the child process's stdout/stderr using
+    # locale.getpreferredencoding(), which on Windows is a codepage
+    # (cp1252 here), not UTF-8. Every tool this wraps prints through
+    # loguru, and loguru's own box-drawing rules (=, —) plus the rupee
+    # sign and check/cross marks this codebase uses everywhere include
+    # bytes cp1252 has no mapping for — confirmed: byte 0x90 crashed the
+    # decode. That crash happens inside subprocess's OWN internal reader
+    # thread, not in a place a try/except here could catch, and it leaves
+    # proc.stdout/proc.stderr as None rather than raising cleanly — so the
+    # actual failure surfaced two frames later as `None + str`, which reads
+    # nothing like an encoding problem. errors="replace" is the second half:
+    # even UTF-8 can meet a genuinely undecodable byte from a dependency's
+    # own output, and this tool's job is reporting pass/fail, not being a
+    # byte-perfect terminal — a replacement character beats a crash that
+    # discards the result of everything already run.
     proc = subprocess.run([sys.executable, "-m", *args],
                           cwd=str(Path(__file__).parent.parent),
-                          capture_output=True, text=True)
-    out = proc.stdout + proc.stderr
+                          capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
+    out = (proc.stdout or "") + (proc.stderr or "")
     print(out)
     if db_dependent and proc.returncode != 0 and \
             "SUPABASE_URL and SUPABASE_SERVICE_KEY must be set" in out:

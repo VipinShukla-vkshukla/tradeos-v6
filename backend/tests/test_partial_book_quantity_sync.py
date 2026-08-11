@@ -196,6 +196,150 @@ def test_health_check_handles_no_open_positions():
     assert ok is True
 
 
+# ── close_position()'s partial-booking fold-in ──────────────────────────────
+#
+# WHAT THIS CATCHES — 11-Aug-2026, same session, next question. PPLPHARMA is
+# still open (6 of 11 shares), so it correctly has no row in closed_positions
+# yet — the Trade Log only ever shows FULLY closed trades, by design, and
+# that alone explains why it is absent while ETERNAL/CIPLA (both full exits
+# the same day) are not. The real question is whether the eventual full
+# close will correctly fold the already-realised partial profit into the
+# final number, or silently drop it the way close_position()'s own comment
+# ("Partial bookings already realised are folded into total P&L") only
+# CLAIMS it does. No test exercised that claim before this. These pin it
+# with PPLPHARMA's own real numbers: entry 194.08, 5 booked @ 214.00 on
+# 10-Aug (the live dashboard's own "+₹99.60 booked" line), a hypothetical
+# final exit of the remaining 6 at 200.00.
+
+class _CloseFakeQuery:
+    """
+    TABLE-AWARE, DELIBERATELY — close_position() writes to closed_positions
+    (the row these tests check), open_positions (delete, on the way out)
+    and position_reconcile_log (_log_reconcile(), an audit trail row this
+    fixture must not confuse with the outcome row).
+
+    The first version of this fixture routed every insert() into ONE
+    shared list regardless of table name, so a run that reached
+    _log_reconcile() (any run past the first test in this file that
+    exercises a different code path first — see below) found TWO rows in
+    "inserted" and failed on the count, not the math, with an empty
+    AssertionError that looked like a real regression. It was not: the
+    fold-in arithmetic was correct in isolation the whole time (confirmed
+    directly against the real function before concluding this was the
+    fixture) — only this fake could not tell the outcome row from the
+    audit-log row. A fake that does not discriminate by table name cannot
+    be trusted to test code that writes to more than one.
+    """
+    def __init__(self, sink):
+        self._sink, self._filters = sink, {}
+    def select(self, *a, **k): return self
+    def eq(self, col, val):
+        self._filters[col] = val
+        return self
+    def insert(self, row):
+        self._sink.append(dict(row))
+        return self
+    def delete(self): return self
+    def execute(self):
+        self.data = []
+        return self
+
+
+class _NullQuery:
+    """Any table this fixture does not care about — open_positions'
+    delete(), position_reconcile_log's insert() — accepted and discarded."""
+    def select(self, *a, **k): return self
+    def eq(self, *a, **k): return self
+    def insert(self, *a, **k): return self
+    def delete(self): return self
+    def execute(self):
+        self.data = []
+        return self
+
+
+class _CloseFakeSB:
+    def __init__(self):
+        self.inserted: list[dict] = []
+    def table(self, name):
+        if name == "closed_positions":
+            return _CloseFakeQuery(self.inserted)
+        return _NullQuery()
+
+
+def _pplpharma_pos():
+    return {"symbol": "PPLPHARMA", "direction": "LONG", "entry_price": 194.08,
+            "current_qty": 6, "actual_qty": 6, "kite_qty": 6,
+            "partial_booked_qty": 5, "partial_booked_price": 214.00,
+            "entry_date": "2026-07-31", "product": "CNC", "mode": "LIVE",
+            "framework": "SWING", "planned_stop": 190.0}
+
+
+def test_close_position_folds_the_partial_into_realized_pnl():
+    from control.position_lifecycle import close_position
+    sb = _CloseFakeSB()
+    with cfg_ctx({}):
+        ok = close_position(sb, _pplpharma_pos(), exit_price=200.00,
+                            exit_reason="BROKER_EXIT", detail="test",
+                            trade_date="2026-08-20")
+    assert ok is True
+    assert len(sb.inserted) == 1
+    row = sb.inserted[0]
+    # final tranche: (200.00 - 194.08) * 6 = 35.52
+    # booked tranche: (214.00 - 194.08) * 5 = 99.60
+    # total: 135.12 — NOT just 35.52 (which is what a fold-in bug would
+    # produce: only the final tranche, the Aug 10 profit silently dropped)
+    assert abs(row["realized_pnl"] - 135.12) < 0.01, (
+        f"got {row['realized_pnl']} — expected 135.12 (35.52 final + 99.60 "
+        f"booked). A value near 35.52 means the partial's profit was NOT "
+        f"folded in and would have been silently lost from the permanent "
+        f"trade record.")
+
+
+def test_close_position_reports_the_full_original_quantity():
+    from control.position_lifecycle import close_position
+    sb = _CloseFakeSB()
+    with cfg_ctx({}):
+        close_position(sb, _pplpharma_pos(), exit_price=200.00,
+                       exit_reason="BROKER_EXIT", detail="test",
+                       trade_date="2026-08-20")
+    row = sb.inserted[0]
+    assert row["actual_qty"] == 11, (
+        f"got {row['actual_qty']} — the closed record must show the full "
+        f"original position (6 remaining + 5 already booked), not just "
+        f"what was left at the final exit")
+    assert abs(row["invested_value"] - 194.08 * 11) < 0.01
+
+
+def test_close_position_exit_value_blends_both_exit_prices():
+    from control.position_lifecycle import close_position
+    sb = _CloseFakeSB()
+    with cfg_ctx({}):
+        close_position(sb, _pplpharma_pos(), exit_price=200.00,
+                       exit_reason="BROKER_EXIT", detail="test",
+                       trade_date="2026-08-20")
+    row = sb.inserted[0]
+    # 200.00*6 (final) + 214.00*5 (booked) = 1200.00 + 1070.00 = 2270.00
+    assert abs(row["exit_value"] - 2270.00) < 0.01
+
+
+def test_close_position_without_a_partial_is_unaffected():
+    """A plain, never-partially-booked position must fold in nothing extra
+    — regression guard that this change did not alter the ordinary path."""
+    from control.position_lifecycle import close_position
+    sb = _CloseFakeSB()
+    pos = {"symbol": "ETERNAL", "direction": "LONG", "entry_price": 306.00,
+          "current_qty": 9, "actual_qty": 9, "partial_booked_qty": 0,
+          "partial_booked_price": None, "entry_date": "2026-07-30",
+          "product": "CNC", "mode": "LIVE", "framework": "SWING",
+          "planned_stop": 295.0}
+    with cfg_ctx({}):
+        close_position(sb, pos, exit_price=312.50, exit_reason="BROKER_EXIT",
+                       detail="test", trade_date="2026-08-10")
+    row = sb.inserted[0]
+    assert abs(row["realized_pnl"] - (312.50 - 306.00) * 9) < 0.01
+    assert row["actual_qty"] == 9
+
+
 TESTS = [
     ("LIVE book-partial syncs actual_qty/kite_qty",
      test_live_book_partial_syncs_actual_and_kite_qty),
@@ -214,4 +358,12 @@ TESTS = [
     ("health check flags the drifted shape", test_health_check_flags_the_drifted_shape),
     ("health check passes once fields agree", test_health_check_passes_once_fields_agree),
     ("health check handles no open positions", test_health_check_handles_no_open_positions),
+    ("close_position folds the partial into realized_pnl",
+     test_close_position_folds_the_partial_into_realized_pnl),
+    ("close_position reports the full original quantity",
+     test_close_position_reports_the_full_original_quantity),
+    ("close_position exit_value blends both exit prices",
+     test_close_position_exit_value_blends_both_exit_prices),
+    ("close_position without a partial is unaffected",
+     test_close_position_without_a_partial_is_unaffected),
 ]
