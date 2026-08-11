@@ -1,0 +1,58 @@
+-- 11-Aug-2026. tools/validate_config.py flagged paper_starting_capital
+-- (100000) as 3.3x the real 30000 account, "so paper results would not
+-- transfer." Investigating led to a deeper finding than a value fix:
+-- execution.paper_broker.capacity() -- the function that ACTUALLY governs
+-- how many paper positions can be open -- migrated from reading
+-- paper_starting_capital to reading capital_for("INTRADAY")
+-- (== intraday_capital) on 07-Aug-2026. paper_starting_capital was never
+-- removed from system_config or from validate_config's coherence check,
+-- which kept validating a key confirmed (by grep) to be read by NO code
+-- anywhere for behaviour -- risk_level=SAFE, not CRITICAL, so
+-- check_wiring()'s own dead-key detection never looked at it either.
+--
+-- tools/validate_config.py's check_coherence() is fixed in this same
+-- session (not by this migration -- no schema change needed for that
+-- part) to: report paper_starting_capital as INFO (unread, not
+-- actionable) rather than ERROR; check the REAL transferability property
+-- against capital_for("INTRADAY") under a new "paper_capacity_transfer"
+-- finding; and fix paper_max_open_positions' recommendation to divide by
+-- the REAL capacity (100000) rather than the dead key. That recommendation
+-- did not change VALUE as a result (it was already correctly computing
+-- against paper_starting_capital=100000, which happened to equal
+-- intraday_capital=100000 by coincidence) -- but it is now correct for
+-- the right reason, and stays correct if the two numbers are ever set
+-- differently.
+--
+-- Also found and fixed while doing this: apply_fixes() wrote
+-- `suggested` straight into system_config.value with no check it parsed
+-- as a number. Two pre-existing findings (intraday_capital, both
+-- branches) carried PROSE there ("below Rs 30,000 before going live"),
+-- which strips to a non-numeric string -- --fix, run while either was
+-- active, would have silently corrupted a live capital-sizing key. Fixed
+-- at both the call sites (suggested=None; a judgment call has no single
+-- correct number) and in apply_fixes() itself (refuses a non-numeric
+-- suggestion and a key with no matching system_config row, rather than
+-- trusting every finding to keep getting the shape right).
+--
+-- WHAT THIS MIGRATION ACTUALLY CHANGES: one value.
+--   paper_max_open_positions  10 -> 4
+-- 10 positions x the Rs 25,000 intraday_max_order_value needs Rs 250,000,
+-- far more than the Rs 100,000 paper capacity (capital_for("INTRADAY"))
+-- -- the last setups of a busy paper day were being silently truncated
+-- for lack of simulated cash, not lack of quality.
+--
+-- paper_starting_capital's VALUE is deliberately left unchanged (still
+-- 100000). It is confirmed inert; validate_config now explains that
+-- plainly every run, so there is no remaining risk of it misleading a
+-- reader, and leaving it is more honest than a cosmetic edit that could
+-- read as "this fixes something" when the real fix was to the CHECK.
+--
+-- intraday_capital is NOT touched here. Its own oversized-sleeve
+-- questionable finding is a pre-existing, deliberate, deferred decision
+-- (see KNOWLEDGE_BASE.md: "Do not flip intraday live without first
+-- resolving this gap") -- not something this migration reverses.
+
+UPDATE public.system_config
+SET value = '4',
+    updated_at = now()
+WHERE key = 'paper_max_open_positions';

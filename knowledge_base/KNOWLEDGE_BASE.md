@@ -273,10 +273,36 @@ they bound what the rules above can even be tested against.)*
   standby/dashboard-only per `deploy/README.md`. Confirm its IP is
   currently allowlisted before trusting live automated exits — see the
   IP-allowlist hypothesis above.
-- `paper_starting_capital` (₹1,00,000) also exceeds `validate_config`'s
-  1.5x-of-real-capital threshold (tripped 8 Aug's diagnostic run) — same
-  shape as the `intraday_capital` item above, on a second config key. Not
-  urgent (safe while paper), but two keys now carry this pattern.
+- **11-Aug addendum — resolved, but not the way it looked.** `paper_starting_
+  capital` (₹1,00,000) tripping `validate_config`'s 1.5x threshold turned
+  out not to be a value problem: `execution.paper_broker.capacity()`
+  migrated from reading `paper_starting_capital` to reading
+  `capital_for("INTRADAY")` (== `intraday_capital`) on 07-Aug-2026, and
+  `paper_starting_capital` was never removed from the coherence check —
+  confirmed by grep to be read by NO code anywhere for behaviour, and
+  invisible to `check_wiring()` because it is `risk_level=SAFE`, not
+  `CRITICAL`. `tools/validate_config.py` now reports it as INFO (unread)
+  and checks the real transferability property
+  (`paper_capacity_transfer`) against `capital_for("INTRADAY")` instead —
+  which is STILL ₹1,00,000 against a ₹30,000 account, so the underlying
+  "paper results may not fully transfer" fact has not gone away, only the
+  check pointing at the wrong key has. `intraday_capital` staying elevated
+  remains the pre-existing, deliberate, deferred decision named above —
+  this addendum did not change it.
+  Also found and fixed in the same pass: `apply_fixes()` (`--fix`) wrote
+  `suggested` straight into `system_config.value` with no check it parsed
+  as a number. Two findings (`intraday_capital`, both branches) carried
+  PROSE there ("below ₹30,000 before going live"), which strips to a
+  non-numeric string — `--fix`, run while either was active, would have
+  silently corrupted a live capital-sizing key. Fixed at the call sites
+  (`suggested=None` — a judgment call has no single correct number) and
+  hardened in `apply_fixes()` itself (refuses a non-numeric suggestion and
+  a key with no matching `system_config` row).
+  `paper_max_open_positions` (10) DID change — 10 × the ₹25,000
+  `intraday_max_order_value` needs ₹2,50,000, far more than the real
+  ₹1,00,000 paper capacity. Lowered to 4, migration 071.
+  `tools.health`'s `config` check is fully green for the first time this
+  session as a result.
 - `brain_proposals.backtest_result` has existed since the table was
   created and, confirmed by direct query 11-Aug-2026, had never once been
   populated (0 of 54 rows). `tools/proposal_backtest.py`

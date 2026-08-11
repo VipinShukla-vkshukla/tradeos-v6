@@ -135,17 +135,31 @@ def check_coherence(sb=None) -> list[Finding]:
     sleeve = _f(c.get("intraday_capital"), cap)
     intraday_live = (c.get("intraday_trading_mode") or "PAPER").upper() == "LIVE"
     if sleeve >= cap:
+        # `suggested` IS None HERE, DELIBERATELY — 11-Aug-2026. It used to
+        # carry PROSE ("below ₹30,000 [before going live]"), which
+        # apply_fixes() strips to "below 30000 [before going live]" and
+        # writes STRAIGHT INTO system_config.value with no check that it
+        # parsed as a number — --fix, run while this finding was active,
+        # would have silently corrupted intraday_capital's live value to
+        # that literal string, and cfg_float() would then have caught the
+        # parse failure and fallen back to its OWN hardcoded default with
+        # no warning anywhere. Found while fixing the paper-capacity check
+        # below; never actually triggered live, but the path was real —
+        # see the hardening in apply_fixes() itself for the other half.
+        #
+        # None rather than a numeric guess because there ISN'T a single
+        # mechanically-correct value the way want_order/want_notional are
+        # DERIVED below — how much capital each book gets is the
+        # operator's call, not a formula, and --fix must not invent one.
         if intraday_live:
             out.append(Finding(
-                "intraday_capital", "ERROR", f"₹{sleeve:,.0f}",
-                f"below ₹{cap:,.0f}",
+                "intraday_capital", "ERROR", f"₹{sleeve:,.0f}", None,
                 f"intraday is LIVE and its sleeve is >= the whole ₹{cap:,.0f} "
                 f"account, so swing has ₹0 to size against and refuses EVERY "
                 f"entry. The two books cannot both spend the same rupee"))
         else:
             out.append(Finding(
-                "intraday_capital", "WARN", f"₹{sleeve:,.0f}",
-                f"below ₹{cap:,.0f} before going live",
+                "intraday_capital", "WARN", f"₹{sleeve:,.0f}", None,
                 f"harmless while intraday is PAPER — swing gets the full "
                 f"₹{cap:,.0f} because a simulated position reserves nothing. "
                 f"But switching intraday to LIVE with this value leaves swing "
@@ -203,18 +217,65 @@ def check_coherence(sb=None) -> list[Finding]:
             out.append(Finding(nk, "OK", f"₹{nv:,.0f}", None,
                                f"{nv / cap_fw:.0%} of the {fw} sleeve"))
 
-    # Paper capital far above real capital makes paper results untransferable:
-    # the simulation would take positions the real account could never fund.
-    pc = _f(c.get("paper_starting_capital"), 100000)
+    # PAPER CAPACITY IS capital_for("INTRADAY"), NOT paper_starting_capital —
+    # 11-Aug-2026, found while fixing the finding below.
+    #
+    # execution.paper_broker.capacity() carries its own account of this: until
+    # 07-Aug-2026 it read its own `paper_starting_capital` key, introduced
+    # 31-Jul-2026 before capital_for()'s book-sleeve mechanism existed. Once
+    # capital_for() shipped, capacity() was migrated to read it instead — the
+    # SAME sleeve live sizing reads, not a second number that can silently
+    # drift from it. paper_starting_capital was never removed from
+    # system_config or from THIS check, which kept validating a key no code
+    # anywhere reads for behaviour. Confirmed by grep before writing this: the
+    # only occurrences of "paper_starting_capital" outside migrations and this
+    # tool's own key list are a historical comment in paper_broker.py and this
+    # module's own coherence check — never a cfg*() read.
+    #
+    # A check validating a dead key is the exact "wiring" failure mode
+    # check_wiring() exists to catch, and did not catch here because
+    # paper_starting_capital is risk_level=SAFE, not CRITICAL — outside that
+    # check's own scope. book_cap["intraday"] (== capital_for("INTRADAY"),
+    # already computed above) is what capacity() actually reads.
+    pc_dead = _f(c.get("paper_starting_capital"), 100000)
+    pc = book_cap["intraday"]
+    out.append(Finding(
+        "paper_starting_capital", "INFO", f"₹{pc_dead:,.0f}", None,
+        f"NOT READ BY ANY CODE — paper_broker.capacity() reads "
+        f"capital_for('INTRADAY') (currently ₹{pc:,.0f}) since the 07-Aug-2026 "
+        f"migration. This key is kept for backward compatibility only; see "
+        f"the intraday_capital finding above for the check that actually "
+        f"governs paper capacity and its transferability to the real account."))
+
+    # THE TRANSFERABILITY PROPERTY THE OLD CHECK WAS FOR, ATTACHED TO THE KEY
+    # THAT ACTUALLY GOVERNS IT. Paper capital far above real capital makes
+    # paper results untransferable: the simulation would take positions the
+    # real account could never fund — separate from, and in addition to, the
+    # intraday_capital finding above (which is about swing being starved if
+    # intraday ever goes LIVE with this value; this is about whether PAPER
+    # results mean anything today, regardless of live/paper mode).
     if pc > cap * 1.5:
+        # suggested=None, matching the intraday_capital finding above and for
+        # the identical reason: "paper_capacity_transfer" is not itself a
+        # system_config row (it names the CONCERN, not a key), and even
+        # spelled as a number, --fix would run update().eq("key",
+        # "paper_capacity_transfer") against zero matching rows, report
+        # success (Supabase does not error on a filter that matches nothing),
+        # and silently fix nothing. The real key is intraday_capital, already
+        # carrying its own None-suggested finding above for the same
+        # judgment-call reason.
         out.append(Finding(
-            "paper_starting_capital", "ERROR", f"₹{pc:,.0f}", f"₹{cap:,.0f}",
-            f"₹{pc:,.0f} is {pc / cap:.1f}x the real account. Paper would take "
-            f"positions you could never fund, so its results would not transfer — "
-            f"which is the only thing paper trading is for."))
+            "paper_capacity_transfer", "WARN", f"₹{pc:,.0f}", None,
+            f"paper capacity (capital_for('INTRADAY')) is ₹{pc:,.0f}, "
+            f"{pc / cap:.1f}x the real ₹{cap:,.0f} account. Paper would take "
+            f"positions you could never fund, so its results would not fully "
+            f"transfer — which is the only thing paper trading is for. Same "
+            f"underlying key as the intraday_capital finding above; lowering "
+            f"it fixes both."))
     else:
-        out.append(Finding("paper_starting_capital", "OK", f"₹{pc:,.0f}", None,
-                           "matches the real account, so paper results transfer"))
+        out.append(Finding("paper_capacity_transfer", "OK", f"₹{pc:,.0f}", None,
+                           "matches the real account closely enough that paper "
+                           "results transfer"))
 
     # The paper book must fit inside paper capital. Otherwise the simulation
     # stops taking setups partway through the day for a reason that has nothing
@@ -226,8 +287,9 @@ def check_coherence(sb=None) -> list[Finding]:
             "paper_max_open_positions", "WARN", f"{n_paper:g}",
             f"{max(1, int(pc // biggest)):g}",
             f"{n_paper:g} positions x ₹{biggest:,.0f} needs ₹{n_paper * biggest:,.0f}, "
-            f"more than the ₹{pc:,.0f} paper account — the last setups of the day "
-            f"would be skipped for lack of cash rather than lack of quality."))
+            f"more than the ₹{pc:,.0f} paper capacity (capital_for('INTRADAY')) — "
+            f"the last setups of the day would be skipped for lack of cash "
+            f"rather than lack of quality."))
     else:
         out.append(Finding("paper_max_open_positions", "OK", f"{n_paper:g}", None,
                            f"{n_paper:g} x ₹{biggest:,.0f} fits inside ₹{pc:,.0f}"))
@@ -296,6 +358,29 @@ def check_wiring(sb=None) -> list[Finding]:
 
 
 def apply_fixes(findings: list[Finding], sb=None) -> int:
+    """
+    `suggested` must be a bare number — HARDENED, NOT JUST DOCUMENTED,
+    11-Aug-2026. This used to write `re.sub(r"[₹,]", "", f.suggested)`
+    straight into system_config.value with no check that it parsed as a
+    number. Two of this file's own findings (intraday_capital, both
+    branches) carried PROSE there ("below ₹30,000 [before going live]"),
+    which strips to "below 30000 [before going live]" — not a float — and
+    --fix, run while either was active, would have silently corrupted a
+    live capital-sizing key to that literal string; cfg_float() would then
+    have caught the parse failure on the NEXT read and fallen back to its
+    own hardcoded default with no warning anywhere. Both callers were fixed
+    to pass suggested=None instead (a judgment call has no single correct
+    number to suggest), but a THIRD one being added later without this
+    guard would reproduce the exact same defect silently. This function
+    must refuse a non-numeric suggestion rather than trust every call site
+    to keep getting it right.
+
+    Also refuses a `key` that does not exist in system_config — a finding
+    whose name describes a CONCERN rather than a real config row (this
+    file added exactly one of those this session: paper_capacity_transfer)
+    would otherwise update().eq() against zero matching rows, which
+    Supabase does not error on, and report success while fixing nothing.
+    """
     sb = sb or get_supabase()
     n = 0
     for f in findings:
@@ -303,6 +388,20 @@ def apply_fixes(findings: list[Finding], sb=None) -> int:
             continue
         val = re.sub(r"[₹,]", "", f.suggested)
         try:
+            float(val)
+        except ValueError:
+            logger.error(f"  {f.key}: suggested value {f.suggested!r} is not "
+                        f"a number — refusing to write it. This is a bug in "
+                        f"the finding, not something to work around here.")
+            continue
+        try:
+            existing = (sb.table("system_config").select("key")
+                          .eq("key", f.key).execute().data)
+            if not existing:
+                logger.error(f"  {f.key}: no such system_config row — "
+                            f"refusing to write (see this finding's own key: "
+                            f"it may name a CONCERN, not an actual config key)")
+                continue
             sb.table("system_config").update({"value": val}).eq("key", f.key).execute()
             logger.success(f"  {f.key}: {f.current} -> {f.suggested}")
             n += 1
@@ -322,8 +421,16 @@ def main(fix: bool = False) -> int:
     all_f = coh + wir
 
     for f in all_f:
-        icon = {"ERROR": "✗", "WARN": "!", "OK": "✓"}[f.severity]
-        log = {"ERROR": logger.error, "WARN": logger.warning, "OK": logger.info}[f.severity]
+        # INFO added 11-Aug-2026 alongside the paper_starting_capital finding
+        # (a key confirmed dead, not actionable — see check_coherence()) —
+        # neither an ERROR/WARN needing --fix nor a plain OK worth folding
+        # into the "consistent" count silently. A KeyError here on an
+        # unmapped severity would take the whole tool down, which is exactly
+        # the failure this dict literal has no fallback against; extend both
+        # maps together if a new severity is ever added again.
+        icon = {"ERROR": "✗", "WARN": "!", "OK": "✓", "INFO": "i"}[f.severity]
+        log = {"ERROR": logger.error, "WARN": logger.warning, "OK": logger.info,
+              "INFO": logger.info}[f.severity]
         log(f"  {icon} {f.key:<32} {f.current}"
             + (f"  ->  {f.suggested}" if f.suggested else ""))
         if f.severity != "OK":
