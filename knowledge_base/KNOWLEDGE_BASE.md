@@ -27,6 +27,21 @@ contradiction.)*
   backed by the codebase's own 70-trade historical study.
   Next evidence needed: none pressing — this can be treated as settled
   unless a future session contradicts it.
+  **11-Aug addendum — `intraday_giveback_min_r` recalibrated 1.0 → 0.5.**
+  The guard's EXISTENCE was settled above; its THRESHOLD was not re-derived
+  until this session. `closed_positions` MFE quantiles (framework=INTRADAY,
+  n=27 with excursion data): winners' minimum peak 0.499R, losers' 75th-
+  percentile peak 0.490R — the two coincide almost exactly, which is what
+  makes 0.5 the boundary the data itself draws rather than a round number.
+  At the old 1.0R floor a full quarter of winners (p25 MFE 0.849R) never
+  had the guard active during their most fragile stretch.
+  `tools/exit_ladder_replay.py --min-r 0.5` against the same window: 9
+  positions affected (vs 3 at 1.0), ceiling +5.60R (vs +1.42R) — KAYNES,
+  SAPPHIRE, ADANIGREEN, IFCI, HINDCOPPER, SWIGGY all peaked 0.5-1.1R and
+  reversed to a loss via SETUP_INVALIDATED/TIME_EXIT, never touching a
+  rung the old floor could engage on.
+  Confidence: Medium — n=27 is real but still thin, the same caveat
+  migration 059 itself carried. Re-run the replay as the sample grows.
 
 - **`final_score` does not predict forward R within the CONTINUATION swing
   family, on the full resolved sample measured so far.**

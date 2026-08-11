@@ -68,7 +68,28 @@ def load_intraday_policy() -> dict:
         "cost_buffer_pct":    cfg_float("intraday_breakeven_cost_pct", 0.21),
         # Give-back guard. OFF by default — see the note in evaluate_intraday_exit.
         "giveback_pct":       cfg_float("intraday_giveback_pct", 0.0),
-        "giveback_min_r":     cfg_float("intraday_giveback_min_r", 1.0),
+        #
+        # min_r LOWERED 1.0 -> 0.5, 11-Aug-2026, from the closed book's own
+        # MFE quantiles (tools.exit_ladder_replay / direct query,
+        # framework=INTRADAY, n=27 with excursion data):
+        #
+        #   winners (n=10): MIN peak 0.499R, p25 0.849R, median 1.550R
+        #   losers  (n=17): p75 peak 0.490R, median 0.145R
+        #
+        # Every winner in the sample peaked at >=0.499R at some point; 75%
+        # of losers NEVER reached 0.490R before turning into a loss. Those
+        # two numbers coincide almost exactly, which is what makes 0.5 the
+        # boundary the data itself draws, not a round number chosen to fit
+        # the backtest. At the old 1.0R floor, a full quarter of winners
+        # (p25 MFE 0.849) never had the guard active during their most
+        # fragile stretch — exactly the population exit_ladder_replay names:
+        # KAYNES, SAPPHIRE, ADANIGREEN, IFCI, HINDCOPPER, SWIGGY all peaked
+        # 0.5-1.1R and reversed to a loss via SETUP_INVALIDATED/TIME_EXIT,
+        # never touching a stop the guard could have pre-empted. Re-run
+        # `python -m tools.exit_ladder_replay --min-r <x>` as the sample
+        # grows — n=27 is real but still thin; treat this as the data's
+        # current best answer, not a settled one.
+        "giveback_min_r":     cfg_float("intraday_giveback_min_r", 0.5),
     }
 
 

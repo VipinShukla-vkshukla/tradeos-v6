@@ -103,6 +103,27 @@ def test_a_short_giveback_is_symmetric():
         f"a short give-back did not fire — got {result['action']}")
 
 
+def test_default_min_r_is_point_five_not_one():
+    """
+    Regression pin, 11-Aug-2026. min_r LOWERED 1.0 -> 0.5 from the closed
+    book's own MFE quantiles: every winner in the sample (n=10) peaked at
+    >=0.499R; 75% of losers (n=17) never reached 0.490R before turning into
+    a loss. At the old 1.0R floor, a full quarter of winners (p25 MFE
+    0.849R) never had the guard active during their most fragile stretch —
+    see exit_policy.py's own comment at this key for the named positions
+    (KAYNES, SAPPHIRE, ADANIGREEN, IFCI, HINDCOPPER, SWIGGY) that peaked
+    0.5-1.1R and reversed to a loss with the guard never engaged. If this
+    test starts failing because the default reverted to 1.0, that evidence
+    needs to be revisited, not silently overwritten.
+    """
+    with cfg_ctx({}):
+        policy = load_intraday_policy()
+    assert policy["giveback_min_r"] == 0.5, (
+        f"got {policy['giveback_min_r']} — expected 0.5; if this is now 1.0, "
+        f"the default reverted without the MFE quantile evidence in "
+        f"exit_policy.py's own comment being revisited")
+
+
 TESTS = [
     ("old default never fires the guard",
      test_old_default_never_fires_the_guard),
@@ -114,4 +135,6 @@ TESTS = [
      test_keeping_most_of_the_move_does_not_fire),
     ("a short giveback is symmetric",
      test_a_short_giveback_is_symmetric),
+    ("default min_r is 0.5, not 1.0",
+     test_default_min_r_is_point_five_not_one),
 ]
