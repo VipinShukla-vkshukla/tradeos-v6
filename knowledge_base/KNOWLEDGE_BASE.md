@@ -82,6 +82,36 @@ contradiction.)*
 
 *(Enough evidence to act cautiously on, not enough to call settled.)*
 
+- **Intraday engines structurally suit different market regimes — momentum/
+  breakout engines (ORB, GAP, PDL, PBK, VCE, SDN) should outperform in
+  RISK_ON, mean-reversion engines (RNG, VWR) should outperform in NEUTRAL/
+  CAUTION — but this is UNTESTED, not measured.**
+  11-Aug-2026: no engine has ever been chosen or weighted per market regime
+  in this system — `hurdle.regime_bucket()` gates the allocator's BAR, not
+  which engine's opinion to trust more. `allocation.scoring.
+  regime_fit_multiplier()` now exists and is fully wired into `score()`
+  (`engine_family`/`market_state` params, both optional), but shipped at
+  `intraday_regime_fit_weight=0.0` — an exact no-op — because the
+  classification is STRUCTURAL (each engine's own module docstring: does it
+  need a trend to break into, or the absence of one) rather than measured.
+  `hurdle.py`'s own docstring already states the project's position on
+  this exact question: "Per-regime fitting is Phase 5 and is gated on
+  years of data, not on cleverness" — paid for twice already by the STRONG
+  hurdle bucket's two self-reference failures (05-Aug, 10-Aug).
+  Confidence: Theoretical only — zero measured evidence. `regime_at_
+  detection` (migration 068) was added this session specifically to
+  accumulate the evidence `allocation.scoring.regime_fit_report()` would
+  need: does MOMENTUM's RISK_ON mean R actually exceed its NEUTRAL/CAUTION
+  mean, and does MEAN_REVERSION's NEUTRAL/CAUTION mean actually exceed its
+  RISK_ON mean? Both columns are brand new and hold zero historical rows as
+  of this writing.
+  Next evidence needed: re-run `python -m allocation.scoring --regime-fit`
+  after a few weeks of live sessions have accumulated TAKEN rows with
+  `regime_at_detection` populated. Raise `intraday_regime_fit_weight` only
+  if the report confirms the direction in both archetypes — the same
+  evidence bar `rank_weight_screener` and `rank_weight_rr` were both raised
+  on, not the theory alone.
+
 - **Automated live-order execution cannot be trusted unattended — a
   broker-side block can pass every readiness check and only surface when
   the order itself is placed.**

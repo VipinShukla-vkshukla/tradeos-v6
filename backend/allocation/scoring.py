@@ -553,8 +553,104 @@ def expected_hold_days(sb, framework: str) -> tuple[float, int]:
     return statistics.fmean(days), len(days)
 
 
+MOMENTUM       = "MOMENTUM"        # needs a trend to break INTO
+MEAN_REVERSION = "MEAN_REVERSION"  # needs the ABSENCE of one
+
+# STRUCTURAL, not statistical — each classification is drawn from the
+# engine's OWN module docstring (intraday/strategies/*.py), not an outside
+# judgment. See regime_fit_multiplier()'s docstring for why a per-engine-
+# per-regime EMPIRICAL prior is not attempted instead.
+ENGINE_ARCHETYPE = {
+    "ORB": MOMENTUM,        # "Opening Range Breakout"
+    "GAP": MOMENTUM,        # "gap up, hold, continue"
+    "PDL": MOMENTUM,        # "previous-day high break and retest"
+    "PBK": MOMENTUM,        # "the first pullback in a trend day" — needs an
+                            # established trend to pull back FROM
+    "VCE": MOMENTUM,        # "volatility contraction, then expansion" — a
+                            # squeeze play, classic breakout precursor
+    "SDN": MOMENTUM,        # short family — a breakdown/distribution
+                            # pattern, structurally the same axis inverted
+    "RNG": MEAN_REVERSION,  # "buy the low of an established range" — its
+                            # OWN docstring: "the complement to every
+                            # breakout engine in this package"
+    "VWR": MEAN_REVERSION,  # "VWAP reclaim — the one thing that works in
+                            # the midday DRIFT" — its own word for a
+                            # non-trending regime
+}
+
+# Bounded nudge, as a FRACTION of 1.0, before `intraday_regime_fit_weight`
+# scales it down. RISK_OFF is 0.0 for every entry because market_context.
+# classify() already blocks new longs outright in RISK_OFF (allow_longs is
+# False), so a long-only engine's fit in that state is moot — this table
+# only has an opinion where a proposal can actually reach it.
+_REGIME_FIT_NUDGE = {
+    (MOMENTUM, "RISK_ON"):        +0.15,   # a real trend to break into
+    (MOMENTUM, "NEUTRAL"):        -0.10,   # false-breakout risk
+    (MOMENTUM, "CAUTION"):        -0.10,
+    (MOMENTUM, "RISK_OFF"):        0.0,
+    (MEAN_REVERSION, "NEUTRAL"):  +0.15,   # RNG's own reason to exist
+    (MEAN_REVERSION, "CAUTION"):  +0.05,
+    (MEAN_REVERSION, "RISK_ON"):  -0.10,   # fading a real trend
+    (MEAN_REVERSION, "RISK_OFF"):  0.0,
+}
+
+
+def regime_fit_multiplier(engine_family: str | None,
+                          market_state: str | None) -> tuple[float, str]:
+    """
+    A bounded nudge to an engine's prior, based on whether its own archetype
+    (momentum/breakout vs mean-reversion) structurally suits the CURRENT
+    market state — not an empirical per-engine-per-regime prior.
+
+    WHY NOT EMPIRICAL, GIVEN THAT'S THIS PROJECT'S USUAL STANDARD. Every
+    other weight change in this session (rank_weight_screener,
+    rank_weight_rr) was shipped on a direct tercile measurement. This one
+    is not, on purpose: hurdle.py's own docstring already states the
+    project's position on this exact question — "Per-regime fitting is
+    Phase 5 and is gated on years of data, not on cleverness" — and that
+    caution has already been paid for twice. The STRONG hurdle bucket was
+    unreachable until 05-Aug-2026 for lack of history, then crossed its own
+    40-sample floor on rows the allocator had written that same morning,
+    pricing itself against its own newborn output. intraday_priors() has
+    n=843 TAKEN rows total across ALL engines and ALL history combined (see
+    the 11-Aug review); splitting that further by 4 regime states AND 8
+    engines before it has even cleared 30 per ENGINE alone would recreate
+    the identical trap at a finer grain.
+
+    So this is a STRUCTURAL rule instead — each engine's classification
+    comes from what the engine's own docstring says it needs (a trend to
+    break into, or the absence of one), not from a backtest. That is
+    weaker evidence than a tercile split, and the weight says so: default
+    0.0, exactly mirroring how rank_weight_tier and rank_weight_conviction
+    already sit at 0.0 pending validation (entry_ranking.py's own
+    precedent). Restoring it is a config change once regime_at_detection
+    (migration 068) has accumulated enough rows to run the SAME kind of
+    measurement this session ran for final_score and implied_rr — see
+    KNOWLEDGE_BASE.md's "Promising Hypotheses" entry for this exact item
+    and what evidence would confirm or kill it.
+
+    Returns (multiplier, reason). multiplier is 1.0 — an exact no-op — when
+    the weight is 0, the engine is unclassified, or market_state is
+    unknown; "no opinion" must be indistinguishable from "no adjustment",
+    the same rule the cold-start floor already applies for the same reason.
+    """
+    weight = cfg_float("intraday_regime_fit_weight", 0.0)
+    if weight <= 0 or not market_state:
+        return 1.0, "regime fit off (weight 0 or no market state)"
+
+    archetype = ENGINE_ARCHETYPE.get(engine_family or "")
+    if archetype is None:
+        return 1.0, f"{engine_family or '?'} unclassified — no opinion"
+
+    nudge = _REGIME_FIT_NUDGE.get((archetype, market_state), 0.0)
+    mult = 1.0 + nudge * weight
+    return mult, (f"{engine_family}={archetype} in {market_state}: "
+                  f"{nudge:+.0%} nudge x weight {weight:.2f}")
+
+
 def score(entry: float, stop: float, target: float, qty: int, product: str,
-          prior: Prior, hold_days: float, direction: str = "LONG") -> dict:
+          prior: Prior, hold_days: float, direction: str = "LONG",
+          engine_family: str | None = None, market_state: str | None = None) -> dict:
     """
     One proposal, on the common scale. Pure arithmetic over in-memory data.
 
@@ -569,6 +665,12 @@ def score(entry: float, stop: float, target: float, qty: int, product: str,
     would have been refused by the allocator before any engine's opinion was
     consulted, and the refusal would have read like a data problem rather than
     a policy.
+
+    `engine_family`/`market_state` are OPTIONAL and both default to None, in
+    which case regime_fit_multiplier() returns an exact 1.0 no-op — a caller
+    that does not pass them gets identical output to before this parameter
+    pair existed. See regime_fit_multiplier() for what they do when passed
+    and why the weight defaults to 0.0 regardless.
     """
     from intraday.cost_model import round_trip
     from intraday import direction as D
@@ -585,11 +687,21 @@ def score(entry: float, stop: float, target: float, qty: int, product: str,
     friction = round_trip(entry, qty, product=product).total
     cost_r   = friction / (risk_pct * entry * qty)
 
+    regime_mult, regime_reason = regime_fit_multiplier(engine_family, market_state)
+
     if prior.usable:
-        e_r, basis = prior.mean_r - cost_r, f"empirical n={prior.n}"
+        # The nudge scales the RETURN estimate (mean_r), not the cost — cost
+        # is a broker fee schedule and has no opinion about market regime.
+        adj_mean_r = prior.mean_r * regime_mult
+        e_r, basis = adj_mean_r - cost_r, f"empirical n={prior.n}"
+        if regime_mult != 1.0:
+            basis += f" x{regime_mult:.3f} ({regime_reason})"
     else:
         # NEUTRAL means zero expected R, not "assume the target". Flagged so a
-        # caller cannot mistake an absent prior for a measured one.
+        # caller cannot mistake an absent prior for a measured one. 0.0 * any
+        # multiplier is still 0.0 — the regime nudge is correctly a no-op on
+        # an unmeasured engine, same as it would be on a measured one with
+        # mean_r == 0.
         e_r, basis = 0.0 - cost_r, f"NEUTRAL prior (n={prior.n} below floor)"
 
     return {
@@ -603,6 +715,7 @@ def score(entry: float, stop: float, target: float, qty: int, product: str,
         "prior_n":     prior.n,
         "prior_floor": prior.below_floor,
         "basis":       basis,
+        "regime_fit_mult": regime_mult,
     }
 
 
@@ -875,6 +988,113 @@ def rr_tercile_report(sb=None) -> int:
     return 0
 
 
+def regime_fit_report(sb=None) -> int:
+    """
+    DIAGNOSTIC ONLY — not called from score() or the allocator. Run with
+    `python -m allocation.scoring --regime-fit`.
+
+    THE QUESTION THIS ANSWERS. regime_fit_multiplier() classifies each
+    intraday engine as MOMENTUM or MEAN_REVERSION by what its own docstring
+    says it needs, and nudges its edge by a small bounded amount depending
+    on the CURRENT market_context state — shipped at weight 0.0 (an exact
+    no-op) because that classification is structural, not measured. This
+    report is what WOULD measure it, once regime_at_detection (migration
+    068, 11-Aug-2026) has accumulated enough TAKEN rows: does MOMENTUM mean
+    R actually run higher in RISK_ON than in NEUTRAL/CAUTION, and does
+    MEAN_REVERSION mean R actually run higher in NEUTRAL/CAUTION than in
+    RISK_ON? If both hold, the hypothesis is confirmed and the weight can
+    be raised on evidence, the same way rank_weight_screener and
+    rank_weight_rr were. If neither holds, the classification was wrong and
+    the weight should stay at 0 regardless of how appealing the theory is.
+
+    TAKEN ONLY, DELIBERATELY — the same discipline priors_intraday_
+    taken_only enforces on intraday_priors() (see that switch and
+    KNOWLEDGE_BASE.md's own account of what happened before it existed:
+    88% of the population being refused detections inverted the entire
+    learning loop). A regime-fit measurement built from every BLOCKED_* row
+    alongside TAKEN ones would have the identical defect.
+
+    RUN TODAY, THIS REPORTS "NO DATA YET" AND THAT IS THE CORRECT
+    ANSWER — regime_at_detection is a brand new column with zero historical
+    rows the day this shipped. This function exists to be re-run in a few
+    weeks, not to justify anything today.
+    """
+    sb = sb or get_supabase()
+    floor = cfg_int("priors_min_sample_intraday", 30)
+    rows, off = [], 0
+    while True:
+        page = (sb.table("intraday_setups")
+                  .select("strategy,outcome_pct,entry,stop,direction,cost_pct,"
+                          "cost_verdict,regime_at_detection")
+                  .not_.is_("outcome_pct", "null")
+                  .eq("cost_verdict", "TAKEN")
+                  .not_.is_("regime_at_detection", "null")
+                  .range(off, off + PAGE - 1).execute().data) or []
+        rows += page
+        if len(page) < PAGE:
+            break
+        off += PAGE
+
+    logger.info("═" * 74)
+    logger.info("REGIME FIT REPORT — mean R by (archetype, regime_at_detection).")
+    logger.info("DIAGNOSTIC ONLY. Not wired into score() or the allocator.")
+    logger.info("═" * 74)
+
+    if not rows:
+        logger.warning("  0 TAKEN rows carry regime_at_detection yet — expected "
+                       "immediately after migration 068 ships. Re-run this "
+                       "after a few weeks of live sessions have accumulated "
+                       "data; see this function's own docstring.")
+        return 0
+
+    from intraday import direction as D
+    by_cell: dict[tuple[str, str], list[float]] = {}
+    for r in rows:
+        family = str(r.get("strategy") or "")
+        archetype = ENGINE_ARCHETYPE.get(family)
+        if archetype is None:
+            continue
+        entry, stop = r.get("entry"), r.get("stop")
+        ret = r.get("outcome_pct")
+        if None in (entry, stop, ret):
+            continue
+        try:
+            risk_pct = D.risk_per_share(float(entry), float(stop),
+                                        r.get("direction") or "LONG") / float(entry) * 100.0
+            if risk_pct <= 0:
+                continue
+            # GROSS R, cost added back — matches _intraday_priors_from_rows'
+            # exact convention (outcome_pct is stored NET of cost; score()
+            # subtracts cost_r separately), so this report's numbers are
+            # directly comparable to intraday_priors()'s.
+            gross_pct = float(ret) + float(r.get("cost_pct") or 0)
+            r_mult = gross_pct / risk_pct
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+        key = (archetype, r["regime_at_detection"])
+        by_cell.setdefault(key, []).append(r_mult)
+
+    if not by_cell:
+        logger.warning("  regime_at_detection rows exist but none matched a "
+                       "classified engine family — nothing to report")
+        return 0
+
+    for archetype in (MOMENTUM, MEAN_REVERSION):
+        logger.info("")
+        logger.info(f"── {archetype} ──")
+        for state in ("RISK_ON", "NEUTRAL", "CAUTION", "RISK_OFF"):
+            vals = by_cell.get((archetype, state), [])
+            d = _dist(f"{archetype}/{state}", vals, floor)
+            (logger.warning if d.below_floor else logger.info)(f"  {state:<9}: {d.describe()}")
+
+    logger.info("")
+    logger.info("Confirms the hypothesis if MOMENTUM's RISK_ON mean exceeds its "
+               "NEUTRAL/CAUTION means, AND MEAN_REVERSION's NEUTRAL/CAUTION "
+               "means exceed its RISK_ON mean. Anything else argues for "
+               "leaving intraday_regime_fit_weight at 0.")
+    return 0
+
+
 def report() -> int:
     """Print every prior the system can currently justify, with its n."""
     sb = get_supabase()
@@ -912,5 +1132,7 @@ if __name__ == "__main__":
         sys.exit(tercile_report())
     elif "--rr-tercile" in sys.argv:
         sys.exit(rr_tercile_report())
+    elif "--regime-fit" in sys.argv:
+        sys.exit(regime_fit_report())
     else:
         sys.exit(report())

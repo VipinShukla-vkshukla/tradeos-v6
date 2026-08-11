@@ -1358,7 +1358,14 @@ _SHORT_SPINE = [
      "                                      direction=best.direction)"),
     ("allocator prior carried", "allocation/proposal.py",    'direction   = getattr(setup, "direction"'),
     ("allocator coherence",     "allocation/proposal.py",    "from intraday.direction import validate"),
-    ("allocator scorer (caller)", "allocation/allocator.py", "direction=p.direction)"),
+    # 11-Aug-2026: marker updated from "direction=p.direction)" to
+    # "direction=p.direction," -- the S.score() call at this site grew two
+    # new trailing kwargs (engine_family, market_state; see
+    # allocation/scoring.py::regime_fit_multiplier(), shipped at weight 0.0)
+    # so direction=p.direction is no longer the LAST argument. The claim
+    # this marker verifies (direction is passed through) is unchanged; only
+    # what immediately follows it in the source changed.
+    ("allocator scorer (caller)", "allocation/allocator.py", "direction=p.direction,"),
     ("allocator prior ladder",  "allocation/allocator.py",   '/SHORT")'),
     ("simulate cost gate",      "tools/simulate.py",
      "is_worth_taking(best.entry, qty, best.target, best.stop,\n"

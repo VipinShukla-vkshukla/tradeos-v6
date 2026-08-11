@@ -91,6 +91,7 @@ MODULES = [
     ("rr weight reduced on tercile evidence", "tests.test_rr_weight"),
     ("entry pacing", "tests.test_entry_pacing"),
     ("stale token alerting", "tests.test_token_alerting"),
+    ("regime-aware engine fit (shipped inert)", "tests.test_regime_fit"),
 ]
 
 

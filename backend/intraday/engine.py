@@ -2489,7 +2489,7 @@ class IntradayEngine:
             for s in _all:
                 if s.meta.get("lifecycle") == "SHADOW":
                     try:
-                        self._record_setup(s, st.phase, 0.0, "SHADOW", 0)
+                        self._record_setup(s, st.phase, 0.0, "SHADOW", 0, mc_state=(mc.state if mc else None))
                     except Exception as e:
                         logger.debug(f"  shadow record failed for {s.strategy}: {e}")
 
@@ -2525,7 +2525,7 @@ class IntradayEngine:
                     self._record_setup(
                         best, st.phase, 0.0,
                         "BLOCKED_SHORTS_OFF" if not cfg_bool("intraday_allow_shorts", False)
-                        else "BLOCKED_SHORTS_MARKET", 0)
+                        else "BLOCKED_SHORTS_MARKET", 0, mc_state=(mc.state if mc else None))
                     continue
                 from intraday import shortability
                 # NOT getattr(st, "minutes_to_close", 0). SessionState has no
@@ -2542,7 +2542,7 @@ class IntradayEngine:
                     minutes_left=minutes_to_cover_deadline())
                 best.meta["shortability"] = notes
                 if not ok_sh:
-                    self._record_setup(best, st.phase, 0.0, "BLOCKED_SHORTABILITY", 0)
+                    self._record_setup(best, st.phase, 0.0, "BLOCKED_SHORTABILITY", 0, mc_state=(mc.state if mc else None))
                     logger.info(f"      {sym}: short refused — {why_sh[:120]}")
                     continue
 
@@ -2575,7 +2575,7 @@ class IntradayEngine:
             # lookup, so it belongs first on both counts.
             if cfg_bool("intraday_block_reentry_after_loss", True) \
                     and sym in self._failed_today():
-                self._record_setup(best, st.phase, 0.0, "BLOCKED_REENTRY", 0)
+                self._record_setup(best, st.phase, 0.0, "BLOCKED_REENTRY", 0, mc_state=(mc.state if mc else None))
                 logger.info(f"      {sym}: {best.strategy} conf {best.confidence:.2f} "
                             f"— already lost money in this name today, standing down")
                 continue
@@ -2591,7 +2591,7 @@ class IntradayEngine:
                         f"is untouched — only this MIS tranche squares off at session end")
                     # falls through to the gates below, no `continue`
                 else:
-                    self._record_setup(best, st.phase, 0.0, "BLOCKED_CROSS_FRAMEWORK", 0)
+                    self._record_setup(best, st.phase, 0.0, "BLOCKED_CROSS_FRAMEWORK", 0, mc_state=(mc.state if mc else None))
                     logger.info(
                         f"      {sym}: {best.strategy} conf {best.confidence:.2f} — the "
                         f"{(other.get('framework') or 'SWING').upper()} book already holds "
@@ -2611,7 +2611,7 @@ class IntradayEngine:
             if self._news is not None:
                 ev = self._news.check(best.symbol, ctx.sector)
                 if not ev.allow:
-                    self._record_setup(best, st.phase, 0.0, "BLOCKED_EVENT", 0)
+                    self._record_setup(best, st.phase, 0.0, "BLOCKED_EVENT", 0, mc_state=(mc.state if mc else None))
                     continue
                 if ev.reason:
                     best.meta["event_note"] = ev.reason
@@ -2627,7 +2627,7 @@ class IntradayEngine:
                     "INTRADAY", [b.high for b in ctx.bars], [b.low for b in ctx.bars],
                     direction=best.direction)
                 if not ok_s:
-                    self._record_setup(best, st.phase, 0.0, "BLOCKED_STRUCTURE", 0)
+                    self._record_setup(best, st.phase, 0.0, "BLOCKED_STRUCTURE", 0, mc_state=(mc.state if mc else None))
                     continue
                 best.meta["structure"] = st_struct.state
 
@@ -2638,7 +2638,7 @@ class IntradayEngine:
             from intraday import ai_advisor
             allow_ai, adj_conf, ai_note = ai_advisor.apply(best, self._advice)
             if not allow_ai:
-                self._record_setup(best, st.phase, 0.0, "VETOED_AI", 0)
+                self._record_setup(best, st.phase, 0.0, "VETOED_AI", 0, mc_state=(mc.state if mc else None))
                 continue
             best.confidence = adj_conf
             if ai_note:
@@ -2658,7 +2658,7 @@ class IntradayEngine:
             # trade costs nothing while a mediocre one costs 0.21% plus the risk.
             floor = self._confidence_floor()
             if best.confidence < floor:
-                self._record_setup(best, st.phase, 0.0, "BELOW_CONVICTION", 0)
+                self._record_setup(best, st.phase, 0.0, "BELOW_CONVICTION", 0, mc_state=(mc.state if mc else None))
                 logger.info(f"      {sym}: {best.strategy} conf {best.confidence:.2f} "
                             f"< floor {floor:.2f} — passing, budget is better spent later")
                 continue
@@ -2698,7 +2698,7 @@ class IntradayEngine:
                 planned_value=qty * best.entry,
             )
             if not liq_ok:
-                self._record_setup(best, st.phase, 0.0, "BLOCKED_LIQUIDITY", 0)
+                self._record_setup(best, st.phase, 0.0, "BLOCKED_LIQUIDITY", 0, mc_state=(mc.state if mc else None))
                 logger.info(f"      {sym}: {best.strategy} — {liq_why}")
                 continue
 
@@ -2719,7 +2719,7 @@ class IntradayEngine:
                                       direction=best.direction)
             rt = round_trip(best.entry, qty)
             self._record_setup(best, st.phase, rt.pct_of_position,
-                               "TAKEN" if ok else "REJECTED_COST", qty)
+                               "TAKEN" if ok else "REJECTED_COST", qty, mc_state=(mc.state if mc else None))
             if not ok:
                 continue
 
@@ -2798,7 +2798,7 @@ class IntradayEngine:
             ok, why = self.allocator_permits(st.symbol, "MIS", "INTRADAY")
             if not ok:
                 self._record_setup(st, s["phase"], s.get("cost_pct") or 0.0,
-                                   "ALLOCATOR_DECLINED", 0)
+                                   "ALLOCATOR_DECLINED", 0, mc_state=(mc.state if mc else None))
                 logger.info(f"      {st.symbol}: allocator declined — {why[:90]}")
                 continue
             # In PAPER mode, actually TAKE the setup. Without this the
@@ -2887,7 +2887,7 @@ class IntradayEngine:
         from execution.gates import is_paper
 
         def _blocked(verdict: str) -> None:
-            self._record_setup(st, phase, cost_pct, verdict, 0)
+            self._record_setup(st, phase, cost_pct, verdict, 0, mc_state=(mc.state if mc else None))
 
         # Two switches, mirroring control/paper_entry.py for swing.
         # intraday_auto_entry says whether setups are taken at all;
@@ -3336,13 +3336,39 @@ class IntradayEngine:
 
         return False, v.get("reason") or f"allocator returned {v['verdict']}"
 
-    def _record_setup(self, s, phase: str, cost_pct: float, verdict: str, qty: int) -> None:
+    def _record_setup(self, s, phase: str, cost_pct: float, verdict: str, qty: int,
+                      mc_state: str | None = None) -> None:
         """
         Persist every setup DETECTED, including cost rejections.
 
         "How often did ORB fire and how did those resolve" is unanswerable if
         only taken trades are stored — and that question is the only way an
         engine's lifecycle state can ever be justified rather than guessed.
+
+        `mc_state` RECORDS THE MARKET REGIME AT DETECTION — 11-Aug-2026, and
+        the second attempt at this specific column. hurdle.py's own docstring
+        already documents the first one: a query once tried to read a column
+        `regime_at_detection` that no migration had added and no code had ever
+        written, PostgREST rejected the whole request, and a bare `except`
+        swallowed it — see migrations/000-ish history and hurdle.py's "THE BAR
+        IS MEASURED IN THE SAME UNITS" section. This is that column, built the
+        other way round: added by migration 068 FIRST, written HERE, so the
+        column exists before anything tries to read it.
+
+        Every call site passes its own local `mc` (a market_context.
+        MarketContext, in scope at all twelve of them — evaluate_intraday_
+        setups computes it once per cycle, _maybe_open_paper and
+        act_on_setups both receive or unpack it). Optional and defaults to
+        None rather than being required, so a call site that genuinely has no
+        market context (there are none today, but a future one might) fails
+        soft into an unclassified row rather than a crash.
+
+        WHAT THIS ENABLES, NOT WHAT IT DOES. This function does not use
+        mc_state to change anything — see allocation/scoring.py's
+        regime_fit_multiplier(), which is the mechanism that eventually will,
+        gated at weight 0.0 pending exactly the evidence this column exists
+        to accumulate. Writing the data and using it are different
+        commitments; this is only the first one.
         """
         if not self._setup_is_new(s, verdict):
             return
@@ -3369,6 +3395,7 @@ class IntradayEngine:
                 "cost_verdict": verdict,
                 "corroborated_by": ",".join(s.meta.get("corroborated_by") or []) or None,
                 "meta": json.dumps({**s.meta, "qty": qty}, default=str),
+                "regime_at_detection": mc_state,
             }).execute()
             self._recorded[f"{s.symbol}:{s.strategy}"] = (s.entry, verdict)
         except Exception as e:

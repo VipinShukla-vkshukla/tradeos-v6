@@ -224,8 +224,20 @@ class Allocator:
                 # the proof that INTRADAY's line is never touched.
                 p_days, p_n = _hold_days_for_proposal(
                     fw, p.source, days, n_days, self._swing_hold_days_by_family)
+                # engine_family=p.source, market_state=regime — both optional,
+                # both pass straight through to regime_fit_multiplier(),
+                # which is 1.0 (no-op) unless intraday_regime_fit_weight is
+                # deliberately raised above 0. `regime` here is whatever this
+                # evaluate() call was given, which for the live intraday path
+                # is mc.state (RISK_ON/NEUTRAL/CAUTION/RISK_OFF) — see
+                # engine.py::_allocate_shadow. p.source is the engine FAMILY
+                # for intraday proposals (from_intraday()) and the swing
+                # family for swing ones; ENGINE_ARCHETYPE only recognises the
+                # former, so a swing proposal here always reads "unclassified
+                # — no opinion" and this is a genuine no-op for that book.
                 sc = S.score(p.entry, p.stop, p.target, p.quantity, p.product,
-                             pri, p_days, direction=p.direction)
+                             pri, p_days, direction=p.direction,
+                             engine_family=p.source, market_state=regime)
                 scored.append({"proposal": p, "symbol": p.symbol, **sc,
                                "hold_days_n": p_n})
 
