@@ -196,10 +196,25 @@ def _invalidation_is_reachable(s: Setup) -> bool:
     risk = abs(s.entry - s.stop)
     if risk <= 0:
         return True                     # coherent() owns this failure
-    buf = cfg_float("intraday_invalidation_buffer_pct", 0.12) / 100.0
-    cut = level * (1 - D.sign(D.normalise(s.direction)) * buf)
-    # How far the cut sits on the WRONG side of the stop, as a fraction of risk.
-    beyond = (cut - s.stop) if D.is_short(s.direction) else (s.stop - cut)
+
+    # THE RAW LEVEL, NOT THE BUFFERED CUT — corrected 12-Aug-2026, same day,
+    # from a live false positive. The first version compared the exit's
+    # BUFFERED trigger (`level * (1 ± intraday_invalidation_buffer_pct)`) to
+    # the stop, and refused TORNTPHARM's SDN VWAP-rejection short in
+    # production: vwap 4842.29, stop 4843.81. That setup places its stop just
+    # above the rejection high, DELIBERATELY tighter than the invalidation
+    # buffer, so the stop and the invalidation are the same event — the same
+    # design PBK's own comment calls out as what makes the entry efficient.
+    # Charging it the buffer made a correct, tight stop look like an abandoned
+    # structure, and the highest-quality short this book has was being refused
+    # every cycle.
+    #
+    # The buffer is exit TIMING; the question here is structural — is the stop
+    # anchored to the level the setup names, or somewhere unrelated? So compare
+    # the level itself. NATIONALUM is still caught (stop 413.85 vs a level of
+    # 399.45: 264% of risk away, the structure genuinely abandoned), and a stop
+    # placed just past its level in either direction now reads as what it is.
+    beyond = (level - s.stop) if D.is_short(s.direction) else (s.stop - level)
     return (beyond / risk) <= cfg_float("intraday_invalidation_max_beyond_stop_frac", 0.10)
 
 

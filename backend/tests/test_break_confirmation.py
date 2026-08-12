@@ -573,3 +573,35 @@ TESTS += [
      test_pbk_target_no_longer_invents_a_price_never_traded),
     ("VWR and GDB refuse a touch of VWAP", test_vwr_and_gdb_refuse_a_touch_of_vwap),
 ]
+
+
+def test_the_torntpharm_short_is_not_refused():
+    """
+    THE LIVE FALSE POSITIVE, 12-Aug-2026 12:27. SDN's VWAP rejection places its
+    stop just above the rejection high — tighter than the invalidation buffer
+    by design, so the stop and the invalidation are the same event. Charging it
+    the buffer refused the highest-quality short this book has, every cycle.
+    vwap 4842.29, stop 4843.81, entry below both.
+    """
+    from intraday.strategies.registry import _invalidation_is_reachable
+    s = _setup(4820.00, 4843.81, 4780.00, "vwap", 4842.29, direction="SHORT")
+    assert _invalidation_is_reachable(s), (
+        "a stop placed just past its own level is the design, not an abandoned "
+        "structure")
+
+
+def test_a_stop_just_past_the_level_is_fine_in_both_directions():
+    from intraday.strategies.registry import _invalidation_is_reachable
+    # long: stop a hair below the level it names
+    assert _invalidation_is_reachable(
+        _setup(101.0, 99.90, 105.0, "range_high", 100.0))
+    # short: stop a hair above the level it names
+    assert _invalidation_is_reachable(
+        _setup(99.0, 100.10, 95.0, "range_low", 100.0, direction="SHORT"))
+
+
+TESTS += [
+    ("the TORNTPHARM short is not refused", test_the_torntpharm_short_is_not_refused),
+    ("a stop just past its level is fine both ways",
+     test_a_stop_just_past_the_level_is_fine_in_both_directions),
+]
