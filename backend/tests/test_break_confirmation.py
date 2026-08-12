@@ -605,3 +605,36 @@ TESTS += [
     ("a stop just past its level is fine both ways",
      test_a_stop_just_past_the_level_is_fine_in_both_directions),
 ]
+
+
+def test_sdn_vwap_rejection_invalidates_at_the_level_that_failed():
+    """
+    THE 12-Aug 14:10 PRODUCTION REFUSAL, on ~15 names every 15s. SDN's VWAP
+    rejection anchors its STOP to the rejection high and published VWAP as its
+    invalidation. rej_high is normally BELOW vwap (price rallied toward VWAP
+    and was refused before reaching it), so the stop fired first and the
+    invalidation could never run — the whole condition was refused.
+    """
+    from intraday.strategies.registry import _invalidation_is_reachable
+    # TRITURBINE: stop 593.71 (= rej_high 593.00 * 1.0012), vwap 594.24
+    assert not _invalidation_is_reachable(
+        _setup(590.0, 593.71, 580.0, "vwap", 594.24, direction="SHORT")),         "publishing VWAP is what the check correctly refused"
+    assert _invalidation_is_reachable(
+        _setup(590.0, 593.71, 580.0, "range_low", 593.00, direction="SHORT")),         "the rejection high, which the stop is built on, must be reachable"
+
+
+def test_the_worst_12aug_spread_is_fixed_too():
+    """MARUTI had the widest gap: stop 13957.73 against a published vwap of
+    13987.34 — 29.61 away, on a rejection high of ~13941."""
+    from intraday.strategies.registry import _invalidation_is_reachable
+    assert not _invalidation_is_reachable(
+        _setup(13900.0, 13957.73, 13700.0, "vwap", 13987.34, direction="SHORT"))
+    assert _invalidation_is_reachable(
+        _setup(13900.0, 13957.73, 13700.0, "range_low", 13941.00, direction="SHORT"))
+
+
+TESTS += [
+    ("SDN VWAP rejection invalidates at the level that failed",
+     test_sdn_vwap_rejection_invalidates_at_the_level_that_failed),
+    ("the worst 12-Aug spread is fixed too", test_the_worst_12aug_spread_is_fixed_too),
+]

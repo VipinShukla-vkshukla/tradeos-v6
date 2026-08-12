@@ -198,11 +198,26 @@ class ShortDistribution:
                        f"{len(touched)}x (high {rej_high:.2f}), back under at "
                        f"{ctx.ltp:.2f}, {chg:+.2f}% on the day. Institutional sell "
                        f"programmes benchmark to VWAP — this is that footprint"),
-            invalidation=f"reclaims VWAP {ctx.vwap:.2f}",
+            # THE LEVEL THAT FAILED, NOT THE ONE BEHIND IT — 12-Aug-2026.
+            # This published VWAP while the stop above is anchored to
+            # `rej_high`, and the comment at that stop already says why
+            # rej_high is right: "the level the market actually refused is the
+            # honest invalidation, and it is usually tighter." Two levels for
+            # one thesis, and the engine used the looser one for the exit.
+            #
+            # rej_high is usually BELOW VWAP (price rallied toward VWAP and was
+            # refused before reaching it), so the stop fired first and the
+            # invalidation was decoration — registry's reachability check
+            # refused the whole condition in production on 12-Aug: TRITURBINE,
+            # GESHIP, LUPIN, M&M, HDFCAMC, DRREDDY, HINDPETRO, LAURUSLABS,
+            # MARUTI, CHOLAFIN, GABRIEL, ANGELONE, ADANIGREEN, every cycle.
+            # VWAP stays in meta as the CONTEXT that makes the rejection
+            # meaningful; the thesis dies when the rejection high is reclaimed.
+            invalidation=f"reclaims the rejection high {rej_high:.2f}",
             valid_phases=self.phases,
             meta={"sub_engine": "VWR", "vwap": round(ctx.vwap, 2),
                   "rejection_high": round(rej_high, 2),
-                  "invalidation_level": round(ctx.vwap, 2)},
+                  "invalidation_level": round(rej_high, 2)},
         )
 
     # ── TRP: broke yesterday's high, could not hold it ───────────────────────

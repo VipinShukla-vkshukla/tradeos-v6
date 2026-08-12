@@ -179,8 +179,44 @@ def review(setups: list, market_state: str, open_symbols: list[str],
         if delta:
             out[s.symbol] = Advice(s.symbol, s.strategy, "NEUTRAL", delta, why, "prior")
 
-    lines = []
+    # ── SEND EACH IDEA ONCE — 12-Aug-2026 ───────────────────────────────────
+    #
+    # `_pending_review` accumulates every Setup DETECTED since the last slow
+    # tick. The fast loop runs every 15s, so one 5-minute window re-detects the
+    # same (symbol, strategy) up to twenty times and every copy became its own
+    # prompt line. Measured in production on 12-Aug: single calls of 764, 712,
+    # 702 and 696 setups — against 1,527 DISTINCT detections recorded across
+    # the entire session. The model was being asked to re-read the same idea
+    # twenty times in one prompt and reliably vetoed 2-5 of them.
+    #
+    # Dedup keeps the highest-confidence instance of each idea, which is also
+    # the most recent meaningful one: confidence moves with volume and RS, so
+    # the best copy is the strongest the setup ever looked.
+    #
+    # The cap then bounds the tail. The model's job here is to veto crowding
+    # and correlation among the candidates that could actually be funded, and
+    # `intraday_max_new_positions` is 2 — ranking the 40 best against each
+    # other answers that; ranking 700 does not answer it any better, it just
+    # costs more and buries the signal.
+    #
+    # The PRIORS loop above deliberately stays over the full list: it is local
+    # arithmetic, costs nothing, and works when the LLM is unavailable.
+    best_by_idea: dict[tuple, object] = {}
     for s in setups:
+        k = (s.symbol, s.strategy)
+        prev = best_by_idea.get(k)
+        if prev is None or s.confidence > prev.confidence:
+            best_by_idea[k] = s
+    ranked = sorted(best_by_idea.values(), key=lambda x: -x.confidence)
+    cap = cfg_int("intraday_ai_max_setups", 40)
+    sent = ranked[:cap] if cap > 0 else ranked
+    if len(sent) < len(setups):
+        logger.info(f"  intraday AI: {len(setups)} detections -> {len(best_by_idea)} "
+                    f"distinct -> {len(sent)} sent "
+                    f"({100 * (1 - len(sent) / max(1, len(setups))):.0f}% fewer prompt lines)")
+
+    lines = []
+    for s in sent:
         lines.append(
             f"- {s.symbol} [{s.strategy}] entry {s.entry:.2f} stop {s.stop:.2f} "
             f"target {s.target:.2f} R:R {s.rr:.1f} conf {s.confidence} "
@@ -222,7 +258,7 @@ def review(setups: list, market_state: str, open_symbols: list[str],
     note = data.get("note")
     if note:
         logger.info(f"  intraday AI: {note}")
-    logger.info(f"  intraday AI reviewed {len(setups)} setup(s), "
+    logger.info(f"  intraday AI reviewed {len(sent)} setup(s), "
                 f"{sum(1 for a in out.values() if a.verdict == 'AVOID')} vetoed")
 
     try:
