@@ -1,10 +1,10 @@
 # TradeOS Knowledge Base — Living Document
 
-**Last updated:** 11 August 2026 (4 sessions of evidence, plus direct
+**Last updated:** 12 August 2026 (5 sessions of evidence, plus direct
 `final_score` and `implied_rr` tercile measurements against the full
 historical sample)
 **Source reviews:** `daily/2026-08-06.md`, `daily/2026-08-07.md`,
-`daily/2026-08-10.md`, `daily/2026-08-11.md`
+`daily/2026-08-10.md`, `daily/2026-08-11.md`, `daily/2026-08-12.md`
 
 Read this before starting a new day's review. Update it after, per the
 workflow in `README.md`. An item's confidence should track its sample
@@ -49,6 +49,9 @@ contradiction.)*
   essentially flat (−0.02R), so this doesn't prove the recalibration
   "saved" money here, only that it engages where the underlying data said
   it should.
+  **12-Aug: VIJAYA (swing), fifth occurrence.** Peaked +0.92R (+7.40%),
+  gave back exactly 50%, exited +0.45R/+3.65%. n=3 occurrences (2
+  sessions) → n=5 occurrences (4 sessions). Confidence unchanged at High.
 
 - **`final_score` does not predict forward R within the CONTINUATION swing
   family, on the full resolved sample measured so far.**
@@ -152,6 +155,11 @@ contradiction.)*
   as of this evening — see Standing Operational Watch Items. The
   hypothesis stays untested; the underlying risk it is about has not gone
   away.
+  **12-Aug: second clean success.** VIJAYA's SELL executed cleanly, zero
+  IP blocks, GTT cancelled within 3 minutes. Now **2 successes, 1
+  failure**.
+  Confidence: Medium → **Medium-high**. One more clean session would
+  support promoting this to Validated Rules.
 
 - **The swing allocator's "slots spent" decline reflects real slot
   scarcity — DEMOTED from Validated Rules, 7 Aug.**
@@ -173,6 +181,10 @@ contradiction.)*
   trade (see `daily/2026-08-10.md` Item 2) — a related, still-open
   bookkeeping question about whether `allocation_decisions` reliably
   reflects what the live engine actually decided.
+  **12-Aug: third clean session.** CARBORUNIV entered within 2 seconds of
+  VIJAYA's give-back exit; day ended with the counter matching reality
+  (2/3 used). 3 of 4 sessions now clean. Confidence unchanged at Medium —
+  majority-clean still doesn't retire the open 7-Aug investigation.
 
 ---
 
@@ -188,7 +200,13 @@ review knows to keep watching, not to re-derive from scratch.)*
   `daily/2026-08-10.md` for the unreconciled allocator-numbers caveat on
   this specific trade). Running total ~8-9 legs, 2 wins. **11 Aug: first
   quiet session** — 25 setups detected, zero taken or closed. Sample
-  unchanged.
+  unchanged. **12 Aug: busiest detection day yet (91 distinct setups),
+  still zero closed.** Rejection profile shifted — `BLOCKED_SHORTABILITY`
+  (dominant in the engine's first days) nearly absent (2 of 693 raw);
+  `BLOCKED_SHORTS_MARKET` (the regime gate) now dominates. Reads as the
+  shortability infrastructure maturing while the regime gate remains the
+  real constraint — noted, not yet a separate tracked claim. Sample
+  unchanged at ~8-9 legs.
   Needed before any verdict: ~20 resolved outcomes across ≥10 sessions
   (this project's own `MIN_SAMPLE`/`MIN_SESSIONS` standard from
   `tools/weekly_review.py`).
@@ -198,6 +216,8 @@ review knows to keep watching, not to re-derive from scratch.)*
   slot sit).
   Needed before any verdict: a second confirming session, same bar the
   give-back guard cleared on its way to Validated.
+  **12 Aug: no new evidence** — zero `EXIT_STALL` events. Explicitly
+  checked and empty, not skipped. Stays at n=1.
 
 - **Whether `swing_max_new_per_day` is too conservative.**
   Sessions: 6 Aug (n=1 — slot count was the binding constraint on 11 of 17
@@ -297,6 +317,13 @@ still supports the bet, rather than re-deriving the original decision.)*
   of −0.94%, but the first real data point. MOM/RVS still zero resolved
   (SCI, MANAPPURAM both remain open). RNG: detection only (9 raw), no
   closes.
+  **12 Aug: exposure growing, evidence still zero.** Two more MOM
+  positions opened (CARBORUNIV, AIIL) alongside already-open SCI,
+  MANAPPURAM — **four live MOM positions, real capital, n=0 resolved**
+  since the 07-Aug promotion. VCE/RNG: no new closes. Flagging explicitly
+  that real money exposure to this bet is now larger than when it was
+  made, with no additional evidence either direction — worth a direct
+  look the day any MOM position finally resolves.
 
 ---
 
