@@ -23,7 +23,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from loguru import logger
-from config import cfg, cfg_bool, get_supabase
+from config import cfg, cfg_bool, cfg_float, get_supabase
+from intraday import direction as D
 from intraday.strategies.base import Setup, SymbolContext
 from intraday.strategies.orb import OpeningRangeBreakout
 from intraday.strategies.vwap_reclaim import VwapReclaim
@@ -164,6 +165,44 @@ def active_engines() -> list:
     return [e for e in _ALL if engine_lifecycle(e.name) == LIFECYCLE_ACTIVE]
 
 
+def _invalidation_is_reachable(s: Setup) -> bool:
+    """
+    Can the setup's OWN thesis-death level fire before its stop?
+
+    WHY — 12-Aug-2026, NATIONALUM. GAP places its stop below the opening range
+    low, then clamps it to `gap_max_risk_pct` when that is unaffordable. On an
+    extended gap the two come apart completely: entry 419.30, stop 413.85, and
+    an invalidation reading "a close below 399.45" — five percent away, and
+    below the stop. `exit_policy._invalidated()` could never fire, so the trade
+    the operator was shown ("dies if the gap is given back") and the trade the
+    system actually held (a 1.3% price limit in the middle of a 5% range) were
+    different trades. The engine's own risk model had silently overruled its
+    structure and kept the structure's prose.
+
+    THE TOLERANCE IS NOT ZERO, DELIBERATELY. Several engines place the stop
+    just below the level on purpose, with a buffer smaller than the exit's,
+    so the stop legitimately fires a hair first — MCX on the same day had the
+    invalidation cut 0.58 below a stop 22.51 from entry, 2.6% of risk. That is
+    the design working, not a defect. Only a divergence LARGE relative to the
+    trade's own risk means the structure was abandoned: NATIONALUM's was 273%.
+
+    Applied here rather than in each engine because it is a property every
+    Setup must hold, and nine copies of it would be nine chances to drift.
+    """
+    from intraday.exit_policy import invalidation_level_from
+    level, _ = invalidation_level_from(s)
+    if not level:
+        return True                     # no structural exit claimed; nothing to check
+    risk = abs(s.entry - s.stop)
+    if risk <= 0:
+        return True                     # coherent() owns this failure
+    buf = cfg_float("intraday_invalidation_buffer_pct", 0.12) / 100.0
+    cut = level * (1 - D.sign(D.normalise(s.direction)) * buf)
+    # How far the cut sits on the WRONG side of the stop, as a fraction of risk.
+    beyond = (cut - s.stop) if D.is_short(s.direction) else (s.stop - cut)
+    return (beyond / risk) <= cfg_float("intraday_invalidation_max_beyond_stop_frac", 0.10)
+
+
 def evaluate_all(ctx: SymbolContext, phase: str) -> tuple[Setup | None, list[Setup]]:
     """
     Run every enabled engine against one symbol.
@@ -175,6 +214,13 @@ def evaluate_all(ctx: SymbolContext, phase: str) -> tuple[Setup | None, list[Set
     for eng in enabled_engines():
         try:
             s = eng.evaluate(ctx, phase)
+            if s and not _invalidation_is_reachable(s):
+                logger.info(
+                    f"  {ctx.symbol}: {s.strategy} refused — its stop {s.stop:.2f} sits "
+                    f"beyond the level it calls its own thesis death "
+                    f"({s.invalidation}). The structural exit can never fire, so "
+                    f"the trade has no thesis — only a price limit")
+                s = None
             if s:
                 # Stamped at detection so every downstream consumer — the
                 # recorder, the resolver, the weekly review — reads the same

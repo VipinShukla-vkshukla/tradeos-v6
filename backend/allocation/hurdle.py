@@ -319,6 +319,7 @@ def hurdle(bucket: str, slots_left: int, minutes_left: int,
     # of them fails open. A measured-negative population is evidence; an empty
     # one is not.
     floored = False
+    bar_before_floor = bar
     if bar not in (float("inf"), float("-inf")):
         floor_edge = cfg_float("alloc_edge_absolute_floor", 0.0)
         if bar < floor_edge:
@@ -332,6 +333,13 @@ def hurdle(bucket: str, slots_left: int, minutes_left: int,
         "slots_left": slots_left, "max_slots": max_slots,
         "minutes_left": minutes_left, "framework": framework,
         "absolute_floor_applied": floored,
+        # The bar the RELATIVE question alone would have set — the percentile
+        # of what is arriving, before the absolute capital-protection floor
+        # clamps it. Published so a paper book can honour the allocator's
+        # RANKING without inheriting the floor's absorbing state; see
+        # policies.intraday_stopping and engine.allocator_permits.
+        "bar_before_floor": (None if bar_before_floor in (float("inf"), float("-inf"))
+                             else round(bar_before_floor, 5)),
         **base_meta,
     }
 

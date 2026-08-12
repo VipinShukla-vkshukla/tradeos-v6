@@ -23,8 +23,42 @@ from typing import Protocol
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config import IST
+from config import IST, cfg_float
 from intraday import direction as D
+
+
+def confirmation_pct(structure_width_pct: float, frac: float) -> float:
+    """
+    How far past a level price must be before the break COUNTS, in percent.
+
+    WHY THIS EXISTS — 12-Aug-2026. ORB and VCE both bounded the break from
+    above (`break_pct > max_chase` → the move is spent) and not from below, so
+    a break by two paise was a valid entry. ORB's own module docstring lists
+    the missing filter by name — "retest OR strength … a break by two paise is
+    a quote, not a signal" — and ORB additionally paid `break_pct < 0.2` a
+    +0.10 confidence BONUS, so the least confirmed breaks scored the highest.
+
+    On 12-Aug that produced four ORB entries at +0.02–0.03% over the range and
+    three VCE entries at +0.04–0.19% over the coil. All seven were closed
+    SETUP_INVALIDATED within minutes, for −0.15R to −0.47R.
+
+    THE FLOOR IS THE INVALIDATION BUFFER, AND THAT IS THE WHOLE POINT.
+    `_invalidated()` cuts a long at `level * (1 - intraday_invalidation_buffer
+    _pct)`. Entering at `level * (1 + 0.0002)` therefore opens a trade that is
+    already inside its own kill zone: SBIN was entered 0.06% above the range
+    high with the invalidation line 0.12% below it — 0.18% of total room, 0.15R
+    against a 1.0R stop. No edge survives being measured on that scale; the
+    trade is decided by the spread. Deriving the entry threshold from the same
+    config key the exit reads means the two cannot drift apart — the project's
+    "a gate and the thing it gates must be the SAME QUANTITY" rule, applied to
+    an entry and its own exit.
+
+    `frac` scales the second requirement with the structure being broken: a
+    2.8%-wide opening range needs more than a 1.4%-wide one to call the break
+    real. The binding constraint is whichever is larger.
+    """
+    buf = cfg_float("intraday_invalidation_buffer_pct", 0.12)
+    return max(frac * max(structure_width_pct, 0.0), buf)
 
 
 @dataclass

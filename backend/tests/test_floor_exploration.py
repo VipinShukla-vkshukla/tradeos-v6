@@ -34,9 +34,19 @@ def _engine(verdict: dict):
     return eng
 
 
-def _v(verdict="DECLINE", floored=True, reason="edge below the bar"):
-    return {"verdict": verdict, "reason": reason,
-            "hurdle_inputs": {"absolute_floor_applied": floored, "base": -1.09}}
+def _v(verdict="DECLINE", floored=True, reason="edge below the bar", rank=0):
+    """
+    `rank` is policies.intraday_stopping's `floor_only_rank` — the allocator's
+    own ordering, restricted to `slots_left`. 12-Aug-2026: exploration is now
+    RANKED. rank=None means the allocator scored this proposal and did NOT
+    place it in the slots available, which on a paper book is now a refusal
+    exactly as it is live.
+    """
+    v = {"verdict": verdict, "reason": reason,
+         "hurdle_inputs": {"absolute_floor_applied": floored, "base": -1.09}}
+    if rank is not None:
+        v["floor_only_rank"] = rank
+    return v
 
 
 def test_paper_explores_below_the_floor_so_the_prior_keeps_learning():
@@ -48,6 +58,33 @@ def test_paper_explores_below_the_floor_so_the_prior_keeps_learning():
                   "alloc_floor_blocks_paper": "false"}):
         ok, why = eng.allocator_permits("PAYTM", "MIS", "INTRADAY")
     assert ok, f"paper book blocked by the floor — the prior can never recover: {why}"
+
+
+def test_paper_does_not_explore_what_the_ranking_did_not_select():
+    """
+    THE 12-Aug-2026 CORRECTION. The waiver used to be unranked, so every
+    floor-declined proposal in the cycle entered — the allocator scored five
+    at 09:30:28, ranked them, declined all five, and the paper book opened all
+    five. Exploration means taking the BEST few below the floor, not taking
+    everything; without this the paper book has no selection at all and the
+    day's budget goes to arrival order.
+    """
+    eng = _engine(_v(rank=None))
+    with cfg_ctx({"alloc_live_intraday": "true",
+                  "intraday_trading_mode": "PAPER",
+                  "alloc_floor_blocks_paper": "false"}):
+        ok, why = eng.allocator_permits("PAYTM", "MIS", "INTRADAY")
+    assert not ok, "an unranked floor-decline must refuse on paper, exactly as live"
+
+
+def test_the_ranked_reason_names_the_rank():
+    """An exploration trade must be auditable as one, and say where it placed."""
+    eng = _engine(_v(rank=2))
+    with cfg_ctx({"alloc_live_intraday": "true",
+                  "intraday_trading_mode": "PAPER",
+                  "alloc_floor_blocks_paper": "false"}):
+        ok, why = eng.allocator_permits("PAYTM", "MIS", "INTRADAY")
+    assert ok and "#3" in why, why
     assert "EXPLORATION" in why, f"the carve-out was silent: {why!r}"
 
 
@@ -107,4 +144,7 @@ TESTS = [
      test_the_carve_out_can_be_switched_off),
     ("a DEFER is never converted into an exploration take",
      test_a_defer_is_never_converted_into_an_exploration_take),
+    ("paper does not explore what the ranking did not select",
+     test_paper_does_not_explore_what_the_ranking_did_not_select),
+    ("the ranked reason names the rank", test_the_ranked_reason_names_the_rank),
 ]

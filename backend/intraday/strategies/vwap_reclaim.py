@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config import cfg_float, cfg_int
 from intraday.session import DRIFT, PRIME, AFTERNOON
-from intraday.strategies.base import Setup, SymbolContext
+from intraday.strategies.base import Setup, SymbolContext, confirmation_pct
 
 
 class VwapReclaim:
@@ -90,6 +90,19 @@ class VwapReclaim:
         reclaim_pct = (ctx.ltp - ctx.vwap) / ctx.vwap * 100.0
         if reclaim_pct > cfg_float("vwr_max_extension_pct", 0.45):
             return None                    # already extended past the level
+
+        # ── AND A LOWER BOUND — 12-Aug-2026 ──────────────────────────────
+        # Same one-sided-bound defect ORB, VCE and GAP all had: the reclaim
+        # was capped from above and unbounded from below, so an entry one
+        # paise over VWAP qualified. VWAP is also this setup's own
+        # invalidation level, so such an entry opens INSIDE the band that
+        # closes it — `_invalidated` cuts at vwap*(1-buffer), which would sit
+        # above the entry. There is no structure width to scale against here
+        # (VWAP is a line, not a range), so the floor is the invalidation
+        # buffer itself — the one number that makes entry and exit agree.
+        # See base.confirmation_pct().
+        if reclaim_pct < confirmation_pct(0.0, 0.0):
+            return None                    # touching VWAP, not reclaiming it
 
         # Context filter: only reclaim in a stock that is actually strong today.
         if ctx.prev_close and ctx.ltp < ctx.prev_close:

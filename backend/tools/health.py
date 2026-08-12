@@ -1318,7 +1318,14 @@ _SHORT_SPINE = [
     ("exit ladder",      "intraday/exit_policy.py",        "D.gain_r(entry, ltp, risk, d)"),
     ("stop comparison",  "intraday/exit_policy.py",        "D.is_better_price(ltp, sl, d)"),
     ("cover deadline",   "intraday/exit_policy.py",        "intraday_short_cover_lead_min"),
-    ("invalidation",     "intraday/exit_policy.py",        "D.is_better_price(ltp, breached, d)"),
+    # `ref`, not `ltp`, since 12-Aug-2026: the invalidation compares either the
+    # last price or the last COMPLETED bar close, depending on
+    # intraday_invalidation_require_close, and `ref` is whichever is in force.
+    # The property this line guards is unchanged and is the only one that
+    # matters — the comparison is still made THROUGH D, so it is still
+    # direction-aware. This check caught the rename the moment it landed, which
+    # is the check working, not the check being in the way.
+    ("invalidation",     "intraday/exit_policy.py",        "D.is_better_price(ref, breached, d)"),
     ("cost model",       "intraday/cost_model.py",         "D.reward_per_share(entry_price, target_price, direction)"),
     ("allocator scorer", "allocation/scoring.py",          "D.validate(entry, stop, target, direction)"),
     ("priors",           "allocation/scoring.py",          'f"{key}/SHORT"'),

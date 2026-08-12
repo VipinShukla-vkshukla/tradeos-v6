@@ -47,7 +47,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config import cfg_float, cfg_int
 from intraday.session import PRIME
-from intraday.strategies.base import Setup, SymbolContext
+from intraday.strategies.base import Setup, SymbolContext, confirmation_pct
 
 
 class OpeningRangeBreakout:
@@ -87,6 +87,17 @@ class OpeningRangeBreakout:
         if break_pct > max_chase:
             return None                     # the move is already spent
 
+        # ── THE "STRENGTH" ARM OF `retest OR strength` — 12-Aug-2026 ─────────
+        # This module's own docstring has always specified this filter; only
+        # the upper bound above was ever implemented. See
+        # base.confirmation_pct() for the full trace and why the floor is the
+        # invalidation buffer. The retest arm remains unbuilt: it needs bar
+        # history this engine is not given, and claiming it in a docstring
+        # while checking neither is what let 0.02% breaks through for weeks.
+        min_break = confirmation_pct(range_pct, cfg_float("orb_min_break_frac", 0.10))
+        if break_pct < min_break:
+            return None                     # a quote, not a break
+
         vr = ctx.volume_ratio()
         min_vr = cfg_float("orb_min_volume_ratio", 1.20)
         if vr is not None and vr < min_vr:
@@ -121,8 +132,13 @@ class OpeningRangeBreakout:
             conf += min(0.25, (vr - min_vr) * 0.15)
         if ctx.rs_vs_index_pct and ctx.rs_vs_index_pct > 0:
             conf += min(0.15, ctx.rs_vs_index_pct * 0.05)
-        if break_pct < 0.2:
-            conf += 0.10                    # caught early, not chasing
+        # Early WITHIN THE CONFIRMED BAND. The previous form (`break_pct <
+        # 0.2`) paid its largest bonus to the two-paise breaks the gate above
+        # now refuses outright — the engine's highest-confidence ORBs were its
+        # least confirmed ones. "Early" can only mean early relative to the
+        # range of breaks this engine is willing to take at all.
+        if break_pct < (min_break + max_chase) / 2:
+            conf += 0.10                    # confirmed, but not yet chased
         conf = round(min(0.95, conf), 2)
 
         return Setup(

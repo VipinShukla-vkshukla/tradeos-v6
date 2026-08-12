@@ -89,6 +89,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config import cfg_float, cfg_int
+from intraday.session import PRIME, DRIFT, AFTERNOON
 from intraday.strategies.base import Setup, SymbolContext
 
 NAME = "SDN"
@@ -98,9 +99,29 @@ class ShortDistribution:
     """Supply overwhelming demand, in three recognisable shapes."""
 
     name = NAME
-    phases = ("OPENING", "MORNING", "DRIFT", "AFTERNOON")
+    # THE DECLARATION MUST NAME REAL PHASES, AND BE ENFORCED — 12-Aug-2026.
+    # This read ("OPENING", "MORNING", "DRIFT", "AFTERNOON"). "MORNING" is not
+    # a phase this system has — session.py defines OPENING / PRIME / DRIFT /
+    # AFTERNOON — and PRIME (09:30-11:00), the window SDN does almost all of
+    # its work in, was absent. It did no harm only because this was the one
+    # engine of nine that never checked its own `phases`, so the tuple was
+    # decorative. That is the project's "a dict key and the key its consumer
+    # looks up are two different claims" landmine, armed: adding the guard the
+    # other eight engines have — an obvious consistency cleanup — would have
+    # silently switched every SDN short off during PRIME, and the logs would
+    # have read as a market with no short setups.
+    # registry.py:267 also writes this tuple to strategy_config.phases, so
+    # until now that column named a phase that does not exist.
+    phases = (PRIME, DRIFT, AFTERNOON)
 
     def evaluate(self, ctx: SymbolContext, phase: str) -> Setup | None:
+        # Now enforced, like every other engine. OPENING (09:15-09:30) is
+        # deliberately excluded: it is not in session.TRADEABLE, and the
+        # `intraday_short_min_bars` floor below already made SDN unreachable
+        # there in practice, so this is behaviour-preserving today and
+        # honest tomorrow.
+        if phase not in self.phases:
+            return None
         # ── Preconditions common to every condition below ────────────────────
         #
         # Checked once, here, rather than three times inside the conditions —

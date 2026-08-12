@@ -38,7 +38,8 @@ from config import cfg_float, cfg_int
 TAKE, DEFER, DECLINE = "TAKE", "DEFER", "DECLINE"
 
 
-def intraday_stopping(scored: list[dict], bar: float, slots_left: int) -> list[dict]:
+def intraday_stopping(scored: list[dict], bar: float, slots_left: int,
+                      bar_before_floor: float | None = None) -> list[dict]:
     """
     Each arrival against the bar, best first. A stopping rule.
 
@@ -47,9 +48,32 @@ def intraday_stopping(scored: list[dict], bar: float, slots_left: int) -> list[d
     14:00 is not deferring the same opportunity, it is inventing a different
     one. So an intraday proposal is taken or declined, and if it is declined it
     is recorded as declined rather than parked.
+
+    `floor_only_rank` — 12-Aug-2026, THE RANKING IS THE PRODUCT
+    -----------------------------------------------------------
+    When the absolute edge floor clamps the bar, every proposal declines and
+    `engine.allocator_permits` used to wave the ENTIRE cycle through on a paper
+    book. That waiver bypassed not just the floor but the two things that were
+    working: the edge ORDER and `slots_left`. On 12-Aug the log read "5
+    proposal(s) scored, 0 to take, 5 refused" and then opened all five. The
+    allocator ranked them and the ranking was thrown away — so the paper book
+    had no selection of any kind, and the day's budget went to whatever arrived
+    first.
+
+    This computes, in the SAME pass and by the SAME rule, which proposals would
+    have been taken had only the RELATIVE question been asked — the percentile
+    of what is arriving, `bar_before_floor`. Those get an integer rank; anyone
+    else keeps a bare DECLINE. The verdict itself is unchanged, so the live
+    book and `allocation_decisions` see exactly what they saw before.
+
+    The point is that paper and live now run one decision procedure with one
+    ranking and one slot budget. The only remaining divergence is whether the
+    absolute floor binds, and it is bounded to the top `slots_left` instead of
+    being unbounded.
     """
     out = []
     taken = 0
+    taken_ex_floor = 0
     for p in sorted(scored, key=lambda x: -(x.get("edge") or float("-inf"))):
         edge = p.get("edge")
         if edge is None:
@@ -63,10 +87,25 @@ def intraday_stopping(scored: list[dict], bar: float, slots_left: int) -> list[d
         # way against a bar of 0.0406. The verdict was always right (DECLINE
         # either way, since `taken` only advances on a real TAKE below); only
         # the reason lied about which gate actually stopped it.
+        # Would the RELATIVE bar alone have taken it, and is there room? Same
+        # order, same budget — only the floor is set aside. Computed before the
+        # verdict branches so it is one pass over one sorted list, not a second
+        # ranking that could disagree with this one.
+        rank = None
+        if (bar_before_floor is not None and edge >= bar_before_floor
+                and taken_ex_floor < slots_left):
+            rank = taken_ex_floor
+            taken_ex_floor += 1
+
         if edge < bar:
-            out.append({**p, "verdict": DECLINE,
-                        "reason": f"edge {edge:.4f} below the bar {bar:.4f} — "
-                                  f"better is likely still to arrive"})
+            v = {**p, "verdict": DECLINE,
+                 "reason": f"edge {edge:.4f} below the bar {bar:.4f} — "
+                           f"better is likely still to arrive"}
+            if rank is not None:
+                v["floor_only_rank"] = rank
+                v["reason"] += (f" (rank {rank + 1} of {slots_left} against the "
+                                f"pre-floor bar {bar_before_floor:.4f})")
+            out.append(v)
             continue
         if taken >= slots_left:
             out.append({**p, "verdict": DECLINE,

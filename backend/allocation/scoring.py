@@ -52,7 +52,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import cfg_bool, cfg_float, cfg_int, get_supabase
+from config import cfg_bool, cfg_float, cfg_int, get_supabase, today_ist
 
 
 PAGE = 1000
@@ -129,6 +129,38 @@ def intraday_priors(sb, rows: list[dict] | None = None) -> dict[str, Prior]:
     floor = cfg_int("priors_min_sample_intraday", 30)
     if rows is not None:
         return _intraday_priors_from_rows(list(rows), floor)
+
+    # ── THE PRIOR MUST BE ABLE TO FORGET — 12-Aug-2026 ──────────────────────
+    #
+    # This fetch had no time bound: every resolved row in intraday_setups,
+    # ever. Two consequences, both compounding.
+    #
+    # The book cannot demonstrate that it improved. Every pre-fix trade sits in
+    # the prior at equal weight with every post-fix one, permanently, so an
+    # engine change can only move the mean by dilution — and the worse the
+    # history, the more good trades are needed to shift it.
+    #
+    # And the absorbing state `engine.allocator_permits` works around has no
+    # exit. A prior that has gone negative floors the bar, the floor declines
+    # everything, zero trades write zero new TAKEN rows, and with no window to
+    # age out of, the negative prior is permanent. That is why the paper
+    # carve-out had to exist; bounding the window is what eventually makes it
+    # unnecessary.
+    #
+    # 0 restores the unbounded read exactly, the rollback lever. A window short
+    # enough to drop the sample below `priors_min_sample_intraday` does not
+    # fail — it lands in `_cold_start`, which is deliberately PERMISSIVE,
+    # because "no opinion" and "measured bad" must not give the same answer.
+    #
+    # SWING'S FETCH IS NOT TOUCHED. It is a different function (swing_priors)
+    # over a different table with a different horizon, and this session's remit
+    # is the intraday book.
+    lookback = cfg_int("priors_intraday_lookback_days", 90)
+    since = None
+    if lookback > 0:
+        from datetime import timedelta
+        since = (today_ist() - timedelta(days=lookback)).isoformat()
+
     rows, off = [], 0
     while True:
         page = (sb.table("intraday_setups")
@@ -148,8 +180,10 @@ def intraday_priors(sb, rows: list[dict] | None = None) -> dict[str, Prior]:
                   # compared.
                   .select("symbol,trade_date,strategy,outcome,outcome_pct,"
                           "entry,stop,direction,cost_verdict,cost_pct")
-                  .not_.is_("outcome_pct", "null")
-                  .range(off, off + PAGE - 1).execute().data) or []
+                  .not_.is_("outcome_pct", "null"))
+        if since:
+            page = page.gte("trade_date", since)
+        page = (page.range(off, off + PAGE - 1).execute().data) or []
         rows += page
         if len(page) < PAGE:
             break

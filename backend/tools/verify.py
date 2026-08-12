@@ -76,6 +76,8 @@ MODULES = [
     ("allocator edge floor",   "tests.test_edge_floor"),
     ("gated intraday priors",  "tests.test_gated_priors"),
     ("setup dedup rehydration", "tests.test_setup_rehydration"),
+    ("break confirmation",      "tests.test_break_confirmation"),
+    ("close invalidation",      "tests.test_close_invalidation"),
     ("replay candidate dedup", "tests.test_replay_dedup"),
     ("floor exploration",      "tests.test_floor_exploration"),
     ("exit audit sanity",      "tests.test_exit_audit_sanity"),

@@ -103,7 +103,39 @@ def load_intraday_policy() -> dict:
     }
 
 
-def _invalidated(pos: dict, ltp: float) -> tuple[bool, str]:
+def last_completed_close(bars: list, now: datetime | None = None) -> float | None:
+    """
+    The close of the most recent bar that has actually FINISHED, or None.
+
+    PURE. `bars` is any sequence of objects with `.ts` and `.close`, oldest
+    first — intraday.strategies.base.Bar in production. The interval is
+    inferred from the spacing of the last two bars rather than read from
+    config, because a config key that disagrees with the builder's real
+    interval would silently mis-classify the forming bar as complete, which is
+    the exact wick-exit this function exists to prevent.
+
+    The last bar in the list is normally still forming: its close is the last
+    tick, which is `ltp` under another name. Using it would make a "close"
+    rule identical to the tick rule it replaces — the silent no-op this
+    project has shipped four times.
+    """
+    if not bars or len(bars) < 2:
+        return None
+    now = now or datetime.now(IST)
+    try:
+        interval = (bars[-1].ts - bars[-2].ts)
+        if interval.total_seconds() <= 0:
+            return None
+        for b in reversed(bars):
+            if b.ts + interval <= now:
+                return float(b.close)
+    except (AttributeError, TypeError):
+        return None
+    return None
+
+
+def _invalidated(pos: dict, ltp: float,
+                 last_close: float | None = None) -> tuple[bool, str]:
     """
     Has the setup's own thesis died?
 
@@ -135,14 +167,42 @@ def _invalidated(pos: dict, ltp: float) -> tuple[bool, str]:
     d = D.normalise(pos.get("direction"))
     buf = cfg_float("intraday_invalidation_buffer_pct", 0.12) / 100.0
     breached = level * (1 - D.sign(d) * buf)
-    if not D.is_better_price(ltp, breached, d):
+
+    # ── A CLOSE, NOT A TICK — 12-Aug-2026 ───────────────────────────────────
+    # Every engine's invalidation prose promises a CLOSE ("a close back below
+    # 1081.80", "a close back under VWAP"); this compared the last traded
+    # price. Those are different quantities, and the gap between them is where
+    # the book died on 12-Aug: six of nine exits were SETUP_INVALIDATED at
+    # -0.15R to -0.72R, and SBIN's was ten paise through the line on a trade
+    # risking 1.2%. One seller is not a structure failing.
+    #
+    # A completed bar closing beyond the level is the thing the prose has
+    # always described: the level failed to hold for a whole bar, which is
+    # what a disciplined discretionary trader waits for before conceding the
+    # idea. Off by default so the change is measured, not assumed.
+    #
+    # NO COMPLETED BAR MEANS NO INVALIDATION, DELIBERATELY. Early in a trade
+    # there may be no finished bar yet. Falling back to `ltp` there would
+    # reintroduce the tick exit at exactly the moment it does the most damage,
+    # so the answer is "not yet confirmed" — and nothing is unprotected,
+    # because the invalidation is an OPTIMISATION that cuts before the stop,
+    # while the stop itself (checked above, and untouched) is the safety
+    # control.
+    ref = ltp
+    if cfg_bool("intraday_invalidation_require_close", False):
+        if last_close is None:
+            return False, ""
+        ref = last_close
+
+    if not D.is_better_price(ref, breached, d):
         note = pos.get("invalidation_note") or f"lost {level:.2f}"
         return True, note
     return False, ""
 
 
 def evaluate_intraday_exit(pos: dict, ltp: float, policy: dict,
-                           now: datetime | None = None) -> dict:
+                           now: datetime | None = None,
+                           last_close: float | None = None) -> dict:
     """
     What to do with one intraday position. Pure — no I/O.
 
@@ -278,7 +338,7 @@ def evaluate_intraday_exit(pos: dict, ltp: float, policy: dict,
     # not a setup that deserves to be held for its target, and this is the rule
     # that cuts before the stop rather than after.
     if policy["check_invalidation"]:
-        bad, why = _invalidated(pos, ltp)
+        bad, why = _invalidated(pos, ltp, last_close)
         if bad:
             return {
                 "action": "EXIT_INVALIDATED", "reason": "SETUP_INVALIDATED",
@@ -466,6 +526,42 @@ def invalidation_level_from(setup) -> tuple[float | None, str]:
     rather than by parsing prose.
     """
     m = getattr(setup, "meta", None) or {}
+
+    # ── AN EXPLICIT DECLARATION WINS — 12-Aug-2026 ──────────────────────────
+    #
+    # Three engines set `meta["invalidation_level"]` outright (SDN's VWR, TRP
+    # and ORB conditions) and NOTHING read it: this function only ever inferred
+    # the level from the ordered key list below. The project's own landmine,
+    # again — "a dict key and the key its consumer looks up are two different
+    # claims" — and the inference got two engines actively wrong:
+    #
+    #   RNG   is a LONG at the range LOW. Its meta carries range_low AND
+    #         range_high, and range_high is checked first, so the level came
+    #         back ABOVE the entry. `_invalidated` then reads "price is below
+    #         its invalidation level" on the very first evaluation and kills
+    #         the trade instantly. RNG has never completed a trade.
+    #   SDN/ORB is a SHORT that broke the range LOW, and carries both keys too,
+    #         so it also resolved to range_high — the wrong end of the range.
+    #   SDN/TRP declares prev_high; the list looks for `pdh`. No match at all,
+    #         so the invalidation check was simply dead for every trap short.
+    #   PBK   declares "losing VWAP" in prose and publishes no level key at
+    #         all — also dead.
+    #
+    # The inference stays for engines that do not declare, because removing it
+    # would silently disarm them instead. But an engine that states its own
+    # level is the authority on it: it knows which end of its structure the
+    # thesis lives at, and a positional key list cannot.
+    explicit = m.get("invalidation_level")
+    if explicit:
+        try:
+            prose = str(getattr(setup, "invalidation", "") or "")
+            # The prose reads "a close below X — because ..."; the clause before
+            # the dash is the label, the rest is the reasoning the alert prints.
+            label = prose.split(" — ")[0].strip() or "lost its invalidation level"
+            return float(explicit), label
+        except (TypeError, ValueError):
+            pass
+
     for key, label in (
         ("range_high", "closed back inside the opening range"),
         ("coil_high", "returned inside the coil"),

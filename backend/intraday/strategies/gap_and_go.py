@@ -76,6 +76,18 @@ class GapAndGo:
         if retrace > cfg_float("gap_max_retrace_pct", 50.0):
             return None
 
+        # ── AND NEVER BUY ONE THAT HAS ALREADY RUN — 12-Aug-2026 ────────────
+        # `retrace` goes NEGATIVE when price is above the open: the gap was not
+        # given back, it EXTENDED. The bound above is one-sided, so an
+        # arbitrarily extended gap read as "held" and was bought at the top of
+        # its own move. NATIONALUM on 12-Aug logged "-198% retraced" — price
+        # had run roughly twice the gap's own size beyond the open — and the
+        # rationale still printed "and held". Same one-sided-bound defect as
+        # ORB's missing minimum break, in the opposite direction.
+        min_retrace = -cfg_float("gap_max_extension_pct", 60.0)
+        if retrace < min_retrace:
+            return None                     # chasing an extended gap
+
         vr = ctx.volume_ratio()
         min_vr = cfg_float("gap_min_volume_ratio", 1.30)
         if vr is not None and vr < min_vr:
@@ -96,8 +108,11 @@ class GapAndGo:
         conf = 0.5
         if vr:
             conf += min(0.22, (vr - min_vr) * 0.14)
-        if retrace < 20:
+        if 0 <= retrace < 20:
             conf += 0.12                    # barely gave anything back
+        # The lower bound matters: without it every NEGATIVE retrace — i.e.
+        # every already-extended gap — collected this bonus too, so the most
+        # chased entries scored highest. NATIONALUM took it at -198%.
         if ctx.rs_vs_index_pct and ctx.rs_vs_index_pct > 0:
             conf += min(0.12, ctx.rs_vs_index_pct * 0.04)
         conf = round(min(0.94, conf), 2)

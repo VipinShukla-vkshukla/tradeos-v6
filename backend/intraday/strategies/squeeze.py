@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config import cfg_float, cfg_int
 from intraday.session import PRIME, DRIFT, AFTERNOON
-from intraday.strategies.base import Setup, SymbolContext
+from intraday.strategies.base import Setup, SymbolContext, confirmation_pct
 
 
 class SqueezeExpansion:
@@ -79,6 +79,17 @@ class SqueezeExpansion:
         break_pct = (ctx.ltp - r_hi) / r_hi * 100.0
         if break_pct > cfg_float("vce_max_chase_pct", 0.45):
             return None
+
+        # A RELEASE MUST CLEAR THE COIL, NOT TOUCH IT — 12-Aug-2026. Same
+        # missing lower bound as ORB, same consequence: HINDALCO entered
+        # 0.04% above the coil high and was cut "returned inside the coil"
+        # eight minutes later. The invalidation floor matters more here than
+        # in ORB, because this engine's own invalidation level IS r_hi — the
+        # line it was entering within four basis points of.
+        # See base.confirmation_pct().
+        min_break = confirmation_pct(recent_rng, cfg_float("vce_min_break_frac", 0.10))
+        if break_pct < min_break:
+            return None                      # touching the coil, not leaving it
 
         vr = ctx.volume_ratio()
         min_vr = cfg_float("vce_min_volume_ratio", 1.40)

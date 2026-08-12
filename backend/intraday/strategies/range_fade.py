@@ -126,7 +126,13 @@ class RangeFade:
             invalidation=(f"a close below {lo:.2f} — the range breaking down turns this from "
                           f"the best entry on the chart into the worst"),
             valid_phases=self.phases,
+            # invalidation_level DECLARED, not inferred — 12-Aug-2026. This
+            # meta carries both edges of the range, and exit_policy's key list
+            # checked range_high first, so a LONG taken at the range LOW got an
+            # invalidation level ABOVE its own entry and was invalidated on the
+            # first evaluation, every time. RNG has never completed a trade.
             meta={"range_low": round(lo, 2), "range_high": round(hi, 2),
+                  "invalidation_level": round(lo, 2),
                   "width_pct": round(width_pct, 2), "low_touches": low_touches,
                   "high_touches": high_touches, "volume_ratio": vr},
         )

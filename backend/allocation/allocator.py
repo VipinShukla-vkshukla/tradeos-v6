@@ -243,7 +243,8 @@ class Allocator:
 
             policy = P.swing_assignment if fw == "SWING" else P.intraday_stopping
             verdicts = (policy(scored, bar, fw_slots, field) if fw == "SWING"
-                        else policy(scored, bar, fw_slots))
+                        else policy(scored, bar, fw_slots,
+                                    inputs.get("bar_before_floor")))
             for v in verdicts:
                 v["hurdle"] = (None if bar in (float("inf"), float("-inf"))
                                else round(bar, 5))

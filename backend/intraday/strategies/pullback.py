@@ -104,9 +104,25 @@ class TrendPullback:
             stop = ctx.ltp * (1 - max_risk / 100.0)
             risk = ctx.ltp - stop
 
-        # Target the day high first — proven reachable — then extend by R.
+        # Target the day high — proven reachable — falling back to an R
+        # multiple only when the high is too close to be worth the trip.
+        #
+        # THIS WAS `max(by_r, day_high * 1.002)` UNTIL 12-Aug-2026, which is
+        # the exact defect vwap_reclaim.py had fixed on 10-Aug and which was
+        # never carried across to its sibling. Taking the LARGER of the two
+        # means that whenever 2.5R sits beyond the day high — the common case
+        # on a pullback, since the high was made earlier and price has since
+        # come back — the target silently becomes a price the stock has never
+        # traded at, past a level it has actually proven. exit_policy's
+        # `use_setup_target` exits AT this field, so a target never touched is
+        # a trade that rides the give-back guard down instead of banking the
+        # move it genuinely had.
         by_r = ctx.ltp + risk * cfg_float("pbk_target_r", 2.5)
-        target = max(by_r, ctx.day_high * 1.002)
+        min_worthwhile = ctx.ltp + risk * cfg_float("pbk_min_target_r", 1.0)
+        if ctx.day_high * 1.002 >= min_worthwhile:
+            target = ctx.day_high * 1.002
+        else:
+            target = by_r
 
         conf = 0.55
         conf += min(0.15, (frac_above - 0.70) * 0.5)
@@ -125,6 +141,13 @@ class TrendPullback:
             invalidation=(f"losing VWAP {ctx.vwap:.2f} on a closing basis — on a trend day "
                           f"that is the trend ending, not a dip"),
             valid_phases=self.phases,
+            # invalidation_level DECLARED — 12-Aug-2026. This meta published no
+            # key exit_policy.invalidation_level_from() recognised, so the
+            # "losing VWAP on a closing basis" clause above was prose only and
+            # the invalidation check never fired on a PBK trade. VWAP is the
+            # anchor the whole thesis rests on; it is also where the stop sits,
+            # which is what makes this entry efficient.
             meta={"frac_above_vwap": round(frac_above, 2), "touches": touches,
+                  "vwap": round(ctx.vwap, 2), "invalidation_level": round(ctx.vwap, 2),
                   "dist_vwap_pct": round(dist_vwap, 2), "off_high_pct": round(off_high, 2)},
         )

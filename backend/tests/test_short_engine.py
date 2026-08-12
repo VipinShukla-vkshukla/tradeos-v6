@@ -20,6 +20,8 @@ that squeezes it.
 
 from __future__ import annotations
 
+from intraday.session import PRIME  # was the literal PRIME, a phase that
+                                    # does not exist — see test_break_confirmation
 from tests import cfg_ctx
 from tests._fixtures import CLEAN_STOCK, ctx_for
 
@@ -49,7 +51,7 @@ def test_all_three_conditions_fire_on_their_own_shape():
         eng = ShortDistribution()
         seen = {}
         for kind in ("trap", "vwap_reject", "breakdown"):
-            s = eng.evaluate(ctx_for(kind), "MORNING")
+            s = eng.evaluate(ctx_for(kind), PRIME)
             assert s is not None, (
                 f"the {kind} session produced NO setup — most likely the chase "
                 f"rule or the target construction, both of which generate a "
@@ -84,7 +86,7 @@ def test_at_least_one_condition_is_economic_at_realistic_size():
         eng = ShortDistribution()
         economic = []
         for kind in ("trap", "vwap_reject", "breakdown"):
-            s = eng.evaluate(ctx_for(kind), "MORNING")
+            s = eng.evaluate(ctx_for(kind), PRIME)
             qty = int(5000 // s.entry) or 1
             ok, _ = is_worth_taking(s.entry, qty, s.target, s.stop, "MIS", s.direction)
             if ok:
@@ -120,11 +122,11 @@ def test_preconditions_refuse_what_they_should():
         eng = ShortDistribution()
         # Green on the day — shorting demonstrated demand, and the population
         # most likely to lock at its upper circuit.
-        assert eng.evaluate(ctx_for("trap", prev_close=95.0), "MORNING") is None
+        assert eng.evaluate(ctx_for("trap", prev_close=95.0), PRIME) is None
         # Above VWAP — the average buyer today is in profit.
-        assert eng.evaluate(ctx_for("trap", vwap=90.0), "MORNING") is None
+        assert eng.evaluate(ctx_for("trap", vwap=90.0), PRIME) is None
         # No VWAP at all.
-        assert eng.evaluate(ctx_for("trap", vwap=None), "MORNING") is None
+        assert eng.evaluate(ctx_for("trap", vwap=None), PRIME) is None
 
 
 def test_structure_gate_inverts_for_a_short():

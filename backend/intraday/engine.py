@@ -1347,11 +1347,29 @@ class IntradayEngine:
         return round(base + (scarce - base) * used, 3)
 
     def _entry_cap(self) -> int:
-        from execution.gates import max_orders_per_day
+        """
+        The budget the floor above is measuring consumption OF.
+
+        This read `intraday_max_orders_per_day` (20) — the BROKER's daily order
+        cap, a risk limit on how many orders may be sent. The budget entries
+        are actually drawn from is `intraday_max_new_per_day` (10), checked in
+        _maybe_enter_intraday. Two different numbers for two different things,
+        and the floor was scaling against the wrong one, so it rose at exactly
+        half the intended rate: on 12-Aug-2026 the tenth and final entry of the
+        day left the floor reading 0.675 — "half the budget spent" — when the
+        budget was in fact fully spent and the floor should have been at
+        `intraday_min_confidence_scarce` (0.80) since the entry before.
+
+        The cost was not theoretical. The floor stopped at 0.675 and stayed
+        there; SDN's modal confidence on a down tape is 0.66 (0.62 base + 0.04
+        for negative RS), so every short the session offered after 09:38 was
+        refused by fifteen thousandths of a point, by a bar that was itself set
+        by ten losing longs taken in the first six minutes.
+        """
         try:
-            return max(1, max_orders_per_day("INTRADAY"))
+            return max(1, cfg_int("intraday_max_new_per_day", 4))
         except Exception:
-            return 5
+            return 4
 
     def _entries_today(self) -> int:
         """
@@ -1555,10 +1573,19 @@ class IntradayEngine:
             # framework, not by which loop happens to be running.
             if (p.get("framework") or "SWING").upper() == "INTRADAY":
                 from intraday.exit_policy import (evaluate_intraday_exit,
-                                                  load_intraday_policy)
+                                                  load_intraday_policy,
+                                                  last_completed_close)
                 if self._intraday_policy is None:
                     self._intraday_policy = load_intraday_policy()
-                d = evaluate_intraday_exit(p, float(ltp), self._intraday_policy)
+                # The close of the last FINISHED bar, for the invalidation
+                # check. None when this symbol has no context or too few bars
+                # yet, which `_invalidated` reads as "not confirmed" rather
+                # than falling back to the tick. Only consumed when
+                # `intraday_invalidation_require_close` is on.
+                _c = self._contexts.get(p["symbol"])
+                d = evaluate_intraday_exit(
+                    p, float(ltp), self._intraday_policy,
+                    last_close=last_completed_close(getattr(_c, "bars", None) or []))
             else:
                 d = evaluate_exit(p, float(ltp), held, self._policy)
 
@@ -3606,15 +3633,44 @@ class IntradayEngine:
         #
         # `alloc_floor_blocks_paper` flips it back for anyone who wants the
         # paper book to mirror the live block exactly and accept the freeze.
+        # ── THE WAIVER WAS UNRANKED, AND THAT WAS THE REAL DEFECT ───────────
+        # 12-Aug-2026. The carve-out above was written to stop the floor
+        # freezing the prior, and that reasoning still holds. What it got wrong
+        # was its SCOPE: it waved through every floor-declined proposal in the
+        # cycle, which discarded the allocator's edge ORDER and its
+        # `slots_left` budget along with the floor. The allocator scored five
+        # proposals at 09:30:28, ranked them, declined all five — and the paper
+        # book opened all five. The book was not exploring; it had no selection
+        # at all, and the day's whole budget went to arrival order.
+        #
+        # `floor_only_rank` (policies.intraday_stopping) is that same ranking,
+        # computed in the same pass by the same rule against the pre-floor bar.
+        # Permitting only ranked proposals means paper and live now run ONE
+        # decision procedure with ONE ranking and ONE slot budget. The only
+        # divergence left is whether the absolute floor binds, and it is capped
+        # at the top `slots_left` rather than unbounded.
+        #
+        # WHY NOT SIMPLY MAKE THEM IDENTICAL. `alloc_floor_blocks_paper=true`
+        # does exactly that and the operator may set it. The cost is measured,
+        # not theoretical: scoring.intraday_priors() fetches every resolved row
+        # in intraday_setups with NO time bound, so a prior that has gone
+        # negative never ages out. Zero trades means zero new TAKEN rows means
+        # the prior cannot move, and no engine improvement can ever reach it.
+        # The honest fix for the divergence is to make the floor stop binding —
+        # a positive prior — not to remove the only path that can produce one.
         floor_declined = ((v.get("hurdle_inputs") or {}).get("absolute_floor_applied")
                           and v["verdict"] != "DEFER")
         if floor_declined and not cfg_bool("alloc_floor_blocks_paper", False):
             from execution.gates import is_paper
-            if is_paper(framework):
+            rank = v.get("floor_only_rank")
+            if is_paper(framework) and rank is not None:
                 return True, (f"below the absolute floor, but {framework} is PAPER "
-                              f"— taken as EXPLORATION so the prior keeps learning; "
-                              f"the DECLINE is recorded and the live-equivalent "
-                              f"book excludes it")
+                              f"and the allocator ranked it #{rank + 1} of the "
+                              f"slots available — taken as EXPLORATION so the prior "
+                              f"keeps learning; the DECLINE is recorded and the "
+                              f"live-equivalent book excludes it")
+            if is_paper(framework):
+                return False, (v.get("reason") or "below the absolute floor")
 
         return False, v.get("reason") or f"allocator returned {v['verdict']}"
 

@@ -211,7 +211,8 @@ def simulate_intraday(sb, force_phase: str | None = None) -> dict:
     from intraday.engine import IntradayEngine
     from intraday.session import session_state
     from intraday import market_context as mkt
-    from intraday.exit_policy import evaluate_intraday_exit, load_intraday_policy
+    from intraday.exit_policy import (evaluate_intraday_exit, load_intraday_policy,
+                                  last_completed_close)
     from intraday.strategies.registry import evaluate_all, engine_names
     from intraday.cost_model import is_worth_taking
     from execution.gates import trading_mode, auto_exit_enabled
@@ -304,7 +305,14 @@ def simulate_intraday(sb, force_phase: str | None = None) -> dict:
     ipol = load_intraday_policy()
     for p in ipos:
         ltp = float(p.get("current_price") or p.get("entry_price") or 0)
-        d = evaluate_intraday_exit(p, ltp, ipol)
+        # Same last-completed-bar close the daemon passes. A preview tool
+        # that omits it would report HOLD where the daemon exits (or the
+        # reverse) the moment intraday_invalidation_require_close is on —
+        # the class of divergence tools/simulate.py exists to prevent.
+        _c = eng._contexts.get(p["symbol"])
+        d = evaluate_intraday_exit(
+            p, ltp, ipol,
+            last_close=last_completed_close(getattr(_c, "bars", None) or []))
         logger.info(f"      {p['symbol']:<12} {d['action']:<18} {d['detail'][:70]}")
     if not ipos:
         logger.info("      none — expected until a paper entry is taken during a session")
