@@ -610,6 +610,23 @@ ENGINE_ARCHETYPE = {
     "VWR": MEAN_REVERSION,  # "VWAP reclaim — the one thing that works in
                             # the midday DRIFT" — its own word for a
                             # non-trending regime
+    # GDB WAS THE ONE FAMILY THAT ACTUALLY REACHES THIS LOOKUP AND WAS ABSENT
+    # — 12-Aug-2026. regime_fit_multiplier() is keyed by `p.source`, and
+    # from_intraday() sets `source` to the FAMILY (family_of()), so the keys
+    # that ever reach here are the six FAMILIES {ORB, VWR, VCE, RNG, SDN, GDB}
+    # — not the eight sub-engine names. GAP/PDL/PBK above are documentary:
+    # real engines, but merged into the ORB/VWR families, so their key is
+    # never looked up. GDB is a family of its own (registry.FAMILIES: GDB->GDB)
+    # and was the sole family missing a row, so an unpromoted-then-promoted GDB
+    # would read "unclassified — no opinion" (an exact 1.0 no-op) the day the
+    # weight is raised, silently, exactly the "future regime_fit_report() run
+    # drops them" failure this module's test docstring already names. Inert
+    # today twice over — the weight defaults to 0.0 and GDB is SHADOW so no GDB
+    # proposal reaches the allocator at all — but correct the moment either
+    # changes. Its own module docstring is unambiguous ("This is a
+    # mean-reversion LONG engine: buy the recovery off a gap-down open"), so
+    # unlike the pooled VWR family there is no archetype ambiguity to resolve.
+    "GDB": MEAN_REVERSION,  # gap-down bounce — buy the recovery, not the gap
 }
 
 # Bounded nudge, as a FRACTION of 1.0, before `intraday_regime_fit_weight`

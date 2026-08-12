@@ -114,11 +114,42 @@ def test_weight_scales_the_nudge_linearly():
 
 def test_all_seven_named_engines_are_classified():
     """CLAUDE.md names ORB, GAP, PDL, VCE, PBK, VWR, RNG as the seven
-    intraday engines; SDN (short family) is an eighth. All must resolve to
-    an archetype, or a future regime_fit_report() run silently drops them."""
+    intraday engines; SDN (short family) is an eighth, GDB (gap-down bounce)
+    a ninth. All must resolve to an archetype, or a future regime_fit_report()
+    run silently drops them."""
     from allocation.scoring import ENGINE_ARCHETYPE
-    for eng in ("ORB", "GAP", "PDL", "VCE", "PBK", "VWR", "RNG", "SDN"):
+    for eng in ("ORB", "GAP", "PDL", "VCE", "PBK", "VWR", "RNG", "SDN", "GDB"):
         assert eng in ENGINE_ARCHETYPE, f"{eng} has no archetype classification"
+
+
+def test_every_family_that_reaches_the_lookup_is_classified():
+    """ASSERT THROUGH THE CONSUMER'S LOOKUP, NOT A HARDCODED LIST — 12-Aug-2026.
+
+    The hardcoded list above missed GDB for exactly the reason the project's
+    own landmine names: regime_fit_multiplier() is keyed by `p.source`, and
+    from_intraday() sets `source` to the engine FAMILY (family_of()), so the
+    keys that actually reach this table are the registry's FAMILIES, not the
+    sub-engine names. A per-engine list can never notice a NEW family going
+    unclassified; deriving the required set from registry.FAMILIES — the same
+    values the live path feeds in — is the only construction that catches the
+    next GDB automatically. (The reverse is deliberately NOT asserted: GAP, PDL
+    and PBK are classified but never looked up, which is documentary and
+    harmless.)"""
+    from allocation.scoring import ENGINE_ARCHETYPE
+    from intraday.strategies.registry import FAMILIES
+    for family in set(FAMILIES.values()):
+        assert family in ENGINE_ARCHETYPE, (
+            f"family {family!r} reaches regime_fit_multiplier() via p.source "
+            f"but has no archetype — it will read 'unclassified, no opinion' "
+            f"(a silent 1.0 no-op) the day intraday_regime_fit_weight is raised")
+
+
+def test_gdb_is_mean_reversion_matching_its_own_docstring():
+    """GDB's module docstring: 'This is a mean-reversion LONG engine: buy the
+    recovery off a gap-down open.' The archetype must agree — a gap-down bounce
+    nudged as momentum would be favoured in RISK_ON, the opposite of the truth."""
+    from allocation.scoring import ENGINE_ARCHETYPE, MEAN_REVERSION
+    assert ENGINE_ARCHETYPE.get("GDB") == MEAN_REVERSION
 
 
 def test_archetypes_are_only_the_two_defined_constants():
@@ -219,6 +250,10 @@ TESTS = [
      test_mean_reversion_engine_disfavoured_in_risk_on_at_full_weight),
     ("weight scales the nudge linearly", test_weight_scales_the_nudge_linearly),
     ("all seven named engines are classified", test_all_seven_named_engines_are_classified),
+    ("every family that reaches the lookup is classified",
+     test_every_family_that_reaches_the_lookup_is_classified),
+    ("GDB is mean-reversion matching its own docstring",
+     test_gdb_is_mean_reversion_matching_its_own_docstring),
     ("archetypes are only the two defined constants",
      test_archetypes_are_only_the_two_defined_constants),
     ("score() without the new params is unchanged",
