@@ -1,5 +1,11 @@
 # TradeOS v6 — read this before answering anything
 
+## CURRENT WORK — READ BEFORE ANYTHING ELSE
+
+Active plan: `docs/TRADEOS_ROADMAP.md`
+Findings ledger: `docs/FINDINGS.md` — append-only, read it first
+One stage per session. Stop at the gate. Never edit a prior ledger entry.
+
 Claude Code loads this file automatically at the start of every session in this
 repository. It exists so a new conversation starts with the design rather than
 re-deriving it, and so advice never contradicts decisions already made and paid
@@ -17,6 +23,7 @@ before writing anything that compares a "regime" string, because at least two
 of these near-homophone systems have already collided silently once.
 
 ---
+
 
 ## What this is
 
