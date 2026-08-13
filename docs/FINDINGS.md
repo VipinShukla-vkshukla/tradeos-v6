@@ -1539,3 +1539,330 @@ R with n on both populations, and the inverted-gate answer (none at 2 SE; one
 candidate at 1.5) are all recorded. No retirements, per the gate's own terms.
 
 ---
+
+## 2026-08-14 — Stage 2b (unit economics) — the swing book's break-even hit rate is 39.66% and it hits 39.7%
+
+**Ran:**
+
+```bash
+git checkout -b diagnostic/unit-economics
+cd backend && python -m tools.verify                    # 432/432 before and after
+cd backend && python -m tools.expectancy_ledger | grep -E "friction, in R"
+cd backend && python -m tools.unit_economics            # NEW, read-only, committed with this entry
+```
+
+`tools/unit_economics.py` is new and is the only thing this stage adds. It is
+read-only — no writes, no orders, no config. It exists because the ledger's own
+rule is that every number carries the command that produced it, and a model
+living in a scratch directory satisfies that for exactly one session. Registered
+nowhere, called by nothing; it is run by hand.
+
+---
+
+### PREFLIGHT — three corrections that govern how every number below reads
+
+**P.1 — friction is STATUTORY here, and `round_trip()` would double-count.**
+`intraday/cost_model.round_trip()` adds `cost_slippage_bps` (5) to both legs.
+That is correct for a PRE-TRADE gate, which decides against a price it has not
+yet paid. It is a double count against a REALISED outcome, because slippage is
+already inside the fill on both books: `execution/paper_broker.py:90` fills
+MARKET orders at `ltp * (1 ± slip)`, so every intraday row's `entry_price` and
+`exit_price` already carry it, and live fills embed real slippage by
+construction. `tools/expectancy_ledger.py` uses `entry_leg + exit_leg` for this
+reason. This stage matches it, so every figure below is directly comparable to
+Stage 2. **Not a defect in either** — but note the asymmetry it creates and that
+nothing currently states: the intraday cost GATE prices an MIS round trip at
+**0.206%** of position and the expectancy LEDGER prices the same trade at
+**0.106%**. Same trade, two numbers, because they answer two different
+questions. Recorded here so the next reader does not "reconcile" them.
+
+**P.2 — Stage 2's `+0.204R` is a mean of eight ratios and one row is 0.767R.**
+Reproduced exactly, then decomposed:
+
+```
+   symbol           clip   stop%  risk Rs  cost Rs   cost%  friction R
+   KIMS              802   2.74%       22    16.83  2.097%       0.767   <<
+   BHEL             2037   5.77%      118    19.58  0.961%       0.167
+   PPLPHARMA        2609   6.69%      175    21.25  0.814%       0.122
+   TRAVELFOOD       2713   4.81%      130    21.11  0.778%       0.162
+   ETERNAL          2754   7.34%      202    21.23  0.771%       0.105
+   VIJAYA           2780   8.07%      224    21.33  0.767%       0.095
+   GABRIEL          2788  10.43%      291    21.30  0.764%       0.073
+   CIPLA            2940   5.11%      150    21.59  0.734%       0.144
+   friction R   mean +0.204   median +0.133
+```
+
+KIMS is a one-share ₹802 position risking ₹22, against a ₹15.04 DP fee. Its
+friction is 0.767R and it drags the mean of the other seven (+0.124) to +0.204.
+A mean over eight heterogeneous ratios is a statement about that one row.
+**Stage 2's C.4 headline of −0.004R at the design target is therefore the
+KIMS-weighted figure.** At the median clip and median stop the same arithmetic
+gives **+0.068R**, and at the geometry the pipeline is producing today it gives
+**+0.010R**. Stage 2's direction survives — the swing book at its design target
+is inside noise of zero — but −0.004R overstates the deficit, and the reason it
+overstates it is a single ₹802 clip.
+
+**P.3 — the model is validated three ways before anything is built on it.**
+(i) `expectancy_ledger` reconciles it against the broker's own contract notes:
+`-0.01% across 4 round trip(s), Rs 25,596 turnover`. (ii) It reproduces Stage 2
+exactly — SWING/CNC mean **+0.204R**, INTRADAY/MIS mean **+0.124R**, both to
+three decimals. (iii) Per-row, all eight swing rows above.
+
+---
+
+### THE IDENTITY THIS STAGE IS ABOUT
+
+```
+    friction_R = statutory_rupees(clip) / risk_rupees = cost_pct(clip) / stop_pct
+```
+
+and because CNC's DP fee is flat, `cost_pct(clip) = k + DP/clip`. So friction in
+R is a function of **two** things, and which one is held fixed **inverts the
+advice**:
+
+| framing | what moves | effect of a BIGGER clip |
+|---|---|---|
+| stop % fixed | risk in ₹ rises with clip | DP amortises → friction **falls** |
+| risk ₹ fixed | stop narrows as 1/clip | stop narrows faster → friction **RISES** |
+
+**The system holds risk fixed** (`risk_pct_per_trade` = 1.0). Measured, at
+₹20,000:
+
+```
+      clip   stop%  cost Rs   fricR │    @2.0R    @2.5R    @3.0R │  Rs/tr@2R
+     2,000  10.00%    19.48   0.097 │   +0.103   +0.303   +0.503 │    +20.52
+     4,000   5.00%    23.94   0.120 │   +0.080   +0.280   +0.480 │    +16.06   << ceiling
+    10,000   2.00%    37.28   0.186 │   +0.014   +0.214   +0.414 │     +2.72
+    20,000   1.00%    59.54   0.298 │   -0.098   +0.102   +0.302 │    -19.54
+```
+
+**This contradicts `TRADEOS_ROADMAP.md` Stage 4 item 2, which lists "clip-size
+floor" as a friction fix.** Under the sizing rule the system actually uses, a
+clip-size floor makes friction *worse*. A clip floor only helps if the stop
+width is held — i.e. if `risk_pct_per_trade` rises with it. Raising one without
+the other is a change that reads as a fix and is not one.
+
+---
+
+### GEOMETRY, MEASURED — the inputs the grid is anchored on
+
+```
+  SWING closed book   n=8    clip median Rs2,733   stop median 6.23%   planned target median 1.44R
+  SWING plans 13-Aug  n=82                         stop median 4.34%   planned target median 1.90R
+  INTRADAY MIS        n=47   clip median Rs6,525   stop median 0.90%   planned target median 2.00R
+  swing close rate    10.6/month  (78 closes, 2025-12-31 to 2026-08-12, 224 days)
+```
+
+The two swing stop widths disagree — 6.23% against 4.34% — and **the
+disagreement decides the answer**, so both are carried through every table
+rather than one being picked.
+
+### FRICTION BY CLIP
+
+```
+       clip │   CNC Rs    CNC %  DP share │   MIS Rs    MIS % │  CNC/MIS
+      2,000 │    19.48   0.974%     77.2% │     2.12   0.106% │    9.19x
+      2,733 │    20.60   0.824%     73.0% │     2.65   0.106% │    7.77x
+      4,000 │    23.94   0.599%     62.8% │     4.26   0.106% │    5.62x
+     10,000 │    37.28   0.373%     40.3% │    10.62   0.106% │    3.51x
+     20,000 │    59.54   0.298%     25.3% │    21.26   0.106% │    2.80x
+     50,000 │   126.28   0.253%     11.9% │    53.14   0.106% │    2.38x
+    100,000 │   237.52   0.238%      6.3% │    82.68   0.083% │    2.87x
+  asymptote, clip → ∞:  CNC 0.2225%   MIS 0.0355%
+```
+
+**MIS cost% is FLAT at 0.106% across this entire ladder.** Brokerage is
+`min(₹20, 0.03%)` per order and the percentage branch wins below ₹66,667 per
+leg, so nothing amortises until a position worth ~₹133,000. **Clip size is not
+an intraday lever at any size this account can reach.** CNC's slope is 77% DP
+fee at ₹2,000 and 6% at ₹100,000 — that is the whole of the swing clip argument.
+
+---
+
+### THE TWO ANSWERS ASKED FOR
+
+**Minimum clip at which swing CNC clears friction at 2R (40% hit):**
+
+| stop geometry | minimum clip | vs current ₹2,733 clip |
+|---|---|---|
+| 6.23% — closed book median | **₹1,250** | already clears, net **+0.068R** |
+| 4.34% — current plans, n=82 | **₹2,250** | already clears, net **+0.010R** |
+
+**The clip is not the binding constraint.** The book is already above both
+thresholds. It clears by ₹483 at the geometry it is currently planning.
+
+**Target multiple that clears friction at the current clip:**
+
+| clip | stop | required target | friction | net @2R |
+|---|---|---|---|---|
+| ₹2,733 | 6.23% | **1.831R** | 0.132R | +0.068R |
+| ₹2,733 | 4.34% | **1.975R** | 0.190R | +0.010R |
+| ₹4,000 | 6.23% | 1.740R | 0.096R | +0.104R |
+| ₹4,000 | 4.34% | 1.845R | 0.138R | +0.062R |
+
+**The pipeline's median planned target is 1.90R (n=82) and its break-even is
+1.975R. The book is planning targets below its own break-even.**
+
+```
+   target 1.90R (plans median n=82) stop 4.34% : gross +0.160R  friction 0.190R  net -0.030R
+   target 2.00R (design           ) stop 4.34% : gross +0.200R  friction 0.190R  net +0.010R
+```
+
+**INTRADAY MIS, the same two questions:**
+
+| question | answer |
+|---|---|
+| minimum clip clearing 2R | **ANY clip** — cost% is constant, so clip is not a constraint |
+| required target at ₹6,525 clip | **1.795R** (friction 0.118R, net @2R **+0.082R**) |
+
+Stage 2 reported +0.076R; the +0.082R here is the same number computed on the
+median 0.90% stop rather than the 0.94% mean. Both stand.
+
+---
+
+### THE FORM THAT IS HARDEST TO ARGUE WITH — break-even hit rate
+
+`h* = (1 + friction_R) / (1 + target_R)`. No assumption about the win rate
+enters, so this survives even if the 40% design target never does.
+
+```
+   measured: SWING 39.7% (n=78) · INTRADAY MIS 25.5% (n=47), Stage 2 C.4
+   book         clip  stop%  fricR │  h* @2.0R  h* @2.5R  h* @3.0R
+   SWING       2,733  6.23%  0.132 │   37.74%   32.35%   28.31%
+   SWING       2,733  4.34%  0.190 │   39.66%   34.00%   29.75%   <<
+   SWING       4,000  6.23%  0.096 │   36.54%   31.32%   27.40%
+   SWING       4,000  4.34%  0.138 │   37.93%   32.51%   28.45%
+   INTRADAY    6,525  0.90%  0.118 │   37.27%   31.95%   27.95%
+```
+
+**At the clip it takes and the stops it currently plans, the swing book's
+break-even hit rate at 2R is 39.66%. It hits 39.7%.** Four hundredths of a
+percentage point of edge, on n=78. That is not a book with a small edge; it is
+a book sitting on its own fee schedule.
+
+At 2.5R the same configuration breaks even at 34.00% — **5.7 points of headroom
+against the same measured hit rate.** The target multiple is the lever; the clip
+is not, because it is already above threshold and capped anyway (next section).
+
+---
+
+### AT ₹20,000 — every configuration the constraints permit
+
+`max_position_pct` = 20% is **enforced** (`analysis/portfolio_constraints.py:223`,
+`qty_by_maxpos = int((capital * max_position_pct / 100.0) // entry_price)`), so
+the clip ceiling at ₹20,000 is **₹4,000**. CNC is full cash — no leverage — so
+concurrent slots are ₹20,000 ÷ clip.
+
+```
+  monthly at the MEASURED close rate of 10.6 trades/month
+     clip   stop%  riskRs  risk%   fricR    @2.0R    @2.5R   reqTgt  Rs/mo@2R  %/mo@2R  Rs/mo@2.5R  slots
+    2,000   6.23%     125  0.62%   0.156   +0.044   +0.244   1.891R       +58   +0.29%        +322    10
+    2,000   4.34%      87  0.43%   0.224   -0.024   +0.176   2.061R       -22   -0.11%        +162    10
+    2,733   6.23%     170  0.85%   0.132   +0.068   +0.268   1.831R      +122   +0.61%        +483     7
+    2,733   4.34%     119  0.59%   0.190   +0.010   +0.210   1.975R       +13   +0.06%        +264     7
+    3,000   6.23%     187  0.93%   0.116   +0.084   +0.284   1.790R      +166   +0.83%        +562     6
+    3,000   4.34%     130  0.65%   0.167   +0.033   +0.233   1.917R       +46   +0.23%        +322     6
+    4,000   6.23%     249  1.25%   0.096   +0.104   +0.304   1.740R      +275   +1.37%        +803     5
+    4,000   4.34%     174  0.87%   0.138   +0.062   +0.262   1.845R      +114   +0.57%        +482     5
+```
+
+Note the ₹4,000 / 6.23% row risks ₹249 — **1.25% of capital, above the
+configured 1.0%.** The best 2R cell available inside the config as written is
+₹4,000 / 4.34%: **+₹114 per month, +0.57%.**
+
+**A config incoherence found on the way:** `max_positions_risk_on` is 8 and the
+clip ceiling is ₹4,000. 8 × ₹4,000 = ₹32,000 against ₹20,000 of cash. At the
+₹4,000 ceiling the account funds **5** positions, not 8. Not changed.
+
+---
+
+### THE QUESTION, ANSWERED PLAINLY
+
+> At ₹20,000, is there a configuration where the swing framework is worth running?
+
+**At 2R — no.**
+
+Not because expectancy is negative. Because the entire achievable edge is
+**+₹114 to +₹275 per month** — 0.57% to 1.37% — and it is earned by paying
+**₹23.94 of charges per trade to keep ₹10.78 of edge**. The account pays more
+than twice its own edge in fees. And the margin that produces it is 0.04
+percentage points of hit rate: break-even 39.66%, measured 39.7%. Any
+degradation the book has already shown — a 1.90R median planned target instead
+of 2.00R — takes it to **−0.030R**. It is already there.
+
+Three independent reasons, any one sufficient:
+
+1. **The break-even hit rate and the measured hit rate are the same number.**
+   39.66% vs 39.7%, n=78. There is no edge to be eroded because there is none
+   to begin with.
+2. **The book plans below its own break-even.** Required 1.975R, planning 1.90R
+   median across 82 current plans. The design target of 2R is not what the
+   pipeline is asking for.
+3. **The clip lever is exhausted and capped.** The book is already above the
+   ₹2,250 threshold, and `max_position_pct` caps it at ₹4,000 regardless. Under
+   fixed-rupee risk, raising it further makes friction worse, not better.
+
+**At 2.5R — yes, conditionally, and it is the only lever that works at this
+capital.** ₹4,000 clip at 4.34% stops gives **+0.262R, +₹482/month, +2.41%**,
+with a break-even hit rate of 32.51% against a measured 39.7% — 7.2 points of
+headroom instead of 0.04. At ₹2,733 it is +₹264/month.
+
+The condition, stated because the grid does not model it: **the grid holds the
+hit rate at 40% while raising the target, and that is generous.** A target
+further away is reached less often. The break-even table is the honest form of
+this — 2.5R needs 34.00% rather than 39.66% — but whether moving the target from
+1.90R to 2.5R costs more than 5.7 points of hit rate is **not established here
+and cannot be without Stage 3.**
+
+**Intraday MIS, by contrast, nets +0.082R at 2R at ANY clip**, with a break-even
+of 37.27% — but its measured hit rate is 25.5%, twelve points below that. Its
+friction problem is solved and its selection problem is not. The two books fail
+for opposite reasons, and the same fix helps neither.
+
+---
+
+**Could not determine:**
+
+- **Whether 40% at 2R is achievable at all.** Every grid in this entry is
+  conditional on it. The measured book is 39.7% hit and −₹12,385 net over 78
+  trades, at a median PLANNED target of 1.44R. The specification has never been
+  demonstrated on a single closed trade, and this stage does not demonstrate it
+  — it prices it.
+- **What raising the target to 2.5R costs in hit rate.** The decisive unknown
+  for the only recommendation this entry makes. Stage 3.
+- **Whether the 4.34% or the 6.23% stop geometry is the right anchor.** n=82
+  current plans against n=8 taken trades, and they disagree by enough to flip
+  the 2R answer. The n=8 are the trades that were actually SELECTED for entry,
+  so the gap may be a selection effect rather than drift — untestable at n=8.
+- **Slippage as actually realised.** Every figure assumes fills at the modelled
+  price, and the 5 bps in `cost_slippage_bps` is an assumption, not a
+  measurement. It is inside the paper book's fills by construction and inside
+  the live book's by definition, but nothing here measures live slippage against
+  intended entry.
+- **The intraday monthly figures at ₹20,000.** The 109.9 closes/month rate is
+  extrapolated from 9 sessions over 13 days, the book is PAPER, and
+  `intraday_capital` is ₹100,000 against a ₹30,000 account — the landmine Stage
+  0 flagged. Per-trade R stands; the monthly rupee figures do not, and are
+  omitted for that reason.
+- **Whether `max_position_pct` 20% is the right ceiling.** It is enforced and it
+  binds; whether it should is a Stage 4 question.
+
+**Recommends:**
+
+- **No config change in this stage.** Read-only, and the one change worth making
+  depends on an unknown (target vs hit-rate trade-off) that Stage 3 exists to
+  settle.
+- **For Stage 4, correct the roadmap's item 2.** "Clip-size floor" as written
+  makes friction worse under fixed-rupee sizing. The friction lever at ₹20,000
+  is `risk_target_atr_mult` (currently 3.0 against `risk_stop_atr_mult` 1.5,
+  i.e. exactly 2R), not clip size.
+- **For Stage 3, add one question to the replay spec:** what does the hit rate do
+  when the target moves from 1.9R to 2.5R on the same detections? It is the only
+  number that decides whether the swing book has a configuration at ₹20,000.
+- **Note for whoever revisits sizing:** `max_positions_risk_on` 8 cannot be
+  funded at the ₹4,000 clip ceiling on ₹20,000. Five, not eight.
+
+**Gate: NEEDS DECISION.** The unit economics are established and reproducible.
+The decision they force — run the swing book at 2.5R, or stop running it at
+₹20,000 — is Vipin's, and it should not be taken before Stage 3 prices the
+target-versus-hit-rate trade.
