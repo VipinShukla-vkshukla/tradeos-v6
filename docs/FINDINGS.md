@@ -575,3 +575,242 @@ coverage is 98.5%, and the intraday book, where it is 100%.
 **Recommendation: treat Gate 1 as PASS and go to Stage 2 — after BUG-1 is fixed.**
 
 ---
+
+## 2026-08-14 — Stage 1b (scoped to tooling) — three tool defects fixed; the short book is visible, and it is not what the detection scorecard said it was
+
+Gate 1 was called **PASS** by the operator, and the original Stage 1b (backfill
+`planned_stop_at_entry`) was **skipped by their decision** — INTRADAY coverage is
+100%, and the 47.8% headline is 69 pre-automation manual rows that 1b's own
+charter refuses to backfill. This entry is the substituted work: fix the three
+tool defects Stage 1 recorded but was read-only for.
+
+Branch `fix/expectancy-ledger-shorts` off `main`. **Changes are confined to
+`backend/tools/` plus one new check under `backend/tests/`** (which is where
+CLAUDE.md directs verification code to live, instead of a throwaway script). No
+engine, no gate, no live trading path, no migration, no config key.
+
+**Ran:**
+
+```bash
+git checkout -b fix/expectancy-ledger-shorts
+cd backend && python -m tools.verify --module expectancy_ledger_shorts
+git stash push backend/tools/expectancy_ledger.py backend/tools/exit_audit.py
+cd backend && python -m tools.verify --module expectancy_ledger_shorts   # must FAIL
+git stash pop
+cd backend && python -m tools.verify
+cd backend && python -m tools.expectancy_ledger
+cd backend && python -m tools.exit_audit --days 30 --book INTRADAY
+cd backend && python -m tools.exit_audit --days 30 --book SWING
+```
+
+Plus one read-only scratchpad script, `split.py`, which **imports the fixed
+`expectancy_ledger.load()`** rather than recomputing any R of its own.
+
+---
+
+### BUG-1 — fixed. `tools/expectancy_ledger.py`, the risk denominator
+
+`risk_amt = (entry - float(stop)) * qty` replaced with
+`D.risk_per_share(entry, float(stop), r.get("direction")) * qty`.
+`intraday.direction.risk_per_share` is **imported, not reimplemented** — it is
+the same function `position_lifecycle.py:880` already uses to write
+`r_multiple`, and it still returns `0.0` for a stop genuinely on the wrong side
+in either direction, which is the one case the old guard was right about.
+`direction` added to the `SELECT`; it exists and is populated on every row
+(`Counter({('LONG','SWING'): 78, ('LONG','INTRADAY'): 48, ('SHORT','INTRADAY'): 8})`).
+
+**Raw output — before / after, same command:**
+
+```
+before:  56 of 134 closed trades carry planned_stop_at_entry.
+         · INTRADAY / MIS   (n=39)  NET R  mean -0.251
+
+after:   planned_stop_at_entry PRESENT on  64 of 134 closed trades (47.8%)  ← column coverage
+         R COMPUTABLE on                   64 of 134 closed trades (47.8%)  ← usable for R stats
+         · INTRADAY / MIS   (n=47)
+           gross R                    n=47   mean -0.128 ±0.108   median -0.274
+           friction, in R             n=47   mean +0.124 ±0.006   median +0.118
+           NET R  ← the number        n=47   mean -0.252 ±0.110   median -0.382
+```
+
+64/134 is **exactly** the figure Stage 1 measured independently against the
+table with `coverage_query.py`. The tool and the direct query now agree.
+
+### BUG-2 — fixed. Two counts, separately labelled
+
+The line printed `len(scored)` — rows whose R could be **computed** — under the
+words "carry planned_stop_at_entry", which is **column presence**. They now
+print as two labelled lines, and any row that has the column but cannot be
+scored is **named**, because a stop on the wrong side for the direction traded
+is a data defect and not a rounding loss:
+
+```
+  {n} row(s) carry a stop that R cannot be computed from — the stop is on the
+  wrong side of entry for the direction recorded, or sits exactly at it: {symbols}
+```
+
+On today's book the two counts are both 64 and that warning does not fire. It
+would have named all 8 shorts before the BUG-1 fix.
+
+### BUG-3 — fixed. `tools/exit_audit.py --days N`
+
+Added, windowing on `exit_date`, stated on the header line
+(`(last 30d, exits since 2026-07-15)` vs `(ALL history)`) so no future entry can
+repeat Stage 1's mismatch of a lifetime table printed beside 30-day tables.
+`check_open_stops` is deliberately **not** windowed — an open position has no
+exit date, and a 30-day flag must not hide a breached stop on a trade opened 40
+days ago. Rows with no `exit_date` are excluded and counted out loud.
+
+**Raw output — the flag genuinely filters:**
+
+```
+$ python -m tools.exit_audit --days 30 --book INTRADAY
+  window: exit_date >= 2026-07-15 (30d) — 56 of 56 closed row(s)
+  CLOSED TRADES — INTRADAY (last 30d, exits since 2026-07-15): 56 ...
+
+$ python -m tools.exit_audit --days 30 --book SWING
+  window: exit_date >= 2026-07-15 (30d) — 9 of 78 closed row(s)
+  CLOSED TRADES — SWING (last 30d, exits since 2026-07-15): 8 ...
+  BROKER_EXIT                 8   +0.482     +0.728       63%
+```
+
+**This resolves a Stage 1 "could not determine" in the harmless direction, and
+proves it rather than assuming it.** Stage 1 wrote "it happens not to matter
+much here — the intraday book only starts in July." That is now measured:
+INTRADAY is **56 of 56**, so every `exit_audit` INTRADAY figure in the Stage 1
+entry is unchanged and was accidentally correct. SWING is **9 of 78**, which is
+what demonstrates the flag is not a no-op — and it independently reproduces
+Stage 1's "69 pre-automation rows" from a different code path.
+
+---
+
+### The test, and it FAILS FIRST
+
+`backend/tests/test_expectancy_ledger_shorts.py`, 10 checks, registered in
+`tools/verify.py::MODULES`. Pinned to **DEVYANI**, a real closed SDN short —
+the same trade CLAUDE.md's `alloc_edge_absolute_floor` landmine already names.
+Hand computation, from entry/stop/exit/direction only:
+
+```
+  direction SHORT, entry 133.46, stop 134.26, exit 134.11, qty 65
+  risk/share = 134.26 - 133.46       = 0.80
+  risk       = 0.80 x 65             = 52.00
+  gross P&L  = (133.46 - 134.11)x65  = -42.25    (= realized_pnl, exactly)
+  gross R    = -42.25 / 52.00        = -0.8125
+```
+
+The tool now returns `risk_amt 52.00`, `gross_r -0.8125` — and
+`round(gross_r,3) == -0.813`, the `r_multiple` the lifecycle stored from the
+same `D.risk_per_share`. Two independent computations of one number agree.
+
+**Demonstrated failing before trusting it to pass**, per the house rule —
+`git stash` on the two tool files, same command:
+
+```
+  ✗  expectancy ledger scores shorts  (7/10 failed)
+         the short was dropped from every R statistic — BUG-1 has regressed
+         TypeError: type NoneType doesn't define __round__ method
+       column presence and computability are reported separately
+       exit_audit accepts --days and windows on exit_date
+         TypeError: audit_closed() got an unexpected keyword argument 'days'
+  7 of 10 checks FAILED.
+```
+
+The 3 that pass in both states are the **invariants**, and they are supposed to:
+the long path must be bit-identical at sign=+1, a missing direction must still
+read as LONG, and `(entry - stop) * qty < 0` is a statement about the pinned row
+that must hold whatever the tool does with it.
+
+**Full suite after:** `all 432 checks passed across 55 modules` (was 422/54).
+
+---
+
+### The corrected INTRADAY numbers, all 8 shorts included
+
+```
+INTRADAY — every closed row, R now computable on both directions
+  ALL        n=56  gross -0.052 ±0.136  cost +0.338  NET -0.390 ±0.160  median net -0.412  | ₹ gross -43  friction 681  net -724  net-win 15/56
+  LONG       n=48  gross -0.043 ±0.152  cost +0.369  NET -0.412 ±0.180  median net -0.387  | ₹ gross +32  friction 616  net -583  net-win 13/48
+  SHORT      n=8   gross -0.109 ±0.302  cost +0.148  NET -0.256 ±0.306  median net -0.478  | ₹ gross -76  friction  65  net -140  net-win  2/8
+
+Same split, MIS only (the 9 CNC rows carry a 1.45R DP fee and swamp a pooled mean)
+  MIS ALL    n=47  gross -0.128 ±0.108  cost +0.124  NET -0.252 ±0.110  median net -0.382
+  MIS LONG   n=39  gross -0.132 ±0.116  cost +0.120  NET -0.251 ±0.119  median net -0.371
+  MIS SHORT  n=8   gross -0.109 ±0.302  cost +0.148  NET -0.256 ±0.306  median net -0.478
+
+The 8 shorts, individually (all SDN):
+  BLUESTARCO  entry  1541.00  stop  1556.26  risk ₹45.78  gross +1.332  cost +0.106  net +1.226
+  COFORGE     entry  1769.90  stop  1794.45  risk ₹73.65  gross -0.391  cost +0.077  net -0.468
+  DEVYANI     entry   133.46  stop   134.26  risk ₹52.00  gross -0.813  cost +0.178  net -0.990
+  HINDCOPPER  entry   540.85  stop   544.90  risk ₹44.55  gross -0.346  cost +0.142  net -0.488
+  KAYNES      entry  3717.40  stop  3743.49  risk ₹52.18  gross -0.981  cost +0.152  net -1.133
+  SAPPHIRE    entry   199.70  stop   200.88  risk ₹70.80  gross -0.733  cost +0.180  net -0.913
+  SONACOMS    entry   818.00  stop   822.97  risk ₹49.70  gross +1.001  cost +0.174  net +0.827
+  TATACHEM    entry   672.25  stop   676.41  risk ₹54.08  gross +0.060  cost +0.172  net -0.112
+```
+
+**Found — and this corrects the reason Stage 1 gave for the fix, not the fix.**
+
+1. **The short book's gross R is NEGATIVE on the real closed book: −0.109R
+   (n=8).** Stage 1 recommended fixing BUG-1 partly because "the short book is
+   the one bucket with positive gross R (+0.050)". That +0.050 came from
+   `engine_scorecard`'s **24 SDN detections**, not the **8 SDN closed
+   positions** — the identical population error Stage 1 itself identified in
+   that tool, reaching one stage further than it was caught. The fix was still
+   required; the argument for it was measuring detections. **Recorded here so
+   Stage 2 does not inherit "shorts are the profitable side" as a premise.**
+2. **On NET R the shorts are the better half anyway, for a different reason.**
+   SHORT net −0.256 against LONG net −0.412 pooled — but that gap is almost
+   entirely the 9 CNC-priced longs. MIS-only the two are indistinguishable
+   (−0.256 vs −0.251). Short friction is genuinely lower (+0.148R vs +0.369R
+   pooled) because every short is MIS and pays no DP fee. **n=8. This is not a
+   measurement of short edge and must not be quoted as one.**
+3. **Two SDN winners carry the whole distribution** — BLUESTARCO +1.332R and
+   SONACOMS +1.001R against six losers. The ±0.302 standard error on gross R is
+   larger than the mean itself.
+4. **The ledger's INTRADAY gross R (−0.052, n=56) and Stage 1's authoritative
+   −0.047 are not a discrepancy, and Stage 2 must not chase one.** They use
+   different denominators by design: the ledger divides by
+   `planned_stop_at_entry × actual_qty`; `r_multiple` divides by
+   `pos["planned_stop"]` — the CURRENT, possibly trailed stop at close — times
+   `qty + booked_qty`. SAPPHIRE is the visible case: ledger −0.733, stored
+   −0.633, a partial book. Both are correct answers to different questions.
+
+**Could not determine:**
+
+- **Whether shorts have edge.** n=8, ±0.302 SE, two trades carrying the mean.
+  No engine verdict follows from this table and none is offered.
+- **Whether the friction figures are right in rupees.** The ledger recomputes at
+  today's rates; the reconciliation on record is `2026-08-04: -0.01% across 4
+  round trip(s)`, and the spec asks for ≥20. The RATE TABLE is validated; the
+  SAMPLE is not. Every net R above inherits that.
+- **Why 9 INTRADAY rows are recorded as CNC.** Still not investigated — carried
+  forward unchanged from Stage 1. They cost 1.451R of friction each and they are
+  what makes pooled LONG (−0.412) differ from MIS LONG (−0.251).
+- **Whether `--days 30` is the right window for anything.** The flag now exists
+  and is honest about what it did; whether 30 days is a useful window on a book
+  that is 13 sessions old is a separate question, unasked here.
+- **The two spec documents were NOT edited.** BUG-3's Stage 1 note offered
+  "corrected or the flag added"; the flag was added, so
+  `docs/EDGE_DIAGNOSTIC.md` A.2 and `docs/TRADEOS_ROADMAP.md` Stage 1 now run as
+  written. Their text was not otherwise reviewed.
+- **Nothing was re-run to regenerate Stage 1's tables.** Only the INTRADAY
+  `exit_audit` window was checked (56 of 56, unchanged). `engine_scorecard`,
+  `taken_reconciliation` and `discover_engines` were not re-run and their Stage 1
+  numbers stand as recorded — including BUG-2's separate defect in
+  `taken_reconciliation`, which is **not** the BUG-2 fixed here.
+
+**Recommends:**
+
+- **Stage 2 may now run.** Its friction-versus-signal call reads the whole
+  population, both directions, and the coverage line it quotes is the column,
+  not the computability.
+- **Do not carry "SDN is the profitable bucket" into Stage 2.** On the closed
+  book it is not, and the number that said so was scoring detections.
+- No engine retirements, no config changes, no gate changes. Nothing here
+  supports one, and nothing here touched one.
+
+**Gate:** PASS — three defects fixed, each demonstrated failing first, full
+suite green at 432/432.
+
+---

@@ -78,8 +78,9 @@ def load(sb) -> list[dict]:
     rewriting history to make a bucket tidier. They are flagged instead.
     """
     from intraday.cost_model import entry_leg, exit_leg
+    from intraday import direction as D
 
-    BASE = ("symbol,product,framework,mode,strategy,intraday_strategy,"
+    BASE = ("symbol,product,framework,mode,strategy,intraday_strategy,direction,"
             "entry_price,exit_price,actual_qty,planned_stop_at_entry,"
             "realized_pnl,charges,hold_days,exit_date,max_favorable_excursion,"
             "signal_id,signal_date,source")
@@ -118,8 +119,29 @@ def load(sb) -> list[dict]:
         invested = entry * qty
         gross    = float(r.get("realized_pnl") or 0.0)
 
+        # ── WAS `(entry - float(stop)) * qty`, WHICH DELETED THE SHORT BOOK ──
+        #
+        # A short's stop sits ABOVE its entry, so `entry - stop` is negative,
+        # `risk_amt > 0` is False, and gross_r / net_r / cost_r all became
+        # None. Every one of the 8 closed shorts on record is an SDN row —
+        # i.e. 100% of the short book — and SDN is the only bucket with
+        # positive gross R. The tool that Stage 2 uses for the
+        # friction-versus-signal call was therefore long-only, silently.
+        #
+        # It also miscounted Gate 1: the line below the R section reported
+        # `len(scored)` as `planned_stop_at_entry` coverage, so eight rows
+        # that HAVE the column were reported as missing it — 56/134 (41.8%)
+        # against a true 64/134 (47.8%), on a 60% gate. See the fix there.
+        #
+        # `D.risk_per_share` is the same direction-aware function
+        # `position_lifecycle.py:880` already uses to write `r_multiple`, and
+        # it returns 0.0 for a stop genuinely on the wrong side in EITHER
+        # direction — which is the one case this must still refuse. It is
+        # imported, not reimplemented: this project has already paid for
+        # three divergent copies of one calculation.
         stop = r.get("planned_stop_at_entry")
-        risk_amt = (entry - float(stop)) * qty if stop not in (None, "") else 0.0
+        risk_amt = (D.risk_per_share(entry, float(stop), r.get("direction")) * qty
+                    if stop not in (None, "") else 0.0)
 
         out.append({
             **r,
@@ -204,8 +226,34 @@ def ledger(rows: list[dict]) -> None:
 
     logger.info("")
     logger.info("── R, only where the entry stop was recorded ────────────────────────────")
-    scored = [t for t in rows if t["net_r"] is not None]
-    logger.info(f"  {len(scored)} of {len(rows)} closed trades carry planned_stop_at_entry.")
+    # ── TWO NUMBERS, NOT ONE. THEY ARE DIFFERENT CLAIMS ─────────────────────
+    #
+    # This line used to print `len(scored)` — rows whose R could be COMPUTED —
+    # against the words "carry planned_stop_at_entry", which is COLUMN
+    # PRESENCE. They coincided only by accident, and stopped coinciding the
+    # moment a row existed that had the column and still could not be scored.
+    # Eight shorts were exactly that (the direction bug above), so the tool
+    # the roadmap names as the coverage authority under-reported the gate
+    # number it exists to produce: 56 of 134 (41.8%) against a true 64 of 134
+    # (47.8%), on a 60% gate.
+    #
+    # Reported separately and labelled from here on. A gap between them is not
+    # noise — it means a stop was recorded on the WRONG SIDE for the direction
+    # that was traded, which is a data defect worth naming rather than
+    # absorbing into a coverage percentage.
+    present = [t for t in rows if t.get("planned_stop_at_entry") not in (None, "")]
+    scored  = [t for t in rows if t["net_r"] is not None]
+    logger.info(f"  planned_stop_at_entry PRESENT on  {len(present)} of {len(rows)} "
+                f"closed trades ({len(present)/len(rows)*100:.1f}%)  ← column coverage")
+    logger.info(f"  R COMPUTABLE on                   {len(scored)} of {len(rows)} "
+                f"closed trades ({len(scored)/len(rows)*100:.1f}%)  ← usable for R stats")
+    unusable = [t for t in present if t["net_r"] is None]
+    if unusable:
+        logger.warning(
+            f"  {len(unusable)} row(s) carry a stop that R cannot be computed from — "
+            f"the stop is on the wrong side of entry for the direction recorded, or "
+            f"sits exactly at it: "
+            f"{', '.join(sorted({t['symbol'] for t in unusable}))}")
     if not scored:
         logger.warning("  No R can be computed. Stage 4 carries the stop through; until then "
                        "this section is empty rather than invented.")

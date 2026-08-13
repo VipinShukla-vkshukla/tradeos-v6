@@ -1,9 +1,22 @@
 """
 Are we cutting winners early and holding losers? READ-ONLY.
 
-    python -m tools.exit_audit                # both books
+    python -m tools.exit_audit                # both books, ALL history
     python -m tools.exit_audit --book SWING
+    python -m tools.exit_audit --days 30      # closes in the last 30 days only
     python -m tools.exit_audit --open-only    # just the live stop-breach check
+
+`--days` exists because two specification documents (`docs/EDGE_DIAGNOSTIC.md`
+A.2 and `docs/TRADEOS_ROADMAP.md` Stage 1) both instruct the reader to run
+`--days 30`, and the flag did not exist. argparse exits 2, the operator
+substitutes `--book INTRADAY`, and every exit-reason number produced that way
+is LIFETIME while the `taken_reconciliation` and `discover_engines` numbers
+printed beside it are 30-day. Nothing in the output said so. The Stage 1
+ledger entry of 14-Aug-2026 is written against that mismatch.
+
+The window is applied to `exit_date` — when the trade CLOSED, which is what an
+exit audit is about — and never to the open-position check, which has no exit
+date to filter on and is always current by construction.
 
 WHY THIS EXISTS
 ---------------
@@ -137,16 +150,47 @@ def check_open_stops(sb) -> int:
     return breached
 
 
-def audit_closed(sb, book: str | None) -> None:
+def _in_window(row: dict, cutoff: str | None) -> bool:
+    """
+    Did this trade close on or after `cutoff` (an ISO date string)?
+
+    `exit_date` may be a date or a timestamp, so it is compared on its first
+    ten characters — ISO dates sort lexically, which is why no parsing is
+    needed. A row with NO exit_date cannot be placed in any window: it is
+    EXCLUDED when a window was asked for and counted out loud by the caller,
+    rather than silently kept (which would make `--days 30` quietly wider than
+    30 days) or silently dropped (which is how a denominator goes wrong).
+    """
+    if cutoff is None:
+        return True
+    d = row.get("exit_date")
+    return bool(d) and str(d)[:10] >= cutoff
+
+
+def audit_closed(sb, book: str | None, days: int | None = None) -> None:
     """(b) — capture on winners, overrun on losers, split by exit reason."""
     rows = _rows(sb, "closed_positions",
                  "symbol,framework,direction,entry_price,exit_price,r_multiple,"
                  "exit_reason,max_favorable_excursion,max_adverse_excursion,"
-                 "planned_stop_at_entry,planned_target_at_entry,realized_pnl,charges")
+                 "planned_stop_at_entry,planned_target_at_entry,realized_pnl,"
+                 "charges,exit_date")
     if book:
         rows = [r for r in rows if (r.get("framework") or "SWING").upper() == book.upper()]
+
+    cutoff = None
+    if days is not None:
+        import datetime as _dt
+        cutoff = (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
+        before = len(rows)
+        undated = sum(1 for r in rows if not r.get("exit_date"))
+        rows = [r for r in rows if _in_window(r, cutoff)]
+        logger.info(f"  window: exit_date >= {cutoff} ({days}d) — "
+                    f"{len(rows)} of {before} closed row(s)"
+                    + (f"; {undated} carry no exit_date and are excluded" if undated else ""))
+
     if not rows:
-        logger.warning(f"  no closed positions{' for ' + book if book else ''}")
+        logger.warning(f"  no closed positions{' for ' + book if book else ''}"
+                       + (f" in the last {days} days" if days is not None else ""))
         return
 
     # ── A DEGENERATE RISK DENOMINATOR MUST NOT BE AVERAGED IN — 10-Aug-2026 ──
@@ -271,7 +315,12 @@ def audit_closed(sb, book: str | None) -> None:
     overrun = [max(0.0, -x["r"] - 1.0) for x in losses]
 
     logger.info("")
-    logger.info(f"  CLOSED TRADES{' — ' + book if book else ''}: {len(recs)} with "
+    # The window is stated ON the header, not only in the command that produced
+    # it. Every exit_audit figure in the Stage 1 ledger is lifetime, printed
+    # beside 30-day figures from other tools, and nothing in the output said
+    # which was which — so the label is part of the fix, not decoration.
+    window = f" (last {days}d, exits since {cutoff})" if days is not None else " (ALL history)"
+    logger.info(f"  CLOSED TRADES{' — ' + book if book else ''}{window}: {len(recs)} with "
                 f"a stop and an R on record")
     logger.info("  " + "-" * 78)
     logger.info(f"    winners            {len(wins):>4}   avg {statistics.fmean([x['r'] for x in wins]):+.3f}R"
@@ -325,18 +374,25 @@ def audit_closed(sb, book: str | None) -> None:
             "is currently 0 (disabled).")
 
 
-def main(book: str | None, open_only: bool) -> int:
+def main(book: str | None, open_only: bool, days: int | None = None) -> int:
     sb = get_supabase()
+    # NOT windowed, deliberately. An open position has no exit_date, and "is
+    # this live position past its stop?" is a question about right now — a
+    # 30-day flag must not hide a breached stop on a trade opened 40 days ago.
     check_open_stops(sb)
     if not open_only:
         for b in ([book] if book else ["SWING", "INTRADAY"]):
-            audit_closed(sb, b)
+            audit_closed(sb, b, days=days)
     return 0
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Exit-ladder efficiency audit (read-only)")
     ap.add_argument("--book", choices=["SWING", "INTRADAY"])
+    ap.add_argument("--days", type=int, default=None,
+                    help="only trades that CLOSED in the last N days "
+                         "(default: all history). The open-position stop check "
+                         "is always current and is never windowed.")
     ap.add_argument("--open-only", action="store_true")
     a = ap.parse_args()
-    sys.exit(main(a.book, a.open_only))
+    sys.exit(main(a.book, a.open_only, a.days))

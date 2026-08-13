@@ -105,6 +105,7 @@ MODULES = [
     ("regime-aware engine fit (shipped inert)", "tests.test_regime_fit"),
     ("brain_proposals walk-forward backtest", "tests.test_proposal_backtest"),
     ("validate_config paper capacity", "tests.test_validate_config_paper_capacity"),
+    ("expectancy ledger scores shorts", "tests.test_expectancy_ledger_shorts"),
 ]
 
 
