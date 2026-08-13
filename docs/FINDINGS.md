@@ -814,3 +814,728 @@ The 8 shorts, individually (all SDN):
 suite green at 432/432.
 
 ---
+
+## 2026-08-14 — Stage 2 (B.2, B.3, B.5, B.6, C.1–C.4) — no gate is inverted at the 2-SE bar, but conviction is noise pointing the wrong way, and the swing ranking layer does not order outcomes at n=1386
+
+Branch `diagnostic/edge-decomposition` off `main`. **READ-ONLY — no source file
+was modified.** Per the session brief, **B.1 is not re-derived** and **B.4's
+friction path was not run**: Stage 1b already established gross R is negative on
+both directions MIS-only (LONG −0.132 n=39, SHORT −0.109 n=8), so this is a
+signal problem, and that entry stands as the citation.
+
+**Ran:**
+
+```bash
+git checkout -b diagnostic/edge-decomposition main
+cd backend && python -m tools.exit_ladder_replay --min-r 0.5
+```
+
+Plus seven read-only scratchpad scripts, no source file touched: `schema_probe.py`,
+`pop_probe.py`, `caveats.py`, `b3_counterfactual.py`, `b2_b6.py`, `b5_c.py`,
+`c3_c4b.py`. Each imports `tools.expectancy_ledger.load()` for closed-book R
+rather than recomputing it — the same function Stage 1b fixed and pinned a test
+to. Raw output pasted below.
+
+---
+
+### POPULATIONS — declared once, never mixed inside a comparison
+
+Stage 1 and Stage 1b were each derailed by a population error. Every table in
+this entry is headed with which of these three it reads.
+
+| tag | table | n | what a row is |
+|---|---|---|---|
+| **[CLOSED]** | `closed_positions` | 56 INTRADAY / 78 SWING | a real trade that opened and closed |
+| **[DET-INTRA]** | `intraday_setups` | 6035 raw / 890 dedup / 13 sessions | an intraday **detection** and its counterfactual |
+| **[PLANS-SW]** | `signal_output_daily` | 1386 with a resolved return / 35 dates | a swing **plan** that triggered |
+
+[DET-INTRA] dedup key is `(symbol, strategy, trade_date)` → **890**. Keyed on
+`meta.sub_engine` instead it is 941; Stage 1 reported 840 on its own keying. The
+three differ because `meta.sub_engine` is null on 631 raw rows. `strategy` is
+used here because a null bucket is not an engine.
+
+---
+
+### PREFLIGHT — two corrections that govern how every table below may be read
+
+**PRE-1 — `cost_pct` is written only on rows that reached the cost gate. The
+spec's own B.3 recipe is therefore biased in favour of the gates.**
+
+`EDGE_DIAGNOSTIC.md` B.3 says "report hit rate and mean `outcome_pct`". But
+`outcomes.py:182` writes `outcome_pct = gain_pct − cost_pct`, and `cost_pct` is
+**zero on 100% of rows for ten of the fourteen verdicts**:
+
+```
+  cost_verdict                 rows  cost_pct=0   share  mean cost_pct
+  TAKEN                        1048           0    0.0%         0.2062
+  REJECTED_COST                 804           0    0.0%         0.2062
+  ALLOCATOR_DECLINED            745           0    0.0%         0.2063
+  BLOCKED_PAPER_CAPACITY         24           0    0.0%         0.2063
+  BLOCKED_SHORTS_MARKET         707         707  100.0%         0.0000
+  BELOW_CONVICTION              626         626  100.0%         0.0000
+  VETOED_AI                     587         587  100.0%         0.0000
+  BLOCKED_STRUCTURE             451         451  100.0%         0.0000
+  BLOCKED_SHORTABILITY          402         402  100.0%         0.0000
+  BLOCKED_SHORTS_OFF            397         397  100.0%         0.0000
+  BLOCKED_CROSS_FRAMEWORK        76          76  100.0%         0.0000
+  BLOCKED_REENTRY                73          73  100.0%         0.0000
+  BLOCKED_EVENT                  56          56  100.0%         0.0000
+  SHADOW                         39          39  100.0%         0.0000
+```
+
+So a bucket blocked before the cost gate has `net = gross`, while TAKEN carries a
+real +0.264R of modelled friction. Comparing mean `outcome_pct` across that line
+**hands every early-firing gate a free round trip — about 0.21% of price, ≈0.26R
+at typical `risk_pct`** — and would manufacture an inversion out of nothing.
+Pooled B.3a: TAKEN mean `outcome_pct` −0.336 vs BELOW_CONVICTION +0.005 looks
+like a +0.34pp gap; on **gross R**, the only quantity both sides actually carry,
+it is +0.19R. **Every B.3 comparison below is made on gross R.** This is the
+CLAUDE.md landmine "a gate and the thing it gates must be the SAME QUANTITY",
+found in the diagnostic spec rather than in the code.
+
+**PRE-2 — `regime_at_detection` exists on 2 of 13 sessions. Every regime
+conclusion is confounded with date.**
+
+```
+  trade_date       rows  regime set   share   values
+  2026-07-28        236           0    0.0%   {}
+  ... (28-Jul through 10-Aug all 0.0%) ...
+  2026-08-10        921           0    0.0%   {}
+  2026-08-11        275          19    6.9%   {'RISK_OFF': 15, 'NEUTRAL': 4}
+  2026-08-12       1527        1527  100.0%   {'CAUTION': 358, 'NEUTRAL': 342, 'RISK_OFF': 827}
+  2026-08-13       1167        1167  100.0%   {'NEUTRAL': 782, 'CAUTION': 240, 'RISK_OFF': 145}
+```
+
+Every `NULL` is 28-Jul → 11-Aug; every labelled row is 11–13 Aug. "NEUTRAL
+underperforms unlabelled" is therefore indistinguishable from "12–13 Aug were bad
+days". **The regime axis of B.6 cannot be answered and is reported as such.**
+
+---
+
+### B.2 — which engines earn their existence
+
+**B.2a — POPULATION [CLOSED]: `closed_positions`, `framework='INTRADAY'`, n=56.**
+
+```
+  engine        n  R-able   gross R     ±SE   cost R     net R     ±SE    win   gross Rs     net Rs  verdict
+  ORB          11      11    +0.188   0.216   +0.089    +0.100   0.216   4/11       +168        +46  INSUFFICIENT (n<20)
+  GAP           9       9    +0.075   0.320   +0.093    -0.018   0.325   4/9          -3        -75  INSUFFICIENT (n<20)
+  VWR           9       9    -0.200   0.299   +0.180    -0.380   0.267   1/9         -61       -183  INSUFFICIENT (n<20)
+  SDN           8       8    -0.109   0.302   +0.148    -0.256   0.306   2/8         -76       -140  INSUFFICIENT (n<20)
+  PDL           7       7    +0.327   0.784   +1.626    -1.299   0.963   2/7        +206        +25  INSUFFICIENT (n<20)
+  VCE           7       7    -0.579   0.124   +0.288    -0.868   0.256   0/7        -236       -328  INSUFFICIENT (n<20)
+  PBK           5       5    -0.251   0.365   +0.179    -0.430   0.365   2/5         -41        -68  INSUFFICIENT (n<20)
+  ------------------------------------------------------------------------------------------------
+  ALL          56      56    -0.052   0.136   +0.338    -0.390   0.160  15/56        -43       -724  NO EDGE — gross<0
+  ALL/MIS      47      47    -0.128   0.108   +0.124    -0.252   0.110  12/47       -412       -843  NO EDGE — gross<0
+```
+
+**The authoritative closed book cannot rank a single engine.** The largest bucket
+is ORB at **n=11**; the roadmap's retirement bar is 30. Every ±SE is larger than
+the mean it decorates. RNG has **zero** closed positions and does not appear.
+
+**PDL's +1.626R cost is not a cost-model result — all 7 PDL closes are CNC.** This
+resolves half of a Stage 1 "could not determine" (why 9 INTRADAY rows are recorded
+as CNC):
+
+```
+INTRADAY rows NOT MIS: 9
+  LALPATHLAB   PDL    CNC  cost_r  +2.133  gross_r  -0.321  net_r  -2.454
+  ATHERENERG   PDL    CNC  cost_r  +0.712  gross_r  +1.931  net_r  +1.219
+  ATHERENERG   PDL    CNC  cost_r  +1.578  gross_r  -0.796  net_r  -2.374
+  SYRMA        VCE    CNC  cost_r  +1.183  gross_r  -1.143  net_r  -2.326
+  PATANJALI    PDL    CNC  cost_r  +1.114  gross_r  +4.371  net_r  +3.257
+  GODFRYPHLP   VWR    CNC  cost_r  +0.498  gross_r  +1.924  net_r  +1.425
+  M&MFIN       PDL    CNC  cost_r  +2.592  gross_r  -1.313  net_r  -3.905
+  M&MFIN       PDL    CNC  cost_r  +1.741  gross_r  -0.805  net_r  -2.546
+  VBL          PDL    CNC  cost_r  +1.511  gross_r  -0.776  net_r  -2.287
+```
+
+7 PDL, 1 VCE, 1 VWR. **PDL's closed book is 7 of 7 CNC** — the engine has never
+been measured at intraday friction, and its net R of −1.299 is a delivery-charge
+artifact, not an engine verdict. Do not carry −1.299 forward as PDL's number.
+
+**B.2b — POPULATION [DET-INTRA]: `cost_verdict='TAKEN'`, deduplicated, n=170.** A
+different population. Roughly a third became positions (Stage 1: 53 of 159 on its
+keying).
+
+```
+  VWR                        n=  49 res=  49  target 16.3%  grossR -0.310±0.163  costR +0.314  netR -0.624±0.164   NO EDGE — gross<0
+  ORB                        n=  41 res=  41  target 14.6%  grossR -0.156±0.169  costR +0.187  netR -0.344±0.168   NO EDGE — gross<0
+  VCE                        n=  30 res=  30  target 20.0%  grossR -0.201±0.264  costR +0.268  netR -0.470±0.265   NO EDGE — gross<0
+  SDN                        n=  24 res=  24  target 20.8%  grossR +0.017±0.238  costR +0.284  netR -0.267±0.241   gross>0, net<0 — friction
+  GAP                        n=  15 res=  15  target 20.0%  grossR +0.063±0.328  costR +0.163  netR -0.101±0.329   INSUFFICIENT (n<20)
+  PDL                        n=   8 res=   8  target 25.0%  grossR -0.064±0.615  costR +0.427  netR -0.491±0.609   INSUFFICIENT (n<20)
+  PBK                        n=   2 res=   2  target  0.0%  grossR -1.000±0.000  costR +0.347  netR -1.347±0.002   INSUFFICIENT (n<20)
+  RNG                        n=   1 res=   1  target  0.0%  grossR -1.000±0.000  costR +0.448  netR -1.448±0.000   INSUFFICIENT (n<20)
+  ------------------------------------------------------------------------------------------------
+  ALL TAKEN                  n= 170 res= 170  target 17.6%  grossR -0.175±0.093  costR +0.264  netR -0.440±0.094   NO EDGE — gross<0
+```
+
+**The two populations disagree per engine and both are within noise.** ORB is
++0.188 gross on [CLOSED] and −0.156 on [DET-INTRA]; PDL is +0.327 and −0.064.
+Only three [DET-INTRA] buckets clear n=20 (VWR 49, ORB 41, VCE 30) and all three
+are negative gross. **This is not a retirement list** — it is the reason Stage 3
+exists.
+
+---
+
+### B.3 — THE COUNTERFACTUAL: are the gates backwards? *(the priority)*
+
+**POPULATION [DET-INTRA] throughout. 890 dedup keys: 170 TAKEN, 720 never-TAKEN.**
+
+Construction, stated because it is load-bearing: a TAKEN key is represented by its
+**first TAKEN row** — the trade that would have opened. A never-taken key is
+credited to **every** blocking reason it carried, at the row where that reason
+first fired. Keys carrying more than one reason appear in more than one bucket:
+
+```
+reasons carried per never-taken key: {1: 347, 2: 161, 3: 106, 4: 58, 5: 34, 6: 14}
+```
+
+`dR = ... SE` is the gap in **gross R** divided by the pooled standard error of
+the two means. It is not a p-value; it exists so a +0.19R gap on n=170 vs n=270
+cannot be read as a verdict.
+
+**B.3a — pooled over both directions**
+
+```
+  TAKEN  [baseline]          n= 170  res= 170  target  30/170  = 17.6%  net%  -0.336  med  -0.798  grossR -0.175±0.093  netR -0.440
+  --------------------------------------------------------------------------
+  BELOW_CONVICTION           n= 270  res= 267  target  54/267  = 20.2%  net%  +0.005  med  -0.211  grossR +0.014±0.090  netR +0.014  |  tgt +2.6%   dR +0.190 = +1.5 SE
+  REJECTED_COST              n= 252  res= 246  target  36/246  = 14.6%  net%  -0.307  med  -0.471  grossR -0.220±0.105  netR -0.913  |  tgt -3.0%   dR -0.044 = -0.3 SE
+  BLOCKED_STRUCTURE          n= 237  res= 235  target  47/235  = 20.0%  net%  -0.063  med  -0.248  grossR -0.118±0.089  netR -0.118  |  tgt +2.4%   dR +0.057 = +0.4 SE
+  VETOED_AI                  n= 227  res= 224  target  40/224  = 17.9%  net%  -0.010  med  -0.198  grossR +0.028±0.103  netR +0.028  |  tgt +0.2%   dR +0.203 = +1.5 SE
+  BLOCKED_SHORTS_MARKET      n= 174  res= 174  target  36/174  = 20.7%  net%  +0.075  med  -0.191  grossR +0.105±0.116  netR +0.105  |  tgt +3.0%   dR +0.280 = +1.9 SE
+  BLOCKED_SHORTABILITY       n= 149  res= 149  target  11/149  =  7.4%  net%  -0.071  med  -0.177  grossR -0.291±0.099  netR -0.291  |  tgt -10.3%  dR -0.116 = -0.8 SE
+  BLOCKED_SHORTS_OFF         n=  61  res=  61  target   8/61   = 13.1%  net%  -0.107  med  -0.233  grossR -0.424±0.145  netR -0.424  |  tgt -4.5%   dR -0.248 = -1.4 SE
+  BLOCKED_EVENT              n=  30  res=  29  target   2/29   =  6.9%  net%  -0.350  med  -0.494  grossR -0.651±0.168  netR -0.651  |  tgt -10.8%  dR -0.476 = -2.5 SE
+  SHADOW                     n=  26  res=  26  target   5/26   = 19.2%  net%  +0.032  med  -0.379  grossR +0.094±0.311  netR +0.094  |  tgt +1.6%   dR +0.270 = +0.8 SE
+  BLOCKED_CROSS_FRAMEWORK    n=  24  res=  24  target   4/24   = 16.7%  net%  -0.205  med  -0.222  grossR -0.340±0.213  netR -0.340  |  tgt -1.0%   dR -0.165 = -0.7 SE
+  BLOCKED_REENTRY            n=  23  res=  23  target   4/23   = 17.4%  net%  -0.228  med  -0.370  grossR -0.485±0.221  netR -0.485  |  tgt -0.3%   dR -0.309 = -1.3 SE
+```
+
+**Exactly one bucket separates from TAKEN by more than 2 SE, and it separates in
+the direction that says the gate is working: `BLOCKED_EVENT` at −2.5 SE** (6.9%
+target vs 17.6%, −0.476R). Nothing is inverted at that bar.
+
+**B.3b — direction-matched.** Three reasons are structurally short-only
+(`BLOCKED_SHORTS_MARKET`, `BLOCKED_SHORTABILITY`, `BLOCKED_SHORTS_OFF` are 100%
+SHORT) while TAKEN is 85.9% LONG. Comparing across that line is two questions
+wearing one number, so it is done separately:
+
+```
+LONG only
+  TAKEN LONG [baseline]      n= 146  res= 146  target  25/146  = 17.1%  grossR -0.207±0.101
+  BELOW_CONVICTION           n= 190  res= 188  target  30/188  = 16.0%  grossR -0.145±0.098  |  tgt -1.2%   dR +0.062 = +0.4 SE
+  REJECTED_COST              n= 152  res= 150  target  16/150  = 10.7%  grossR -0.480±0.102  |  tgt -6.5%   dR -0.273 = -1.9 SE
+  BLOCKED_STRUCTURE          n= 139  res= 139  target  21/139  = 15.1%  grossR -0.175±0.111  |  tgt -2.0%   dR +0.032 = +0.2 SE
+  VETOED_AI                  n=  94  res=  93  target  17/93   = 18.3%  grossR +0.110±0.157  |  tgt +1.2%   dR +0.317 = +1.7 SE
+  BLOCKED_EVENT              n=  25  res=  24  target   2/24   =  8.3%  grossR -0.579±0.200  |  tgt -8.8%   dR -0.371 = -1.7 SE
+  SHADOW                     n=  26  res=  26  target   5/26   = 19.2%  grossR +0.094±0.311  |  tgt +2.1%   dR +0.301 = +0.9 SE
+  BLOCKED_CROSS_FRAMEWORK    n=   8   << n<20, INSUFFICIENT
+  BLOCKED_REENTRY            n=  17   << n<20, INSUFFICIENT
+
+SHORT only
+  TAKEN SHORT [baseline]     n=  24  res=  24  target   5/24   = 20.8%  grossR +0.017±0.238
+  BELOW_CONVICTION           n=  80  res=  79  target  24/79   = 30.4%  grossR +0.393±0.192  |  tgt +9.5%   dR +0.376 = +1.2 SE
+  REJECTED_COST              n= 100  res=  96  target  20/96   = 20.8%  grossR +0.186±0.210  |  tgt +0.0%   dR +0.169 = +0.5 SE
+  BLOCKED_STRUCTURE          n=  98  res=  96  target  26/96   = 27.1%  grossR -0.037±0.145  |  tgt +6.2%   dR -0.054 = -0.2 SE
+  VETOED_AI                  n= 133  res= 131  target  23/131  = 17.6%  grossR -0.030±0.136  |  tgt -3.3%   dR -0.047 = -0.2 SE
+  BLOCKED_SHORTS_MARKET      n= 174  res= 174  target  36/174  = 20.7%  grossR +0.105±0.116  |  tgt -0.1%   dR +0.088 = +0.3 SE
+  BLOCKED_SHORTABILITY       n= 149  res= 149  target  11/149  =  7.4%  grossR -0.291±0.099  |  tgt -13.5%  dR -0.308 = -1.2 SE
+  BLOCKED_SHORTS_OFF         n=  61  res=  61  target   8/61   = 13.1%  grossR -0.424±0.145  |  tgt -7.7%   dR -0.441 = -1.6 SE
+  BLOCKED_EVENT n=5 / BLOCKED_CROSS_FRAMEWORK n=16 / BLOCKED_REENTRY n=6   << all n<20, INSUFFICIENT
+```
+
+Direction-matching **destroys the two largest apparent inversions**.
+`BLOCKED_SHORTS_MARKET` goes from +1.9 SE pooled to **+0.3 SE** against a short
+baseline — its pooled advantage was almost entirely the difference between
+shorting and going long, not the gate. `BELOW_CONVICTION` LONG falls to +0.4 SE.
+What survives is `BELOW_CONVICTION` **on shorts**: 30.4% target vs 20.8%, +0.376R
+— but at **+1.2 SE on n=80 against a 24-row baseline.** Directional, not a
+verdict, and B.5 below is the same finding from the other side.
+
+**B.3e — the gate B.3a structurally cannot see.** `ALLOCATOR_DECLINED` (745 raw
+rows, the second-largest verdict) and `BLOCKED_PAPER_CAPACITY` are **absent from
+B.3a entirely** — not because they are rare, but because **63 of 63 and 11 of 11
+of their dedup keys also carry a TAKEN row**, so the never-taken filter absorbs
+them into the baseline. The TAKEN bucket above is therefore not "trades the system
+made"; it is "setups that cleared the **cost** gate". Split from inside
+[DET-INTRA] only, with no join to `closed_positions`:
+
+```
+  TAKEN, allocator never declined n= 107  res= 107  target  19/107  = 17.8%  grossR -0.202±0.117
+  TAKEN, but ALSO declined        n=  63  res=  63  target  11/63   = 17.5%  grossR -0.130±0.154  |  tgt -0.3%  dR +0.072 = +0.4 SE
+  TAKEN, but ALSO cap-blocked     n=  11   << n<20, INSUFFICIENT
+```
+
+**The allocator is neither selecting nor harming: +0.4 SE.** On this evidence it
+costs opportunity and returns nothing measurable — the spec's "TAKEN ≈ BLOCKED,
+gates are noise" reading. n=63.
+
+**B.3d — robustness, and a trap worth recording.** The same comparison on raw
+undeduplicated rows flips several buckets past 3 SE:
+
+```
+  TAKEN [baseline]           n=1048  res=1048  target 143/1048 = 13.6%  grossR -0.160±0.035
+  BELOW_CONVICTION           n= 626  res= 623  target 124/623  = 19.9%  grossR +0.118±0.067  |  tgt +6.3%   dR +0.278 = +3.7 SE
+  BLOCKED_SHORTS_MARKET      n= 707  res= 635  target  98/635  = 15.4%  grossR +0.052±0.063  |  tgt +1.8%   dR +0.213 = +3.0 SE
+  BLOCKED_SHORTS_OFF         n= 397  res= 397  target  90/397  = 22.7%  grossR +0.102±0.083  |  tgt +9.0%   dR +0.262 = +2.9 SE
+  ALLOCATOR_DECLINED         n= 745  res= 745  target  82/745  = 11.0%  grossR -0.138±0.040  |  tgt -2.6%   dR +0.023 = +0.4 SE
+  REJECTED_COST              n= 804  res= 732  target  97/732  = 13.3%  grossR -0.246±0.056  |  tgt -0.4%   dR -0.085 = -1.3 SE
+  BLOCKED_STRUCTURE          n= 451  res= 448  target  84/448  = 18.8%  grossR -0.094±0.064  |  tgt +5.1%   dR +0.066 = +0.9 SE
+  VETOED_AI                  n= 587  res= 571  target  87/571  = 15.2%  grossR -0.111±0.060  |  tgt +1.6%   dR +0.050 = +0.7 SE
+  BLOCKED_SHORTABILITY       n= 402  res= 402  target  46/402  = 11.4%  grossR -0.048±0.069  |  tgt -2.2%   dR +0.112 = +1.4 SE
+  BLOCKED_REENTRY            n=  73  res=  73  target   8/73   = 11.0%  grossR -0.519±0.108  |  tgt -2.7%   dR -0.359 = -3.1 SE
+  BLOCKED_EVENT              n=  56  res=  55  target   4/55   =  7.3%  grossR -0.562±0.126  |  tgt -6.4%   dR -0.402 = -3.1 SE
+  BLOCKED_PAPER_CAPACITY     n=  24  res=  24  target   4/24   = 16.7%  grossR -0.442±0.187  |  tgt +3.0%   dR -0.282 = -1.5 SE
+```
+
+**Those SEs are fake.** One symbol re-detected forty times through a session
+counts forty times, so the raw view pseudo-replicates and understates the standard
+error by roughly √(6035/890) ≈ 2.6×. It manufactures significance the
+deduplicated view does not support. Recorded because a naive
+`GROUP BY cost_verdict` — which is literally what the spec asks for — lands
+exactly here and would have concluded that three gates are inverted.
+
+**B.3 answer: no gate is inverted at the 2-SE bar.** `BLOCKED_EVENT` is measurably
+correct (−2.5 SE). `ALLOCATOR_DECLINED` is measurably neutral (+0.4 SE, n=63).
+`BELOW_CONVICTION` is the one candidate for inversion and it is +1.5 SE pooled /
++1.2 SE on shorts — **suggestive, not established.** This is consistent with, and
+sharper than, `discover_engines` Pass A in Stage 1, which asked the aggregate
+question and found no refused slice beating the taken baseline.
+
+---
+
+### B.5 — does conviction predict anything?
+
+**POPULATION [DET-INTRA], dedup.**
+
+```
+  TAKEN only   (n=170)
+    band               n  target  mean out%   gross R     ±SE
+    0.00-0.55         4   50.0%     +0.193    +0.501   0.867   << n<20
+    0.55-0.65        26   23.1%     -0.222    -0.112   0.259
+    0.65-0.75        63   17.5%     -0.354    -0.200   0.156
+    0.75-0.85        38   13.2%     -0.473    -0.354   0.165
+    0.85-2.00        39   15.4%     -0.304    -0.073   0.201
+    Spearman rho(confidence, gross R) = +0.0137   z = +0.18   DIRECTIONLESS
+
+  ALL detections (every verdict), first row of each key   (n=887)
+    band               n  target  mean out%   gross R     ±SE
+    0.00-0.55        67   20.9%     -0.046    -0.197   0.162
+    0.55-0.65       180   16.1%     -0.084    -0.097   0.102
+    0.65-0.75       424   16.5%     -0.115    -0.167   0.068
+    0.75-0.85       138   13.8%     -0.323    -0.377   0.099
+    0.85-2.00        78   10.3%     -0.420    -0.400   0.124
+    Spearman rho(confidence, gross R) = +0.0025   z = +0.07   DIRECTIONLESS
+```
+
+**Outcome does not rise with confidence. Across the top four bands it falls
+monotonically, on both metrics, in the larger sample:** target rate 16.1% → 16.5%
+→ 13.8% → 10.3%, gross R −0.097 → −0.167 → −0.377 → −0.400. The 0.55–0.65 vs
+0.85+ gap is 0.303R at **1.9 SE** (n=180 vs n=78). Spearman is ~0 only because the
+sub-0.55 band (n=67) is also poor, which breaks monotonicity over the full range.
+
+**The conviction floor that rises 0.55 → 0.80 through the session is tightening
+along an axis whose measured slope is flat-to-negative.** That is the same finding
+as B.3's `BELOW_CONVICTION` bucket, reached from the opposite side and on a larger
+sample — two independent constructions agreeing. Neither reaches 2 SE
+individually.
+
+---
+
+### B.6 — when, not what
+
+**Preflight on [CLOSED]:** `regime_at_entry` is populated on **0 of 56** intraday
+closed rows, and there is **no entry-time column at all** — `entry_date` is a
+DATE. **Phase and regime are not computable on the closed book.** B.6 therefore
+runs on [DET-INTRA], stated rather than silently substituted.
+
+**By phase — PRIME is not better than DRIFT. It is worse, in both views.**
+
+```
+  TAKEN only (n=170)
+  PRIME                      n= 127  target 15.7%  grossR -0.217±0.103  netR -0.454
+  DRIFT                      n=  34  target 23.5%  grossR -0.092±0.228  netR -0.441
+  AFTERNOON                  n=   9  target 22.2%  grossR +0.099±0.507  << n<20
+
+  ALL detections (n=890 dedup)
+  PRIME                      n= 666  target 16.4%  grossR -0.233±0.051  netR -0.370
+  DRIFT                      n= 157  target 14.2%  grossR -0.175±0.111  netR -0.325
+  AFTERNOON                  n=  67  target 13.6%  grossR -0.033±0.156  netR -0.191
+```
+
+The ordering is the same in both views and is the **opposite** of the assumption
+the phase weighting encodes: gross R improves monotonically as the session ages
+(PRIME −0.233 → DRIFT −0.175 → AFTERNOON −0.033 on n=890). **No pair separates by
+2 SE** — PRIME vs AFTERNOON is 1.2 SE, PRIME vs DRIFT 0.5 SE. Consistent direction
+across two independent slicings, insufficient magnitude. Worth a Stage 3
+hypothesis; not worth a config change.
+
+**By regime — NOT ANSWERABLE.** See PRE-2. For the record and for no other
+purpose: TAKEN `NEUTRAL` n=34 grossR −0.548±0.156 vs `NULL` n=123 −0.132±0.114
+(2.2 SE) — but 100% of `NEUTRAL` is 11–13 Aug and 100% of `NULL` is
+28-Jul–11-Aug, so that 2.2 SE measures two date ranges, not two regimes. `CAUTION`
+n=13 (+0.387) is below the n bar and is carried by one VCE detection at +2.500R.
+
+**Engine × regime — NOT ANSWERABLE.** Only two cells clear n=20 (VWR×NULL n=35,
+ORB×NULL n=30) and `NULL` is not a regime.
+
+```
+  VWR x None                 n=  35  target 20.0%  grossR -0.144±0.214
+  VWR x NEUTRAL              n=  14  << n<20
+  ORB x None                 n=  30  target 16.7%  grossR -0.101±0.206
+  ORB x NEUTRAL              n=  10  << n<20
+  VCE x None n=19 / VCE x NEUTRAL n=10 / SDN x None n=13 / SDN x CAUTION n=11
+  GAP x None n=15 / PDL x None n=8 / PBK x None n=2 / RNG x None n=1   << all n<20
+```
+
+**This directly settles the roadmap's Stage 6 conditional:** `HARDENING_BRIEF`
+Phase 5 (breadth) requires Stage 3 regime segmentation across 200+ observations;
+the entire labelled regime corpus is **2 sessions**. `regime_fit_multiplier()`
+stays at weight 0.0 — it is not waiting for tuning, it is waiting for data that
+does not exist yet. The 12-Aug hypothesis in the spec ("continuation engines may
+only pay in continuation regimes") cannot be tested across 30 sessions, because
+12-Aug is one of only two sessions carrying a regime label at all.
+
+**By direction, [CLOSED], MIS only** — B.1 territory, **cited from Stage 1b, not
+re-derived**; reproduced only to confirm the load path is identical: LONG n=39
+gross −0.132 net −0.251; SHORT n=8 gross −0.109 net −0.256 (n<20, insufficient).
+
+---
+
+### C.1 — do the swing engines produce differentiated outcomes?
+
+**POPULATION [PLANS-SW]: `signal_output_daily` rows with a resolved
+`outcome_return_pct`, n=1386, dates 2026-06-25 → 2026-08-11.** These are plans
+that triggered, resolved by the pipeline — **not closed trades.** `strategy` is a
+combination string (`CTL+MOM+SEC`), so a row is credited to **every** engine token
+it carries and the n column sums past 1386.
+
+```
+    engine           n  TARGET   STOP  mean ret%     ±SE   median   verdict
+    SEC            819    7.2%   1.2%     +1.460   0.264   +1.183
+    CTL            676   23.2%   5.6%     +2.166   0.238   +2.774
+    MOM            429   10.0%   0.5%     +0.566   0.366   +0.151
+    RVS             76    6.6%   3.9%     +1.193   0.934   +0.615
+    RSB             71   25.4%   7.0%     +0.332   0.673   +0.228
+    IAD             48    8.3%   2.1%     +3.153   1.040   +1.353
+    TPO             33   39.4%  18.2%     +3.663   1.126   +4.197
+    SBS             30   20.0%   3.3%     +2.920   1.286   +3.023
+    VBD             23   17.4%   0.0%     +3.051   1.695   +4.509
+    BOOK          1386   19.8%   4.5%     +1.106   0.190   +1.346
+```
+
+**Yes — unlike intraday, the swing engines separate.** CTL (+2.166, n=676) vs MOM
+(+0.566, n=429) is **3.7 SE**; CTL vs the book mean is 3.5 SE. CTL also carries the
+highest target rate of the three large buckets (23.2% vs SEC 7.2% and MOM 10.0%).
+MOM vs book is −1.3 SE — weakest of the three, not yet separated from it.
+TPO/SBS/VBD/IAD look strong but sit at n=23–48 with SEs of 1.0–1.7; above the
+n≥20 bar, far below anything that supports an action.
+
+**C.1b — POPULATION [CLOSED]: `closed_positions`, `framework='SWING'`, n=78, R
+computable on 8.**
+
+```
+    strategy            n  R-able   gross R     net R  mean pnl Rs   verdict
+    CTL                47       1    +0.289    +0.184          +33
+    CTL (Legacy)       21       0         —         —         -644
+    None                2       0         —         —         -283   INSUFFICIENT (n<20)
+    TPO                 2       2    +0.423    -0.008          +36   INSUFFICIENT (n<20)
+    SBS                 2       2    +0.178    +0.025           +3   INSUFFICIENT (n<20)
+    CTL+MOM+SEC         1       1    +0.081    -0.086          -10   INSUFFICIENT (n<20)
+    AI PICK             1       0         —         —         -306   INSUFFICIENT (n<20)
+    MOM+SEC             1       1    +0.192    +0.118          +34   INSUFFICIENT (n<20)
+    SEC                 1       1    +2.095    +1.974         +345   INSUFFICIENT (n<20)
+```
+
+Every bucket insufficient; the largest is CTL n=47 with **one** R-computable row.
+No swing engine can be judged on real trades.
+
+---
+
+### C.2 — does `final_score` correlate with realised return?
+
+**POPULATION [PLANS-SW], n=1386.**
+
+```
+  final_score quintile cuts: [57.3, 63.7, 68.4, 73.3]
+    quintile                   n  TARGET   STOP  mean ret%     ±SE   median
+    Q1 [   0.0,  57.3)    277   17.0%   5.4%     +1.697   0.513   +2.141
+    Q2 [  57.3,  63.7)    272   16.9%   4.4%     +1.304   0.442   +0.632
+    Q3 [  63.7,  68.4)    277   23.8%   4.7%     +0.480   0.420   +0.997
+    Q4 [  68.4,  73.3)    280   19.6%   2.1%     +0.693   0.371   +1.090
+    Q5 [  73.3, 999.0)    280   21.4%   6.1%     +1.363   0.361   +1.683
+
+  Spearman rho(final_score, outcome_return_pct) = -0.0175   z = -0.65   n=1386
+```
+
+**No monotone relationship, on the largest clean sample in this entry.** The
+**lowest**-scored quintile has the highest mean return (+1.697%) and the highest
+median (+2.141%); Q3 is the worst (+0.480%). Spearman is −0.018 at z=−0.65 —
+indistinguishable from zero on 1386 observations, which is enough n that this is a
+real negative result rather than an underpowered one.
+
+**The swing ranking layer does not order outcomes.** `swing_max_new_per_day`
+(**3** in `system_config`, not the 2 the spec assumes) is choosing arbitrarily
+from the top of a list whose order carries no measured information. This is the
+same shape as B.5's intraday conviction result, in a different framework, on a
+sample 8× larger.
+
+---
+
+### C.3 — are the exit rungs helping?
+
+**Ran:** `cd backend && python -m tools.exit_ladder_replay --min-r 0.5`
+
+```
+  EXIT-LADDER ESTIMATE — give-back at 50% / min 0.5R, 56 measurable position(s) (0 unmeasurable, excluded)
+  11 position(s) WOULD HAVE been cut early by give-back:
+  symbol        actual exit           actual R   peak R  giveback R
+  KAYNES        SETUP_INVALIDATED       -0.981    +0.61      +0.305
+  SAPPHIRE      MULTI_LEG               -0.633    +1.06      +0.530
+  ADANIGREEN    SETUP_INVALIDATED       -0.474    +0.63      +0.316
+  IFCI          TIME_EXIT               -0.396    +0.66      +0.332
+  HINDCOPPER    SETUP_INVALIDATED       -0.346    +0.65      +0.327
+  SWIGGY        SETUP_INVALIDATED       -0.282    +0.54      +0.268
+  RKFORGE       GAVE_BACK_THE_MOVE      -0.022    +0.56      +0.280
+  GRAPHITE      TIME_EXIT               +0.269    +0.84      +0.422
+  GVT&D         TRAIL_SL_HIT            +0.780    +1.82      +0.912
+  FSL           MULTI_LEG               +0.550    +1.35      +0.677
+  GVT&D         GAVE_BACK_THE_MOVE      +0.168    +0.53      +0.263
+  ACTUAL exits (as they really closed):   total -2.64R  (56 positions)
+  GIVE-BACK ceiling estimate:              total +3.36R  (11 would have changed)
+  Estimated ceiling on the improvement:    +6.00R
+  WARNING: This is a CEILING, not a forecast — it assumes give-back always wins any
+           race with another exit rung, which the summary data cannot rule out or confirm.
+```
+
+**The number the spec says "was never measured" is now measured — for intraday.
+Give-back would cut 4 winners out of 11 (36%).** Winners cut: GRAPHITE +0.269,
+GVT&D +0.780, FSL +0.550, GVT&D +0.168 = **+1.767R surrendered**. Losers avoided:
+7 rows totalling **−3.134R**. Net favourable on this sample, at a 36% false-cut
+rate, against the tool's own explicit ceiling caveat.
+
+**But C.3 is a PHASE C question — it is asked about the SWING ladder — and this
+tool cannot answer it.** `tools/exit_ladder_replay.py:99` hardcodes
+`.eq("framework", "INTRADAY")`. The 56 rows above are the intraday book. The swing
+side is not merely unqueried, it is **not computable**:
+
+```
+  SWING: 78 closed rows
+    r_multiple + high_water_mark + stop all present (replay-measurable): 8
+```
+
+**And the two rungs C.3 asks about have never fired on the swing book:**
+
+```
+  config: exit_giveback_pct=50  exit_giveback_min_r=0.5  exit_stall_days=10  exit_stall_peak_r=0.5
+          intraday_giveback_pct=50.0  intraday_giveback_min_r=0.5
+  SWING     n=78   give-back rung fired: 0   stall rung fired: 0
+  INTRADAY  n=56   give-back rung fired: 3   stall rung fired: 0
+      GIVEBACK  RKFORGE  GAVE_BACK_THE_MOVE  R=-0.022
+      GIVEBACK  GVT&D    GAVE_BACK_THE_MOVE  R=+0.168
+      GIVEBACK  MCX      GAVE_BACK_THE_MOVE  R=+0.926
+  SWING exit_reason histogram: TRAIL SL HIT 37, STRATEGY ROTATION 12, TIME EXIT 10,
+                               STOP LOSS HIT 9, BROKER_EXIT 8, "4.5% loss" 1,
+                               MANUAL DISCIPLINE EXIT 1
+  SWING hold_days: n=78  min=0  median=5.0  max=34
+                   held 11-15 sessions: 11    held >15 sessions: 7
+```
+
+**`EXIT_STALL` has fired zero times in either book, ever.** `EXIT_GIVEBACK` has
+fired zero times on swing and three times on intraday under a different name.
+Every swing exit reason on record is a legacy space-separated string. **The
+question "is `EXIT_GIVEBACK` net-positive versus holding to the stop on the swing
+book" has no data behind it at all** — the rung is configured and has never closed
+a swing trade. The spec's contamination warning (`fix/session-count-parity`) is
+moot here: the reading is not contaminated, it is absent. `exit_stall_days=10`
+against a swing book whose **median hold is 5.0 days** is at least consistent with
+a rung that rarely reaches its own trigger.
+
+---
+
+### C.4 — expectancy in rupees
+
+```
+  capital_snapshot.configured  Rs 30,000
+  risk_pct_per_trade           1.0%   -> Rs 300 risk per position
+  max_positions_risk_on/off    8 / 6
+  swing_max_new_per_day        3
+  intraday_max_new_per_day     20
+```
+
+**MEASURED — POPULATION [CLOSED]:**
+
+```
+    bucket                  n     hit   mean win  mean loss   EXPECTANCY    net R   cost R
+    INTRADAY all           56   26.8%        +65        -41       -12.92   -0.390   +0.338
+    INTRADAY MIS           47   25.5%        +56        -43       -17.93   -0.252   +0.124
+    SWING all              78   39.7%       +442       -555      -158.78   +0.278   +0.204
+    SWING attributed        9   55.6%       +102        -44       +37.26   +0.278   +0.204
+```
+
+(The two SWING R columns are the 8-row subsample — see "Could not determine".)
+
+**TO SPECIFICATION — the spec's own shape (1% risk, 40% hit, 2R winner), with
+MEASURED friction rather than an assumed one:**
+
+```
+      capital  risk/trade book              exp R   Rs/trade   Rs/mo @20  %/mo @20   Rs/mo @40  %/mo @40
+       20,000         200 intraday MIS     +0.076     +15.12        +302     +1.51        +605     +3.02
+       20,000         200 swing CNC        -0.004      -0.85         -17     -0.08         -34     -0.17
+       30,000         300 intraday MIS     +0.076     +22.68        +454     +1.51        +907     +3.02
+       30,000         300 swing CNC        -0.004      -1.27         -25     -0.08         -51     -0.17
+```
+
+**This is the finding C.4 was written to surface, and it is worse than "small".**
+
+At the framework's **own design target** — 40% hit rate, 2R average winner, 1%
+risk — the arithmetic is `0.40 × 2 − 0.60 × 1 = +0.200R` gross. Intraday MIS
+friction (+0.124R measured) leaves **+0.076R**, or **₹15–23 per trade**, or
+**+1.51% of capital per month at 20 trades**. Swing CNC friction (+0.204R
+measured) leaves **−0.004R — the design target is a break-even coin flip on the
+swing book.**
+
+So "profits are not significant" is confirmed as **partly structural and not
+fixable by engine work**: even with every rule performing to specification,
+intraday returns ~1.5%/month at ₹20,000 and swing returns approximately zero. The
+swing book does not need better selection to reach its design target — **at its
+design target it still makes nothing**, because CNC friction consumes the entire
+edge that 40%/2R produces. The levers are clip size (the flat ₹15.04 DP fee is a
+fixed cost fighting a percentage edge), a higher target multiple, or capital — not
+engine selection. Note the swing +0.204R friction figure inherits the 8-row
+caveat below.
+
+---
+
+### BUGS AND DRIFT FOUND — recorded, not fixed (Stage 2 is read-only)
+
+**BUG-4 — `tools/exit_ladder_replay.py:99` is hardcoded to INTRADAY, but C.3 is a
+swing question.** `.eq("framework", "INTRADAY")`. The spec names this tool for the
+swing exit-rung question and it cannot see the swing book. Not a wrong number — a
+silently narrowed population, the same class of defect Stage 1 found in
+`engine_scorecard`. Adding `--book` would mirror the `--days` fix of Stage 1b.
+
+**BUG-5 — `EXIT_STALL` has never fired in either book, and `EXIT_GIVEBACK` has
+never fired on swing.** Configured (`exit_stall_days=10`, `exit_stall_peak_r=0.5`,
+`exit_giveback_pct=50`, `exit_giveback_min_r=0.5`) and producing zero closes across
+134 rows. This is the CLAUDE.md pattern "a check that cannot PASS" applied to an
+exit rung. Whether it is unreachable or merely never reached is **not** established
+here, and the distinction matters before Stage 4 tunes it.
+
+**DRIFT-1 — documented config values do not match `system_config`.**
+`intraday_max_new_per_day` is **20**; CLAUDE.md says 4. `swing_max_new_per_day` is
+**3**; `EDGE_DIAGNOSTIC.md` C.2 says 2. `capital_snapshot.configured` is
+**₹30,000**; CLAUDE.md's header says ₹20,000 and `EDGE_DIAGNOSTIC` C.4 computes on
+₹20,000. Both capital figures are given in C.4 so the reader can pick. Nothing was
+changed.
+
+---
+
+**Could not determine:**
+
+- **Any engine verdict, either book.** [CLOSED] intraday: largest bucket ORB n=11.
+  [CLOSED] swing: largest CTL n=47 with **1** R-computable row. This is precisely
+  what Stage 3 is for and no retirement is proposed.
+- **Whether any regime affects anything.** `regime_at_detection` covers 2 of 13
+  sessions (PRE-2). Engine × regime has two cells above n=20 and both are the
+  `NULL` bucket. **`HARDENING_BRIEF` Phase 5 cannot be evaluated** and its
+  200-observation precondition is nowhere near met.
+- **Whether the swing exit ladder helps.** BUG-4, plus 8 replay-measurable swing
+  rows, plus zero rung firings. Three independent reasons, any one sufficient.
+- **Whether the B.3 counterfactuals would have filled.** `outcome_pct` is
+  simulated against bars by `outcomes.resolve_day`; no fill, slippage or queue
+  position is modelled. Inherited from Stage 1 and it applies to every B.3, B.5 and
+  B.6 number here.
+- **Whether `BELOW_CONVICTION` is genuinely inverted.** +1.5 SE pooled, +1.2 SE
+  direction-matched on shorts. Two independent constructions (B.3 and B.5) agree on
+  the sign. Neither reaches 2 SE. **This is the single most valuable thing for
+  Stage 3 to settle** and it is not settled here.
+- **Any swing R statistic whatsoever.** All 8 R-computable swing rows are gross
+  winners — 8 of 8 — while the book they come from lost ₹9,253 net across 78 trades
+  at a 39.7% hit rate:
+
+```
+  PPLPHARMA SEC +2.095 | VIJAYA TPO +0.452 | KIMS TPO +0.394 | ETERNAL CTL +0.289
+  TRAVELFOOD SBS +0.267 | GABRIEL MOM+SEC +0.192 | CIPLA SBS +0.089 | BHEL CTL+MOM+SEC +0.081
+  of these, gross_r > 0: 8 of 8
+```
+
+  Stage 1's "+0.482 gross R (n=8)" and this entry's swing `cost_r +0.204` /
+  `net_r +0.278` are all computed on a subsample containing **zero losers**. They
+  are not estimates of swing edge and must not be quoted as any. The C.4 "SWING
+  attributed" row (100% gross hit rate) is included above precisely to make that
+  visible, and C.4's swing friction figure inherits it.
+- **Why PDL's closed book is 7 of 7 CNC.** Identified — it explains PDL's +1.626R
+  cost R entirely — but the cause, why `intraday_product` was CNC for that engine,
+  was not investigated. Carried forward from Stage 1 in sharper form.
+- **The 631 `intraday_setups` rows with a null `meta.sub_engine`.** They are why
+  three dedup keyings give 840 / 890 / 941. Not chased.
+- **Whether `outcome_return_pct` on [PLANS-SW] equals a tradeable return.** It is
+  the pipeline's own resolution of a plan, not a fill. C.1 and C.2 inherit that,
+  and it is why C.2's null result is stated as "the ranking does not order
+  outcomes" rather than "the ranking does not order P&L".
+
+---
+
+**Found (summary):**
+
+1. **Signal problem confirmed, not re-derived** — cited from Stage 1b per the
+   session brief. B.2 adds that the book-level [CLOSED] reading is gross −0.052R
+   (n=56), MIS-only gross −0.128R (n=47).
+2. **No gate is inverted at 2 SE.** One bucket clears that bar and it clears it in
+   the working direction: `BLOCKED_EVENT` at −2.5 SE. `ALLOCATOR_DECLINED` is
+   measurably neutral at +0.4 SE (n=63) — the spec's "gates are noise" reading.
+3. **`BELOW_CONVICTION` is the one inversion candidate**, at +1.5 SE pooled and
+   +1.2 SE on shorts (30.4% target vs 20.8%). Not established.
+4. **B.5 reaches the same conclusion independently and more cleanly**: gross R
+   falls monotonically across the top four confidence bands (−0.097 → −0.167 →
+   −0.377 → −0.400) and target rate falls with it (16.1% → 10.3%). Spearman +0.003,
+   z=+0.07. **The conviction score is noise, and its slope leans negative.**
+5. **The swing ranking layer is decorative** — Spearman(final_score, return) =
+   −0.018, z=−0.65 on **n=1386**. The lowest quintile has the best mean and median
+   return. Largest and cleanest sample in this entry.
+6. **Swing engines DO differentiate, unlike intraday** — CTL +2.166% (n=676) vs MOM
+   +0.566% (n=429) at 3.7 SE on [PLANS-SW].
+7. **PRIME is not better than DRIFT** — the ordering is monotone in the opposite
+   direction across both slicings, at 0.5–1.2 SE.
+8. **Two methodological traps recorded** so no future session falls in: the spec's
+   own B.3 recipe gives early-firing gates a free round trip (PRE-1), and the
+   undeduplicated view manufactures 3-SE results the dedup view does not support
+   (B.3d).
+9. **At its own design target the swing book earns ≈₹0** and intraday earns
+   ~1.5%/month at ₹20,000. Capital and friction, not selection.
+10. Two tool defects (BUG-4, BUG-5) and three doc/config drifts (DRIFT-1).
+
+---
+
+**Recommends:**
+
+- **No retirements.** That is Gate 3, after the replay, and this entry contains no
+  bucket meeting the bar (n≥30 deduplicated **and** negative gross R **and** failure
+  against a random baseline). Stated explicitly because B.2b shows three intraday
+  buckets above n=20 with negative gross R — two of three criteria, which the
+  roadmap already says is not enough.
+- **No config changes, no gate removals.** `BELOW_CONVICTION` is the one thing the
+  evidence points at and it points at 1.2–1.5 SE. Removing a gate on that is the
+  mirror image of adding one.
+- **Stage 3 should be scoped to settle three specific questions**, none of which
+  more sessions of the current book will answer quickly: (a) is the conviction
+  score inverted or merely flat; (b) does phase ordering really run PRIME < DRIFT <
+  AFTERNOON; (c) do the swing engines' [PLANS-SW] differences survive on real fills.
+- **Carry PRE-1 into any future B.3-style query.** Compare gross R, never
+  `outcome_pct`, across the cost gate.
+- **Do not quote any swing R number from this ledger.** The 8-row sample is 8
+  winners out of 8.
+- Flag for whoever runs Stage 4: `HARDENING_BRIEF` Phase 5 has no evidence base,
+  and the roadmap already authorises deleting it if Stage 3 does not support it.
+  Nothing here supports it.
+
+**Gate 2: PASS.** The diagnosis (signal, from Stage 1b), per-engine gross/cost/net
+R with n on both populations, and the inverted-gate answer (none at 2 SE; one
+candidate at 1.5) are all recorded. No retirements, per the gate's own terms.
+
+---
