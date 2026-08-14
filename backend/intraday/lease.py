@@ -51,10 +51,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import IST, get_supabase, cfg_int, cfg
+from config import IST, get_supabase, cfg_int, cfg, cfg_bool
 
 ACTIVE = "ACTIVE"
 STANDBY = "STANDBY"
+
+_TABLE = "intraday_daemon_lease"
 
 _INSTANCE_ID = f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
 
@@ -215,3 +217,184 @@ def release(sb=None) -> None:
 
 def instance_id() -> str:
     return _INSTANCE_ID
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STARTUP EXCLUSION — migration 077
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Everything above this line is a ROLE, and a role is not a mutex. On
+# 2026-08-10 09:36 two daemons placed six real orders into one live account
+# inside 62 seconds, interleaved with nine echoes of the account-wide latch
+# that forbids them — a latch with one assignment site and no reset, so one
+# process cannot produce that sequence. Three properties of the code above
+# allowed it, and all three are visible in this file:
+#
+#   1. acquire() READS the row (line ~118) and then upserts UNCONDITIONALLY
+#      (line ~153). It never re-asserts what it read. Its own docstring says
+#      so: "Two daemons starting in the same second could briefly both believe
+#      they are active."
+#   2. The loser is not told. It finds out at its next renew(), which run.py
+#      calls on a 30s timer while the engine evaluates every 15s — so a
+#      demoted daemon places orders for one or two more full cycles.
+#   3. _is_primary() lets a configured primary skip the deference check and
+#      claim a LIVE, unexpired lease held by a running daemon (migration 050,
+#      set to 'tradeos-vcn' on 2026-08-06 — four days before the incident).
+#
+# So the lease cannot be repaired into exclusion; a second process that is
+# RUNNING AT ALL is one config read, one exception or one renew interval away
+# from acting. The fix is to stop it existing.
+#
+# WHY THIS IS NOT A POSTGRES ADVISORY LOCK
+# pg_advisory_lock() is session-scoped and this system reaches Postgres only
+# through PostgREST, which hands every request a POOLED connection and returns
+# it afterwards. A session lock taken that way is held by a connection nobody
+# owns and released at a moment nobody controls — it would be a lock that
+# cannot be trusted to fail, which is the defect this repo has found five
+# times already. What IS atomic over PostgREST is a single conditional UPDATE:
+# Postgres takes the row lock, serialises the writers, and reports how many
+# rows matched. That is a compare-and-swap, and it is enough.
+
+
+@dataclass
+class LockResult:
+    granted: bool
+    code: str            # CLAIMED | STALE | FREE | HELD | LOST_RACE | UNREADABLE | OFF
+    holder: str          # who holds it — this instance when granted
+    detail: str
+
+
+def _parse_expiry(raw) -> datetime | None:
+    """The stored expiry as IST, or None when it cannot be read at all."""
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except Exception:
+        return None
+    # Migration 023 writes now(), which is tz-aware. A naive value is a legacy
+    # or hand-edited row; assume the wall clock this system runs on rather than
+    # refusing over it.
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=IST)
+    return dt.astimezone(IST)
+
+
+def _lock_verdict(row: dict | None, me: str, now: datetime) -> tuple[bool, str, str]:
+    """
+    May this process claim the lock? Pure — no clock, no database, no config.
+
+    Split out from claim_startup_lock() so the two behaviours that matter can
+    be tested offline against a table of rows: a LIVE holder must refuse, and a
+    genuinely stale one must not block a restart.
+
+    Note what is deliberately NOT consulted: _is_primary(). A preference for
+    which machine should normally run (migration 050) is not authority to
+    barge in on one that already is — honouring it here would reproduce the
+    2026-08-10 overlap exactly, since that is the path that produced it.
+    """
+    if row is None:
+        return True, "FREE", "no lease row exists yet — claiming it"
+
+    holder = row.get("holder") or ""
+    if not holder:
+        return True, "FREE", "the lease is unheld — claiming it"
+    if holder == me:
+        return True, "FREE", "this instance already holds the lease"
+
+    expires = _parse_expiry(row.get("expires_at"))
+    if expires is None:
+        # Fail CLOSED. An unreadable expiry against a named holder cannot be
+        # distinguished from a live one, and the cost of guessing wrong is two
+        # daemons on a live account. Refusing costs a session in which the GTT
+        # stops still protect every position, and the message below says
+        # exactly how to clear it.
+        return False, "UNREADABLE", (
+            f"{holder} holds the lease and its expires_at is unreadable "
+            f"({row.get('expires_at')!r}) — refusing to start rather than "
+            f"guessing whether that process is alive. Clear it with:  UPDATE "
+            f"intraday_daemon_lease SET holder='' WHERE id=1;")
+
+    if expires > now:
+        left = int((expires - now).total_seconds())
+        return False, "HELD", (
+            f"{holder} holds the lease for another {left}s")
+
+    lapsed = int((now - expires).total_seconds())
+    return True, "STALE", (
+        f"{holder}'s lease lapsed {lapsed}s ago — claiming it")
+
+
+def claim_startup_lock(sb=None) -> LockResult:
+    """
+    Take the lease exclusively, or report that another daemon is running.
+
+    Called once, at startup, BEFORE anything reads state or places an order.
+    The write is a compare-and-swap: the UPDATE carries `.eq("holder", <the
+    holder we just read>)`, so if another process claimed in between, zero rows
+    match and this one refuses. That is the property acquire()'s unconditional
+    upsert lacks, and it is why two simultaneous starts cannot both win.
+
+    Failure is CLOSED throughout — an unreadable row, a missing table, a lost
+    race and a write error all refuse. A lock that keeps trading when it cannot
+    verify exclusivity is not a lock; every other guard in this file fails open
+    to ACTIVE, and that is precisely how this failure survived.
+    """
+    if not cfg_bool("intraday_single_daemon_lock", True):
+        return LockResult(True, "OFF", _INSTANCE_ID,
+                          "intraday_single_daemon_lock is off — starting without "
+                          "startup exclusion (migration 023 behaviour: a second "
+                          "daemon runs as a standby and may act for up to one "
+                          "renew interval after losing the lease)")
+
+    sb = sb or get_supabase()
+    now = _now()
+
+    try:
+        rows = (sb.table(_TABLE).select("holder,hostname,expires_at")
+                  .eq("id", 1).execute().data or [])
+    except Exception as e:
+        return LockResult(False, "UNREADABLE", "?", (
+            f"could not read {_TABLE} ({e}). Without it exclusivity cannot be "
+            f"established, and starting anyway is exactly how two daemons ended "
+            f"up on one live account on 2026-08-10. Apply migration 023 if this "
+            f"table is missing."))
+
+    row = rows[0] if rows else None
+    may, code, detail = _lock_verdict(row, _INSTANCE_ID, now)
+    if not may:
+        return LockResult(False, code, (row or {}).get("holder") or "?", detail)
+
+    patch = {
+        "holder": _INSTANCE_ID,
+        "hostname": socket.gethostname(),
+        "acquired_at": now.isoformat(),
+        "expires_at": (now + timedelta(seconds=_ttl())).isoformat(),
+    }
+
+    try:
+        if row is None:
+            # The PK on id makes a simultaneous insert fail rather than
+            # duplicate. Losing that race is a refusal, same as any other.
+            sb.table(_TABLE).insert({"id": 1, **patch}).execute()
+            return LockResult(True, "CLAIMED", _INSTANCE_ID,
+                              f"lock claimed ({detail})")
+
+        observed = row.get("holder")
+        q = sb.table(_TABLE).update(patch).eq("id", 1)
+        # A held-then-freed row stores '' rather than NULL, but both shapes
+        # exist in the wild and `.eq(col, None)` is not `IS NULL` in PostgREST.
+        q = q.is_("holder", "null") if observed is None else q.eq("holder", observed)
+        changed = q.execute().data or []
+    except Exception as e:
+        return LockResult(False, "LOST_RACE", (row or {}).get("holder") or "?",
+                          f"could not write the lock ({e}) — refusing to start")
+
+    if not changed:
+        # The holder changed between the read and the write. Another daemon
+        # claimed in that window; this is the race acquire() cannot see.
+        return LockResult(False, "LOST_RACE", "?", (
+            "another daemon claimed the lease between this process reading it "
+            "and writing — refusing to start"))
+
+    return LockResult(True, "CLAIMED", _INSTANCE_ID, f"lock claimed ({detail})")

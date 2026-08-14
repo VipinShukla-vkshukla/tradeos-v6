@@ -94,6 +94,44 @@ def main(once: bool = False, dry: bool = False) -> None:
         logger.info("NSE holiday — nothing to do")
         return
 
+    # ── REFUSE TO BE THE SECOND DAEMON (migration 077) ──────────────────────
+    #
+    # Before this, a second daemon STARTED and ran as a standby, and standby is
+    # a role rather than a mutex: one config read, one database exception or
+    # one 30-second renew interval separates it from acting. On 2026-08-10 at
+    # 09:36 that gap was 62 seconds and six real orders went into the live
+    # account from two processes at once, interleaved with nine echoes of the
+    # account-wide latch that forbids them.
+    #
+    # This runs before load_state(), before the universe, before any order can
+    # be considered. An expired lease is still claimable — see
+    # lease._lock_verdict — so a legitimate restart after a crash is never
+    # blocked; only a LIVE holder refuses.
+    lock = lease.claim_startup_lock(sb)
+    if not lock.granted:
+        logger.error("═" * 74)
+        logger.error("  REFUSING TO START — another intraday daemon holds this account")
+        logger.error(f"  {lock.detail}")
+        logger.error("")
+        logger.error("  Every duplicate guard in order_manager is per-process — the "
+                     "5-minute")
+        logger.error("  duplicate-order window, the account-wide block latch and the "
+                     "daily caps")
+        logger.error("  are all module globals, so two daemons halve all four. This "
+                     "is the")
+        logger.error("  mechanism behind 'PPLPHARMA sold twice'.")
+        logger.error("")
+        logger.error("  To hand over: stop the running daemon. A clean shutdown "
+                     "releases the")
+        logger.error("  lease immediately. To watch without trading, use "
+                     "`python -m tools.simulate`,")
+        logger.error("  which writes nothing. To disable this check:")
+        logger.error("    UPDATE system_config SET value='false' "
+                     "WHERE key='intraday_single_daemon_lock';")
+        logger.error("═" * 74)
+        return
+    logger.success(f"  startup lock: {lock.detail}")
+
     # Exactly one daemon may ACT. A second one anywhere — laptop and server
     # both running — would place every exit order twice and send every alert
     # twice, because the duplicate guards are per-process and cannot see each

@@ -37,6 +37,8 @@ being unable to add it.
 
 from __future__ import annotations
 
+import os
+import socket
 import sys
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
@@ -519,22 +521,57 @@ def _count_live_positions(sb) -> int:
         return -1
 
 
+# WHO wrote the row. Every guard in this module is a process-local global —
+# _recent, _blocked, _blocked_account, and the daily caps via _today_totals —
+# so "which process" is the difference between one book and two. On 2026-08-10
+# six live orders were placed by a process that could not have placed them,
+# interleaved with the latch echoes of one that could not, and the log could
+# PROVE two writers existed while being unable to NAME either. Migration 077.
+_HOST = socket.gethostname()
+_PID = os.getpid()
+
+
 def _log(sb, req: OrderRequest, action: str, order_id: str | None,
          detail: str, framework: str = "SWING") -> None:
+    row = {
+        "ts":       datetime.now(IST).isoformat(),
+        "symbol":   req.symbol,
+        "channel":  "ORDER",
+        "action":   action,
+        "side":     req.side,
+        "ref_id":   order_id,
+        "price":    req.price,
+        "quantity": req.quantity,
+        "detail":   detail,
+        # Without this, today's spend cannot be attributed, and the
+        # per-framework daily caps are unenforceable.
+        "framework": (framework or "SWING").upper(),
+        "host":     _HOST,
+        "pid":      _PID,
+    }
     try:
-        sb.table("intraday_broker_log").insert({
-            "ts":       datetime.now(IST).isoformat(),
-            "symbol":   req.symbol,
-            "channel":  "ORDER",
-            "action":   action,
-            "side":     req.side,
-            "ref_id":   order_id,
-            "price":    req.price,
-            "quantity": req.quantity,
-            "detail":   detail,
-            # Without this, today's spend cannot be attributed, and the
-            # per-framework daily caps are unenforceable.
-            "framework": (framework or "SWING").upper(),
-        }).execute()
+        sb.table("intraday_broker_log").insert(row).execute()
+        return
+    except Exception as e:
+        first = e
+
+    # PostgREST fails the WHOLE insert on one unknown column, and this table is
+    # the money trail — the only record that an order was attempted at all. If
+    # migration 077 has not been applied, adding attribution must not cost the
+    # row it attributes. Strip and retry, exactly as the PostgREST landmine in
+    # CLAUDE.md prescribes.
+    #
+    # Retried only when the error names a column, so an ordinary network fault
+    # does not get a second attempt and write the row twice.
+    msg = str(first)
+    if not any(t in msg for t in ("PGRST204", "column", "'host'", "'pid'")):
+        logger.debug(f"  order log failed: {first}")
+        return
+    row.pop("host", None)
+    row.pop("pid", None)
+    try:
+        sb.table("intraday_broker_log").insert(row).execute()
+        logger.warning(f"  order log written WITHOUT host/pid — apply migration "
+                       f"077 to make duplicate daemons attributable ({first})")
     except Exception as e:
         logger.debug(f"  order log failed: {e}")
