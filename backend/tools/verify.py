@@ -107,6 +107,8 @@ MODULES = [
     ("validate_config paper capacity", "tests.test_validate_config_paper_capacity"),
     ("expectancy ledger scores shorts", "tests.test_expectancy_ledger_shorts"),
     ("preflight host and lease guards", "tests.test_preflight_host_and_lease"),
+    ("planner regime symmetry and cost floor (shipped inert)",
+     "tests.test_planner_regime_and_cost"),
 ]
 
 

@@ -3479,3 +3479,297 @@ along the way (F-15 armed unguarded runner path, F-16 sizing split, F-13
 unchanged) are recorded and not silently fixed.
 
 ---
+
+## 2026-08-15 — Stage 2e (planner: regime symmetry + a cost model) — the regime knob was a knob on R and it pointed the wrong way; the planner now prices its own friction on the LEDGER basis, and both fixes ship inert
+
+Both defects are in `analysis/risk_model.py`, the module that writes
+`signal_output_daily.planned_target` on the **LIVE** swing book. Both are fixed
+behind config keys that default to today's behaviour, so **merging this changes
+nothing**. Arming either is a separate decision.
+
+---
+
+### 0 — THE TWO DEFECTS, RESTATED FROM THE CODE
+
+```
+regime_k  = REGIME_STOP_MULT.get((regime or "NEUTRAL").upper(), 1.0)   # :158
+atr_stop  = anchor - (p["stop_atr_mult"] * regime_k * atr_abs)         # :161
+target    = anchor + (p["target_atr_mult"] * atr_abs)                  # :188
+```
+
+**1. The stop was scaled by `regime_k`; the target was not.** Both are ATR
+distances — the two sides of one ratio — so a knob whose stated purpose is
+volatility was silently a knob on reward-per-unit-risk:
+
+```
+planned R = target_atr_mult / (stop_atr_mult * regime_k) = 3.0 / (1.5 * k)
+   TRENDING 2.1050 · RISK ON 2.0000 · NEUTRAL 1.9048 · RECOVERING 1.7391 · RISK OFF 1.6000
+```
+
+R **shrank as conditions worsened** — more risk per share for identical reward,
+exactly when the market is least likely to pay for it — and the 2R design point
+was reachable only in `RISK ON`, which this book has never traded.
+
+**2. The planner had no cost model.** `risk_model.py` imported `dataclasses` and
+nothing else while every other gate in the system prices its own friction.
+
+---
+
+### 1 — WHAT WAS BUILT
+
+**Regime symmetry** (`risk_regime_scales_target`, default **false**). `regime_k`
+now multiplies the target distance too — **on the ATR branch only**:
+
+```python
+target_k = regime_k if (p["regime_scales_target"] and stop_source == "atr") else 1.0
+target   = anchor + (p["target_atr_mult"] * target_k * atr_abs)
+```
+
+Scaling it on the structure branch as well was the obvious alternative and is
+wrong. A structural stop is a **price**, so `regime_k` never touched its risk;
+scaling only its target would raise R with **no offsetting risk change** — a free
++5% on 308 of 995 plans. `k` is applied to the target exactly where it was
+applied to the stop, which is what "symmetric" means here. This is not an
+argument, it is a test: patching the line to scale unconditionally makes
+`test_symmetry_leaves_a_structure_stop_plan_alone` fail with
+`target moved from 545.0 to 547.25 on a structure stop`. Demonstrated, then
+reverted.
+
+**A cost model** (`risk_min_planned_r_enabled`, default **false**). Every plan
+now sizes its own clip by the production rule, prices that clip's round trip,
+and reports `friction_r` / `required_rr` on `TradeLevels` **whether or not the
+floor is armed**. When armed, a plan below `(1 - h + friction_R)/h + margin` is
+rejected with `below_min_planned_r_{rr}_needs_{bar}`.
+
+`plan_clip()` holds the two capital terms and `compute_position_size()` was
+refactored to **call it** rather than restate them — two copies of a sizing rule
+is how a plan and the position it becomes drift apart, and friction is only
+meaningful if computed on the clip the account will actually take. The refactor
+is behaviour-identical: **200,000 randomised sizings against the pre-refactor
+arithmetic, 0 mismatches**, across quantity *and* `capped_by`.
+
+---
+
+### 2 — WHICH COST BASIS, AND WHY
+
+**LEDGER** (`entry_leg + exit_leg`, statutory only), **not GATE**
+(`round_trip`, which adds `cost_slippage_bps` 5 on both legs).
+
+The two differ by a constant **+0.100pp of position** — on CNC clips that is
+**1.10–1.17x**, on MIS 1.94x. Measured here at each plan's own clip:
+
+```
+  friction R (ledger)  n=784  min 0.1062  p25 0.1305  MED 0.1568  p75 0.1997  max 0.4467
+  friction R (gate)    n=784  min 0.1192  p25 0.1497  MED 0.1786  p75 0.2306  max 0.5011
+```
+
+The reason is the CLAUDE.md rule that **a gate and the thing it gates must be the
+SAME QUANTITY**. `planned_target` is ultimately judged against **realised** R —
+`expectancy_ledger`, `weekly_review`, and every prior built from
+`closed_positions` — and all of those price friction statutorily, because
+slippage is already inside the fill price on both books (`paper_broker.py:90`
+fills at `ltp * (1 ± slip)`; live fills embed it by construction). Charging it
+again in the planner would be a **double count against the very number this floor
+exists to protect**, and would put the plan and its own outcome on two different
+rulers. The GATE basis is right where it lives — a pre-trade decision against a
+quoted price not yet paid — and is reported alongside below, not used.
+
+---
+
+### 3 — PLANNED R, BEFORE AND AFTER
+
+**POPULATION [PLANS-2e]:** `signal_output_daily`, **2026-07-28 → 2026-08-13**,
+13 dates, **995 rows with a coherent geometry** — Stage 2c's window and its
+exact count, pinned by date rather than by "last 13" because 14-Aug has since
+landed. **All 995 read `NEUTRAL`** (`k = 1.05`).
+
+Every "after" figure is produced by **calling `compute_trade_levels()` with the
+switch on**, not by multiplying the stored R by `k`. Reconstruction fidelity
+against the stored plan: **target max |err| ₹0.000, `expected_r` max |err| 0.000,
+stop max |err| ₹0.010** (2-dp storage rounding).
+
+```
+                       n     min     p25     MED     p75     max    mean
+  ALL      before    995  1.9050  1.9050  1.9050  2.1390  7.1210  2.2241
+  ALL      after     995  1.9110  2.0000  2.0000  2.1390  7.1210  2.2897
+
+  atr      before    687  1.9050  1.9050  1.9050  1.9050  1.9050  1.9050
+  atr      after     687  2.0000  2.0000  2.0000  2.0000  2.0000  2.0000
+
+  structure before   308  1.9110  2.2130  2.6370  3.3490  7.1210  2.9359
+  structure after    308  1.9110  2.2130  2.6370  3.3490  7.1210  2.9359   << unchanged, by design
+```
+
+```
+  in the 1.90 <= R < 1.95 band :  before 696   after 9   (the 9 are all structure stops)
+  exactly 2.0000              :  before   2   after 689  (687 atr + the 2 already there)
+```
+
+The median planned R is **1.9050 before and 2.0000 after on every one of the 13
+dates, without exception** — because it was never a distribution. The constant
+is gone; the structure-stop tail is untouched.
+
+---
+
+### 4 — HOW MANY MOVE ABOVE BREAK-EVEN
+
+Each plan against **its own** stop and **its own** clip, sized by the production
+rule at **₹20,000** with an empty book. (₹20,000 is stated explicitly, not
+inherited: this laptop's `TOTAL_CAPITAL` env reads ₹30,000 — F-16 — and
+`capital_for("SWING")` would have handed the planner that. The tests pin it for
+the same reason.)
+
+```
+FUNDING at Rs 20,000  —  unfundable 211, fundable 784
+  clip Rs              n=784  min 1396.57  p25 2856.79  MED 3328.66  p75 3760.10  max 3999.60
+  required R (ledger)  n=784  min 1.7654   p25 1.8263   MED 1.8920   p75 1.9994   max 2.6169
+  required R (gate)    n=784  min 1.7979   p25 1.8743   MED 1.9466   p75 2.0764   max 2.7527
+```
+
+**THE ANSWER, at the 40% design hit rate:**
+
+| basis | below break-even BEFORE | AFTER | moved above |
+|---|---|---|---|
+| **LEDGER** (statutory) | **185 of 784 (23.6%)** | **72 (9.2%)** | **113** |
+| **GATE** (+5 bps) | 285 of 784 (36.4%) | 154 (19.6%) | 131 |
+
+Expectancy `h·R − (1−h) − f` on the ledger basis moves from a median of
+**+0.0347R to +0.0706R**, and its p25 from **+0.0037R to +0.0367R** — the
+quartile that was straddling zero clears it.
+
+**The 72 that remain below** are not a residue of the 1.90 band — that band is
+gone. They are plans whose own friction demands more than 2.0R:
+
+```
+  planned R after : 1.9370 .. 2.2890      stop % : 2.17 .. 4.71
+  clip Rs         : 2,024 .. 4,000        by source: atr 61, structure 11
+```
+
+A tight stop is what does it: friction in R is `cost_pct / stop_pct`, so a 2.17%
+stop on a ₹2,024 clip pays 0.45R to open and close and needs 2.62R to break even.
+**This is the case for the floor and against arming it alone** — it refuses
+narrow-stop plans, which is the opposite selection from the wide-stop one the
+`max_risk_pct` 8.0 ceiling makes.
+
+**Through the shipped switch itself**, not the report's arithmetic:
+
+```
+  floor only                 refuses  185 of 784 (23.6%)
+  floor + regime symmetry    refuses   71 of 784 ( 9.1%)
+```
+
+71 against the table's 72 — one plan sits inside the rounding. `friction_r` is
+stored to 4 dp and `required_rr` is derived **from the rounded figure**, so that
+the two numbers a human reads reconcile through `(1−h+f)/h` instead of
+disagreeing in the fourth decimal. The shipped number is 71.
+
+---
+
+### 5 — EACH TEST FAILED FIRST
+
+`backend/tests/test_planner_regime_and_cost.py`, 19 checks, registered in
+`tools/verify.py::MODULES`. Run against the untouched module first:
+
+```
+  ✗  planner regime symmetry and cost floor (shipped inert)  (14/19 failed)
+```
+
+The 5 that passed are the regression pins on *today's* behaviour — the 1.9048
+constant, the unscaled target, the regime ladder — which must pass before and
+after, because the shipped default is inertness. The other 14 failed, then
+passed.
+
+Two of them are the mirror pair CLAUDE.md demands, on **one setup** (entry ₹500,
+ATR 2%, ₹4,000 clip, 3.15% stop, friction 0.19R, own break-even 1.975R):
+
+- `floor CAN FAIL` — at the unfixed 1.9048R the plan is refused, and the reason
+  names both numbers.
+- `floor CAN PASS` — the regime fix alone lifts the same plan to 2.0R, over its
+  own bar. A threshold no realistic input clears is the allocator defect wearing
+  a different hat, so this is asserted, not assumed.
+
+Two more pin the permissive direction, because **"no opinion" and "measured bad"
+must not give the same answer**: an **unfundable** plan (no clip → no friction)
+and a **broken cost model** (`_statutory_round_trip` replaced with a raiser) are
+both left `valid`, tagged `unfunded` / `unavailable`. Refusing to fund a share is
+`portfolio_constraints`' job and it names that reason itself; a cost verdict
+never computed must not stand in front of it.
+
+```
+cd backend && python -m tools.verify     ->  all 481 checks passed across 57 modules
+cd backend && python -m tools.simulate   ->  SWING LIVE 6 positions, 8 buyable plans (unchanged)
+```
+
+---
+
+### 6 — FOUND ALONG THE WAY
+
+**F-17 — Stage 2c's `788 fundable / 207 unfundable` does not reproduce.** The
+stored geometry gives **784 / 211**, while the 995-row denominator, the 13 dates
+and `expected_r` all reproduce exactly — so this is the funding split alone.
+Neither price basis nor any rounding rule tested yields 788:
+
+```
+  price=entry_zone_low  risk=geom -> 784      floor // (shipped) -> 784
+  price=entry_zone_low  risk=pct  -> 784      round()            -> 899
+  price=current_price   risk=geom -> 779      ceil()             -> 995
+  price=current_price   risk=pct  -> 779      capital 30,000     -> 858
+```
+
+Consequently **every count in §4 is quoted against 784, not 788.** 2c's
+scratchpad is gone and I did not rerun it; I can show only that its split does
+not reproduce from `signal_output_daily` today under any rule I tested. Same
+shape as F-1. **Flagged, not resolved.**
+
+**F-18 — the max-position ceiling is the *sole* binding funding term.** Testing
+each term alone, `int(4000 // entry)` refuses exactly the same 211 plans as
+`min(risk, maxpos)`, while the risk-budget term alone refuses 155. So no plan in
+this window is unfundable because ₹200 cannot buy one share — every one of the
+211 is unfundable because the share costs more than the ₹4,000 ceiling (2c
+measured their median price at ₹7,678). `risk_pct_per_trade` sets the *size* of a
+funded position; it never decides *whether* there is one. Not a defect; it means
+`max_position_pct` is the only lever that widens the tradeable universe, and 2c's
+§5 already records that the slot count is over-committed against cash.
+
+**F-19 — `tools.health` reports 1 pre-existing problem, unrelated to this work.**
+`learning: 1000 detection(s) across 1 past session(s) were never scored
+(2026-08-14)`. `outcomes.resolve_day` did not run for 14-Aug, so the weekly
+review would judge engines on a session that was never collected. Untouched here
+— it is not in this brief and it is not caused by it — but it is live, and it
+poisons exactly the priors this floor's hit-rate assumption would eventually be
+recalibrated from.
+
+---
+
+### 7 — NOT DONE
+
+- **Neither switch is armed.** `risk_regime_scales_target` and
+  `risk_min_planned_r_enabled` are both `false` in code and in migration 079.
+  §4 says what arming would do; deciding to is a separate stage.
+- **Migration 079 has NOT been applied.** Migrations run against a live book.
+  Unlike 078, nothing here needs it: the code defaults already reproduce current
+  behaviour exactly, so the file exists to make the keys visible and editable on
+  the dashboard, not to make the change take effect. Numbered 079 because 077 is
+  on the unmerged `fix/single-daemon-lease` branch and 078 is on main.
+- **The break-even identity's own assumptions are still violated.** It assumes
+  winners pay exactly the planned R and losers exactly 1R; of the 10 closed swing
+  trades with a full planned geometry, **one reached its planned target and none
+  reached its planned stop** (F-2). The floor is therefore a *planning*
+  discipline — do not write down a plan that cannot pay for itself — and not a
+  forecast of realised expectancy, which the exit ladder decides. This is stated
+  in the module docstring and in the `risk_plan_hit_rate` config description so
+  it cannot be armed without reading it.
+- **Not measured against realised outcomes.** Every number in §3 and §4 is over
+  *plans*. Whether a 2.0R target is reached more or less often than a 1.9048R one
+  needs the exit-ladder work F-2 points at, not this stage.
+
+**Gate: PASS** — both defects fixed behind keys defaulting to current behaviour,
+the cost basis chosen is the ledger's and the reason is stated, the
+structure-branch alternative was rejected on a demonstrated failing test rather
+than an argument, the sizing refactor is proven behaviour-identical over 200,000
+randomised inputs, 14 of 19 tests were demonstrated failing first, `tools.verify`
+is 481/481 and `tools.simulate` is unchanged. Three items found along the way
+(F-17 non-reproducing 2c split, F-18 funding lever, F-19 live unscored session)
+are recorded and not silently fixed.
+
+---
