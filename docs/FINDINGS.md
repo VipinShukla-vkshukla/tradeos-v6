@@ -2330,3 +2330,431 @@ output behind every number. **F-1 is escalated: it is a live contradiction with
 the prior entry's headline, and it is not resolved here.**
 
 ---
+
+## 2026-08-14 — Stage 2d (diagnostic, swing exit ladder) — `closed_positions` records the wrong exit reason for every swing trade; the ladder fired on 11 of 11 and give-back is the rung
+
+**Brief:** parameterise `exit_ladder_replay`'s hardcoded framework (test first,
+no live exit logic), then answer five questions on the swing book. Measurement
+only, no recommendations, `n<20` flagged as insufficient rather than ranked.
+
+**Read-only throughout.** The only files changed are
+`backend/tools/exit_ladder_replay.py` and its test. No exit logic, no config,
+no migration. `python -m tools.verify` — **all 434 checks pass across 55
+modules.**
+
+---
+
+### 0 — THE TOOL FIX, AND WHY SIX TESTS DID NOT CATCH THE BUG
+
+`_rows()` was hardcoded `.eq("framework", "INTRADAY")` at :99, while the tool's
+name, its `--days` flag and every line it prints are book-agnostic. Pointed at
+a swing question it returned a confident, correctly-formatted answer about the
+intraday book.
+
+Six tests passed over it because the fake Supabase they used **accepted `.eq()`
+and ignored it**. A filter that is never applied cannot be caught by a mock
+that never applies filters — the same shape as the `check_selects` defect in
+CLAUDE.md, one layer down. Both are fixed: `--framework {INTRADAY,SWING}`, and
+a fake `_Q.eq()` that actually filters. Demonstrated failing first:
+
+```
+✗  exit ladder replay  (2/8 failed)
+     the framework filter selects the book that was asked for
+       TypeError: _rows() takes 2 positional arguments but 3 were given
+     a swing-only book is empty to an intraday replay
+       TypeError: replay() got an unexpected keyword argument 'framework'
+```
+
+then passing (8 checks). `GIVEBACK_KEYS` was added with it: the two books do
+**not** share threshold keys (`exit_giveback_*` min 0.5R vs
+`intraday_giveback_*` min 1.0R), so parameterising the framework alone would
+have replayed the swing book against the intraday threshold and labelled the
+result SWING.
+
+---
+
+### 1 — THE POPULATION. The book is 81 rows, not 80, and it is two books
+
+```
+  SWING closed rows: 81
+    source=manual  70   2025-12-31 - 2026-03-09   r_multiple 0/70, planned_stop 0/70, charges 0/70
+    source=kite    11   2026-07-13 - 2026-08-14   r_multiple 11/11, planned_stop 11/11, charges 11/11
+```
+
+**Three positions closed 14-Aug, not two: MANAPPURAM, PPLPHARMA *and AIIL*.**
+The brief said 78 -> 80; it is 78 -> 81.
+
+The 70 legacy rows carry **no plan geometry at all** — no stop, no target, no
+`r_multiple`, no `charges`. Every R-denominated and net-of-cost question in this
+brief is therefore unanswerable on them, and they are never pooled below. Their
+`exit_reason` values are free-text human labels (`TRAIL SL HIT`,
+`STRATEGY ROTATION`, `4.5% loss`), not the ladder's action codes. Only the 11
+`source=kite` rows were ever under the exit ladder.
+
+For completeness, the legacy book in rupees — **not R, and not comparable to
+anything below**:
+
+```
+  exit_reason                  n  sum Rs gross   mean Rs  win rate
+  TRAIL SL HIT                37         -2702       -73     40.5%
+  STRATEGY ROTATION           12         +7062      +588     83.3%
+  TIME EXIT                   10        -11069     -1107      0.0%
+  STOP LOSS HIT                9         -2569      -285     22.2%
+  MANUAL DISCIPLINE EXIT       1          -388      -388      0.0%
+  4.5% loss                    1          -127      -127      0.0%
+```
+
+---
+
+### 2 — Q1: THE EXIT-REASON HISTOGRAM. The stored one is wrong on all 11
+
+`closed_positions.exit_reason` for the system-managed book has exactly one
+bucket:
+
+```
+  exit_reason        n  sum grossR  sum netR  mean grossR   median  sum Rs net
+  BROKER_EXIT       11      +4.349    +2.802       +0.395   +0.289        +621
+```
+
+That reads as "the ladder never fired." **It is an artefact, and it is false.**
+
+`reconcile_with_broker` writes `pos.get("exit_signal") or "BROKER_EXIT"`
+(`position_lifecycle.py:1233`). `manage_open_positions` sets `exit_signal`
+(`:1634`) — but the **daemon**, the process that actually evaluates swing exits
+every 15s during market hours, does not. Its live-exit branch writes
+`{"current_qty": 0, "status": "CLOSING"}` (`intraday/engine.py:1969`) and no
+`exit_signal`. So every exit the daemon executes reconciles as `BROKER_EXIT`,
+indistinguishable from an operator's manual sale.
+
+This is the *same* two-callers-of-one-decision defect that `engine.py:1884`
+documents having fixed for the order whitelist, surviving in the attribution
+write beside it.
+
+**The real attribution survives in `intraday_broker_log`, which records the
+rung name in the order's own reason string.** Joining it to the 11 closes:
+
+```
+symbol      entry       exit        closed_positions  WHAT ACTUALLY FIRED                    R
+PPLPHARMA   2026-07-13  2026-07-30  BROKER_EXIT       BOOK_PARTIAL->BOOK_PARTIAL->TRAIL_SL   +2.095
+GABRIEL     2026-07-30  2026-07-31  BROKER_EXIT       TRAIL_SL                               +0.192
+TRAVELFOOD  2026-08-04  2026-08-06  BROKER_EXIT       EXIT_GIVEBACK                          +0.267
+BHEL        2026-07-23  2026-08-03  BROKER_EXIT       EXIT_STALL                             +0.081
+KIMS        2026-08-05  2026-08-06  BROKER_EXIT       EXIT_GIVEBACK                          +0.394
+ETERNAL     2026-07-30  2026-08-10  BROKER_EXIT       EXIT_GIVEBACK                          +0.289
+CIPLA       2026-07-30  2026-08-10  BROKER_EXIT       EXIT_STALL                             +0.089
+VIJAYA      2026-08-10  2026-08-12  BROKER_EXIT       EXIT_GIVEBACK                          +0.452
+MANAPPURAM  2026-08-04  2026-08-14  BROKER_EXIT       EXIT_STALL                             -0.750
+PPLPHARMA   2026-07-31  2026-08-14  BROKER_EXIT       BOOK_PARTIAL->EXIT_GIVEBACK            +0.863
+AIIL        2026-08-12  2026-08-14  BROKER_EXIT       EXIT_GIVEBACK                          +0.377
+
+   terminal rung        n     sum R    mean R
+   EXIT_GIVEBACK        6    +2.642    +0.440     <<  the rung that fires most
+   EXIT_STALL           3    -0.580    -0.193
+   TRAIL_SL             2    +2.287    +1.144
+   TOTAL               11    +4.349
+```
+
+**ANSWER TO Q1: `EXIT_GIVEBACK`, 6 of 11 (55%). The ladder decided 11 of 11
+outcomes — the brief's premise is correct and the stored exit reason is the
+only thing that says otherwise.** `EXIT_STOP`, `EXIT_TARGET`, `EXIT_TIME` and
+`EXIT_DETERIORATION` fired **zero** times.
+
+---
+
+### 3 — Q2: WHAT GIVE-BACK CUT. All six were in profit; only one has resolved
+
+The live rung logs its own arithmetic, so "in profit at the time" is read
+directly off the decision, not inferred:
+
+```
+  TRAVELFOOD  peaked 0.61R (+2.92%)   back to +0.27R (+1.28%)  56% handed back
+  KIMS        peaked 0.79R (+2.15%)   back to +0.39R (+1.07%)  50%
+  ETERNAL     peaked 0.60R (+4.41%)   back to +0.28R (+2.06%)  53%
+  VIJAYA      peaked 0.92R (+7.40%)   back to +0.45R (+3.67%)  50%
+  PPLPHARMA   peaked 1.34R (+12.49%)  back to +0.61R (+5.67%)  55%
+  AIIL        peaked 0.74R (+4.17%)   back to +0.37R (+2.08%)  50%
+```
+
+**6 of 6 cuts were in profit.** Continuing each position past its real exit
+over real daily bars, with give-back disabled and everything else held:
+
+```
+symbol      cut on      R at cut  forward outcome          R then   delta  sess
+TRAVELFOOD  2026-08-06    +0.267  STILL OPEN @08-13        +0.583  +0.316     5
+KIMS        2026-08-06    +0.394  EXIT_STOP  (resolved)    +0.073  -0.321     2
+ETERNAL     2026-08-10    +0.289  STILL OPEN @08-13        +0.534  +0.245     3
+VIJAYA      2026-08-12    +0.452  STILL OPEN @08-13        +0.861  +0.409     1
+PPLPHARMA   2026-08-14    +0.863  NO FORWARD BARS               -       -     -
+AIIL        2026-08-14    +0.377  NO FORWARD BARS               -       -     -
+```
+
+**ANSWER TO Q2 — INSUFFICIENT, and this is the honest answer.** Six cuts, all
+in profit, but **exactly one (KIMS) has a resolved forward outcome, and it says
+the cut was right** (+0.321R saved). Two are unmeasurable — they closed today
+and `stock_data_daily` ends 2026-08-13. The remaining three are marked to
+market on **one to five sessions** of follow-through against a 1–3 week
+horizon; they are not results. Nominal sum over the four measurable rows is
+**+0.649R against the rung**, and it inverts if any of those three
+mark-to-market positions gives it back.
+
+n=6 against the brief's n<20 floor. **Flagged insufficient, not ranked.** This
+is the number that decides whether the rung pays and the book is still too
+young to produce it.
+
+---
+
+### 4 — Q3: THE BREAKEVEN RUNG. n=0, twice over
+
+```
+  EXIT_STOP terminal on 0/11 — no swing position has ever exited on a stop
+  positions reaching planned stop: 0/11 (checked against daily bar lows)
+```
+
+**ANSWER TO Q3: zero trades were stopped at breakeven, so "how many later
+reached 1.5R" has no population.** Not a small number — no number.
+
+It is unanswerable a second way, which matters more. The standalone breakeven
+ratchet (`3c`) is a `TRAIL_SL` action; it places no order, so it leaves no row
+in `intraday_broker_log`, and it writes `breakeven_moved` to `open_positions` —
+**a column `closed_positions` does not have.** Confirmed live:
+
+```
+  breakeven_moved        open=True   closed=False
+  trail_activated        open=True   closed=False
+  active_sl              open=True   closed=False
+  partial_booked_qty     open=True   closed=False
+  exit_signal            open=True   closed=False
+```
+
+Whether the ratchet ever engaged on a closed position is **destroyed at close**
+and cannot be recovered from any table. The mechanism does work — intraday
+SWIGGY currently carries `breakeven_moved=True` — but no closed swing row can
+show it. Of the six current live SWING positions (SUMICHEM, SCI, CARBORUNIV,
+TRAVELFOOD, GABRIEL, AUBANK), none has `breakeven_moved=True` and all six have
+`active_sl == planned_stop`.
+
+---
+
+### 5 — Q4: THE COUNTERFACTUAL, and a method that had to be thrown away
+
+**A full-path daily-bar replay was built, run, and discarded. It is reported
+here because it looked right and was not.** It drives the real `evaluate_exit`
+over daily OHLC from entry, probing low/high/close, carrying `active_sl`,
+`high_water_mark` and partial state. Scored against the order log:
+
+```
+  daily-bar replay vs the live order log: 2/11 agree
+  give-back: live fired 6, replay predicted 3, overlap 1 (ETERNAL)
+```
+
+It called give-back on PPLPHARMA-1 and BHEL where the live system actually
+fired `BOOK_PARTIAL`/`TRAIL_SL` and `EXIT_STALL`, and missed five real
+give-backs. Daily OHLC cannot see the tick path the 15s loop sees, and the live
+rung reads the daemon's *running* `high_water_mark`, which understates the true
+bar high on 6 of 11 (median 0.030R, worst 0.565R; GABRIEL's never left the
+entry price). **Its counterfactual totals are not reported. A replay that
+disagrees with ground truth on 9 of 11 cannot price a rung.**
+
+What survives is the counterfactual anchored on ground truth — start from the
+real exit, disable the rung that caused it, walk forward:
+
+```
+   rung             fired   D book R if disabled        basis
+   EXIT_GIVEBACK        6   +0.649R over 4 of 6         1 resolved, 3 mark-to-market, 2 no bars
+   EXIT_STALL           3   -0.537R over 2 of 3         1 resolved, 1 mark-to-market, 1 no bars
+   BOOK_PARTIAL         3   NOT REPORTED                needs a full-path replay (above)
+   TRAIL_SL             2   NOT REPORTED                needs a full-path replay (above)
+   EXIT_STOP            0   +0.000R exactly             never fired
+   EXIT_TARGET          0   +0.000R exactly             never fired
+   EXIT_TIME            0   +0.000R exactly             never fired
+   EXIT_DETERIORATION   0   +0.000R exactly             never fired
+   breakeven ratchet    ?   +0.000R on the book         no stop-out exists for it to have changed
+```
+
+**ANSWER TO Q4:** four of the eight rungs are provably inert on this book —
+they have never fired, so disabling them changes nothing, exactly. Two more
+(partial, trail) cannot be priced without a replay fidelity this book does not
+support. Only give-back and stall have measurable effects, both on n<=6 with
+1–5 sessions of follow-through, and **they point in opposite directions and
+roughly cancel (+0.111R net).** Every measurable bucket is below the n<20
+floor. **Nothing here ranks.**
+
+Book context for the 11, recomputed at n=11:
+
+```
+  reached planned TARGET (intraday touch)  3/11      exited at or above target  1/11
+  reached planned STOP                     0/11
+  median planned R 1.291 | median actual R +0.289 | median winner +0.333 (n=10 winners)
+```
+
+The brief's "1 of 10 reached its planned target" is the *exit-price* reading;
+3 of 11 touched the target intraday and gave it back. Both are true and they
+are different predicates — the same failure mode §6 is about.
+
+---
+
+### 6 — Q5: THE 39.7% DISCREPANCY IS RESOLVED, AND STAGE 2b IS STILL WRONG
+
+**F-1 was right that 39.7% does not reproduce under any of the six predicates
+it tested, and wrong that it does not reproduce.** The seventh predicate — the
+one F-1 did not test — returns it exactly:
+
+```
+n=78 (Stage 2's view)
+  realized_pnl > 0                              35/78 = 44.87%   <- gross
+  realized_pnl - charges > 0                    32/78 = 41.03%   <- treats NULL charges as zero
+  net, NULL charges MODELLED at CNC rates       31/78 = 39.74%   <<  C.4's number
+```
+
+`charges` is NULL on all 70 legacy rows. Filling them from
+`cost_model.round_trip(..., product="CNC")` gives **31/78 = 39.74% ~ 39.7%**.
+It is robust: three different charge treatments (fill-missing, entry-priced
+both legs, all-modelled) all return 31/78. **C.4's hit rate is correct and its
+predicate is net-of-cost.** The rupee means do not reproduce as exactly
+(+433/-567 vs C.4's +442/-555), so C.4's exact charge model is not recoverable,
+but the hit rate is not in doubt.
+
+**The correct figure, with its predicate, on today's book:**
+
+```
+  SWING, n=81, NET of cost (charges modelled where NULL)   33/81 = 40.74%
+  SWING, n=81, GROSS                                       37/81 = 45.68%
+  SWING, n=78, NET / GROSS                                 39.74% / 44.87%
+```
+
+**But resolving F-1 does not rescue Stage 2b — it relocates the error.**
+`h* = (1 + friction_R)/(1 + target_R)` is derived in `unit_economics.py:388`
+from `h*T - (1-h) = friction_R`, where winners pay `T` R **gross** and losers
+1R **gross** and friction is subtracted separately. **h* is therefore a GROSS
+hit-rate threshold.** Stage 2b compared it against C.4's **NET** 39.7%.
+
+That is the CLAUDE.md landmine — *a gate and the thing it gates must be the
+same quantity* — in a new place. The like-for-like comparison is:
+
+```
+   h* @2.0R (clip 2,733, stop 4.34%, friction 0.190R)   39.66%   gross threshold
+   measured GROSS hit rate, n=78                        44.87%   -> 5.2 points of headroom
+   measured GROSS hit rate, n=81                        45.68%   -> 6.0 points of headroom
+```
+
+**Stage 2b's "four hundredths of a percentage point" is an artefact of
+comparing a gross bar against a net measurement.** F-1's numerical instinct
+(44.87% is the right comparand) was correct; its stated reason (the number does
+not reproduce) was not.
+
+**Downstream conclusions that used 39.7% and must be re-read:**
+
+1. **Stage 2b headline — "the swing book's break-even hit rate is 39.66% and it
+   hits 39.7%" (ledger heading, and the section "THE FORM THAT IS HARDEST TO
+   ARGUE WITH"). WITHDRAWN.** Correct: break-even 39.66% gross vs 44.87%
+   measured gross.
+2. **Stage 2b "That is not a book with a small edge; it is a book sitting on
+   its own fee schedule." WITHDRAWN** — it rests entirely on (1).
+3. **Stage 2b's 2.5R argument** ("34.00% vs 39.7%, 5.7 points of headroom") —
+   arithmetic unchanged but the baseline moves: against 44.87% gross the
+   headroom at 2.5R is **10.9 points**, and the 2R case already has 5.2. The
+   *relative* case for a higher target is weaker than 2b presented, because 2R
+   is not marginal.
+4. **Stage 2c's "the measured book is 39.7% hit and -Rs 12,385 net over 78"** —
+   the hit figure is net, the rupee figure is net; internally consistent, but it
+   must not be compared to a gross h*.
+5. **Stage 2 C.4's own table** — correct as printed, but the column is a NET
+   hit rate and is not labelled as one. That mislabelling is the whole defect.
+6. **Stage 2c's Recommends item 3 ("Settle F-1 first ... 44.87% and 39.7% point
+   to opposite decisions")** — settled here. They are the same book measured
+   gross and net; the decision-relevant one against h* is **44.87%**.
+
+Unchanged by all of this: C.4's **-0.004R at the design target**, which is a
+specification calculation (40% assumed hit, 2R winner, measured friction) and
+never used the measured hit rate at all.
+
+---
+
+### 7 — FOUND ALONG THE WAY
+
+**F-3 — every swing exit is mislabelled `BROKER_EXIT` in `closed_positions`,
+and the learning loop reads that column.** §2. The daemon's exit branch
+(`engine.py:1969`) omits the `exit_signal` write that
+`position_lifecycle.py:1634` performs. Cost: exit attribution for the entire
+live swing book is recoverable only by joining `intraday_broker_log` and
+parsing an order's free-text reason string. Any tool reading
+`closed_positions.exit_reason` to score rungs sees one bucket and concludes the
+ladder is inert.
+
+**F-4 — `exit_ladder_replay --framework SWING` reports +0.05R where the truth
+is a rung firing six times.**
+
+```
+  3 position(s) WOULD HAVE been cut early by give-back:   TRAVELFOOD ETERNAL VIJAYA
+  Estimated ceiling on the improvement:    +0.05R
+```
+
+The tool floors an affected position at the give-back threshold and never asks
+what happened next, so **it is structurally incapable of reporting a give-back
+loss** — its output is bounded below by the actual result. Its docstring
+already warns it overstates the guard's help; this quantifies that on the swing
+book. It also reads the stored `high_water_mark`, which understates the true
+peak on 6 of 11.
+
+**F-5 — 844 blocked SELL attempts on the swing book.**
+
+```
+   Kite IP allowlist                345
+   qty mismatch (already sold)      301
+   market closed                    181
+   duplicate window                  17
+```
+
+The IP-allowlist bucket is the CLAUDE.md `_force_ipv4()` landmine still biting
+— `IP (103.197.74.141) is not allowed to place orders for this app` — and on
+06-Aug and 10-Aug it blocked exits for a session before they went out. KIMS's
+give-back was blocked at 04:44 and placed at 07:02, ~2.5 hours later, at a
+price the rung did not choose. **Exit slippage from blocked orders is not
+measured anywhere and is not in any R figure in this entry.**
+
+**F-6 — `exit_slip_bps` has no `system_config` row.** It falls to the code
+default of 30 in `position_lifecycle.py`. Every other exit key is present.
+Harmless today (the default matches `intraday_exit_slip_bps`), noted because a
+key nobody writes is the dominant failure mode in this repo.
+
+---
+
+### 8 — COULD NOT DETERMINE
+
+- **Whether the give-back rung pays.** Q2, n=6, one resolved outcome. The
+  measurement exists and is stated; the sample does not support a verdict.
+- **What `BOOK_PARTIAL` and `TRAIL_SL` are worth.** Both need a full-path
+  replay, and the replay built here agrees with ground truth on 2 of 11.
+- **Whether the breakeven ratchet ever engaged on a closed position.**
+  Structurally unrecoverable — the column is not carried to `closed_positions`.
+- **Anything about the 70 legacy rows in R or net terms.** No stop, no target,
+  no charges. They are counted and their rupees reported; nothing else is
+  honest.
+- **Exit slippage from the 844 blocked orders** (F-5). Real, unmeasured, and it
+  sits inside every R figure above as noise of unknown sign.
+- **Whether the daemon was continuously up during July.** `high_water_mark`
+  understates the true peak on 6 of 11, which is consistent with gaps in
+  observation, but uptime is not recorded anywhere I could query.
+- **The intraday book.** Not examined; this stage is swing-only.
+
+**Recommends: nothing.** The brief forbids it and, with every measurable bucket
+below n=20, the evidence would not support one. Recorded for whoever runs
+Stage 3:
+
+1. **Q1's premise is confirmed but its answer inverts the stored data.** Any
+   Stage 3 work that scores exit rungs must join `intraday_broker_log`, not read
+   `closed_positions.exit_reason`. F-3 is the prerequisite for that being
+   unnecessary.
+2. **Stage 2b's headline is withdrawn (§6).** The swing book has 5.2 points of
+   gross headroom over its 2R break-even, not 0.04. Any target-multiple
+   decision must start from 44.87%.
+3. **The give-back rung fires at 0.5R peak.** On this book 1R is 4–9% of price,
+   so the protected band is ~2% wide and six of six cuts were in profit. That
+   is a measurement, not a recommendation; it is the thing Stage 3 should be
+   powered to test.
+
+**Gate: PASS** — five questions asked, five answered with raw output behind
+every number, and three of them answered "insufficient" with the reason stated.
+**Q1's stored answer was wrong and the correct one is escalated as F-3.**
+
+---

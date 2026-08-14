@@ -2,6 +2,17 @@
 What would the give-back guard have done to trades already closed? READ-ONLY.
 
     python -m tools.exit_ladder_replay --days 20
+    python -m tools.exit_ladder_replay --days 400 --framework SWING
+
+WHICH BOOK — 14-Aug-2026
+------------------------
+The framework was hardcoded `.eq("framework", "INTRADAY")` in `_rows`. The
+tool's name, its `--days` flag and every log line it prints are book-agnostic,
+so pointing it at a swing question returned a confident, correctly-formatted
+answer about the intraday book instead. Six tests passed over it because the
+fake Supabase they used accepted `.eq()` and ignored it — a filter that is
+never applied cannot be caught by a mock that never applies filters. Both are
+fixed: `--framework`, and a fake that honours `.eq`.
 
 WHY THIS IS A DIFFERENT KIND OF BACKTEST FROM allocator_replay.py
 -------------------------------------------------------------------
@@ -89,14 +100,26 @@ def _f(v):
         return None
 
 
-def _rows(sb, since: str) -> list[dict]:
+# Which config keys hold each book's give-back threshold. The two frameworks
+# do NOT share them — swing's rung is `exit_giveback_*` (position_lifecycle's
+# `_policy`), intraday's is `intraday_giveback_*` (exit_policy) — and their
+# defaults differ (min_r 0.5 vs 1.0). Parameterising the framework without
+# parameterising these would have quietly replayed the swing book against the
+# intraday threshold and reported it as a swing answer.
+GIVEBACK_KEYS = {
+    "INTRADAY": ("intraday_giveback_pct", 50.0, "intraday_giveback_min_r", 1.0),
+    "SWING":    ("exit_giveback_pct",     50.0, "exit_giveback_min_r",     0.5),
+}
+
+
+def _rows(sb, since: str, framework: str = "INTRADAY") -> list[dict]:
     out, off = [], 0
     while True:
         page = (sb.table("closed_positions")
                 .select("symbol,entry_price,direction,r_multiple,"
                         "exit_reason,high_water_mark,planned_stop_at_entry,"
                         "framework,entry_date")
-                .eq("framework", "INTRADAY")
+                .eq("framework", framework)
                 .gte("entry_date", since)
                 .range(off, off + PAGE - 1).execute().data) or []
         out += page
@@ -106,12 +129,14 @@ def _rows(sb, since: str) -> list[dict]:
     return out
 
 
-def replay(days: int, giveback_pct: float, giveback_min_r: float, sb=None) -> int:
+def replay(days: int, giveback_pct: float, giveback_min_r: float, sb=None,
+           framework: str = "INTRADAY") -> int:
+    framework = (framework or "INTRADAY").upper()
     sb = sb or get_supabase()
     since = (today_ist() - timedelta(days=days)).isoformat()
-    rows = _rows(sb, since)
+    rows = _rows(sb, since, framework)
     if not rows:
-        logger.error("  no closed INTRADAY positions in this window")
+        logger.error(f"  no closed {framework} positions in this window")
         return 1
 
     unaffected, affected, unmeasurable = [], [], 0
@@ -176,8 +201,9 @@ def replay(days: int, giveback_pct: float, giveback_min_r: float, sb=None) -> in
     new_total = sum(x["giveback_r"] for x in all_recs)
 
     logger.info("")
-    logger.info(f"  EXIT-LADDER ESTIMATE — give-back at {giveback_pct:.0f}% / "
-                f"min {giveback_min_r:.1f}R, {len(all_recs)} measurable position(s) "
+    logger.info(f"  EXIT-LADDER ESTIMATE [{framework}] — give-back at "
+                f"{giveback_pct:.0f}% / min {giveback_min_r:.1f}R, "
+                f"{len(all_recs)} measurable position(s) "
                 f"({unmeasurable} unmeasurable, excluded)")
     logger.info("  " + "-" * 78)
     if affected:
@@ -206,13 +232,18 @@ def replay(days: int, giveback_pct: float, giveback_min_r: float, sb=None) -> in
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(
         description="Estimate the give-back guard's effect on already-closed "
-                    "INTRADAY positions (read-only, approximate — see docstring)")
+                    "positions in one book (read-only, approximate — see docstring)")
     ap.add_argument("--days", type=int, default=20)
+    ap.add_argument("--framework", default="INTRADAY",
+                    choices=["INTRADAY", "SWING"],
+                    help="which book to replay (default INTRADAY)")
     ap.add_argument("--pct", type=float, default=None,
-                    help="override intraday_giveback_pct for the test")
+                    help="override the book's giveback_pct for the test")
     ap.add_argument("--min-r", type=float, default=None,
-                    help="override intraday_giveback_min_r for the test")
+                    help="override the book's giveback_min_r for the test")
     a = ap.parse_args()
-    pct = a.pct if a.pct is not None else cfg_float("intraday_giveback_pct", 50.0)
-    min_r = a.min_r if a.min_r is not None else cfg_float("intraday_giveback_min_r", 1.0)
-    sys.exit(replay(a.days, pct, min_r))
+    fw = a.framework.upper()
+    pct_key, pct_def, min_key, min_def = GIVEBACK_KEYS[fw]
+    pct = a.pct if a.pct is not None else cfg_float(pct_key, pct_def)
+    min_r = a.min_r if a.min_r is not None else cfg_float(min_key, min_def)
+    sys.exit(replay(a.days, pct, min_r, framework=fw))

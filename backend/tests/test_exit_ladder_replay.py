@@ -28,9 +28,21 @@ from tools.exit_ladder_replay import replay
 
 
 class _Q:
+    """A fake PostgREST builder that HONOURS .eq() instead of ignoring it.
+
+    The original fake accepted `.eq()` and returned every row regardless, which
+    is precisely why the hardcoded `framework='INTRADAY'` filter survived six
+    passing tests — a filter that is never applied cannot be caught by a mock
+    that never applies filters. This one filters, so asking for the wrong
+    framework returns nothing and the test fails loudly.
+    """
+
     def __init__(self, rows): self._rows = rows
     def select(self, *a, **k): return self
-    def eq(self, *a, **k): return self
+
+    def eq(self, col, val):
+        return _Q([r for r in self._rows if r.get(col) == val])
+
     def gte(self, *a, **k): return self
     def range(self, a, b): return _E(self._rows[a:b + 1])
 
@@ -46,11 +58,11 @@ class _SB:
 
 
 def _pos(symbol, r_mult, hwm, entry=100.0, stop=99.0, direction="LONG",
-        reason="STOP_LOSS_HIT"):
+        reason="STOP_LOSS_HIT", framework="INTRADAY"):
     return {"symbol": symbol, "entry_price": entry, "direction": direction,
             "r_multiple": r_mult, "exit_reason": reason,
             "high_water_mark": hwm, "planned_stop_at_entry": stop,
-            "framework": "INTRADAY"}
+            "framework": framework}
 
 
 def _run(rows, pct=50.0, min_r=1.0):
@@ -143,6 +155,35 @@ def test_the_full_tool_runs_end_to_end_and_reports_a_delta():
     assert code == 0
 
 
+def test_the_framework_filter_selects_the_book_that_was_asked_for():
+    """`_rows` must return the framework it was ASKED for, not the one that was
+    typed into the query. 14-Aug-2026: it was hardcoded `.eq("framework",
+    "INTRADAY")`, so every swing question this tool was pointed at silently
+    answered about the intraday book."""
+    from tools.exit_ladder_replay import _rows
+    book = [_pos("I1", 0.2, 102.0, framework="INTRADAY"),
+            _pos("S1", 0.2, 102.0, framework="SWING"),
+            _pos("S2", 1.4, 102.0, framework="SWING")]
+    got = _rows(_SB(book), "2026-01-01", "SWING")
+    assert [r["symbol"] for r in got] == ["S1", "S2"], \
+        f"asked for SWING, got {[r.get('framework') for r in got]}"
+    got_i = _rows(_SB(book), "2026-01-01", "INTRADAY")
+    assert [r["symbol"] for r in got_i] == ["I1"]
+
+
+def test_a_swing_only_book_is_empty_to_an_intraday_replay():
+    """The parameter must reach the QUERY, not just the signature. A book with
+    no intraday rows must make an INTRADAY replay report nothing to measure
+    (rc=1) and a SWING replay succeed (rc=0) over the same fixture."""
+    book = [_pos("S1", r_mult=0.2, hwm=102.0, framework="SWING"),
+            _pos("S2", r_mult=2.3, hwm=102.3, reason="TARGET_HIT",
+                 framework="SWING")]
+    assert replay(days=20, giveback_pct=50.0, giveback_min_r=0.5,
+                  sb=_SB(book), framework="INTRADAY") == 1
+    assert replay(days=20, giveback_pct=50.0, giveback_min_r=0.5,
+                  sb=_SB(book), framework="SWING") == 0
+
+
 TESTS = [
     ("a gave-back position is floored at the threshold",
      test_a_gave_back_position_is_floored_at_the_threshold),
@@ -156,4 +197,8 @@ TESTS = [
      test_a_short_is_estimated_symmetrically),
     ("the full tool runs end to end and reports a delta",
      test_the_full_tool_runs_end_to_end_and_reports_a_delta),
+    ("the framework filter selects the book that was asked for",
+     test_the_framework_filter_selects_the_book_that_was_asked_for),
+    ("a swing-only book is empty to an intraday replay",
+     test_a_swing_only_book_is_empty_to_an_intraday_replay),
 ]
