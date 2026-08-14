@@ -2758,3 +2758,440 @@ every number, and three of them answered "insufficient" with the reason stated.
 **Q1's stored answer was wrong and the correct one is escalated as F-3.**
 
 ---
+
+## 2026-08-14 — Stage 2d-i (diagnostic, blocked exits) — F-5's 844 is 6: only six orders ever reached Zerodha and were refused, every blocked exit eventually filled, realised displacement is **+₹21.24 / +0.27R FAVOURABLE**, and the log proves two daemons were writing to one live account
+
+**Branch:** `diagnostic/blocked-exit-slippage`. **Read-only** — no execution
+logic touched, no config written, no order placed. `python -m tools.verify` →
+**all 434 checks passed across 55 modules**.
+
+Follows the exit-ladder session's **F-5** and its open item *"exit slippage from
+the 844 blocked orders — real, unmeasured, and it sits inside every R figure
+above as noise of unknown sign."* It is now measured. The sign is positive and
+the magnitude is ₹21.
+
+---
+
+### 0 — TWO CORRECTIONS TO F-5, BEFORE ANY NUMBER BELOW IS READ
+
+**C-1 — `intraday_broker_log.ts` comes back in UTC, and F-5 read it as wall
+clock.** `_log()` writes `datetime.now(IST).isoformat()`; the column is
+`timestamptz`, so PostgREST returns `+00:00`. F-5's *"KIMS's give-back was
+blocked at 04:44 and placed at 07:02"* is **10:14:29 → 12:32:28 IST** — both
+inside the session, not before dawn. Every timestamp in this entry is converted.
+
+**C-2 — "844 blocked SELL attempts" counts preflight refusals, not broker
+rejections.** 886 of the 892 blocked rows never reached Zerodha: they are
+`preflight()` returning locally on a latched flag, once per 15-second cycle, per
+symbol. The count is log volume, not lost exits. Today's snapshot reads 845
+because the daemon is live and still appending this morning; F-5's 844 was the
+same population one session earlier.
+
+---
+
+### 1 — POPULATION
+
+```
+total intraday_broker_log rows          989   (under the 1000-row PostgREST cap;
+channel  ORDER 939 · GTT 50                    paged anyway, nothing truncated)
+action   BLOCKED 886 · PLACED 55 · CANCELLED 19 · FAILED 17 ·
+         BLOCKED_PERMANENT 6 · MODIFIED 6
+side     SELL 876 · BUY 63 · None 50
+ts span  2026-07-28 → 2026-08-14   framework SWING 921 · None 68
+```
+
+Snapshot taken 2026-08-14 11:52 IST. Reproduce:
+
+```python
+from config import get_supabase
+rows = get_supabase().table("intraday_broker_log").select("*").order("id").execute().data
+```
+
+---
+
+### 2 — Q1: BLOCKED ATTEMPTS BY REASON AND DATE, AND WHAT BECAME OF THEM
+
+```
+  blocked SELL 845   blocked BUY 47   of 939 ORDER rows
+  reached the broker and were refused: 6
+  refused locally by preflight (latch echo, no broker call): 886
+```
+
+Blocked **SELL** attempts by reason — F-5's four buckets, with the IP bucket
+split by what actually happened:
+
+```
+    334  IP allowlist (per-symbol latch echo)      <- local, pre-fix code
+    301  qty mismatch (broker shows less/none)
+    182  market closed
+     17  duplicate window
+      6  IP allowlist (BROKER REJECTION)           <- the only real ones
+      5  IP allowlist (account latch echo)         <- local, post-fix code
+```
+
+By IST trading date:
+
+```
+  2026-07-28  n=   1   market closed:1
+  2026-07-29  n= 326   IP allowlist:284 | market closed:39 | IP rejection:3
+  2026-07-30  n=  43   qty mismatch:26 | duplicate window:17
+  2026-07-31  n=  15   qty mismatch:15
+  2026-08-03  n=  57   market closed:51 | qty mismatch:6
+  2026-08-04  n= 260   qty mismatch:254 | market closed:6
+  2026-08-06  n=  52   IP allowlist:50 | IP rejection:2
+  2026-08-10  n=   6   IP allowlist:5 | IP rejection:1
+  2026-08-14  n=  85   market closed:85
+```
+
+Eight symbols carry all 845: PPLPHARMA 416, TMCV 260, BHEL 57, MANAPPURAM 56,
+TRAVELFOOD 51, ETERNAL 2, CIPLA 2, **KIMS 1**. F-5's headline example was
+blocked exactly **once**.
+
+**Outcome per distinct (symbol, side, reason) decision** — a block whose
+placement came within 120s *before* it is scored filled, because that is the
+same decision already executed:
+
+```
+reason         attempts decisions filled never  waits(h)
+IP_ALLOWLIST        349         7      7     0  0.00, 0.00, 0.00, 0.01, 0.36, 2.30, 22.13
+QTY_MISMATCH        301         3      2     1  0.00, 0.04
+MARKET_CLOSED       216         6      5     1  0.04, 0.24, 0.27, 0.27, 36.97
+DUPLICATE            23         4      3     1  0.00, 0.00, 0.00
+OTHER                 3         2      2     0  0.01, 0.01
+```
+
+**Every exit decision blocked by the IP allowlist eventually filled — 7 of 7,
+none lost.** The three `never` rows are not lost exits: two are TMCV (§7, F-9 —
+nothing was held to sell) and one is CARBORUNIV, whose order had gone out
+seconds earlier.
+
+---
+
+### 3 — Q2: LTP AT FIRST ATTEMPT vs ACTUAL FILL
+
+Anchored on the **6 `BLOCKED_PERMANENT` rows** — the only events where an order
+reached Zerodha — deduplicated to the **4 distinct exit decisions** they
+represent (29-Jul refused the same PPLPHARMA `BOOK_PARTIAL` three times). Each
+is matched to the position that was *open on that date*, because PPLPHARMA has
+two closed positions with different R values (₹11.64 and ₹18.09) and matching on
+symbol alone silently picks the wrong one.
+
+`price` in the log is the marketable limit, not the LTP:
+`SELL limit = round(ltp × (1 − 30bps), 1)` — so `ltp = price / 0.997`, exact to
+the ₹0.1 rounding. `src=TRUE` is `closed_positions.exit_price`, the reconciled
+broker average; `src=RECON` is a partial book, where the true fill is not stored
+and the placement's own limit is inverted instead.
+
+```
+symbol      rejected (IST)   filled (IST)         hrs   ltp@rej      fill src     q    d/sh      1R   rupees       R
+PPLPHARMA   07-29 12:57:32  07-30 11:05:07    22.13    194.58    197.69 RECON   7    3.11   11.64    21.77   0.267
+KIMS        08-06 10:14:29  08-06 12:32:28     2.30    811.03    811.15 TRUE    1    0.12   21.95     0.12   0.005
+TRAVELFOOD  08-06 10:56:04  08-06 11:17:26     0.36   1374.02   1373.70 TRUE    2   -0.32   65.21    -0.64  -0.005
+PPLPHARMA   08-10 09:36:01  08-10 09:36:12     0.00    214.64    214.64 RECON   5    0.00   18.09     0.00   0.000
+
+  TOTAL realised displacement: Rs +21.24   +0.27 R   (+ = filled BETTER than the rung's price)
+```
+
+**The answer: +₹21.24, +0.27R, favourable.** Three qualifications, all of which
+cut against reading that as good news:
+
+1. **n=4, and one decision is 102% of the total.** PPLPHARMA's 22.13-hour block
+   spanned an overnight the ladder did not choose and gapped up. The other three
+   sum to **−₹0.52**. This is one favourable draw, not a property of blocking.
+2. **R is per-share and quantity does not enter it, so the +0.267R is on the 7
+   shares booked, not the position.** At position level (15 shares, 1R = ₹11.64)
+   it is `21.77 / (15 × 11.64)` = **+0.125R** — PPLPHARMA's recorded **2.095R
+   contains ~0.12R of block luck** and would read ~1.97R without it.
+3. **The exposure was one-sided in variance, not in mean.** A 22-hour unplanned
+   overnight on a 15-share position is a gap risk the give-back rung had
+   explicitly decided to stop carrying.
+
+**Consequence for the ledger: F-5's open item is closed.** +₹21.24 across the
+entire live swing book's history is not material at ₹20,000, and **no R figure
+in Stage 2, 2b, 2c or 2d needs restating** — except PPLPHARMA's own 2.095R,
+noted above. The noise was real; it was small.
+
+**KIMS, specifically** — the trade F-5 named: blocked once at 10:14:29 IST,
+placed at 12:32:28, filled at **811.15 against 811.03** at the moment the rung
+fired. The give-back cost **₹0.12 on one share**.
+
+---
+
+### 4 — Q3: THE LATCH HOLDS PER PROCESS, AND TWO PROCESSES WERE RUNNING
+
+```
+  date          rejected  acct-latch  sym-latch  placed   code
+  2026-07-29           3           0        284       0   pre-fix (per-symbol)
+  2026-08-06           2           0         50       3   pre-fix (per-symbol)
+  2026-08-10           1           9          0       6   post-fix (account-wide)
+```
+
+**It is not retrying at the broker.** 3 rejections producing 284 echoes, and 2
+producing 50, are the **per-(symbol,side) latch** — the exact defect
+`_blocked_account` was written to fix. `git log -S"_blocked_account"` dates that
+fix to **`ad4a861`, 2026-08-06**, *after* both sessions. On 10-Aug, post-fix, one
+rejection produced **nine** echoes, not 284. The fix works.
+
+**But the echoes are still DB writes.** `_blocked_account` short-circuits the
+broker round trip, not the call: `engine.py` keeps calling `place()` every 15s
+and every refusal writes a row via `_log()`. That is the whole of F-5's 844.
+
+**The serious finding — two writers on one live account.** The 10-Aug timeline:
+
+```
+  id=  860 09:36:01.03  BLOCKED_PERMANENT  SELL PPLPHARMA   IP (103.197.75.33) is not allowed...
+  id=  861 09:36:02.34  BLOCKED            SELL ETERNAL     ALL orders blocked for this session
+  id=  862 09:36:03.70  BLOCKED            SELL CIPLA       ALL orders blocked for this session
+  id=  863 09:36:06.77  BLOCKED            BUY  AUBANK      ALL orders blocked for this session
+  id=  864 09:36:07.02  BLOCKED            BUY  SCI         ALL orders blocked for this session
+  id=  865 09:36:12.81  PLACED             SELL PPLPHARMA   BOOK_PARTIAL: 1.13R >= the plan's target
+  id=  866 09:36:16.59  PLACED             SELL ETERNAL     EXIT_GIVEBACK: peaked at 0.60R
+  id=  867 09:36:19.67  PLACED             SELL CIPLA       EXIT_STALL: 11 sessions
+  id=  868 09:36:20.83  BLOCKED            SELL PPLPHARMA   ALL orders blocked for this session
+  id=  869 09:36:20.86  BLOCKED            SELL ETERNAL     ALL orders blocked for this session
+  id=  870 09:36:20.88  BLOCKED            SELL CIPLA       ALL orders blocked for this session
+  id=  872 09:36:22.25  BLOCKED            BUY  AUBANK      ALL orders blocked for this session
+  id=  873 09:36:22.52  BLOCKED            BUY  SCI         ALL orders blocked for this session
+  id=  871 09:36:24.14  PLACED             BUY  AUBANK      AUTO_ENTRY: stop 1013.36
+  id=  874 09:36:26.52  PLACED             BUY  SCI         AUTO_ENTRY: stop 279.14
+  id=  878 09:36:46.26  BLOCKED            BUY  AUBANK      an identical BUY for AUBANK was placed 22s ago
+```
+
+`_blocked_account` is a module global with **exactly one assignment site and no
+reset anywhere in the tree**:
+
+```
+backend/execution/order_manager.py:89:_blocked_account: str | None = None
+backend/execution/order_manager.py:262:    if _blocked_account:
+backend/execution/order_manager.py:483:            _blocked_account = msg
+```
+
+A single process therefore cannot place an order after 09:36:01. Six were placed
+between 09:36:12 and 09:37:03, **interleaved with nine echoes of the latch that
+would have forbidden them**. Two independent sweeps of the same book, one
+latched and one not.
+
+Second, independent confirmation from a *different* module global: id=878 says
+*"an identical BUY for AUBANK was placed 22s ago"* — 09:36:46 − 22s = 09:36:24,
+exactly id=871. `_recent` is process-local, so **the process that placed at
+09:36:24 is the one that blocked at 09:36:46**, and it is not the process that
+wrote the latch echo at 09:36:22. Note also that id=871 carries a lower id than
+id=872/873 but a later `ts` — insert order and clock order disagree, which is
+what concurrent writers look like.
+
+**Why this outranks everything else here.** Every guard in `order_manager` is
+process-local: `_blocked`, `_blocked_account`, `_recent` (the 5-minute duplicate
+window), and the daily caps read through `_today_totals`. With two daemons all
+four are effectively doubled — and *"PPLPHARMA sold twice this way"* is already a
+CLAUDE.md landmine. This is the mechanism that produces it.
+
+**`intraday_broker_log` has no pid, host or session column**, so *which* two
+processes these were is not recoverable from the log. Recorded as unrecoverable,
+not guessed.
+
+---
+
+### 5 — Q4: ENTRIES ARE AFFECTED — BY DESIGN, AND THEY FAIL SAFER
+
+Yes. The block is account-wide and cannot distinguish a BUY from a SELL. 47
+blocked BUY attempts:
+
+```
+      34  market closed
+       6  duplicate window
+       4  IP allowlist
+       1  order value ₹3,062 exceeds available cash ₹0
+       1  order value ₹3,060 exceeds available cash ₹0
+       1  could not read available cash from the broker
+```
+
+The 4 IP-blocked BUYs are **2 entry decisions**, each blocked twice by the two
+processes of §4. `BUY limit = round(ltp × (1 + 20bps), 1)`, so `ltp = price /
+1.002`:
+
+```
+    AUBANK  blocked 08-10 09:36:06 -> placed 09:36:24 (+17s)  ltp 1061.08 -> 1061.58  +0.50/sh x5  = Rs  +2.50
+    SCI     blocked 08-10 09:36:07 -> placed 09:36:26 (+19s)  ltp  300.10 ->  300.00  -0.10/sh x14 = Rs  -1.40
+```
+
+**Net entry displacement: ₹1.10 paid more than the plan's price, across two
+entries delayed by under 20 seconds.** No entry was blocked long enough to
+matter.
+
+**And the entry path has a protection the exit path does not.** `engine.py:2434`:
+
+```python
+        max_entry = getattr(d, "max_entry", None)
+        if max_entry and limit > float(max_entry):
+            logger.info(f"  {sym}: a {limit} limit would exceed the plan's max entry "
+                        f"{max_entry} — not chasing past its own R:R")
+            return
+```
+
+A long block makes an entry **not happen** rather than happen at a price the
+plan rejected. The exit side has no such guard, and structurally cannot have the
+same one — refusing to exit because the price moved is how a give-back becomes a
+stop-out. The asymmetry is correct; it is recorded because it means Q4's answer
+is *"yes, and it is the safer direction"*.
+
+---
+
+### 6 — Q5: ROOT CAUSE. TWO DIFFERENT FAULTS, ONE FIXED, ONE LIVE
+
+Every rejection, with the source address Zerodha saw:
+
+```
+  2026-07-29 12:57:32 IST  IPv4  52.159.247.226                             PPLPHARMA
+  2026-07-29 13:05:20 IST  IPv6  2402:e280:3e1a:670:5ccb:7a4a:ecad:a1fa     PPLPHARMA
+  2026-07-29 14:20:49 IST  IPv6  2402:e280:3e1a:670:5ccb:7a4a:ecad:a1fa     PPLPHARMA
+  2026-08-06 10:14:29 IST  IPv4  103.197.74.141                             KIMS
+  2026-08-06 10:56:04 IST  IPv4  103.197.74.141                             TRAVELFOOD
+  2026-08-10 09:36:01 IST  IPv4  103.197.75.33                              PPLPHARMA
+```
+
+Message text is identical in all six, and names an IP and nothing else:
+
+```
+IP (X) is not allowed to place orders for this app. Update allowed IPs on the
+Kite developer console. Learn more - https://support.zerodha.com/.../static-ip
+```
+
+**Cause A — IPv6 leakage. Fixed, has not recurred.** The two `2402:e280:…`
+rejections are the dual-stack fault `config._force_ipv4()` documents.
+`git log -S"_force_ipv4"` → **`074c355`, 2026-07-29**, the same day. No v6
+address appears after it.
+
+**Cause B — the daemon's public IPv4 changes between sessions. LIVE, UNFIXED.**
+Three distinct v4 addresses across three sessions, two of them
+(`103.197.74.141`, `103.197.75.33`) in the same ISP /22 but different hosts. The
+allowlist entry is stale because the address moved, not because anything in the
+code is wrong.
+
+**It is not a session or token problem, and the log shows this rather than my
+assuming it.** On 10-Aug orders were **PLACED successfully 12 seconds after** the
+rejection (§4, id=865). A dead `access_token` or a wrong `api_key` does not
+self-heal in 12 seconds, and Zerodha reports those conditions with different
+messages — `_ACCOUNT_WIDE` lists them separately. The error names an address.
+
+**One address is not explained by either cause and is reported as-is:**
+`52.159.247.226` (29-Jul 12:57) is a Microsoft Azure range, not the operator's
+ISP, and is the only rejection from it. That is consistent with an order attempt
+originating from a cloud runner rather than the local daemon — but
+`intraday_broker_log` records no host (§4, F-10), so **this is what the log
+shows, and I am not claiming which process it was.**
+
+---
+
+### 7 — FOUND ALONG THE WAY
+
+**F-7 — `swing_entry_slip_bps` has no `system_config` row**, exactly as F-6
+found for `exit_slip_bps`. Both fall to code defaults (20 and 30 bps).
+
+```
+intraday_exit_slip_bps = '30'
+exit_slip_bps          = ''      <- F-6
+swing_entry_slip_bps   = ''      <- F-7
+```
+
+Harmless today; every entry and exit price in §3 and §5 is reconstructed through
+these constants, so a future edit to either silently invalidates this entry's
+arithmetic.
+
+**F-8 — 216 of the 892 blocked rows are `market is closed`, written between
+~09:00 and 09:15 IST.** The daemon calls `place()` every ~15s before the open and
+`preflight()` refuses each one; 85 such rows were written this morning alone,
+and BHEL took 57 on 08-03 before filling at 09:17. No money, but it is a quarter
+of F-5's headline number and it buries real events in the log.
+
+**F-9 — TMCV: a live entry was placed, recorded as a position, never filled, and
+then the daemon tried to sell it 254 times.** BUY 7 @ 437.2 placed 08-03
+09:17:03. From 08-04 12:24:56 to 15:31:28 there are **254 `cannot sell 7 —
+broker shows 0 held`** rows. TMCV appears in **neither `open_positions` nor
+`closed_positions`** today — 0 rows in each. This is the entry-side mirror of the
+optimistic write `engine.py` documents for exits: the position was booked on
+`PLACED`, the fill never came, and nothing reconciled the entry away until the
+row simply vanished, unrecorded. It is also the whole of the `qty mismatch`
+bucket's 254.
+
+**F-10 — `intraday_broker_log` carries no process, host or session identity.**
+It is why §4 can prove two writers existed but not name them, and why §6's Azure
+address cannot be attributed.
+
+---
+
+### 8 — COULD NOT DETERMINE
+
+- **True fill prices for the two partial books** (PPLPHARMA 29-Jul and 10-Aug).
+  `closed_positions.exit_price` is the blended exit of the whole position, and
+  `open_positions.partial_booked_price` is overwritten by each subsequent
+  partial and gone once the position closes. Both rows in §3 marked `RECON` are
+  the placement's own limit inverted through the 30bps constant — a
+  reconstruction of the decision price, not a broker fill. Kite's order history
+  covers the current day only, so 29-Jul and 06-Aug are unrecoverable.
+- **Which two processes were writing on 10-Aug** (§4, F-10). Their existence is
+  proven; their identity is not in the data.
+- **Whether the 22.13-hour PPLPHARMA block's favourable outcome is typical.**
+  n=1 at that duration, n=4 overall. The sign of the total is set by a single
+  overnight gap.
+- **Whether any block occurred in a session that produced no rejection row at
+  all** — i.e. whether `_log()` itself ever failed. `_log` swallows its exception
+  to `logger.debug` (`order_manager.py:539`), so a silent write failure would be
+  invisible here. Nothing suggests it happened; nothing rules it out.
+- **The intraday book.** Not examined — every blocked row in this population is
+  `framework=SWING` or null.
+
+---
+
+### 9 — RECOMMENDS
+
+Not implemented, per the brief. Ranked by money at risk, not by effort.
+
+**R-1 — Enforce one daemon per account. This is the only finding here with real
+money behind it.** §4 proves two processes swept the same live book within one
+minute, and every safety guard in `order_manager` — `_blocked`,
+`_blocked_account`, `_recent`, and the daily caps via `_today_totals` — is
+process-local and therefore was doubled. The recorded consequence of exactly
+this is already in CLAUDE.md: *"PPLPHARMA sold twice this way."* Proposed: a
+Postgres advisory lock keyed on the account, taken at `run.py` startup, where a
+second daemon **refuses to start and says so** rather than quietly trading
+alongside the first. Add a `host`/`pid` column to `intraday_broker_log` (F-10)
+in the same change, so the next occurrence is attributable instead of inferred.
+
+**R-2 — Turn the IP allowlist from a post-mortem into a preflight.** Cause B
+(§6) is knowable *before* the market opens: the daemon can read its own public
+v4 and compare it against the address the operator last put in the Kite console,
+stored as a new `system_config` key. Mismatch → loud alert at startup and at
+09:00, not a rejected exit at 10:14. This must be built to the CLAUDE.md rule
+that killed the last version of it — *"`tradeos ip` reports the v4 address
+matching, so the check passes and the orders still fail"* — meaning the check
+has to compare against **what Kite was told**, which no API exposes, so the
+config key is the only honest reference. Demonstrate it FAILING on a wrong
+address before trusting it.
+
+**R-3 — Do not call `place()` when the market is shut** (F-8). Hoist
+`is_market_open()` into the caller's loop. Removes ~216 rows of noise and a
+quarter of F-5's number, changes no decision.
+
+**R-4 — Reconcile entries, not just exits** (F-9). An entry written
+optimistically on `PLACED` should be verified against broker holdings on the
+next reconcile and withdrawn if it never filled, instead of generating 254 sell
+attempts against shares that do not exist and then disappearing from both
+tables.
+
+**R-5 — Give `exit_slip_bps` and `swing_entry_slip_bps` real `system_config`
+rows** (F-6, F-7).
+
+**Explicitly NOT recommended: anything about exit slippage itself.** §3 measures
+it at **+₹21.24 / +0.27R favourable across the entire book history**, on n=4,
+and no exit was ever permanently lost. Widening a gate, adding a retry ladder or
+changing the exit price model to chase this would be optimising noise — and the
+one real hazard it exposed (a 22-hour unplanned overnight) is prevented by R-2
+stopping the block, not by changing how exits are priced.
+
+**Gate: PASS** — five questions asked, five answered with raw output behind
+every number. Two of F-5's own claims are corrected (§0), its open slippage item
+is closed (§3), and the investigation surfaced a concurrency defect (§4) that
+outranks the question it was sent to answer. Nothing on the trading path was
+changed; `tools.verify` is 434/434.
+
+---
