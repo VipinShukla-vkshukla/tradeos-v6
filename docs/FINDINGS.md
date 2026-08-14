@@ -1866,3 +1866,467 @@ for opposite reasons, and the same fix helps neither.
 The decision they force — run the swing book at 2.5R, or stop running it at
 ₹20,000 — is Vipin's, and it should not be taken before Stage 3 prices the
 target-versus-hit-rate trade.
+
+---
+
+## 2026-08-14 — Stage 2c (planned-target shortfall) — the planned target is not below break-even by drift; 1.9048R is a CONSTANT set by the regime stop multiplier, and it carries no cost basis at all
+
+Branch `diagnostic/planned-target-shortfall` off `main`. **READ-ONLY — no source
+file, config key or database row was modified.** `git status --porcelain` empty
+at the end of the session.
+
+**Ran:**
+
+```bash
+git checkout -b diagnostic/planned-target-shortfall main
+```
+
+Plus seven read-only scratchpad scripts, no source file touched: `probe.py`,
+`planned_r.py`, `basis.py`, `implied.py`, `actionable.py`, `gatebar.py`,
+`reconcile.py` / `reconcile2.py`, `hitrate.py`, `payoff.py`. Cost figures are
+taken from the production functions themselves — `intraday.cost_model.entry_leg`
+/ `exit_leg` / `round_trip` imported, never reimplemented — and the mechanism in
+§1 is verified by **calling `compute_trade_levels()`**, not by reading it.
+
+---
+
+### POPULATIONS
+
+| tag | table | n | what a row is |
+|---|---|---|---|
+| **[PLANS]** | `signal_output_daily`, last 30 dates present | 1002 raw / **995** with a coherent geometry / 13 dates (28-Jul → 13-Aug) | one evening plan |
+| **[CLOSED-SW]** | `closed_positions`, `framework='SWING'` | **80** rows / **10** with a full planned geometry | a real swing trade |
+
+**[CLOSED-SW] has grown from 78 to 80 since Stage 2 and 2b ran earlier today.**
+MANAPPURAM (−₹144.45) and PPLPHARMA (+₹171.78) both closed on 2026-08-14. Rows
+carrying `planned_stop_at_entry` went 8 → 10. Every Stage 2b figure anchored on
+n=78 is now one session stale; that is not an error in 2b, but no number below
+is quoted at n=78.
+
+---
+
+### 1 — WHAT SETS THE PLANNED TARGET *(the first question)*
+
+The whole chain, and it contains no cost model anywhere:
+
+```
+compute_msl.compute_trade_plan()            swing/compute/compute_msl.py:2121
+  -> analysis.risk_model.compute_trade_levels(                      :2151-2157
+         entry_price = ez_low, anchor_price = ez_low,
+         structure_stop = supertrend, regime = regime_ctx["regime"])
+  -> levels.target                                                  :2168
+  -> signal_output_daily.planned_target
+```
+
+Inside `compute_trade_levels`, two lines decide everything:
+
+```python
+regime_k  = REGIME_STOP_MULT.get((regime or "NEUTRAL").upper(), 1.0)   # :158
+atr_stop  = anchor - (p["stop_atr_mult"] * regime_k * atr_abs)         # :161
+target    = anchor + (p["target_atr_mult"] * atr_abs)                  # :188
+```
+
+**The stop is scaled by `regime_k`. The target is not.** `compute_trade_plan`
+passes `entry_price = anchor_price = ez_low`, so when the ATR stop is taken the
+planned R is not a distribution at all — it is arithmetic:
+
+```
+planned R = target_atr_mult / (stop_atr_mult * regime_k) = 3.0 / (1.5 * regime_k)
+```
+
+Verified **through the function**, entry = anchor = 100, ATR = 3:
+
+```
+     TRENDING     stop   95.72  target  109.00  rr 2.1050
+     RISK ON      stop   95.50  target  109.00  rr 2.0000
+     NEUTRAL      stop   95.28  target  109.00  rr 1.9050   <<
+     RECOVERING   stop   94.83  target  109.00  rr 1.7390
+     RISK OFF     stop   94.38  target  109.00  rr 1.6000
+```
+
+`risk_stop_atr_mult` 1.5 and `risk_target_atr_mult` 3.0 are both **present in
+`system_config`** at their code defaults. **All 1000 rows of
+`signal_output_daily.regime` in the window read `NEUTRAL`**, and every one of the
+13 dates is 100% NEUTRAL. `market_regime.computed_regime` agrees. No regime value
+in the data falls outside `REGIME_STOP_MULT`, so nothing is silently taking
+`k=1.0` through the `.get(..., 1.0)` fallback.
+
+**So the "1.90R median planned target" is not drift, not degradation, and not a
+distribution whose middle happens to sit at 1.90. It is the single number
+`3.0/(1.5×1.05) = 1.9048`, produced identically on every plan that takes the ATR
+stop, and it has been that number on all 13 sessions.** The design target of 2R
+is only reachable at `regime_k = 1.00`, i.e. **`RISK ON` — one of five regimes,
+and not the one the market has been in for any session on record.**
+
+The docstring at `risk_model.py:70-71` states the intent — "tighter stops in
+trending markets keep R:R attractive" — so regime moving R:R is deliberate. What
+is not stated anywhere is that the DEFAULT regime lands the book below its own
+2R design point, and Stage 2b established that this is also below break-even.
+
+---
+
+### 2 — THE DISTRIBUTION OF PLANNED R *(the second question)*
+
+**POPULATION [PLANS], n=995 of 1002 with a coherent geometry.** The 7 excluded
+are `risk_too_wide_*` rejects (8.0–10.3% stops against `risk_max_risk_pct` 8.0)
+which correctly carry NULL stop and target.
+
+`expected_r` reproduces `(target−entry)/(entry−stop)` on all 995 — max |diff|
+**0.0023**, median 0.000244, zero rows over 0.01. The stored column and the
+geometry agree; nothing downstream is reading a stale R.
+
+```
+                          n     min    p10    p25    MED    p75    p90     max   mean
+  ALL plans             995   1.903  1.905  1.905  1.905  2.139  3.066   7.121  2.224
+  stop % (planned)      995   1.530  2.603  3.360  4.284  5.269  6.124   7.853  4.329
+```
+
+It is **bimodal, not spread**, and the split is exactly the stop source:
+
+```
+  stop_source=atr       685   1.903  1.905  1.905  1.905  1.905  1.905   1.907  1.905
+  stop_source=structure 310   1.911  2.013  2.192  2.623  3.349  4.407   7.121  2.930
+```
+
+**694 of 995 (69.7%) sit in the band 1.90 ≤ R < 1.95** — the ATR-stop constant
+(685 rows) plus a handful of structure stops that land just inside it. The 310
+supertrend-stop plans are the only source of any R above it, because a tighter
+structural stop raises R against an unmoved target.
+
+The median is 1.905 on **every single one of the 13 dates**, without exception:
+
+```
+    2026-08-13  n=  82  MED 1.905  p25 1.905  p75 2.414  mean 2.387
+    2026-08-12  n=  81  MED 1.905  p25 1.905  p75 2.118  mean 2.151
+    2026-08-11  n=  76  MED 1.905  p25 1.905  p75 2.289  mean 2.234
+    2026-08-10  n=  78  MED 1.905  p25 1.905  p75 1.905  mean 2.145
+    2026-08-07  n=  78  MED 1.905  p25 1.905  p75 2.287  mean 2.197
+    2026-08-06  n=  81  MED 1.905  p25 1.905  p75 2.022  mean 2.223
+    2026-08-05  n=  81  MED 1.905  p25 1.905  p75 2.108  mean 2.293
+    2026-08-04  n=  79  MED 1.905  p25 1.905  p75 1.936  mean 2.207
+    2026-08-03  n=  68  MED 1.905  p25 1.905  p75 2.139  mean 2.217
+    2026-07-31  n=  73  MED 1.905  p25 1.905  p75 1.940  mean 2.215
+    2026-07-30  n=  76  MED 1.905  p25 1.905  p75 2.149  mean 2.216
+    2026-07-29  n=  82  MED 1.905  p25 1.905  p75 2.112  mean 2.233
+    2026-07-28  n=  60  MED 1.905  p25 1.905  p75 1.906  mean 2.174
+```
+
+Stage 2b's `13-Aug n=82, planned target median 1.90R` reproduces exactly.
+
+---
+
+### 3 — WHAT FRACTION FALLS BELOW BREAK-EVEN *(the third question)*
+
+Each plan judged against **its own** planned stop and **its own** clip, sized by
+the production rule at ₹20,000 with an empty book
+(`analysis/portfolio_constraints.py:220-226`: `min(qty_by_risk, qty_by_maxpos)`,
+`risk_pct_per_trade` 1.0 → ₹200 risk, `max_position_pct` 20% → ₹4,000 ceiling).
+Friction per plan is `(entry_leg+exit_leg)/risk_rupees` at the plan's own entry
+price and quantity — CNC, the swing product.
+
+**207 of 995 plans (20.8%) cannot be funded at ₹20,000 at all:**
+
+```
+   unfundable n=207
+      151  risk budget Rs200 < risk/share & clip ceiling Rs4,000 < share price
+       56  clip ceiling Rs4,000 < share price
+   their share price: median Rs7,678  max Rs45,554
+   their risk/share : median Rs292.51  (budget is Rs200)
+```
+
+The remaining **788** are scored:
+
+```
+  clip Rs                  n=788  min 1397  p25 2830  MED 3326  p75 3760  max 4000
+  friction R (ledger)      n=788  min 0.106 p25 0.131 MED 0.157 p75 0.200 max 0.447
+  friction R (gate)        n=788  min 0.119 p25 0.150 MED 0.179 p75 0.231 max 0.501
+  required target (ledger) n=788  min 1.765 p25 1.827 MED 1.893 p75 2.000 max 2.617
+  required target (gate)   n=788  min 1.798 p25 1.874 MED 1.948 p75 2.077 max 2.753
+  net R @planned (ledger)  n=788  min -0.117 p25 +0.002 MED +0.034 p75 +0.131 max +1.878
+  net R @planned (gate)    n=788  min -0.161 p25 -0.020 MED +0.016 p75 +0.104 max +1.820
+  break-even hit% (ledger) n=788  p25 36.04  MED 38.81  p75 39.93  max 44.04
+  break-even hit% (gate)   n=788  p25 36.75  MED 39.47  p75 40.70  max 45.53
+```
+
+**THE ANSWER, both bases, at the 40% design hit rate:**
+
+| basis | plans below break-even |
+|---|---|
+| **LEDGER** (statutory only) | **191 of 788 = 24.2%** |
+| **GATE** (statutory + 5 bps slippage) | **289 of 788 = 36.7%** |
+
+By planned-R band (shares are of the 788 fundable), which shows where the loss
+sits:
+
+```
+    1.90 <= R <  1.95 :  526 ( 66.8%)  med net(ledger) +0.0198  med net(gate) -0.0013
+    1.95 <= R <  2.00 :   15 (  1.9%)  med net(ledger) +0.0467  med net(gate) +0.0306
+    2.00 <= R <  2.50 :   93 ( 11.8%)  med net(ledger) +0.1213  med net(gate) +0.1001
+    2.50 <= R < 99.00 :  154 ( 19.5%)  med net(ledger) +0.4380  med net(gate) +0.3989
+```
+
+**Almost all of the loss is in the 1.90-band, but not all of it** — checked
+rather than assumed:
+
+```
+  ledger: 191 below break-even of 788   planned-R range 1.903 .. 2.289
+          183 in the 1.90-1.95 band, 8 outside it
+  gate:   289 below break-even of 788   planned-R range 1.903 .. 2.289
+          274 in the 1.90-1.95 band, 15 outside it
+```
+
+The 8 (resp. 15) exceptions reach up to a planned 2.289R and still fail, because
+a wide stop or a small clip pushes their own required target above it. **No plan
+above 2.289R fails on either basis.**
+
+That band is two thirds of the book and its median net is `+0.0198R` on the
+ledger basis and **`−0.0013R` on the gate basis — it straddles zero.** The
+1.9048R constant is not
+comfortably profitable or clearly unprofitable; it sits ON the line, and which
+side it lands on is decided by the cost basis chosen and by the individual
+plan's stop width.
+
+This is a **less severe** reading than Stage 2b's headline. 2b compared one
+median (1.90R) against one break-even computed at one clip and one stop
+(₹2,733 / 4.34% → 1.975R) and concluded the book plans below break-even.
+Matching each plan to its OWN required target, 75.8% of fundable plans clear on
+the ledger basis. 2b's number is a median-against-median comparison; both are
+correct answers to different questions, and the per-plan form is the one that
+says how much of the book is affected.
+
+---
+
+### 4 — WHICH COST BASIS EACH SIDE USES *(the fourth question)*
+
+**The planner uses NEITHER. It has no cost basis at all.**
+`analysis/risk_model.py` — the module that produces `planned_target` — imports
+only `dataclasses`. Every cost token is absent:
+
+```
+   'cost_model' appears in risk_model.py: False
+   'round_trip' appears in risk_model.py: False
+   'entry_leg'  appears in risk_model.py: False
+   'exit_leg'   appears in risk_model.py: False
+   'charges' / 'brokerage' / 'stt' / 'slippage' / 'dp_per_sell' / 'friction': all False
+   module-level imports: ['from __future__ import annotations',
+                          'from dataclasses import dataclass, asdict']
+```
+
+| side | what it uses | where |
+|---|---|---|
+| **planned_target** | **no cost model** — `anchor + 3.0×ATR` | `analysis/risk_model.py:188` |
+| **Stage 2b break-even** | **LEDGER** basis, statutory only | `tools/unit_economics.py:102` → `entry_leg`+`exit_leg` → `friction_r` at `:110-111` |
+| **expectancy ledger** | **LEDGER** basis | `tools/expectancy_ledger.py:80` imports `entry_leg, exit_leg` |
+| **intraday cost gate** | **GATE** basis, +slippage | `intraday/cost_model.py:128` `round_trip`, slippage added at `:161`, summed at `:170` |
+| **swing sizing cost gate** | GATE basis — but **DISABLED** | `analysis/portfolio_constraints.py:297`; `sizing_max_cost_r = 0` in `system_config` |
+
+**So the 1.90 vs 1.975 gap is NOT a units mismatch.** It cannot be: a units
+mismatch needs two cost models, and the planning side uses zero. The brief's
+hypothesis is refuted, and refuted in the adverse direction — priced on the
+GATE basis instead, the required target at the same anchors **rises**:
+
+```
+      clip prod  stop% |  ledger%  fricR  reqTgt  net@1.905 |    gate%  fricR  reqTgt  net@1.905
+     2,733  CNC   4.34 |   0.8240  0.190   1.975    -0.0279 |   0.9240  0.213   2.032    -0.0510
+     2,733  CNC   6.23 |   0.8240  0.132   1.831    +0.0297 |   0.9240  0.148   1.871    +0.0136
+     4,000  CNC   4.34 |   0.5985  0.138   1.845    +0.0240 |   0.6985  0.161   1.902    +0.0010
+     4,000  CNC   6.23 |   0.5985  0.096   1.740    +0.0659 |   0.6985  0.112   1.780    +0.0498
+```
+
+At Stage 2b's own anchors the shortfall goes from **−0.028R to −0.051R**, not to
+zero. (Stage 2b printed −0.030R; −0.0279R here is the same figure computed at
+1.9048R rather than a rounded 1.90R.)
+
+**A correction to how the 0.206% / 0.106% pair should be read.** Those are **MIS**
+numbers and the ratio between them does not transfer to the swing book:
+
+```
+   MIS  Rs 2,000   ledger 0.1060%   gate 0.2065%   ratio 1.95x   delta +0.1005pp
+   MIS  Rs 6,500   ledger 0.1063%   gate 0.2063%   ratio 1.94x   delta +0.1000pp
+   CNC  Rs 2,000   ledger 0.9740%   gate 1.0745%   ratio 1.10x   delta +0.1005pp
+   CNC  Rs 2,733   ledger 0.8240%   gate 0.9240%   ratio 1.12x   delta +0.1000pp
+   CNC  Rs 4,000   ledger 0.5985%   gate 0.6985%   ratio 1.17x   delta +0.1000pp
+```
+
+The two bases differ by a **constant +0.100pp of position** — slippage is
+`turnover × 5bps/10000` = 0.10% of position on both products
+(`cost_model.py:161`). On MIS that doubles the cost (1.94x); on CNC it is a
+1.10–1.17x adjustment, because CNC's statutory base is 6–9x larger. **The "two
+cost models disagree by 2x" framing is an MIS fact and is nearly irrelevant to
+the swing book.**
+
+---
+
+### 5 — RECORDED, NOT CHANGED: the slot/clip funding arithmetic
+
+As the brief asks, and it is worse than the one line 2b recorded — `NEUTRAL` and
+`RISK OFF` are over-committed too, and NEUTRAL is the only regime observed:
+
+```
+  max_positions_risk_on    = 8  ->  8 x Rs4,000 = Rs32,000 vs Rs20,000 cash (OVER by Rs12,000)
+  max_positions_neutral    = 6  ->  6 x Rs4,000 = Rs24,000 vs Rs20,000 cash (OVER by Rs 4,000)
+  max_positions_risk_off   = 6  ->  6 x Rs4,000 = Rs24,000 vs Rs20,000 cash (OVER by Rs 4,000)
+  clip ceiling funds 5 concurrent CNC positions.
+  at the MEDIAN planned clip of Rs3,326, cash funds 6 concurrent positions.
+```
+
+`max_position_pct` 20.0 and `risk_pct_per_trade` 1.0 confirmed present in
+`system_config`; the ceiling is enforced at
+`analysis/portfolio_constraints.py:223`. **Not changed.**
+
+---
+
+### 6 — FOUND ALONG THE WAY
+
+**F-1 — Stage 2 C.4's `SWING all 78 39.7%` does not reproduce, and Stage 2b's
+headline conclusion rests on it.** On the 78 rows Stage 2 would have seen, six
+natural definitions of "hit" were tested and none returns 39.7%:
+
+```
+n=78 (Stage 2's view)
+  realized_pnl > 0                              35/ 78 =  44.87%
+  realized_pnl - charges > 0                    32/ 78 =  41.03%
+  r_multiple > 0                                 8/ 78 =  10.26%
+  pnl_pct > 0                                   35/ 78 =  44.87%
+  exit_price > entry_price                      35/ 78 =  44.87%
+  realized_pnl >= 0                             35/ 78 =  44.87%
+  (39.7% would require 31/78 = 39.74%. No predicate tested yields 31.)
+```
+
+Stage 2b's conclusion is "break-even 39.66% vs measured 39.7% — four hundredths
+of a percentage point." Against the nearest reproducible reading, **44.87%
+gross**, the same break-even leaves **5.2 points of headroom, not 0.04.** I
+cannot show Stage 2's number is wrong — its scratchpad scripts are gone and I
+did not rerun them — only that it does not reproduce from `closed_positions`
+today under any definition I tested. **This is flagged, not resolved.**
+
+**F-2 — and the deeper problem: the break-even identity's payoff assumptions are
+both violated, in the same direction.** `h* = (1+friction)/(1+target)` assumes
+winners pay exactly `target` R and losers exactly 1R. **POPULATION [CLOSED-SW],
+the 10 rows with a full planned geometry:**
+
+```
+   symbol        plannedR   grossR  storedR  target?   stop?
+   PPLPHARMA        1.905    2.229    2.095     True   False
+   BHEL             1.905    0.081    0.081    False   False
+   GABRIEL          1.067    0.203    0.192    False   False
+   ETERNAL          1.235    0.289    0.289    False   False
+   CIPLA            1.291    0.089    0.089    False   False
+   PPLPHARMA        1.036    0.665    0.863    False   False
+   TRAVELFOOD       1.597    0.267    0.267    False   False
+   MANAPPURAM       1.132   -0.750   -0.750    False   False
+   KIMS             2.797    0.394    0.394    False   False
+   VIJAYA           1.079    0.452    0.452    False   False
+
+   positive-R rate         9/10 = 90.0%
+   PLANNED-TARGET hit rate 1/10 = 10.0%   <- the 'h' the identity actually means
+   planned-STOP hit rate   0/10 =  0.0%   <- the '1R loser' the identity assumes
+   mean winner  +0.519R  median +0.289R  (identity assumes +1.263R)
+   mean loser   -0.750R  median -0.750R  (identity assumes -1.000R)
+```
+
+**One of ten trades reached its planned target. None reached its planned stop.**
+Every other exit was resolved by the exit ladder somewhere in between. A "hit
+rate" counting `realized_pnl > 0` and a break-even assuming a `1.9R` winner are
+**not the same quantity** — this is the CLAUDE.md landmine "a gate and the thing
+it gates must be the SAME QUANTITY", now found in the break-even identity itself.
+
+The direct consequence for Stage 3: **the planned target is very nearly
+irrelevant to what this book actually realises.** Moving it from 1.9R to 2.5R
+changes the exit price of trades that reach it, and 1 of 10 did. Whatever Stage 3
+measures about target-versus-hit-rate must be measured against the **exit
+ladder**, not against the target in isolation.
+
+**F-3 — `implied_rr`, the quantity the entry gate actually tests, has a median of
+0.777 and its bar is 0.8.** `expected_r`/`planned_target` describe R at the entry
+zone; `generate_signals.py:800` gates on `implied_rr`, which re-anchors at the
+quoted price (`risk_model.py:44-56` — a deliberate chase penalty).
+
+```
+  planned R (at zone low)        n=991  p25 1.905  MED 1.905  p75 2.139
+  implied_rr (at quoted price)   n=991  p25 0.681  MED 0.777  p75 0.787
+  implied_rr BELOW planned R: 953 of 991 = 96.2%   (median dist_entry_pct +3.25%)
+  implied_rr < 1.975 : 951 of 991 = 96.0%
+```
+
+The bar it is tested against, read from `system_config`, **not** the code default:
+
+```
+   min_rr_to_enter                =   1.0   (system_config)
+   min_rr_to_enter_NEUTRAL        =   0.8   (system_config)   <- the effective bar
+   min_rr_to_enter_TRENDING       =   0.9      min_rr_to_enter_RISK_ON    = 1.1
+   min_rr_to_enter_RECOVERING     =   1.3      min_rr_to_enter_RISK_OFF   = 1.5
+```
+
+**`min_rr_to_enter_NEUTRAL` is 0.8 in `system_config`, overriding the 1.0 code
+default at `generate_signals.py:191`.** So in the only regime on record, a plan
+whose R:R at the quoted price is 0.8 clears the entry gate, against a break-even
+that needs ~1.9–2.0R. The in-zone slice is better but still short — n=47,
+implied_rr median 1.741, 66% below 1.975R. **Caveat: `implied_rr` is computed
+against the evening close, not against the fill; the daemon re-evaluates at live
+price. This is not a claim about realised R.** It is a claim about the bar.
+
+---
+
+**Could not determine:**
+
+- **Whether Stage 2 C.4's 39.7% was ever right.** F-1 shows it does not
+  reproduce; it does not show what produced it. Stage 2's `b5_c.py` / `c3_c4b.py`
+  were scratchpad scripts and are gone. **Until this is settled, Stage 2b's
+  "break-even hit rate and measured hit rate are the same number" should not be
+  quoted as established.**
+- **What the correct hit rate for the break-even identity even is.** F-2 says the
+  honest `h` is the planned-target hit rate, which is **1 of 10**. At n=10 that
+  is not a measurement, and the identity cannot be evaluated against it.
+- **Whether the ledger or the gate cost basis is right for judging a PLAN.**
+  Stage 2b's P.1 argued convincingly that `entry_leg+exit_leg` is right for a
+  REALISED outcome and `round_trip` for a PRE-TRADE gate. A planned target is a
+  pre-trade object, which argues for the gate basis and a 36.7% below-break-even
+  figure rather than 24.2%. Both are reported above; **the choice is not made
+  here** and it moves the answer by 12.5 percentage points.
+- **Whether the 207 unfundable plans matter.** They are 20.8% of what the
+  pipeline publishes each evening and cannot be taken at ₹20,000 under the
+  current sizing rule. Whether they are also the ones the ranking layer would
+  have chosen is not tested — Stage 2 C.1/C.2 already found the swing ranking
+  layer does not order outcomes at n=1386.
+- **Whether the supertrend stop's higher R is real or a selection effect.** The
+  310 `stop_source=structure` plans carry median 2.623R purely because a tighter
+  stop divides an unchanged target distance. Nothing here tests whether those
+  tighter stops survive contact.
+- **Live slippage.** Unmeasured, exactly as Stage 2b recorded. The 0.100pp gap
+  between the two cost bases IS the slippage assumption, so the 24.2% vs 36.7%
+  spread is entirely a function of an unvalidated 5 bps.
+- **Whether `regime_k` scaling the stop but not the target is intended.**
+  `risk_model.py:70-71` documents regime moving R:R deliberately. Nothing
+  documents that the default regime lands below the 2R design point. I did not
+  find a decision record either way and did not assume one.
+- **Anything about the intraday book.** Not examined; this stage is swing-only.
+
+**Recommends:**
+
+**No action, and specifically no change to `risk_target_atr_mult`,
+`REGIME_STOP_MULT` or `min_rr_to_enter_NEUTRAL`.** The brief forbids it and the
+evidence does not support it yet. Recorded for whoever runs Stage 3:
+
+1. **The lever is one constant, and it is not the one 2b named.** 2b proposed
+   `risk_target_atr_mult` (currently 3.0). The measurement above says planned R
+   is `target_atr_mult / (stop_atr_mult × regime_k)` — **`regime_k` = 1.05 in the
+   only regime on record is the whole of the 2.0 → 1.9048 gap.** Raising the
+   target multiplier and neutralising the regime multiplier are different
+   changes with different side effects: `regime_k` also sets the STOP WIDTH,
+   hence position size, hence friction in R. Neither should be moved before
+   Stage 3.
+2. **Stage 3 must price the target against the EXIT LADDER, not in isolation**
+   (F-2). One trade in ten reached its target. A replay that moves the target
+   and holds the exit policy fixed will measure almost nothing.
+3. **Settle F-1 first.** Stage 2b's decision-grade conclusion rests on a number
+   that does not reproduce. That is a one-query check and it should precede any
+   target change, because 44.87% and 39.7% point to opposite decisions.
+4. Note for whoever revisits sizing: the over-commitment in §5 applies to
+   `max_positions_neutral` (6) as well, not only `max_positions_risk_on` (8).
+
+**Gate: PASS** — the four questions asked are answered with commands and raw
+output behind every number. **F-1 is escalated: it is a live contradiction with
+the prior entry's headline, and it is not resolved here.**
+
+---
