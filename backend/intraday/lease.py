@@ -197,6 +197,77 @@ def renew(sb=None) -> LeaseState:
         return LeaseState(ACTIVE, _INSTANCE_ID, now, f"renew failed: {e}")
 
 
+@dataclass
+class LeaseView:
+    """
+    A read-only snapshot of the lease row. Plain data, no clock inside — the
+    two booleans are resolved against the clock once, by observe(), so anything
+    reasoning about them can be tested without one.
+    """
+    holder: str          # "" when nobody holds it
+    hostname: str        # the machine that last held it
+    held_by_me: bool     # THIS process is the holder
+    held_by_other: bool  # a DIFFERENT process holds it and it has NOT expired
+    readable: bool       # the row could be read at all
+    detail: str
+
+
+def observe(sb=None) -> LeaseView:
+    """
+    Who holds the lease right now, WITHOUT touching it.
+
+    acquire() and renew() both WRITE. Either one, called from a process that
+    only wants to know the answer — the pipeline's exit path, a preflight, a
+    health check — would take the lease away from the daemon that legitimately
+    holds it. That is the precise failure this module exists to prevent, so the
+    question "may I act?" needs a form that cannot answer itself by making the
+    answer true. This is that form, and it is the only lease function in this
+    module that issues no write.
+
+    `readable` distinguishes "nobody holds it" from "I could not find out",
+    which are opposite facts: the first means it is free, the second means
+    nothing is known. Collapsing them into one empty holder is how a database
+    blip would read as permission.
+    """
+    sb = sb or get_supabase()
+    now = _now()
+    try:
+        rows = (sb.table("intraday_daemon_lease")
+                  .select("holder,hostname,expires_at")
+                  .eq("id", 1).execute().data or [])
+    except Exception as e:
+        return LeaseView("", "", False, False, False, f"lease unreadable: {e}")
+
+    if not rows:
+        return LeaseView("", "", False, False, True, "no lease row — no daemon has ever run")
+
+    r = rows[0]
+    holder = r.get("holder") or ""
+    host = r.get("hostname") or "?"
+    try:
+        expires = datetime.fromisoformat(
+            str(r.get("expires_at")).replace("Z", "+00:00")).astimezone(IST)
+    except Exception:
+        # An unreadable timestamp is an EXPIRED lease, not a live one: the
+        # conservative direction here is "nobody is driving", because the
+        # opposite reading would let a corrupt row silently forbid every exit.
+        expires = now - timedelta(seconds=1)
+
+    mine = bool(holder) and holder == _INSTANCE_ID
+    other = bool(holder) and not mine and expires > now
+    if mine:
+        detail = "this process holds the lease"
+    elif other:
+        detail = (f"{holder} (on '{host}') holds the lease for another "
+                  f"{int((expires - now).total_seconds())}s")
+    elif holder:
+        detail = (f"{holder} (on '{host}') last held the lease; it expired "
+                  f"{int((now - expires).total_seconds())}s ago")
+    else:
+        detail = f"the lease is free (last held on '{host}')"
+    return LeaseView(holder, host, mine, other, True, detail)
+
+
 def release(sb=None) -> None:
     """Give up the lease on a clean shutdown so failover is immediate."""
     sb = sb or get_supabase()

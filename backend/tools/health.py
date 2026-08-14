@@ -231,41 +231,94 @@ def check_kite() -> tuple[bool, str]:
     #
     # kite_client forces v4 at import. This verifies the force actually took,
     # because a check that cannot fail is not a check.
+    # Host-scoped like everything else below it: DNS resolution is a property of
+    # the machine asking, so the message names it rather than implying the
+    # system as a whole resolves this way.
+    import socket as _sock
+    host = _sock.gethostname()
     try:
-        import socket
-        fams = {f for f, *_ in socket.getaddrinfo("api.kite.trade", 443)}
-        if socket.AF_INET6 in fams:
-            return False, ("api.kite.trade still resolves over IPv6 — orders will "
-                           "leave from a v6 address that Zerodha's IPv4-only "
-                           "allowlist can never match")
+        fams = {f for f, *_ in _sock.getaddrinfo("api.kite.trade", 443)}
+        if _sock.AF_INET6 in fams:
+            return False, (f"on '{host}', api.kite.trade still resolves over IPv6 "
+                           f"— orders from this machine would leave from a v6 "
+                           f"address that Zerodha's IPv4-only allowlist can never "
+                           f"match")
     except Exception:
         pass
 
     # An allowlist mismatch does not surface until an order is rejected, which
     # is mid-session, which is the worst time to discover it.
+    #
+    # BUT IT IS ONLY A MISMATCH ON THE MACHINE THAT PLACES ORDERS.
+    #
+    # This check ran on whatever host invoked it and reported its findings as
+    # though they described the system. They did not. Orders leave from ONE
+    # machine — the Oracle VCN, whose static public IP is correctly allowlisted.
+    # The laptop has a dynamic ISP address that changes on every reconnect and
+    # is allowlisted nowhere, deliberately. So run from the laptop this printed
+    #
+    #     public IP is 103.197.74.232 but only 103.197.75.33 is recorded as
+    #     allowlisted — order placement will be REJECTED from this machine
+    #
+    # which is literally true of the laptop and says nothing whatsoever about
+    # whether tomorrow's exits will fill. It was recorded as F-12, "the IP
+    # allowlist is stale RIGHT NOW, live, before tomorrow's open", and the four
+    # "distinct addresses" behind it across four sessions were four DHCP leases
+    # on a machine that has never sent an order.
+    #
+    # A wrong alarm is not a lesser fault than a missing one; it is the fault
+    # that teaches an operator to ignore this output. So the comparison is only
+    # EVALUATED where it means something, it always names the host it is talking
+    # about, and where it does not apply it says which machine it would apply to
+    # instead of going quiet.
     ip = ""
+    ip_note = ""
     try:
+        from execution.order_manager import host_permits_live
+        cfgrows = (sb.table("system_config").select("key,value")
+                     .in_("key", ["kite_allowlisted_ip", "live_order_host",
+                                  "intraday_lease_primary_host"])
+                     .execute().data or [])
+        conf = {r["key"]: (r.get("value") or "") for r in cfgrows}
+        # The SAME function preflight gates live orders on, not a second copy of
+        # the rule — a health check that disagrees with the gate it reports on is
+        # how you get a green board over a refused order.
+        order_host = (conf.get("live_order_host", "").strip()
+                      or conf.get("intraday_lease_primary_host", "").strip())
+        this_host_places_orders, _ = host_permits_live(host, order_host)
+
         import urllib.request
         ip = urllib.request.urlopen("https://api.ipify.org",
                                     timeout=8).read().decode().strip()
-        rows = (sb.table("system_config").select("value")
-                  .eq("key", "kite_allowlisted_ip").execute().data or [])
-        rec = (rows[0]["value"] if rows else "") or ""
         # TWO MACHINES, TWO IPs, ONE KEY.
         #
-        # The laptop and the Oracle server run the same daemon from different
-        # addresses, and Zerodha's console accepts SEVERAL allowlisted IPs. A
-        # single-valued key cannot describe that: with the laptop's address
-        # recorded here, this check fails on the server — telling the operator
-        # that orders will be REJECTED on the one machine where they actually
-        # work. So the key is a comma-separated list and this asks for
-        # membership, not equality.
-        allowed = [p.strip() for p in rec.split(",") if p.strip()]
-        if allowed and ip not in allowed:
-            return False, (f"public IP is {ip} but only {', '.join(allowed)} "
+        # Zerodha's console accepts SEVERAL allowlisted IPs, so the key is a
+        # comma-separated list and this asks for membership, not equality.
+        allowed = [p.strip() for p in conf.get("kite_allowlisted_ip", "").split(",")
+                   if p.strip()]
+
+        if order_host and not this_host_places_orders:
+            # Not the order-placing machine: this host's address cannot affect
+            # whether orders fill, so it is not compared. Note it and carry on —
+            # the broker's own verdict below is read from a table both machines
+            # share and IS meaningful from here, so returning early would trade
+            # one wrong answer for a missing one.
+            ip_note = (f", read-only from '{host}' ({ip or 'IP unknown'}) — this "
+                       f"machine does not place orders, so its address is not "
+                       f"compared against the allowlist; live orders go out from "
+                       f"'{order_host}'")
+        elif allowed and ip not in allowed:
+            return False, (f"'{host}' — the machine that places live orders — has "
+                           f"public IP {ip}, but only {', '.join(allowed)} "
                            f"{'is' if len(allowed) == 1 else 'are'} recorded as "
-                           f"allowlisted — order placement will be REJECTED from "
-                           f"this machine")
+                           f"allowlisted. Order placement will be REJECTED from "
+                           f"this address")
+        elif ip and allowed:
+            ip_note = (f", '{host}' places live orders and its IPv4 {ip} is in "
+                       f"recorded kite_allowlisted_ip")
+        elif ip:
+            ip_note = (f", IPv4 {ip} on '{host}' (no kite_allowlisted_ip recorded "
+                       f"to compare against)")
     except Exception:
         pass
 
@@ -313,8 +366,7 @@ def check_kite() -> tuple[bool, str]:
                        f"— cannot confirm orders are accepted")
 
     return True, (f"session live for {prof.get('user_id')}"
-                  + (f", IPv4 {ip} is in recorded kite_allowlisted_ip" if ip
-                     else ", IPv4 forced")
+                  + (ip_note or f", IPv4 forced on '{host}'")
                   + ", no broker config rejection today")
 
 

@@ -3195,3 +3195,287 @@ outranks the question it was sent to answer. Nothing on the trading path was
 changed; `tools.verify` is 434/434.
 
 ---
+
+## 2026-08-15 — R-2/R-3 (preflight identity + lease) — the IP check was watching the wrong machine; the guard it was reaching for is HOST IDENTITY, and F-11 is not hypothetical — a GitHub Actions runner placed a live SELL on 29-Jul and only Zerodha's allowlist stopped it
+
+**Branch:** `fix/preflight-lease-and-host`, off `main` (not off
+`fix/single-daemon-lease` — the two are independent and either may land first).
+`python -m tools.verify` → **all 462 checks passed across 56 modules** (434
+baseline + 28 new). `python -m tools.health` → **21/21**. `python -m
+tools.simulate` → clean, nothing written.
+
+---
+
+### 0 — THE CORRECTION THIS STARTS FROM, AND WHAT IT COST TO GET WRONG
+
+The operator's correction, in full: the Oracle VCN holds the lease and has a
+**static public IP that is correctly allowlisted**. The IP mismatches
+`tools.health` reported were the **laptop's dynamic ISP address**. It was
+checking the machine it ran on, not the machine that places orders.
+
+That invalidates **F-12** ("the IP allowlist is stale RIGHT NOW, live, before
+tomorrow's open") and the R-2 stage it proposed. The four "distinct addresses"
+across four sessions were four DHCP leases on a machine that has never sent an
+order. This session confirms the mechanism directly — from this laptop:
+
+```
+this host: Vipin                      kite_allowlisted_ip         = 103.197.75.33
+lease row: hostname 'tradeos-vcn'     intraday_lease_primary_host = tradeos-vcn
+public IP: 103.197.74.232             <- the laptop, still 103.197.74.x,
+                                         still not allowlisted, still irrelevant
+```
+
+**A wrong alarm is not a lesser fault than a missing one.** It is the fault that
+teaches an operator to ignore the output. `check_kite` produced a RED line about
+imminent live-trading failure every time it ran from the laptop, and the line was
+literally true and said nothing whatsoever about whether tomorrow's exits fill.
+No IP-vs-allowlist check was built here, by instruction and on the merits: it is
+meaningless from any host but the VCN and nearly always trivially true on it.
+
+---
+
+### 1 — WHAT WAS BUILT — TWO GUARDS, BOTH IN `preflight()`
+
+`preflight()` is where every order path in this codebase already converges, which
+is the only reason one edit covers the paths `run.py`'s startup lock does not.
+
+**Guard 1 — WHICH MACHINE (`host_permits_live`, pure).** Identity, not address.
+The question a machine can answer about *itself*, offline, correctly, from
+anywhere: am I the one that is supposed to be doing this? Correct on every host
+including the ones where an IP check is meaningless, and it does not decay when
+the ISP hands out a new lease. LIVE only — a paper fill never reaches the broker,
+so no address is involved, and refusing paper on the laptop would refuse the one
+thing a laptop is for.
+
+**Guard 2 — WHICH PROCESS (`lease_permits`, pure).** F-11. Reads the lease
+through a new `lease.observe()`, which is **the only function in `lease.py` that
+does not write** — `acquire()` and `renew()` both upsert, so calling either from
+preflight would have the pipeline *steal* the lease from the daemon it is meant
+to defer to. A test asserts `observe()` issues exactly `['select']` and raises on
+any write. Applies to BOTH modes: two processes writing the same paper position
+poisons the learning loop exactly as two live orders empty an account — the money
+differs, the doubling does not.
+
+**Ordering, as asked.** Host is free (one `socket` call) and sits above every
+check that costs a round trip; lease is one database read and sits below the
+session latches, above the three broker calls. Two tests assert this by pointing
+preflight at a fake broker that **raises on contact** — so "the guard fired before
+any broker call" is an assertion, not a claim. Pre-fix, both surfaced as
+`broker state unavailable: preflight reached the broker`.
+
+---
+
+### 2 — EXITS ARE NOT EXEMPT. THEY ARE HELD TO A WEAKER FORM OF THE SAME CHECK
+
+Stated explicitly because it was asked, and because exempting them was the
+tempting wrong answer:
+
+| lease state | BUY | SELL |
+|---|---|---|
+| this process holds it | allow | allow |
+| **another process holds it, UNEXPIRED** | refuse | **refuse** |
+| lapsed (holder named, expired) | refuse | **allow** |
+| free (clean `release()`) | refuse | **allow** |
+| unreadable (database failure) | refuse | **allow** |
+
+A blanket exit exemption would leave F-11 open on the exact path that has it —
+`position_lifecycle.main(manage=True)` sells, it does not buy. So exits are
+refused in the **one** state where refusing is safe: something else is
+demonstrably alive and will act on the position on its own cycle.
+
+**Why that makes a handover safe.** When an active daemon dies its lease is not
+transferred, it **lapses** — for up to `intraday_lease_ttl_seconds` (120) the row
+still names a holder that no longer exists. A symmetric check would spend that
+entire window refusing exits on behalf of a dead process: the wrong answer at the
+worst moment, and the same class of error as the daily-cap bug where exits were
+exempt from being *blocked* by the cap but not from *consuming* it. Here the lapse
+reads as `held_by_other=False` the instant it expires and the exit goes straight
+through, while an entry in that same state stays refused because nothing is
+watching the book. `observe()` also treats an **unreadable timestamp** as expired
+for this reason — a corrupt row must not be able to forbid every exit for as long
+as it stays corrupt — and separates "nobody holds it" from "I could not find
+out", which are opposite facts that a single empty holder would collapse into
+permission.
+
+---
+
+### 3 — F-11 IS NOT HYPOTHETICAL. IT FIRED ON 29-JUL, FROM A CLOUD RUNNER
+
+The previous session recorded F-11 as a path that *could* double an exit. The
+broker log says it already did. `intraday_broker_log`, PPLPHARMA SELL, 29-Jul
+(ts is UTC; IST in brackets):
+
+```
+07:27:32 [12:57 IST]  BLOCKED_PERMANENT  IP (52.159.247.226) is not allowed ...
+07:35:20 [13:05 IST]  BLOCKED_PERMANENT  IP (2402:e280:3e1a:670:...) is not allowed ...
+08:50:49 [14:20 IST]  BLOCKED_PERMANENT  IP (2402:e280:3e1a:670:...) is not allowed ...
+```
+
+`52.159.247.226` is a Microsoft **Azure** address — where GitHub-hosted runners
+live — and `2402:e280:...` is a residential IPv6 line. **One position, one
+afternoon, two different machines attempting the same live SELL.** Neither was
+the VCN.
+
+The Azure one has a name: `.github/workflows/pipeline_intraday.yml` runs
+`python -m control.position_lifecycle --manage-only --require-live` **every 30
+minutes during market hours**. Its own header says it *"Records state and alerts;
+**never places an order**"* — and `position_lifecycle.py:1691` places one,
+gated on `auto_exit_enabled("SWING")`, which is **armed right now**:
+
+```
+intraday_autonomy_phase = 4.0    intraday_orders_enabled = true
+swing_auto_exit         = true   swing_trading_mode      = LIVE
+```
+
+So the live book currently has a **third scheduled order-placing process** that
+holds no lease, is not the daemon, and runs from an address Zerodha will never
+accept. The only thing that has been preventing duplicate swing exits on that
+path is the IP allowlist rejecting it — an accidental safety net that R-2 as
+originally framed would have "fixed" by making the runner's orders go through.
+That is the strongest argument against the IP check and for this one.
+
+Both guards refuse that runner now, independently: wrong host **and** no lease.
+
+---
+
+### 4 — EACH TEST FAILED FIRST
+
+`tests/test_preflight_host_and_lease.py`, 28 checks, registered in
+`tools/verify.py::MODULES`. Demonstrated failing **twice**, deliberately:
+
+**(a) Against pre-change source** (`git stash` of `order_manager.py` +
+`lease.py`, test file kept) — **28 of 28 failed**, on `ImportError: cannot import
+name 'host_permits_live'` / `'lease_permits'` / `'LeaseView'` and
+`AttributeError: module 'intraday.lease' has no attribute 'observe'`.
+
+**(b) The demonstration that actually matters** — pure functions present, both
+guards' defaults flipped to `False` so the logic exists and is *not wired*:
+**7 of 28 failed**, and they are exactly the behavioural ones:
+
+```
+preflight refuses a live order from the wrong host   -> broker state unavailable: preflight reached the broker
+the wrong host is refused before the broker          -> AssertionError
+preflight refuses when another process holds lease   -> broker state unavailable: preflight reached the broker
+the lease guard also fires before the broker         -> AssertionError
+preflight refuses an entry through the same handover -> 5 SWING orders already placed today (cap 5)
+paper is NOT exempt from the lease check             -> broker state unavailable: preflight reached the broker
+both switches default ON                             -> must fall back to intraday_lease_primary_host and still fire
+```
+
+(b) is the one worth keeping. A pure function's correctness proves nothing about
+its callers — this project has been bitten by that four times in one feature —
+so the guards are asserted **through `preflight()` itself**, with the clock, kill
+switch, phase gate and broker all replaced by known answers so the tests stay
+offline and clock-free as `tests/__init__.py` requires. The suite also pins that
+each guard **can pass** (`the right host gets past the host guard`), because a
+check that cannot PASS is the same defect wearing a different hat.
+
+---
+
+### 5 — THE HEALTH CHECK NOW NAMES THE MACHINE
+
+`check_kite` calls **the same `host_permits_live()` preflight gates on**, not a
+second copy of the rule — a health check that disagrees with the gate it reports
+on is how you get a green board over a refused order. Before and after, same
+laptop, same minute:
+
+```
+x kite  public IP is 103.197.74.232 but only 103.197.75.33 is recorded as
+        allowlisted — order placement will be REJECTED from this address
+
+v kite  session live for DSY688, read-only from 'Vipin' (103.197.74.232) — this
+        machine does not place orders, so its address is not compared against
+        the allowlist; live orders go out from 'tradeos-vcn', no broker config
+        rejection today
+```
+
+**It can still fail.** Same code, same stale IP, asked as if it ran on the VCN
+(`socket.gethostname` patched to `tradeos-vcn`):
+
+```
+x kite  'tradeos-vcn' — the machine that places live orders — has public IP
+        103.197.74.232, but only 103.197.75.33 is recorded as allowlisted.
+        Order placement will be REJECTED from this address
+```
+
+Two things were deliberately **not** done. The first draft returned early on a
+non-order-placing host — which would have skipped the broker-verdict section
+below it and printed *"no broker config rejection today"* **without checking**,
+trading one wrong answer for a missing one. It now only skips the IP comparison
+and falls through, because `BLOCKED_PERMANENT` is read from a table both machines
+share and IS meaningful from any host. Second, the IPv6-resolution check now
+names the host too, for the same reason: DNS is a property of the machine asking.
+
+---
+
+### 6 — CONFIG, AND WHY IT IS LIVE BEFORE THE MIGRATION
+
+Migration **078** (not 077 — that number is taken on the unmerged
+`fix/single-daemon-lease` branch; the two are independent and may be applied in
+either order). Three keys, both switches **defaulting ON in code as well as in
+SQL**, because a guard inert until a migration runs is no guard at all on the day
+it ships:
+
+- `live_order_host_check` — bool, **true**
+- `live_order_host` — comma-separated hostname prefixes, seeded `tradeos-vcn`
+- `live_order_lease_check` — bool, **true**
+
+`live_order_host` falls back in code to `intraday_lease_primary_host`, which
+**already holds `tradeos-vcn` in the live book** — the machine that runs the
+daemon and the machine whose IP is allowlisted are the same machine by
+construction. So the host guard is correct the moment the code deploys, with no
+migration dependency. A test pins that fallback against an empty config, which is
+exactly the pre-migration state. **Empty means the check is ABSENT, not that
+everything is denied** — a blank key must not brick live trading on a fresh
+install, the same rule as the allocator's cold start.
+
+---
+
+### 7 — FOUND ALONG THE WAY
+
+**F-15 — `pipeline_intraday.yml`'s header contradicts the code it runs.** It
+says the step *"never places an order"*; `position_lifecycle.py:1691` places one,
+armed. Now blocked by both guards, but the comment is still wrong and the next
+person to read it will be misled the same way. Doc-only, not touched here.
+
+**F-16 — `TOTAL_CAPITAL` on this laptop is ₹30,000; the account is ₹20,000.**
+Printed on every command run this session (`Capital=₹30,000`). This is the
+2026-08-06 split brain that `check_daemon` already carries a check for — it
+stayed silent because `capital_snapshot` was last written by this same host, so
+the `who != gethostname()` condition never fired. The check compares against
+whoever wrote the snapshot, not against a declared truth, so a laptop that both
+writes and reads it can never disagree with itself. Not fixed — it is a check
+that cannot fail, of the exact kind this project keeps finding, and it deserves
+its own stage.
+
+**F-13 stands unchanged** (`renew()`'s primary override is still a mid-run steal
+path) and is now *more* relevant, not less: `_is_primary()` prefix-matches
+`intraday_lease_primary_host`, the same key this session made the host guard fall
+back to. A host renamed to start with `tradeos-vcn` would gain both the lease
+override and live-order rights in one step.
+
+---
+
+### 8 — NOT DONE
+
+- **Migration 078 has NOT been applied.** Migrations run against a live book;
+  applying one was not in this brief. Consequence is deliberate and stated in §6:
+  both guards are live on deploy regardless.
+- **No IP-vs-allowlist check was built**, by instruction and on the merits (§0).
+- **F-15 and F-16 recorded, not fixed.** F-16 in particular means every position
+  size computed on this laptop is 50% too large; it is not a code defect and a
+  one-line `.env` change fixes it, but it is live right now.
+- **Not exercised against two real concurrent processes.** The guards are
+  verified offline against fakes that enforce the contract. Confirming the
+  daemon still trades normally needs a live session on the VCN — the daemon holds
+  its own lease and runs on `tradeos-vcn`, so it passes both guards by
+  construction, but that is reasoning, not a measurement.
+
+**Gate: PASS** — both changes are in `preflight()` as specified, the exit/entry
+asymmetry is stated and tested rather than assumed, every test was demonstrated
+failing first (twice, the second time in the form that catches an unwired guard),
+`tools.verify` is 462/462, `tools.health` 21/21. Three live-money items found
+along the way (F-15 armed unguarded runner path, F-16 sizing split, F-13
+unchanged) are recorded and not silently fixed.
+
+---

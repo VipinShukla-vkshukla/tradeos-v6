@@ -230,6 +230,129 @@ def entry_reserved(n_today: int, now: datetime, max_before_cutoff: int,
     return False, ""
 
 
+def host_permits_live(this_host: str, recorded: str) -> tuple[bool, str]:
+    """
+    PURE — may a process on `this_host` place a LIVE order at all?
+
+    WHY THIS AND NOT AN IP CHECK
+    -----------------------------
+    The obvious guard is "is my public IP in Zerodha's allowlist", and it is the
+    wrong one. Order placement leaves from ONE machine — the Oracle VCN, which
+    has a static public IP that is correctly allowlisted. The laptop has a
+    dynamic ISP address that changes on every reconnect and is allowlisted
+    nowhere, by design. So an IP comparison run on the laptop reports a mismatch
+    that is true, alarming, and completely irrelevant: it is describing a machine
+    that does not place orders. Run on the VCN it is nearly always trivially
+    true. Neither reading is worth the alarm it raises.
+
+    The question actually worth asking is one machine can answer about ITSELF
+    with no network at all: am I the machine that is supposed to be doing this?
+    Identity, not address. It is correct on every host — including the ones where
+    an IP check is meaningless — and it does not decay when the ISP hands out a
+    new lease.
+
+    WHAT IT COSTS THE WRONG HOST
+    -----------------------------
+    Nothing it had. A live order from a non-allowlisted address is rejected by
+    Zerodha anyway; worse, order_manager reads that rejection as account-wide,
+    latches _blocked_account, and logs "EVERY ORDER ON THIS ACCOUNT IS NOW
+    BLOCKED" — a genuinely frightening line about a condition that exists only
+    inside that one stray process. Refusing locally converts a broker round trip
+    and a false alarm into one honest sentence.
+
+    `recorded` is a comma-separated list, matching kite_allowlisted_ip's shape,
+    because Zerodha's console does accept several addresses and a single-valued
+    key could not describe a two-machine setup — the exact bug tools.health
+    already carries a comment about. Each entry is a case-insensitive PREFIX
+    match on the hostname, the same idiom as lease._is_primary(), so a recorded
+    'tradeos-vcn' matches that host without exact-string fragility. Listing two
+    hosts is only honest if BOTH are allowlisted at the broker.
+
+    EMPTY MEANS ABSENT, NOT DENIED. A component with no data must be
+    indistinguishable from that component not being there — a blank key on a
+    fresh install must not brick live trading before the operator has been told
+    the key exists. The switch is the off lever; the value is not.
+    """
+    allowed = [p.strip().lower() for p in (recorded or "").split(",") if p.strip()]
+    if not allowed:
+        return True, ""
+    me = (this_host or "").strip().lower()
+    if any(me.startswith(a) for a in allowed):
+        return True, ""
+    return False, (
+        f"this machine is '{this_host}' — live orders may only be placed from "
+        f"{' or '.join(repr(a) for a in allowed)}, which is the host whose IP is "
+        f"allowlisted at the broker. Nothing has been sent. Open positions keep "
+        f"their resting GTT stops")
+
+
+def lease_permits(side: str, held_by_me: bool, held_by_other: bool,
+                  readable: bool, holder: str = "") -> tuple[bool, str]:
+    """
+    PURE — may this process act on the book, given who holds the daemon lease?
+
+    THE HOLE THIS CLOSES (F-11)
+    ----------------------------
+    position_lifecycle.main(manage=True) sells real shares through place() and
+    never consults the lease, the startup lock, or the daemon. Run from the
+    pipeline while the daemon is live, both processes evaluate the same exit and
+    both send it — every duplicate-suppression guard in this system
+    (_recent, _blocked, engine._recorded, Notifier._last) is in-memory and
+    per-process, so neither can see the other. preflight is where every order
+    path in the codebase converges, which makes it the only place a check like
+    this covers the paths a startup lock cannot.
+
+    ENTRIES AND EXITS ARE NOT HELD TO THE SAME BAR, DELIBERATELY
+    -------------------------------------------------------------
+    A lease check written once and applied to both sides would recreate this
+    module's oldest mistake in a new place: being unable to reduce risk is a
+    strictly worse failure than being unable to add it. So:
+
+      BUY  — requires this process to HOLD the lease. Not holding it, for any
+             reason, refuses. An entry is discretionary and nothing is lost by
+             declining it; and an unheld lease means no daemon is running, which
+             is exactly when new exposure should not be opened.
+
+      SELL — refused ONLY while a DIFFERENT process holds an UNEXPIRED lease.
+             That is the one state where refusing is safe, because it is the one
+             state where something else is demonstrably alive and will exit the
+             position on its own next cycle. Every other state — lease free,
+             lease expired, lease unreadable — lets the exit through.
+
+    That asymmetry is what makes a handover safe. When an active daemon dies its
+    lease is not transferred, it LAPSES: for up to lease_ttl_seconds the row
+    still names a holder that no longer exists. A symmetric check would spend
+    that entire window refusing exits on behalf of a process that is already
+    dead — precisely the wrong answer at precisely the wrong moment. Here the
+    lapse reads as `held_by_other=False` the instant it expires, and an exit
+    placed by hand or by the pipeline goes straight through. The 2026-08-06
+    stall (a starved loop that lost its lease mid-run) is this exact shape.
+
+    `readable=False` is a database failure, not an answer. It refuses entries —
+    an entry can wait for the next cycle — and permits exits, for the same
+    reason: unknown state must never be the thing that stops you closing a
+    position.
+    """
+    if held_by_me:
+        return True, ""
+    who = holder or "another process"
+    if held_by_other:
+        return False, (
+            f"{who} holds the daemon lease and is managing this book — it will "
+            f"act on this position on its own cycle. Two processes placing the "
+            f"same order is how one exit becomes two")
+    if (side or "").upper() == "SELL":
+        # Free, expired or unreadable: nothing else is demonstrably driving, so
+        # the exit is this process's job.
+        return True, ""
+    if not readable:
+        return False, ("could not read the daemon lease, so this process cannot "
+                       "confirm it is the one managing the book — refusing to "
+                       "open a new position on an unknown state")
+    return False, ("no process holds the daemon lease — nothing is watching the "
+                   "book, and a position opened now would be unmanaged")
+
+
 def preflight(req: OrderRequest, sb=None, framework: str = "SWING") -> OrderResult:
     """
     Every reason this order must not be sent. Cheap, and checked in order of severity.
@@ -238,6 +361,16 @@ def preflight(req: OrderRequest, sb=None, framework: str = "SWING") -> OrderResu
     accepted it, so every swing order was measured against the intraday rails —
     swing_max_order_value was configured, displayed on the panel, and never
     consulted by the code that blocks orders.
+
+    WHO IS ALLOWED TO BE HERE AT ALL — two checks, different scopes
+    ---------------------------------------------------------------
+    host  applies to LIVE orders only. It is about which machine's traffic the
+          BROKER accepts, and a paper fill never reaches the broker; blocking
+          paper on the laptop would refuse the one thing a laptop is for.
+    lease applies to BOTH modes. It is about which process is DRIVING a book,
+          and two processes writing the same paper position poisons the
+          learning loop exactly as two live orders empty an account — the
+          money differs, the doubling does not.
     """
     sb = sb or get_supabase()
 
@@ -255,6 +388,27 @@ def preflight(req: OrderRequest, sb=None, framework: str = "SWING") -> OrderResu
     if req.quantity <= 0:
         return OrderResult(False, None, f"quantity {req.quantity} is not positive", "QUANTITY")
 
+    # ── Is this machine allowed to place a LIVE order? ──────────────────────
+    # Free — one socket call, no network, no database — so it goes above every
+    # check that costs a round trip. A process that must not place this order
+    # should not first spend a price fetch, a holdings fetch and a margins fetch
+    # discovering that.
+    from config import cfg, cfg_bool
+    from execution.gates import is_paper
+    fw = (framework or "SWING").upper()
+    live = not is_paper(fw)
+    if live and cfg_bool("live_order_host_check", True):
+        import socket
+        # Falls back to intraday_lease_primary_host, which already names the
+        # machine that runs the daemon — the same machine by construction, and
+        # already set in this book. The dedicated key overrides it and is the
+        # truth if the two ever have to differ.
+        recorded = (cfg("live_order_host", "").strip()
+                    or cfg("intraday_lease_primary_host", "").strip())
+        ok, why = host_permits_live(socket.gethostname(), recorded)
+        if not ok:
+            return OrderResult(False, None, why, "WRONG_HOST")
+
     # A configuration rejection cannot be retried into success, so it is checked
     # BEFORE any broker call — an order that cannot be placed should not cost a
     # holdings fetch and a margins fetch every cycle to discover that again.
@@ -269,6 +423,19 @@ def preflight(req: OrderRequest, sb=None, framework: str = "SWING") -> OrderResu
                            f"blocked for this session — {_blocked[key][:140]}",
                            "BROKER_CONFIG")
 
+    # ── Is this PROCESS the one driving this book? (F-11) ───────────────────
+    # One database read, so it sits below the free checks and the session
+    # latches and above the three broker round trips. observe() is deliberately
+    # the only read-only function in lease.py: calling acquire() here would have
+    # the pipeline STEAL the lease from the daemon it is meant to defer to.
+    if cfg_bool("live_order_lease_check", True):
+        from intraday import lease
+        view = lease.observe(sb)
+        ok, why = lease_permits(req.side, view.held_by_me, view.held_by_other,
+                                view.readable, view.holder)
+        if not ok:
+            return OrderResult(False, None, why, "NOT_LEASE_HOLDER")
+
     px = req.price
     if px is None:
         try:
@@ -279,7 +446,6 @@ def preflight(req: OrderRequest, sb=None, framework: str = "SWING") -> OrderResu
     if not px:
         return OrderResult(False, None, "no price available to value the order", "NO_PRICE")
 
-    fw = (framework or "SWING").upper()
     value = px * req.quantity
     # The per-order cap guards against a SIZING bug, which is an entry concern:
     # an exit's quantity is not computed from capital, it is what you already
