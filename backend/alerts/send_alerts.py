@@ -158,7 +158,7 @@ from loguru import logger
 from config import (
     get_supabase, today_ist, is_kill_switch_active,
     cfg, cfg_bool, DRY_RUN,
-    TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
+    TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, fetch_all,
 )
 
 # ── PATCH 1: entry_readiness import ───────────────────────────────────────
@@ -1036,10 +1036,9 @@ def load_data(sb, today: str) -> dict:
     lessons_ai = lessons_rb = 0
     try:
         lesson_rows = (
-            sb.table("lessons")
+            fetch_all(lambda: sb.table("lessons")
               .select("source")
-              .gte("date", str(today_ist() - timedelta(days=7)))
-              .execute().data
+              .gte("date", str(today_ist() - timedelta(days=7))))
         )
         lessons_ai = sum(1 for r in lesson_rows if "AI:" in (r.get("source") or ""))
         lessons_rb = sum(1 for r in lesson_rows if "RULE" in (r.get("source") or "").upper())

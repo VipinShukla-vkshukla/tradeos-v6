@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import get_supabase, DRY_RUN, is_kill_switch_active
+from config import get_supabase, DRY_RUN, is_kill_switch_active, fetch_all
 
 
 def _hdr(t: str) -> None:
@@ -98,9 +98,13 @@ def engine_report(sb) -> None:
     """
     _hdr("INTRADAY ENGINE SCORECARD (resolved outcomes)")
     from collections import defaultdict
-    rows = (sb.table("intraday_setups")
-              .select("strategy,cost_verdict,outcome,outcome_pct,confidence")
-              .execute().data or [])
+    # PAGED — this read has NO date filter at all, so it is the whole table
+    # (8324 rows on 15-Aug-2026) and was returning an arbitrary 1000 of them.
+    # This is the read-only preview CLAUDE.md tells you to run before changing
+    # anything, so a scorecard computed from a silently truncated twelfth of
+    # the evidence is the worst possible place for this defect to hide.
+    rows = fetch_all(lambda: sb.table("intraday_setups")
+                     .select("strategy,cost_verdict,outcome,outcome_pct,confidence"))
     done = [r for r in rows if r.get("outcome")]
     if not done:
         logger.info("  no resolved outcomes yet — they are written at session close")

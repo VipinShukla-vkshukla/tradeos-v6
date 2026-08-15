@@ -131,7 +131,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import get_supabase, today_ist, is_kill_switch_active, logger
-from config import cfg, cfg_float, cfg_int
+from config import cfg, cfg_float, cfg_int, fetch_all
 
 # ── AI_KEYS: load once at module level ────────────────────────────────────────
 try:
@@ -272,12 +272,11 @@ def load_existing_lessons(sb, strategy: str, sector: str,
     """
     try:
         cutoff = (today_ist() - timedelta(days=DEDUP_WINDOW_DAYS)).isoformat()
-        rows = (sb.table("lessons")
+        rows = fetch_all(lambda: sb.table("lessons")
                   .select("id,corrective_rule,confidence,times_applied,scenario_context")
                   .eq("impacted_sector", sector)
                   .eq("is_active", True)
-                  .gte("date", cutoff)
-                  .execute().data)
+                  .gte("date", cutoff))
         # Filter for same strategy + scenario_type in scenario_context
         return [r for r in rows
                 if strategy in (r.get("scenario_context") or "")
@@ -696,13 +695,12 @@ def _find_applicable_lessons(sb, trade: dict, signal_ctx: dict,
 
     # ── Match 1: exact symbol ──
     try:
-        rows = (
+        rows = fetch_all(lambda:
             sb.table("lessons")
               .select("id,corrective_rule,scenario_type,impacted_sector,"
                       "times_applied,times_worked,confidence,scenario_context,source")
               .eq("is_active", True)
               .contains("linked_symbols", [sym])
-              .execute().data
         )
         for r in rows:
             if r["id"] not in seen_ids:
@@ -714,13 +712,12 @@ def _find_applicable_lessons(sb, trade: dict, signal_ctx: dict,
     # ── Match 2: sector + signal_type context ──
     if sector:
         try:
-            rows = (
+            rows = fetch_all(lambda:
                 sb.table("lessons")
                   .select("id,corrective_rule,scenario_type,impacted_sector,"
                           "times_applied,times_worked,confidence,scenario_context,source")
                   .eq("is_active", True)
                   .ilike("impacted_sector", f"%{sector}%")
-                  .execute().data
             )
             for r in rows:
                 if r["id"] not in seen_ids:
@@ -1403,21 +1400,19 @@ def main():
         return {"status": "ok", "analyzed": 0}
 
     # ── Existing lesson dedup check (by scenario_context prefix) ─────────────
-    existing_sc = (sb.table("lessons")
+    existing_sc = fetch_all(lambda: sb.table("lessons")
                      .select("scenario_context")
-                     .gte("date", cutoff)
-                     .execute().data)
+                     .gte("date", cutoff))
     analyzed_prefixes = {(r.get("scenario_context") or "")[:20] for r in existing_sc}
 
     # ── AI budget gating (v1 logic retained) ─────────────────────────────────
     max_stocks    = cfg_int("ai_max_stocks_per_day", 20)
     daily_budget  = cfg_float("ai_daily_budget_inr", 200.0)
     today_str     = str(today_ist())
-    todays_ai     = (sb.table("lessons")
+    todays_ai     = fetch_all(lambda: sb.table("lessons")
                        .select("id")
                        .like("source", "AI:%")
-                       .gte("date", today_str)
-                       .execute().data)
+                       .gte("date", today_str))
     ai_count      = len(todays_ai)
     active_prov   = cfg("ai_provider", "disabled").lower()
     cost_per_call = PROVIDER_COST_INR.get(active_prov, 0.30)

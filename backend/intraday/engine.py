@@ -956,6 +956,9 @@ class IntradayEngine:
 
         yesterday = (today_ist() - timedelta(days=1)).isoformat()
         try:
+            # paging-exempt: ONE day AND cost_verdict=BLOCKED_SHORTABILITY —
+            # 15 rows for 14-Aug-2026, against 2289 detections that session.
+            # The day filter alone would NOT be enough on this table.
             rows = (self.sb.table("intraday_setups").select("symbol,meta")
                       .eq("trade_date", yesterday)
                       .eq("cost_verdict", "BLOCKED_SHORTABILITY")

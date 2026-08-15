@@ -49,7 +49,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import IST, cfg_float, get_supabase, today_ist
+from config import IST, cfg_float, get_supabase, today_ist, fetch_all
 
 # A cluster must recur before it is a pattern. Below this it is an anecdote, and
 # anecdotes are what backtests are made of.
@@ -141,7 +141,11 @@ def refused_but_right(sb, days: int) -> int:
     """
     _hdr(f"A · REFUSED BUT RIGHT — gates that decline winners ({days}d)")
     since = (today_ist() - timedelta(days=days)).isoformat()
-    rows = (sb.table("intraday_setups")
+    # PAGED — 8324 rows in this window on 15-Aug-2026, 1000 returned. Pass A
+    # compares the REFUSED population against the taken one; truncating it
+    # biases both sides toward the oldest sessions and MIN_OCCURRENCES = 6 is
+    # then cleared, or missed, on evidence that was never read.
+    rows = fetch_all(lambda: sb.table("intraday_setups")
               # symbol, trade_date and ts are the de-duplication key. Without
               # them this pass counted evaluation ticks: LALPATHLAB/RNG wrote 52
               # rows for ONE setup on 28 July, and MIN_OCCURRENCES = 6 was
@@ -150,7 +154,7 @@ def refused_but_right(sb, days: int) -> int:
               # repeating is worse than one that does not run.
               .select("strategy,cost_verdict,outcome,outcome_pct,phase,confidence,"
                       "symbol,trade_date,ts,risk_pct")
-              .gte("trade_date", since).execute().data or [])
+              .gte("trade_date", since))
     from tools.weekly_review import dedupe_setups, _tradeable_floor
     raw_n = len([r for r in rows if r.get("outcome")])
     done = [r for r in dedupe_setups(rows) if r.get("outcome")]
@@ -270,9 +274,16 @@ def moved_but_unseen(sb, days: int) -> int:
         return 0
     logger.info(f"  {len(bars)} symbol-days loaded for {len(universe)} universe names")
 
+    # PAGED — and here the cap did not merely weaken the answer, it INVERTED
+    # this tool's purpose. `seen` is the set of symbols an engine already
+    # detected, and every symbol missing from it becomes a "moved but unseen"
+    # discovery candidate. Truncated to 1000 of 8324 rows, ~7300 detections
+    # vanish from `seen`, so names the engines DID fire on are reported as
+    # opportunities they missed — the tool manufactures its own findings, and
+    # the more the engines detect the more it invents.
     seen = defaultdict(set)      # trade_date -> symbols any engine detected
-    for r in (sb.table("intraday_setups").select("symbol,trade_date")
-                .gte("trade_date", since).execute().data or []):
+    for r in fetch_all(lambda: sb.table("intraday_setups").select("symbol,trade_date")
+                       .gte("trade_date", since)):
         seen[str(r.get("trade_date"))].add(r.get("symbol"))
 
     # Previous close per symbol, so the gap is knowable at the open.

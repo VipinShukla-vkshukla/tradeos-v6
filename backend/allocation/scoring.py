@@ -52,7 +52,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import cfg_bool, cfg_float, cfg_int, get_supabase, today_ist
+from config import (cfg_bool, cfg_float, cfg_int, get_supabase, today_ist,
+                    fetch_all)
 
 
 PAGE = 1000
@@ -161,9 +162,14 @@ def intraday_priors(sb, rows: list[dict] | None = None) -> dict[str, Prior]:
         from datetime import timedelta
         since = (today_ist() - timedelta(days=lookback)).isoformat()
 
-    rows, off = [], 0
-    while True:
-        page = (sb.table("intraday_setups")
+    # SORTED PAGING, via the shared primitive. This loop paged on .range()
+    # alone, and LIMIT/OFFSET without ORDER BY has no stable row order across
+    # requests: pages can repeat rows and skip others. Measured on this table
+    # 15-Aug-2026, 8324 matching rows came back as 8324 rows / 5000 distinct.
+    # A prior is a MEAN over these rows, so duplicates silently reweight it
+    # toward whichever observations the planner happened to repeat.
+    def _build():
+        q = (sb.table("intraday_setups")
                   # symbol and trade_date are NOT decoration: they are two of
                   # the three fields _intraday_priors_from_rows() dedups on.
                   # Omitted, r.get() returns None for both, every row of one
@@ -181,13 +187,9 @@ def intraday_priors(sb, rows: list[dict] | None = None) -> dict[str, Prior]:
                   .select("symbol,trade_date,strategy,outcome,outcome_pct,"
                           "entry,stop,direction,cost_verdict,cost_pct")
                   .not_.is_("outcome_pct", "null"))
-        if since:
-            page = page.gte("trade_date", since)
-        page = (page.range(off, off + PAGE - 1).execute().data) or []
-        rows += page
-        if len(page) < PAGE:
-            break
-        off += PAGE
+        return q.gte("trade_date", since) if since else q
+
+    rows = fetch_all(_build, page=PAGE)
     return _intraday_priors_from_rows(rows, floor)
 
 
@@ -1072,19 +1074,13 @@ def regime_fit_report(sb=None) -> int:
     """
     sb = sb or get_supabase()
     floor = cfg_int("priors_min_sample_intraday", 30)
-    rows, off = [], 0
-    while True:
-        page = (sb.table("intraday_setups")
-                  .select("strategy,outcome_pct,entry,stop,direction,cost_pct,"
-                          "cost_verdict,regime_at_detection")
-                  .not_.is_("outcome_pct", "null")
-                  .eq("cost_verdict", "TAKEN")
-                  .not_.is_("regime_at_detection", "null")
-                  .range(off, off + PAGE - 1).execute().data) or []
-        rows += page
-        if len(page) < PAGE:
-            break
-        off += PAGE
+    # Sorted paging — same reason as intraday_priors above.
+    rows = fetch_all(lambda: sb.table("intraday_setups")
+                     .select("strategy,outcome_pct,entry,stop,direction,cost_pct,"
+                             "cost_verdict,regime_at_detection")
+                     .not_.is_("outcome_pct", "null")
+                     .eq("cost_verdict", "TAKEN")
+                     .not_.is_("regime_at_detection", "null"), page=PAGE)
 
     logger.info("═" * 74)
     logger.info("REGIME FIT REPORT — mean R by (archetype, regime_at_detection).")

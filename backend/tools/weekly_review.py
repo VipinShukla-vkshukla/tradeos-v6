@@ -454,10 +454,15 @@ def review_gates(sb, days: int = 14) -> list:
     """
     _hdr(f"GATES — did refusing turn out to be correct? ({days}d)")
     since = (today_ist() - timedelta(days=days)).isoformat()
-    rows = (sb.table("intraday_setups")
+    # PAGED, for the same reason review_engines is — 8324 rows in the window,
+    # 1000 returned, biased toward the oldest sessions. This function decides
+    # whether a REFUSAL was correct, and loosening a gate is a one-way door
+    # toward more risk; deciding that on a twelfth of the evidence, weighted
+    # away from the recent sessions, is the worst shape that error can take.
+    rows = fetch_all(lambda: sb.table("intraday_setups")
               # symbol, strategy and ts are the dedupe key — see review_engines.
               .select("cost_verdict,outcome,trade_date,risk_pct,symbol,strategy,ts")
-              .gte("trade_date", since).execute().data or [])
+              .gte("trade_date", since))
     # Same de-duplication as review_engines, for the same reason: a gate that
     # refused one setup forty times refused one setup.
     done = [r for r in dedupe_setups(rows) if r.get("outcome")]

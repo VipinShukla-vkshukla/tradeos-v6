@@ -64,7 +64,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config import (
     get_supabase, today_ist, IST,
     is_kill_switch_active, logger,
-    get_trade_date,
+    get_trade_date, fetch_all,
 )
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
@@ -638,11 +638,10 @@ def c15_lesson_freshness(sb, td):
     """
     cutoff = str((datetime.strptime(td, "%Y-%m-%d") - timedelta(days=LESSON_STALE_DAYS)).date())
     rows = (
-        sb.table("lessons")
+        fetch_all(lambda: sb.table("lessons")
           .select("date,source")
           .gte("date", cutoff)
-          .like("source", "AI:%")
-          .execute().data
+          .like("source", "AI:%"))
     )
     ai_lessons = len(rows)
     ok = ai_lessons > 0

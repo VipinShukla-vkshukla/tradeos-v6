@@ -30,7 +30,7 @@ import pandas as pd
 from loguru import logger
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config import get_supabase, cfg, cfg_float
+from config import get_supabase, cfg, cfg_float, fetch_all
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -144,12 +144,15 @@ def _compute_forward_returns(sb, signals: pd.DataFrame,
     all_price_rows = []
     for i in range(0, len(symbols), 250):
         chunk = symbols[i:i+250]
-        rows = (sb.table("stock_data_daily")
+        # PAGED — see performance_tracker: the 250-symbol chunk bounds the
+        # IN list, not the row count. 250 symbols x 60 days is 10,712 rows and
+        # 1000 came back, so 91% of the price history this aggregates was never
+        # read. Nothing raised; the frame was simply short.
+        rows = fetch_all(lambda: sb.table("stock_data_daily")
                   .select("date,symbol,close,high,low")
                   .in_("symbol", chunk)
                   .gte("date", str(min_date))
-                  .lte("date", str(max_date))
-                  .execute().data)
+                  .lte("date", str(max_date)))
         all_price_rows.extend(rows)
 
     if not all_price_rows:

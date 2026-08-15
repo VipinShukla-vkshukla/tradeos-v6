@@ -1289,6 +1289,18 @@ class _StubQuery:
     @property
     def not_(self): return self
 
+    def order(self, col, *a, **k):
+        """Paged reads sort on a unique key (config.fetch_all, 15-Aug-2026).
+
+        Without this the probe raised AttributeError inside hurdle()'s own
+        `except`, which falls back to the cold-start bar — so this check went
+        red reporting "-inf, under the floor", i.e. a symptom three steps
+        downstream of a missing stub method. It caught the breakage, which is
+        the check working; the message just pointed at the clamp rather than
+        at the read that never happened.
+        """
+        return self
+
     def range(self, start, end):
         return _StubExec(self._rows[start:end + 1])
 

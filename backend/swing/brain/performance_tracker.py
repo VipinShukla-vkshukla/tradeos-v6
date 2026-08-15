@@ -42,7 +42,7 @@ import pandas as pd
 from loguru import logger
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config import get_supabase, cfg, cfg_float
+from config import get_supabase, cfg, cfg_float, fetch_all
 
 
 def _pearson(a: pd.Series, b: pd.Series) -> Optional[float]:
@@ -79,11 +79,12 @@ def _load_outcomes_for_date_range(sb, signal_date_min: date,
     Load signal_log with forward returns from stock_data_daily for a date range.
     Returns enriched DataFrame with outcome_win, max_fwd_return.
     """
-    rows = (sb.table("signal_log")
+    # PAGED — 3676 signal_log rows in a 90-day window, 1000 returned. This is
+    # the denominator of every performance metric the brain reports.
+    rows = fetch_all(lambda: sb.table("signal_log")
               .select("*")
               .gte("date", str(signal_date_min))
-              .lte("date", str(signal_date_max))
-              .execute().data)
+              .lte("date", str(signal_date_max)))
     if not rows:
         return pd.DataFrame()
 
@@ -99,12 +100,16 @@ def _load_outcomes_for_date_range(sb, signal_date_min: date,
     all_rows = []
     for i in range(0, len(symbols), 250):
         chunk = symbols[i:i+250]
-        pr = (sb.table("stock_data_daily")
+        # PAGED. The chunk size of 250 is sized for the IN-list limit, NOT the
+        # row cap — 250 symbols across a 60-day window is 10,712 rows, of which
+        # 1000 came back. 91% of the forward prices every outcome is scored
+        # against were silently missing, and a symbol whose rows fell outside
+        # the returned 1000 simply had no forward return at all.
+        pr = fetch_all(lambda: sb.table("stock_data_daily")
                 .select("date,symbol,close")
                 .in_("symbol", chunk)
                 .gte("date", str(signal_date_min))
-                .lte("date", str(look_end))
-                .execute().data)
+                .lte("date", str(look_end)))
         all_rows.extend(pr)
 
     if not all_rows:

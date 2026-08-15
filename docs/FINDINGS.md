@@ -4808,3 +4808,200 @@ question answered at scale with both of the brief's input numbers restated in on
 unit; no retirement recommended.
 
 ---
+
+## 2026-08-15 — F-19 follow-up (the cap, everywhere else) — 14-Aug is scored; the same unpaged idiom was on eleven more readers, the worst losing 91% of the price history every swing outcome is scored against, and a static check now fails the next one
+
+**Branch:** `fix/outcomes-resolve-gap` (continued). `python -m tools.verify` →
+**all 501 checks passed across 58 modules**. `python -m tools.health` → **21/21,
+fully green** — `learning` now reads `every past session scored (8324 resolved
+outcomes on hand)`. `python -m tools.simulate` → SWING LIVE 6 positions, 8
+buyable plans, unchanged.
+
+---
+
+### 0 — THE BACKFILL LANDED
+
+Operator refreshed the Kite token and ran the backfill. Confirmed against the
+live book, not reported from the command's own output:
+
+```
+total rows in intraday_setups   8324
+unresolved (all dates)             0
+2026-08-14  total 2289   unresolved 0
+outcomes.unresolved_days()        []
+```
+
+`health` also demonstrates the F-21 fix: its success line reads **8324**, a
+number that moves. Before, it was `len()` of a `.limit(1000)` read and would
+have said "1000" forever.
+
+### 1 — THE QUESTION THIS STAGE ANSWERS
+
+Fixing six readers does not stop the seventh being written, and it says nothing
+about the readers of the *other* nine tables past the cap. So: which unpaged
+reads are actually truncating today, and what stops the next one?
+
+Every table counted, not guessed:
+
+```
+stock_data_daily 55963 · chartink_raw_data 41496 · allocation_decisions 20873
+industry_strength 9382 · intraday_setups 8324 · master_shortlist 7212
+signal_log 4563 · sector_strength 2716 · signal_output_daily 2430 · lessons 1114
+```
+
+Ten tables over the cap, 173 unpaged reads across them. But most filter to one
+day, so the decisive measurement is **rows in the busiest single day**:
+
+```
+intraday_setups   2289   <== the only table over the cap in ONE day
+stock_data_daily   501
+chartink_raw_data  501
+master_shortlist   100 · industry_strength 83 · signal_output_daily 82
+signal_log          82 · lessons 36 · sector_strength 23
+```
+
+That is what makes this tractable. A `.eq("date", …)` read is bounded evidence
+everywhere except `intraday_setups`, so ~80 of the 173 sites needed nothing.
+
+### 2 — WHAT WAS ACTUALLY TRUNCATING
+
+Eleven readers, each measured before being touched.
+
+| reader | got | should get | lost |
+|---|---|---|---|
+| `data_aggregator` prices | 1000 | 10712 | **91%** |
+| `performance_tracker` prices | 1000 | 10712 | **91%** |
+| `simulate` engine scorecard | 1000 | 8324 | 88% |
+| `weekly_review.review_gates` | 1000 | 8324 | 88% |
+| `discover_engines` pass A | 1000 | 8324 | 88% |
+| `discover_engines` pass B | 1000 | 8324 | 88% |
+| `performance_tracker` signal_log | 1000 | 3676 | 73% |
+| `lessons` × 5 (AI + alerts + DQM) | 1000 | 1102 | 9% |
+
+**The two 91% losses are the worst thing found in this stage.** Both chunk
+`in_("symbol", chunk)` at 250 — a size chosen for PostgREST's IN-list limit,
+which has nothing to do with the row cap. 250 symbols across a 60-day window is
+10,712 rows and 1000 came back. That is the forward-price history *every swing
+outcome is scored against*, and a symbol whose rows fell outside the returned
+1000 simply had no forward return at all. Nothing raised; the frame was short.
+
+**`discover_engines` pass B is the one whose failure inverts the tool.** `seen`
+is the set of symbols an engine already detected, and every symbol *missing*
+from it becomes a "moved but unseen" discovery candidate. Truncated, ~7,300
+detections vanish from `seen`, so names the engines *did* fire on get reported
+as opportunities they missed. The tool manufactures its own findings, and the
+better the engines get the more it invents.
+
+`simulate` is the read-only preview CLAUDE.md tells you to run before changing
+anything. Its scorecard was an arbitrary twelfth of the book.
+
+### 3 — THREE HAND-ROLLED PAGERS THAT PAGED WITHOUT SORTING
+
+`hurdle.py` and `scoring.py` (×2) already paged — and none of them called
+`.order()`. That is the §4 defect from the previous entry, sitting in
+production code, including on the population the allocator's bar is a
+percentile of.
+
+Checked live: they came back clean this time (INTRADAY 1163/1163 distinct,
+SWING 19710/19710). **That is not a property to rest a live gate on.** The same
+idiom demonstrably broke on `intraday_setups` — 8324 rows, 5000 distinct — and
+the SWING window is 19,710 rows, twenty pages, taken while the allocator is
+flushing new verdicts into the same table, which is exactly when offset paging
+drifts. All three now go through `config.fetch_all`, which is a net deletion.
+
+One trap in doing it: `hurdle.py`'s local helper was itself named `fetch_all`,
+so importing the shared one shadowed it and the pooled-retry call
+`fetch_all(filtered=False)` would have hit the new signature. Renamed to
+`_page`; caught by grepping the callers, not by the tests.
+
+### 4 — THE CHECK THAT STOPS THE NEXT ONE
+
+`tests/test_static_analysis.py::test_no_unpaged_read_of_a_table_that_exceeds_
+the_row_cap`. A read of a table known to exceed the cap must page, bound itself
+(`.limit`/`.single`/`count=`), or carry an explicit `paging-exempt: <why>`
+marker. The marker is deliberate friction — it makes an exemption a reviewed
+decision rather than an omission nobody noticed.
+
+**Demonstrated failing** by reverting `simulate.py` to the unpaged form:
+
+```
+guard FIRED as it should:
+  tools/simulate.py:106 reads intraday_setups unpaged and unbounded
+```
+
+Two ways it was built so it cannot pass vacuously:
+
+- It asserts `scanned > 40` first. A regex that stops recognising this
+  codebase's query style would otherwise report zero violations forever —
+  the exact shape of the five dead health checks this project has already
+  found.
+- Its first draft *did* misreport: after a read was converted to `fetch_all`
+  the statement has no `.execute()` of its own, so the regex ran past the end
+  and latched onto the next one in the file, re-flagging work already done.
+  A check that cries wolf about completed fixes is one that gets muted. Fixed
+  by treating a preceding `fetch_all(` as paged.
+
+Four reads are exempt, each carrying its measurement: `.eq("id", …)` on
+`signal_log` (one row, ×2), `ml_provider`'s resolved WIN/LOSS population (12
+rows), and `engine.py`'s runway requeue (15 rows — one day AND
+`cost_verdict=BLOCKED_SHORTABILITY`; the day filter alone would *not* be enough
+on that table).
+
+### 5 — THE FAKES, AGAIN (F-22 THREE MORE TIMES)
+
+`fetch_all` calls `.order()`, and 14 test fakes plus `health.py`'s own
+`_StubQuery` did not have it. None of them failed loudly:
+
+- The 14 test fakes raised `AttributeError` — 25 of 500 checks red, which is
+  the good case.
+- `health.py::_StubQuery` raised *inside* `hurdle()`'s own `except`, which
+  falls back to the cold-start bar. So `check_allocator_hurdle` went red
+  reporting `the bar came back -inf, under the floor 0.0` — a symptom three
+  steps downstream of a missing stub method. The check caught the breakage,
+  which is it working; the message just pointed at the clamp rather than at
+  the read that never happened.
+
+All 15 now have `.order()`, with the reason recorded in each.
+
+### 6 — MEASURED AFTER
+
+```
+consumer                       before   after
+simulate scorecard               1000    8324
+weekly review_engines            1000    8324
+weekly review_gates              1000    8324
+discover_engines A+B             1000    8324
+AI lessons (is_active)           1000    1102
+```
+
+The intraday scorecard now reads over the whole book, and it is not a cosmetic
+change: SDN 4567 detections at 17%, ORB 1833 at 4%, VWR 1050 at 18%. Four
+engines carry a `<- review` flag that the truncated view could not have
+supported either way.
+
+### 7 — NOT DONE
+
+- **`swing/ingestion/ingest_sheets - Copy.py` is dead code in the tree.**
+  Nothing imports it (checked across `backend/`, `.github/`, `tradeos.cmd`).
+  Excluded from the scanner by name rather than annotated, because putting a
+  considered paging exemption into dead code implies the code is live. **It
+  should be deleted — that is the operator's call, not a check's.**
+- **The engine scorecard's numbers are now trustworthy and have not been
+  acted on.** Four engines flagged `<- review` on the full population is a
+  weekly-review decision, not this stage's.
+- **Nothing addresses why 14-Aug produced 2289 detections** against 28-Jul's
+  236. Still the open question from the previous entry, and still what pushed
+  every reader past the cap in the first place.
+- **`outcomes_watch` still has not fired.** Unchanged from the previous entry;
+  first proof is its 09:00 IST run.
+
+**Gate: PASS** — backfill confirmed complete against the live book rather than
+from the command's output, every remaining exposure measured before being
+touched, eleven truncating readers repaired including two losing 91% of the
+swing book's price history, three production pagers that sorted on nothing now
+sorted, and a static check — demonstrated failing, and guarded against passing
+vacuously — that fails the next unpaged read instead of waiting for a session
+to stumble on it. `tools.verify` 501/501, `tools.health` 21/21, `tools.simulate`
+unchanged.
+
+---

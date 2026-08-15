@@ -31,6 +31,22 @@ class _Q:
         q._eq = {**self._eq, col: val}
         return q
 
+    def order(self, col, *a, **k):
+        """Paged reads sort on a unique key (config.fetch_all, 15-Aug-2026).
+
+        LIMIT/OFFSET with no ORDER BY has no stable row order between
+        requests, so pages repeat rows and drop others — 8324 matching rows
+        came back as 5000 distinct on the live book. A fake without this
+        method does not fail loudly: the AttributeError is swallowed by the
+        caller's non-fatal except, or turns a paged fetch into an empty list,
+        which is how test_setup_rehydration silently lost 4 of 7 checks.
+        """
+        try:
+            self._rows.sort(key=lambda r: (r.get(col) is None, r.get(col)))
+        except (AttributeError, TypeError):
+            pass
+        return self
+
     def range(self, a, b):
         rows = self.r
         for c, v in self._eq.items():

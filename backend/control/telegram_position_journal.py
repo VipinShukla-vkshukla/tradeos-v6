@@ -135,6 +135,7 @@ def record_entry(sb, symbol: str, signal_id: int | None,
     trade_date = str(today_ist())
     sig = {}
     if signal_id:
+        # paging-exempt: .eq("id", ...) on the primary key — at most one row.
         rows = sb.table("signal_log").select("*").eq("id", signal_id).execute().data
         sig = rows[0] if rows else {}
     if not sig:

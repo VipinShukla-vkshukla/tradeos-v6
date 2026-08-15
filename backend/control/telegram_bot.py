@@ -158,6 +158,7 @@ def process_telegram_commands():
 def _handle_approval(signal_id: str, sb) -> None:
     """Execute an approved signal."""
     try:
+        # paging-exempt: .eq("id", ...) on the primary key — at most one row.
         signals = sb.table("signal_log").select("*").eq("id", signal_id).execute().data
         if not signals:
             send_message(f"Signal {signal_id} not found.")

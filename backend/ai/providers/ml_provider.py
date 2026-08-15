@@ -255,6 +255,9 @@ def train_model():
             return False
 
         # All signal_log rows with outcomes (WIN or LOSS)
+        # paging-exempt: resolved WIN/LOSS only — 12 rows on 15-Aug-2026, and
+        # the swing book has 70 closed trades in total. Re-measure before
+        # assuming it stays small; the ML model is trained on exactly this.
         signals = (
             sb.table("signal_log")
             .select("*")

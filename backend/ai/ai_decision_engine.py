@@ -81,7 +81,7 @@ from pathlib import Path
 from loguru import logger
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import get_supabase, today_ist, is_kill_switch_active, cfg, cfg_float, cfg_int, get_trade_date
+from config import get_supabase, today_ist, is_kill_switch_active, cfg, cfg_float, cfg_int, get_trade_date, fetch_all
 
 DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
 
@@ -540,12 +540,15 @@ def load_context(sb, trade_date: str) -> dict:
             )
 
     # ── Lessons — sorted by live confidence ──
+    # PAGED — 1102 active lessons on 15-Aug-2026 against a 1000-row cap, so
+    # 102 of them were invisible to the model and which 102 was up to the
+    # planner. The comment below is right that Python sorts and limits; it
+    # cannot sort what the server never sent.
     lesson_rows = (
-        sb.table("lessons")
+        fetch_all(lambda: sb.table("lessons")
           .select("id,corrective_rule,scenario_type,impacted_sector,"
                   "times_applied,times_worked,confidence,source")
-          .eq("is_active", True)
-          .execute().data          # ← no limit, no order — Python will do both
+          .eq("is_active", True))
     )
     for l in lesson_rows:
         l["live_confidence"] = _lesson_confidence(l)

@@ -81,7 +81,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import cfg, cfg_bool, cfg_float, cfg_int, get_supabase, today_ist
+from config import (cfg, cfg_bool, cfg_float, cfg_int, get_supabase,
+                    today_ist, fetch_all)
 
 
 STRONG, WEAK = "STRONG", "WEAK"
@@ -441,20 +442,26 @@ def _empirical_base(bucket: str, framework: str, sb=None
         # 1955 real SWING rows, 1000 returned, the 75th percentile computed on
         # whichever 1000 the server happened to return. A fresh builder every
         # page for the same reason base_query() exists — .range() mutates too.
-        def fetch_all(filtered: bool) -> list:
-            out, off = [], 0
-            while True:
+        # THE SHARED PRIMITIVE, WHICH SORTS. This loop was hand-rolled and
+        # paged on .range() alone. LIMIT/OFFSET with no ORDER BY has no stable
+        # row order between requests — each page is a separate query and the
+        # planner may reorder — so successive windows can repeat rows and skip
+        # others. Measured on intraday_setups 15-Aug-2026: 8324 matching rows
+        # paged unsorted returned 8324 rows of which 5000 were distinct.
+        #
+        # This population is a PERCENTILE input. Duplicates do not merely lose
+        # information, they reweight the distribution the bar is read off, and
+        # the SWING window is 19,710 rows — twenty pages, taken while the
+        # allocator is flushing new verdicts into the same table, which is
+        # exactly when offset paging drifts. It happened to come back clean
+        # when checked; "happened to" is not a property to rest a live gate on.
+        def _page(filtered: bool) -> list:
+            def build():
                 q = base_query()
-                if filtered:
-                    q = q.eq("regime_bucket", bucket)
-                page = q.range(off, off + PAGE - 1).execute().data or []
-                out += page
-                if len(page) < PAGE:
-                    break
-                off += PAGE
-            return out
+                return q.eq("regime_bucket", bucket) if filtered else q
+            return fetch_all(build, page=PAGE)
 
-        rows = fetch_all(filtered=True)
+        rows = _page(filtered=True)
     except Exception as e:
         # LOUD. This is the failure that emptied the book: the same query threw
         # for a year of sessions behind logger.debug, and a silent fall-through
@@ -557,7 +564,7 @@ def _empirical_base(bucket: str, framework: str, sb=None
     settled_n = len(_extract(_settled(rows)))
     if settled_n < floor:
         pooled = True
-        rows = fetch_all(filtered=False)
+        rows = _page(filtered=False)
         raw_n = len(rows)
         edges = _extract(rows)
         settled_n = len(_extract(_settled(rows)))
