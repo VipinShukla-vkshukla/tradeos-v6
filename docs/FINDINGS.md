@@ -3773,3 +3773,310 @@ is 481/481 and `tools.simulate` is unchanged. Three items found along the way
 are recorded and not silently fixed.
 
 ---
+
+## 2026-08-15 — F-19 (outcomes resolve gap) — `resolve_day` DID run on 14-Aug; "1000 unscored" was the PostgREST row cap wearing a count's clothing, and the same cap was on the weekly review, which was judging every engine on 1000 of 8324 rows
+
+**Branch:** `fix/outcomes-resolve-gap`, off `main`. `python -m tools.verify` →
+**all 500 checks passed across 58 modules** (481 baseline + 19 new).
+`python -m tools.health` → 2 problems remain, both requiring a broker token the
+operator must refresh (`kite`, `learning`). `python -m tools.simulate` → SWING
+LIVE 6 positions, 8 buyable plans — unchanged.
+
+---
+
+### 0 — THE PREMISE WAS WRONG, AND THE TRUE ANSWER IS WORSE
+
+The brief asked why `outcomes.resolve_day` **did not run** on 14-Aug. It ran.
+
+`intraday_setups` for 2026-08-14 holds **2289 rows, of which exactly 1000 carry
+an outcome and 1289 do not**. Exactly one thousand is not a number a market
+produces. It is `resolve_day`'s work queue being served through PostgREST's
+silent 1000-row cap:
+
+```
+resolve_day's own query, run against the live book today
+  sb.table("intraday_setups").select("*")
+    .eq("trade_date","2026-08-14").is_("outcome","null")     ->  1000 rows
+  actually unresolved (paged)                                ->  1289 rows
+```
+
+So the day was not unscored. It was **half scored**, which is worse, because a
+half-scored day is indistinguishable from a finished one: `resolve_day` logged
+`1000 resolved` through `logger.success` and returned `{"resolved": 1000}`,
+with no field any caller could have read to learn that 1289 rows were left.
+
+The resolved rows are **not an id-ordered prefix** — resolved ids run 6058-8346
+and unresolved 7037-8337, interleaved — which is the signature of an unordered
+capped read rather than a run that stopped part-way.
+
+### 1 — THE FULL LIST OF UNSCORED DATES
+
+Asked for before any fix. Established by paging every row in the table with no
+date filter (8324 rows), then confirmed against server-side `count='exact'`:
+
+```
+date         total  unresolved  resolved
+2026-07-28     236           0       236
+2026-07-29       5           0         5
+2026-07-30      45           0        45
+2026-07-31     174           0       174
+2026-08-03     135           0       135
+2026-08-04      36           0        36
+2026-08-05     530           0       530
+2026-08-06     523           0       523
+2026-08-07     461           0       461
+2026-08-10     921           0       921
+2026-08-11     275           0       275
+2026-08-12    1527           0      1527
+2026-08-13    1167           0      1167
+2026-08-14    2289        1289      1000   <== the only gap
+
+server-side exact total        8324
+server-side exact unresolved   1289
+unresolved on any OTHER date      0
+empty-string outcomes             0
+```
+
+**2026-08-14 is the only date carrying unresolved rows, and it carries 1289 of
+them — not 1000.** No other date in the table is affected.
+
+That "no other date" is a claim the shipped code could not have made. See §3.
+
+### 2 — WHAT SCHEDULES `resolve_day`: NOTHING
+
+`resolve_day` is reached from exactly one place — `intraday/run.py`'s `finally`
+block, and only when `was_active` (the daemon held the lease). A session is
+scored if and only if the daemon **started, acquired the lease, and exited
+cleanly that day**. It is a side-effect of a shutdown, not a scheduled step.
+
+`backfill()` runs from the same block, and `unresolved_days` deliberately
+excludes today — correct on its own terms, since today's setups are legitimately
+unresolved until the close. The consequence is that **a session cannot repair
+its own remainder**; the earliest repair is the *next* trading day's daemon exit.
+
+14-Aug was a **Friday**. Today, 15-Aug, is a **Saturday** (and Independence Day).
+`brain_full_weekly` runs **Sunday 19:30 IST** (`0 14 * * 0`). The next daemon
+exit is **Monday**. So the sequence was:
+
+```
+Fri 14-Aug  daemon exits, resolve_day scores 1000 of 2289, backfill skips today
+Sat 15-Aug  no market, no daemon, no backfill
+Sun 16-Aug  weekly_review consumes the book WITH THE HOLE STILL IN IT
+Mon 17-Aug  daemon exits, backfill finally clears 14-Aug — one day too late
+```
+
+This was not bad luck. For any session producing more than 1000 detections it
+is **structural and weekly**, and the last three sessions all qualify (12-Aug
+1527, 13-Aug 1167, 14-Aug 2289). The swing book has no such exposure: the
+evening pipeline scores it as an explicit step. Intraday had no equivalent.
+
+### 3 — THE CAP WAS ON FIVE READERS, NOT ONE
+
+The same unpaged idiom sat on every consumer of this table.
+
+| reader | saw | should see | consequence |
+|---|---|---|---|
+| `resolve_day` work queue | 1000 | 2289 | a day can never be finished in one pass |
+| `unresolved_days` | 1000 | 1289 | the health check's count IS the cap |
+| `review_engines` (weekly) | **1000** | **8324** | engines judged on 12% of the evidence |
+| `engine_scorecard` | 1000 | 8324 | same table, same truncation |
+| `_rehydrate_recorded` | 1000 | 2289 | a restart re-records what it cannot see |
+
+**`unresolved_days` could hide a whole DATE.** It returns the first 1000
+unresolved rows and tallies the dates it happens to find. 14-Aug alone has 1289,
+so the cap was **fully consumed by one date** — any other unscored session would
+have been invisible not only to the health check but to `backfill()`, which
+iterates precisely this list and would therefore never have gone back for it.
+The §1 table required paging to produce; the shipped code could not have.
+
+**The weekly review is the worst of these and it is the one the health message
+names.** It read 1000 of 8324 rows, and the truncation was not a random 12% —
+it favoured the oldest sessions, because that is the order rows come back in:
+
+```
+date        review saw    actually
+2026-07-28       236         236     <- 100% of late July
+2026-07-31       174         174
+2026-08-05       270         530
+2026-08-12         3        1527     <- 0.2% of the last three sessions
+2026-08-13         2        1167
+2026-08-14        37        2289
+```
+
+An engine's **recent** form — the only part that could justify changing its
+lifecycle state — was precisely the part being discarded. Backfilling 14-Aug
+without this fix would have changed nothing for the review: it would still have
+seen ~37 of that day's rows.
+
+`_rehydrate_recorded` is the CLAUDE.md landmine returning through a different
+door. Capped, a restart rehydrates only the part of the morning that fitted and
+re-records the rest — re-inflating both the prior population and the allocator's
+arrival bar, which is the exact failure that function was written to prevent.
+
+### 4 — THE TRAP INSIDE THE FIX FOR THE TRAP
+
+The first `fetch_all` paged with `LIMIT/OFFSET` and **no `ORDER BY`**. Measured
+against the live book before shipping:
+
+```
+returned 8324   distinct 5000   true 8324   rows never returned 3324
+```
+
+The right count, made of the wrong rows: 3324 duplicates and 3324 rows missed.
+PostgreSQL guarantees no row order without an `ORDER BY`, and each page is a
+separate query, so successive windows overlap and drop rows.
+
+**This is worse than the truncation it replaced.** A truncated read is at least
+made of real, distinct observations; this one silently over-weights whatever the
+planner repeated, so every hit rate and prior computed from it is biased and
+nothing about the result's shape says so. Caught only because the per-date
+distribution was re-checked against §1 rather than the total. `fetch_all` now
+sorts on a unique key (`order_by`, default `id`, overridable — `signal_output_daily`
+has no `id` column). Re-verified: **8324 returned, 8324 distinct, 0 missed**,
+per-date distribution identical to §1.
+
+### 5 — MAKING IT LOUD
+
+`tools.health` has reported this correctly since it was written. Reporting is
+not being read: the gap surfaced three days late because an unrelated session
+happened to run the sweep.
+
+**The alert cannot live in the daemon, because the daemon not running IS the
+failure.** An alert fired from `run.py`'s `finally` is silent under exactly the
+conditions that make it necessary. So:
+
+- **`outcomes.alert_unscored()`** — one CRITICAL push naming the dates, the true
+  count, and the fix command. Routed through `intraday.notifier.Notifier` with
+  `framework="SWING"`, mirroring `kite.token_manager.alert_if_stale()`; a broken
+  learning loop is a whole-account event. Never raises.
+- **`--check-and-alert`** — standalone CLI, writes nothing, exits 1 when it
+  alerts.
+- **`outcomes_watch`** — a new job in `brain_scheduler.yml` on `30 3 * * *`,
+  **daily including weekends**, because a check that runs only on trading days
+  shares the blind spot it exists to cover. It would have said so on Saturday
+  morning. The non-zero exit makes a red Actions run a second, independent
+  channel.
+- **`run_pipeline.py` step `28a_resolve_intraday`** — the structural fix. Puts
+  intraday resolution on the same scheduled footing as its two sibling steps
+  (swing outcomes, allocator outcomes) instead of a daemon shutdown. Non-fatal,
+  alerts on anything it could not finish.
+- **`review_engines`** now warns and alerts when its own window contains
+  unscored sessions, at the moment of harm.
+- **`resolve_day`** returns `date` / `remaining` / `complete`, logs a partial day
+  through `logger.warning` rather than `logger.success`, and `backfill` reports
+  `incomplete` — because "no broker" and "nothing to do" both used to return 0.
+
+Verified against the live book with delivery stubbed (nothing sent, nothing
+written): headline `1289 intraday detection(s) across 1 session(s) were never
+scored`, urgency `CRITICAL`, detail naming `2026-08-14 (1289)` and the backfill
+command.
+
+### 6 — THE BACKFILL IS BLOCKED, AND NO DATE IS LOST
+
+```
+python -m intraday.outcomes --backfill
+  outcomes: 1 past session(s) never scored — 1289 detection(s) ...
+    backfilling 2026-08-14 (1289 unresolved)
+  Kite access token EXPIRED (issued 2026-08-14 02:56 IST, 36.1h ago)
+  outcomes: no broker session — 1289 setup(s) on 2026-08-14 stay unresolved
+  outcomes: backfill could NOT finish 2026-08-14 (1289 left, no_broker)
+```
+
+That last line is new. Pre-fix this returned `{"days": 1, "resolved": 0}` —
+identical to what a fully-scored book returns.
+
+**No date is permanently lost.** 14-Aug is one calendar day old, far inside
+Kite's minute-bar retention, and this system has replayed older bars routinely
+(28-29 July were backfilled on 31 July). The sole blocker is the expired access
+token, and refreshing it is a Zerodha login the operator must perform. Two steps:
+
+```
+python -m kite.token_manager --login-url     # operator completes the login
+python -m intraday.outcomes --backfill       # then this finishes 14-Aug
+```
+
+Nothing was approximated and no outcome was fabricated. `health` will stay red
+on `learning` until that runs, which is correct.
+
+### 7 — EACH TEST FAILED FIRST
+
+`tests/test_outcome_resolution_gap.py`, 19 checks, registered in
+`tools/verify.py::MODULES`. **14 of 17 failed against the unfixed code** on
+first run. Two of the three that passed are the guards asserting the fake
+itself truncates — without them every paging test would pass against the broken
+code and prove nothing.
+
+Re-run with paging reverted to the shipped idiom, the tests reproduce the live
+symptom verbatim:
+
+```
+FAIL  resolve_day resolves every row      -> resolved 1000 of 2289
+FAIL  unresolved_days counts past the cap -> reported {'2026-08-14': 1000}
+FAIL  unresolved_days cannot hide a date  -> 13-Aug vanished behind 14-Aug's 1200
+FAIL  weekly review reads every row       -> handed 1000 of 2400
+FAIL  restart dedup map reads every row   -> rehydrated 1000 of 1800
+FAIL  the alert carries the true count    -> "1000 detection(s)"
+```
+
+And with the sort key removed, the two §4 tests fail:
+
+```
+FAIL  paging without a sort key -> 2289 rows but only 2215 distinct
+FAIL  a table without an id     -> rows lost under a custom key
+```
+
+### 8 — FOUND ALONG THE WAY
+
+**F-20 — `resolve_day` destroyed its own date variable.** `d` was bound to the
+trade date at the top of the function; the row loop then ran
+`d = D.normalise(r.get("direction"))`, so from the first row onward the date was
+gone and the success log — `f"outcomes {d}: ..."` — printed the last setup's
+**direction**: `outcomes LONG: 1000 resolved`. The direction arithmetic was
+always correct. The one line that tells you *which session was scored* was not,
+and it is the line you go looking for when asking why a day never was. Renamed
+to `dirn`; `health`'s `_SHORT_SPINE` marker caught the rename immediately, which
+is that check working.
+
+**F-21 — `health.check_learning_loop`'s success message could never move.** Its
+"N resolved outcomes on hand" was `len()` of a `.limit(1000)` read, so it would
+have read exactly "1000" forever once the table passed a thousand rows. Now a
+`count='exact'` header.
+
+**F-22 — `test_setup_rehydration`'s fake swallowed a real breakage.** Its
+`_FakeQuery` had no `range`/`order`, so once `_rehydrate_recorded` was paged the
+call raised `AttributeError`, was caught by that function's non-fatal `except`,
+and every test in the module saw an empty map — 4 of 7 failing. Both methods
+added with the reason recorded. Worth noting the failure mode: a fake missing a
+method the production code now calls turns into a **silent empty result**, not
+an error, because the code under test is deliberately non-fatal there.
+
+### 9 — NOT DONE
+
+- **14-Aug is still unscored.** Blocked on the operator's Kite login (§6). Every
+  code path needed to finish it is in place and tested; nothing else stands
+  between the token and a complete book.
+- **`outcomes_watch` has never fired.** The YAML parses and the job is wired
+  (`python -m intraday.outcomes --check-and-alert`), but a GitHub Actions cron
+  cannot be exercised from here. First real proof is its 09:00 IST run.
+- **No alert was actually delivered.** The live verification in §5 stubbed
+  `Notifier.send`. Delivery itself is exercised only by the mocked tests, and
+  sending a real push was not mine to do unasked.
+- **`engine.py:952` (runway requeue) is still unpaged.** One day, filtered to
+  `cost_verdict=BLOCKED_SHORTABILITY`, so it is far from 1000 today — but it is
+  the same idiom on the same growing table. Left alone deliberately: it is
+  outside this brief and changing it needs its own test.
+- **Nothing was done about WHY 14-Aug produced 2289 detections** when 28-Jul
+  produced 236. A 10x rise in detections per session in three weeks is either a
+  universe change, a dedup regression, or a genuinely busier tape, and it is
+  what pushed every reader past the cap. Worth a stage of its own.
+
+**Gate: PASS** — root cause identified as the row cap rather than the assumed
+missing run, the full unscored-date list established by paging and confirmed
+server-side before any fix, five capped readers repaired, a worse bug introduced
+by the first fix caught before shipping and pinned with its own failing test,
+the failure made loud on a schedule that does not depend on the daemon that
+failed, 14 of 17 tests demonstrated failing first, `tools.verify` 500/500 and
+`tools.simulate` unchanged. The backfill is blocked on an operator credential
+step and is reported as blocked rather than approximated.
+
+---

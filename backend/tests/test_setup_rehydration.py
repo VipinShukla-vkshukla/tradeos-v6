@@ -32,6 +32,30 @@ class _FakeQuery:
     def __init__(self, rows): self._rows = rows
     def select(self, *a, **k): return self
     def eq(self, *a, **k): return self
+
+    def order(self, col, *a, **k):
+        """Paged reads sort on a unique key — without one, successive
+        LIMIT/OFFSET windows overlap and drop rows (8324 matching rows came
+        back as 5000 distinct on the live book). These fixtures carry no `id`,
+        and they do not need to: what matters here is that the call is
+        accepted, not that it reorders anything."""
+        return self
+
+    def range(self, start, end):
+        """`_rehydrate_recorded` is PAGED as of 15-Aug-2026.
+
+        The read it does was capped at 1000 rows by PostgREST, and a session
+        now routinely exceeds that (14-Aug: 2289 detections). Capped, the
+        dedup map rehydrates only the part of the morning that fitted and a
+        restart re-records the rest — the exact re-inflation of the prior
+        population this whole module exists to prevent. Paging it means the
+        fake has to serve windows; without this method the call raised
+        AttributeError, was swallowed by the function's non-fatal `except`,
+        and every test here saw an empty map.
+        """
+        self._rows = self._rows[start:end + 1]
+        return self
+
     def execute(self): return _FakeExec(self._rows)
 
 

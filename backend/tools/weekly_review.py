@@ -43,7 +43,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import cfg_float, cfg_int, get_supabase, today_ist
+from config import cfg_float, cfg_int, get_supabase, today_ist, fetch_all
 
 # An engine is not judged below this many resolved outcomes. 25 detections in a
 # session looks like plenty and is one day of one market regime.
@@ -256,7 +256,15 @@ def review_engines(sb, days: int = 30) -> list:
     """
     _hdr(f"INTRADAY ENGINES — last {days} days of resolved outcomes")
     since = (today_ist() - timedelta(days=days)).isoformat()
-    rows = (sb.table("intraday_setups")
+    # PAGED. This read was capped at 1000 rows by PostgREST and the window now
+    # holds 8324 — so on 15-Aug-2026 every engine in the system was being
+    # promoted, shadowed or retired on 12% of the evidence. The truncation was
+    # not even a random 12%: it favoured the OLDEST sessions, because that is
+    # the order the rows come back in. 28-Jul contributed all 236 of its
+    # detections while 12-Aug contributed 3 of 1527 and 13-Aug contributed 2 of
+    # 1167. An engine's recent form — the only part that could justify changing
+    # its lifecycle state — was the part being discarded.
+    rows = fetch_all(lambda: sb.table("intraday_setups")
               # symbol and ts are REQUIRED by dedupe_setups — the key is
               # (session, symbol, engine) and the tie-break is the earliest
               # timestamp. Omitting symbol silently collapses every name on a
@@ -266,7 +274,30 @@ def review_engines(sb, days: int = 30) -> list:
               # missing column produces neither an error nor a warning.
               .select("strategy,cost_verdict,outcome,outcome_pct,confidence,"
                       "trade_date,risk_pct,symbol,ts")
-              .gte("trade_date", since).execute().data or [])
+              .gte("trade_date", since))
+
+    # THE REVIEW SAYS SO WHEN ITS OWN EVIDENCE IS INCOMPLETE.
+    #
+    # This is the consumer the health check's message names, and it had no idea
+    # anything was missing: an unscored session simply contributes no resolved
+    # rows, which is indistinguishable from an engine that was quiet. 14-Aug's
+    # 1289 unscored detections would have been consumed by exactly this
+    # function on 16-Aug with no indication that a fifth of the fortnight was
+    # absent.
+    try:
+        from intraday.outcomes import unresolved_days
+        gaps = unresolved_days(sb, days=days)
+        if gaps:
+            missing = sum(n for _, n in gaps)
+            logger.warning(
+                f"  ⚠ {missing} detection(s) across {len(gaps)} session(s) in "
+                f"this window are UNSCORED ({', '.join(d for d, _ in gaps)}) — "
+                f"every verdict below is drawn from a book with holes in it. "
+                f"Fix: python -m intraday.outcomes --backfill")
+            from intraday.outcomes import alert_unscored
+            alert_unscored(days=days, sb=sb)
+    except Exception as e:
+        logger.debug(f"  could not check for unscored sessions — {e}")
     raw_n = len([r for r in rows if r.get("outcome")])
     done = [r for r in dedupe_setups(rows) if r.get("outcome")]
     if not done:

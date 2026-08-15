@@ -536,8 +536,13 @@ def check_learning_loop() -> tuple[bool, str]:
     sb = get_supabase()
     pending = outcomes.unresolved_days(sb, days=30)
     if not pending:
-        n = len((sb.table("intraday_setups").select("id")
-                   .not_.is_("outcome", "null").limit(1000).execute().data) or [])
+        # count='exact' is a HEADER, not a row fetch. The previous form was
+        # `.limit(1000)` and reported len() of what came back, so this line
+        # would have read "1000 resolved outcomes on hand" forever once the
+        # table passed a thousand rows — a number that stops moving is a
+        # number nobody can use to notice anything.
+        n = (sb.table("intraday_setups").select("id", count="exact")
+               .not_.is_("outcome", "null").limit(1).execute().count)
         return True, f"every past session scored ({n} resolved outcomes on hand)"
     total = sum(n for _, n in pending)
     days = ", ".join(d for d, _ in pending[:4])
@@ -1382,7 +1387,16 @@ _SHORT_SPINE = [
     ("allocator scorer", "allocation/scoring.py",          "D.validate(entry, stop, target, direction)"),
     ("priors",           "allocation/scoring.py",          'f"{key}/SHORT"'),
     ("outcome resolver", "intraday/outcomes.py",           "hi >= stop, lo <= tgt"),
-    ("outcome sign",     "intraday/outcomes.py",           "D.gain_pct(entry, exit_px, d)"),
+    # `dirn`, not `d`, since 15-Aug-2026 — and the rename is the POINT, not
+    # cosmetic. `d` was already bound to the TRADE DATE at the top of
+    # resolve_day, so `d = D.normalise(...)` inside the row loop destroyed it,
+    # and the success log (`outcomes {d}:`) printed the last setup's direction
+    # instead of the session it had just scored. The direction arithmetic was
+    # always correct; the line that tells you WHICH DAY was scored was not, and
+    # that is the line you read when asking why a day never was. This check
+    # caught the rename the moment it landed — the check working, not the check
+    # being in the way.
+    ("outcome sign",     "intraday/outcomes.py",           "D.gain_pct(entry, exit_px, dirn)"),
     ("setup levels",     "intraday/strategies/base.py",    "D.risk_per_share(self.entry, self.stop, self.direction)"),
     # ── not yet built. The switch must stay off until these land. ──────────
     ("market context",   "intraday/market_context.py",     "allow_shorts"),

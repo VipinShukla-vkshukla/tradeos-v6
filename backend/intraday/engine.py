@@ -27,7 +27,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import IST, get_supabase, cfg, cfg_bool, cfg_int, cfg_float, today_ist
+from config import (IST, get_supabase, cfg, cfg_bool, cfg_int, cfg_float,
+                    today_ist, fetch_all)
 from intraday.config import (is_market_open, gtt_enabled, orders_enabled,
                              autonomy_phase)
 from intraday.notifier import Notifier, Action
@@ -300,10 +301,16 @@ class IntradayEngine:
         silently.
         """
         try:
-            rows = (self.sb.table("intraday_setups")
-                    .select("symbol,strategy,entry,cost_verdict,meta")
-                    .eq("trade_date", today_ist().isoformat())
-                    .execute().data) or []
+            # PAGED — a session now routinely exceeds the 1000-row PostgREST
+            # cap (14-Aug-2026: 2289 detections). Capped, this map rehydrates
+            # only the part of the morning that fitted, so a restart re-records
+            # everything it could not see — which is the exact re-inflation of
+            # the prior population and the allocator's arrival bar that this
+            # function was written to prevent, arriving through a different
+            # door and reporting a healthy-looking count on the way in.
+            rows = fetch_all(lambda: self.sb.table("intraday_setups")
+                             .select("symbol,strategy,entry,cost_verdict,meta")
+                             .eq("trade_date", today_ist().isoformat()))
             for r in rows:
                 sym = r.get("symbol")
                 if not sym:

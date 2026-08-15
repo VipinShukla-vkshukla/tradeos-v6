@@ -254,6 +254,39 @@ def main():
         from swing.signals.outcomes import main as fn
         return fn()
 
+    def step_resolve_intraday_outcomes():
+        """
+        Score every intraday detection — on a SCHEDULE, not on a daemon exit.
+
+        THE ASYMMETRY THIS CLOSES — 15-Aug-2026. The two steps around this one
+        score the swing book and the allocator from the pipeline, on a clock.
+        The intraday book had no equivalent: `outcomes.resolve_day` was reached
+        only from `intraday/run.py`'s `finally` block, and only when that daemon
+        held the lease. A day was therefore scored if and only if the daemon
+        started, acquired the lease, and exited cleanly THAT day. Nothing ever
+        scheduled it.
+
+        Combined with `unresolved_days` excluding today — correct on its own
+        terms, since today's setups are legitimately unresolved until the close
+        — a session could not repair its own remainder, so the earliest repair
+        was the NEXT trading day's daemon exit. On a Friday that lands after
+        the Sunday weekly review has already consumed the hole. 14-Aug-2026 was
+        a Friday: 2289 detections, 1000 scored, 1289 left, and the review that
+        would have used them was 40 hours away with no trading day in between.
+
+        `backfill` is idempotent and cheap — it resolves nothing when nothing
+        is outstanding, and one symbol fetch per symbol when something is.
+        Non-fatal, matching its siblings: a scoring gap costs a day of
+        learning, an aborted pipeline costs a day of signals. But it ALERTS on
+        anything it could not finish, because "could not reach the broker" and
+        "there was nothing to do" both used to return zero.
+        """
+        from intraday import outcomes
+        res = outcomes.backfill()
+        if not res.get("complete", True):
+            outcomes.alert_unscored()
+        return res
+
     def step_score_allocator():
         """
         Score every allocation verdict — taken, deferred and declined.
@@ -446,6 +479,7 @@ def main():
             ("26_alerts",              step_alerts,              False),  # Telegram digest
             ("27_quality_audit",       step_quality_audit,       False),  # output-side checks, advisory
             ("28_resolve_outcomes",    step_resolve_outcomes,    False),  # full-field priors: score every plan
+            ("28a_resolve_intraday",   step_resolve_intraday_outcomes, False),  # intraday evidence: no longer daemon-only
             ("28b_score_allocator",    step_score_allocator,     False),  # promotion evidence: score every verdict
             ("29_storage_rolloff",     step_storage_rolloff,     False),  # LAST: archive history, never fatal
         ]

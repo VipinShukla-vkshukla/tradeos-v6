@@ -263,6 +263,83 @@ def get_supabase() -> Client:
         _sb_client = create_client(SUPABASE_URL, SUPABASE_KEY)
     return _sb_client
 
+
+# PostgREST returns AT MOST 1000 rows and reports no error when it truncates.
+# A read that expects fewer than that is fine; a read over a growing table is a
+# bug with a delay fuse on it, and this project has now been bitten twice.
+#
+# 15-Aug-2026: `intraday_setups` crossed 1000 rows PER SESSION on 12-Aug. From
+# that day every unpaged reader of the table was silently wrong —
+# `outcomes.resolve_day` could only ever finish the first 1000 detections of a
+# day, `unresolved_days` reported the cap as if it were a count, and
+# `weekly_review.review_engines` judged every engine on 1000 of 8324 rows with
+# the truncation biased hard toward the OLDEST sessions.
+#
+# The failure has no symptom. There is no exception, no warning, and the
+# returned rows are all genuine — only the absent ones carry the information.
+# So the fix cannot be "remember to page"; it has to be a primitive that is
+# easier to reach for than the broken idiom.
+_PAGE = 1000
+
+
+def fetch_all(build_query, page: int = _PAGE, cap: int = 500_000,
+              order_by: str = "id") -> list[dict]:
+    """
+    Every row the query matches, not the first thousand.
+
+    `build_query` is a ZERO-ARGUMENT CALLABLE that returns a freshly-built,
+    fully-filtered query — not a query object. PostgREST builders accumulate
+    state and are not safely reusable across `.execute()`, so each page must be
+    constructed from scratch:
+
+        rows = fetch_all(lambda: sb.table("intraday_setups")
+                                   .select("id,outcome")
+                                   .eq("trade_date", d))
+
+    `order_by` MUST NAME A UNIQUE COLUMN, AND IS NOT OPTIONAL POLISH.
+
+    Each page is a SEPARATE query. PostgreSQL guarantees no row order without
+    an ORDER BY, so successive LIMIT/OFFSET windows over the same filter may
+    return overlapping or disjoint sets — the planner is free to change its
+    mind between requests. Measured on this book, 15-Aug-2026: paging 8324
+    matching rows with no sort returned exactly 8324 rows, of which 5000 were
+    distinct. 3324 were duplicates and 3324 rows were never returned at all.
+
+    That is a WORSE failure than the truncation this function exists to fix.
+    The count is right, so every sanity check on the count passes; the rows are
+    wrong, so every average, hit rate and prior computed from them is silently
+    biased toward whichever rows the planner happened to repeat. A truncated
+    read is at least made of real, distinct observations.
+
+    The default is `id`. Tables without one must pass their own unique key —
+    `signal_output_daily` has no `id` column, which is exactly the kind of
+    thing that makes this a parameter rather than a hardcoded string.
+
+    Paging stops on the first short page, so a query matching fewer than
+    `page` rows costs exactly one request — the same as the unpaged form.
+
+    `cap` is a runaway guard, not a limit you should ever reach. Hitting it
+    logs loudly rather than returning a quietly-truncated list, because
+    "quietly truncated" is the entire defect this function exists to remove.
+    """
+    rows: list[dict] = []
+    off = 0
+    while True:
+        q = build_query()
+        if order_by:
+            q = q.order(order_by)
+        got = q.range(off, off + page - 1).execute().data or []
+        rows.extend(got)
+        if len(got) < page:
+            return rows
+        off += page
+        if off >= cap:
+            logger.error(
+                f"  fetch_all hit its {cap:,}-row runaway guard — the result is "
+                f"TRUNCATED and whatever consumes it is now wrong. Narrow the "
+                f"filter or raise the cap deliberately.")
+            return rows
+
 # ── Google Sheets ─────────────────────────────────────────────
 GOOGLE_SHEET_ID       = os.getenv("GOOGLE_SHEET_ID", "")
 GOOGLE_CREDENTIALS    = os.getenv("GOOGLE_CREDENTIALS_JSON", str(BASE_DIR / "credentials" / "service_account.json"))

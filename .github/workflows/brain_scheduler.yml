@@ -6,6 +6,16 @@ name: TradeOS Brain Scheduler
 # Sat     10:00 IST  → script_scan_weekly       (30 4 * * 6)
 # Sun     19:30 IST  → brain_full_weekly        (0 14 * * 0)
 # Sun     21:00 IST  → expire_proposals         (30 15 * * 0)
+# DAILY   09:00 IST  → outcomes_watch           (30 3 * * *)
+#
+# outcomes_watch runs EVERY day, weekends included, and that is the point.
+# Intraday outcome resolution has no scheduler of its own — it is a side-effect
+# of the intraday daemon's shutdown — so the failure mode being watched for is
+# "the daemon did not run", and a check that only runs on trading days shares
+# the blind spot it is meant to cover. 14-Aug-2026 (a Friday) left 1289
+# detections unscored; the next daemon exit was Monday and the weekly review
+# was Sunday, so nothing would have noticed until after the evidence was
+# already consumed. This job would have said so on Saturday morning.
 #
 # weekly_perf_digest no longer lives in a separate workflow. It used to be in
 # brain_sunday_chain.yml, triggered via workflow_run — but that trigger fires
@@ -24,6 +34,7 @@ on:
     - cron: '30 4 * * 6'     # script_scan_weekly
     - cron: '0 14 * * 0'     # brain_full_weekly
     - cron: '30 15 * * 0'    # expire_proposals
+    - cron: '30 3 * * *'     # outcomes_watch — DAILY, weekends included
   workflow_dispatch:
     inputs:
       job:
@@ -36,6 +47,7 @@ on:
           - brain_quant_midweek
           - script_scan_weekly
           - expire_proposals
+          - outcomes_watch
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -276,3 +288,51 @@ jobs:
           name: expire-proposals-logs-${{ github.run_id }}
           path: backend/logs/
           retention-days: 3
+
+# ═════════════════════════════════════════════════════════════════════════════
+# JOB 6 — Outcomes Watch (DAILY 09:00 IST, weekends included)
+# ═════════════════════════════════════════════════════════════════════════════
+# Alerts when a past trading session's intraday detections were never scored.
+#
+# WHY THIS IS NOT A HEALTH CHECK. tools/health.py has reported this correctly
+# since it was written, and reporting is not the same as being read: the
+# 14-Aug-2026 gap surfaced three days late because an unrelated session
+# happened to run the sweep. A day of lost evidence is silent by construction —
+# an unscored session contributes no rows, which looks exactly like a quiet
+# engine to everything downstream.
+#
+# WHY IT CANNOT LIVE IN THE INTRADAY DAEMON. The failure being watched for IS
+# the daemon not running, or not exiting cleanly, or not holding the lease. An
+# alert fired from that process is silent under precisely the conditions that
+# make it necessary.
+#
+# Writes nothing to the book. `--check-and-alert` exits 1 when it alerts, so a
+# red run in the Actions tab is a second, independent channel — deliberate.
+  outcomes_watch:
+    name: "🔍 Outcomes Watch"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: |
+      github.event.schedule == '30 3 * * *' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'outcomes_watch')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Alert on any session that was never scored
+        env:
+          SUPABASE_URL:              ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY:      ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN:        ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:          ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -m intraday.outcomes --check-and-alert

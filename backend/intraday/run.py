@@ -392,6 +392,17 @@ def main(once: bool = False, dry: bool = False) -> None:
                 if bf.get("resolved"):
                     logger.success(f"  backfilled {bf['resolved']} outcome(s) from "
                                    f"{bf['days']} earlier session(s)")
+                # AND SHOUT IF EITHER PASS LEFT WORK BEHIND.
+                #
+                # `res` above could report 1000 resolved and still have left
+                # 1289 rows unscored — the fetch was capped and nothing said
+                # so. That is now visible in `complete`, and a daemon that
+                # cannot finish its own day must not exit quietly: this is the
+                # last moment anything looks at the intraday book until the
+                # next session, and on a Friday the next session is after the
+                # weekly review.
+                if not res.get("complete", True) or not bf.get("complete", True):
+                    outcomes.alert_unscored(sb=sb)
         except Exception as e:
             logger.warning(f"  could not resolve today's outcomes — {e}")
 

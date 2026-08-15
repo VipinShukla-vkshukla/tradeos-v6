@@ -109,6 +109,8 @@ MODULES = [
     ("preflight host and lease guards", "tests.test_preflight_host_and_lease"),
     ("planner regime symmetry and cost floor (shipped inert)",
      "tests.test_planner_regime_and_cost"),
+    ("outcome resolution gap (row cap + loud alert)",
+     "tests.test_outcome_resolution_gap"),
 ]
 
 

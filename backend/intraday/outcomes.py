@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from datetime import date, datetime, timedelta
 from loguru import logger
-from config import IST, get_supabase, cfg, today_ist
+from config import IST, get_supabase, cfg, today_ist, fetch_all
 from intraday import direction as D
 
 
@@ -76,26 +76,48 @@ def resolve_day(trade_date: str | None = None, sb=None) -> dict:
 
     Run after the close — from the evening pipeline, or by hand. Setups already
     carrying an outcome are skipped, so re-running is free.
+
+    THE WORK QUEUE IS PAGED, AND THE RESULT SAYS WHETHER IT FINISHED.
+
+    Both halves of that sentence are 15-Aug-2026 repairs to one incident.
+
+    The fetch below used to be a plain `.select("*")`, which PostgREST caps at
+    1000 rows with no error. 14-Aug-2026 produced 2289 detections. This function
+    ran, was handed 1000 of them, resolved all 1000, and logged
+    `1000 resolved — 0 target, 0 stop, 1000 timeout` as a SUCCESS. 1289 rows
+    were left with a NULL outcome and nothing anywhere said so. A day that is
+    HALF scored is worse than one that is not scored at all, because the health
+    check that watches for unscored days looked at the same capped read and
+    reported the cap as its count.
+
+    So the return value now carries `remaining` and `complete`. A caller that
+    only reads `resolved` cannot tell a finished day from a truncated one, and
+    every caller did.
     """
     sb = sb or get_supabase()
     d = trade_date or today_ist().isoformat()
 
-    rows = (sb.table("intraday_setups").select("*")
-              .eq("trade_date", d).is_("outcome", "null")
-              .execute().data or [])
+    rows = fetch_all(lambda: sb.table("intraday_setups").select("*")
+                             .eq("trade_date", d).is_("outcome", "null"))
     if not rows:
         logger.info(f"  outcomes: nothing unresolved for {d}")
-        return {"resolved": 0}
+        return {"resolved": 0, "date": d, "remaining": 0, "complete": True}
+
+    def _unfinished(reason: str) -> dict:
+        """Not scored is NOT the same as nothing to score."""
+        return {"resolved": 0, "date": d, "remaining": len(rows),
+                "complete": False, "reason": reason}
 
     try:
         from kite import kite_client
         kite = kite_client.get_kite()
         if not kite:
-            logger.warning("  outcomes: no broker session — cannot replay bars")
-            return {"resolved": 0, "reason": "no_broker"}
+            logger.warning(f"  outcomes: no broker session — {len(rows)} setup(s) "
+                           f"on {d} stay unresolved")
+            return _unfinished("no_broker")
     except Exception as e:
         logger.warning(f"  outcomes: broker unavailable — {e}")
-        return {"resolved": 0, "reason": "no_broker"}
+        return _unfinished("no_broker")
 
     interval = cfg("intraday_bar_interval", "minute")
     day = datetime.strptime(d, "%Y-%m-%d").date()
@@ -106,7 +128,7 @@ def resolve_day(trade_date: str | None = None, sb=None) -> dict:
         tok = {k.split(":", 1)[1]: v["instrument_token"] for k, v in (tokens or {}).items()}
     except Exception as e:
         logger.warning(f"  outcomes: token lookup failed — {e}")
-        return {"resolved": 0}
+        return _unfinished("no_tokens")
 
     tally = {"TARGET": 0, "STOP": 0, "TIMEOUT": 0, "UNKNOWN": 0}
     resolved = 0
@@ -147,11 +169,18 @@ def resolve_day(trade_date: str | None = None, sb=None) -> dict:
         # `hurdle`'s arrival distribution are both built from it, so a short
         # engine would have been assigned a catastrophic measured prior made
         # entirely of an arithmetic error, and then retired on that evidence.
-        d = D.normalise(r.get("direction"))
+        # `dirn`, NOT `d`. This line read `d = D.normalise(...)` and `d` is the
+        # TRADE DATE, bound at the top of the function — so from the first row
+        # onward the date was gone, and the success log below (`outcomes {d}:`)
+        # printed the last setup's direction: `outcomes LONG: 1000 resolved`.
+        # The one line that says WHICH session was scored named a direction
+        # instead, which is precisely the line you go looking for when asking
+        # why a day was never scored.
+        dirn = D.normalise(r.get("direction"))
         outcome, exit_px = "TIMEOUT", float(bars[-1]["close"])
         for b in bars:
             hi, lo = float(b["high"]), float(b["low"])
-            if D.is_short(d):
+            if D.is_short(dirn):
                 hit_stop, hit_tgt = hi >= stop, lo <= tgt
             else:
                 hit_stop, hit_tgt = lo <= stop, hi >= tgt
@@ -172,7 +201,7 @@ def resolve_day(trade_date: str | None = None, sb=None) -> dict:
         # that fell 1% made +1%. Unsigned, every profitable short would have been
         # recorded as a loss of the same size, which is the sign error that
         # turns a working engine into a retired one.
-        pct = D.gain_pct(entry, exit_px, d)
+        pct = D.gain_pct(entry, exit_px, dirn)
         # Net of the round trip, because a gross win under 0.21% is a loss and
         # recording it as a win would teach the wrong lesson.
         cost = float(r.get("cost_pct") or 0)
@@ -186,13 +215,20 @@ def resolve_day(trade_date: str | None = None, sb=None) -> dict:
         except Exception as e:
             logger.debug(f"  outcomes: update failed for {sym}: {e}")
 
-    logger.success(
-        f"  outcomes {d}: {resolved} resolved from {len(bar_cache)} symbol "
-        f"fetch(es) — {tally['TARGET']} target, {tally['STOP']} stop, "
-        f"{tally['TIMEOUT']} timeout"
-        + (f", {tally['UNKNOWN']} unknown" if tally["UNKNOWN"] else "")
-    )
-    return {"resolved": resolved, **tally}
+    remaining = len(rows) - resolved
+    line = (f"  outcomes {d}: {resolved} of {len(rows)} resolved from "
+            f"{len(bar_cache)} symbol fetch(es) — {tally['TARGET']} target, "
+            f"{tally['STOP']} stop, {tally['TIMEOUT']} timeout"
+            + (f", {tally['UNKNOWN']} unknown" if tally["UNKNOWN"] else ""))
+    if remaining:
+        # NOT logger.success. A partially scored day previously reported
+        # through the same success path as a complete one, so the log gave the
+        # operator no way to tell them apart.
+        logger.warning(f"{line} — {remaining} STILL UNRESOLVED on {d}")
+    else:
+        logger.success(line)
+    return {"resolved": resolved, "date": d, "remaining": remaining,
+            "complete": remaining == 0, **tally}
 
 
 def unresolved_days(sb=None, days: int = 30) -> list[tuple[str, int]]:
@@ -202,13 +238,22 @@ def unresolved_days(sb=None, days: int = 30) -> list[tuple[str, int]]:
     Today is excluded: its setups are legitimately unresolved until the close,
     and reporting them as a gap would make the health check cry wolf every
     single trading day — which is how a real warning stops being read.
+
+    THE CAP DID NOT JUST UNDERCOUNT — IT COULD HIDE A WHOLE DATE.
+
+    This read was unpaged, so PostgREST returned the first 1000 unresolved
+    rows. On 15-Aug-2026 14-Aug alone had 1289 of them, which means the cap was
+    fully consumed by one date and ANY other unscored session would have been
+    invisible: not in the health check, and — worse — not in `backfill()`,
+    which iterates precisely this list and would therefore never have gone back
+    for it. The health check's headline number, "1000 detections were never
+    scored", was the row limit wearing a count's clothing.
     """
     sb = sb or get_supabase()
     since = (today_ist() - timedelta(days=days)).isoformat()
     today = today_ist().isoformat()
-    rows = (sb.table("intraday_setups").select("trade_date")
-              .gte("trade_date", since).is_("outcome", "null")
-              .execute().data or [])
+    rows = fetch_all(lambda: sb.table("intraday_setups").select("trade_date")
+                             .gte("trade_date", since).is_("outcome", "null"))
     tally: dict[str, int] = {}
     for r in rows:
         d = str(r.get("trade_date"))
@@ -253,13 +298,101 @@ def backfill(days: int = 30, sb=None) -> dict:
                    f"{sum(n for _, n in pending)} detection(s) the learning loop "
                    f"has never seen")
     total = 0
+    stuck: list[str] = []
     for d, n in pending:
         logger.info(f"    backfilling {d} ({n} unresolved)")
         try:
-            total += resolve_day(d, sb=sb).get("resolved", 0)
+            res = resolve_day(d, sb=sb)
+            total += res.get("resolved", 0)
+            if not res.get("complete", True):
+                stuck.append(f"{d} ({res.get('remaining', '?')} left"
+                             + (f", {res['reason']}" if res.get("reason") else "")
+                             + ")")
         except Exception as e:
             logger.warning(f"    {d} could not be backfilled — {e}")
-    return {"days": len(pending), "resolved": total}
+            stuck.append(f"{d} ({type(e).__name__})")
+
+    # A BACKFILL THAT COULD NOT FINISH MUST NOT LOOK LIKE ONE THAT DID.
+    #
+    # This used to sum `resolved` and return. With no broker session — the
+    # normal state on a weekend, when the token issued on Friday morning has
+    # already passed its 07:30 boundary — every date returned 0 and the caller
+    # saw `{"days": 2, "resolved": 0}`, which is exactly what a fully-scored
+    # book also produces once `pending` is empty.
+    if stuck:
+        logger.error(f"  outcomes: backfill could NOT finish {', '.join(stuck)}")
+    return {"days": len(pending), "resolved": total,
+            "incomplete": stuck, "complete": not stuck}
+
+
+def alert_unscored(days: int = 30, sb=None) -> bool:
+    """
+    Push ONE alert when a past session was never scored. Returns True if sent.
+
+    WHY A HEALTH CHECK WAS NOT ENOUGH — 15-Aug-2026.
+
+    `tools.health` has reported this correctly since the day it was written.
+    Nobody runs `tools.health` on a Saturday. The 14-Aug gap was found because
+    an unrelated session happened to run the sweep and read the line, three
+    days after the evidence went missing and one day before the weekly review
+    would consume the hole.
+
+    THE ALERT CANNOT LIVE INSIDE THE DAEMON, BECAUSE THE DAEMON NOT RUNNING IS
+    THE FAILURE. Nothing SCHEDULES resolution: `resolve_day` is a side-effect
+    of `intraday/run.py`'s `finally` block, and only when that daemon held the
+    lease. `backfill()` runs from the same block and `unresolved_days` excludes
+    today, so a Friday session cannot repair its own remainder — the earliest
+    repair is the NEXT trading day's daemon exit. 14-Aug was a Friday and the
+    weekly review runs Sunday, so the gap was guaranteed to be consumed before
+    anything could close it. An alert fired from that same `finally` block
+    would have been silent for exactly the same reason the resolution was.
+
+    So this is a standalone entry point (`--check-and-alert`), meant to be
+    scheduled on a clock that does not care whether the market opened, and it
+    is also called from the evening pipeline and from the weekly review — the
+    consumer whose verdict the missing rows corrupt.
+
+    Routed through `intraday.notifier.Notifier` with `framework="SWING"`, the
+    same choice `kite.token_manager.alert_if_stale()` documents: a broken
+    learning loop is a whole-account event, and the SWING channel is the one
+    that falls back to the configured `alerts.send_alerts` senders.
+
+    Never raises. An alert that cannot be delivered must not abort a pipeline
+    step or a review.
+    """
+    try:
+        sb = sb or get_supabase()
+        pending = unresolved_days(sb, days)
+        if not pending:
+            logger.success("  outcomes: every past session is scored")
+            return False
+
+        total = sum(n for _, n in pending)
+        listing = ", ".join(f"{d} ({n})" for d, n in pending[:6])
+        if len(pending) > 6:
+            listing += f", +{len(pending) - 6} more"
+
+        logger.error(f"  outcomes: {total} detection(s) across {len(pending)} "
+                     f"past session(s) were NEVER SCORED — {listing}")
+
+        from intraday.notifier import Notifier, Action
+        action = Action(
+            symbol="LEARNING", kind="OUTCOMES_UNSCORED",
+            headline=(f"{total} intraday detection(s) across {len(pending)} "
+                      f"session(s) were never scored"),
+            detail=(f"Unscored: {listing}. The weekly review judges engines on "
+                    f"resolved outcomes only, so these sessions are invisible "
+                    f"to promotion and retirement decisions and to every "
+                    f"prior the allocator ranks on. Needs a live broker "
+                    f"session to replay the bars. Fix: "
+                    f"python -m intraday.outcomes --backfill"),
+            urgency="CRITICAL", framework="SWING",
+        )
+        notifier = Notifier(sb)
+        return bool(notifier.send(action, force=True))
+    except Exception as e:
+        logger.debug(f"  outcomes: unscored-session alert failed — {e}")
+        return False
 
 
 def engine_scorecard(days: int = 30, sb=None) -> list[dict]:
@@ -272,10 +405,10 @@ def engine_scorecard(days: int = 30, sb=None) -> list[dict]:
     """
     sb = sb or get_supabase()
     since = (today_ist() - timedelta(days=days)).isoformat()
-    rows = (sb.table("intraday_setups")
-              .select("strategy,outcome,outcome_pct,cost_verdict")
-              .gte("trade_date", since).not_.is_("outcome", "null")
-              .execute().data or [])
+    rows = fetch_all(lambda: sb.table("intraday_setups")
+                             .select("strategy,outcome,outcome_pct,cost_verdict")
+                             .gte("trade_date", since)
+                             .not_.is_("outcome", "null"))
 
     by: dict[str, dict] = {}
     for r in rows:
@@ -304,8 +437,15 @@ if __name__ == "__main__":
     ap.add_argument("--scorecard", action="store_true", help="print per-engine stats")
     ap.add_argument("--backfill", action="store_true",
                     help="resolve every past session left unscored")
+    ap.add_argument("--check-and-alert", action="store_true",
+                    help="push a CRITICAL alert if any past session was never "
+                         "scored; silent if the book is complete. Writes "
+                         "nothing. For a scheduled run on a clock that does "
+                         "not depend on the intraday daemon having started.")
     ap.add_argument("--days", type=int, default=30, help="backfill window")
     a = ap.parse_args()
+    if a.check_and_alert:
+        raise SystemExit(1 if alert_unscored(a.days) else 0)
     if a.scorecard:
         for row in engine_scorecard():
             logger.info(f"  {row['strategy']:<5} setups {row['setups']:>4} "
