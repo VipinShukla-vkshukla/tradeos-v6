@@ -4080,3 +4080,731 @@ failed, 14 of 17 tests demonstrated failing first, `tools.verify` 500/500 and
 step and is reported as blocked rather than approximated.
 
 ---
+
+## 2026-08-15 — Engine re-score on the complete population — the truncation never reached Stage 2, which read all 6035 rows and reproduces to the third decimal; what it silenced was the WEEKLY REVIEW, which has held every engine since 5-Aug and on the full book says RETIRE/SHADOW/SHADOW and has never once seen the short engine
+
+Branch `diagnostic/engine-rescore-complete` off `main`. **READ-ONLY — no source
+file was modified.** Four read-only scratchpad scripts: `fetch_full.py`,
+`replicate_stage2.py`, `reader_probe.py`, `rescore.py` / `engine_split.py` /
+`finish.py` / `review_forecast.py`. Every table below is drawn from one cached
+paged read of `intraday_setups`, verified before use.
+
+---
+
+### 0 — THE READER CHECK THE BRIEF ASKED FOR, BEFORE ANY NUMBER
+
+The brief said not to use `review_engines` or `engine_scorecard` until their
+readers were confirmed paged. Both were checked by replicating each one's own
+idiom verbatim against the live table. **They are not in the same state, and the
+F-19 ledger entry above is wrong about one of them.**
+
+```
+true row count: 8324
+
+weekly_review.py:267  -> config.fetch_all(...)          [SORTED paging]
+  trial 1: returned 8324  distinct 8324  missed 0
+  trial 2: returned 8324  distinct 8324  missed 0
+
+engine_scorecard.py:55 -> _fetch(): .range(), NO .order()  [UNSORTED paging]
+  trial 1: returned 8324  distinct 8324  duplicates 0  rows never returned 0
+  trial 2: returned 8324  distinct 8324  duplicates 0  rows never returned 0
+  trial 3: returned 8324  distinct 8324  duplicates 0  rows never returned 0
+```
+
+**`review_engines` is sound** — `fetch_all` with `order_by` defaulting to `id`.
+Fixed by F-19, verified here.
+
+**`engine_scorecard` is NOT capped at 1000.** F-19 §3's table lists it as
+`saw 1000 / should see 8324`; that is incorrect. `_fetch` has paged with
+`.range()` since it was written. What it does not do is sort — it is the §4 trap
+still standing in the one reader F-19 did not open. On three trials today the
+planner happened to be stable and returned all 8324 distinct, so it is not
+corrupting output right now; the *guarantee* is absent, and F-19 measured this
+exact idiom on this exact table returning 5000 distinct of 8324 one day earlier.
+**Neither tool was used to produce any number below.** Everything is computed
+from `config.fetch_all`.
+
+The cached read was verified before a single statistic was taken from it:
+
+```
+server-side count : 8324
+rows returned     : 8324
+distinct ids      : 8324
+rows never seen   : 0
+```
+
+---
+
+### 1 — THE PREMISE IS HALF RIGHT, AND THE HALF THAT IS WRONG MATTERS MOST
+
+The brief states that every engine-level conclusion in this ledger was computed
+on the biased 1000-row window. **That is not true of Stage 2, and it is
+demonstrable rather than arguable.** Stage 2 declared its population as
+`6035 raw / 890 dedup / 13 sessions`. The complete table today is 8324 rows, of
+which 14-Aug is 2289. 8324 − 2289 = **6035, exactly**. Restricting the verified
+paged read to `trade_date < 2026-08-14` and applying Stage 2's stated
+construction:
+
+```
+raw rows        6035      Stage 2 said 6035
+dedup keys      890       Stage 2 said 890
+TAKEN keys      170       Stage 2 B.2b said 170
+never-TAKEN     720       Stage 2 B.3 said 720
+sessions        13        Stage 2 said 13
+```
+
+B.2b reproduces on every engine, on every column:
+
+```
+  eng     n  S2 n    tgt%     S2    grossR       S2    costR      S2     netR      S2  match
+  VWR    49    49   16.3%   16.3    -0.310   -0.310   +0.314  +0.314   -0.624  -0.624  YES
+  ORB    41    41   14.6%   14.6    -0.156   -0.156   +0.187  +0.187   -0.344  -0.344  YES
+  VCE    30    30   20.0%   20.0    -0.201   -0.201   +0.268  +0.268   -0.470  -0.470  YES
+  SDN    24    24   20.8%   20.8    +0.017   +0.017   +0.284  +0.284   -0.267  -0.267  YES
+  GAP    15    15   20.0%   20.0    +0.063   +0.063   +0.163  +0.163   -0.101  -0.101  YES
+  PDL     8     8   25.0%   25.0    -0.064   -0.064   +0.427  +0.427   -0.491  -0.491  YES
+  PBK     2     2    0.0%    0.0    -1.000   -1.000   +0.347  +0.347   -1.347  -1.347  YES
+  RNG     1     1    0.0%    0.0    -1.000   -1.000   +0.448  +0.448   -1.448  -1.448  YES
+  ALL   170   170   17.6%   17.6    -0.175   -0.175   +0.264  +0.264   -0.440  -0.440  SE 0.093 vs 0.093
+```
+
+B.3a reproduces **every n exactly** (270, 252, 237, 227, 174, 149, 61, 30, 26,
+24, 23). Four buckets differ in the third decimal of gross R, and the cause is
+visible in Stage 2's own printing: it reported `res` < `n` on precisely those
+four (`BELOW_CONVICTION` 267/270, `REJECTED_COST` 246/252, `BLOCKED_STRUCTURE`
+235/237, `VETOED_AI` 224/227, `BLOCKED_EVENT` 29/30). Those rows were unresolved
+on 14-Aug and are resolved now. **Newly-scored outcomes, not missing rows.**
+
+**Stage 2 read the whole population for its window.** Its scratchpad scripts
+paged; the capped idiom lived in the shipped tooling, not in that analysis. The
+truncation is real, it is serious, and it did its damage somewhere else.
+
+---
+
+### 2 — POPULATION [DET-INTRA-FULL]
+
+| tag | table | n | what a row is |
+|---|---|---|---|
+| **[DET-INTRA-FULL]** | `intraday_setups`, complete | 8324 raw / 1102 dedup / 14 sessions | an intraday detection and its counterfactual |
+
+```
+raw rows                     8324      resolved 8324      unresolved 0
+sessions                     14
+dedup keys (date,sym,engine) 1102   of which TAKEN 211, never-TAKEN 891
+R-computable dedup keys      1102 of 1102        rows with no risk_pct>0: 0
+14-Aug adds 2289 rows (27.5% of the table) and 212 keys (19.2% of the keys)
+```
+
+**Two constructions are used below and they are not interchangeable.** Table 3
+represents each key by its **first detection by `ts`** (`dedupe_setups`' rule).
+Tables 4–6 represent a TAKEN key by its **first TAKEN row** — Stage 2's B.2b/B.3
+rule — so the comparison is like-for-like. The two disagree on 3 of 1102 keys,
+where the first detection and the first TAKEN detection resolved differently
+(179/1102 = 16.2% target vs 176/1102 = 16.0%). Stated because a future session
+that mixes them will chase a 0.2pp ghost.
+
+PRE-1 from Stage 2 still governs: `cost_pct` is 0 on every bucket blocked before
+the cost gate, so **gross R is the only quantity both sides of a gate carry**,
+and every cross-gate comparison below is made on it.
+
+---
+
+### 3 — PER ENGINE, COMPLETE POPULATION, ALL DEDUP KEYS
+
+Every detection the engine produced, taken or refused. `n<30` flagged per the
+brief.
+
+```
+  engine    n   target          grossR         costR      netR
+  SDN     398   67/398 = 16.8%  -0.077±0.072  +0.052    -0.129
+  VWR     307   53/307 = 17.3%  -0.345±0.071  +0.229    -0.575
+  VCE     138   25/138 = 18.1%  -0.155±0.118  +0.130    -0.284
+  ORB     119   12/119 = 10.1%  -0.241±0.100  +0.136    -0.377
+  RNG      60    7/60  = 11.7%  -0.137±0.157  +0.040    -0.177
+  PBK      32    4/32  = 12.5%  -0.276±0.244  +0.329    -0.604
+  PDL      25    6/25  = 24.0%  +0.064±0.332  +0.285    -0.221   << n<30 INSUFFICIENT
+  GAP      22    5/22  = 22.7%  +0.100±0.276  +0.119    -0.019   << n<30 INSUFFICIENT
+  GDB       1    0/1   =  0.0%  -1.000±0.000  +0.000    -1.000   << n<30 INSUFFICIENT
+  ---------------------------------------------------------------------------
+  ALL    1102  179/1102 = 16.2% -0.182±0.040  +0.134    -0.317
+```
+
+**Six engines now clear n≥30 on all keys** (SDN 398, VWR 307, VCE 138, ORB 119,
+RNG 60, PBK 32) where Stage 2's TAKEN-only view cleared three at n≥20. Every one
+of the six is negative on gross R. Only ORB separates from zero by more than 2 SE
+(−0.241 ± 0.100, −2.4 SE), and VWR by −4.9 SE (−0.345 ± 0.071).
+
+**Engine and direction are collinear.** This was not visible at Stage 2's sample
+and it governs how every table here may be read:
+
+```
+  SDN    n=398   LONG    0 (  0.0%)  SHORT  398 (100.0%)
+  VWR    n=307   LONG  307 (100.0%)  SHORT    0 (  0.0%)
+  VCE    n=138   LONG  138 (100.0%)  SHORT    0 (  0.0%)
+  ORB    n=119   LONG  119 (100.0%)  SHORT    0 (  0.0%)
+  RNG    n=60    LONG   60 (100.0%)  SHORT    0 (  0.0%)
+  PBK    n=32    LONG   32 (100.0%)  SHORT    0 (  0.0%)
+  PDL    n=25    LONG   25 (100.0%)  SHORT    0 (  0.0%)
+  GAP    n=22    LONG   22 (100.0%)  SHORT    0 (  0.0%)
+  GDB    n=1     LONG    1 (100.0%)  SHORT    0 (  0.0%)
+```
+
+**SDN *is* the short book — every other engine is 100% LONG.** So the per-engine
+TAKEN-vs-blocked splits in §4 are already direction-matched and need no
+adjustment; but any comparison *between* SDN and another engine is also a
+long-versus-short comparison, and cannot be read as an engine verdict. This is
+the B.3b lesson relocated to the engine axis.
+
+---
+
+### 4 — PER ENGINE: TAKEN vs BLOCKED, DIRECTION-MATCHED
+
+`dR` is printed only when **both** sides clear n=30. Without that guard an n=1 or
+n=2 baseline has SE=0 by construction, the pooled SE collapses, and the first
+pass of this analysis produced "RNG blocked beats RNG taken by +5.5 SE" out of a
+single observation and "+2.8 SE" for PBK out of two identical stop-outs. Neither
+is a result; both are printed here as the reason the guard exists.
+
+```
+  SDN  [SHORT]  all keys n=398
+    TAKEN     n=  42  days= 6  target   7/42   = 16.7%  grossR +0.108±0.167  costR +0.273  netR -0.165
+    blocked   n= 356  days= 7  target  60/356  = 16.9%  grossR -0.116±0.076  costR +0.043  netR -0.159  |  tgt +0.2pp  dR -0.225 = -1.2 SE
+
+  VWR  [LONG]   all keys n=307
+    TAKEN     n=  57  days=13  target   9/57   = 15.8%  grossR -0.332±0.149  costR +0.314  netR -0.645
+    blocked   n= 250  days=14  target  43/250  = 17.2%  grossR -0.353±0.081  costR +0.212  netR -0.565  |  tgt +1.4pp  dR -0.022 = -0.1 SE
+
+  VCE  [LONG]   all keys n=138
+    TAKEN     n=  37  days=11  target   9/37   = 24.3%  grossR -0.069±0.251  costR +0.269  netR -0.338
+    blocked   n= 101  days=12  target  15/101  = 14.9%  grossR -0.221±0.131  costR +0.080  netR -0.301  |  tgt -9.5pp  dR -0.152 = -0.5 SE
+
+  ORB  [LONG]   all keys n=119
+    TAKEN     n=  49  days=12  target   6/49   = 12.2%  grossR -0.210±0.150  costR +0.188  netR -0.398
+    blocked   n=  70  days=10  target   6/70   =  8.6%  grossR -0.278±0.135  costR +0.109  netR -0.387  |  tgt -3.7pp  dR -0.068 = -0.3 SE
+
+  RNG  [LONG]   all keys n=60
+    TAKEN     n=   1  << n<30
+    blocked   n=  59  days=11  target   7/59   = 11.9%  grossR -0.122±0.159  costR +0.033  netR -0.155  |  dR SUPPRESSED — a side is under n=30
+
+  PBK  [LONG]   all keys n=32
+    TAKEN     n=   2  << n<30
+    blocked   n=  30  days= 3  target   4/30   = 13.3%  grossR -0.278±0.261  costR +0.325  netR -0.603  |  dR SUPPRESSED
+
+  PDL n=25 (TAKEN 8 / blocked 17) · GAP n=22 (TAKEN 15 / blocked 7) · GDB n=1   << all n<30 INSUFFICIENT
+
+  BOOK LEVEL
+    TAKEN     n= 211  days=14  target  36/211  = 17.1%  grossR -0.141±0.083  costR +0.263  netR -0.404
+    blocked   n= 891  days=14  target 140/891  = 15.7%  grossR -0.207±0.045  costR +0.112  netR -0.320  |  tgt -1.3pp  dR -0.066 = -0.7 SE
+```
+
+**Not one engine separates its taken half from its refused half at 2 SE, and
+four of the six cannot be tested at all** because their TAKEN or blocked side is
+under 30. The two that can be tested (SDN −1.2 SE, VWR −0.1 SE) both lean the
+working direction. At book level the gates are +0.7 SE of nothing.
+
+---
+
+### 5 — B.3 COUNTERFACTUAL AT FULL SCALE
+
+```
+reasons carried per never-taken key: {1: 412, 2: 195, 3: 140, 4: 87, 5: 43, 6: 14}
+```
+
+**POOLED**
+
+```
+  TAKEN [baseline]         n= 211  target  36/211  = 17.1%  grossR -0.141±0.083  costR +0.263  netR -0.404
+  ---------------------------------------------------------------------------------------------------
+  BELOW_CONVICTION         n= 366  target  77/366  = 21.0%  grossR +0.015±0.076  |  tgt +4.0pp   dR +0.156 = +1.4 SE
+  REJECTED_COST            n= 337  target  55/337  = 16.3%  grossR -0.168±0.087  |  tgt -0.7pp   dR -0.027 = -0.2 SE
+  BLOCKED_STRUCTURE        n= 302  target  58/302  = 19.2%  grossR -0.152±0.082  |  tgt +2.1pp   dR -0.011 = -0.1 SE
+  VETOED_AI                n= 276  target  47/276  = 17.0%  grossR -0.034±0.089  |  tgt -0.0pp   dR +0.107 = +0.9 SE
+  BLOCKED_SHORTS_MARKET    n= 258  target  48/258  = 18.6%  grossR +0.015±0.094  |  tgt +1.5pp   dR +0.156 = +1.2 SE
+  BLOCKED_SHORTABILITY     n= 154  target  12/154  =  7.8%  grossR -0.288±0.099  |  tgt -9.3pp   dR -0.147 = -1.1 SE
+  BLOCKED_SHORTS_OFF       n=  61  target   8/61   = 13.1%  grossR -0.424±0.145  |  tgt -3.9pp   dR -0.283 = -1.7 SE
+  BLOCKED_EVENT            n=  37  target   4/37   = 10.8%  grossR -0.513±0.193  |  tgt -6.3pp   dR -0.372 = -1.8 SE
+  BLOCKED_REENTRY n=26 · SHADOW n=26 · BLOCKED_CROSS_FRAMEWORK n=26   << all n<30 INSUFFICIENT
+```
+
+**LONG only** — baseline TAKEN LONG n=169, 17.2%, grossR −0.203±0.095
+
+```
+  BELOW_CONVICTION         n= 243  target  43/243  = 17.7%  grossR -0.120±0.083  |  tgt +0.5pp   dR +0.083 = +0.7 SE
+  REJECTED_COST            n= 180  target  23/180  = 12.8%  grossR -0.402±0.098  |  tgt -4.4pp   dR -0.199 = -1.5 SE
+  BLOCKED_STRUCTURE        n= 172  target  27/172  = 15.7%  grossR -0.143±0.113  |  tgt -1.5pp   dR +0.060 = +0.4 SE
+  VETOED_AI                n= 112  target  19/112  = 17.0%  grossR +0.034±0.138  |  tgt -0.2pp   dR +0.237 = +1.4 SE
+  BLOCKED_EVENT            n=  30  target   4/30   = 13.3%  grossR -0.399±0.233  |  tgt -3.8pp   dR -0.196 = -0.8 SE
+  SHADOW n=26 · BLOCKED_REENTRY n=20 · BLOCKED_CROSS_FRAMEWORK n=8   << all n<30 INSUFFICIENT
+```
+
+**SHORT only** — baseline TAKEN SHORT n=42, 16.7%, grossR +0.108±0.167. The
+short baseline clears n=30 for the first time (Stage 2 had n=24).
+
+```
+  BLOCKED_SHORTS_MARKET    n= 258  target  48/258  = 18.6%  grossR +0.015±0.094  |  tgt +1.9pp   dR -0.093 = -0.5 SE
+  VETOED_AI                n= 164  target  28/164  = 17.1%  grossR -0.080±0.116  |  tgt +0.4pp   dR -0.188 = -0.9 SE
+  REJECTED_COST            n= 157  target  32/157  = 20.4%  grossR +0.099±0.148  |  tgt +3.7pp   dR -0.009 = -0.0 SE
+  BLOCKED_SHORTABILITY     n= 154  target  12/154  =  7.8%  grossR -0.288±0.099  |  tgt -8.9pp   dR -0.396 = -2.0 SE
+  BLOCKED_STRUCTURE        n= 130  target  31/130  = 23.8%  grossR -0.164±0.117  |  tgt +7.2pp   dR -0.272 = -1.3 SE
+  BELOW_CONVICTION         n= 123  target  34/123  = 27.6%  grossR +0.281±0.151  |  tgt +11.0pp  dR +0.173 = +0.8 SE
+  BLOCKED_SHORTS_OFF       n=  61  target   8/61   = 13.1%  grossR -0.424±0.145  |  tgt -3.6pp   dR -0.532 = -2.4 SE
+  BLOCKED_CROSS_FRAMEWORK n=18 · BLOCKED_EVENT n=7 · BLOCKED_REENTRY n=6   << all n<30 INSUFFICIENT
+```
+
+**B.3e — the gates the counterfactual structurally cannot see.** Unchanged in
+kind, sharper in degree: **91 of 91** `ALLOCATOR_DECLINED` dedup keys and **11 of
+11** `BLOCKED_PAPER_CAPACITY` keys also carry a TAKEN row, so both are absorbed
+into the baseline rather than appearing as buckets.
+
+```
+  TAKEN, allocator never declined  n= 120  target  21/120  = 17.5%  grossR -0.143±0.110
+  TAKEN, but ALSO declined         n=  91  target  15/91   = 16.5%  grossR -0.138±0.128  |  tgt -1.0pp  dR +0.004 = +0.0 SE
+  TAKEN, but ALSO cap-blocked      n=  11   << n<30 INSUFFICIENT
+```
+
+**The allocator is measurably nothing at +0.0 SE on n=91**, up from +0.4 SE on
+n=63. The null got cleaner, not weaker.
+
+---
+
+### 6 — WHAT CHANGES AGAINST STAGE 2's B.2, AND WHAT HOLDS
+
+**Nothing here changes because Stage 2 was truncated — it was not (§1). Every
+delta below is 14-Aug's 2289 rows arriving, plus the handful of rows Stage 2
+recorded as unresolved.**
+
+**CHANGES:**
+
+1. **`BLOCKED_EVENT` loses the only 2-SE result in the ledger.** Stage 2's
+   headline was "exactly one bucket separates from TAKEN by more than 2 SE, and
+   it separates in the direction that says the gate is working: −2.5 SE". At full
+   scale it is **−1.8 SE pooled** (n=37) and **−0.8 SE on LONG** (n=30). The sign
+   holds; the significance does not. **"BLOCKED_EVENT is measurably correct" must
+   not be quoted forward.**
+2. **Two short gates cross 2 SE in the working direction, direction-matched.**
+   `BLOCKED_SHORTABILITY` on shorts moves −1.2 → **−2.0 SE** (7.8% target vs
+   16.7%), and `BLOCKED_SHORTS_OFF` on shorts −1.6 → **−2.4 SE**. These are now
+   the only two buckets clearing the bar, and both say the gate is refusing worse
+   setups than it takes.
+3. **SDN is no longer thin and it is no longer the best bucket.** Stage 2 had it
+   at n=24 TAKEN, gross **+0.017**, and both Stage 1 and Stage 2 warned against
+   calling it profitable. At n=42 TAKEN it is **+0.108±0.167**, and on all 398 of
+   its keys **−0.077±0.072**. The engine-level reading is negative; the TAKEN
+   subset's positive number is a 42-row slice of it and is within 1 SE of zero.
+4. **VCE's taken half improves and its refused half does not.** Stage 2: n=30,
+   20.0% target, gross −0.201. Now n=37, **24.3%**, gross **−0.069**, against a
+   blocked half at 14.9% / −0.221. Still −0.5 SE; directionally the one engine
+   whose gates look like they are selecting.
+5. **ORB gets worse and is now the weakest bucket that can be measured.** Stage 2
+   TAKEN: n=41, 14.6%, −0.156. Now TAKEN n=49, **12.2%**, −0.210; on all 119 keys
+   **10.1% target, −0.241±0.100 (−2.4 SE from zero)**.
+6. **RNG and PBK stop being footnotes.** Stage 2 saw them only through TAKEN
+   (n=1, n=2). On all keys they are n=60 and n=32 — both above the brief's bar,
+   both negative, and **RNG has 60 detections of which exactly one was ever
+   taken.** That is not an engine verdict, it is a stop-placement finding (§9).
+7. **A ninth bucket exists.** `GDB` — 1 row, NATIONALUM, 14-Aug, `VETOED_AI`.
+   This is the "gap down > 1%" candidate approved on 5-Aug and launched on
+   10-Aug per `brain_proposals`. First detection recorded 14-Aug.
+8. **`BELOW_CONVICTION` on shorts weakens.** +1.2 → **+0.8 SE** (27.6% vs 16.7%
+   target, n=123 against a now-n=42 baseline). Pooled it holds at +1.4 SE.
+
+**HOLDS:**
+
+1. **No gate is inverted at the 2-SE bar.** The full-scale answer is the same as
+   Stage 2's, and the two buckets that now clear 2 SE clear it in the *working*
+   direction. Nothing points backwards at that bar.
+2. **`BELOW_CONVICTION` remains the single inversion candidate and remains
+   unestablished** — +1.4 SE pooled on n=366, +0.8 SE direction-matched. Stage
+   2's "the most valuable thing for Stage 3 to settle" stands, unsettled.
+3. **The allocator is neutral** — now +0.0 SE on n=91.
+4. **Every measurable engine is negative on gross R.** Six clear n=30 and all six
+   are negative. This is a signal problem, unchanged.
+5. **PRE-1 holds and is load-bearing** — `cost_pct` is still 0 on every
+   pre-cost-gate bucket (visible as `costR +0.000` throughout §5).
+6. **B.3d's warning holds.** Raw target rate is 13.9% against 16.2% deduplicated
+   on the same 8324 rows; the pseudo-replication factor is now √(8324/1102) ≈ 2.7.
+7. **No bucket meets the retirement bar.** n≥30 **and** negative gross R **and**
+   failure against a random baseline: the third condition is met by nothing here.
+
+---
+
+### 7 — B.3's QUESTION AT PROPER SCALE: THE 13.5% vs 21% GAP
+
+**The gap does not hold, and the two numbers were never in the same unit.** Four
+rates, of which only two are comparable:
+
+```
+  RAW ROWS (pseudo-replicated: one setup re-detected every 15s counts N times)
+  14-Aug, full day, raw                                  257/2289  =  11.2%
+  whole population, raw                                 1156/8324  =  13.9%
+  whole population, raw, TAKEN rows only                 152/1382  =  11.0%
+
+  DEDUP KEYS (symbol, strategy, date) — the honest denominator
+  whole population, all dedup keys                       179/1102  =  16.2%
+  14-Aug, all dedup keys                                  39/212   =  18.4%
+  whole population, TAKEN                                 36/211   =  17.1%
+  whole population, never-TAKEN                          140/891   =  15.7%
+  14-Aug, TAKEN                                            6/41    =  14.6%
+```
+
+**`174/1289 = 13.5%` is not 14-Aug's full-day rate.** It is the rate of the
+**backfilled subset** — the 1289 rows `resolve_day` could not reach behind the
+cap. 14-Aug is 2289 rows and its full-day raw rate is **11.2%** (257 TARGET /
+1465 STOP / 567 TIMEOUT). The 1000 rows already scored before the backfill hit
+~8.3%; the backfilled remainder hit ~13.5%. Deduplicated — the only construction
+in which the number means anything — **14-Aug is 18.4%, the best session in the
+back half of the book**, not the worst.
+
+**`21%` is `11/53` from Stage 1 A.1** — TAKEN detections that became *real
+positions*. It is a dedup rate on n=53, not a raw rate, and not the TAKEN
+population. At full scale the TAKEN population is **17.1% (36/211)**.
+
+Same-unit, direction-matched, on all 8324 rows:
+
+```
+  -- LONG --
+  TAKEN LONG               29/169  = 17.2%   grossR -0.203±0.095
+  never-TAKEN LONG         80/535  = 15.0%   grossR -0.268±0.055   dR -0.065 = -0.6 SE   tgt -2.2pp
+  -- SHORT --
+  TAKEN SHORT               7/42   = 16.7%   grossR +0.108±0.167
+  never-TAKEN SHORT        60/356  = 16.9%   grossR -0.116±0.076   dR -0.225 = -1.2 SE   tgt +0.2pp
+```
+
+**Direction-matched, the taken and refused halves of the book are the same
+population.** −0.6 SE on longs, −1.2 SE on shorts, both leaning the working way.
+There is no 7.5-point gap to explain: the gap was an artifact of comparing a raw
+subset rate against a dedup sub-sub-population rate, which is exactly the trap
+B.3d was written to record.
+
+Per-session, deduplicated, for whoever wants the shape:
+
+```
+  date          keys    tgt%  taken    tgt%  grossR(all)  grossR(taken)
+  2026-07-28      18   16.7%     15   20.0%       -0.307         -0.168
+  2026-07-29       5   60.0%      1  100.0%        1.288          2.503
+  2026-07-30      15   13.3%      7   28.6%       -0.419         -0.072
+  2026-07-31      59   22.0%     21   14.3%        0.012         -0.317
+  2026-08-03      50   14.0%     11   27.3%       -0.233          0.024
+  2026-08-04      26    3.8%      8    0.0%       -0.630         -0.360
+  2026-08-05      25   12.0%     12   16.7%       -0.344         -0.375
+  2026-08-06      78   12.8%     10   10.0%       -0.305         -0.358
+  2026-08-07      57   17.5%     16   31.2%       -0.096          0.366
+  2026-08-10      77   13.0%     18   16.7%       -0.347         -0.204
+  2026-08-11      50   14.0%      4   25.0%       -0.230         -0.136
+  2026-08-12     251   19.5%     33   12.1%       -0.126         -0.275
+  2026-08-13     179   12.3%     14   14.3%       -0.247         -0.323
+  2026-08-14     212   18.4%     41   14.6%       -0.077          0.002
+```
+
+---
+
+### 8 — WHAT THE TRUNCATION ACTUALLY INVALIDATES
+
+Named, per the brief. The list is shorter than expected in one direction and
+worse in another.
+
+**INVALIDATED — every verdict the shipped `review_engines` has ever produced,
+and more importantly every verdict it FAILED to produce.** Replicating the
+review's own logic (`dedupe_setups`, the 0.589% tradeable floor, MIN_SAMPLE=20,
+MIN_SESSIONS=10, the hit-rate ladder) on three windows:
+
+```
+--- COMPLETE population, 14 sessions: 8324 raw -> 1102 setups ---
+  engine     all   hit  | tradeable   hit    avg%  days   verdict
+  SDN        398  17%  |        84  10%   -0.06     7   hold     84 tradeable but 7 session(s)
+  VWR        307  17%  |        84  21%   -0.23    13   SHADOW   21% of 84 — detects, does not deliver
+  VCE        138  18%  |        71  23%   -0.12    13   SHADOW   23% of 71 — detects, does not deliver
+  ORB        119  10%  |        68   7%   -0.42    12   RETIRE   7% of 68 over 12 sessions
+  RNG         60  12%  |         0   0%    0.00     0   hold     all 60 below the 0.59% floor
+  PBK         32  12%  |         1   0%   -0.59     1   hold     only 1 tradeable (31 below floor)
+  PDL         25  24%  |         0   0%    0.00     0   hold     all 25 below the 0.59% floor
+  GAP         22  23%  |        21  19%   -0.10     4   hold     21 tradeable but 4 session(s)
+  GDB          1   0%  |         1   0%   -0.60     1   hold     only 1 tradeable
+
+--- the TRUNCATED window the shipped review actually read: 1000 raw -> 187 setups ---
+  VWR         44  18%  |        18  17%   -0.32     6   hold
+  VCE         34  15%  |        21  19%   -0.31     6   hold
+  PBK         32  12%  |         1   0%   -0.59     1   hold
+  PDL         25  24%  |         0   0%    0.00     0   hold
+  ORB         23  13%  |        21  10%   -0.51     5   hold
+  GAP         22  23%  |        21  19%   -0.10     4   hold
+  RNG          7   0%  |         0   0%    0.00     0   hold
+
+  ORB  hold -> RETIRE      VWR  hold -> SHADOW      VCE  hold -> SHADOW
+  SDN  absent -> hold      GDB  absent -> hold
+```
+
+**The truncation was not producing wrong verdicts. It was producing NO
+verdicts** — `hold` on every engine, every week, for the same reason each time:
+too few tradeable outcomes, too few sessions. A review that always holds is
+indistinguishable from a review that is working and finding nothing, which is
+why this ran for ten days without anyone noticing.
+
+**It also made two engines invisible.** The first 1000 rows by id end mid-5-Aug:
+
+```
+  2026-07-28  236/236   2026-07-29  5/5     2026-07-30  45/45
+  2026-07-31  174/174   2026-08-03  135/135 2026-08-04  36/36   2026-08-05  369/530
+  engines present: GAP ORB PBK PDL RNG VCE VWR
+  engines ABSENT:  SDN (first seen 06-Aug)   GDB (first seen 14-Aug)
+```
+
+**`SDN` — the short engine, the largest bucket in the book at n=398 — has never
+once appeared in a weekly review.** The same window that hid it is the reason
+the review has never had an opinion on the entire short programme.
+
+**INVALIDATED — the silence in `brain_proposals` since 5-Aug.** The last
+`ENGINE_LIFECYCLE` proposal was `GAP -> SHADOW` on 5-Aug. The last review run was
+`weekly_20260810_225957`:
+
+```
+  created 2026-07-30  run weekly_20260731_013855  ENGINE_LIFECYCLE  PDL -> RETIRE       SUPERSEDED
+  created 2026-07-31  run weekly_20260731_154933  ENGINE_LIFECYCLE  VWR -> PROMOTE      SUPERSEDED
+  created 2026-07-31  run weekly_20260731_154933  ENGINE_PARAMETERS RNG -> widen stop   PENDING
+  created 2026-08-05  run weekly_20260805_170312  ENGINE_LIFECYCLE  GAP -> SHADOW       REJECTED
+  created 2026-07-31  run weekly_20260810_225957  ENGINE_PARAMETERS PDL -> widen stop   PENDING
+```
+
+The 10-Aug run refreshed **PDL's** parameter proposal and not **RNG's**. That is
+the truncation's fingerprint, and it is exact: in the truncated window RNG had 7
+detections, below the MIN_SAMPLE=20 that gates the "every detection is below the
+cost floor" branch, so it could not fire. On the complete population RNG has
+**60** detections, **all 60 below the floor** — the branch fires. **A real,
+actionable RNG stop-placement proposal was suppressed by the row cap on at least
+the 10-Aug run**, and the model that predicts this also predicts exactly the
+proposal set that was observed. Nothing else in the ledger explains that row.
+
+**NOT INVALIDATED — Stage 2's B.2, B.3, B.5, B.6, C.1–C.4.** §1 reproduces B.2b
+and B.3a from the complete population, to the third decimal, on every n. Stage 2
+paged. Its conclusions move only where 14-Aug moved them (§6), and it named its
+own limits correctly.
+
+**NOT INVALIDATED, BUT NOT USABLE EITHER — Stage 1's `engine_scorecard` table.**
+It was not truncated; its n per engine (15/24/41/8/49/30/2/1) match the complete
+pre-14-Aug population exactly. Its **R values** never matched Stage 2's on those
+identical n, and the cause is an estimator difference, not a population one:
+
+```
+  eng     n   scorecard estimator   Stage 1 printed    |  Stage 2 estimator
+  VWR    49                -0.261            -0.261                  -0.310
+  ORB    41                -0.241            -0.242                  -0.156
+  VCE    30                -0.337            -0.317                  -0.201
+  SDN    24                +0.032            +0.050                  +0.017
+  GAP    15                +0.061            +0.061                  +0.063
+  PDL     8                -0.048            -0.052                  -0.064
+  PBK     2                -0.682            -0.682                  -1.000
+  RNG     1                -1.035            -1.101                  -1.000
+```
+
+`_intraday_observations` takes `grp[0]` — whichever row arrived first from an
+**unsorted** read, not the earliest by `ts` — derives `risk_pct` from *that* row's
+entry/stop, then averages `outcome_pct` and `cost_pct` over the *whole* group.
+Reproducing that estimator recovers Stage 1's printed numbers (VWR −0.261 and
+GAP +0.061 and PBK −0.682 exactly); the residuals on VCE/SDN/RNG are the
+arrival-order tiebreak, **which is the point** — the estimator is not
+reproducible run to run. Stage 1 already said no engine verdict should be quoted
+from that table. That instruction now has a second, independent reason behind it.
+
+---
+
+### 9 — FOUND ALONG THE WAY
+
+**F-23 — NINE readers of `intraday_setups` are still unpaged or unsorted at
+HEAD, and one of them builds the priors.** F-19 fixed five and recorded
+`engine.py:952` as the only survivor. Enumerating every reader of this table at
+HEAD (`git grep 'table("intraday_setups")'`) and reading each one:
+
+```
+UNSORTED PAGING — right count, no guarantee which rows (the F-19 §4 hazard)
+  tools/engine_scorecard.py:55     _fetch
+  allocation/scoring.py:166        intraday_priors
+  allocation/scoring.py:1077       regime-segmented priors
+  tools/allocator_replay.py:74     _fetch_setups
+  tools/control_room.py:475        _load_setups
+
+UNPAGED — hard 1000-row cap, the original defect
+  tools/weekly_review.py:457       review_gates
+  tools/discover_engines.py:144    Pass A, refused-but-right
+  tools/discover_engines.py:274    Pass B
+  tools/simulate.py:101            the intraday engine scorecard
+  intraday/engine.py:959           runway requeue (already flagged by F-19)
+```
+
+**`allocation/scoring.py` is the serious one.** It builds `intraday_priors()` —
+the thing that prices every candidate the allocator sees — and it pages without
+a sort key. F-19 §4 states the consequence for exactly this case: the count is
+right so every sanity check passes, and the rows are silently over-weighted
+toward whatever the planner repeated, so **every prior is biased and nothing
+about its shape says so**. This is the same table, past the same cap, in the one
+consumer where a biased read reaches live sizing decisions.
+
+**`tools/simulate.py` is the one CLAUDE.md tells you to run first**, and its
+engine scorecard reads 1000 of 8324 with no paging at all — the same truncation,
+biased toward the oldest sessions, in the read-only preview the operator is
+directed to trust before changing anything.
+
+**`review_gates` decides whether a REFUSAL was correct.** Loosening a gate is a
+one-way door toward more risk, and it was deciding that on a twelfth of the
+evidence, weighted away from the recent sessions.
+
+`engine_scorecard` compounds its unsorted read with an order-dependent
+estimator: `grp[0]` is whichever row arrived first, so even a sound read leaves
+the tool non-reproducible run to run (§8). Three trials today returned 8324
+distinct, so nothing is corrupting output at this moment; F-19 measured this
+same idiom on this same table returning 5000 distinct of 8324 one day earlier.
+
+Nothing was fixed — this stage is read-only. **The count of unrepaired readers
+was checked against HEAD, not against the working tree**, which was being
+modified by another process during this session (§13).
+
+**F-24 — no intraday engine is registered in `strategy_config`.** CLAUDE.md says
+"The seven intraday engines — ORB, GAP, PDL, VCE, PBK, VWR, RNG — registered in
+`strategy_config` with a lifecycle state". The table holds twelve rows and every
+one is a swing family:
+
+```
+  ACC CTL EAP IAD MOM PEAD RSB RVS SBS SEC TPO VBD   (all ACTIVE, all enabled)
+```
+
+`review_engines` does `cur = (cfg.get(eng) or {}).get("lifecycle") or "ACTIVE"`,
+so every intraday engine reads as ACTIVE regardless of its real state, and its
+`lifecycle -> proposal` column has been printing a default rather than a fact for
+the entire life of this tool. This is the silent-default landmine. Whether
+anything downstream consumes an intraday lifecycle was **not** traced, so the
+consequence is unknown — but the printed column is not evidence of anything.
+
+**F-25 — RNG detects 60 setups and could take exactly one; PDL 25 and could take
+none.** The tradeable stop floor is 0.589% and it excludes 60/60 of RNG, 25/25 of
+PDL, 31/32 of PBK and 314/398 of SDN. These engines are not failing to deliver;
+they are proposing trades the cost model correctly refuses before they are ever
+scored. Every §3 R statistic for RNG/PDL/PBK is therefore drawn almost entirely
+from setups the system would not take today. The review's own code says this
+better than a ledger line can — its `g["n"] == 0` branch calls it a stop-placement
+problem, "not the lifecycle" — and the truncation is why it has not said so about
+RNG since 31-July.
+
+**F-26 — 14-Aug produced 2289 detections against 28-Jul's 236, and nothing has
+explained it.** Carried forward from F-19 §9 unchanged; this stage measured it
+again (14-Aug is 27.5% of the whole table and 19.2% of the dedup keys) and did
+not chase it. It is now the largest single influence on every pooled number in
+this ledger.
+
+---
+
+### 10 — INSUFFICIENT, DECLARED
+
+`n<30` on the deduplicated population, per the brief:
+
+- **Engines, all keys:** PDL (25), GAP (22), GDB (1).
+- **Engines, TAKEN side:** RNG (1), PBK (2), PDL (8), GAP (15) — four of nine
+  engines cannot have their taken half compared to their refused half at all.
+- **B.3 buckets, pooled:** BLOCKED_REENTRY (26), SHADOW (26),
+  BLOCKED_CROSS_FRAMEWORK (26).
+- **B.3 buckets, LONG:** SHADOW (26), BLOCKED_REENTRY (20),
+  BLOCKED_CROSS_FRAMEWORK (8).
+- **B.3 buckets, SHORT:** BLOCKED_CROSS_FRAMEWORK (18), BLOCKED_EVENT (7),
+  BLOCKED_REENTRY (6).
+- **B.3e:** TAKEN-but-cap-blocked (11).
+- **BLOCKED_EVENT pooled is n=37** — it clears the bar, barely, and it is the
+  bucket whose Stage 2 headline result did not survive.
+
+---
+
+### 11 — COULD NOT DETERMINE
+
+- **Whether the counterfactual outcomes would have filled.** Inherited from
+  Stage 1 and Stage 2 and it applies to every number here: `outcome_pct` is
+  simulated against bars by `outcomes.resolve_day`, with no fill, slippage or
+  queue position modelled.
+- **Whether any engine's edge is real.** Six engines clear n=30 and all six are
+  negative on gross R, but not one separates its taken half from its blocked half
+  at 2 SE, and four cannot be tested at all. This is Gate 3's question.
+- **Whether the RETIRE/SHADOW verdicts §8 forecasts are correct.** They are what
+  the review's *own logic* returns on the complete population. Whether that logic
+  is right — a hit-rate ladder on a floor-filtered subset, with no cost or R term
+  in the verdict at all — is not established here and is a separate question.
+- **Whether the intraday lifecycle column drives anything** (F-24).
+- **Whether `engine_scorecard`'s unsorted read has ever actually corrupted a
+  published number.** Three trials today were clean. Past runs cannot be replayed.
+- **Why 14-Aug produced 10× 28-Jul's detections** (F-26).
+- **Whether the regime axis is answerable yet.** Not re-checked; PRE-2 said 2 of
+  13 sessions carried `regime_at_detection` and nothing in this brief touched it.
+
+---
+
+### 12 — RECOMMENDS
+
+- **No retirements. That is Gate 3.** Stated plainly because §8 contains the
+  string "RETIRE" next to ORB, and because ORB is genuinely the weakest
+  measurable bucket (10.1% target on 119 keys, −0.241±0.100 gross R, −2.4 SE from
+  zero). It still fails the third retirement condition — failure against a random
+  baseline — which nothing in this entry tested.
+- **Expect the Sunday 16-Aug `brain_sunday_chain` to propose `ORB -> RETIRE`,
+  `VWR -> SHADOW` and `VCE -> SHADOW`.** These will be the first engine lifecycle
+  proposals since 5-Aug and the first ever written from a complete read. They go
+  to `brain_proposals` as PENDING and change nothing on their own. **Do not
+  approve them on this entry** — read them as the truncation fix working, not as
+  a verdict.
+- **Treat F-23's nine readers as one job, and start with `allocation/scoring.py`.**
+  It is the only one of them whose output reaches a live sizing decision, and an
+  unsorted paged read there biases every prior in the system with no symptom.
+  `tools/simulate.py` is second, because CLAUDE.md directs the operator to run it
+  before changing anything and it currently reads 1000 of 8324.
+- **Fix `engine_scorecard` before quoting it again** (F-23): add `.order("id")`
+  to `_fetch`, and replace `grp[0]` with the earliest row by `ts` so it agrees
+  with `dedupe_setups` and with itself between runs. Small and testable.
+- **Stop quoting `BLOCKED_EVENT` as the gate that measurably works.** It was the
+  ledger's only 2-SE result and it is now −1.8 SE. Two short gates took its place
+  and they should be quoted with their direction attached:
+  `BLOCKED_SHORTABILITY` −2.0 SE and `BLOCKED_SHORTS_OFF` −2.4 SE, **on shorts**.
+- **Carry the engine/direction collinearity forward** (§3). SDN is the short
+  book. Any future per-engine comparison that puts SDN beside a LONG engine is
+  B.3b's error on a new axis.
+- **`BELOW_CONVICTION` still needs settling and still is not settled** — +1.4 SE
+  pooled on n=366. Two full stages have now pointed at it without reaching 2 SE.
+  More sessions of the current book are not obviously going to close it; a
+  designed test might.
+- **Register the intraday engines in `strategy_config` or correct CLAUDE.md**
+  (F-24). One of the two is wrong today.
+
+### 13 — A CONCURRENT PROCESS WAS MODIFYING THIS REPO DURING THE SESSION
+
+Recorded because it governs how §0 and F-23 may be read, and because a ledger
+that does not say this leaves a future session unable to reconcile the entry
+against the commit.
+
+The working tree was clean at `git checkout -b diagnostic/engine-rescore-complete
+main`. By the time this entry was written, 30 source files were modified —
+including `backend/tools/weekly_review.py` (paging added to `review_gates`),
+`backend/allocation/hurdle.py`, `backend/allocation/scoring.py` and
+`backend/tests/test_static_analysis.py` (a new guard against unpaged reads).
+File mtimes fall inside this session's window (20:59–21:07 IST). **None of it is
+mine — this stage touched no source file** — and it was not committed here.
+
+Consequences for what is above:
+
+- **Every code claim in §0 and F-23 was verified against `HEAD`**, not the
+  working tree, and re-verified after the concurrent edits were noticed.
+  `engine_scorecard.py` is untouched by that work, so F-23's reading of it
+  stands. `review_engines`' `fetch_all` at `weekly_review.py:267` is committed in
+  `956a38b`, not a working-tree change, so §0's clearance of it stands.
+- **`review_gates` (F-23's unpaged list) is being fixed by that other work as
+  this is written.** The list is a statement about HEAD at 2026-08-15 21:00 IST
+  and will date faster than the rest of this entry. Re-derive it, do not quote
+  it.
+- **The 8324-row read predates all of it** (20:54 IST) and is a database read in
+  any case, so no number in this entry is affected.
+
+---
+
+**Gate: PASS** — both readers checked and reported before use, with the F-19
+ledger's own claim about one of them corrected; the complete 8324-row population
+paged and verified returned == distinct == server count; per-engine gross/cost/net
+R with n, deduplicated, target rates, and the TAKEN-vs-blocked split
+direction-matched, with `n<30` declared throughout and `dR` suppressed rather
+than printed where a side is too thin; Stage 2's B.2b/B.3a reproduced exactly to
+establish which prior findings the truncation does and does not invalidate; B.3's
+question answered at scale with both of the brief's input numbers restated in one
+unit; no retirement recommended.
+
+---
