@@ -5005,3 +5005,31 @@ to stumble on it. `tools.verify` 501/501, `tools.health` 21/21, `tools.simulate`
 unchanged.
 
 ---
+
+### 8 — CORRECTION TO §2 OF THIS ENTRY (same session, appended not edited)
+
+The count is wrong. §2's table says **eleven** readers and collapses the
+`lessons` rows as "x5"; the commit message repeats both. Counted from the diff
+rather than from the working notes, `7a3d94b` converts **15 previously-unpaged
+reads**, of which **8** are `lessons`:
+
+```
+lessons (8)   ai_decision_engine:544 · post_trade_analysis:275, 700, 716,
+              1406, 1416 · send_alerts:1039 · data_quality_monitor:641
+intraday_setups (4)  simulate:101 · weekly_review:457 (review_gates)
+                     discover_engines:144 (pass A) · :274 (pass B)
+signal_log (1)       performance_tracker:82
+stock_data_daily (2) performance_tracker:102 · data_aggregator:147
+```
+
+Plus the 3 hand-rolled pagers replaced (hurdle x1, scoring x2) — 18 `fetch_all`
+call sites in total.
+
+Nothing else in §2 changes: every per-reader measurement quoted there was taken
+against the live book and is unaffected, and the two 91% losses are still the
+two `stock_data_daily` chunked reads. Only the tally was wrong. Recorded here
+rather than by editing §2, because this ledger is append-only and a silently
+corrected number is worth less than a visibly corrected one — F-17 and F-1 are
+both in this file because a figure that would not reproduce was quoted forward.
+
+---
