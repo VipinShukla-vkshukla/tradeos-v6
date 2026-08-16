@@ -105,11 +105,17 @@ def _load_outcomes_for_date_range(sb, signal_date_min: date,
         # 1000 came back. 91% of the forward prices every outcome is scored
         # against were silently missing, and a symbol whose rows fell outside
         # the returned 1000 simply had no forward return at all.
-        pr = fetch_all(lambda: sb.table("stock_data_daily")
+        # `order_by` IS NOT OPTIONAL HERE. stock_data_daily has NO `id`
+        # COLUMN, so fetch_all's default key raises PostgREST 42703 on the
+        # first page. Converting this read without it turned a silent 91%
+        # truncation into a hard failure of the whole outcome scorer —
+        # verified 15-Aug-2026 by calling this function directly. (symbol,
+        # date) is unique on the table: 16,489 distinct of 16,489 rows.
+        pr = fetch_all(lambda c=chunk: sb.table("stock_data_daily")
                 .select("date,symbol,close")
-                .in_("symbol", chunk)
+                .in_("symbol", c)
                 .gte("date", str(signal_date_min))
-                .lte("date", str(look_end)))
+                .lte("date", str(look_end)), order_by="symbol,date")
         all_rows.extend(pr)
 
     if not all_rows:

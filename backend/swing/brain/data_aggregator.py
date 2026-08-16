@@ -148,11 +148,13 @@ def _compute_forward_returns(sb, signals: pd.DataFrame,
         # IN list, not the row count. 250 symbols x 60 days is 10,712 rows and
         # 1000 came back, so 91% of the price history this aggregates was never
         # read. Nothing raised; the frame was simply short.
-        rows = fetch_all(lambda: sb.table("stock_data_daily")
+        # `order_by` IS NOT OPTIONAL — see performance_tracker: this table has
+        # no `id` column and the default key raises 42703 on the first page.
+        rows = fetch_all(lambda c=chunk: sb.table("stock_data_daily")
                   .select("date,symbol,close,high,low")
-                  .in_("symbol", chunk)
+                  .in_("symbol", c)
                   .gte("date", str(min_date))
-                  .lte("date", str(max_date)))
+                  .lte("date", str(max_date)), order_by="symbol,date")
         all_price_rows.extend(rows)
 
     if not all_price_rows:

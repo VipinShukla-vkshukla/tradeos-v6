@@ -621,17 +621,12 @@ def review_ai_tier_weight(sb) -> None:
     from allocation.scoring import _dist
 
     floor = 30   # Prior's own convention: "needs 30 observations to be trusted"
-    rows, off = [], 0
-    while True:
-        page = (sb.table("signal_output_daily")
-                  .select("outcome_return_pct,outcome_entered,"
-                          "entry_zone_high,planned_stop,ai_tier")
-                  .not_.is_("outcome_category", "null")
-                  .range(off, off + 1000 - 1).execute().data) or []
-        rows += page
-        if len(page) < 1000:
-            break
-        off += 1000
+    # SORTED PAGING, (symbol, date) — signal_output_daily has no `id` column.
+    rows = fetch_all(lambda: sb.table("signal_output_daily")
+                     .select("outcome_return_pct,outcome_entered,"
+                             "entry_zone_high,planned_stop,ai_tier,symbol,date")
+                     .not_.is_("outcome_category", "null"),
+                     order_by="symbol,date")
 
     by_tier: dict[str, list[float]] = defaultdict(list)
     for r in rows:
@@ -709,16 +704,12 @@ def review_swing_family_maturity(sb) -> None:
     _hdr("SWING FAMILY MATURITY — ready for Point 5 prerequisites?")
     from allocation.scoring import swing_family
 
-    rows, off = [], 0
-    while True:
-        page = (sb.table("signal_output_daily")
-                  .select("strategy,outcome_entered,outcome_category")
-                  .eq("outcome_entered", True)
-                  .range(off, off + 1000 - 1).execute().data) or []
-        rows += page
-        if len(page) < 1000:
-            break
-        off += 1000
+    # SORTED PAGING, (symbol, date) — signal_output_daily has no `id` column.
+    rows = fetch_all(lambda: sb.table("signal_output_daily")
+                     .select("strategy,outcome_entered,outcome_category,"
+                             "symbol,date")
+                     .eq("outcome_entered", True),
+                     order_by="symbol,date")
 
     if not rows:
         logger.info("  no entered signals found — nothing to measure")
@@ -790,16 +781,9 @@ def review_swing_reservation_engagement(sb, days: int = 14) -> None:
     """
     _hdr("SWING RESERVATION — is the multiple actually engaging?")
     since = (today_ist() - timedelta(days=days)).isoformat()
-    rows = []
-    off = 0
-    while True:
-        page = (sb.table("allocation_decisions").select("verdict")
-                  .eq("framework", "SWING").gte("trade_date", since)
-                  .range(off, off + 1000 - 1).execute().data) or []
-        rows += page
-        if len(page) < 1000:
-            break
-        off += 1000
+    # SORTED PAGING — allocation_decisions is 20,873 rows.
+    rows = fetch_all(lambda: sb.table("allocation_decisions").select("verdict,id")
+                     .eq("framework", "SWING").gte("trade_date", since))
 
     total = len(rows)
     if total == 0:

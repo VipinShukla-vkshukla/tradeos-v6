@@ -5033,3 +5033,437 @@ corrected number is worth less than a visibly corrected one — F-17 and F-1 are
 both in this file because a figure that would not reproduce was quoted forward.
 
 ---
+
+## 2026-08-15 — F-23 reconciliation + the price re-score — the priority reader was already fixed, three survivors were not, the guard left behind could not see either of the two families it was built for, and the previous session's headline fix does not run at all
+
+**Branch:** `diagnostic/rescore-complete-prices`, off `main` at `03b3529` (all
+session work merged to main first; `fix/single-daemon-lease` deliberately NOT
+merged — see §9). `python -m tools.verify` → **all 502 checks passed across 58
+modules**. `python -m tools.health` → **22 checks, 1 problem: `quote_parity`,
+which is this entry's F-27 and is the check finally telling the truth**.
+`python -m tools.simulate` → SWING LIVE 6 positions, 8 buyable plans, unchanged.
+
+READ-ONLY on outcome DATA: nothing re-resolved, nothing written back. Every
+number below is computed and printed.
+
+---
+
+### 0 — F-23, RECONCILED AGAINST HEAD
+
+F-23 listed its readers under a heading saying **NINE**; the code block beneath
+it holds **TEN** entries. The tenth (`engine.py:959`) is annotated "already
+flagged by F-19", so the count is either an off-by-one or an unstated exclusion
+— the same species of tally error §8 of the previous entry corrected about
+itself. Recorded, not guessed at.
+
+Each of the ten, checked against `HEAD` rather than against the prose:
+
+```
+FIXED BY SESSION 2 (6)
+  allocation/scoring.py:166   intraday_priors       <== F-23's OWN PRIORITY
+  allocation/scoring.py:1077  regime-segmented priors
+  tools/weekly_review.py:457  review_gates
+  tools/discover_engines.py:144  pass A
+  tools/discover_engines.py:274  pass B
+  tools/simulate.py:101       engine scorecard
+
+EXEMPT, WITH A MEASUREMENT (1)
+  intraday/engine.py:959      runway requeue — `paging-exempt:`, 15 rows
+
+STILL OPEN AT HEAD (3)  — all three fixed by this entry
+  tools/engine_scorecard.py:55   _fetch
+  tools/allocator_replay.py:74   _fetch_setups
+  tools/control_room.py:475      _load_setups
+```
+
+**The brief asked to prioritise `allocation/scoring.py:166` and fix it if still
+open. It is not still open.** Session 2 converted it to `config.fetch_all` and
+left the reasoning in place above the call. The thing F-23 called "the serious
+one" — the prior that prices every candidate the allocator sees — was repaired
+before this session started. Stating that plainly matters more than finding
+something to do to it.
+
+### 1 — THE THREE SURVIVORS, MEASURED BEFORE BEING TOUCHED
+
+Each reproduced exactly as it stood at HEAD, three trials, against
+`count=exact`:
+
+| reader | true rows | unsorted trials (rows / distinct) | lost |
+|---|---|---|---|
+| `engine_scorecard._fetch` | 8324 | 8324/8324 · 8324/8324 · 8324/8324 | — |
+| `allocator_replay._fetch_setups` | 8324 | **8324/5000** · 8324/8324 · 8324/8324 | **3324** |
+| `control_room._load_setups` | 7864 | **7864/5000** · 7864/7864 · 7864/7864 | **2864** |
+
+**Two of the three broke live, on the first trial.** The previous entry could
+only say of this idiom that it "came back clean this time"; here it did not.
+The count is right in both the good and the bad trial, which is the entire
+defect — 3,324 rows arrived twice and 3,324 never arrived, and nothing about
+the shape of the result says so.
+
+`control_room`'s companion read of `closed_positions` carries `.limit(1000)`
+and is bounded in fact: 148 rows over the 365-day filter. Checked, not assumed.
+
+### 2 — F-23 CENSUSED ONE TABLE. THE IDIOM WAS ON SIX.
+
+F-23 enumerated its readers with `git grep 'table("intraday_setups")'`. That is
+a census of one table, and the finding's scope silently became the scope of its
+grep. Scanning for the *idiom* instead — a `.range()` pager with no `.order()`,
+any table — found **21 sites**, of which ten read a table over the cap:
+
+```
+PRODUCTION
+  allocation/scoring.py:528   swing_priors()      <== THE LIVE SWING BOOK'S PRIOR
+  allocation/scoring.py:847   tier weight
+  allocation/scoring.py:955   rr fallback
+  swing/signals/engines_stage8.py:195  PEAD results-day bars (stock_data_daily)
+  swing/signals/outcomes.py:272        status report
+  allocation/outcomes.py:93 · allocation/swing_hold_days.py:71  (closed_positions)
+TOOLS
+  hurdle_population_audit:67 · swing_family_maturity_audit:59
+  weekly_review:626 · :714 · :796 · benchmark:82 · exit_ladder_replay:118
+  expectancy_ledger:102 · exit_audit:78 · taken_reconciliation:71
+  quote_parity:229 · backup:84 · :124 · health:684
+```
+
+**`swing_priors()` is the exact counterpart of the reader F-23 called "the
+serious one", on the LIVE book, and F-23 could not see it because it reads a
+different table.** Measured: its population is 1,681 rows (two pages), clean on
+three trials — lower exposure than the intraday side, not zero.
+
+**`taken_reconciliation._rows` pages `intraday_setups` itself** — 8,324 rows,
+the very table F-23 censused — and was invisible to that census because the
+table name is a *parameter*, `sb.table(table)`. So was
+`engine_scorecard._fetch`, one of the two readers that measured a live loss.
+
+**`intraday_quote_parity` is 178,545 rows** — by a wide margin the largest table
+in this schema, absent from the previous session's `_LARGE_TABLES` list, and
+paged unsorted across 179 pages by `quote_parity.report()`. A "known large
+tables" list is only as good as the census behind it.
+
+All 21 now go through `config.fetch_all`. Four kept their hand-rolled form
+behind an explicit `sort-exempt:` marker with its measurement (`v_storage_usage`
+is a 56-row catalogue view).
+
+**`signal_output_daily` has no `id` column**, so eight of these conversions had
+to pass `order_by="symbol,date"` — verified unique, 2430 distinct of 2430.
+`fetch_all`'s default would have raised on every one of them. That detail is
+not incidental; it is §6.
+
+### 3 — THE GUARD SESSION 2 LEFT COULD NOT SEE EITHER FAMILY
+
+`test_no_unpaged_read_of_a_table_that_exceeds_the_row_cap` is a good check for
+the defect it was built for, and it has two structural blind spots:
+
+- **`.range(` is treated as evidence of boundedness** (`if re.search(r'\.(limit|
+  range|single|maybe_single)\(...')`). Correct for truncation; it means the
+  entire *unsorted-paging* family — every reader in §1 and §2 — is invisible to
+  it. F-23 named that family and the guard written alongside F-23 does not
+  watch it.
+- **It matches `.table("literal")` only**, so the two variable-name readers
+  above are not merely unflagged, they are not even counted in `scanned`.
+
+`tests/test_static_analysis.py::test_no_range_pager_without_a_sort_key` closes
+both. **Demonstrated failing** by reverting `quote_parity.py`:
+
+```
+guard FIRED as it should:
+  tools/quote_parity.py:236 pages intraday_quote_parity with no sort key
+```
+
+**Its anti-vacuous guard is a positive control, not a row count, and that is a
+correction to the pattern this project has been using.** The sibling check
+asserts `scanned > 40`, which is sound because reads of large tables are
+plentiful and stay plentiful. That reasoning does not transfer: *this* check's
+own fixes DELETE `.range()` sites, so the population it counts shrinks every
+time it succeeds. The scan went **19 → 10** in this session. A floor set from
+the "before" number fails on the "after" — and the obvious repair, lowering the
+floor until it passes, is how a threshold becomes decoration. It asserts
+instead that the detector still flags a known-bad sample and still passes a
+known-good one, neither of which erodes.
+
+### 4 — F-27: `health.check_quote_parity` WAS GREEN ON 0.6% OF ITS EVIDENCE
+
+Adding `intraday_quote_parity` to the large-table list immediately surfaced an
+unpaged read the previous census never had a reason to look at:
+`tools/health.py:895`. Its 5-day window is **167,025 rows**. Unpaged, PostgREST
+returned 1,000.
+
+Both verdicts computed from the same cutoff, same function, 15-Aug-2026:
+
+```
+truncated (1000 rows)   True   "400 day_high/day_low comparisons, all clean"
+complete  (100,215)     False  "176 of 66810 day_high/day_low comparisons behind"
+```
+
+**The check has been reporting RANGE clean while RANGE was regressed, and
+`intraday_quote_mode_range` is ON and trusted on that all-clear.** This is the
+sixth green-while-broken check found in this project and it fits the house
+description exactly: it *could* fail, but never on the evidence it was handed.
+
+Fixed by filtering to the three fields the verdicts actually read — the other
+~66,810 rows were fetched and discarded in Python — and paging. Costs ~8s. A
+health check that takes eight seconds and tells the truth is worth more than an
+instant one that says what you hoped.
+
+`health` now reports **1 PROBLEM: quote_parity**. That is not a regression
+introduced here; it is a real fault that was already true this morning and is
+now visible. **It is unexplained and worth the operator's attention.**
+
+### 5 — F-28: SESSION 2's HEADLINE FIX DOES NOT RUN
+
+The previous entry's worst finding was the two 91% price losses —
+`data_aggregator` and `performance_tracker`, "the forward-price history every
+swing outcome is scored against". Both were converted to `fetch_all(...)` with
+no `order_by`.
+
+**`stock_data_daily` has no `id` column.** `fetch_all` defaults to `id`.
+PostgREST answers a sort on a missing column with 42703 and fails the WHOLE
+query.
+
+Verified by calling the production function directly, not by reading it:
+
+```
+>>> _load_outcomes_for_date_range(sb, date(2026,5,1), date(2026,8,10), 5)
+RAISED: APIError {'code': '42703', 'message': 'column stock_data_daily.id does not exist'}
+```
+
+So the swing brain's forward-return scorer went from silently reading 9% of the
+prices to reading none and raising. Both call sites fixed with
+`order_by="symbol,date"` (unique: 16,489 of 16,489).
+
+Audited against the live schema, every `fetch_all` site in the backend: **2 of
+45 wrong, 43 fine** — the ratio that survives review by eye.
+
+`health.check_sort_keys` is new and is a live schema probe, because "the code
+names this column" and "this column exists" are different claims and only one is
+answerable offline. `check_selects` cannot cover this: it validates columns
+named in `.select()`, and a sort key is a Python argument supplied by a default
+the call site never writes down. **Demonstrated failing**, then passing:
+
+```
+REVERTED -> FAIL: performance_tracker.py:114 sorts stock_data_daily on ['id'] which it does not have
+RESTORED -> PASS: all 45 fetch_all reads sort on a column that exists
+```
+
+### 6 — THE RE-SCORE: THE PREMISE IS WRONG, AND THE REAL ANSWER IS NARROWER
+
+The brief states the truncation means "every swing R figure in this ledger may
+be wrong, including the live book's". That is a claim about a DEPENDENCY, and it
+was tested rather than assumed. There are two different swing "R" populations:
+
+**A — `closed_positions.r_multiple`.** From `position_lifecycle.py:880`:
+
+```python
+risk   = D.risk_per_share(entry, stop0, d)
+r_mult = round((realized_pnl / total_qty) / risk, 3)
+```
+
+`realized_pnl` is built from the ACTUAL FILL prices; `risk` from
+`planned_stop`. **No `stock_data_daily` anywhere in it.** And neither
+`tools/expectancy_ledger.py` nor `tools/unit_economics.py` — the two tools every
+swing R figure in this ledger is quoted from — reads that table at all (0
+occurrences; they touch `closed_positions`, `signal_output_daily`,
+`system_config`).
+
+⇒ **No closed swing position's R changes. Not one, gross or net. The 91%
+truncation cannot have touched any swing R figure in this ledger, including the
+live book's.**
+
+**B — plan-level `outcome_*`,** scored FROM prices by `performance_tracker`.
+That is the population the truncated readers actually feed, and there the effect
+is not bias but annihilation. Same function, same window
+(2026-05-01..08-10, horizon 5), price fetch switched:
+
+```
+TRUNCATED   2,000 price rows    0 of 3896 signals scored   (0.0%)
+COMPLETE   21,656 price rows  3818 of 3896 signals scored  (98.0%)
+                              mean fwd +0.152%  hit 21.5%  loss 10.4%
+```
+
+Note this is the path that has been RAISING since §5's defect landed, so it has
+most recently produced neither number.
+
+The swing outcome resolver that actually writes `outcome_category` —
+`swing/signals/outcomes.py:82` — was never in this blast radius: it pages, and
+it sorts. See §9 for the one thing wrong with it.
+
+**Per trade.** 82 closed SWING positions; 12 carry the `planned_stop_at_entry`
+needed to express R. "recorded" is the fill-derived figure; "re-scored" walks
+the complete price frame to the close on the recorded exit date — a DIFFERENT
+measurement, not a correction of the first.
+
+```
+symbol       exit         recorded   truncated   complete
+PPLPHARMA    2026-07-30      2.095       n/a        1.956
+GABRIEL      2026-07-31      0.192       n/a        0.330
+BHEL         2026-08-03      0.081       n/a        0.160
+TRAVELFOOD   2026-08-06      0.267       n/a       -0.293
+KIMS         2026-08-06      0.394       n/a        0.278
+ETERNAL      2026-08-10      0.289       n/a        0.189
+CIPLA        2026-08-10      0.089       n/a       -0.028
+VIJAYA       2026-08-12      0.452       n/a        1.076
+MANAPPURAM   2026-08-14     -0.750       n/a       -0.659
+PPLPHARMA    2026-08-14      0.863       n/a        0.694
+AIIL         2026-08-14      0.377       n/a        0.238
+AUBANK       2026-08-14      0.366       n/a        0.409
+```
+
+**The truncated frame priced ZERO of the twelve.** Under truncation these trades
+have no re-scored R at all — again absent, not wrong.
+
+**Aggregate.**
+
+```
+recorded (fills)        n=12   gross R +0.3929   hit 91.7%
+re-scored COMPLETE      n=12   gross R +0.3625   hit 75.0%
+re-scored TRUNCATED     n=0    —
+net R (recorded)        n=12   net   R +0.2568   hit 66.7%
+```
+
+`tools.expectancy_ledger`, authoritative, agreeing to the third decimal:
+
+```
+· SWING / CNC (n=12)
+  gross R          n=12  mean +0.393 ±0.188  median +0.328
+  friction, in R   n=12  mean +0.171 ±0.055  median +0.113
+  NET R  <- number n=12  mean +0.222 ±0.197  median +0.151
+  SWING CNC by rupees: n=82  net-win 34/82
+```
+
+### 7 — LEDGER FINDINGS WHOSE NUMBERS CHANGE, AND WHY
+
+**None of them change because of the truncation.** They change because the book
+grew from 8 R-computable swing trades to 12.
+
+| finding | was | is now |
+|---|---|---|
+| Stage 1 "+0.482 gross R (n=8)" | +0.482, n=8 | **+0.393, n=12** |
+| line 297 "SWING / CNC (n=8) NET R mean +0.278" | +0.278, n=8 | **+0.222, n=12** |
+| Stage 2b / C.4 "SWING 39.7% (n=78)" | 39.7%, n=78 | **41.5% (34/82)** |
+| the "zero losers" caveat (line ~1467) | 8 of 8 gross winners | **VOID — 11 of 12** |
+
+**The "zero losers" caveat is the one that matters.** The ledger has repeatedly
+and correctly refused to call +0.482R an estimate of swing edge because the
+subsample contained no losing trade. It now contains one — MANAPPURAM, −0.750,
+14-Aug. The caveat as written is no longer true; the *caution* it encodes still
+is, at n=12 with one loser.
+
+**`tools/unit_economics.py` hardcodes `SWING 39.7% (n=78)` in a log line.** It
+prints a measured-sounding figure that is now a literal. Not fixed here — it is
+a one-line change in a tool this ledger quotes, and it should be changed
+deliberately rather than as a side effect of a paging session.
+
+### 8 — DISCOVER_ENGINES: BOTH HYPOTHESES SURVIVE
+
+Re-run at `--days 30` to match Stage 1's window, because the tool now defaults
+to 14 and comparing across windows would measure the window, not the fix.
+
+```
+                        STAGE 1 (truncated)        NOW (complete)
+pass A population       1000 -> 236 -> 99          8324 -> 1102 -> 330
+taken baseline          21% (n=53)                 19% (n=121)
+refused slices beating  none                       BLOCKED_EVENT/VWR 33% of 6
+gap up   > 1%           lift 1.6x (32% of 95)      lift 1.8x (35% of 89)
+                        24 missed, avg 6.06%       23 missed, avg 5.10%
+gap down > 1%           lift 1.9x (39% of 31)      lift 1.9x (38% of 32)
+                        11 missed, avg 4.86%        7 missed, avg 4.06%
+```
+
+**H1 survives and strengthens: 1.6x → 1.8x. H2 survives unchanged at 1.9x.
+Neither is void.**
+
+**And the reason is worth recording, because it corrects the previous entry's
+reasoning about its own fix.** Session 2 argued pass B's truncation "inverts the
+tool — the better the engines get the more it invents". Directionally right;
+quantitatively small here. The LIFT is computed from `stock_data_daily` bars and
+never touched `intraday_setups` at all — only the MISSED counts read `seen`. So
+truncation could never have manufactured a lift, only inflated a miss count, and
+it did: gap-down 11 → 7 (36% overstated), gap-up 24 → 23 (4%). The hypotheses
+were never the fragile part.
+
+**What did change is Stage 1's pass A conclusion.** It read "no refused slice
+beats the taken baseline — the gates are declining worse setups than they
+allow, which is their job", and was cited as "independent evidence that the
+gates are not inverted". On the complete population one slice does beat it
+(`BLOCKED_EVENT`/VWR, 33% of 6; at 14d also `BLOCKED_STRUCTURE`/VCE, 27% of 11).
+At n=6 and n=11 this is not evidence of anything and must not be acted on — but
+the sentence as written is no longer supported.
+
+Two `ENGINE_CANDIDATE` rows written (id 192, 193), both `PENDING`. Nothing
+auto-applied.
+
+### 9 — `outcomes_watch`: INSTALLED, CORRECTLY WIRED, HAS NOT FIRED
+
+**Installed — verified against the remote, not the working tree.** Only the
+default branch is ever scheduled, so the working tree proves nothing:
+
+```
+origin/main blob .github/workflows/brain_scheduler.yml
+  cron: '30 3 * * *'   # 09:00 IST, daily
+  job outcomes_watch:  if github.event.schedule == '30 3 * * *'   <- exact match
+  workflow_dispatch options include outcomes_watch  <- manually triggerable
+  runs: python -m intraday.outcomes --check-and-alert
+```
+
+The gate string and the cron string match exactly. In a multi-cron workflow a
+mismatch there is the standard way a job is scheduled and never runs; it is not
+the failure here.
+
+The entrypoint exists and was executed:
+`outcomes: every past session is scored`.
+
+**Has not fired, and could not have.** The commit that added it, `956a38b`,
+landed **2026-08-15 20:38:56 IST** — about eleven and a half hours after today's
+09:00 window. First possible run is **16-Aug 09:00 IST**.
+
+**Not verified from run history.** There is no `gh` CLI and no GitHub token in
+this environment, so the Actions log was not read. "Has never fired" is inferred
+from the commit timestamp — which is decisive for today and is not the same
+claim as having seen an empty run list. First proof remains its 09:00 IST run.
+
+### 10 — RECOMMENDS
+
+**No retirements**, per the brief and independently on the evidence: the two
+pass-A slices that beat baseline sit at n=6 and n=11, and F-25's stop-floor
+finding still means several engines' R statistics describe setups the cost model
+would refuse today.
+
+### 11 — NOT DONE
+
+- **`swing/signals/outcomes.py:82` pages on `.order("date")` — a NON-UNIQUE
+  key.** Ties within a date are ordered arbitrarily across requests, so the same
+  drift is available to it; it is a weaker version of the §1 defect, not an
+  instance of safety. Measured over a 250-symbol / 14-page window: 13,451 of
+  13,451 distinct on two trials, both orderings. **Not fixed — this is the
+  outcome resolver and the brief is READ-ONLY on outcomes.** The new static
+  check does NOT catch it: it tests for the presence of `.order(`, not for the
+  uniqueness of what is ordered on. That is the next member of this family.
+- **The `quote_parity` RANGE regression (§4) is real and unexplained.** 176 of
+  66,810 day_high/day_low comparisons are behind, against a clean 07-Aug
+  baseline. `intraday_quote_mode_range` is ON.
+- **`tools/unit_economics.py`'s hardcoded `SWING 39.7% (n=78)`** (§7).
+- **`local main is 3 commits ahead of origin/main` and unpushed**, so none of
+  this session's or the previous session's fixes are on the branch GitHub
+  actually schedules from. `outcomes_watch` itself IS there; the paging fixes
+  the weekly jobs depend on are not.
+- **`fix/single-daemon-lease` is still unmerged** — one commit, `e5738a7`,
+  carrying migration 077 and `order_manager` changes. Promoting a live-order
+  path and a DB migration is a different decision from consolidating diagnostic
+  work, and it conflicts in `FINDINGS.md`. Left for the operator.
+- **Nothing addresses why 14-Aug produced 2289 detections** against 28-Jul's
+  236. Unchanged and still the largest single influence on every pooled number
+  in this ledger.
+
+**Gate: PASS** — F-23 reconciled against HEAD line by line with its own count
+corrected, the three survivors measured breaking live before being repaired, the
+idiom traced past F-23's one-table census to twenty-one sites on six tables
+including the live swing prior, a guard added for the family the previous guard
+could not see and given a positive control instead of a threshold its own
+successes erode, a health check found green on 0.6% of its evidence and now
+failing truthfully, the previous session's headline fix found non-functional and
+repaired with a schema probe that would have caught it, the re-score's premise
+tested and shown not to reach closed-position R, and both discovery hypotheses
+confirmed to survive. `tools.verify` 502/502, `tools.health` 22 checks / 1 real
+problem, `tools.simulate` unchanged.
+
+---

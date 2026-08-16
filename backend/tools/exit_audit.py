@@ -60,7 +60,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import get_supabase
+from config import get_supabase, fetch_all
 
 PAGE = 1000
 
@@ -72,16 +72,14 @@ MIN_RISK_PCT = 0.15
 MAX_PLAUSIBLE_R = 15.0
 
 
-def _rows(sb, table: str, cols: str) -> list[dict]:
-    out, off = [], 0
-    while True:
-        page = (sb.table(table).select(cols)
-                .range(off, off + PAGE - 1).execute().data) or []
-        out += page
-        if len(page) < PAGE:
-            break
-        off += PAGE
-    return out
+def _rows(sb, table: str, cols: str, order_by: str = "id") -> list[dict]:
+    # SORTED PAGING. `order_by` is a PARAMETER because this helper is called on
+    # both `closed_positions` (has `id`) and `open_positions` (does NOT — it is
+    # keyed on (symbol, product) since migration 028, and asking for `id` there
+    # raises 42703). A hardcoded sort key would have swapped a silent wrong
+    # answer for a loud crash on the live book.
+    return fetch_all(lambda: sb.table(table).select(cols),
+                     page=PAGE, order_by=order_by)
 
 
 def _f(v, default=None):
@@ -95,7 +93,8 @@ def check_open_stops(sb) -> int:
     """(a) — is any OPEN position already past the stop it was given?"""
     rows = _rows(sb, "open_positions",
                  "symbol,framework,product,direction,entry_price,current_price,"
-                 "planned_stop,active_sl,status,current_qty,actual_qty,unrealized_pnl")
+                 "planned_stop,active_sl,status,current_qty,actual_qty,unrealized_pnl",
+                 order_by="symbol")   # no `id`: keyed on (symbol, product)
     live = [r for r in rows if (r.get("status") or "").upper() == "ACTIVE"]
     if not live:
         logger.info("  no ACTIVE positions")
@@ -173,7 +172,7 @@ def audit_closed(sb, book: str | None, days: int | None = None) -> None:
                  "symbol,framework,direction,entry_price,exit_price,r_multiple,"
                  "exit_reason,max_favorable_excursion,max_adverse_excursion,"
                  "planned_stop_at_entry,planned_target_at_entry,realized_pnl,"
-                 "charges,exit_date")
+                 "charges,exit_date,id")
     if book:
         rows = [r for r in rows if (r.get("framework") or "SWING").upper() == book.upper()]
 

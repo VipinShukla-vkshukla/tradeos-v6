@@ -224,15 +224,16 @@ def _vwap_engine_relevance(diffs: list[float]) -> None:
 
 
 def report(sb) -> int:
-    rows, off = [], 0
-    while True:
-        page = (sb.table("intraday_quote_parity")
-                  .select("symbol,field,live_value,fetched_value,diff_pct,ts")
-                  .range(off, off + 999).execute().data) or []
-        rows += page
-        if len(page) < 1000:
-            break
-        off += 1000
+    from config import fetch_all
+    # SORTED PAGING. `intraday_quote_parity` is 178,545 rows — 179 pages,
+    # measured 15-Aug-2026, the largest paged read in this codebase and one
+    # this project's large-table list did not even name. Unsorted, 179
+    # LIMIT/OFFSET windows over a table the daemon is actively appending to is
+    # the worst case for offset drift, and this is the report that decides
+    # whether live quotes agree with fetched ones.
+    rows = fetch_all(lambda: sb.table("intraday_quote_parity")
+                     .select("symbol,field,live_value,fetched_value,diff_pct,"
+                             "ts,id"))
 
     if not rows:
         logger.error("  no parity rows collected")

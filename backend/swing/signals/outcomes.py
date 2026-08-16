@@ -62,7 +62,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from loguru import logger
-from config import cfg_int, get_supabase, today_ist
+from config import cfg_int, get_supabase, today_ist, fetch_all
 
 
 PAGE = 1000
@@ -267,15 +267,12 @@ def status(sb) -> None:
                        "built from it would be fabricated. Run without --status.")
         return
     import collections
-    rows, off = [], 0
-    while True:
-        page = (sb.table("signal_output_daily").select("outcome_category,outcome_return_pct")
-                  .not_.is_("outcome_category", "null")
-                  .range(off, off + PAGE - 1).execute().data) or []
-        rows += page
-        if len(page) < PAGE:
-            break
-        off += PAGE
+    # SORTED PAGING, (symbol, date) — this table has no `id` column. Read-only
+    # status reporting; the resolution path above is untouched.
+    rows = fetch_all(lambda: sb.table("signal_output_daily")
+                     .select("outcome_category,outcome_return_pct,symbol,date")
+                     .not_.is_("outcome_category", "null"),
+                     page=PAGE, order_by="symbol,date")
     c = collections.Counter(r["outcome_category"] for r in rows)
     for k, n in c.most_common():
         rs = [float(r["outcome_return_pct"]) for r in rows

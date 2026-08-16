@@ -49,7 +49,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from loguru import logger
-from config import cfg_float, cfg_int, get_supabase, today_ist
+from config import cfg_float, cfg_int, get_supabase, today_ist, fetch_all
 
 
 def _results_dates(sb, lookback_days: int = 30) -> dict[str, str]:
@@ -189,19 +189,20 @@ def run_pead(stock_map: dict, sector_rank: dict, sb=None) -> dict:
     reaction: dict[tuple[str, str], float] = {}
     syms = [x for x in stock_map if x.upper() in events]
     try:
+        # SORTED PAGING. The chunk size is PostgREST's IN-list limit and has
+        # nothing to do with the 1000-row cap: 60 symbols across a window*4-day
+        # window is several thousand rows, so this pages — and it paged with no
+        # ORDER BY, which can repeat rows and skip others at a stable total.
+        # A skipped row here is a results-day bar that silently does not exist,
+        # and PEAD then scores that name with no reaction at all.
         for i in range(0, len(syms), 60):
-            off = 0
-            while True:
-                rows = (sb.table("stock_data_daily")
-                          .select("symbol,date,pct_change,delivery_pct")
-                          .in_("symbol", syms[i:i + 60])
-                          .gte("date", since).range(off, off + 999).execute().data) or []
-                for r in rows:
-                    reaction[(r["symbol"], str(r["date"])[:10])] = (
-                        float(r.get("pct_change") or 0), float(r.get("delivery_pct") or 0))
-                if len(rows) < 1000:
-                    break
-                off += 1000
+            chunk = syms[i:i + 60]
+            for r in fetch_all(lambda c=chunk: sb.table("stock_data_daily")
+                               .select("symbol,date,pct_change,delivery_pct")
+                               .in_("symbol", c).gte("date", since),
+                               order_by="symbol,date"):
+                reaction[(r["symbol"], str(r["date"])[:10])] = (
+                    float(r.get("pct_change") or 0), float(r.get("delivery_pct") or 0))
     except Exception as e:
         logger.warning(f"  PEAD: results-day bars unavailable ({e}) — engine produces nothing")
         return {}

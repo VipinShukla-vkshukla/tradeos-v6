@@ -113,6 +113,87 @@ def check_selects() -> tuple[bool, str]:
     return True, "every SELECT names columns that exist (checked strictly)"
 
 
+def check_sort_keys() -> tuple[bool, str]:
+    """
+    Does every `fetch_all` sort on a column that actually exists?
+
+    THIS IS check_selects' BLIND SPOT, AND IT COST THE SWING OUTCOME SCORER.
+
+    `fetch_all(order_by="id")` is the default, and `id` is not universal in this
+    schema: `stock_data_daily`, `signal_output_daily`, `open_positions` and the
+    views have no such column. PostgREST answers a sort on a missing column with
+    42703 and fails the WHOLE query, so the reader returns nothing at all.
+
+    `check_selects` cannot see this. It validates the columns named in
+    `.select()`; the sort key is an ARGUMENT to a Python function, never appears
+    in a select string, and is supplied by a default the call site does not
+    write down.
+
+    Found 15-Aug-2026: the previous session converted the two 91%-truncating
+    price reads — its own headline fix, "the worst thing found in this stage" —
+    to `fetch_all` without a sort key. Both read `stock_data_daily`. Calling
+    `performance_tracker._load_outcomes_for_date_range` raised 42703 on the
+    first page, so the swing brain's forward-return scorer went from silently
+    reading 9% of the prices to reading none and raising. Two of 45 call sites
+    were wrong and 43 were fine, which is exactly the ratio that survives
+    review by eye.
+
+    A live schema probe, not a grep: "the code names this column" and "this
+    column exists" are different claims, and only one of them can be checked
+    offline.
+    """
+    import re as _re
+    from pathlib import Path as _Path
+    from config import get_supabase
+    sb = get_supabase()
+    root = _Path(__file__).resolve().parent.parent
+
+    seen: dict[str, set] = {}
+
+    def _cols(table: str) -> set:
+        if table not in seen:
+            try:
+                r = sb.table(table).select("*").limit(1).execute().data
+                seen[table] = set(r[0].keys()) if r else set()
+            except Exception:
+                seen[table] = set()
+        return seen[table]
+
+    bad, checked = [], 0
+    for path in sorted(root.rglob("*.py")):
+        if any(x in path.parts for x in ("__pycache__", "db")) or " - Copy" in path.name:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for m in _re.finditer(r'fetch_all\(', text):
+            seg = text[m.end():m.end() + 700]
+            tm = _re.search(r'\.table\(\s*["\'](\w+)["\']\s*\)', seg)
+            if not tm:
+                continue
+            table = tm.group(1)
+            cols = _cols(table)
+            if not cols:                      # empty or unreadable — cannot judge
+                continue
+            checked += 1
+            ob = _re.search(r'order_by\s*=\s*["\']([^"\']+)["\']', seg)
+            key = ob.group(1) if ob else "id"
+            missing = [k.strip() for k in key.split(",") if k.strip() not in cols]
+            if missing:
+                line = text[:m.start()].count("\n") + 1
+                bad.append(f"{path.relative_to(root).as_posix()}:{line} sorts "
+                           f"{table} on {missing} which it does not have")
+
+    # A SCANNER THAT MATCHES NOTHING PASSES FOREVER.
+    if checked < 20:
+        return False, (f"only {checked} fetch_all call sites were resolved against the "
+                       f"schema — the scanner has stopped recognising them, and a check "
+                       f"that cannot fail is not a check")
+    if bad:
+        return False, ("; ".join(bad[:3]) +
+                       f" ({len(bad)} total) — PostgREST fails the WHOLE query on an "
+                       f"unknown sort column, so these readers return nothing at all")
+    return True, f"all {checked} fetch_all reads sort on a column that exists"
+
+
 def check_broker_consistency() -> tuple[bool, str]:
     """
     Do the resting broker orders match the positions they are supposed to protect?
@@ -679,6 +760,10 @@ def storage_snapshot() -> dict:
     ceiling  = cfg_float("storage_ceiling_mb", 500.0) * 1024 * 1024
     fail_pct = cfg_float("storage_fail_pct", 80.0)
 
+    # sort-exempt: v_storage_usage is one row per public table — 56 rows,
+    # measured 15-Aug-2026. It is a catalogue view, not a data table, and
+    # cannot approach the cap without the schema itself having 1000 tables.
+    # It also has no `id`; the natural key is table_name.
     rows, off = [], 0
     while True:
         page = (sb.table("v_storage_usage")
@@ -887,11 +972,30 @@ def check_quote_parity() -> tuple[bool, str]:
 
     sb = get_supabase()
     cutoff = (today_ist() - timedelta(days=5)).isoformat()
+    # THIS READ WAS UNPAGED, AND IT INVERTED THE VERDICT.
+    #
+    # `intraday_quote_parity` is 178,545 rows; this 5-day window is 167,025 of
+    # them. Unpaged, PostgREST returned 1000 — 0.6% — with no error. Measured
+    # 15-Aug-2026, both verdicts computed from the same cutoff:
+    #
+    #   truncated (1000 rows):  True  — "400 day_high/day_low comparisons, all clean"
+    #   complete (100,215):     False — "176 of 66810 day_high/day_low comparisons behind"
+    #
+    # So the check reported RANGE clean while RANGE had regressed, and
+    # `intraday_quote_mode_range` has been trusted on that all-clear. This is
+    # the project's own "a check that cannot fail is not a check" landmine: it
+    # could fail in principle, but never on the evidence it was given.
+    #
+    # Filtered to the three fields the verdicts actually read (the other
+    # ~66,810 rows were fetched and discarded in Python) and paged. Costs ~8s.
+    # A health check that takes eight seconds and tells the truth is worth more
+    # than an instant one that says what you hoped.
+    from config import fetch_all
     try:
-        rows = (sb.table("intraday_quote_parity")
-                  .select("field,diff_pct,ts")
-                  .gte("ts", cutoff)
-                  .execute().data or [])
+        rows = fetch_all(lambda: sb.table("intraday_quote_parity")
+                         .select("field,diff_pct,ts,id")
+                         .gte("ts", cutoff)
+                         .in_("field", ["day_high", "day_low", "vwap"]))
     except Exception as e:
         return False, f"could not read intraday_quote_parity: {e}"
 
@@ -1730,6 +1834,7 @@ CHECKS = [
     ("exits",    "an exit rule can sell without alerting, or fires from only one caller", check_exit_actions, False),
     ("costs",    "charges are priced off a stale or wrong-product rate",         check_cost_rates, False),
     ("selects",  "a query reads a column the schema no longer has",              check_selects,  False),
+    ("sort_keys", "a paged read sorts on a column the table does not have, so it returns nothing", check_sort_keys, False),
     ("kite",     "no broker session, or the IP is not allowlisted",              check_kite,     False),
     ("data",     "decisions would run on stale inputs",                          check_data_freshness, False),
     ("broker",   "resting orders do not match the positions they protect",       check_broker_consistency, False),

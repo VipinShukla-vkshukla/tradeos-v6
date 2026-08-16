@@ -40,7 +40,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from loguru import logger
-from config import get_supabase
+from config import get_supabase, fetch_all
 
 PAGE = 1000
 
@@ -54,16 +54,13 @@ def audit(sb=None) -> None:
     logger.info("SWING FAMILY MATURITY AUDIT — per-family, not book-wide")
     logger.info("=" * 78)
 
-    rows, off = [], 0
-    while True:
-        page = (sb.table("signal_output_daily")
-                  .select("strategy,date,outcome_entered,outcome_category")
-                  .eq("outcome_entered", True)
-                  .range(off, off + PAGE - 1).execute().data) or []
-        rows += page
-        if len(page) < PAGE:
-            break
-        off += PAGE
+    # SORTED PAGING, (symbol, date) — signal_output_daily has no `id` column,
+    # so fetch_all's default order key raises 42703 on it.
+    rows = fetch_all(lambda: sb.table("signal_output_daily")
+                     .select("strategy,date,outcome_entered,outcome_category,"
+                             "symbol")
+                     .eq("outcome_entered", True),
+                     page=PAGE, order_by="symbol,date")
 
     if not rows:
         logger.warning("  no entered signals found — nothing to measure")

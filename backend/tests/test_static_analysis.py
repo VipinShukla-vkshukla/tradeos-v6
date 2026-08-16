@@ -114,10 +114,16 @@ def test_no_undefined_names_anywhere_in_the_backend():
 #   20873 · industry_strength 9382 · intraday_setups 8324 · master_shortlist
 #   7212 · signal_log 4563 · sector_strength 2716 · signal_output_daily 2430
 #   · lessons 1114
+#
+# `intraday_quote_parity` added 15-Aug-2026: 178,545 rows, by a wide margin the
+# largest table in this schema and absent from the list above, which was built
+# from the tables the previous session happened to be looking at. A "known
+# large tables" list is only as good as the census behind it.
 _LARGE_TABLES = {
     "stock_data_daily", "chartink_raw_data", "allocation_decisions",
     "industry_strength", "intraday_setups", "master_shortlist",
     "signal_log", "sector_strength", "signal_output_daily", "lessons",
+    "intraday_quote_parity",
 }
 
 # A single-day equality filter bounds a read only if that table's BUSIEST day
@@ -196,9 +202,138 @@ def test_no_unpaged_read_of_a_table_that_exceeds_the_row_cap():
         f"filter genuinely bounds it:\n  " + "\n  ".join(viol))
 
 
+# ── THE SECOND DEFECT FAMILY: PAGED, BUT SORTED ON NOTHING ──────────────
+#
+# The check above treats `.range(` as evidence of boundedness, which is exactly
+# right for the truncation it hunts and exactly wrong for this one. A
+# hand-rolled `.range()` pager with no ORDER BY reads the whole table and still
+# gets the wrong rows: PostgreSQL guarantees no row order without an ORDER BY,
+# so successive LIMIT/OFFSET windows over one filter may repeat rows and skip
+# others. The TOTAL comes back right, which is why nothing raises and why every
+# count-based sanity check passes.
+#
+# Measured on the live book 15-Aug-2026, three trials of each reader:
+#   allocator_replay._fetch_setups   8324 rows / 5000 distinct   (3324 lost)
+#   control_room._load_setups        7864 rows / 5000 distinct   (2864 lost)
+# Both on trial 1, both clean on trials 2 and 3. That is the property this
+# check exists to stop anyone relying on.
+#
+# F-23 enumerated this family by grepping `table("intraday_setups")` and so saw
+# only one table's worth. The same idiom was live on five more, including
+# `swing_priors()` — the LIVE swing book's prior — and the PEAD engine's
+# results-day bars.
+
+
+def _scan_unsorted(label: str, text: str) -> tuple[list[str], int]:
+    """The detector itself, over ONE source text. Split out from the file walk
+    so the test can feed it a known-bad sample and prove it still bites."""
+    import re
+    viol, scanned = [], 0
+    # NOTE the table name is captured LOOSELY — `([^)\s]*?)` — because
+    # `engine_scorecard._fetch` and `taken_reconciliation._rows` pass it as a
+    # PARAMETER, `sb.table(table)`. The unpaged check above matches
+    # `.table("literal")` only, so those two were invisible to it AND to
+    # F-23's census, and one of them measured a live 3324-row loss.
+    for m in re.finditer(
+            r'\.table\(\s*([^)\s]*?)\s*\)((?:.|\n){0,900}?)\.execute\(\)', text):
+        table, chain = m.group(1).strip("\"'"), m.group(2)
+        if re.search(r'\.(insert|update|upsert|delete)\(', chain):
+            continue
+        if ".range(" not in chain:
+            continue
+        scanned += 1
+        if ".order(" in chain:
+            continue
+        line = text[:m.start()].count("\n") + 1
+        window = text[max(0, m.start() - 400):m.end()]
+        if "sort-exempt:" in window:
+            continue
+        viol.append(f"{label}:{line} pages {table} with no sort key")
+    return viol, scanned
+
+
+def _unsorted_pagers() -> tuple[list[str], int]:
+    """Every `.range()` pager with no `.order()`. Returns (violations, scanned)."""
+    viol, scanned = [], 0
+    for path in sorted(BACKEND.rglob("*.py")):
+        parts = path.parts
+        if "tests" in parts or "__pycache__" in parts or "db" in parts:
+            continue
+        if " - Copy" in path.name:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        v, s = _scan_unsorted(path.relative_to(BACKEND).as_posix(), text)
+        viol += v
+        scanned += s
+    return viol, scanned
+
+
+# A POSITIVE CONTROL, not a row count. The check above this one guards against
+# a vacuous pass with `scanned > 40`, which works because reads of large tables
+# are plentiful and stay plentiful. That reasoning does NOT transfer here: this
+# check's own fixes REMOVE `.range()` sites, so the population it counts shrinks
+# every time it succeeds — the scan went 19 -> 10 in the session that added it,
+# and a floor set from the "before" number would have failed on the "after".
+# A threshold that the fix itself erodes is a worse guard than no threshold.
+# So prove the detector bites on a sample that cannot change instead.
+_KNOWN_BAD = '''
+def _bad(sb):
+    rows, off = [], 0
+    while True:
+        page = (sb.table("intraday_setups").select("id")
+                  .range(off, off + 999).execute().data) or []
+        rows += page
+        if len(page) < 1000:
+            break
+        off += 1000
+    return rows
+'''
+
+_KNOWN_GOOD = '''
+def _good(sb):
+    rows, off = [], 0
+    while True:
+        page = (sb.table("intraday_setups").select("id")
+                  .order("id").range(off, off + 999).execute().data) or []
+        rows += page
+        if len(page) < 1000:
+            break
+        off += 1000
+    return rows
+'''
+
+
+def test_no_range_pager_without_a_sort_key():
+    # 1 — the detector fires on the defect it exists for
+    bad, bad_scanned = _scan_unsorted("<control>", _KNOWN_BAD)
+    assert bad_scanned == 1 and len(bad) == 1, (
+        f"the detector no longer recognises an unsorted .range() pager "
+        f"(scanned={bad_scanned}, flagged={len(bad)}) — it has stopped "
+        f"matching this codebase's paging style, and a check that cannot fail "
+        f"is not a check")
+
+    # 2 — and does NOT fire on the same pager once sorted, so a green result
+    #     means "sorted", not "unparsed"
+    good, good_scanned = _scan_unsorted("<control>", _KNOWN_GOOD)
+    assert good_scanned == 1 and not good, (
+        f"the detector flags a correctly-sorted pager (scanned={good_scanned}, "
+        f"flagged={len(good)}) — it would cry wolf about work already done")
+
+    # 3 — the real tree
+    viol, _ = _unsorted_pagers()
+    assert not viol, (
+        f"{len(viol)} paged read(s) sort on nothing. LIMIT/OFFSET without "
+        f"ORDER BY may return the right COUNT built from the wrong rows — "
+        f"measured on this book at 8324 rows / 5000 distinct. Use "
+        f"config.fetch_all(), or add a `sort-exempt: <why>` comment:\n  "
+        + "\n  ".join(viol))
+
+
 TESTS = [
     ("no undefined names anywhere in the backend",
      test_no_undefined_names_anywhere_in_the_backend),
     ("no unpaged read of a table that exceeds the row cap",
      test_no_unpaged_read_of_a_table_that_exceeds_the_row_cap),
+    ("no .range() pager without a sort key",
+     test_no_range_pager_without_a_sort_key),
 ]

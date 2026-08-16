@@ -78,6 +78,7 @@ def load(sb) -> list[dict]:
     rewriting history to make a bucket tidier. They are flagged instead.
     """
     from intraday.cost_model import entry_leg, exit_leg
+    from config import fetch_all
     from intraday import direction as D
 
     BASE = ("symbol,product,framework,mode,strategy,intraday_strategy,direction,"
@@ -97,14 +98,10 @@ def load(sb) -> list[dict]:
                        "Capture ratio cannot be split by runner state.")
         cols = BASE
 
-    rows, off = [], 0
-    while True:
-        page = (sb.table("closed_positions").select(cols)
-                  .range(off, off + 999).execute().data) or []
-        rows += page
-        if len(page) < 1000:
-            break
-        off += 1000
+    # SORTED PAGING — closed_positions is a live book that only grows.
+    # `cols` is built above and may or may not carry the runner columns; `id`
+    # is appended for the sort key rather than assumed present in it.
+    rows = fetch_all(lambda: sb.table("closed_positions").select(cols + ",id"))
 
     out = []
     for r in rows:
