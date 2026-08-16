@@ -105,11 +105,16 @@ def _load_outcomes_for_date_range(sb, signal_date_min: date,
         # 1000 came back. 91% of the forward prices every outcome is scored
         # against were silently missing, and a symbol whose rows fell outside
         # the returned 1000 simply had no forward return at all.
+        # order_by IS NOT OPTIONAL HERE: stock_data_daily has 86 columns and no
+        # `id`, so fetch_all's default sort key raises 42703 on page one and
+        # this read returns nothing at all. (symbol, date) is the table's
+        # natural key — verified unique on the live book.
         pr = fetch_all(lambda: sb.table("stock_data_daily")
                 .select("date,symbol,close")
                 .in_("symbol", chunk)
                 .gte("date", str(signal_date_min))
-                .lte("date", str(look_end)))
+                .lte("date", str(look_end)),
+                order_by="symbol,date")
         all_rows.extend(pr)
 
     if not all_rows:

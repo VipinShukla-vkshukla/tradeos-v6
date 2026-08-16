@@ -196,9 +196,175 @@ def test_no_unpaged_read_of_a_table_that_exceeds_the_row_cap():
         f"filter genuinely bounds it:\n  " + "\n  ".join(viol))
 
 
+# ── fetch_all's sort key must exist on the table it sorts ───────────────────
+#
+# Converting a read to `config.fetch_all` fixes truncation and introduces a new
+# way to be wrong: the function sorts by `id` unless told otherwise, and not
+# every table HAS an `id`. `stock_data_daily` has 86 columns and none of them is
+# `id`, so both price readers converted on 15-Aug raised
+#
+#     42703  column stock_data_daily.id does not exist
+#
+# on their FIRST page — the whole forward-price history for every swing outcome,
+# unreadable, from the commit that was supposed to stop it being truncated.
+#
+# What makes this worth a standing check rather than a one-line fix is that the
+# capability was already tested. `test_outcome_resolution_gap.py::
+# test_fetch_all_lets_a_table_without_an_id_name_its_own_key` proves `order_by`
+# is honoured, and its own docstring names a table with no `id` column. The
+# parameter worked. Nobody checked the CALL SITES, which is this project's
+# recurring shape: a function's correctness proves nothing about its callers.
+#
+# Probed live against the book, 16-Aug-2026, via `.order("id").range(0,0)` —
+# the exact request fetch_all issues for page one:
+#
+#     lessons YES · allocation_decisions YES · intraday_setups YES ·
+#     signal_log YES · stock_data_daily NO (42703)
+#
+# EXISTENCE IS ONLY HALF THE CLAIM. A sort key that exists but is not unique
+# pages with no error at all and lets rows repeat and vanish across page
+# boundaries — the failure mode the previous stage measured at 8324 rows / 5000
+# distinct, and a strictly worse one than the 42703 above, because nothing
+# raises. So each key below was also paged over the WHOLE table and its returned
+# count checked against both the server-side count and its own distinct count:
+#
+#     lessons 1114 · signal_log 4563 · intraday_setups 8324 ·
+#     allocation_decisions 20873 · stock_data_daily 55963
+#     all three numbers equal for every row above.
+#
+# The map is keyed by TABLE, not by the bad ones, deliberately. An allowlist of
+# known-broken tables goes stale in silence the day someone points fetch_all at
+# a sixth table; requiring every table to carry a measured key means a new one
+# fails here until somebody probes it. That is the friction, and it is the point.
+_FETCH_ALL_SORT_KEY = {
+    "lessons":              "id",
+    "allocation_decisions": "id",
+    "intraday_setups":      "id",
+    "signal_log":           "id",
+    # 55,963 rows and no `id` column. (symbol, date) is the table's natural key.
+    "stock_data_daily":     "symbol,date",
+}
+
+
+def _fetch_all_sites() -> tuple[list[str], int]:
+    """
+    Every production `fetch_all(...)` call, the table it reads and the sort key
+    it will use. Returns (violations, scanned).
+
+    Parsed with `ast`, not a regex, for two reasons the regex version of the
+    sibling check learned the hard way: a `fetch_all` argument may be a NAMED
+    builder rather than a lambda (`hurdle.py` and `scoring.py` both pass one),
+    and a text window wide enough to catch those reliably latches onto whatever
+    statement follows.
+    """
+    import ast
+
+    def _table_of(node, funcs: dict, depth: int = 3) -> str | None:
+        """
+        The table name inside a lambda body or a named builder function.
+
+        Follows one builder into another, because `hurdle.py` pages with a
+        `build()` that returns `base_query()` — the `.table()` call is a
+        function away, and a single-level walk silently resolved nothing there
+        and skipped the site rather than checking it.
+        """
+        if depth <= 0 or node is None:
+            return None
+        if isinstance(node, ast.Name):
+            return _table_of(funcs.get(node.id), funcs, depth - 1)
+        for sub in ast.walk(node):
+            if (isinstance(sub, ast.Call)
+                    and isinstance(sub.func, ast.Attribute)
+                    and sub.func.attr == "table"
+                    and sub.args
+                    and isinstance(sub.args[0], ast.Constant)
+                    and isinstance(sub.args[0].value, str)):
+                return sub.args[0].value
+        # no .table() of its own — chase the local helpers it calls
+        for sub in ast.walk(node):
+            if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+                    and sub.func.id in funcs):
+                found = _table_of(funcs[sub.func.id], funcs, depth - 1)
+                if found:
+                    return found
+        return None
+
+    viol, scanned = [], 0
+    for path in sorted(BACKEND.rglob("*.py")):
+        parts = path.parts
+        if "tests" in parts or "__pycache__" in parts or "db" in parts:
+            continue
+        if " - Copy" in path.name or path.name == "config.py":
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except SyntaxError:
+            continue
+        # Builders are defined at any nesting depth — hurdle's `build` is nested
+        # two deep inside the function that pages with it.
+        funcs = {n.name: n for n in ast.walk(tree)
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        rel = path.relative_to(BACKEND).as_posix()
+
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and node.args):
+                continue
+            fn = node.func
+            name = fn.id if isinstance(fn, ast.Name) else (
+                fn.attr if isinstance(fn, ast.Attribute) else None)
+            if name != "fetch_all":
+                continue
+            table = _table_of(node.args[0], funcs)
+            if table is None:
+                continue
+            scanned += 1
+
+            key = "id"          # config.fetch_all's default
+            for kw in node.keywords:
+                if kw.arg == "order_by" and isinstance(kw.value, ast.Constant):
+                    key = kw.value.value
+
+            want = _FETCH_ALL_SORT_KEY.get(table)
+            if want is None:
+                viol.append(
+                    f"{rel}:{node.lineno} pages {table}, whose sort key has "
+                    f"never been measured — probe `.order(\"id\")` against it "
+                    f"and record the result in _FETCH_ALL_SORT_KEY")
+            elif key != want:
+                viol.append(
+                    f"{rel}:{node.lineno} pages {table} sorted on '{key}', "
+                    f"but that table's verified unique key is '{want}'"
+                    + (" — `id` does not exist there and PostgREST raises "
+                       "42703 on page one" if key == "id" else ""))
+    return viol, scanned
+
+
+def test_fetch_all_sorts_on_a_key_that_exists_on_the_table_it_reads():
+    viol, scanned = _fetch_all_sites()
+
+    # A PARSER THAT RESOLVES NOTHING REPORTS NOTHING. If `fetch_all` is ever
+    # renamed, re-exported, or wrapped, this walk would quietly match zero calls
+    # and pass forever while watching an empty set — the shape of the five dead
+    # health checks this project has already found. 16 production sites exist
+    # today; the floor is set below that so ordinary deletions do not trip it,
+    # and high enough that losing the call style does.
+    assert scanned >= 12, (
+        f"only {scanned} fetch_all call sites resolved to a table — the parser "
+        f"has stopped recognising how this codebase pages, and a check that "
+        f"cannot fail is not a check")
+
+    assert not viol, (
+        f"{len(viol)} paged read(s) sort on a column that is not that table's "
+        f"verified unique key. A missing column raises 42703 on the first page; "
+        f"a non-unique one is worse — it pages without error and lets rows "
+        f"repeat and vanish across page boundaries:\n  " + "\n  ".join(viol))
+
+
 TESTS = [
     ("no undefined names anywhere in the backend",
      test_no_undefined_names_anywhere_in_the_backend),
     ("no unpaged read of a table that exceeds the row cap",
      test_no_unpaged_read_of_a_table_that_exceeds_the_row_cap),
+    ("fetch_all sorts on a key that exists on the table it reads",
+     test_fetch_all_sorts_on_a_key_that_exists_on_the_table_it_reads),
 ]

@@ -5302,3 +5302,245 @@ path, F-12 stale allowlist) are recorded and not silently fixed.
 >>>>>>> fix/single-daemon-lease
 
 ---
+
+## 2026-08-16 — Stage 2f (change, `fetch_all` sort keys) — the paging fix broke the two readers it was fixing: `stock_data_daily` has no `id`, so both price readers raised 42703 on page one. Confirmed live, fixed, and a check that resolves every paged read's sort key back to its table
+
+### 0 — THE CLAIM, INDEPENDENTLY CONFIRMED
+
+Session 4 reported it and did not verify it. It is real. Calling the production
+function, live book, 16-Aug:
+
+```
+0. schema probe: stock_data_daily
+   select('id') RAISED: APIError: {'code': '42703', ...
+              'message': 'column stock_data_daily.id does not exist'}
+   columns (86): ['close', 'date', 'high', 'low', 'symbol']
+   has 'id': False
+
+2. performance_tracker._load_outcomes_for_date_range (PRODUCTION)
+   RAISED: APIError: {'code': '42703', 'details': None, 'hint': None,
+                      'message': 'column stock_data_daily.id does not exist'}
+```
+
+The traceback lands on `performance_tracker.py:108` -> `config.py:331`, which is
+`fetch_all`'s first `.range(0, 999)`. **Page one.** Not a truncation, not a
+degradation — the read returns nothing and the exception propagates.
+
+`stock_data_daily` has 86 columns and `id` is not one of them. `fetch_all`'s
+`order_by` defaults to `"id"`, and the previous stage converted both price
+readers without passing one.
+
+### 1 — WHAT IT WOULD HAVE COST, AND WHY IT COST NOTHING
+
+The irony is exact. The previous entry's §2 names these two readers as the
+**worst thing found in that stage** — 91% of the forward-price history every
+swing outcome is scored against, silently missing. The fix for that loss turned
+a 9%-complete read into a 0%-complete one that raises.
+
+It never ran in production. `7a3d94b` landed **Sat 15-Aug 21:12 IST**; the
+latest `performance_metrics` row is **2026-08-14**, the Friday — the last
+trading day before it. The evening pipeline has not run the brain since the
+break, and today is Sunday. The first run that would have hit this is Monday
+17-Aug. Caught inside the weekend, ~14 hours after it was written, before it
+could cost a single metric.
+
+Worth stating plainly because it is luck, not design: nothing in the previous
+stage's own verification would have caught it. `tools.verify` is offline by
+construction, so no test in it can see a live schema; `tools.health` does not
+exercise the brain's readers; and the fakes the tests use answer `.order()` for
+any column name at all.
+
+### 2 — THE CAPABILITY WAS TESTED. THE CALLERS WERE NOT.
+
+This is the sharpest part, and it is a landmine this project already has
+written down in another form.
+
+`tests/test_outcome_resolution_gap.py::test_fetch_all_lets_a_table_without_an_id_name_its_own_key`
+exists. It passes. Its docstring reads *"`signal_output_daily` has no `id`
+column. A hardcoded sort key would make this function unusable there, or worse,
+silently wrong."* Somebody thought about tables without an `id`, built the
+parameter for it, and proved the parameter works.
+
+`config.fetch_all`'s docstring says the same thing again, in capitals:
+`order_by` MUST NAME A UNIQUE COLUMN — and names `signal_output_daily` as the
+motivating case.
+
+Both were true and neither helped, because **nothing checked the call sites**.
+Across the whole backend, exactly one `order_by=` was ever passed, and it was in
+that test. Every one of the 23 production paged reads took the default.
+
+That is CLAUDE.md's *"a direction-aware function's correctness proves nothing
+about its callers"* recurring on a different parameter. The generalisation is
+now two-for-two: when a function grows a parameter with a backwards-compatible
+default, the default is where the defect hides, and testing the parameter is
+not testing the callers.
+
+### 3 — THE OTHER SITES: 23 READS, 5 TABLES, 2 BROKEN
+
+Every production `fetch_all` call resolved to the table it reads and probed live
+with `.order("id").range(0,0)` — the exact request `fetch_all` issues for page
+one:
+
+```
+table                  .order(id) works?    sites
+lessons                YES                  8
+allocation_decisions   YES                  1
+intraday_setups        YES                  11
+signal_log             YES                  1
+stock_data_daily       NO (42703)           2   <== data_aggregator:151
+                                                    performance_tracker:108
+```
+
+**2 of 23 broken, both on `stock_data_daily`, both fixed. The other 21 were
+already correct** — `id` exists on all four remaining tables. Fixed only the
+broken ones, as instructed.
+
+**Existence is only half the claim, so uniqueness was measured too.** A sort key
+that exists but is not unique is the strictly worse failure: it pages with no
+error at all and lets rows repeat and vanish across page boundaries — the
+8324-rows/5000-distinct shape from the previous entry. Each key paged over the
+WHOLE table, returned count checked against both the server-side count and its
+own distinct count:
+
+```
+table                    server    paged  distinct  key
+lessons                    1114     1114      1114  id                OK
+allocation_decisions      20873    20873     20873  id                OK
+intraday_setups            8324     8324      8324  id                OK
+signal_log                 4563     4563      4563  id                OK
+stock_data_daily          55963    55963     55963  symbol,date       OK
+```
+
+`(symbol, date)` on the full 55,963-row table across 56 pages: 55,963 returned,
+55,963 distinct, exactly the server count. `postgrest-py` sends
+`order_by="symbol,date"` as `order=symbol,date`, which PostgREST reads as two
+sort terms — confirmed on the wire (`{'select': 'date,symbol', 'order':
+'symbol,date'}`) rather than assumed.
+
+### 4 — MEASURED AFTER
+
+Both production readers, live, same calls that raised in §0:
+
+```
+performance_tracker._load_outcomes_for_date_range
+   OK -> 3676 rows x 120 cols
+   outcome_win:     3676/3676 populated
+   max_fwd_return:  2889/3676 populated
+
+data_aggregator._compute_forward_returns   (600 signals, 140 symbols)
+   Outcomes: 600 evaluated, 285 wins (47.5%), coverage=100%
+   ret_fwd_5d  600/600 · ret_fwd_10d 600/600 · ret_fwd_20d 593/600
+```
+
+`_compute_forward_returns` needed signals older than its own eval cutoff
+(`max_horizon * 1.5` = 30 days) to reach the fixed line at all — the first
+attempt returned early on *"No signals old enough for forward return
+evaluation"* and proved nothing. Re-run against signals from 19-Jun–02-Jul.
+**Coverage 100%** is the number the previous entry could not produce; it was 9%.
+
+### 5 — THE CHECK, DEMONSTRATED FAILING FIRST
+
+`tests/test_static_analysis.py::test_fetch_all_sorts_on_a_key_that_exists_on_the_table_it_reads`.
+Written before the fix, run against the broken tree:
+
+```
+✗  static analysis  (1/3 failed)
+     fetch_all sorts on a key that exists on the table it reads
+       2 paged read(s) sort on a column that is not that table's verified
+       unique key...
+         swing/brain/data_aggregator.py:151 pages stock_data_daily sorted on
+           'id', but that table's verified unique key is 'symbol,date' — `id`
+           does not exist there and PostgREST raises 42703 on page one
+         swing/brain/performance_tracker.py:108 pages stock_data_daily ...
+```
+
+Three deliberate choices in it:
+
+**`ast`, not a regex.** The sibling paging check is a regex and learned the hard
+way that a text window wide enough to catch a statement latches onto the next
+one. It also cannot follow a `fetch_all(build, ...)` where `build` is a named
+function — and two sites pass one.
+
+**One extra hop of resolution, because the first draft silently skipped a site.**
+`hurdle.py:462` pages `allocation_decisions` through a `build()` that returns
+`base_query()`; the `.table()` call is a function away. A single-level walk
+resolved nothing there and **skipped the site rather than checking it** — 22
+sites seen instead of 23. An unresolvable site is invisible, not loud, which is
+the failure mode of a check that watches less than it claims. Now chases local
+helpers to depth 3.
+
+**The map is keyed by table, not by the broken ones.** An allowlist of
+known-bad tables goes stale in silence the day someone points `fetch_all` at a
+sixth table. Requiring *every* table to carry a measured key means a new one
+fails here until somebody probes it.
+
+Guarded against passing vacuously: it asserts `scanned >= 12` before judging
+anything. If `fetch_all` is ever renamed, re-exported or wrapped, the walk would
+match zero calls and pass forever while watching an empty set — the shape of the
+five dead health checks this project has already found. 23 resolve today.
+
+`tools.verify` **516/516 across 59 modules**, up from 515 on `main` (baseline
+measured by stashing, not assumed). `tools.health` unchanged at 1 problem, §6.
+
+### 6 — FOUND ALONG THE WAY
+
+**F-23 — `docs/FINDINGS.md` has unresolved merge-conflict markers committed to
+`main`.** Six of them, from `ed77595 "merging everything"` (16-Aug 11:07):
+
+```
+3199:<<<<<<< HEAD      3516:=======      3581:>>>>>>> fix/single-daemon-lease
+3587:<<<<<<< HEAD      5102:=======      5302:>>>>>>> fix/single-daemon-lease
+```
+
+Two whole ledger entries are interleaved inside conflict blocks. The content
+appears to be present on both sides, so nothing is obviously lost, but this is
+the append-only ledger CLAUDE.md tells every session to read first, and it
+currently cannot be read straight through. **Recorded, not fixed** — out of this
+stage's scope, and resolving a conflict inside an append-only ledger is a
+judgement call about which side is authoritative that belongs to the operator.
+
+**F-24 — `tools.health` is red on `kite` right now.**
+
+```
+✗  kite      Kite call failed: 'NoneType' object has no attribute 'profile'
+```
+
+The broker object is `None` — no session, distinct from F-12's stale IP
+allowlist. **Confirmed pre-existing**: identical failure on stashed `main`, so
+it is not this change. It is Sunday and the token has almost certainly expired;
+it needs a fresh login before Monday's open. Unrelated to paging, untouched.
+
+### 7 — NOT DONE
+
+- **No live schema probe was added to `tools.health`.** The map in §5 is a
+  static claim — "the code says `stock_data_daily` has no `id`" — and CLAUDE.md
+  already records that *"the code mentions this column" and "this column exists"
+  are different claims*, which is why `open_positions.direction` is a live probe
+  rather than a grep. The same argument applies here and the same remedy would
+  be a `check_fetch_all_sort_keys()` in `health.py` that probes each key against
+  the running database. Deliberately out of this stage's narrow scope; it is the
+  natural next thing.
+- **The 4 non-`stock_data_daily` tables were not changed**, per instruction —
+  they were verified correct, not left unexamined.
+- **F-23 and F-24 recorded, not fixed.**
+
+### 8 — COULD NOT DETERMINE
+
+- **Whether any earlier pipeline run consumed a partially-broken read.** The
+  break window is bounded by commit time (Sat 21:12) and the last
+  `performance_metrics` row (Fri 14-Aug), which is strong evidence it never ran
+  — but the pipeline writes no "brain step attempted and crashed" record, so the
+  absence of a 15-Aug row is consistent with both "never ran" and "ran and
+  died". The weekend makes the former overwhelmingly likely; it is not proven.
+
+**Gate: PASS** — the reported claim was verified by calling the production
+function rather than taken on report, and it was real: 42703 on page one, not a
+degraded read. Both readers fixed with a key measured unique over the full
+55,963-row table; all 23 production paged reads audited against their own
+table's schema with the count reported (2 broken, 21 already correct, only the
+broken ones touched); the new check demonstrated failing before it was trusted
+to pass and guarded against passing vacuously. Two items found along the way
+(F-23 conflict markers in this ledger, F-24 live `kite` failure) are recorded
+and not silently fixed.
+
+---
