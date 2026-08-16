@@ -106,15 +106,12 @@ MODULES = [
     ("brain_proposals walk-forward backtest", "tests.test_proposal_backtest"),
     ("validate_config paper capacity", "tests.test_validate_config_paper_capacity"),
     ("expectancy ledger scores shorts", "tests.test_expectancy_ledger_shorts"),
-<<<<<<< HEAD
     ("preflight host and lease guards", "tests.test_preflight_host_and_lease"),
     ("planner regime symmetry and cost floor (shipped inert)",
      "tests.test_planner_regime_and_cost"),
     ("outcome resolution gap (row cap + loud alert)",
      "tests.test_outcome_resolution_gap"),
-=======
     ("single daemon startup lock", "tests.test_daemon_lock"),
->>>>>>> fix/single-daemon-lease
 ]
 
 
