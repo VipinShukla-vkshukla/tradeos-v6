@@ -1,0 +1,16 @@
+# Fetched bars and their manifest are DERIVED DATA, rebuildable from Kite.
+#
+# Not committed for two reasons: it reached 1.1 MB across 134 files after
+# verifying a single session, and a full replay of the 102 replayable days is
+# ~4,182 symbol-days (REPLAY_DESIGN §3.2) — hundreds of megabytes of binary
+# churn in a repository whose history should stay readable.
+#
+# The cache is safe to delete. The manifest is the coverage record for a RUN,
+# and any run whose conclusions matter should have its coverage line copied into
+# the findings ledger rather than left to live here.
+cache/
+
+# Frozen parameter files are the opposite case and are DELIBERATELY NOT ignored:
+# REPLAY_DESIGN §8 requires frozen.json to resolve to a committed git object
+# before the holdout runner will start. Ignoring params/ would silently disable
+# that gate.

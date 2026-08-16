@@ -243,6 +243,13 @@ _FETCH_ALL_SORT_KEY = {
     "signal_log":           "id",
     # 55,963 rows and no `id` column. (symbol, date) is the table's natural key.
     "stock_data_daily":     "symbol,date",
+    # Measured 2026-08-16 on the live table: 2,716 rows, NO `id` column — the
+    # same trap as stock_data_daily. `sector` alone is NOT unique (25 distinct
+    # across 1000 rows); (date, sector) probed unique.
+    "sector_strength":      "date,sector",
+    # Measured 2026-08-16: 51 rows, `id` present and unique. Note it has
+    # start_date/end_date and NO `event_date`.
+    "event_calendar":       "id",
 }
 
 

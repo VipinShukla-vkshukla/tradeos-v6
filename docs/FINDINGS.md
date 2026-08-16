@@ -5539,3 +5539,304 @@ to pass and guarded against passing vacuously. Two items found along the way
 and not silently fixed.
 
 ---
+
+## 2026-08-16 — Replay harness (build + verify) — the design's 6/3/3 split was void and is rebuilt on 75 measured days; the harness reproduces the OUTCOME rule exactly but MISSES the detection bar at 79.7% vs 85%, so it is NOT trusted and no replay was run
+
+**Ran:**
+
+```bash
+git checkout -b feat/replay-harness
+# depth + window census (scratch scripts, read-only, paged on (symbol,date))
+python -m tools.replay.independence
+python -m tools.verify --module replay_harness
+python -m tools.verify
+python -m tools.replay.verify_known_day --date 2026-08-14
+```
+
+### 1 — DEPTH MEASURED, AND THE DESIGN WAS WRONG ABOUT ITS CENTRAL PARAMETER
+
+`stock_data_daily`: **55,963 rows, 108 distinct dates, 2026-03-06 .. 2026-08-14.**
+The design's `IN-SAMPLE 2025-07-01 .. 2025-12-31` window **does not exist**.
+
+```
+                                                  trading   fully
+window          from          to                    days    usable
+--------------------------------------------------------------------------
+IN-SAMPLE       2026-03-06 .. 2026-04-30              36        30
+VALIDATION      2026-05-01 .. 2026-05-31              18        18
+HOLDOUT         2026-06-01 .. 2026-06-30              21        21
+--------------------------------------------------------------------------
+clean total                                           75        69
+CONTAMINATED    2026-07-01 .. 2026-08-14              33        33
+```
+
+In-sample loses 6 days whose `value_cr` is null on **every** row (2026-03-06,
+03-09, 03-10, 03-11, 03-12, 04-28). `value_cr` is 45% of `build_universe`'s rank
+and one of its hard filters, so those dates cannot be reconstructed at all.
+
+**2026-04-29 carries 2,476 rows** against a 499-502 norm; 1,976 are shells with
+`value_cr` but a null `close`. The harness drops null-`close` rows, restoring a
+normal 500-name universe rather than losing the day.
+
+REPLAY_DESIGN was revised and committed as `fa9b9fe` **before** any code was
+written, per instruction. §8.1 states plainly, before the run, that a 21-day
+holdout is thin and that the SWING arm may be uninformative for a structural
+reason rather than for want of rows: Q1's paired estimator is exactly zero for
+any plan that never reaches 1.905R, so `n_effective` is the count of plans
+reaching the lower target — and on the live book that was **0 of 11**, peak
+1.34R.
+
+### 2 — TWO CORRECTIONS THE MEASUREMENT FORCED
+
+**F-25 — `stock_data_daily` is NOT the full NSE EQ cross-section.** The design
+asserted it was, citing the `SERIES == 'EQ'` filter at `ingest_bhavcopy.py:184`.
+That filter governs the bhavcopy dataframe, not what is stored. The unfiltered
+set goes to `raw_prices`; `stock_data_daily` receives a **Chartink-screened
+subset** (`ingest_bhavcopy.py:624-633`) — measured **499-502 symbols per date
+against 2,463 in `raw_prices`** on the same date.
+
+It *is* point-in-time (`.eq("date", trade_date)`, written by that evening's own
+run) and 32 of March's names are gone by August, so it is not one static list
+applied backwards. But it is **93% static** — 465 symbols present on all 108
+dates, median day-over-day churn **0** — and it bounds the replay to names
+Chartink surfaced. That is a ceiling on scope, not a bias in the estimate: the
+live system trades the same filtered universe.
+
+**`raw_prices` is not an escape hatch** — checked: it starts **2026-04-16**,
+*shallower* than `stock_data_daily`, and carries no indicator columns. So
+`stock_data_daily` is a hard floor for BOTH arms. Kite bars go back years; the
+screener inputs do not. Backfill is out of scope.
+
+**F-26 — `fetch_chartink_universe` is an unpaged read** (`ingest_bhavcopy.py:393`)
+capped at 1000 rows by PostgREST, and its return value decides which symbols
+reach `stock_data_daily` **at all**. ~500 today so it is not truncating, but it
+is the F-19 idiom sitting on production ingest. **Recorded, not fixed.**
+
+### 3 — WHAT WAS BUILT
+
+`backend/tools/replay/` — a new tool. **No live engine, gate, exit rule, config
+key or migration was touched.**
+
+```
+independence.py     the static forbidden-reader scan
+universe.py         point-in-time COPY of scanner.build_universe
+swing_inputs.py     point-in-time COPY of screen_stocks.load_data
+bars.py             Kite fetch, disk cache, coverage manifest
+contexts.py         SymbolContext assembly + the lookahead assertion
+detect.py           the evaluate_all loop, reproduced
+ladder.py           imports evaluate_exit AND evaluate_intraday_exit
+outcomes_port.py    the resolver loop, ported
+verify_known_day.py the ONLY module permitted to read the live record
+```
+
+Imported, never reimplemented: the nine engines, `_invalidation_is_reachable`,
+`family_of`, `evaluate_exit`, `evaluate_intraday_exit`, `intraday.direction`,
+`cost_model.round_trip`. `evaluate_all` is **reproduced, not called** — it reads
+live `system_config` through `enabled_engines()`, and an engine retired today
+would otherwise show zero detections across all of history, which is the exact
+inversion of what the tool is for.
+
+Copied rather than imported, each for a stated reason: `build_universe` resolves
+its own date internally and has no injection point; `load_data` is not
+point-in-time on five of nine reads; the outcome loop is welded to Supabase I/O.
+**Production untouched in all three cases.**
+
+15 checks in `tests/test_replay_harness.py`, registered in `tools/verify.py`.
+
+### 4 — THE INDEPENDENCE CHECK, DEMONSTRATED FAILING FIRST
+
+It failed **twice on real input before it passed**, which is the only reason to
+believe it:
+
+```
+# 1. on the package's own prose, unprompted:
+  [X] __init__.py:12 references 'engine_scorecard'
+  [X] detect.py:27  references 'intraday_setups'
+  [X] detect.py:95  references 'intraday_setups'
+FAIL: 3 forbidden reference(s), 0 exemption breach(es)
+```
+
+Reworded rather than weakening the grep — a literal grep is the only kind that
+cannot be talked out of a match. Then a deliberate injection of a real read:
+
+```
+# 2. appended to contexts.py:
+  [X] contexts.py:157 references 'intraday_setups' - the live detection record
+      return sb.table("intraday_setups").select("*").eq("trade_date", day)...
+FAIL: 1 forbidden reference(s)          EXIT=1
+# removed:
+OK: the harness reads no forbidden table or module    EXIT=0
+```
+
+The exemption is guarded rather than trusted: `independence.py` is exempt only
+because it names the tables as data, and `check_exempt_files_are_inert()`
+asserts that file can reach no database at all.
+`check_scan_is_not_vacuous()` asserts the walk saw at least 4 files, so an empty
+scan cannot report clean.
+
+### 5 — VERIFICATION AGAINST 2026-08-14 (2,289 stored rows / 212 dedup keys)
+
+**Check 1 — the outcome rule: PASS.**
+
+```
+   stored rows      : 2289
+   compared         : 2289
+   reproduced       : 2263  (98.9%)
+   RESIDUALS (26), classified:
+     stored value matches a WHOLE-DAY window : 26
+     UNEXPLAINED                             : 0
+   -> PASS   (2263 reproduced, 26 stored-side anomalies, 0 unexplained)
+```
+
+The ported resolver reproduces the production rule exactly. All 26 residuals are
+positively identified (see F-27), not explained away by elimination.
+
+**Check 2 — detections: FAIL. The harness is NOT TRUSTED.**
+
+```
+   coverage: 2422/2422 symbol-days (100.0%), 0 missing
+   symbols replayed : 133
+   stored keys      : 212
+   replayed keys    : 198
+   reproduced       : 169  (79.7%)   bar: >= 85%     <-- MISSED
+   missed           : 43
+   extras           : 29             bar: 0          <-- MISSED
+   level mismatches : 157
+```
+
+**No full replay was run, and the bar was not moved.** It was fixed in the
+design before the number existed, and the number did not clear it.
+
+Residuals classified — REPLAY_DESIGN §10.2 requires this rather than a shrug:
+
+```
+EXTRAS by producing-engine lifecycle:
+  PBK ACTIVE 9 - VWR ACTIVE 6 - SDN ACTIVE 6 - RNG ACTIVE 4 - PDL 2 - GAP 1 - GDB 1
+  -> produced by RETIRED engines: 0 of 29        (all nine read ACTIVE)
+
+MISSED by family:   VCE 17 - VWR 17 - ORB 4 - RNG 4 - SDN 1
+MISSED by verdict:  BELOW_CONVICTION 14 - REJECTED_COST 8 - TAKEN 8 -
+                    BLOCKED_STRUCTURE 7 - BLOCKED_EVENT 2 - others 4
+
+LEVEL MISMATCHES by relative entry difference:
+  <= 5 bps 71 - <= 25 bps 64 - <= 100 bps 14 - > 100 bps 1
+  largest: LLOYDSME/VWR 151bps, ADANIGREEN/VWR 96bps, URBANCO/VWR 89bps
+```
+
+**Found:** misses and extras both concentrate in **VCE and the VWR family
+(VWR+PBK)** — 34 of 43 misses, 15 of 29 extras. Those are the two engine groups
+most sensitive to intra-minute price and to VWAP, and the live daemon overlays
+tick-derived `day_high`, `day_low`, VWAP and `session_volume` onto every context
+(`apply_live_quotes`, `merge_live_bars`) on a 15 s cadence, while the replay
+computes all four from completed minute bars only. 135 of 150 level deltas are
+within 25 bps, which is the same signature. This is §10.2 cause 1 (tick vs bar)
+— **predicted by the design, but materially larger than the 85% bar assumed.**
+
+The lifecycle hypothesis is **dead, not unexamined**: all nine engines read
+ACTIVE from live config, so not one extra is explained by the harness
+deliberately ignoring lifecycle state.
+
+### 6 — FOUND ALONG THE WAY
+
+**F-27 — 26 of 2,289 stored outcomes on 2026-08-14 were scored from the SESSION
+OPEN, not from the setup's own timestamp.** All 26 reproduce exactly under a
+whole-day window and none reproduce under the post-detection window that
+`outcomes.py:142-150` actually implements. The clearest case is two GODREJCP SDN
+shorts 15 seconds apart with **identical entry (935.8) and identical target
+(932.3)**:
+
+```
+stop 938.12  ts 04:02:46Z  stored STOP   (-0.248%)   <- the FARTHER stop
+stop 937.12  ts 04:03:01Z  stored TARGET (+0.168%)   <- the NEARER stop
+```
+
+The farther stop cannot be reached first. **At least one of those two stored
+outcomes is wrong under any single consistent window**, so this is not a window
+disagreement being misread — it is bad data in the table `intraday_priors` and
+`hurdle`'s arrival distribution are both built from. `outcomes.py:210` is the
+only writer of the column, and its window logic is unchanged since commit
+`042217e`, so the mechanism is **not yet explained**. 1.1% of one session.
+**Recorded, not fixed.**
+
+**F-28 — the Stage 2f static check caught two real bugs in this session's own
+new code, before either ran.** Both in `swing_inputs.py`:
+
+```
+tools/replay/swing_inputs.py:133 pages sector_strength, whose sort key has never been measured
+tools/replay/swing_inputs.py:151 pages event_calendar, whose sort key has never been measured
+```
+
+Probed against the live tables:
+
+```
+sector_strength   2,716 rows, NO `id` column (the stock_data_daily trap again)
+  sector          1000 rows,   25 distinct, 975 duplicates -> NOT UNIQUE
+  date,sector     1000 rows, 1000 distinct,   0 duplicates -> UNIQUE
+event_calendar    51 rows, `id` present and UNIQUE
+  event_date      COLUMN ABSENT -> would have raised 42703 on page one
+```
+
+I had written `order_by="sector"` — non-unique, which is the *worse* failure
+because it pages without error while letting rows repeat and vanish across page
+boundaries — and filtered on `event_date`, **a column that does not exist**
+(the table has `start_date`/`end_date`). Both fixed; both keys added to
+`_FETCH_ALL_SORT_KEY` with the measurement recorded beside them. This is the
+check paying for itself on the first outside code it ever saw.
+
+**F-24 is resolved.** `kite` was red on 2026-08-15 (`'NoneType' object has no
+attribute 'profile'`); it now returns `profile OK: DSY688`.
+
+### 7 — NOT DONE
+
+- **No full replay, and no Q1/Q2 numbers.** The harness did not clear its own
+  detection bar, and running analysis on an unverified harness is precisely the
+  failure this verification step exists to prevent.
+- **The swing arm was built but not exercised end to end.** `swing_inputs.py`
+  smoke-tests clean — 500 stocks, 23 sectors, regime and FII both resolving
+  as-of-date rather than latest, verified on two consecutive dates — but no
+  swing plan has been replayed through `ladder.step_swing`.
+- **Parameter freezing (REPLAY_DESIGN §8) is not implemented.** The engines read
+  `cfg_*` at call time — `base.confirmation_pct` does, for one — so this
+  verification ran against **today's** config. For a two-day-old session that is
+  near-harmless; for March it is not, and the freeze must exist before any
+  window is scored.
+- **The bar-cache format deviates from the design**: gzipped JSON per symbol-day
+  rather than parquet per symbol-month, to avoid introducing a `pyarrow`
+  dependency into this project for a backtest. Stated in `bars.py`.
+- **F-25, F-26 and F-27 recorded, not fixed.**
+
+### 8 — COULD NOT DETERMINE
+
+- **Why those 26 rows were scored from the session open.** The single writer's
+  window logic is unchanged since the original commit and reads correctly.
+  Whether this affects sessions other than 2026-08-14 was **not measured** — it
+  costs a full bar fetch per session — so the finding is recorded rather than
+  extrapolated to the book.
+- **Whether reproducing the live quote overlay would clear the 85% bar.** The
+  concentration in VCE/VWR/PBK is strong circumstantial evidence with a named
+  mechanism, and nothing more. It is a hypothesis, not a measurement.
+- **Whether the 29 extras are genuinely absent from the live record, or were
+  recorded and then collapsed by `_setup_is_new` under a different entry drift.**
+  Not separated.
+- **Whether any historical date's stored universe came from
+  `fetch_chartink_universe`'s fallback path** (F-26) rather than its own date.
+  Nothing records which path was taken, so it cannot be recovered from the
+  database.
+
+**Recommends:** before any window is scored — (a) reproduce the live quote
+overlay in `contexts.py`, or re-derive the acceptance bar from a measured
+tick-vs-bar floor instead of the assumed 85%; (b) replace the 2 dp level
+tolerance with a relative one, since a 2 dp match on a Rs 37,550 stock demands
+the identical tick and 90% of current deltas are under 25 bps; (c) implement the
+§8 parameter freeze before touching any date older than this week. **F-27
+deserves its own stage** — it is bad data in the table every prior is built from,
+and it is the only finding here that touches money already at risk.
+
+**Gate: BLOCKED** — the harness reproduces the outcome rule with zero unexplained
+residuals across 2,289 rows, but reproduces only 79.7% of stored detections
+against a pre-registered 85%, and produces 29 detections the live system did not
+against a bar of zero. It is not trusted, no replay was run, and the bar was not
+moved to make it pass. `python -m tools.verify`: **all 531 checks passed across
+60 modules.**
+
+---

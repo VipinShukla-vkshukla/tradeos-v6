@@ -52,6 +52,7 @@ from loguru import logger
 #: system owns — if it fails, nothing below it matters.
 MODULES = [
     ("static analysis",     "tests.test_static_analysis"),
+    ("replay harness",      "tests.test_replay_harness"),
     ("long path unchanged", "tests.test_long_path_unchanged"),
     ("direction spine",     "tests.test_direction_spine"),
     ("regime vocabulary",   "tests.test_regime_vocabulary"),
