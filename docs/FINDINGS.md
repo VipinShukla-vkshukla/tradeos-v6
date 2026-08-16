@@ -6179,3 +6179,331 @@ clears the bar does so by reading a price before it printed. **The bar was not
 moved.**
 
 ---
+## 2026-08-16 — Replay scope decision (diagnostic, read-only) — the intraday arm is abandoned: of six engines, two are already answered NO on live data, two can never reach n, one cannot fire, leaving ONE — the short one. The swing arm's reproduction anchor reproduces 1181/1181 EXACTLY and its holdout n_effective is 46, not the single digits §8.1 feared. Two holdout dates carry intra-session OHLC
+
+**Ran:** read-only SQL against the live database, plus one scratch script over the
+EXISTING bar cache. No replay. No fetch. No window scored. Nothing written to the
+repo outside this ledger.
+
+### 0 — A PREMISE CORRECTION, BECAUSE IT CHANGES THE QUESTION
+
+The brief says the swing arm "reads `signal_output_daily`". It does not, and may
+not: `tools/replay/independence.py:55` lists that table as FORBIDDEN — *"the day's
+stored plans; replaying against them replays their conclusions"*. `swing_inputs.py`
+reads `stock_data_daily`, `sector_strength`, `market_regime`, `fii_dii_flow` and
+`event_calendar`, and the harness **regenerates** plans through the nine screener
+engines. So the swing arm does not merely avoid the `ltp` problem — it has a
+*harder* job than the brief assumes (it must reproduce plan SELECTION, not just
+read it) and a *better* anchor to check itself against. Both halves matter below.
+
+### 1 — INTRADAY ARM: NO. AND THE REASON IS NOT THE 79.7%
+
+The reproduction shortfall is the known blocker. It is not the decisive one. Apply
+the design's OWN pre-registered Q2 rule — n>=100 per window, gross R>0 by >=2 SE in
+in-sample AND validation, positive in holdout — to the six engines, and the arm is
+already empty before fidelity is argued at all.
+
+**First: two of the six are already answered, on live data, with no replay.**
+Complete-population figures (2026-08-15 re-score), 2 SE interval on gross R:
+
+```
+  engine    n    gross R +/- SE     2 SE interval        verdict
+  VWR     307   -0.345 +/- 0.071  [-0.487, -0.203]   ALREADY NO   (-4.9 SE)
+  ORB     119   -0.241 +/- 0.100  [-0.441, -0.041]   ALREADY NO   (-2.4 SE)
+  SDN     398   -0.077 +/- 0.072  [-0.221, +0.067]   open
+  VCE     138   -0.155 +/- 0.118  [-0.391, +0.081]   open
+  RNG      60   -0.137 +/- 0.157  [-0.451, +0.177]   open
+  PBK      32   -0.276 +/- 0.244  [-0.764, +0.212]   open
+```
+
+VWR and ORB exclude positive gross R at 2 SE **already**. A replay cannot add
+information to a question the live book has closed; it can only disagree with it,
+and if it did, the harness would be the suspect.
+
+**Second: of the four still open, three cannot be reached.** Detection rates from
+the live book (14 sessions), PROJECTED onto the clean windows (30 / 18 / 21 usable
+days, §8) — projections, not measurements:
+
+```
+  engine  per-session   in-sample  validation  holdout   n>=100 in all three?
+  SDN         28.4         853         514       597     yes
+  VCE          9.9         297         178       208     yes -- but 0 of 17
+                                                          reproduce (structural)
+  RNG          4.3         129          77        90     NO  (2 of 3 windows)
+  PBK          2.3          69          41        48     NO  (0 of 3 windows)
+```
+
+- **PBK** prints INSUFFICIENT in every window. It can never be ranked.
+- **RNG** prints INSUFFICIENT in validation and holdout, so it fails rules (b)
+  and (c) by arithmetic, whatever the bars say.
+- **VCE** has ample n and reproduces **none of it**. `squeeze.py:57-77` takes
+  `r_hi = max(b.high for b in bars[-n:])` then requires `ctx.ltp > r_hi`; at a bar
+  close `ctx.ltp` IS `bars[-1].close <= bars[-1].high <= r_hi`, so the engine
+  cannot fire at any close, on any symbol, on any day.
+
+**That leaves exactly one engine: SDN. The short one.** The only engine with
+adequate n in every window and an open question is the single engine that is 100%
+SHORT — which is precisely where the harness's composition bias is concentrated
+(SDN net +2 on 102; every long engine net negative). A "yes" from that arm would be
+one engine, in the one direction the harness over-produces, and indistinguishable
+from the artefact by any test the harness contains.
+
+**Third — and this one CORRECTS an assumption I would otherwise have carried in.**
+It is natural to assume the replay's bar-close entry is systematically *better*
+than the live tick entry (a breakout entered on the retrace rather than the spike),
+which would inflate gross R. **Measured, and it is not true.** All 220 dedup keys
+on 2026-08-14, each matched to the minute bar containing its own timestamp, from
+the bars **already in the cache** — no fetch. Sign convention: positive = the
+replay's entry is more favourable than live.
+
+```
+  engine  dir      n   mean_bps   median   %replay_better   %exactly_at_close
+  SDN     SHORT  102     -0.94     -1.87        38.2%             4.9%
+  VWR     LONG    35     +0.20     +1.18        51.4%            11.4%
+  PBK     LONG    22     -0.31      0.00        36.4%            22.7%
+  VCE     LONG    17     -0.57      0.00        41.2%            11.8%
+  RNG     LONG    17     -1.06     +0.59        52.9%             5.9%
+  PDL     LONG    15     -0.11     +0.75        53.3%             0.0%
+  ORB     LONG     9     -2.76     -2.92        33.3%            22.2%
+  ------------------------------------------------------------------------
+  ALL            220     -0.65      0.00        42.7%             8.6%
+  pooled LONG    118     -0.39      0.00
+  pooled SHORT   102     -0.94     -1.87
+```
+
+**The entry-PRICE channel is worth about two thirds of one basis point, against a
+~21 bp MIS round trip — roughly 3% of one round trip, and pointing mildly AGAINST
+the replay.** So conditional on a key reproducing, its entry is faithful. The
+damage is entirely **composition** — which keys exist — not price. That is a
+narrower defect than assumed and it still kills the arm, because composition is
+exactly what a per-engine mean is computed over.
+
+**Answer to Q1: no, the intraday replay cannot answer "do any of these engines show
+positive gross R".** Two engines are already answered NO without it; two can never
+reach the pre-registered n; one cannot fire; and the remainder is a single short
+engine sitting on the harness's own bias. **Recommend abandoning the intraday arm
+rather than running it with caveats.** Caveats cannot repair a denominator.
+
+### 2 — SWING ARM: IT HAS AN ANCHOR, IT REACHES EVERY WINDOW, AND THE ARITHMETIC REPRODUCES EXACTLY
+
+**The equivalent reproduction test exists in two halves, and the half that killed
+the intraday arm is the half the swing arm passes outright.**
+
+The intraday arm died because the stored `entry` is `round(ctx.ltp, 2)` — a tick
+price, matching a bar close on 8.5% of detections. **The swing planner stores no
+tick price anywhere.** `compute_msl.py:2151` calls `compute_trade_levels(entry_price
+= ez_low, atr_abs = atr_14, anchor_price = ez_low, structure_stop = supertrend,
+regime = ...)`. Every argument is a stored daily column.
+
+Rebuilt from `stock_data_daily.atr_14`, `.supertrend` and `market_regime`, against
+every stored plan that carries one:
+
+```
+  stored plans with planned_stop (2026-07-24 .. 2026-08-14)   1181
+  rebuilt stop matches stored, to 2 dp                        1181   (100.0%)
+  mean relative error vs risk                                 0.0001
+```
+
+**1181 of 1181, exact.** Where the intraday anchor scored 8.5%, this scores 100%.
+The R:R constant falls straight out of it and confirms Stage 2c: 3.0 / (1.5 x 1.05)
+= 1.90476 — `risk_target_atr_mult` over `risk_stop_atr_mult` times the NEUTRAL
+regime multiplier, with `regime_scales_target` off.
+
+**The second half — plan SELECTION — has an anchor too, and unlike the intraday one
+it reaches the clean windows.** Two candidate anchors, and only one is usable:
+
+```
+  table                  rows   dates  from         levels present from
+  signal_output_daily    2430      36  2026-06-25   planned_stop 2026-07-24
+  master_shortlist       7212     116  2026-03-09   entry_zone_low throughout
+```
+
+`signal_output_daily` — the 114-column plan record — **begins 2026-06-25 and carries
+`planned_stop`/`planned_target` only from 2026-07-24**, which is entirely inside the
+CONTAMINATED window. It cannot verify a clean window at all. `master_shortlist`
+carries `entry_zone_low`, `final_score` and `engines_list` across **116 dates from
+2026-03-09**, covering in-sample, validation and holdout, and it is **not** on the
+forbidden list (`independence.py:49-70`) — it is the screener's own output, so
+comparing against it is verification in exactly the sense §10.1 permits for
+`intraday_setups`. It would need the same explicit whitelist exemption.
+
+**Can it pass? Not demonstrated — it has not been built or run, and I will not
+claim otherwise.** What is established is that the failure mode that killed the
+other arm is absent by construction, and that the level arithmetic is exact. The
+open risk is symbol selection, not price.
+
+**Point-in-time, verified rather than assumed.** Every June `stock_data_daily` row
+was written on its own session date (`created_at` max = min, 0 days after). Note
+what that does and does not prove: it rules out a late INSERT, not a late UPDATE,
+since an upsert preserves `created_at`. Which is how the next item surfaced.
+
+### 3 — n_effective FOR Q1'S 6x4 SWEEP OVER THE 21-DAY HOLDOUT: **46**, NOT SINGLE DIGITS
+
+Measured on the **actual** 2026-06-01..06-30 holdout — 21 trading days — not
+extrapolated. Forward bars run to 2026-08-14, so every June plan gets its full
+15-session hold: **nothing is right-censored.** Plans from `master_shortlist`,
+stops rebuilt by the arithmetic proven exact above, ladder walked per §7.3 with the
+bad fill (stop wins ties):
+
+```
+  plans with valid levels (21 days, ~73/day)                      1541
+  triggered (price traded into the entry zone within 10 sessions)  883   57%
+  reached 1.905R before the stop                                   188
+  give-back (50%, live) fired                                      612   69% of triggered
+```
+
+`n_effective` is not "reached 1.905R" — it is the count whose **paired difference is
+non-zero**, i.e. plans where the target actually BINDS before another rung takes the
+trade. Give-back and the 1.0R move-to-breakeven both cut ahead of it; the trail does
+NOT, because `exit_trail_after_r` is **2.0**, above 1.905R, so it can never bite
+before the target at the baseline. Per give-back column:
+
+```
+  give-back setting      n_effective (m-axis)
+  50%  (live baseline)         46
+  65%                          60
+  OFF                         130
+  give-back axis itself       612 trades on which the rung fired
+```
+
+**n_effective ~= 46 in the weakest cell of the grid — above 30, so the swing arm is
+NOT uninformative before it is run.** This contradicts REPLAY_DESIGN §8.1, which
+projected "tens of observations, possibly single digits" from `EXIT_TARGET` firing
+0 of 11 live. That projection was drawn from 11 trades the ENTRY RANKER had already
+filtered to a handful of names; the replay scores all ~73 plans/day, and the reach
+rate on the full plan population is an order of magnitude more productive than the
+traded book implied. §8.1's caution was right in method and wrong in magnitude.
+
+**46 is an UPPER bound and should be read as one.** Modelled: stop, target,
+give-back, breakeven. Not modelled: stall, time stop, partial booking, and
+`EXIT_DETERIORATION` — which needs live trend context daily bars cannot supply.
+Each can only cut trades before the target, never add them. The stall and time-stop
+rungs both gate on peak < 0.5R and so cannot touch a trade that reached 1.905R; the
+realistic residual is deterioration and partial, and the honest statement is
+**46 with a floor no lower than the high 30s**, still clear of 30.
+
+Robustness: recomputed with the forward walk on `raw_prices` (complete bhavcopy)
+instead of `stock_data_daily`, **46 vs 47** — insensitive to which price table
+walks the ladder.
+
+### 4 — F-33: TWO HOLDOUT DATES CARRY INTRA-SESSION OHLC, NOT THE SESSION'S
+
+Found while testing whether `created_at` proved point-in-time. It did not, and this
+is what it was hiding.
+
+`stock_data_daily` on **2026-06-17** and **2026-06-18** disagrees with `raw_prices`
+on the same (symbol, date):
+
+```
+  date         n    close differs   high too low   mean |diff|
+  2026-06-17  500      497 (99.4%)      152          58.2 bps
+  2026-06-18  500      493 (98.6%)      136          59.4 bps
+```
+
+The signature is diagnostic, not ambiguous. On 2026-06-17, `open` and `low` agree
+**exactly** while `high` and `close` do not, and the stored `high` is never above
+the bhavcopy's:
+
+```
+  symbol      sdd O/H/L/C                         raw_prices O/H/L/C
+  SBIN     1017.0 / 1023.0 / 1013.45 / 1020.85    1017.0 / 1028.1 / 1013.45 / 1026.5
+  TITAN    4338.0 / 4380.5 / 4327.5  / 4367.9     4338.0 / 4395.0 / 4327.5  / 4380.5
+  RELIANCE 1333.0 / 1334.0 / 1317.0  / 1327.2     1333.0 / 1334.0 / 1317.0  / 1332.7
+```
+
+That is a **truncated session**: the row was written at **13:07 IST**, before the
+close — open and low already made, high and close not yet. `raw_prices` for the same
+date was written the next morning (2026-06-18 07:33 UTC) from the complete bhavcopy.
+`created_at` showed max = min on both dates, so no second INSERT ever corrected them.
+
+**Scope: exactly two dates** across the whole checkable overlap
+(2026-04-16..2026-08-14, where `raw_prices` exists). Both fall inside the 21-day
+holdout. Consequences:
+
+- Every one of the 86 indicators on those two dates is computed from a partial
+  session, and the rolling ones (ATR, the moving averages, supertrend) carry that
+  error FORWARD for their window length. So the exposure is wider than two dates.
+- Plans GENERATED on 06-17/06-18 rest on wrong indicators. That is a different and
+  larger exposure than the ladder walk, which measured insensitive (46 vs 47).
+- **2026-03-06 .. 2026-04-15 cannot be checked this way at all** — `raw_prices`
+  begins 2026-04-16 — so roughly the first third of in-sample is unverifiable for
+  this defect. Its rate elsewhere is 2 in 84 dates; that is not a guarantee.
+
+**Recorded, not fixed.** This is production ingest and out of this diagnostic's
+scope. It is not a replay defect — it is a data defect the replay would have
+silently inherited, and would have shown up as an unexplained June anomaly nobody
+could source.
+
+### 5 — IF BOTH FAILED: WHAT WOULD ACTUALLY ANSWER Q2
+
+They did not both fail, so this is scoped to the intraday question alone. **Not a
+proposal — a costing, as asked.**
+
+- **Tick capture going forward.** The daemon already receives the stream; recording
+  it makes reproduction decidable at the resolution the engines actually decide at.
+  Order of magnitude: ~95 symbols, ~2.1M ticks/session, ~85 MB/session packed,
+  ~1.8 GB/month. **It cannot retro-fix March–June.** It makes FUTURE sessions
+  verifiable and does nothing for the replayable history, so it does not answer Q2
+  as posed — it only lets a later harness be trusted.
+- **A longer live sample — and this is the honest route.** The intraday book is
+  **already PAPER**. It costs time, not money, and it has perfect fidelity because
+  it IS the system. At the live rate (~28 SDN detections/session), halving SDN's SE
+  from 0.072 to 0.036 needs 4x the n: ~1,600 detections ~= **57 sessions ~= 11-12
+  trading weeks.**
+- **The ceiling both routes share, which decides this.** More n buys PRECISION, not
+  SIGN. If an engine's true gross R is ~0 or negative, no sample size makes it
+  positive; it only narrows the interval around the wrong side of zero. Two engines
+  have already narrowed past the point of doubt. The replay was an attempt to buy 75
+  days of history cheaply; the paper book delivers the same evidence at full
+  fidelity, just slower — and it is already running.
+
+### 6 — RECOMMENDATION: RUN THE SWING ARM ONLY
+
+**Abandon the intraday arm.** Not "run with caveats" — §1 is not a fidelity
+complaint that better labelling repairs. Of six engines: two answered NO already,
+two structurally short of n, one unable to fire, one short engine standing alone in
+the direction of the harness's own bias.
+
+**Run the swing arm**, subject to four conditions, each of which can fail:
+
+1. **Build the §10.1-equivalent reproduction gate against `master_shortlist` FIRST,
+   with a bar fixed before the number exists, and score no window until it passes.**
+   The level arithmetic is proven (1181/1181); plan SELECTION is not, and that is
+   the whole remaining risk. `master_shortlist` needs the explicit whitelist
+   exemption `verify_known_day.py` has for `intraday_setups`, or the §2 static check
+   will (correctly) fail the build.
+2. **Handle 2026-06-17 and 2026-06-18 before scoring the holdout** — exclude them,
+   or rebuild them from `raw_prices`. Excluding costs 2 of 21 holdout days; leaving
+   them silently prices two days of plans off a partial session.
+3. **Print `n_effective` per cell**, per §8.1. Baseline (m x give-back 50) ~= 46;
+   give-back 65 ~= 60; give-back OFF ~= 130; the give-back axis ~= 612. The grid is
+   informative, and its weakest cell is the one the question is literally about.
+4. **Label in-sample as partly unverifiable** for F-33: 2026-03-06..04-15 predates
+   `raw_prices` and cannot be cross-checked.
+
+**Do not report Q1 as "the replay's verdict" if condition 1 fails.** The swing arm
+earns its answer by reproducing plan selection, exactly as the intraday arm was
+required to and did not.
+
+### 7 — NOT DONE / COULD NOT DETERMINE
+
+- **The swing reproduction gate was not built or run.** Nothing here demonstrates
+  the swing arm PASSING; it demonstrates that its arithmetic reproduces exactly and
+  that an anchor spanning every window exists. Those are necessary, not sufficient.
+- **n_effective assumes the replay regenerates a plan population resembling
+  `master_shortlist`.** If the regenerated screener selects materially different
+  symbols, 46 moves. That is condition 1 restated as a number.
+- **The 220-key entry-bias measurement is ONE session** (2026-08-14, the only one
+  cached). Whether the sub-1-bp figure holds in March is untested, and testing it
+  costs a bar fetch per session.
+- **The 13 `engine_silent_on_a_reachable_price` misses remain unexplained** —
+  unchanged from the prior entry; the entry-price measurement here does not touch
+  them, since it measures matched keys rather than missing ones.
+- **F-33's forward contamination was not quantified** — how many trading days of
+  rolling indicators the two bad dates corrupt, and by how much.
+
+**Gate: SCOPE DECIDED. Intraday arm ABANDONED. Swing arm APPROVED to proceed to its
+reproduction gate — and no further until that gate passes.** No replay was run, no
+window scored, no parameter moved, nothing written outside this ledger.
+
+---
