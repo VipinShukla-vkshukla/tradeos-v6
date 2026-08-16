@@ -1,0 +1,1453 @@
+{
+  "code": {
+    "backend/analysis/risk_model.py": "ef5d80e79bb63438e1a0f6569d7006084b76ebf5",
+    "backend/control/position_lifecycle.py": "95541123ca80582d07f8081c29fc4115d15830e7",
+    "backend/intraday/exit_policy.py": "5f54e6a557349bfdf3235e1bb237e5dc35c53526",
+    "backend/intraday/scanner.py": "c4177dd3eee381577adb3b12a50bae057a2a9e3e",
+    "backend/intraday/strategies": "6695d6b952559eb0560733cbb4fb7955fcb7a872"
+  },
+  "created_at": "2026-08-16T15:02:00.818595+05:30",
+  "label": "frozen",
+  "notes": {
+    "by_source": {
+      "source_default": 27,
+      "system_config": 150
+    },
+    "config_sources": [
+      "intraday/strategies",
+      "intraday/session.py",
+      "intraday/market_context.py",
+      "intraday/scanner.py",
+      "intraday/exit_policy.py",
+      "intraday/cost_model.py",
+      "control/position_lifecycle.py",
+      "analysis/risk_model.py"
+    ],
+    "keys": 177
+  },
+  "provenance": {
+    "cost_brokerage_flat": {
+      "read_by": [
+        "intraday/cost_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "cost_brokerage_pct": {
+      "read_by": [
+        "intraday/cost_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "cost_cnc_brokerage_flat": {
+      "read_by": [
+        "intraday/cost_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "cost_cnc_brokerage_pct": {
+      "read_by": [
+        "intraday/cost_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "cost_cnc_stamp_buy_pct": {
+      "read_by": [
+        "intraday/cost_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "cost_cnc_stt_buy_pct": {
+      "read_by": [
+        "intraday/cost_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "cost_cnc_stt_sell_pct": {
+      "read_by": [
+        "intraday/cost_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "cost_dp_per_sell": {
+      "read_by": [
+        "intraday/cost_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "cost_exchange_pct": {
+      "read_by": [
+        "intraday/cost_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "cost_gst_pct": {
+      "read_by": [
+        "intraday/cost_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "cost_sebi_pct": {
+      "read_by": [
+        "intraday/cost_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "cost_slippage_bps": {
+      "read_by": [
+        "intraday/cost_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "cost_stamp_buy_pct": {
+      "read_by": [
+        "intraday/cost_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "cost_stt_buy_pct": {
+      "read_by": [
+        "intraday/cost_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "cost_stt_sell_pct": {
+      "read_by": [
+        "intraday/cost_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "exit_breakeven_at_r": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "exit_breakeven_cost_pct": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "exit_giveback_min_r": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "exit_giveback_pct": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "exit_move_to_breakeven": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_bool",
+      "source": "system_config"
+    },
+    "exit_partial_book_pct": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "exit_partial_book_r": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "exit_slip_bps": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_int",
+      "source": "source_default"
+    },
+    "exit_stall_days": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "exit_stall_peak_r": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "exit_target_r": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "exit_time_stop_days": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "exit_time_stop_min_r": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "exit_trail_after_r": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "exit_trail_r": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "gap_hold_window_min": {
+      "read_by": [
+        "intraday/strategies/gap_and_go.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "gap_max_atr_frac": {
+      "read_by": [
+        "intraday/strategies/gap_and_go.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "gap_max_extension_pct": {
+      "read_by": [
+        "intraday/strategies/gap_and_go.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "gap_max_retrace_pct": {
+      "read_by": [
+        "intraday/strategies/gap_and_go.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "gap_max_risk_pct": {
+      "read_by": [
+        "intraday/strategies/gap_and_go.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "gap_min_atr_frac": {
+      "read_by": [
+        "intraday/strategies/gap_and_go.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "gap_min_pct": {
+      "read_by": [
+        "intraday/strategies/gap_and_go.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "gap_min_volume_ratio": {
+      "read_by": [
+        "intraday/strategies/gap_and_go.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "gap_stop_buffer_pct": {
+      "read_by": [
+        "intraday/strategies/gap_and_go.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "gap_target_r": {
+      "read_by": [
+        "intraday/strategies/gap_and_go.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "gdb_lookback_bars": {
+      "read_by": [
+        "intraday/strategies/gap_down_bounce.py"
+      ],
+      "reader": "cfg_int",
+      "source": "source_default"
+    },
+    "gdb_max_extension_pct": {
+      "read_by": [
+        "intraday/strategies/gap_down_bounce.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "gdb_max_gap_atr_frac": {
+      "read_by": [
+        "intraday/strategies/gap_down_bounce.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "gdb_max_risk_pct": {
+      "read_by": [
+        "intraday/strategies/gap_down_bounce.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "gdb_min_bars_below": {
+      "read_by": [
+        "intraday/strategies/gap_down_bounce.py"
+      ],
+      "reader": "cfg_int",
+      "source": "source_default"
+    },
+    "gdb_min_gap_atr_frac": {
+      "read_by": [
+        "intraday/strategies/gap_down_bounce.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "gdb_min_gap_pct": {
+      "read_by": [
+        "intraday/strategies/gap_down_bounce.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "gdb_min_target_r": {
+      "read_by": [
+        "intraday/strategies/gap_down_bounce.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "gdb_min_volume_ratio": {
+      "read_by": [
+        "intraday/strategies/gap_down_bounce.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "gdb_stop_buffer_pct": {
+      "read_by": [
+        "intraday/strategies/gap_down_bounce.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "gdb_target_r": {
+      "read_by": [
+        "intraday/strategies/gap_down_bounce.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "intraday_breakeven_at_r": {
+      "read_by": [
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "intraday_breakeven_cost_pct": {
+      "read_by": [
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "intraday_check_invalidation": {
+      "read_by": [
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_bool",
+      "source": "system_config"
+    },
+    "intraday_cost_keep_ratio": {
+      "read_by": [
+        "intraday/cost_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_cost_stop_ratio": {
+      "read_by": [
+        "intraday/cost_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_giveback_min_r": {
+      "read_by": [
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_giveback_pct": {
+      "read_by": [
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_invalidation_buffer_pct": {
+      "read_by": [
+        "intraday/strategies/base.py",
+        "intraday/strategies/prev_day_levels.py",
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_invalidation_max_beyond_stop_frac": {
+      "read_by": [
+        "intraday/strategies/registry.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "intraday_invalidation_require_close": {
+      "read_by": [
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_bool",
+      "source": "system_config"
+    },
+    "intraday_max_atr_pct": {
+      "read_by": [
+        "intraday/scanner.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_max_universe": {
+      "read_by": [
+        "intraday/scanner.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "intraday_min_atr_pct": {
+      "read_by": [
+        "intraday/scanner.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_min_delivery_pct": {
+      "read_by": [
+        "intraday/scanner.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_min_price": {
+      "read_by": [
+        "intraday/scanner.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_min_runway_min": {
+      "read_by": [
+        "intraday/session.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "intraday_min_turnover_cr": {
+      "read_by": [
+        "intraday/scanner.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_move_to_breakeven": {
+      "read_by": [
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_bool",
+      "source": "system_config"
+    },
+    "intraday_must_exit_time": {
+      "read_by": [
+        "intraday/session.py",
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg",
+      "source": "system_config"
+    },
+    "intraday_orb_minutes": {
+      "read_by": [
+        "intraday/strategies/short_distribution.py"
+      ],
+      "reader": "cfg_int",
+      "source": "source_default"
+    },
+    "intraday_partial_book_pct": {
+      "read_by": [
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_partial_book_r": {
+      "read_by": [
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_rerank_live_weight": {
+      "read_by": [
+        "intraday/scanner.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_rvol_cap": {
+      "read_by": [
+        "intraday/scanner.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_short_cover_lead_min": {
+      "read_by": [
+        "intraday/session.py",
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "intraday_short_low_room_pct": {
+      "read_by": [
+        "intraday/strategies/short_distribution.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_short_max_chase_pct": {
+      "read_by": [
+        "intraday/strategies/short_distribution.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_short_min_bars": {
+      "read_by": [
+        "intraday/strategies/short_distribution.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "intraday_short_min_rr": {
+      "read_by": [
+        "intraday/strategies/short_distribution.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_short_min_runway_min": {
+      "read_by": [
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "intraday_short_orb_min_vol_ratio": {
+      "read_by": [
+        "intraday/strategies/short_distribution.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_short_runway_tighten_enabled": {
+      "read_by": [
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_bool",
+      "source": "system_config"
+    },
+    "intraday_short_runway_tighten_floor_pct": {
+      "read_by": [
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_short_stop_buffer_pct": {
+      "read_by": [
+        "intraday/strategies/short_distribution.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_short_target_atr_mult": {
+      "read_by": [
+        "intraday/strategies/short_distribution.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_short_trap_reentry_pct": {
+      "read_by": [
+        "intraday/strategies/short_distribution.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_short_vwap_near_pct": {
+      "read_by": [
+        "intraday/strategies/short_distribution.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_skip_flagged": {
+      "read_by": [
+        "intraday/scanner.py"
+      ],
+      "reader": "cfg_bool",
+      "source": "system_config"
+    },
+    "intraday_squareoff_buffer_min": {
+      "read_by": [
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "intraday_target_r": {
+      "read_by": [
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_time_stop_min_r": {
+      "read_by": [
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_time_stop_minutes": {
+      "read_by": [
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "intraday_trail_after_r": {
+      "read_by": [
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_trail_r": {
+      "read_by": [
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "intraday_universe_bench_size": {
+      "read_by": [
+        "intraday/scanner.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "intraday_universe_live_rerank": {
+      "read_by": [
+        "intraday/scanner.py"
+      ],
+      "reader": "cfg_bool",
+      "source": "system_config"
+    },
+    "intraday_use_setup_target": {
+      "read_by": [
+        "intraday/exit_policy.py"
+      ],
+      "reader": "cfg_bool",
+      "source": "system_config"
+    },
+    "max_position_pct": {
+      "read_by": [
+        "analysis/risk_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "mkt_risk_on_min_chg_pct": {
+      "read_by": [
+        "intraday/market_context.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "mkt_short_size_caution": {
+      "read_by": [
+        "intraday/market_context.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "mkt_short_size_risk_off": {
+      "read_by": [
+        "intraday/market_context.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "mkt_size_caution": {
+      "read_by": [
+        "intraday/market_context.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "mkt_size_neutral": {
+      "read_by": [
+        "intraday/market_context.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "mkt_size_risk_on": {
+      "read_by": [
+        "intraday/market_context.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "orb_max_chase_pct": {
+      "read_by": [
+        "intraday/strategies/orb.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "orb_max_range_frac": {
+      "read_by": [
+        "intraday/strategies/orb.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "orb_max_risk_pct": {
+      "read_by": [
+        "intraday/strategies/orb.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "orb_min_break_frac": {
+      "read_by": [
+        "intraday/strategies/orb.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "orb_min_range_frac": {
+      "read_by": [
+        "intraday/strategies/orb.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "orb_min_volume_ratio": {
+      "read_by": [
+        "intraday/strategies/orb.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "orb_require_above_pdh": {
+      "read_by": [
+        "intraday/strategies/orb.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "orb_stop_buffer_pct": {
+      "read_by": [
+        "intraday/strategies/orb.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "orb_target_r": {
+      "read_by": [
+        "intraday/strategies/orb.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "orb_window_min": {
+      "read_by": [
+        "intraday/strategies/orb.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "pbk_max_dist_vwap_pct": {
+      "read_by": [
+        "intraday/strategies/pullback.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "pbk_max_risk_pct": {
+      "read_by": [
+        "intraday/strategies/pullback.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "pbk_max_touches": {
+      "read_by": [
+        "intraday/strategies/pullback.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "pbk_min_bars": {
+      "read_by": [
+        "intraday/strategies/pullback.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "pbk_min_frac_above_vwap": {
+      "read_by": [
+        "intraday/strategies/pullback.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "pbk_min_off_high_pct": {
+      "read_by": [
+        "intraday/strategies/pullback.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "pbk_min_target_r": {
+      "read_by": [
+        "intraday/strategies/pullback.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "pbk_stop_buffer_pct": {
+      "read_by": [
+        "intraday/strategies/pullback.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "pbk_structure_bars": {
+      "read_by": [
+        "intraday/strategies/pullback.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "pbk_target_r": {
+      "read_by": [
+        "intraday/strategies/pullback.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "pbk_touch_tol_pct": {
+      "read_by": [
+        "intraday/strategies/pullback.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "pdl_break_margin_pct": {
+      "read_by": [
+        "intraday/strategies/prev_day_levels.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "pdl_fail_margin_pct": {
+      "read_by": [
+        "intraday/strategies/prev_day_levels.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "pdl_hold_bars": {
+      "read_by": [
+        "intraday/strategies/prev_day_levels.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "pdl_max_retest_volume_ratio": {
+      "read_by": [
+        "intraday/strategies/prev_day_levels.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "pdl_max_risk_pct": {
+      "read_by": [
+        "intraday/strategies/prev_day_levels.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "pdl_min_room_x_cost": {
+      "read_by": [
+        "intraday/strategies/prev_day_levels.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "pdl_retest_tol_pct": {
+      "read_by": [
+        "intraday/strategies/prev_day_levels.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "pdl_stop_buffer_pct": {
+      "read_by": [
+        "intraday/strategies/prev_day_levels.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "pdl_target_r": {
+      "read_by": [
+        "intraday/strategies/prev_day_levels.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "position_auto_close": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_bool",
+      "source": "system_config"
+    },
+    "position_reconcile_enabled": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_bool",
+      "source": "system_config"
+    },
+    "risk_max_risk_pct": {
+      "read_by": [
+        "analysis/risk_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "risk_min_planned_r_enabled": {
+      "read_by": [
+        "analysis/risk_model.py"
+      ],
+      "reader": "cfg_bool",
+      "source": "source_default"
+    },
+    "risk_min_risk_pct": {
+      "read_by": [
+        "analysis/risk_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "risk_pct_per_trade": {
+      "read_by": [
+        "analysis/risk_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "risk_plan_capital": {
+      "read_by": [
+        "analysis/risk_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "risk_plan_hit_rate": {
+      "read_by": [
+        "analysis/risk_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "risk_plan_product": {
+      "read_by": [
+        "analysis/risk_model.py"
+      ],
+      "reader": "cfg",
+      "source": "source_default"
+    },
+    "risk_plan_r_margin": {
+      "read_by": [
+        "analysis/risk_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "risk_regime_scales_target": {
+      "read_by": [
+        "analysis/risk_model.py"
+      ],
+      "reader": "cfg_bool",
+      "source": "source_default"
+    },
+    "risk_stop_atr_mult": {
+      "read_by": [
+        "analysis/risk_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "risk_target_atr_mult": {
+      "read_by": [
+        "analysis/risk_model.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "rng_max_dist_from_low_pct": {
+      "read_by": [
+        "intraday/strategies/range_fade.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "rng_max_risk_pct": {
+      "read_by": [
+        "intraday/strategies/range_fade.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "rng_max_volume_ratio": {
+      "read_by": [
+        "intraday/strategies/range_fade.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "rng_max_width_atr_frac": {
+      "read_by": [
+        "intraday/strategies/range_fade.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "rng_min_bars": {
+      "read_by": [
+        "intraday/strategies/range_fade.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "rng_min_touches_each": {
+      "read_by": [
+        "intraday/strategies/range_fade.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "rng_min_width_atr_frac": {
+      "read_by": [
+        "intraday/strategies/range_fade.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "rng_stop_buffer_pct": {
+      "read_by": [
+        "intraday/strategies/range_fade.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "rng_target_frac": {
+      "read_by": [
+        "intraday/strategies/range_fade.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "rng_touch_tol_pct": {
+      "read_by": [
+        "intraday/strategies/range_fade.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "swing_manages_intraday_rows": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_bool",
+      "source": "system_config"
+    },
+    "swing_setup_target_min_r": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "swing_use_setup_target": {
+      "read_by": [
+        "control/position_lifecycle.py"
+      ],
+      "reader": "cfg_bool",
+      "source": "system_config"
+    },
+    "vce_max_chase_pct": {
+      "read_by": [
+        "intraday/strategies/squeeze.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "vce_max_contraction_ratio": {
+      "read_by": [
+        "intraday/strategies/squeeze.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "vce_max_risk_pct": {
+      "read_by": [
+        "intraday/strategies/squeeze.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "vce_min_break_frac": {
+      "read_by": [
+        "intraday/strategies/squeeze.py"
+      ],
+      "reader": "cfg_float",
+      "source": "source_default"
+    },
+    "vce_min_range_atr_frac": {
+      "read_by": [
+        "intraday/strategies/squeeze.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "vce_min_volume_ratio": {
+      "read_by": [
+        "intraday/strategies/squeeze.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "vce_stop_buffer_pct": {
+      "read_by": [
+        "intraday/strategies/squeeze.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "vce_target_r": {
+      "read_by": [
+        "intraday/strategies/squeeze.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "vce_window_bars": {
+      "read_by": [
+        "intraday/strategies/squeeze.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "vwr_lookback_bars": {
+      "read_by": [
+        "intraday/strategies/vwap_reclaim.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "vwr_max_extension_pct": {
+      "read_by": [
+        "intraday/strategies/vwap_reclaim.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "vwr_max_risk_pct": {
+      "read_by": [
+        "intraday/strategies/vwap_reclaim.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "vwr_min_bars_below": {
+      "read_by": [
+        "intraday/strategies/vwap_reclaim.py"
+      ],
+      "reader": "cfg_int",
+      "source": "system_config"
+    },
+    "vwr_min_target_r": {
+      "read_by": [
+        "intraday/strategies/vwap_reclaim.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "vwr_stop_buffer_pct": {
+      "read_by": [
+        "intraday/strategies/vwap_reclaim.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    },
+    "vwr_target_r": {
+      "read_by": [
+        "intraday/strategies/vwap_reclaim.py"
+      ],
+      "reader": "cfg_float",
+      "source": "system_config"
+    }
+  },
+  "sha": "ecca2add0ff4129c8d43a47d2ea99e90c481c4e0bf47a6f3692367de1ddf2ae2",
+  "values": {
+    "cost_brokerage_flat": "20",
+    "cost_brokerage_pct": "0.03",
+    "cost_cnc_brokerage_flat": "0.0",
+    "cost_cnc_brokerage_pct": "0.0",
+    "cost_cnc_stamp_buy_pct": "0.015",
+    "cost_cnc_stt_buy_pct": "0.1",
+    "cost_cnc_stt_sell_pct": "0.1",
+    "cost_dp_per_sell": "15.04",
+    "cost_exchange_pct": "0.00307",
+    "cost_gst_pct": "18",
+    "cost_sebi_pct": "0.0001",
+    "cost_slippage_bps": "5",
+    "cost_stamp_buy_pct": "0.003",
+    "cost_stt_buy_pct": "0.0",
+    "cost_stt_sell_pct": "0.025",
+    "exit_breakeven_at_r": "1.0",
+    "exit_breakeven_cost_pct": "0.20",
+    "exit_giveback_min_r": "0.5",
+    "exit_giveback_pct": "50",
+    "exit_move_to_breakeven": "true",
+    "exit_partial_book_pct": "50",
+    "exit_partial_book_r": "1.5",
+    "exit_slip_bps": "30",
+    "exit_stall_days": "10",
+    "exit_stall_peak_r": "0.5",
+    "exit_target_r": "3.0",
+    "exit_time_stop_days": "15",
+    "exit_time_stop_min_r": "0.5",
+    "exit_trail_after_r": "2.0",
+    "exit_trail_r": "1.5",
+    "gap_hold_window_min": "15",
+    "gap_max_atr_frac": "1.60",
+    "gap_max_extension_pct": "60.0",
+    "gap_max_retrace_pct": "50",
+    "gap_max_risk_pct": "1.30",
+    "gap_min_atr_frac": "0.25",
+    "gap_min_pct": "0.60",
+    "gap_min_volume_ratio": "1.30",
+    "gap_stop_buffer_pct": "0.10",
+    "gap_target_r": "2.0",
+    "gdb_lookback_bars": "12",
+    "gdb_max_extension_pct": "0.50",
+    "gdb_max_gap_atr_frac": "2.00",
+    "gdb_max_risk_pct": "1.10",
+    "gdb_min_bars_below": "2",
+    "gdb_min_gap_atr_frac": "0.35",
+    "gdb_min_gap_pct": "1.00",
+    "gdb_min_target_r": "1.0",
+    "gdb_min_volume_ratio": "1.10",
+    "gdb_stop_buffer_pct": "0.10",
+    "gdb_target_r": "2.0",
+    "intraday_breakeven_at_r": "cfg_float(\"intraday_partial_book_r\", 1.2",
+    "intraday_breakeven_cost_pct": "0.21",
+    "intraday_check_invalidation": "true",
+    "intraday_cost_keep_ratio": "0.70",
+    "intraday_cost_stop_ratio": "0.35",
+    "intraday_giveback_min_r": "0.5",
+    "intraday_giveback_pct": "50.0",
+    "intraday_invalidation_buffer_pct": "0.12",
+    "intraday_invalidation_max_beyond_stop_frac": "0.10",
+    "intraday_invalidation_require_close": "true",
+    "intraday_max_atr_pct": "8.00",
+    "intraday_max_universe": "40",
+    "intraday_min_atr_pct": "1.20",
+    "intraday_min_delivery_pct": "20",
+    "intraday_min_price": "50",
+    "intraday_min_runway_min": "45",
+    "intraday_min_turnover_cr": "25",
+    "intraday_move_to_breakeven": "true",
+    "intraday_must_exit_time": "15:15",
+    "intraday_orb_minutes": "15",
+    "intraday_partial_book_pct": "50",
+    "intraday_partial_book_r": "1.2",
+    "intraday_rerank_live_weight": "0.4",
+    "intraday_rvol_cap": "3.0",
+    "intraday_short_cover_lead_min": "10",
+    "intraday_short_low_room_pct": "0.20",
+    "intraday_short_max_chase_pct": "0.60",
+    "intraday_short_min_bars": "15",
+    "intraday_short_min_rr": "1.3",
+    "intraday_short_min_runway_min": "75",
+    "intraday_short_orb_min_vol_ratio": "1.1",
+    "intraday_short_runway_tighten_enabled": "false",
+    "intraday_short_runway_tighten_floor_pct": "40.0",
+    "intraday_short_stop_buffer_pct": "0.12",
+    "intraday_short_target_atr_mult": "0.55",
+    "intraday_short_trap_reentry_pct": "0.20",
+    "intraday_short_vwap_near_pct": "0.35",
+    "intraday_skip_flagged": "true",
+    "intraday_squareoff_buffer_min": "12",
+    "intraday_target_r": "2.0",
+    "intraday_time_stop_min_r": "0.3",
+    "intraday_time_stop_minutes": "75",
+    "intraday_trail_after_r": "1.5",
+    "intraday_trail_r": "1.0",
+    "intraday_universe_bench_size": "120",
+    "intraday_universe_live_rerank": "true",
+    "intraday_use_setup_target": "true",
+    "max_position_pct": "20.0",
+    "mkt_risk_on_min_chg_pct": "0.25",
+    "mkt_short_size_caution": "0.3",
+    "mkt_short_size_risk_off": "0.6",
+    "mkt_size_caution": "0.35",
+    "mkt_size_neutral": "0.6",
+    "mkt_size_risk_on": "1.0",
+    "orb_max_chase_pct": "0.60",
+    "orb_max_range_frac": "0.70",
+    "orb_max_risk_pct": "1.20",
+    "orb_min_break_frac": "0.10",
+    "orb_min_range_frac": "0.15",
+    "orb_min_volume_ratio": "1.20",
+    "orb_require_above_pdh": "1",
+    "orb_stop_buffer_pct": "0.10",
+    "orb_target_r": "2.0",
+    "orb_window_min": "15",
+    "pbk_max_dist_vwap_pct": "0.45",
+    "pbk_max_risk_pct": "0.80",
+    "pbk_max_touches": "2",
+    "pbk_min_bars": "15",
+    "pbk_min_frac_above_vwap": "0.70",
+    "pbk_min_off_high_pct": "0.30",
+    "pbk_min_target_r": "1.0",
+    "pbk_stop_buffer_pct": "0.15",
+    "pbk_structure_bars": "10",
+    "pbk_target_r": "2.5",
+    "pbk_touch_tol_pct": "0.25",
+    "pdl_break_margin_pct": "0.08",
+    "pdl_fail_margin_pct": "0.15",
+    "pdl_hold_bars": "3",
+    "pdl_max_retest_volume_ratio": "2.5",
+    "pdl_max_risk_pct": "0.80",
+    "pdl_min_room_x_cost": "2.0",
+    "pdl_retest_tol_pct": "0.30",
+    "pdl_stop_buffer_pct": "0.25",
+    "pdl_target_r": "2.5",
+    "position_auto_close": "true",
+    "position_reconcile_enabled": "true",
+    "risk_max_risk_pct": "8.0",
+    "risk_min_planned_r_enabled": "DEFAULT_MIN_PLANNED_R_ENABLED",
+    "risk_min_risk_pct": "1.5",
+    "risk_pct_per_trade": "1.0",
+    "risk_plan_capital": "DEFAULT_PLAN_CAPITAL",
+    "risk_plan_hit_rate": "DEFAULT_PLAN_HIT_RATE",
+    "risk_plan_product": "DEFAULT_PLAN_PRODUCT",
+    "risk_plan_r_margin": "DEFAULT_PLAN_R_MARGIN",
+    "risk_regime_scales_target": "DEFAULT_REGIME_SCALES_TARGET",
+    "risk_stop_atr_mult": "1.5",
+    "risk_target_atr_mult": "3.0",
+    "rng_max_dist_from_low_pct": "0.25",
+    "rng_max_risk_pct": "0.70",
+    "rng_max_volume_ratio": "1.80",
+    "rng_max_width_atr_frac": "1.10",
+    "rng_min_bars": "20",
+    "rng_min_touches_each": "2",
+    "rng_min_width_atr_frac": "0.35",
+    "rng_stop_buffer_pct": "0.25",
+    "rng_target_frac": "0.85",
+    "rng_touch_tol_pct": "0.20",
+    "swing_manages_intraday_rows": "false",
+    "swing_setup_target_min_r": "1.0",
+    "swing_use_setup_target": "true",
+    "vce_max_chase_pct": "0.45",
+    "vce_max_contraction_ratio": "0.65",
+    "vce_max_risk_pct": "1.00",
+    "vce_min_break_frac": "0.10",
+    "vce_min_range_atr_frac": "0.08",
+    "vce_min_volume_ratio": "1.40",
+    "vce_stop_buffer_pct": "0.10",
+    "vce_target_r": "2.5",
+    "vce_window_bars": "8",
+    "vwr_lookback_bars": "12",
+    "vwr_max_extension_pct": "0.45",
+    "vwr_max_risk_pct": "0.90",
+    "vwr_min_bars_below": "3",
+    "vwr_min_target_r": "1.0",
+    "vwr_stop_buffer_pct": "0.08",
+    "vwr_target_r": "2.0"
+  }
+}

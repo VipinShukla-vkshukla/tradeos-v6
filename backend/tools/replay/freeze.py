@@ -212,6 +212,7 @@ def build(label: str = "frozen") -> FrozenParams:
     This is the only place in the harness that touches `system_config`, and it
     touches it exactly once per freeze.
     """
+    from config import get_supabase
     keys = discover_keys()
     table = _config.get_system_config(refresh=True)
 
@@ -230,6 +231,20 @@ def build(label: str = "frozen") -> FrozenParams:
             f"unpaged select in config.get_system_config() is truncating, and "
             f"every missing key would freeze to a source default with no "
             f"symptom. Page the read before freezing anything.")
+    # A SECRET MUST NEVER REACH THIS FILE. The frozen params are committed to
+    # git by design (§8, R2), and the repository's root .gitignore blanket-
+    # ignores `*.json` precisely to keep credentials out of the history — the
+    # replay package carries a narrow exemption so R2 can be satisfied at all.
+    # That exemption is only defensible paired with this refusal.
+    secret = {r["key"] for r in
+              (get_supabase().table("system_config").select("key,is_secret")
+               .eq("is_secret", True).execute().data or [])}
+    leaked = sorted(secret & set(keys))
+    if leaked:
+        raise RuntimeError(
+            f"refusing to freeze {len(leaked)} key(s) marked is_secret in "
+            f"system_config: {leaked}. This file is committed to git.")
+
     values: dict[str, str] = {}
     prov: dict[str, dict] = {}
     for key, rec in keys.items():

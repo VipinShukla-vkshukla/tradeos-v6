@@ -14,3 +14,21 @@ cache/
 # REPLAY_DESIGN §8 requires frozen.json to resolve to a committed git object
 # before the holdout runner will start. Ignoring params/ would silently disable
 # that gate.
+#
+# SAYING SO WAS NOT ENOUGH, AND THIS IS THE SECOND HALF OF THE FIX — 2026-08-16.
+# The paragraph above shipped as a comment and nothing else. The ROOT .gitignore
+# carries a blanket `*.json` (a credentials guard, line 19), which no comment
+# down here overrides, so `params/frozen.json` was unstageable and the R2
+# refusal — "the parameters must resolve to a committed git object" — could
+# never be satisfied by any sequence of actions. A gate that cannot PASS is the
+# same defect as one that cannot fail, and this project has shipped one of each.
+# The negation below is what actually un-ignores it; `git check-ignore -v` is
+# what proves it, and is run in the ledger entry for this stage.
+#
+# The root rule stays intact everywhere else. It exists to keep service-account
+# credentials out of the history, so `freeze.build()` refuses to write any key
+# whose system_config row is marked `is_secret` — the narrow exemption here is
+# paired with a check that the exempted file cannot carry a secret.
+!params/
+!params/*.json
+!params/*.jsonl
