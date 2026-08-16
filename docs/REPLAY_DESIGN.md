@@ -1,6 +1,17 @@
 # TradeOS — Historical Replay Harness: DESIGN
 
-**Status: design only. No code written. Nothing run. Nothing fetched.**
+**Status: REVISED 2026-08-16 — depth measured, walk-forward split rebuilt.**
+
+> **Revision 1 (2026-08-16).** The original document was written without
+> querying the database and its central parameter was wrong. `stock_data_daily`
+> begins **2026-03-06**, not mid-2025, so the 6/3/3-month walk-forward split it
+> specified **does not exist and is void**. Rebuilt in **§8** against measured
+> counts; the honest limits are in **§8.1** (the holdout is 21 days and the
+> swing arm may be uninformative) and **§8.2** (`stock_data_daily` is a hard
+> floor for both arms; backfill is out of scope). Two further corrections fell
+> out of the measurement: **§4.1** — the table is a ~500-name Chartink-screened
+> subset, *not* the full NSE EQ cross-section as originally claimed — and
+> **§3.2**, the Kite call budget, resized from 10,086 to 4,182.
 Implements `docs/PHASE_E_HISTORICAL_REPLAY.md`. Read that first for *why* this
 phase exists; this document is *how it is built* and *how it is proven correct
 before it is believed*.
@@ -77,8 +88,12 @@ is what makes that answer interpretable.
 
 ### Q2 (secondary) — the six intraday engines
 
-> Do any of the six n≥30 intraday engines show positive gross R over a year,
-> given all six are negative over 13 sessions?
+> Do any of the six n≥30 intraday engines show positive gross R over the
+> replayable history, given all six are negative over 13 sessions?
+
+*(Originally phrased "over a year". The history does not reach a year — 75 clean
+trading days, §8. The question is unchanged; its horizon is now stated
+honestly.)*
 
 The six, with their complete-population figures from FINDINGS.md
 (2026-08-15 re-score, 1102 dedup keys / 14 sessions):
@@ -186,17 +201,25 @@ with exponential backoff on any exception and a hard stop after 5 consecutive
 failures. It never runs unattended past a hard stop — a fetch that silently
 degrades is a gap in the denominator.
 
-### 3.2 Expected call count, 12 months
+### 3.2 Expected call count — RESIZED to the measured window
+
+The 12-month budget this section originally carried (~246 days, 10,086 calls)
+was void with the window it assumed. Resized against §8's measurement:
 
 ```
-NSE trading days in 12 months            ~246   (exact figure from nse_holidays)
+replayable trading days                   102   (30 in-sample usable + 18 + 21 + 33)
 intraday universe per day                  40   (intraday_max_universe)
   + NIFTY 50 index context                  1
                                         -----
-symbol-days                        41 x 246 = 10,086 calls   WORST CASE
-at a throttled 2 req/s                   ~84 minutes, ONE TIME
-minute bars stored                 ~375 x 10,086 = ~3.8M bars  (~200 MB packed)
+symbol-days                        41 x 102 =  4,182 calls   WORST CASE
+at a throttled 2 req/s                   ~35 minutes, ONE TIME
+minute bars stored                 ~375 x 4,182 = ~1.6M bars  (~85 MB packed)
 ```
+
+The shallower history is the one place the depth finding *helps*: the fetch is
+now small enough that the chunking optimisation below is not worth taking, and
+the design proceeds on the per-day worst case without needing the span limit
+verified at all.
 
 **The optimisation, contingent on one verification.** Kite Connect v3 documents
 a maximum span per `historical_data` request that is longer than one day for
@@ -253,14 +276,52 @@ interval builds a separate tree rather than silently mixing two bar sizes.
 date's `stock_data_daily` rows.** It reads `date == d` and filters on
 `close`, `value_cr`, `atr_pct`, `delivery_pct`, `asm_flag`, `fo_ban_flag`, then
 ranks on `0.55·movement + 0.45·liquidity` (`scanner.py:181-244`). Every input is
-stored per `(symbol, date)`. `stock_data_daily` is populated from the full NSE
-EQ bhavcopy — `ingest_bhavcopy.py:184` filters `SERIES == 'EQ'` and nothing
-else, and raises if the record count is suspiciously low.
+stored per `(symbol, date)`.
 
-**So the universe for any past date D is the same function applied to D's rows,
-and it carries no survivorship bias**: the cross-section is complete as of D,
-including names that have since been delisted, renamed, or fallen out of
-today's liquid set.
+**CORRECTED 2026-08-16 — `stock_data_daily` is NOT the full NSE EQ
+cross-section.** This document previously asserted it was, on the strength of
+the `SERIES == 'EQ'` filter at `ingest_bhavcopy.py:184`. That filter governs the
+*bhavcopy dataframe*; it does not govern what is stored. The full unfiltered set
+goes to **`raw_prices`**, and `stock_data_daily` receives a **Chartink-screened
+subset** (`ingest_bhavcopy.py:624-633`):
+
+```python
+chartink_syms = fetch_chartink_universe(get_supabase(), trade_date)
+sdd_final = sdd_final[sdd_final["symbol"].isin(chartink_syms)].copy()
+```
+
+Measured: **499–502 symbols per date**, against 2,463 in `raw_prices` on the
+same date. The replay universe is a ~500-name pre-screened list, roughly 20% of
+the traded cross-section.
+
+**Is it point-in-time? Yes — with one residual risk that cannot be closed from
+the database.** `fetch_chartink_universe` reads `.eq("date", trade_date)`
+(`:394`), and the row set for date D was written by D's own evening pipeline, so
+no future information enters by construction. The churn measurement supports
+this: of the 499 symbols on 2026-03-06, **32 are absent** by 2026-08-14 and 34
+are new, so this is not one static list applied backwards — names genuinely
+leave.
+
+**But the universe is 93% static and that bounds what the replay can conclude.**
+465 symbols are present on all 108 dates, and the day-over-day symmetric
+difference has a **median of 0** — most consecutive sessions have an identical
+universe. So:
+
+- **Survivorship bias is small but not provably zero.** The residual risk is
+  `fetch_chartink_universe`'s fallback: when a date has no `chartink_raw_data`
+  rows it silently uses **the most recent available date's** universe (`:398-406`).
+  During a normal same-evening run that is a *prior* date and is harmless. If any
+  historical date was ever re-ingested later, that date's stored universe is the
+  re-run date's list — a genuine lookahead, invisible after the fact because
+  nothing records which path was taken. It cannot be ruled out from the database
+  alone. The harness reports the per-date symbol count and the day-over-day churn
+  in its coverage block so an anomalous date is at least visible.
+- **The replay can only ever judge names Chartink surfaced.** An engine that
+  would have performed well on a name outside that ~500 is unmeasurable here.
+  This is a ceiling on scope, not a bias in the estimate, and it applies equally
+  to the live system — which trades the same filtered universe. So the replay
+  measures the system as deployed, which is the right target for Q1 and Q2, and
+  is *not* a general statement about the engines on Indian equities.
 
 The harness therefore **reimplements nothing** — it imports:
 
@@ -332,18 +393,19 @@ state is a live snapshot with no history in this database. Consequences:
   lists. Ingesting them with a date column is a separate piece of work and is
   **out of scope for this harness** — recorded here so it is not rediscovered.
 
-**UNVERIFIED, and it decides the swing arm's scope: how far back
-`stock_data_daily` actually goes.** One `count(*) group by month` answers it and
-I did not run it (constraints 3 and 4). Step 0 of implementation is that query.
+**RESOLVED 2026-08-16 — the depth question is answered and it is the binding
+constraint on this whole phase.** `stock_data_daily` holds **55,963 rows across
+108 distinct dates, 2026-03-06 to 2026-08-14** — about five and a half months,
+not the twelve this design was originally written against. The walk-forward
+split has been rebuilt around the measurement in §8; the reasoning for why
+backfill is out of scope is in §8.2. The branch that mattered is the second one:
 
-- If depth ≥ 12 months: the swing arm runs with **zero Kite calls** for daily
-  bars, as designed.
-- If depth < 12 months: the daily OHLC backfill is cheap (one `interval="day"`
+- depth ≥ 12 months → swing arm runs with zero Kite calls for daily bars.
+  **Not the case.**
+- depth < 12 months → the daily OHLC backfill is cheap (one `interval="day"`
   call per symbol covers a multi-year span), **but the 86 indicator columns
   `compute_indicators` writes are not**, and every one of the nine screener
-  engines reads them. Backfilling means re-running `compute_indicators`,
-  `compute_regime` and sector strength over history — a materially larger
-  project than this harness, and it must be scoped as one rather than absorbed.
+  engines reads them. **This is the case, and backfill is out of scope (§8.2).**
 
 ---
 
@@ -515,9 +577,10 @@ earlier in the replay than it did live.
 ### 7.3 The swing ladder on daily bars — the approximation, and its sign
 
 The live swing ladder runs inside the 15 s daemon loop on live LTP. Replaying
-that faithfully over a year needs minute bars for every plan symbol — a union
-plausibly 400–600 names × 246 days ≈ 100k–150k calls, ~14 hours at 2 req/s.
-That is not a fetch this project should make for this question.
+that faithfully needs minute bars for every plan symbol — the measured universe
+is ~500 names per date (§4.1), so ≈ 500 × 102 days ≈ **51,000 calls, ~7 hours at
+2 req/s**. Smaller than the year-long estimate this section originally carried,
+and still not a fetch this project should make for this question.
 
 **Decision: the swing ladder steps on daily bars, with a determinate rule and a
 measured error bar.** Per completed daily bar, in this order:
@@ -580,24 +643,146 @@ with, alongside the values, the **git SHA** of `backend/intraday/strategies/`,
 imported function is then called with `params=`/`policy=` from that file. The
 config is read **once**, at the top, and never again.
 
-**The walk-forward split.**
+**The walk-forward split — MEASURED, not assumed.**
+
+The original split in this document (12 months from 2025-07-01) was written
+before the depth of `stock_data_daily` had been queried. It was **void**: the
+table does not go back that far. The measurement below was run on 2026-08-16
+against the live database and every figure in it is a count, not an estimate.
 
 ```
-IN-SAMPLE     2025-07-01 .. 2025-12-31    look freely, tune, explore
-VALIDATION    2026-01-01 .. 2026-03-31    one look per parameter set
-HOLDOUT       2026-04-01 .. 2026-06-30    ONE look, ever, after the freeze
-------------------------------------------------------------------------
-CONTAMINATED  2026-07-13 .. present       reported, labelled, never confirming
+census of stock_data_daily            55,963 rows / 108 distinct dates
+earliest date                         2026-03-06
+latest date                           2026-08-14
 ```
 
-**Why the window ends 2026-06-30 and not today.** The live book runs from
-2026-07-13 and 13–14 sessions of it have been examined in detail across this
-ledger — engine splits, gate counterfactuals, exit attribution, all of it. Those
-months **cannot function as a holdout**: the analyst has already seen the
-outcomes. Including them would be the exact failure PHASE_E §"the one rule"
-warns about, wearing a respectable date range. They are replayed anyway, printed
-under a **CONTAMINATED** heading, and used only for the §10 fidelity comparison
-against the live book. They may never move a parameter.
+```
+                                                  trading   fully
+window          from          to                    days    usable
+--------------------------------------------------------------------------
+IN-SAMPLE       2026-03-06 .. 2026-04-30              36        30
+VALIDATION      2026-05-01 .. 2026-05-31              18        18
+HOLDOUT         2026-06-01 .. 2026-06-30              21        21
+--------------------------------------------------------------------------
+clean total                                           75        69
+CONTAMINATED    2026-07-01 .. 2026-08-14              33        33
+--------------------------------------------------------------------------
+all dates present                                    108
+```
+
+Actual first/last dates carrying rows, since the window edges are weekends:
+validation runs **2026-05-04 .. 2026-05-29**, holdout **2026-06-01 ..
+2026-06-30**, in-sample **2026-03-06 .. 2026-04-30**.
+
+**"Fully usable" is a narrower count than "present", and the gap is all in
+in-sample.** Six dates carry rows whose `value_cr` is **null on every row**:
+2026-03-06, 03-09, 03-10, 03-11, 03-12 and 04-28. `value_cr` is 45% of
+`build_universe`'s rank (`scanner.py:181-244`) and one of its hard filters, so
+the intraday universe cannot be reconstructed for those six dates at all. They
+are **excluded**, not silently ranked on a null. In-sample is therefore **30
+usable days, not 36**. Validation and holdout have no such dates.
+
+**2026-04-29 is an anomalous ingest and is handled, not dropped.** It carries
+**2,476 rows** where every other date carries 499–502. Of those, 500 have a
+non-null `close` and 1,976 do not — they are empty shells carrying `value_cr`
+but no price. The harness drops null-`close` rows before ranking, which restores
+that date to a normal 500-name universe. Recorded here because a date with five
+times the candidate pool would otherwise silently produce a different top-40
+than any neighbouring day, for a reason that has nothing to do with the market.
+
+**Why the clean window ends 2026-06-30.** The live book runs from 2026-07-13 and
+13–14 sessions of it have been examined in detail across this ledger — engine
+splits, gate counterfactuals, exit attribution, all of it. Those sessions
+**cannot function as a holdout**: the analyst has already seen the outcomes.
+Including them would be the exact failure PHASE_E §"the one rule" warns about,
+wearing a respectable date range. The contaminated window is opened at
+**2026-07-01** rather than 07-13 so that the boundary is a calendar month rather
+than a remembered event — the fortnight before the first live trade was still
+examined while forming views. It is replayed anyway, printed under a
+**CONTAMINATED** heading, and used only for the §10 fidelity comparison against
+the live book. **It may never move a parameter.**
+
+### 8.1 — The holdout is thin, and the swing arm may be uninformative
+
+This is stated here, before the run, so that it is a known property of the
+design rather than a disappointment discovered while reading results.
+
+**A 21-day holdout is thin.** It is one calendar month. It contains one
+expiry, a handful of macro prints and whatever single sector rotation happened
+to dominate June — none of which averages out over 21 sessions. A parameter that
+survives it has survived one market, not a range of them. The correct reading of
+a holdout pass here is "not contradicted", never "confirmed".
+
+**For the INTRADAY arm (Q2) this is survivable.** The unit of observation is a
+deduplicated detection, not a day. The live book records ~85 dedup keys per
+session across the nine engines (1,102 keys / 13 sessions, FINDINGS.md
+2026-08-15 re-score), so 21 days is on the order of **1,700–1,800 detections**
+pooled — and the Q2 rule already refuses to rank any engine under n=100 per
+window. The large engines (SDN, VWR, VCE) will clear that; the small ones
+(PBK at n=32 over 14 live sessions) will not, and will print INSUFFICIENT in
+every window. That is the rule working, not a defect.
+
+**For the SWING arm (Q1) it may genuinely be uninformative, and the reason is
+structural rather than a matter of sample size.** Q1's estimator is a *paired*
+difference `ΔR(m) = netR(m) − netR(1.905)` over identical entries. For any plan
+that never trades above 1.905R, that difference is **exactly zero at every m** —
+the target never binds, so moving it changes nothing. Only plans that reach the
+lower target contribute a single non-zero observation. So the effective n for
+Q1 is not the plan count; it is:
+
+```
+n_effective(Q1) = plans whose favourable excursion reaches >= 1.905R
+```
+
+On the only direct evidence available — the 11 live swing trades —
+`EXIT_TARGET` fired **0 times** and the highest peak on the whole book was
+PPLPHARMA at **1.34R** (FINDINGS.md Stage 2d §2). That is `n_effective = 0` on
+11 trades. At roughly 60 plans/day from the evening pipeline (CLAUDE.md), a
+21-day holdout replays on the order of 1,200 plans, but if the reach-1.905R rate
+is in the low single digits the informative subsample is **tens of
+observations, possibly single digits** — nowhere near enough for a 2-SE paired
+test to resolve anything.
+
+**Consequence, accepted in advance:** the `m`-only sweep will most likely return
+"no measurable effect" in every window, and that result will be **correct and
+uninformative simultaneously**. It is why §1 sweeps `m × giveback_pct` jointly:
+the give-back rung fired 6 of 11 live and is where the outcomes actually get
+decided, so the give-back axis has a real n behind it even when the target axis
+does not. **The harness prints `n_effective` beside every Q1 cell.** A cell
+whose paired difference rests on fewer than 30 non-zero observations prints
+`<< n_eff<30 UNINFORMATIVE` and is not ranked — the same guard §11 applies to
+means without counts, applied to the one place where a large n hides a tiny one.
+
+If Q1 comes back uninformative, **that is the finding**, and the honest response
+is to say the data cannot answer it at this depth — not to widen the window into
+contaminated months until a number appears.
+
+### 8.2 — `stock_data_daily` is a hard floor for BOTH arms
+
+**Recorded so this is not rediscovered.** Kite's bar history goes back years and
+is not the binding constraint. The binding constraint is that **every screener
+input other than raw price lives in `stock_data_daily`, which begins
+2026-03-06.** Both arms depend on it and neither can be extended past it:
+
+- **Intraday** — `build_universe` is a pure function of one date's
+  `stock_data_daily` rows (`close`, `value_cr`, `atr_pct`, `delivery_pct`,
+  `asm_flag`, `fo_ban_flag`). No rows, no universe, and therefore no
+  reconstructable set of symbols to have fetched bars for.
+- **Swing** — all nine screener engines read the 86 indicator columns
+  `compute_indicators` writes onto the same table.
+
+`raw_prices` is not an escape hatch and was checked: it holds the **unfiltered**
+cross-section (2,463 symbols on 2026-08-14 against 501 in `stock_data_daily`)
+but it starts **2026-04-16**, which is *shallower* than `stock_data_daily`, and
+it carries OHLCV and delivery only — none of the 86 indicators.
+
+**Backfill is explicitly OUT OF SCOPE.** Extending the window means re-running
+`compute_indicators`, `compute_regime` and `sector_strength` across the
+reconstructed history, then reconciling them against a `chartink_raw_data`
+universe that does not exist for those dates either. That is a materially larger
+project than this harness and must be scoped as one rather than absorbed into
+it. **The replay is built against 75 clean trading days and its conclusions are
+bounded by that.**
 
 **The freeze protocol, and the checks that can fail:**
 
@@ -862,10 +1047,21 @@ blockers; 4–6 are recorded so the next session does not rediscover them.
    itself and does not inherit the problem, but §10.1's comparison must dedup
    the stored side by the same rule or the counts will not line up.
 
+7. **`fetch_chartink_universe` is an unpaged read**
+   (`ingest_bhavcopy.py:393-397`, `:403-407`) — `.select("symbol").eq("date",…)`
+   with no paging, so PostgREST caps it at 1000 rows and reports nothing. It
+   returns ~500 today so it is not currently truncating, but this is the exact
+   F-19 idiom, and the value it returns **decides which symbols are stored in
+   `stock_data_daily` at all**. If the Chartink universe ever crosses 1000, the
+   stored universe silently becomes an arbitrary 1000-row slice and every
+   downstream screener, scanner and replay inherits it with no symptom.
+   **Recorded, not fixed** — this is production ingest and out of this stage's
+   scope. Found while measuring depth for §8.
+
 **UNVERIFIED in this session, by constraint:**
 
-- Depth of `stock_data_daily` (constraints 3, 4). **Decides whether the swing
-  arm is a 12-month replay or a backfill project.** Step 0 of implementation.
+- ~~Depth of `stock_data_daily`~~ — **RESOLVED**, measured 2026-08-16:
+  108 dates, 2026-03-06 .. 2026-08-14. See §8, §8.2, §4.2.
 - Kite's per-request span limit for minute data (constraint 5). Decides whether
   the fetch is ~10,086 calls or ~1,300. The design commits to the worst case.
 - That the engine and exit functions are importable in isolation without side
@@ -909,11 +1105,14 @@ Per the brief's rule 7, recorded rather than resolved:
   states the requirement and stops. If no injection point exists, that change is
   a separate, approved piece of work — it is not made inside the replay, and the
   harness must not carry a private copy of the filter instead.
-- **`stock_data_daily` depth (§4.2).** Answerable by one `count(*) group by
-  month`; constraints 3 and 4 put it out of reach here. It is the single largest
-  open question in this design, because it is the difference between "the swing
-  arm runs with zero Kite calls" and "the swing arm needs an indicator backfill
-  across a year".
+- **`stock_data_daily` depth (§4.2).** ~~The single largest open question in this
+  design.~~ **RESOLVED 2026-08-16 by measurement**: 108 dates, 2026-03-06 ..
+  2026-08-14. It was indeed the largest open question, and the answer moved the
+  design — the 6/3/3-month split it was written around does not exist, the clean
+  window is 75 trading days, and the swing arm's holdout is 21 days and may be
+  uninformative (§8.1). Recorded rather than smoothed over: **a design written
+  against an unmeasured assumption was wrong about its central parameter, and
+  the measurement was one query.**
 - **The outcome-rule port (§9.1).** Constraint-free but worth flagging: it is
   the one place the harness deliberately copies logic rather than importing it,
   because the original is welded to Supabase I/O. The copy is only defensible
