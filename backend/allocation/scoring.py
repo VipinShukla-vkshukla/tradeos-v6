@@ -193,6 +193,72 @@ def intraday_priors(sb, rows: list[dict] | None = None) -> dict[str, Prior]:
     return _intraday_priors_from_rows(rows, floor)
 
 
+# Carrier for a deduplicated group's mean R. Not a database column and never
+# written back — the leading underscore says so at every call site, and
+# `_record_setup` would reject it if it ever reached PostgREST.
+_GROUP_R = "_group_mean_r"
+
+
+def _row_gross_r(r: dict) -> float | None:
+    """Gross R for ONE detection, against THAT detection's own entry and stop.
+
+    The single home of this arithmetic. It was previously written inline in the
+    prior loop while the dedup block above did its own averaging in percent, and
+    the two disagreed about which row a denominator belonged to. One function,
+    one row, no group.
+
+    Returns None — never 0.0 — for a row that cannot be turned into an R: no
+    entry, a stop on the wrong side of it, or a missing outcome. Zero is a
+    measured flat trade and would pull a mean toward it; absence must stay
+    absent, per this module's cold-start rule.
+
+    ── THE PRIOR MUST BE GROSS; score() IS WHAT CHARGES THE COST ─────────────
+
+    `outcomes.resolve_day` writes `outcome_pct = gain_pct - cost_pct` — already
+    NET of the round trip. `score()` then computes `e_r = prior.mean_r -
+    cost_r`, subtracting the identical quantity a SECOND time (`cost_r =
+    friction / (risk_pct * entry * qty)` is `cost_pct / risk_pct` in R units —
+    same number, different spelling). This module's own header states the
+    intended formula: E[R] = expectation over the EMPIRICAL R distribution -
+    cost_R. That wants a GROSS distribution minus one charge.
+
+    IT WAS NOT UNIFORM, WHICH IS WHY IT SURVIVED. `_record_setup` is passed
+    `rt.pct_of_position` only on the TAKEN / REJECTED_COST / ALLOCATOR_DECLINED
+    paths; every other verdict passes a literal 0.0. So refused rows were GROSS
+    (charged once, correctly) and gate-passed rows were NET (charged twice) —
+    and the old prior was dominated by refused rows, so the double charge stayed
+    a minority effect that never showed up as an obvious constant offset.
+
+    `priors_intraday_taken_only` selects exactly the gate-passed rows, so it
+    would have turned that minority effect into a SYSTEMATIC one: every
+    observation double-charged, every intraday edge pushed ~cost_r more
+    negative, and with the absolute floor that means a book that refuses
+    everything. The two changes had to land together.
+
+    Reconstructed rather than backfilled: adding the row's own `cost_pct` back
+    recovers the gross figure exactly, needs no migration over historical rows,
+    and is a no-op on the rows that were already gross (cost_pct = 0). Because
+    it is the ROW's own cost against the ROW's own risk, it stays correct inside
+    a group that mixes charged and uncharged verdicts — GODREJCP/SDN on 14-Aug
+    is 4 rows at cost_pct 0.206 and 6 at 0.
+    """
+    from intraday import direction as D
+
+    if r.get("outcome_pct") is None:
+        return None
+    try:
+        entry, stop = float(r.get("entry") or 0), float(r.get("stop") or 0)
+        d = D.normalise(r.get("direction"))
+        risk = D.risk_per_share(entry, stop, d) if entry else 0.0
+        risk_pct = risk / entry * 100.0 if risk else 0.0
+        if risk_pct <= 0:
+            return None
+        gross_pct = float(r["outcome_pct"]) + float(r.get("cost_pct") or 0)
+        return gross_pct / risk_pct
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
 def _intraday_priors_from_rows(rows: list[dict], floor: int) -> dict[str, Prior]:
     """The whole of intraday_priors() except the fetch. Pure, so a replay can
     hand it a walk-forward slice and get the identical arithmetic."""
@@ -288,6 +354,35 @@ def _intraday_priors_from_rows(rows: list[dict], floor: int) -> dict[str, Prior]
     #
     # NOT applicable to `swing_priors()`: it reads `signal_output_daily`, which
     # the evening pipeline writes once per symbol per day by construction.
+    # ── THE COLLAPSE HAPPENS IN R, NOT IN PERCENT — 16-Aug-2026 ─────────────
+    #
+    # This block was right about the POPULATION and wrong about the ARITHMETIC.
+    # It averaged `outcome_pct` over the group, wrote that one mean onto a copy
+    # of `src[0]`, and let the loop below divide it by `src[0]`'s risk. So the
+    # NUMERATOR came from every row in the group and the DENOMINATOR came from
+    # whichever row the paged read sorted first — `fetch_all`'s default
+    # `order_by="id"`, i.e. the earliest detection, which is not a property of
+    # the setup at all.
+    #
+    # A group is not one price level, and cannot be, BY THE MECHANISM THAT
+    # CREATES IT: `_setup_is_new` re-records a setup precisely WHEN its entry
+    # has drifted past `intraday_setup_dedup_pct`. Drift is the admission
+    # criterion, so every multi-row group holds multiple entries and stops by
+    # construction. GODREJCP/SDN on 14-Aug-2026 is 10 rows carrying 7 distinct
+    # entries, with risk between 0.141% and 0.603% — a 4.3x spread, one value of
+    # which was applied to all ten outcomes.
+    #
+    # R is a RATIO, and the mean of ratios is not the ratio of means unless
+    # every denominator is equal — the one thing this grouping guarantees is
+    # false. Measured over the full resolved table, the two forms disagree on
+    # sign for RNG (+0.061 vs -0.137) and by 68% of the estimate for VCE.
+    #
+    # Each row is therefore reduced to R against ITS OWN entry and stop first,
+    # and the group mean is taken of those. `_row_gross_r` is the single place
+    # that arithmetic lives, so the deduplicated and non-deduplicated paths
+    # cannot drift apart — the pre-fix code had the formula written out twice,
+    # which is how a numerator and a denominator came from different rows
+    # without either line looking wrong on its own.
     if cfg_bool("priors_intraday_dedup", True):
         collapsed: dict[tuple, list[dict]] = {}
         for r in rows:
@@ -301,11 +396,12 @@ def _intraday_priors_from_rows(rows: list[dict], floor: int) -> dict[str, Prior]
             taken = [g for g in grp if (g.get("cost_verdict") or "").upper() == "TAKEN"]
             src = taken or grp
             base = dict(src[0])
-            vals = [(float(g["outcome_pct"]), float(g.get("cost_pct") or 0))
-                    for g in src if g.get("outcome_pct") is not None]
+            vals = [v for v in (_row_gross_r(g) for g in src) if v is not None]
             if vals:
-                base["outcome_pct"] = statistics.fmean(v[0] for v in vals)
-                base["cost_pct"] = statistics.fmean(v[1] for v in vals)
+                # Carried as R, already gross and already divided by each row's
+                # own risk. The loop below reads this instead of recomputing,
+                # because `base`'s entry/stop are one member's, not the group's.
+                base[_GROUP_R] = statistics.fmean(vals)
             deduped.append(base)
         rows = deduped
 
@@ -313,47 +409,18 @@ def _intraday_priors_from_rows(rows: list[dict], floor: int) -> dict[str, Prior]
     by_taken: dict[str, list[float]] = {}
     for r in rows:
         try:
-            entry, stop = float(r.get("entry") or 0), float(r.get("stop") or 0)
             d = D.normalise(r.get("direction"))
-            risk = D.risk_per_share(entry, stop, d) if entry else 0.0
-            risk_pct = risk / entry * 100.0 if risk else 0.0
-            if risk_pct <= 0:
-                continue
             key = r["strategy"] or "?"
             if D.is_short(d):
                 key = f"{key}/SHORT"
-            # ── THE PRIOR MUST BE GROSS; score() IS WHAT CHARGES THE COST ────
-            #
-            # `outcomes.resolve_day` writes `outcome_pct = gain_pct - cost_pct`
-            # — already NET of the round trip. `score()` then computes
-            # `e_r = prior.mean_r - cost_r`, subtracting the identical quantity
-            # a SECOND time (`cost_r = friction / (risk_pct * entry * qty)` is
-            # `cost_pct / risk_pct` in R units — same number, different
-            # spelling). This module's own header states the intended formula:
-            # E[R] = expectation over the EMPIRICAL R distribution - cost_R.
-            # That wants a GROSS distribution minus one charge.
-            #
-            # IT WAS NOT UNIFORM, WHICH IS WHY IT SURVIVED. `_record_setup` is
-            # passed `rt.pct_of_position` only on the TAKEN / REJECTED_COST /
-            # ALLOCATOR_DECLINED paths; every other verdict passes a literal
-            # 0.0. So refused rows were GROSS (charged once, correctly) and
-            # gate-passed rows were NET (charged twice) — and the old prior was
-            # dominated by refused rows, so the double charge stayed a minority
-            # effect that never showed up as an obvious constant offset.
-            #
-            # `priors_intraday_taken_only` selects exactly the gate-passed
-            # rows, so it would have turned that minority effect into a
-            # SYSTEMATIC one: every observation double-charged, every intraday
-            # edge pushed ~cost_r more negative, and with the new absolute
-            # floor above that means a book that refuses everything. The two
-            # changes had to land together.
-            #
-            # Reconstructed rather than backfilled: adding the row's own
-            # `cost_pct` back recovers the gross figure exactly, needs no
-            # migration over historical rows, and is a no-op on the rows that
-            # were already gross (cost_pct = 0).
-            gross_pct = float(r["outcome_pct"]) + float(r.get("cost_pct") or 0)
-            r_mult = gross_pct / risk_pct
+            # A deduplicated row already carries the group's mean R, computed
+            # per member against that member's own risk. Recomputing it from
+            # `base`'s entry/stop is exactly the defect fixed above.
+            r_mult = r.get(_GROUP_R)
+            if r_mult is None:
+                r_mult = _row_gross_r(r)
+            if r_mult is None:
+                continue
             by.setdefault(key, []).append(r_mult)
             if (r.get("cost_verdict") or "").upper() == "TAKEN":
                 by_taken.setdefault(key, []).append(r_mult)

@@ -6507,3 +6507,341 @@ reproduction gate — and no further until that gate passes.** No replay was run
 window scored, no parameter moved, nothing written outside this ledger.
 
 ---
+
+## 2026-08-16 — F-28 (change, dedup estimator risk basis) — the defect is real and indefensible (42.9% of multi-row groups scored outside their own members' range) but it is NOT what moved VCE and RNG off the published table: that is a REPRESENTATION choice, first-detection vs group-mean, and it survives the fix. No engine verdict changes. VWR survives at −4.70 SE
+
+**Ran:**
+
+```bash
+git checkout -b fix/dedup-estimator main
+cd backend && python -m tools.verify --module gated_priors     # before, and after
+cd backend && python -m tools.verify                           # full suite
+cd backend && python -m tools.simulate
+# read-only scratch, all four import the REAL functions, none writes:
+python <scratch>/rederive.py          # old vs corrected, nine engines
+python <scratch>/constructions.py     # four ways to represent a group
+python <scratch>/production_view.py   # the live-config prior, plus tails
+python <scratch>/outside_hull.py      # per-group error of the old form
+```
+
+The "old" estimator throughout is `git show main:backend/allocation/scoring.py`
+loaded as a module — never a retyped copy, because a retyped copy is exactly the
+thing that would not reproduce a defect about which row a denominator came from.
+
+---
+
+### 1 — THE MECHANISM, CONFIRMED
+
+`backend/allocation/scoring.py::_intraday_priors_from_rows`. The dedup block
+collapsed a (symbol, strategy, trade_date) group by averaging `outcome_pct`
+across its members and writing that one mean onto `base = dict(src[0])`. The
+loop below then divided it by `base`'s risk — **`src[0]`'s entry and stop**, i.e.
+whichever row `fetch_all(order_by="id")` sorted first.
+
+Numerator from every row in the group. Denominator from one of them.
+
+A group cannot be one price level, **by the mechanism that creates it**:
+`_setup_is_new` re-records a setup precisely WHEN its entry has drifted past
+`intraday_setup_dedup_pct`. Drift is the admission criterion, so every multi-row
+group holds multiple entries by construction. GODREJCP/SDN on 2026-08-14:
+
+```
+     id     entry      stop   risk%     out%   cost%        R  verdict
+   6136    935.80    938.12   0.248   -0.248   0.000  -1.0003  BLOCKED_SHORTS_MARKET
+   6155    935.80    937.12   0.141    0.168   0.206  +2.6536  REJECTED_COST
+   6279    936.00    937.72   0.184    0.395   0.000  +2.1495  BLOCKED_SHORTS_MARKET
+   6430    932.50    938.12   0.603   -0.603   0.000  -1.0005  BLOCKED_SHORTS_MARKET
+   6529    932.60    934.32   0.184   -0.184   0.000  -0.9977  BELOW_CONVICTION
+   6561    932.10    934.32   0.238   -0.444   0.206  -0.9980  REJECTED_COST
+   6599    931.00    934.32   0.357   -0.357   0.000  -1.0011  BLOCKED_SHORTS_MARKET
+   6980    933.00    934.52   0.163   -0.369   0.206  -0.9987  REJECTED_COST
+   7049    933.00    934.62   0.174   -0.174   0.000  -1.0021  BLOCKED_SHORTS_MARKET
+   7074    933.00    934.62   0.174   -0.380   0.206  -1.0004  REJECTED_COST
+distinct entries: 7      risk spread: 0.141% .. 0.603%  (4.3x)
+```
+
+**Correction to the flag as filed:** the group is **10 rows, not 11** — 10 total
+in `intraday_setups`, all resolved. 7 distinct entries as stated. The old form
+applied 0.248% (row 6136's risk) to all ten outcomes and reported −0.553R; the
+mean of the members' own R is −0.320R.
+
+R is a **ratio**. The mean of ratios is not the ratio of means unless every
+denominator is equal, which is the one thing this grouping guarantees is false.
+
+### 2 — HOW WRONG, PER GROUP (the aggregate hides it)
+
+Per-engine means barely move (§4), which invites the conclusion that this was
+cosmetic. It was not. The old per-group arithmetic was replicated in three lines
+and **validated against the old module first** — all nine engine means matched to
+`delta 0.00e+00` — before anything below was concluded from it.
+
+```
+multi-row groups: 664
+  old estimate OUTSIDE its own members' [min,max]: 285 (42.9%)
+  every member a stop-out (~-1R) yet old scored below -1.02R: 73
+
+worst 8 by distance outside the hull:
+  symbol      eng  date              OLD  members min     max  true mean  rows
+  CARBORUNIV  SDN  2026-08-13     -2.641       -1.002   2.865     -0.773    17
+  HSCL        PBK  2026-08-04     -2.062       -1.002  -1.000     -1.001     2
+  MUTHOOTFIN  VWR  2026-08-13     -1.990       -1.002  -0.999     -1.000     6
+  CHENNPETRO  PBK  2026-07-31     +4.976        2.500   4.079     +3.290     2
+  CEMPRO      SDN  2026-08-11     -1.724       -1.002  -0.999     -1.000    10
+  HINDZINC    VWR  2026-08-14     -1.683       -1.001  -0.997     -1.000     5
+  RADICO      SDN  2026-08-14     -0.328       -1.002  -0.998     -1.000    17
+  PNBHOUSING  SDN  2026-08-07     -1.636       -1.002  -0.999     -1.000     9
+```
+
+**73 groups in which every member row was a plain stop-out — R ≈ −1.000 for all
+of them — were scored below −1.02R.** HSCL/PBK: two rows, −1.002 and −1.000, and
+the estimator said the setup lost **−2.062R**. That is not an imprecision; it is
+a number the trade cannot produce, and the reason it appears is that a stop-out's
+R is exactly −1 *at its own risk*, so the moment the denominator comes from a
+different row the identity breaks. RADICO/SDN is the same error facing the other
+way: 17 rows all ≈ −1.0, scored **−0.328R**, a total loss recorded as a third of
+one.
+
+The aggregate survives this because the errors are near-symmetric across 285
+groups and cancel. That is luck, not design.
+
+### 3 — THE FIX
+
+Each row is reduced to R against **its own** entry and stop first; the group mean
+is taken of those. `_row_gross_r()` is now the single home of that arithmetic —
+the pre-fix code had the formula written out twice, once in the dedup block and
+once in the loop, which is how a numerator and a denominator came from different
+rows without either line looking wrong on its own.
+
+Tests were written first and **three of the four fail on the unfixed estimator:**
+
+```
+✗  gated intraday priors  (3/14 failed)
+   mean_r -0.2500 — expected +2.0R, the mean of each row's own R. -0.25 means
+     the group's outcomes were divided by the FIRST row's risk
+   the same three rows gave ['-0.0833', '-0.8333', '-0.3333'] depending on
+     which one came first
+   mean_r +1.500000 — both rows are +1.0R gross at their own levels; anything
+     else means cost or risk crossed rows
+```
+
+The middle one is the property that matters most: **the same three rows produced
+three different priors depending on which arrived first.** An estimator whose
+answer moves when nothing about the evidence moves is not measuring the evidence.
+
+The fourth check ("a group at one price level is unchanged") passes on BOTH
+sides by design — it pins the no-op. Per this project's rule that a check which
+cannot fail is not a check, it was demonstrated failing against a deliberately
+wrong central-tendency choice (median-of-group instead of mean): `mean_r
++0.500000`, caught. It is the only one of the four that catches that class.
+
+After: `all 545 checks passed across 60 modules`. `tools.simulate` runs clean.
+
+### 4 — RE-DERIVED GROSS R, NINE ENGINES, OLD vs CORRECTED
+
+Complete resolved population, 8324 rows → 1102 dedup keys. `taken_only=false`,
+floor 1, so every engine returns a real number and the population matches the
+15-Aug §3 table. **n matches §3 exactly for all nine engines.**
+
+```
+engine      n   published           OLD estimator           NEW estimator      shift
+------------------------------------------------------------------------------------
+SDN       398      -0.077       -0.0471 +/- 0.0580        -0.0584 +/- 0.0594    -0.0113
+VWR       307      -0.345       -0.3279 +/- 0.0656        -0.3134 +/- 0.0667    +0.0144
+VCE       138      -0.155       -0.2522 +/- 0.1054        -0.2511 +/- 0.1053    +0.0010
+ORB       119      -0.241       -0.2654 +/- 0.0967        -0.2925 +/- 0.0951    -0.0271
+RNG        60      -0.137       +0.0549 +/- 0.1574        +0.0467 +/- 0.1613    -0.0082
+PBK        32      -0.276       -0.3063 +/- 0.2655        -0.3230 +/- 0.2291    -0.0168
+PDL        25      +0.064       +0.0981 +/- 0.3295        +0.0733 +/- 0.3270    -0.0248
+GAP        22      +0.100       +0.0762 +/- 0.2533        +0.0716 +/- 0.2558    -0.0046
+GDB         1      -1.000       -1.0003 +/- nan           -1.0003 +/- nan       +0.0000
+
+OLD  INTRADAY/ALL   n=704  -0.2421 +/- 0.0452     NEW  INTRADAY/ALL   n=704  -0.2426 +/- 0.0451
+OLD  ALL/SHORT      n=398  -0.0471 +/- 0.0580     NEW  ALL/SHORT      n=398  -0.0584 +/- 0.0594
+```
+
+Verdicts at the 2-SE bar:
+
+```
+engine    OLD SE from 0   NEW SE from 0   verdict
+SDN               -0.81           -0.98   open  -> open
+VWR               -5.00           -4.70   NO    -> NO
+VCE               -2.39           -2.38   NO    -> NO
+ORB               -2.75           -3.08   NO    -> NO
+RNG               +0.35           +0.29   open  -> open
+PBK               -1.15           -1.41   open  -> open
+PDL               +0.30           +0.22   open  -> open
+GAP               +0.30           +0.28   open  -> open
+```
+
+**NO VERDICT CHANGES. Not one, on any engine, at any n.** Largest shift is ORB at
+−0.027R. The production-configured prior (`taken_only=true`, floor 30, 90-day
+window) — the number that actually prices a trade — moves no further:
+
+```
+key                      n   OLD mean   NEW mean    shift  usable
+INTRADAY/ALL           169    -0.2305    -0.2401  -0.0097  True
+INTRADAY/ALL/SHORT      42    +0.1181    +0.1175  -0.0007  True
+INTRADAY/ORB            49    -0.2806    -0.3065  -0.0259  True
+INTRADAY/PBK            32    -0.3063    -0.3230  -0.0168  True
+INTRADAY/RNG            60    +0.0549    +0.0467  -0.0082  True
+INTRADAY/SDN/SHORT      42    +0.1181    +0.1175  -0.0007  True
+INTRADAY/VCE            37    -0.1770    -0.1799  -0.0028  True
+INTRADAY/VWR            57    -0.2943    -0.2900  +0.0043  True
+INTRADAY/GAP,GDB,PDL          below floor, NEUTRAL, unchanged
+```
+
+### 5 — THE FLAG'S DIAGNOSIS WAS WRONG, AND THE REAL CAUSE IS A DECISION
+
+The flag attributed the VCE and RNG divergence from the published table to this
+defect. **It is not the cause.** Fixing it moved VCE by +0.001 and RNG by −0.008;
+the divergence is fully intact afterwards. VCE reads −0.251 against a published
+−0.155, RNG reads **+0.047 against −0.137, still a sign flip, after the fix.**
+
+The cause is that §3 and the estimator **represent a group differently**, and
+both were correct in their own terms. Four representations, one population:
+
+```
+=== TAKEN-preferred (the estimator's rule) ===
+engine     n  published   first-ts   first-id     mean-R    last-ts
+SDN      398     -0.077    -0.0926    -0.0926    -0.0584    -0.1442
+VWR      307     -0.345    -0.3491    -0.3491    -0.3134    -0.2814
+VCE      138     -0.155    -0.1803    -0.1803    -0.2511    -0.3767
+ORB      119     -0.241    -0.2498    -0.2498    -0.2925    -0.3339
+RNG       60     -0.137    -0.1366    -0.1366    +0.0467    +0.1914
+PBK       32     -0.276    -0.3234    -0.3234    -0.3230    -0.3455
+PDL       25     +0.064    +0.0635    +0.0635    +0.0733    +0.0886
+GAP       22     +0.100    +0.0958    +0.0958    +0.0716    +0.1187
+GDB        1     -1.000    -1.0003    -1.0003    -1.0003    -1.0003
+
+=== no TAKEN preference ===
+SDN      398     -0.077    -0.0767    -0.0767    -0.0654    -0.1687
+VWR      307     -0.345    -0.3456    -0.3456    -0.3024    -0.2585
+VCE      138     -0.155    -0.1550    -0.1550    -0.2678    -0.3564
+ORB      119     -0.241    -0.2413    -0.2413    -0.2627    -0.2474
+RNG       60     -0.137    -0.1366    -0.1366    +0.0467    +0.1914
+PBK       32     -0.276    -0.2758    -0.2758    -0.3039    -0.3498
+PDL       25     +0.064    +0.0635    +0.0635    +0.0748    +0.0993
+GAP       22     +0.100    +0.1001    +0.1001    +0.0710    +0.1188
+GDB        1     -1.000    -1.0003    -1.0003    -1.0003    -1.0003
+```
+
+**`first-ts` with no TAKEN preference reproduces the published table on all nine
+engines** — VCE −0.1550 vs −0.155, RNG −0.1366 vs −0.137, VWR −0.3456 vs −0.345,
+GAP +0.1001 vs +0.100. That is §3's stated rule (`dedupe_setups`: first detection
+by `ts`) confirmed, and it is also an independent validation of the corrected
+`_row_gross_r`: the same per-row arithmetic reproduces a table computed by
+different code in a different session to four decimals.
+
+Decomposing RNG's −0.137 → +0.047:
+
+- TAKEN preference: **0.000** (RNG is identical in both halves)
+- first-ts → group-mean: **+0.183, the entire gap**
+
+VCE's −0.155 → −0.251: −0.025 from TAKEN preference, −0.071 from first-ts →
+group-mean, −0.001 from this fix.
+
+`first-ts` and `first-id` are identical on every engine, so sorting by `id` was
+never the issue — id order and ts order agree on which row is first. The issue is
+that the old code used the first row for the **denominator only**.
+
+**The drift across the columns is monotone in every engine** — ts → mean → last
+walks one direction, and for RNG it walks from −0.137 to +0.191. Which row of a
+group you believe is worth up to 0.33R on a 60-key engine. That is a live,
+undecided estimator question and it is bigger than the defect this entry fixes.
+
+### 6 — DOES VWR STILL SURVIVE AT −4.9 SE?
+
+**Yes — stated explicitly as asked. VWR remains decisively negative and its NO
+verdict is unchanged.**
+
+```
+construction                              mean      SE      SE from 0
+published §3 (first-ts, no TAKEN pref)   -0.345   0.071      -4.86
+corrected estimator, complete pop        -0.3134  0.0667     -4.70
+old estimator, complete pop              -0.3279  0.0656     -5.00
+corrected, production config (n=57)      -0.2900     --        --
+```
+
+The published "−4.9 SE" is −4.86 on its own construction. The corrected estimator
+reads **−4.70 SE (n=307)**. It weakened by 0.16 SE and did not come close to the
+−2 bar; the 2-SE optimistic upper limit is −0.180, still negative. **All three
+constructions and both estimators agree VWR is negative — it is the only engine
+about which no representation choice makes any difference.**
+
+### 7 — TAILS: THE GROUP MEAN DAMPENS, IT DOES NOT AMPLIFY
+
+A member row's R can be extreme when a late re-record leaves a very tight stop
+(GODREJCP holds a +2.65R row off 0.141% risk). Averaging could have imported
+those into the prior. Measured, it does the opposite:
+
+```
+member rows 8324 in 1102 groups; median group size 3, max 258
+  per member row   min -1.00  p10 -1.00  med -1.00  p90 +2.00  max +10.35  |R|>3: 250
+  per group mean   min -1.00  p10 -1.00  med -0.94  p90 +1.73  max  +6.30  |R|>3: 19
+  groups with >1 member: 729 of 1102 (66.2%)
+```
+
+250 extreme member rows collapse to 19 extreme group means. **66.2% of groups are
+multi-row, so the defect touched two thirds of the population** and still moved
+no engine mean by more than 0.027R.
+
+### 8 — COULD NOT DETERMINE
+
+- **Which representation is CORRECT is not decided here, and this change does not
+  decide it.** The remit was to make `risk_pct` match the row being scored. It
+  now does, under the group-mean representation that was already in place. Whether
+  a prior should represent a setup by its first detection, its taken row, or the
+  mean of its restatements is a separate question worth up to 0.33R on RNG, and
+  changing it silently inside a defect fix is exactly the kind of move this ledger
+  exists to prevent.
+- **VCE's verdict is representation-dependent and that is unresolved.** Published
+  −0.155 ± 0.118 is −1.31 SE → *open*. The estimator, old and new alike, is
+  −2.38 SE → *NO*. The engine's answer depends on a choice nobody has made
+  deliberately. RNG has the same exposure with the sign attached: −0.137 (open,
+  negative) vs +0.047 (open, positive).
+- **Why the ts → mean → last drift is monotone was not established.** It is
+  consistent with later re-records chasing price, but that is a hypothesis; no
+  test here separates it from a resolution artefact in how a re-recorded row's
+  outcome is computed against its own later entry.
+- **The SE under group-mean is not corrected for within-group correlation.** A
+  group's members are restatements of one setup, so its mean has less independent
+  information than n=1 of a fresh observation implies in one direction and more
+  than a single row implies in the other. Every SE above is the plain
+  `stdev/sqrt(n)` over group means. Unquantified.
+- **No claim is made about the 2026-08-14 / 08-13 unscored rows.** `tools.verify`
+  reports 1329 detections across 2 past sessions never scored; they were not
+  touched, and if they are later resolved every number in §4 moves.
+- **The production-config figures use the live 90-day window**, which currently
+  contains the whole table (8324 rows). If `priors_intraday_lookback_days` ever
+  bites, §4's bottom block and §4's top block diverge.
+
+### 9 — NOT DONE, DELIBERATELY
+
+**No `intraday_setups` row was re-scored, repaired, or written.** No migration.
+No config change. This is an estimator fix and nothing else, per the brief. The
+four scratch scripts are read-only and live outside the repo.
+
+**Recommends:**
+
+1. **Land the fix.** Order-dependence is indefensible on its own terms regardless
+   of how little it moves the aggregate, and 73 groups scored below the worst
+   outcome a trade can produce is a defect of kind, not of degree.
+2. **Do not restate any engine verdict on the strength of this change.** Nothing
+   moved. The 15-Aug §3 conclusions stand: VWR NO, ORB NO, and the rest open or
+   under n.
+3. **Open a separate decision on group representation** — first detection vs
+   TAKEN row vs group mean. It is worth more than this fix was, it decides VCE's
+   verdict, and it flips RNG's sign. It should be decided on what the prior is
+   FOR ("if I take this engine's next setup, what R should I expect?") rather
+   than on which number looks better.
+4. **Note for the merge:** this branch is off `main`, so the F-27 entry from
+   `fix/resolve-day-session-guard` is not in this tree. Both branches append to
+   `docs/FINDINGS.md` and will conflict at the tail; both entries are keepers and
+   the resolution is to keep both in date order, never to drop one.
+
+**Gate: PASS on the estimator fix — 545 verify checks green, three of four new
+checks demonstrated failing first, no verdict changed. NEEDS DECISION on group
+representation (§5, §8), which is a bigger lever than the defect and is
+deliberately left untouched.**
+
+---

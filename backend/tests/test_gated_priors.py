@@ -327,3 +327,135 @@ TESTS += [
     ("dedup keeps distinct symbols and days apart",
      test_dedup_keeps_distinct_symbols_and_days_apart),
 ]
+
+
+# ── THE COLLAPSE MUST HAPPEN IN R, NOT IN PERCENT — 16-Aug-2026 ─────────────
+#
+# The dedup above is right about the POPULATION and was wrong about the
+# ARITHMETIC. It averaged `outcome_pct` across the group and then divided that
+# one mean by `src[0]`'s risk — so the denominator came from whichever row the
+# paged read happened to sort first, and the numerator came from all of them.
+#
+# A group is not one price level. `_setup_is_new` re-records a setup precisely
+# WHEN its entry has drifted past `intraday_setup_dedup_pct`, so by construction
+# the rows in a group have different entries and different stops, and therefore
+# different risk. GODREJCP/SDN on 14-Aug is 10 rows carrying 7 distinct entries
+# and risk between 0.141% and 0.603% — a 4.3x spread in the denominator that the
+# old form applied one value of to all ten outcomes.
+#
+# R is the unit the whole allocator is denominated in, and R is a RATIO. The
+# mean of ratios is not the ratio of means unless every denominator is equal,
+# which is the one thing a dedup group guarantees is false.
+
+def test_group_r_uses_each_rows_own_risk_not_the_first_rows():
+    """The defect, at its smallest: two rows, one group, opposite verdicts.
+
+    Row A risks 2.0% and loses all of it (-1R). Row B risks 0.2% and makes 1.0%
+    (+5R). The setup was, on this day, a good one that the first detection
+    happened to catch at the worst level.
+
+    Collapsing in percent: mean(-2.0, +1.0) = -0.5, divided by A's 2.0% risk,
+    = -0.25R. Collapsing in R: mean(-1.0, +5.0) = +2.0R. Not a precision
+    difference — a sign."""
+    from allocation.scoring import intraday_priors
+    grp = [{**_row("VCE", -2.0, "TAKEN", entry=100.0, stop=98.0),
+            "symbol": "X", "trade_date": "2026-08-05"},
+           {**_row("VCE", 1.0, "TAKEN", entry=100.0, stop=99.8),
+            "symbol": "X", "trade_date": "2026-08-05"}]
+    with cfg_ctx({"priors_min_sample_intraday": "1",
+                  "priors_intraday_taken_only": "true",
+                  "priors_intraday_dedup": "true"}):
+        p = intraday_priors(_SB(grp))["INTRADAY/VCE"]
+    assert p.n == 1, f"n {p.n} — the group is one observation"
+    assert abs(p.mean_r - 2.0) < 1e-9, (
+        f"mean_r {p.mean_r:+.4f} — expected +2.0R, the mean of each row's own "
+        f"R. -0.25 means the group's outcomes were divided by the FIRST row's "
+        f"risk")
+
+
+def test_dedup_is_invariant_to_row_order_within_a_group():
+    """The property, stated directly: no engine's prior may depend on which row
+    of a group the paged read sorted first.
+
+    That is the whole defect. `base = dict(src[0])` took entry, stop and
+    direction from row zero, so the same group under a different `order_by` —
+    or the same rows arriving in a different sequence from a replay — produced a
+    different R. An estimator whose answer moves when nothing about the
+    evidence moves is not measuring the evidence."""
+    from allocation.scoring import intraday_priors
+    grp = [{**_row("RNG", -2.0, "TAKEN", entry=100.0, stop=98.0),
+            "symbol": "X", "trade_date": "2026-08-05"},
+           {**_row("RNG", 1.0, "TAKEN", entry=100.0, stop=99.8),
+            "symbol": "X", "trade_date": "2026-08-05"},
+           {**_row("RNG", 0.5, "TAKEN", entry=100.0, stop=99.5),
+            "symbol": "X", "trade_date": "2026-08-05"}]
+    means = []
+    for first in range(len(grp)):
+        rotated = grp[first:] + grp[:first]
+        with cfg_ctx({"priors_min_sample_intraday": "1",
+                      "priors_intraday_taken_only": "true",
+                      "priors_intraday_dedup": "true"}):
+            means.append(intraday_priors(_SB(rotated))["INTRADAY/RNG"].mean_r)
+    assert max(means) - min(means) < 1e-9, (
+        f"the same three rows gave {['%+.4f' % m for m in means]} depending on "
+        f"which one came first")
+
+
+def test_a_group_of_one_level_is_unchanged():
+    """Where every row of a group shares one entry and stop, the two forms are
+    algebraically identical, and the fix must be a no-op there. Most groups on
+    the live table are exactly this, so a change that moved them would be
+    changing far more than the defect."""
+    from allocation.scoring import intraday_priors
+    grp = [{**_row("ORB", pct, "TAKEN", entry=100.0, stop=99.0),
+            "symbol": "X", "trade_date": "2026-08-05"}
+           for pct in (-1.0, 0.5, 2.4)]
+    with cfg_ctx({"priors_min_sample_intraday": "1",
+                  "priors_intraday_taken_only": "true",
+                  "priors_intraday_dedup": "true"}):
+        p = intraday_priors(_SB(grp))["INTRADAY/ORB"]
+    # risk_pct is 1.0%, so R == outcome_pct: mean(-1.0, 0.5, 2.4) = +0.6333
+    assert abs(p.mean_r - (1.9 / 3.0)) < 1e-9, f"mean_r {p.mean_r:+.6f}"
+
+
+def test_the_cost_add_back_survives_the_collapse():
+    """Gross reconstruction happens per row, so a group mixing charged rows
+    (TAKEN/REJECTED_COST carry a real cost_pct) with uncharged ones (every other
+    verdict passes a literal 0.0) must add each row's OWN cost back — not a
+    group average of costs to a group average of outcomes.
+
+    GODREJCP/SDN is exactly that mixture: 4 rows at cost_pct 0.206, 6 at 0.
+
+    The two rows carry DIFFERENT risk (1.0% and 2.0%) on purpose. With equal
+    risk, spreading the group's mean cost over both rows is self-cancelling and
+    the check passes while still being wrong; unequal risk is what makes a cost
+    that crossed rows show up in the mean.
+
+    Neither row is TAKEN, which is also GODREJCP/SDN's shape — `src = taken or
+    grp` means one TAKEN row in a group discards the rest, so a mixed-cost group
+    only exists among refused rows in the first place."""
+    from allocation.scoring import intraday_priors
+    # Both rows are +1.0R gross at their own level; one was recorded net of 0.21.
+    grp = [{**_row("PBK", 0.79, "REJECTED_COST", entry=100.0, stop=99.0),
+            "symbol": "X", "trade_date": "2026-08-05", "cost_pct": 0.21},
+           {**_row("PBK", 2.0, "BLOCKED_STRUCTURE", entry=200.0, stop=196.0),
+            "symbol": "X", "trade_date": "2026-08-05", "cost_pct": 0}]
+    with cfg_ctx({"priors_min_sample_intraday": "1",
+                  "priors_intraday_taken_only": "false",
+                  "priors_intraday_dedup": "true"}):
+        p = intraday_priors(_SB(grp))["INTRADAY/PBK"]
+    assert abs(p.mean_r - 1.0) < 1e-9, (
+        f"mean_r {p.mean_r:+.6f} — both rows are +1.0R gross at their own "
+        f"levels; anything else means cost or risk crossed rows")
+
+
+TESTS += [
+    ("group R uses each row's own risk, not the first row's",
+     test_group_r_uses_each_rows_own_risk_not_the_first_rows),
+    ("dedup is invariant to row order within a group",
+     test_dedup_is_invariant_to_row_order_within_a_group),
+    ("a group at one price level is unchanged",
+     test_a_group_of_one_level_is_unchanged),
+    ("the cost add-back survives the collapse",
+     test_the_cost_add_back_survives_the_collapse),
+]
