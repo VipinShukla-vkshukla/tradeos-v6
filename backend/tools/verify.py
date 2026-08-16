@@ -112,6 +112,8 @@ MODULES = [
      "tests.test_planner_regime_and_cost"),
     ("outcome resolution gap (row cap + loud alert)",
      "tests.test_outcome_resolution_gap"),
+    ("resolve_day session guard (F-27 mechanism A)",
+     "tests.test_resolve_day_session_guard"),
     ("single daemon startup lock", "tests.test_daemon_lock"),
 ]
 
