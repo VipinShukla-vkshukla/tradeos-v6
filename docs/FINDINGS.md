@@ -6845,3 +6845,407 @@ representation (§5, §8), which is a bigger lever than the defect and is
 deliberately left untouched.**
 
 ---
+
+## 2026-08-16 — F-29 (diagnostic, group representation) — a group is NOT one opportunity observed many times: 50.9% of multi-row groups contain more than one OUTCOME, and 111 of them stop out first and hit target later on a re-entry the live config REFUSES. First detection is the correct representation. One verdict changes — VCE reverts to open. VWR NO, ORB NO, both under every representation. RNG's sign flip does not survive
+
+**READ-ONLY. No estimator, no config, no database row was changed.**
+`git status` clean, `python -m tools.verify` → **all 545 checks passed across 60
+modules**, unchanged from `main`.
+
+**Ran:**
+
+```bash
+git checkout -b diagnostic/group-representation main
+cd backend && python -m tools.verify                  # 545/545, tree untouched
+# read-only scratch, all four import the REAL allocation.scoring._row_gross_r:
+python <scratch>/fetch_pop.py     # 8324 resolved rows, 8324 distinct ids, cached
+python <scratch>/represent.py     # four representations x nine engines + 2 controls
+python <scratch>/anatomy.py       # is a group one opportunity? group size, rank, RNG
+python <scratch>/lookahead.py     # entry drift, winner/loser asymmetry, span
+python <scratch>/decide.py        # outcome-mixing counts, final verdict table
+python <scratch>/production.py    # what it does to the LIVE prior
+```
+
+Population identical to F-28: **8324 resolved rows → 1102 dedup keys**, `n`
+matching the 15-Aug §3 table on all nine engines.
+
+---
+
+### 1 — TWO CONTROLS FIRST, BECAUSE EVERYTHING BELOW DEPENDS ON THEM
+
+Neither table below is retyped. `_row_gross_r` is imported from
+`allocation/scoring.py`, and the two constructions are asserted against tables
+computed by *different code in different sessions* before anything is concluded.
+
+```
+CONTROL 1 — does first-ts reproduce the PUBLISHED §3 table?
+  SDN -0.0767 vs -0.077   VWR -0.3456 vs -0.345   VCE -0.1550 vs -0.155
+  ORB -0.2413 vs -0.241   RNG -0.1366 vs -0.137   PBK -0.2758 vs -0.276
+  PDL +0.0635 vs +0.064   GAP +0.1001 vs +0.100   GDB -1.0003 vs -1.000
+  max |delta| = 0.0006  (3dp rounding)                        REPRODUCED
+
+CONTROL 2 — does the shipped estimator reproduce F-28 §4 "NEW"?
+  max |delta| = 0.0000 on all nine engines                    REPRODUCED
+```
+
+Also re-asserted rather than inherited from F-28: the two consumers group on the
+same key (`weekly_review.dedupe_setups` uses `(trade_date, symbol, strategy)`,
+`scoring._intraday_priors_from_rows` uses `(symbol, strategy, trade_date)` —
+1102 either way), and **first-by-ts equals first-by-id in 0 of 1102 groups'
+disagreement**, i.e. they never disagree.
+
+---
+
+### 2 — THE PREMISE IS FALSE, AND THE DATA SAYS SO DIRECTLY
+
+The brief's framing — *"a group is one opportunity observed many times"* — is
+the intent of `_setup_is_new`. It is not what the table contains.
+
+**If the members of a group were repeated readings of one opportunity, they
+would share an outcome. They do not.**
+
+```
+multi-row groups                                        729 of 1102 (66.2%)
+  groups containing MORE THAN ONE distinct outcome      371  (50.9%)
+  first row STOP,   a later row TARGET                  111
+  first row TARGET, a later row STOP                     81
+group span, first row to last:  median 98.1 min   p90 270.3 min   max 303.4 min
+  groups spanning > 60 min                              459
+```
+
+A 303-minute group covers the entire session of a book that is flat by 15:15.
+These are not fifty readings of one 09:30 breakout; they are **every level the
+engine proposed on that name all day**, and half of them resolved differently
+from each other because they *are* different trades at different prices with
+different stops.
+
+The worked example is unambiguous:
+
+```
+ICICIGI  SDN  2026-08-06   15 rows
+  outcomes: STOP STOP STOP STOP TARG TARG TARG TARG TARG TARG TARG TARG TARG TARG TARG
+  first row R  -1.000   ->   GROUP MEAN R  +3.046
+
+BLUESTARCO RNG 2026-08-10   2 rows   STOP, TARG      -0.999  ->  +2.675
+HEROMOTOCO SDN 2026-08-13  12 rows   STOP...TARG     -1.000  ->  +2.511
+```
+
+The system shorted ICICIGI, **was stopped out, and was flat at −1R**. The
+estimator records that setup as **+3.046R**, on the strength of eleven later
+re-entries that never happened.
+
+### 3 — AND THEY ARE RE-ENTRIES THE LIVE CONFIG EXPLICITLY REFUSES
+
+This is not a statistical preference. `intraday/engine.py:2888`:
+
+```python
+if cfg_bool("intraday_block_reentry_after_loss", True) \
+        and sym in self._failed_today():
+    self._record_setup(best, st.phase, 0.0, "BLOCKED_REENTRY", 0, ...)
+```
+
+`_failed_today`'s own docstring records why it exists: ACMESOLAR stopped out for
+−1.35R and re-bought two minutes later at the same conviction, ZEEL invalidated
+and re-entered, seven entries against a cap of five, 31-Jul. Its conclusion is
+the exact sentence this diagnostic needs — *a level that has already failed once
+today is not the same setup at a discount.*
+
+**The group mean prices every engine as though that switch were off.** Over the
+111 STOP-then-TARGET groups:
+
+```
+                     first-ts    grp-mean     swing
+STOP-then-TARGET      -1.0001     +0.2854   +1.2855R  over 111 groups
+TARGET-then-STOP      +2.1688     +0.6172   -1.5516R  over  81 groups
+```
+
+### 4 — THE ASYMMETRY: IT DEFLATES WINNERS AND INFLATES LOSERS
+
+Measured over all 729 multi-row groups, `grp-mean − firstR`:
+
+```
+group's first row WON  (R>0)   n=223   -0.7854R   (160 deflated, 43 inflated)
+group's first row LOST (R<=0)  n=506   +0.3647R   (184 inflated, 36 deflated)
+```
+
+The mechanism, measured: when the setup worked, later re-records **chase** — by
+the last row the entry has moved −0.4540% *against* the trade (median −0.3482%),
+because price has already run. When it failed, the entry barely moves (−0.0281%).
+
+So the group mean shrinks every group toward the middle, and it does so by an
+amount that depends on **what price did afterwards**. That is precisely the
+dispersion an edge test exists to measure, removed by the estimator that is
+supposed to measure it. `VCE/PINELABS 10-Aug`: a setup that hit target at
+**+2.491R** is recorded as **−0.751R**. `RNG/BLUESTARCO`: a stop-out at −0.999R
+is recorded as **+2.675R**.
+
+Group size is itself an outcome, which is why this cannot be waved off as noise
+that cancels:
+
+```
+first-row R by group size:  1 row -0.2433 | 2-3 -0.2508 | 4-9 -0.2801 | 10+ +0.0767
+```
+
+A setup that dies on the first tick writes one row. One that runs writes 258.
+**The number of members the mean is taken over is chosen by the outcome.**
+
+### 5 — ANSWER 1: WHICH REPRESENTATION IS CORRECT
+
+**The FIRST DETECTION by `ts`.** Not because it is the published rule — because
+it is the only row the system could have acted on.
+
+- The engine proposes an entry and a stop at a moment. If the book trades that
+  engine, the order goes in **then**. There is no mechanism by which one setup
+  becomes a position at ten prices.
+- Every later row is one of two things, and **neither is the setup being
+  judged**: a restatement while the money is already committed, or a fresh
+  attempt at a level that already failed — which `intraday_block_reentry_after_
+  loss` refuses outright.
+- Confirmed against real executions: of the 211 groups that contain a `TAKEN`
+  row, **the TAKEN row is the group's first row in 134**. Where it is not, the
+  "earliest TAKEN row, else first" representation gives the same verdict as
+  first-ts on **every engine** (§6), so the recommendation does not rest on the
+  choice between them.
+
+The one honest argument for the group mean is variance reduction — averaging
+repeated noisy readings of one number. **That argument requires the members to
+be readings of one number, and §2 disproves it at 50.9%.** Averaging different
+trades is not variance reduction; it is a portfolio the system is forbidden to
+hold. And it buys no sample: **n is 1102 under both representations.** The group
+mean does not add observations, it only changes what each one is worth.
+
+**Correction to a claim this repo relies on.** `dedupe_setups`' docstring
+justifies first-detection with *"the engine skips a symbol once it holds a
+position in it, and every later row describes a chance that was already spent."*
+The first half is **not what the table shows**: **2982 rows post-date their
+group's first TAKEN row, across 173 of the 211 TAKEN groups, up to 257 of them**
+(those rows average −0.2910R against −0.1410R at the TAKEN row itself). The
+conclusion is right; the stated reason is not the operative one. The operative
+reason is §2 and §3 — the later rows are different trades, and the live config
+refuses the profitable half of them.
+
+### 6 — ANSWER 2: GROSS R, NINE ENGINES, UNDER THE CORRECT REPRESENTATION
+
+`taken_only=false`, floor 1, complete resolved population. SE is plain
+`stdev/sqrt(n)` over group representatives, the same construction the published
+table used. Verdict bar is ±2 SE, `under-n` below 30.
+
+```
+FIRST DETECTION BY ts  (RECOMMENDED)
+engine    n       mean       SE   SE from 0   verdict
+SDN     398    -0.0767   0.0724       -1.06   open
+VWR     307    -0.3456   0.0714       -4.84   NO
+VCE     138    -0.1550   0.1184       -1.31   open
+ORB     119    -0.2413   0.0997       -2.42   NO
+RNG      60    -0.1366   0.1566       -0.87   open
+PBK      32    -0.2758   0.2440       -1.13   open
+PDL      25    +0.0635   0.3319       +0.19   under-n
+GAP      22    +0.1001   0.2761       +0.36   under-n
+GDB       1    -1.0003      nan          --   under-n
+```
+
+**Against the published 15-Aug §3 table: identical** — max |delta| 0.0006, which
+is 3-decimal rounding. §3 was right, and it was right for the right reason.
+
+**Against F-28 §4's estimator table** (`first-ts − shipped estimator`):
+
+```
+engine   first-ts   estimator (F-28 NEW)    delta   SE from 0: first-ts -> est
+SDN       -0.0767      -0.0584 +/- 0.0594  -0.0183      -1.06  ->  -0.98
+VWR       -0.3456      -0.3134 +/- 0.0667  -0.0322      -4.84  ->  -4.70
+VCE       -0.1550      -0.2511 +/- 0.1053  +0.0961      -1.31  ->  -2.38   ** flips
+ORB       -0.2413      -0.2925 +/- 0.0951  +0.0512      -2.42  ->  -3.08
+RNG       -0.1366      +0.0467 +/- 0.1613  -0.1833      -0.87  ->  +0.29   ** sign
+PBK       -0.2758      -0.3230 +/- 0.2291  +0.0472      -1.13  ->  -1.41
+PDL       +0.0635      +0.0733 +/- 0.3270  -0.0098      +0.19  ->  +0.22
+GAP       +0.1001      +0.0716 +/- 0.2558  +0.0285      +0.36  ->  +0.28
+GDB       -1.0003      -1.0003              0.0000       under-n
+```
+
+The intermediate constructions, for completeness — note that **"earliest TAKEN
+row, else first" agrees with first-ts on every verdict**, which is what makes the
+recommendation robust to the 77 groups where the entry was not the first row:
+
+```
+engine   first-ts   taken>first   grp-mean(no pref)   shipped est.   last-ts
+SDN       -0.0767      -0.0926          -0.0654         -0.0584      -0.1687
+VWR       -0.3456      -0.3491          -0.3024         -0.3134      -0.2585
+VCE       -0.1550      -0.1803          -0.2678         -0.2511      -0.3564
+ORB       -0.2413      -0.2498          -0.2627         -0.2925      -0.2474
+RNG       -0.1366      -0.1366          +0.0467         +0.0467      +0.1914
+PBK       -0.2758      -0.3234          -0.3039         -0.3230      -0.3498
+PDL       +0.0635      +0.0635          +0.0748         +0.0733      +0.0993
+GAP       +0.1001      +0.0958          +0.0710         +0.0716      +0.1188
+```
+
+### 7 — ANSWER 3: EVERY VERDICT THAT CHANGES
+
+**Exactly one: VCE.**
+
+```
+engine     first-ts (correct)        shipped estimator        verdict
+VCE      -0.1550 (-1.31 SE) open   -0.2511 (-2.38 SE) NO     CHANGES: NO -> open
+```
+
+Every other engine holds its verdict across all four representations.
+
+**VWR lands NO. Unambiguously, and it is the one engine no representation
+touches:**
+
+```
+first-ts  -0.3456 +/- 0.0714  =  -4.84 SE     NO
+taken>first  -0.3491 +/- 0.0711  =  -4.91 SE  NO
+grp-mean  -0.3024 +/- 0.0667  =  -4.54 SE     NO
+shipped   -0.3134 +/- 0.0667  =  -4.70 SE     NO
+published §3  -0.345          =  -4.86 SE     NO
+```
+
+The optimistic 2-SE upper limit under the recommended representation is
+**−0.2028**, still decisively negative. VWR is negative on every construction
+anyone has computed.
+
+**ORB lands NO — but by a thinner margin than the estimator implies:**
+
+```
+first-ts  -0.2413 +/- 0.0997  =  -2.42 SE     NO   <-- the correct figure
+taken>first  -0.2498 +/- 0.1000 = -2.50 SE    NO
+shipped   -0.2925 +/- 0.0951  =  -3.08 SE     NO
+```
+
+ORB stays NO, and it stays NO on the actual-execution representation too. Worth
+recording that the estimator was flattering the *confidence* of that call by
+0.66 SE, not its direction.
+
+**RNG: the verdict does not change, but the sign flip does not survive.** RNG is
+`open` either way (−0.87 SE vs +0.29 SE, n=60, well inside the bar). Under the
+correct representation RNG is **−0.1366, negative**, not the +0.0467 the
+estimator reports. The +0.183R the estimator adds is entirely §4's mechanism:
+RNG has 60 groups, 40 multi-row, and **only one of them was ever TAKEN**, so its
+number is wholly counterfactual and wholly exposed to this choice.
+`RNG/BLUESTARCO 10-Aug` alone — a stop-out scored +2.675R — is +3.674R of group
+delta on a 60-key engine.
+
+### 8 — ANSWER 4: WHICH ONE TO ACT ON
+
+**Act on first detection. Do not average the two, and do not treat the
+disagreement as uncertainty to be split.**
+
+The two representations are not two estimates of one quantity with different
+noise. They answer different questions:
+
+- first-ts answers *"if I take this engine's next setup, what R should I
+  expect?"* — which is what `allocation/scoring.py`'s own header says a prior is
+  for, and what `score()` consumes.
+- the group mean answers *"what is the average R over every level this engine
+  proposed on this name today, including re-entries after a loss?"* — a
+  question nobody asked, whose answer the book is configured never to be able to
+  realise.
+
+Averaging them would produce a number that answers neither. On VCE that would
+land near −0.203 / −2.0 SE, i.e. **exactly on the bar** — the worst possible
+place to be for a decision that is meant to be evidence-driven, and arrived at
+by construction rather than measurement.
+
+The tie-break rule that generalises: **a representation is admissible only if the
+system could have held the thing it describes.** first-ts always passes.
+"Earliest TAKEN row, else first" also passes and agrees on every verdict. The
+group mean fails it on 371 groups outright.
+
+### 9 — FLAGGED, UNASKED: THIS ALSO MOVES THE LIVE PRIOR
+
+Not part of the brief, and it costs money, so it is recorded. Under the shipped
+production config (`priors_intraday_taken_only=True`, floor 30, 90-day window,
+all read from `system_config`, none hardcoded), the same choice applied to the
+TAKEN subset:
+
+```
+key                    n   first-TAKEN   mean-TAKEN     shift   usable
+INTRADAY/ALL         211       -0.1410      -0.1690   -0.0279   True
+INTRADAY/VWR          57       -0.3315      -0.2900   +0.0415   True
+INTRADAY/ORB          49       -0.2101      -0.3065   -0.0964   True
+INTRADAY/SDN/SHORT    42       +0.1083      +0.1175   +0.0092   True
+INTRADAY/ALL/SHORT    42       +0.1083      +0.1175   +0.0092   True
+INTRADAY/VCE          37       -0.0687      -0.1799   -0.1112   True
+INTRADAY/GAP          15       +0.0626      +0.0494             below floor
+INTRADAY/PDL           8       -0.0641      -0.0944             below floor
+INTRADAY/PBK           2       -0.9993      -0.6823             below floor
+INTRADAY/RNG           1       -1.0000      -1.0001             below floor
+```
+
+Every TAKEN group is a position that really opened, so `first-TAKEN` is not a
+counterfactual — **it is the R the paper book actually booked**. The live VCE
+prior is 0.111R more negative than it should be and the live ORB prior 0.096R,
+both on the pessimistic side, which under `alloc_edge_absolute_floor` means the
+allocator is refusing setups on evidence that overstates how badly they did.
+
+**RNG and PBK are below the floor of 30 TAKEN rows**, so they fall through to
+the per-engine all-detection fallback — which is the §6 number. That is where
+RNG's **−0.1366 vs +0.0467** lands directly on a live prior: the estimator
+currently tells the allocator RNG is a *positive-expectancy* engine. It is not,
+on any row the system could have traded.
+
+### 10 — COULD NOT DETERMINE
+
+- **Whether the first detection's recorded `entry` was actually obtainable at
+  that `ts`.** first-ts is the right ROW; this diagnostic does not establish it
+  is a fillable PRICE. F-25/F-26/F-27 found the replay residual is intra-minute
+  price, and that exposure applies here unchanged. Every number in §6 is a
+  paper entry at a recorded level.
+- **SE is still not corrected for cross-sectional correlation.** first-ts
+  *removes* the within-group correlation problem F-28 §8 flagged — each group
+  contributes one row, not a mean over correlated restatements — but same-day,
+  same-sector correlation across the 1102 groups is unquantified in both
+  constructions. VWR at −4.84 SE has room to absorb it; **ORB at −2.42 SE does
+  not**, and that is the one verdict here whose margin is thin enough for it to
+  matter.
+- **The 1329 unscored detections across 2 past sessions** (F-28 §8,
+  `tools.verify`) are still unscored. Every number above moves if they resolve.
+- **Why VCE and ORB drift the opposite way to SDN, VWR and RNG** between the two
+  representations was not established. F-28 reported the ts→mean→last drift as
+  monotone in every engine; it is not — ORB runs −0.2413 / −0.2627 / −0.2474,
+  down then up. No mechanism separating the two directions was tested.
+- **GDB is n=1.** It appears in every table because §3 does; it is not evidence
+  of anything and no verdict should ever be read off it.
+
+### 11 — NOT DONE, DELIBERATELY
+
+**Nothing was changed.** No estimator edit, no config, no migration, no
+`intraday_setups` row. `git status` clean; `tools.verify` 545/545, identical to
+`main`. The five scratch scripts are read-only and live outside the repo. One
+pre-existing warning (`intraday_broker_log.host` missing, migration 077) was
+present before this session and is untouched.
+
+**Recommends:**
+
+1. **Adopt first detection by `ts` as the representation for judging engine
+   edge**, and say so in one place both consumers read. `dedupe_setups` already
+   implements it; `_intraday_priors_from_rows` does not. They currently
+   disagree, which is why one table says VCE is dead and the other says it is
+   open.
+2. **Restate VCE's verdict to `open`** (−0.1550 ± 0.1184, −1.31 SE, n=138). It
+   was never NO; the NO was an artefact of averaging in re-entries the live
+   config forbids. **VWR stays NO** (−4.84 SE) and **ORB stays NO** (−2.42 SE).
+3. **RNG is negative, not positive** (−0.1366, n=60, open). Retire the +0.047
+   figure wherever it is quoted. The engine has one TAKEN group in the entire
+   history and cannot support a verdict either way — but it must not be carried
+   as positive-expectancy in the meantime.
+4. **When the estimator is changed, fix `_row_gross_r`'s consumer, not
+   `_row_gross_r`.** The per-row arithmetic F-28 landed is correct and both
+   controls above depend on it. What needs replacing is the `statistics.fmean`
+   over the group in the dedup block — the representative, not the ratio.
+5. **Write the test as an invariant, not as an expected number:** a group whose
+   members disagree about their outcome must not be summarised by a value no
+   member holds. That check fails on the current estimator (371 groups) and
+   passes on first-detection, and it is the only form that stays true when the
+   population grows.
+6. **Merge note stands from F-28** — this branch is off `main`, so F-27 from
+   `fix/resolve-day-session-guard` is not in this tree. `docs/FINDINGS.md` will
+   conflict at the tail. Keep both in date order; drop neither.
+
+**Gate: PASS on the diagnosis — the published §3 table reproduced to 0.0006, the
+F-28 estimator reproduced to 0.0000, and the representation question is decided
+on what the system could have held rather than on which number reads better.
+NEEDS DECISION from the operator on recommendations 1–3, which restate one
+verdict (VCE) and one sign (RNG). Nothing was implemented.**
+
+---
