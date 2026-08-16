@@ -66,7 +66,8 @@ from intraday.strategies.range_fade import RangeFade
 from intraday.strategies.short_distribution import ShortDistribution
 from intraday.strategies.gap_down_bounce import GapDownBounce
 
-from tools.replay.contexts import build_context, bars_before
+from tools.replay.contexts import apply_forming_bar, build_context, bars_before
+from tools.replay.conventions import BAR_CLOSE, Convention, evaluation_points
 
 # All nine, instantiated directly. Order matches `registry._ALL` so that any
 # confidence tie breaks the same way it would live.
@@ -102,6 +103,11 @@ class Detection:
     invalidation: str
     rationale: str = ""
     meta: dict = field(default_factory=dict)
+    # Which look produced it: "bar_close", or the forming-bar field sampled
+    # ("open"/"high"/"low"). A detection that exists only at a sub-bar look is
+    # one the bar-close replay can never find, and counting them is how the
+    # tick-vs-bar residual gets a size instead of an adjective.
+    look: str = "bar_close"
 
     @property
     def dedup_key(self) -> tuple:
@@ -140,14 +146,18 @@ def replay_symbol_day(symbol: str, day: str, day_bars: list[Bar],
                       prev: dict | None = None,
                       index_bars: list[Bar] | None = None,
                       index_prev_close: float | None = None,
-                      dedup_pct: float = 0.35) -> list[Detection]:
+                      dedup_pct: float = 0.35,
+                      convention: Convention = BAR_CLOSE) -> list[Detection]:
     """
     Every detection for one symbol on one day, deduplicated as the live loop does.
 
-    CADENCE. The live loop evaluates every 15 s; this evaluates once per
-    completed minute bar (~375/day), which under-samples live by 4x. It is one
-    of the four expected verification mismatches (REPLAY_DESIGN §10.2) and is
-    reported rather than hidden.
+    CADENCE AND WHAT IS KNOWN AT EACH LOOK — see `conventions.py`. The default
+    `BAR_CLOSE` evaluates once per completed minute bar (~375/day) with `ltp`
+    equal to that bar's close; the live loop evaluates every 15 s on a tick
+    price that, measured over 212 recorded detections, equals no nearby bar
+    close 64.6% of the time. The other conventions widen the look; none of them
+    can invent the price, and `FULL_OVERLAY` is explicitly a BOUND rather than a
+    reproduction.
 
     DEDUP. `_setup_is_new`'s rule, reproduced: a setup is new when its
     symbol+sub_engine has not been seen today, or when its entry has moved by
@@ -161,12 +171,8 @@ def replay_symbol_day(symbol: str, day: str, day_bars: list[Bar],
     seen: dict[str, float] = {}          # sub_engine key -> last recorded entry
 
     idx_prev = index_prev_close
-    for i, bar in enumerate(day_bars):
-        # Evaluate AT the close of each completed bar, so the context contains
-        # every bar up to and including this one and nothing after. Using the
-        # NEXT bar's open timestamp would be the same instant; using this bar's
-        # own ts would exclude it and evaluate one bar stale.
-        now = bar.ts + timedelta(minutes=1)
+    for pt in evaluation_points(day_bars, convention):
+        now = pt.now
 
         phase = phase_at(now)
         if phase in ("CLOSED", "PRE_OPEN"):
@@ -174,14 +180,19 @@ def replay_symbol_day(symbol: str, day: str, day_bars: list[Bar],
 
         idx_chg = None
         if index_bars and idx_prev:
-            ib = bars_before(index_bars, now)
+            ib = bars_before(index_bars, pt.upto)
             if ib:
                 idx_chg = (ib[-1].close - idx_prev) / idx_prev * 100.0
 
         ctx = build_context(symbol, day_bars, now, prev=prev,
-                            index_change_pct=idx_chg)
+                            index_change_pct=idx_chg, upto=pt.upto)
         if ctx is None:
             continue
+        if pt.forming is not None:
+            apply_forming_bar(ctx, pt.forming, pt.ltp,
+                              extremes=convention.running_extremes,
+                              vwap=convention.running_vwap,
+                              index_change_pct=idx_chg)
 
         for s in evaluate_one(ctx, phase):
             key = f"{s.symbol}:{s.strategy}"
@@ -197,6 +208,6 @@ def replay_symbol_day(symbol: str, day: str, day_bars: list[Bar],
                 family=s.meta.get("family", ""), direction=s.direction,
                 entry=s.entry, stop=s.stop, target=s.target, rr=s.rr,
                 confidence=s.confidence, invalidation=s.invalidation,
-                rationale=s.rationale, meta=dict(s.meta),
+                rationale=s.rationale, meta=dict(s.meta), look=pt.look,
             ))
     return out

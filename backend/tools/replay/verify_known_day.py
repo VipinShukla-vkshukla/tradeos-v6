@@ -43,6 +43,7 @@ import argparse
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -52,9 +53,11 @@ from loguru import logger
 from config import get_supabase, fetch_all
 from intraday import direction as D
 from tools.replay.bars import BarSource
+from tools.replay.conventions import ALL as CONVENTIONS, BAR_CLOSE, Convention
 from tools.replay.detect import replay_symbol_day
 from tools.replay.outcomes_port import resolve
-from tools.replay.universe import build_universe_at, prev_day_reference
+from tools.replay.universe import (build_universe_for_session,
+                                   prev_day_reference)
 
 
 # ── stored side ─────────────────────────────────────────────────────────────
@@ -174,10 +177,45 @@ def check_outcome_rule(day: str, src: BarSource, sb=None,
     return chk
 
 
+# ── residual classification (REPLAY_DESIGN §10.2) ───────────────────────────
+#
+# THE LEVER THAT MAKES THIS POSSIBLE. Every one of the nine engines sets
+# `entry=round(ctx.ltp, 2)` — checked at orb.py:146, gap_and_go.py:122,
+# prev_day_levels.py:157, squeeze.py:126, pullback.py:137, vwap_reclaim.py:162,
+# range_fade.py:121, short_distribution.py:195/270/314, gap_down_bounce.py:187.
+# So a stored `entry` is not a derived level, it IS the live LTP at that
+# instant. Asking whether that number appears as a completed-bar close near its
+# own timestamp turns "tick versus bar" from a story into a count.
+NEARBY_BARS = 2
+
+
+def _entry_is_a_bar_close(bars, ts_raw, entry, window: int = NEARBY_BARS) -> bool:
+    """Did the stored LTP print as the close of a bar within ±`window` of its ts?"""
+    if not bars or entry is None:
+        return False
+    try:
+        ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00")
+                                    ).astimezone(bars[0].ts.tzinfo)
+    except Exception:
+        return False
+    i = None
+    for j, b in enumerate(bars):
+        if b.ts <= ts:
+            i = j
+        else:
+            break
+    if i is None:
+        return False
+    e = round(float(entry), 2)
+    lo, hi = max(0, i - window), min(len(bars) - 1, i + window)
+    return any(abs(bars[j].close - e) <= 0.005 for j in range(lo, hi + 1))
+
+
 # ── check 2: detections ─────────────────────────────────────────────────────
 @dataclass
 class DetectionCheck:
     day: str = ""
+    convention: str = ""
     stored_keys: int = 0
     replay_keys: int = 0
     reproduced: int = 0
@@ -186,6 +224,14 @@ class DetectionCheck:
     level_mismatches: list = field(default_factory=list)
     symbols_replayed: int = 0
     coverage: str = ""
+    scan_date: str | None = None
+    miss_causes: dict = field(default_factory=dict)
+    extra_causes: dict = field(default_factory=dict)
+    entry_bps: dict = field(default_factory=dict)
+    # Per family, because the residual's SIGN is what every downstream number
+    # inherits and it is not the same sign in every engine. A pooled "43 missed,
+    # 18 extra" hides that VCE is net short of detections while SDN is net long.
+    by_family: dict = field(default_factory=dict)
 
     @property
     def pct(self) -> float:
@@ -193,21 +239,26 @@ class DetectionCheck:
 
 
 def check_detections(day: str, src: BarSource, sb=None,
-                     universe_limit: int | None = None) -> DetectionCheck:
+                     universe_limit: int | None = None,
+                     convention: Convention = BAR_CLOSE) -> DetectionCheck:
     """
     Replay `day` cold and compare its detections to the stored record.
 
-    The replayed universe is the MORNING universe. `scanner.live_rerank`
-    promoted names intraday from quotes that were never stored, so detections on
-    promoted names cannot reproduce at all — one of the four expected mismatches
-    (REPLAY_DESIGN §10.2). To keep that from swamping the comparison, the
-    replayed symbol set is the union of the reconstructed universe and the
-    symbols the stored record actually names. That is NOT circular: the stored
-    record chooses which symbols to fetch bars for, and contributes nothing to
-    whether a detection is found on them.
+    THE UNIVERSE IS RANKED ON THE PRIOR SESSION, not on `day`. The daemon builds
+    its list at 09:15, when `day`'s own bhavcopy does not exist —
+    `universe.scan_date_for_session` carries the measurement and the reasoning.
+    This module used `day`'s own rows until 2026-08-16 and that was lookahead as
+    well as infidelity.
+
+    The replayed symbol set is the union of that universe and the symbols the
+    stored record names. That is NOT circular: the stored record chooses which
+    symbols to fetch bars for and contributes nothing to whether a detection is
+    found on them. It exists because `scanner.live_rerank` promoted names
+    intraday from quotes that were never stored, so without the union those
+    misses would be uncountable rather than merely unreproducible.
     """
     sb = sb or get_supabase()
-    chk = DetectionCheck(day=day)
+    chk = DetectionCheck(day=day, convention=convention.name)
 
     stored_rows = load_stored(day, sb)
     stored = dedupe(stored_rows,
@@ -216,31 +267,62 @@ def check_detections(day: str, src: BarSource, sb=None,
                     ts_fn=lambda r: str(r.get("ts") or ""))
     chk.stored_keys = len(stored)
 
-    uni = build_universe_at(day, sb, limit=universe_limit)
-    symbols = sorted(set(uni.symbols) | {r["symbol"] for r in stored_rows})
+    uni = build_universe_for_session(day, sb, limit=universe_limit)
+    chk.scan_date = uni.scan_date
+    watched = set(uni.symbols)
+    live_symbols = {r["symbol"] for r in stored_rows}
+    symbols = sorted(watched | live_symbols)
     chk.symbols_replayed = len(symbols)
 
     prev = prev_day_reference(day, symbols, sb)
 
     replayed: dict = {}
+    bars_by_symbol: dict = {}
     for sym in symbols:
         bars = src.get(sym, day)
         if not bars:
             continue
-        for det in replay_symbol_day(sym, day, bars, prev=prev.get(sym)):
+        bars_by_symbol[sym] = bars
+        for det in replay_symbol_day(sym, day, bars, prev=prev.get(sym),
+                                     convention=convention):
             k = (det.trade_date, det.symbol, det.family.upper())
             if k not in replayed or det.ts < replayed[k].ts:
                 replayed[k] = det
     chk.replay_keys = len(replayed)
     chk.coverage = src.coverage.line()
 
+    miss_causes: dict[str, int] = defaultdict(int)
+    bps_buckets: dict[str, int] = defaultdict(int)
+
     for k, srow in stored.items():
         det = replayed.get(k)
+        sym = k[1]
         if det is None:
+            # Classified in priority order — the first cause that applies is the
+            # binding one. A symbol with no bars cannot be judged on its price,
+            # and a price that never printed cannot be blamed on a silent engine.
+            #
+            # UNIVERSE MEMBERSHIP IS NOT A CAUSE HERE and an earlier version of
+            # this classifier wrongly made it one. The replayed symbol set is the
+            # union of the universe and every symbol the live record names, so a
+            # name outside the reconstructed 40 was still replayed, still had
+            # bars, and still had every engine run against it. Labelling its
+            # miss "not in the universe" would have credited a universe fix with
+            # 25 misses it does not touch. Membership is reported beside the
+            # cause, never as one.
+            bars = bars_by_symbol.get(sym)
+            if not bars:
+                cause = "no_bars_for_symbol"
+            elif not _entry_is_a_bar_close(bars, srow.get("ts"), srow.get("entry")):
+                cause = "live_ltp_is_intra_minute"           # §10.2 cause 1
+            else:
+                cause = "engine_silent_on_a_reachable_price"
+            miss_causes[cause] += 1
             chk.missed.append({"key": k, "strategy": srow.get("strategy"),
                                "direction": srow.get("direction"),
                                "entry": srow.get("entry"),
-                               "verdict": srow.get("cost_verdict")})
+                               "verdict": srow.get("cost_verdict"),
+                               "cause": cause, "in_universe": sym in watched})
             continue
         chk.reproduced += 1
         problems = []
@@ -251,14 +333,58 @@ def check_detections(day: str, src: BarSource, sb=None,
             exp = srow.get(fld)
             if exp is not None and abs(float(exp) - float(got)) > 0.01:
                 problems.append(f"{fld} {got:.2f} vs {float(exp):.2f}")
+        # RELATIVE, alongside the absolute check. A 2 dp match on a Rs 37,550
+        # stock demands the identical tick; the same 0.01 on a Rs 100 stock is a
+        # basis point. Both are reported because they answer different questions
+        # — "is it the same number" and "is it the same trade".
+        exp_entry = srow.get("entry")
+        if exp_entry:
+            bps = abs(det.entry - float(exp_entry)) / float(exp_entry) * 10_000.0
+            for label, edge in (("<=5bps", 5), ("<=25bps", 25),
+                                ("<=100bps", 100), (">100bps", 1e18)):
+                if bps <= edge:
+                    bps_buckets[label] += 1
+                    break
         if problems:
             chk.level_mismatches.append({"key": k, "problems": problems})
 
+    extra_causes: dict[str, int] = defaultdict(int)
+    stored_families_by_symbol: dict[str, set] = defaultdict(set)
+    for r in stored_rows:
+        stored_families_by_symbol[r["symbol"]].add((r.get("strategy") or "").upper())
+
     for k, det in replayed.items():
-        if k not in stored:
-            chk.extras.append({"key": k, "engine": det.engine,
-                               "sub_engine": det.sub_engine,
-                               "entry": det.entry, "phase": det.phase})
+        if k in stored:
+            continue
+        sym = k[1]
+        if sym not in live_symbols:
+            cause = "symbol_absent_from_live_record"
+        elif det.look != "bar_close":
+            cause = "sub_bar_look_only"
+        elif stored_families_by_symbol.get(sym):
+            cause = "symbol_watched_live_but_this_family_never_fired"
+        else:
+            cause = "unexplained"
+        extra_causes[cause] += 1
+        chk.extras.append({"key": k, "engine": det.engine,
+                           "sub_engine": det.sub_engine, "look": det.look,
+                           "entry": det.entry, "phase": det.phase,
+                           "cause": cause})
+
+    chk.miss_causes = dict(sorted(miss_causes.items(), key=lambda kv: -kv[1]))
+    chk.extra_causes = dict(sorted(extra_causes.items(), key=lambda kv: -kv[1]))
+    chk.entry_bps = dict(bps_buckets)
+
+    fam: dict[str, dict] = defaultdict(
+        lambda: {"stored": 0, "repro": 0, "missed": 0, "extra": 0})
+    for k in stored:
+        fam[k[2]]["stored"] += 1
+        fam[k[2]]["repro" if k in replayed else "missed"] += 1
+    for m in chk.extras:
+        fam[m["key"][2]]["extra"] += 1
+    for f, d in fam.items():
+        d["net"] = d["extra"] - d["missed"]
+    chk.by_family = dict(sorted(fam.items(), key=lambda kv: -kv[1]["stored"]))
     return chk
 
 
@@ -302,6 +428,11 @@ def report(day: str, oc: OutcomeCheck | None, dc: DetectionCheck | None) -> int:
 
     if dc is not None:
         print(f"\n2. DETECTIONS (cold replay vs stored record)")
+        print(f"   convention       : {dc.convention}"
+              + ("   [UPPER BOUND, not a reproduction]"
+                 if CONVENTIONS[dc.convention].is_bound else ""))
+        print(f"   universe ranked  : {dc.scan_date}  (the prior session — the "
+              f"daemon has no bhavcopy for {dc.day} at 09:15)")
         print(f"   {dc.coverage}")
         print(f"   symbols replayed : {dc.symbols_replayed}")
         print(f"   stored keys      : {dc.stored_keys}")
@@ -311,18 +442,38 @@ def report(day: str, oc: OutcomeCheck | None, dc: DetectionCheck | None) -> int:
         print(f"   extras           : {len(dc.extras)}   bar: 0 "
               f"(an extra means the replay is MORE permissive than live)")
         print(f"   level mismatches : {len(dc.level_mismatches)}")
+        if dc.entry_bps:
+            order = ["<=5bps", "<=25bps", "<=100bps", ">100bps"]
+            print("   entry agreement  : "
+                  + "  ".join(f"{l} {dc.entry_bps.get(l, 0)}" for l in order))
+        if dc.by_family:
+            print("   PER FAMILY (net = extras - misses; the sign every "
+                  "downstream n inherits):")
+            print(f"     {'fam':<6}{'stored':>8}{'repro':>7}{'missed':>8}"
+                  f"{'extra':>7}{'net':>6}")
+            for f, d in dc.by_family.items():
+                print(f"     {f:<6}{d['stored']:>8}{d['repro']:>7}"
+                      f"{d['missed']:>8}{d['extra']:>7}{d['net']:>+6}")
+        if dc.miss_causes:
+            print(f"   MISSES classified ({len(dc.missed)}):")
+            for c, n in dc.miss_causes.items():
+                print(f"     {n:>4}  {c}")
+        if dc.extra_causes:
+            print(f"   EXTRAS classified ({len(dc.extras)}):")
+            for c, n in dc.extra_causes.items():
+                print(f"     {n:>4}  {c}")
         if dc.missed:
             print(f"   MISSED, first 15:")
             for m in dc.missed[:15]:
                 _, sym, fam = m["key"]
-                print(f"     {sym:<14} {fam:<6} {str(m['direction']):<5} "
-                      f"entry={m['entry']} verdict={m['verdict']}")
+                print(f"     {sym:<13}{fam:<5}{str(m['direction']):<5} "
+                      f"entry={str(m['entry']):<9} {m['cause']}")
         if dc.extras:
             print(f"   EXTRAS, first 15:")
             for e in dc.extras[:15]:
                 _, sym, fam = e["key"]
-                print(f"     {sym:<14} {fam:<6} via {e['engine']}/{e['sub_engine']} "
-                      f"entry={e['entry']:.2f} phase={e['phase']}")
+                print(f"     {sym:<13}{fam:<5}via {e['engine']}/{e['sub_engine']:<5} "
+                      f"entry={e['entry']:<10.2f}{e['cause']}")
         if dc.level_mismatches:
             print(f"   LEVEL MISMATCHES, first 10:")
             for m in dc.level_mismatches[:10]:
@@ -340,6 +491,50 @@ def report(day: str, oc: OutcomeCheck | None, dc: DetectionCheck | None) -> int:
     return rc
 
 
+def sweep(day: str, src: BarSource, sb=None,
+          universe_limit: int | None = None) -> int:
+    """
+    Every convention against the same day, side by side. A DIAGNOSTIC.
+
+    The exit code is the SHIPPED convention's, never the best column's. A sweep
+    that could pass the gate by finding a permissive enough convention would be
+    the acceptance bar moving itself, which is the one thing this stage was told
+    not to do.
+    """
+    results = []
+    for name in ("bar_close", "cadence_15s", "next_open",
+                 "ltp_bracket", "full_overlay"):
+        conv = CONVENTIONS[name]
+        dc = check_detections(day, src, sb, universe_limit=universe_limit,
+                              convention=conv)
+        results.append((conv, dc))
+
+    print()
+    print("=" * 78)
+    print(f"CONVENTION SWEEP — {day}   (diagnostic; the gate is bar_close)")
+    print("=" * 78)
+    print(f"{'convention':<14}{'repro':>8}{'pct':>8}{'missed':>8}{'extras':>8}"
+          f"{'keys':>7}   bound?")
+    for conv, dc in results:
+        print(f"{conv.name:<14}{dc.reproduced:>8}{dc.pct:>7.1f}%{len(dc.missed):>8}"
+              f"{len(dc.extras):>8}{dc.replay_keys:>7}   "
+              f"{'YES' if conv.is_bound else '-'}")
+    print()
+    for conv, dc in results:
+        print(f"  {conv.name}: {conv.note}")
+        print(f"      misses  {dc.miss_causes}")
+        print(f"      extras  {dc.extra_causes}")
+    print()
+
+    shipped = next(dc for conv, dc in results if conv.name == "bar_close")
+    print("=" * 78)
+    print(f"GATE (bar_close): {shipped.pct:.1f}% vs 85%, "
+          f"{len(shipped.extras)} extras vs 0  -> "
+          f"{'PASS' if shipped.pct >= 85.0 and not shipped.extras else 'FAIL'}")
+    print("=" * 78)
+    return 0 if (shipped.pct >= 85.0 and not shipped.extras) else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--date", required=True, help="trade_date, YYYY-MM-DD")
@@ -348,6 +543,14 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=None,
                     help="cap rows in the outcome check (for a fast smoke test)")
     ap.add_argument("--universe-limit", type=int, default=None)
+    ap.add_argument("--convention", default="bar_close",
+                    choices=sorted(CONVENTIONS),
+                    help="when the replay looks and what it may know — see "
+                         "tools/replay/conventions.py")
+    ap.add_argument("--sweep", action="store_true",
+                    help="run every convention and print the comparison. "
+                         "Diagnostic: the exit code still comes from the "
+                         "SHIPPED convention, never from the best one.")
     args = ap.parse_args()
 
     try:
@@ -360,10 +563,14 @@ def main() -> int:
     src = BarSource(kite)
     sb = get_supabase()
 
+    if args.sweep:
+        return sweep(args.date, src, sb, universe_limit=args.universe_limit)
+
     oc = None if args.detections_only else check_outcome_rule(
         args.date, src, sb, limit=args.limit)
     dc = None if args.outcome_only else check_detections(
-        args.date, src, sb, universe_limit=args.universe_limit)
+        args.date, src, sb, universe_limit=args.universe_limit,
+        convention=CONVENTIONS[args.convention])
     return report(args.date, oc, dc)
 
 

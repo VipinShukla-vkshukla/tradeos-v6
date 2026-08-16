@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import sys
 from bisect import bisect_left
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -56,14 +56,25 @@ def bars_before(bars: list[Bar], ts: datetime) -> list[Bar]:
 
 def build_context(symbol: str, day_bars: list[Bar], now: datetime,
                   prev: dict | None = None,
-                  index_change_pct: float | None = None) -> SymbolContext | None:
+                  index_change_pct: float | None = None,
+                  upto: datetime | None = None) -> SymbolContext | None:
     """
     One symbol's context as it stood at `now`. None when there is too little.
 
     `len(bars) < 5` mirrors the live guard at `engine.py:497` — an engine given
     two bars is not being asked a fair question.
+
+    `upto` is the bar-truncation instant and defaults to `now`. They separate
+    only for a SUB-BAR evaluation: at 09:16:15 the live context holds bars
+    through 09:15, because `bar_builder` emits a bar only once it closes. Using
+    `now` for both there would hand the engine the bar it is standing inside.
+    `upto > now` is refused outright rather than clamped — a caller that asks to
+    read past its own clock has a bug, and silently correcting it hides one.
     """
-    bars = bars_before(day_bars, now)
+    upto = upto or now
+    assert upto <= now, (
+        f"{symbol}: bar truncation {upto} is AFTER the evaluation clock {now}")
+    bars = bars_before(day_bars, upto)
     if len(bars) < 5:
         return None
 
@@ -103,6 +114,59 @@ def build_context(symbol: str, day_bars: list[Bar], now: datetime,
     return ctx
 
 
+def apply_forming_bar(ctx: SymbolContext, forming: Bar, ltp: float,
+                      extremes: bool, vwap: bool,
+                      index_change_pct: float | None = None) -> SymbolContext:
+    """
+    Advance the scalar fields into the bar `now` sits inside. Mutates in place.
+
+    This is the replay's counterpart to `engine.apply_live_quotes` and it is
+    deliberately shaped the same way: the bar LIST is never touched, only
+    `ltp`, `day_high`, `day_low`, `vwap` and `session_volume` — the five fields
+    the websocket overlays live, on the same 15 s cadence, for the same reason
+    (between context rebuilds the day range was simply wrong).
+
+    IT IS AN OVER-APPROXIMATION AND MUST BE READ AS ONE. Live at 09:16:15 had
+    whatever range had printed by 09:16:15. This gives it the whole of 09:16 —
+    the minute's full high and low and all of its volume. That is the generous
+    end of the envelope, chosen because the purpose is a BOUND: something this
+    cannot detect, no intra-minute path could have. See `conventions.py`.
+
+    ONE BAR, AND ONLY THE ONE CONTAINING `now`. The assertion below is the whole
+    guard against this becoming ordinary lookahead: given a forming bar two
+    minutes ahead it would quietly report the future as the present.
+    """
+    assert forming.ts <= ctx.as_of < forming.ts + timedelta(minutes=1), (
+        f"LOOKAHEAD: {ctx.symbol} overlaid with the bar at {forming.ts} while "
+        f"the clock reads {ctx.as_of} — the overlay may only see the bar it is "
+        f"standing inside")
+    assert not ctx.bars or ctx.bars[-1].ts < forming.ts, (
+        f"LOOKAHEAD: {ctx.symbol} bar list already contains {ctx.bars[-1].ts}, "
+        f"at or after the forming bar {forming.ts}")
+
+    ctx.ltp = float(ltp)
+    if extremes:
+        ctx.day_high = max(ctx.day_high, forming.high)
+        ctx.day_low = min(ctx.day_low, forming.low)
+    if vwap and forming.volume:
+        # Re-weight rather than re-derive: the completed bars' typical-price
+        # total is recoverable from the VWAP already on the context, and going
+        # back to the bar list to recompute it would be the same arithmetic at
+        # 375x the cost, once per sample, per symbol, per day.
+        prior_vol = ctx.session_volume or 0.0
+        prior_tv = (ctx.vwap or 0.0) * prior_vol
+        tp = (forming.high + forming.low + forming.close) / 3.0
+        vol = prior_vol + forming.volume
+        if vol:
+            ctx.vwap = (prior_tv + tp * forming.volume) / vol
+        ctx.session_volume = vol
+
+    if index_change_pct is not None and ctx.prev_close:
+        ctx.rs_vs_index_pct = round(
+            (ctx.ltp - ctx.prev_close) / ctx.prev_close * 100.0 - index_change_pct, 2)
+    return ctx
+
+
 def index_change_at(index_bars: list[Bar], now: datetime,
                     index_prev_close: float | None) -> float | None:
     """The index's percent change as of `now`. Feeds relative strength."""
@@ -123,7 +187,8 @@ def build_index_context(index_bars: list[Bar], now: datetime,
 
 # ── the guard ───────────────────────────────────────────────────────────────
 def assert_no_lookahead(ctx: SymbolContext, now: datetime,
-                        full_day_bars: list[Bar]) -> None:
+                        full_day_bars: list[Bar],
+                        upto: datetime | None = None) -> None:
     """
     Prove this context cannot see `now` or later. Raises AssertionError if it can.
 
@@ -131,13 +196,20 @@ def assert_no_lookahead(ctx: SymbolContext, now: datetime,
     slice that included the current bar; the second catches a context assembled
     from the full day's aggregates while only the bar LIST was truncated — a
     plausible bug that the first check alone would pass.
+
+    `upto` is the tighter bar-truncation instant on a sub-bar evaluation, where
+    it sits BEFORE `now`. Checking against `now` alone would pass a context that
+    had swallowed the bar it is standing inside, which is precisely the mistake
+    sub-bar evaluation makes available.
     """
     assert ctx.bars, f"{ctx.symbol}: context has no bars at {now}"
+    limit = upto or now
 
     latest = max(b.ts for b in ctx.bars)
-    assert latest < now, (
-        f"LOOKAHEAD: {ctx.symbol} context built at {now} contains a bar "
-        f"timestamped {latest} — the engine can see the bar it is predicting")
+    assert latest < limit, (
+        f"LOOKAHEAD: {ctx.symbol} context built at {now} (bars < {limit}) "
+        f"contains a bar timestamped {latest} — the engine can see the bar it "
+        f"is predicting")
 
     if len(full_day_bars) > len(ctx.bars):
         full_high = max(b.high for b in full_day_bars)
