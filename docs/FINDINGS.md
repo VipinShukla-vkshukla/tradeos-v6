@@ -3196,7 +3196,7 @@ changed; `tools.verify` is 434/434.
 
 ---
 
-<<<<<<< HEAD
+
 ## 2026-08-15 — R-2/R-3 (preflight identity + lease) — the IP check was watching the wrong machine; the guard it was reaching for is HOST IDENTITY, and F-11 is not hypothetical — a GitHub Actions runner placed a live SELL on 29-Jul and only Zerodha's allowlist stopped it
 
 **Branch:** `fix/preflight-lease-and-host`, off `main` (not off
@@ -3513,7 +3513,6 @@ was reachable only in `RISK ON`, which this book has never traded.
 
 **2. The planner had no cost model.** `risk_model.py` imported `dataclasses` and
 nothing else while every other gate in the system prices its own friction.
-=======
 ## 2026-08-14 — R-1 (change, single-daemon lock) — the lease is a role, not a mutex: three separate paths let both daemons act, one of them by design since 06-Aug. A startup compare-and-swap now refuses the second daemon, and `intraday_broker_log` records who wrote every row
 
 Implements R-1 from Stage 2d-i §9. R-2 (the IP allowlist pre-market check) was
@@ -3578,13 +3577,12 @@ only by `engine.py:2447` and appears on both sides of the interleave (id=863
 BLOCKED AUBANK, id=871 PLACED AUBANK), so the second writer was `intraday/run.py`
 and not `position_lifecycle.main()`. That distinction decided where the lock
 goes; see F-11 for the path it therefore does *not* close.
->>>>>>> fix/single-daemon-lease
 
 ---
 
 ### 1 — WHAT WAS BUILT
 
-<<<<<<< HEAD
+
 **Regime symmetry** (`risk_regime_scales_target`, default **false**). `regime_k`
 now multiplies the target distance too — **on the ATR branch only**:
 
@@ -5099,7 +5097,7 @@ two `stock_data_daily` chunked reads. Only the tally was wrong. Recorded here
 rather than by editing §2, because this ledger is append-only and a silently
 corrected number is worth less than a visibly corrected one — F-17 and F-1 are
 both in this file because a figure that would not reproduce was quoted forward.
-=======
+
 **Migration 077** — two columns and one switch. No change to the lease row's
 shape, deliberately: the startup lock and the runtime lease are the **same row**,
 so the two cannot drift into disagreeing about who is running.
@@ -5299,7 +5297,6 @@ three named mechanisms and the commit that introduced the third; both required
 tests were demonstrated failing before they were trusted to pass; `tools.verify`
 is 448/448. Two live-money items found along the way (F-11 unguarded pipeline
 path, F-12 stale allowlist) are recorded and not silently fixed.
->>>>>>> fix/single-daemon-lease
 
 ---
 
@@ -5488,8 +5485,6 @@ measured by stashing, not assumed). `tools.health` unchanged at 1 problem, §6.
 `main`.** Six of them, from `ed77595 "merging everything"` (16-Aug 11:07):
 
 ```
-3199:<<<<<<< HEAD      3516:=======      3581:>>>>>>> fix/single-daemon-lease
-3587:<<<<<<< HEAD      5102:=======      5302:>>>>>>> fix/single-daemon-lease
 ```
 
 Two whole ledger entries are interleaved inside conflict blocks. The content
