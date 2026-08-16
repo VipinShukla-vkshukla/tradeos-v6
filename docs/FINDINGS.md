@@ -3196,6 +3196,7 @@ changed; `tools.verify` is 434/434.
 
 ---
 
+<<<<<<< HEAD
 ## 2026-08-15 — R-2/R-3 (preflight identity + lease) — the IP check was watching the wrong machine; the guard it was reaching for is HOST IDENTITY, and F-11 is not hypothetical — a GitHub Actions runner placed a live SELL on 29-Jul and only Zerodha's allowlist stopped it
 
 **Branch:** `fix/preflight-lease-and-host`, off `main` (not off
@@ -3512,11 +3513,78 @@ was reachable only in `RISK ON`, which this book has never traded.
 
 **2. The planner had no cost model.** `risk_model.py` imported `dataclasses` and
 nothing else while every other gate in the system prices its own friction.
+=======
+## 2026-08-14 — R-1 (change, single-daemon lock) — the lease is a role, not a mutex: three separate paths let both daemons act, one of them by design since 06-Aug. A startup compare-and-swap now refuses the second daemon, and `intraday_broker_log` records who wrote every row
+
+Implements R-1 from Stage 2d-i §9. R-2 (the IP allowlist pre-market check) was
+explicitly deferred and is NOT in this change — see §5, where it is now also a
+LIVE failure rather than a recommendation.
+
+---
+
+### 0 — WHY THE EXISTING LEASE DID NOT PREVENT 10-AUG *(asked before anything was changed)*
+
+**Is `lease.acquire()` on the swing/order path?** Only indirectly, through one
+variable, and never at the order itself. `may_act` appears in exactly one file:
+
+```
+intraday/run.py:102   if ls.may_act:
+intraday/run.py:138   was_active = ls.may_act
+intraday/run.py:193   if ls.may_act and not was_active:
+intraday/run.py:197   was_active = ls.may_act
+intraday/run.py:202   if prices and not was_active:   <- standby, read-only
+```
+
+`engine.cycle()` routes both books, so swing entries and exits *are* behind the
+lease inside the daemon. But `grep -rn lease backend/execution/` returns
+**nothing** — `preflight()` and `place()` do not know a lease exists. It is a
+loop-level gate, not an order-level one.
+
+**Is it called at startup?** Yes — `run.py:101`, after the holiday check, before
+`load_state()`. The check ran. It did not hold.
+
+**What happens on a stale lease?** It is claimed. `lease.py:138` defers only when
+`holder and holder != _INSTANCE_ID and expires > now`; an expired lease falls
+through to the upsert. That is correct, and preserving it is half of this work.
+
+**So why did two daemons coexist? Three structural reasons, none a typo.**
+
+**(a) `acquire()` is read-then-write, not compare-and-swap.** Its own docstring
+admits it — *"Two daemons starting in the same second could briefly both believe
+they are active."* The write at `lease.py:153` is an unconditional `upsert`; it
+never re-asserts the row read at line 118.
+
+**(b) The loser keeps trading for up to 30 seconds after losing.** `run.py:191`
+re-reads the lease on a 30s timer while `eval_interval_s()` is 15s, so a demoted
+daemon runs one or two more full cycles — placing orders — before it notices.
+**The 10-Aug window is 09:36:01→09:37:03: 62 seconds. Two renew intervals.**
+
+**(c) Migration 050's primary override makes the overlap deliberate.**
+`_is_primary()` gates `acquire()` line 129 as `if rows and not am_primary:` — a
+configured primary **skips the deference check entirely and claims a live,
+unexpired lease held by a running daemon.** `renew()` line 181 does the same
+mid-run. `intraday_lease_primary_host='tradeos-vcn'` shipped in **`a4c20b9`,
+2026-08-06 — four days before the incident.**
+
+**And the root of it: a role is not a mutex.** Migration 023's design is that the
+second daemon *starts and keeps running* in STANDBY — one config read, one
+exception, or one renew interval from acting. Both `acquire()` (lines 127, 156)
+and `renew()` (line 197) fail **OPEN to ACTIVE** on any database error.
+Exclusivity that depends on a live process voluntarily re-reading a flag every
+30 seconds is not exclusivity.
+
+**Both 10-Aug writers were daemons, not the pipeline.** `AUTO_ENTRY:` is emitted
+only by `engine.py:2447` and appears on both sides of the interleave (id=863
+BLOCKED AUBANK, id=871 PLACED AUBANK), so the second writer was `intraday/run.py`
+and not `position_lifecycle.main()`. That distinction decided where the lock
+goes; see F-11 for the path it therefore does *not* close.
+>>>>>>> fix/single-daemon-lease
 
 ---
 
 ### 1 — WHAT WAS BUILT
 
+<<<<<<< HEAD
 **Regime symmetry** (`risk_regime_scales_target`, default **false**). `regime_k`
 now multiplies the target distance too — **on the ATR branch only**:
 
@@ -5031,5 +5099,206 @@ two `stock_data_daily` chunked reads. Only the tally was wrong. Recorded here
 rather than by editing §2, because this ledger is append-only and a silently
 corrected number is worth less than a visibly corrected one — F-17 and F-1 are
 both in this file because a figure that would not reproduce was quoted forward.
+=======
+**Migration 077** — two columns and one switch. No change to the lease row's
+shape, deliberately: the startup lock and the runtime lease are the **same row**,
+so the two cannot drift into disagreeing about who is running.
+
+```
+intraday_broker_log.host   text      socket.gethostname()
+intraday_broker_log.pid    integer   os.getpid()
+idx_broker_log_host_ts     (host, ts DESC)
+system_config.intraday_single_daemon_lock = 'true'   CRITICAL
+```
+
+**`lease.claim_startup_lock()`** — read the row, decide, then write a
+**compare-and-swap**: the UPDATE carries `.eq("holder", <the holder just read>)`,
+so a competitor that claimed in between leaves zero rows matching and this
+process refuses. Verified that this is a real signal and not an assumption —
+`postgrest.SyncRequestBuilder.update()` defaults to
+`returning=ReturnMethod.representation`, so empty `.data` genuinely means zero
+rows matched.
+
+**Why not a Postgres advisory lock, which is what R-1 proposed.**
+`pg_advisory_lock()` is session-scoped, and this system reaches Postgres only
+through PostgREST, which hands out **pooled** connections and returns them after
+each request. A session lock taken that way is held by a connection nobody owns
+and released at a moment nobody controls — a lock that cannot be trusted to
+fail, which is the exact defect shape this repo has now found five times. A
+single conditional UPDATE *is* atomic: Postgres takes the row lock and
+serialises the writers. That is the advisory lock R-1 wanted, built out of the
+one primitive PostgREST actually exposes.
+
+**Failure is CLOSED throughout** — unreadable row, missing table, lost race and
+write error all refuse. This is the single most important line in the change:
+every other path in `lease.py` fails open to ACTIVE, and that is how the failure
+survived.
+
+**`order_manager._log()`** writes `host`/`pid`, and on an unknown-column error
+**strips them and retries** rather than losing the row — this table is the money
+trail, `_log` swallows its exception to `logger.debug`, and *"PostgREST fails the
+WHOLE update on one unknown column"* is already a CLAUDE.md landmine. The retry
+is gated on the error text naming a column, so an ordinary timeout is not
+retried into a phantom duplicate row.
+
+---
+
+### 2 — THE TESTS, DEMONSTRATED FAILING FIRST
+
+`tests/test_daemon_lock.py`, 14 checks, registered in `tools/verify.py`.
+
+**Required test 1 — a live lease refuses a second daemon.** Broken by reverting
+the HELD branch to migration 023's "start anyway":
+
+```
+✗  single daemon startup lock  (4/13 failed)
+     a live lease refuses a second daemon
+       a live lease was claimed anyway: LockResult(granted=True, code='CLAIMED',
+       holder='Vipin-14912-605658', detail='lock claimed (DEMO-A: pre-fix
+       behaviour — tradeos-vcn-4411-a1b2c3 holds it for 90s and we start anyway)')
+     a configured primary may not barge in at startup
+     the switch defaults on when the row is missing
+     lock verdict is pure over a table of rows
+```
+
+**Required test 2 — a genuinely stale lease must not block a restart.** Broken by
+refusing whenever a holder is named, which is the plausible over-tight version:
+
+```
+✗  single daemon startup lock  (3/13 failed)
+     a stale lease does not block a restart
+       a legitimate restart was blocked: LockResult(granted=False, code='HELD',
+       holder='laptop-9812-ffeedd', detail='DEMO-B: over-tight — ... even though
+       its lease lapsed 300s ago')
+```
+
+That second one is not symmetry for its own sake. *"A check that cannot PASS is
+the same defect wearing a different hat"* — a lock that refuses a restart after a
+crash leaves a live book unattended **while looking like a safety feature**,
+which is strictly worse than no lock.
+
+**Third demonstration — the call site, not just the function.** A correct guard
+proves nothing about its callers; the shorting work found that same gap four
+times in one feature. `test_the_daemon_claims_the_lock_before_it_can_act` pins
+the *ordering* in `run.main()` — claim, then `lease.acquire`, then
+`engine.load_state()`, then ever `engine.cycle(`. Broken by replacing the
+refusal's `return` with `pass`:
+
+```
+✗  the daemon claims the lock before it can act
+     run.main() does not return when the lock is refused
+```
+
+**`test_a_configured_primary_may_not_barge_in_at_startup` is the one that pins
+the incident itself.** On one row it asserts that `acquire()` **still claims**
+(migration 050's mid-run reclaim is unchanged, by design) and that
+`claim_startup_lock()` **refuses**. If those two ever agree again, the lock has
+been quietly rewired to the policy that caused 10-Aug.
+
+**`tools.verify` 448/448 across 56 modules** (was 434/55). `tools.health` 21 of
+22 (the exception is F-12, below, which pre-dates this change). `tools.simulate`
+unchanged in shape: swing 6 positions / 8 buyable, intraday 0 takeable.
+
+---
+
+### 3 — THE BEHAVIOUR CHANGE THE OPERATOR MUST KNOW
+
+**There is no hot standby any more.** Migration 023 promised one; with this
+switch on, the second daemon prints why and exits. Failover becomes the
+broker-side GTT stops — which is what `lease.py`'s own docstring already calls
+*the real safety net* — plus a restart once the lease lapses.
+
+**Whoever starts first wins, including against the configured primary.** The
+startup lock deliberately does **not** honour `intraday_lease_primary_host`: a
+preference for which machine should normally run is not authority to barge in on
+one that already is, and honouring it would reproduce 10-Aug exactly. So
+**migration 050's intent is partly reversed at startup** and untouched mid-run.
+To hand the book to the server while the laptop is running: **stop the laptop
+first** — a clean shutdown calls `lease.release()` and frees the row instantly.
+
+**A hard kill costs up to `intraday_lease_ttl_seconds` (120s) before a restart is
+allowed.** That is correct rather than unfortunate: the system cannot distinguish
+"SIGKILLed" from "still running and renewing", and the refusal message states the
+holder and the exact seconds remaining. A same-host/dead-pid fast path would
+remove the wait and was deliberately not built — it needs platform-specific
+liveness code (`os.kill(pid, 0)` on Windows calls `TerminateProcess` and would
+**kill the process it is asking about**), and one change at a time.
+
+---
+
+### 4 — FOUND ALONG THE WAY
+
+**F-11 — the pipeline's exit path places live orders with no lease check at
+all.** `position_lifecycle.main(manage=True)` → `manage_open_positions()` →
+`place()` at `position_lifecycle.py:1691` sells real shares and never consults
+the lease, the lock, or the daemon. It is **not** what happened on 10-Aug (§0),
+so it is recorded and not fixed — but a startup lock in `run.py` does not close
+it, and "daemon + pipeline concurrently" produces the identical doubling of
+`_recent`, `_blocked_account` and the daily caps. The honest place for the check
+is `preflight()`, where every path already converges.
+
+**F-12 — the IP allowlist is stale RIGHT NOW, live, before tomorrow's open.**
+`tools.health` this session:
+
+```
+✗ kite  public IP is 103.197.74.232 but only 103.197.75.33 is recorded as
+        allowlisted — order placement will be REJECTED from this address
+```
+
+This is Stage 2d-i §6 Cause B recurring for the **fourth** distinct address, and
+it is not history — it is the state the daemon will boot into. Every exit
+tomorrow would be refused exactly as PPLPHARMA's was on 10-Aug. Unrelated to
+this change and untouched by it; it is R-2's case, now with a live instance
+behind it rather than a post-mortem.
+
+**F-13 — `renew()`'s primary override remains a mid-run steal path.** A
+configured primary still reclaims unconditionally at `lease.py:181`. That is
+neutralised *only because* startup is now exclusive — there is no longer a second
+daemon for it to steal from. The coupling is worth stating plainly: turning
+`intraday_single_daemon_lock` off restores **both** holes at once, not just the
+startup one.
+
+**F-14 — a refused start is a log line nobody is watching.** The 21-minute
+blindness at the 10-Aug open went unnoticed for exactly this reason and was
+given a push notification on 11-Aug. A daemon that exits at 09:00 because it
+thinks another is running is the same shape of silence. Not built — the notifier
+is constructed after this point in `main()` and moving it is more churn than this
+change should carry.
+
+---
+
+### 5 — NOT DONE
+
+- **R-2, the IP allowlist pre-market check** — deferred by instruction. F-12
+  says it should be the next stage, not a later one.
+- **Migration 077 has NOT been applied.** Migrations run against a live book and
+  applying one was not part of this brief. Note the consequence, which is
+  deliberate: `cfg_bool("intraday_single_daemon_lock", True)` defaults ON, so
+  **the lock is live the moment this code is deployed, before the migration
+  runs** — that is the intended direction. Until 077 is applied, `_log()` will
+  take one rejected insert per order and retry without `host`/`pid`, logging a
+  WARNING naming the migration. No row is lost.
+- **F-11 and F-13 were recorded, not fixed.**
+
+---
+
+### 6 — COULD NOT DETERMINE
+
+- **Whether 10-Aug's two daemons were laptop+server or two on one host.** Still
+  unrecoverable — that is precisely what the new `host`/`pid` columns exist to
+  answer next time, and they cannot answer it retroactively.
+- **Whether the lock behaves correctly against real PostgREST concurrency.** The
+  compare-and-swap is verified offline against a fake that enforces the filter
+  contract, and the client's `returning=representation` default was confirmed by
+  inspecting the installed `postgrest` package. It has **not** been exercised
+  against the live database with two real processes; that needs the migration
+  applied and two daemons started deliberately.
+
+**Gate: PASS** — the question asked before changing anything is answered with
+three named mechanisms and the commit that introduced the third; both required
+tests were demonstrated failing before they were trusted to pass; `tools.verify`
+is 448/448. Two live-money items found along the way (F-11 unguarded pipeline
+path, F-12 stale allowlist) are recorded and not silently fixed.
+>>>>>>> fix/single-daemon-lease
 
 ---
