@@ -5840,3 +5840,342 @@ moved to make it pass. `python -m tools.verify`: **all 531 checks passed across
 60 modules.**
 
 ---
+
+## 2026-08-16 — Replay reproduction — the gap is intra-minute PRICE and it does not close: cadence buys exactly zero, VWAP is ruled out, and every convention that clears 85% does so by lookahead. Two real harness defects fixed; §8 freeze built with three refusals, each demonstrated refusing
+
+**Ran:**
+
+```bash
+git checkout -b fix/replay-reproduction
+python -m tools.replay.verify_known_day --date 2026-08-14            # both checks
+python -m tools.replay.verify_known_day --date 2026-08-14 --sweep    # 5 conventions
+python -m tools.replay.freeze
+python -m tools.replay.holdout --dry-run                             # x4, see §5
+python -m tools.verify
+```
+
+No full replay. No window scored. The 85% and 0-extras bars were not moved.
+
+### 1 — THE LEVER: A STORED `entry` IS THE LIVE LTP
+
+Every one of the nine engines ends with `entry=round(ctx.ltp, 2)` — `orb.py:146`,
+`gap_and_go.py:122`, `prev_day_levels.py:157`, `squeeze.py:126`,
+`pullback.py:137`, `vwap_reclaim.py:162`, `range_fade.py:121`,
+`short_distribution.py:195/270/314`, `gap_down_bounce.py:187`. So the `entry`
+column on a recorded detection is not a derived level. **It is the tick price the
+live system was looking at, to two decimals.**
+
+That turns "tick versus bar" from a story into a query. Over all 212 stored
+dedup keys on 2026-08-14, asking whether that number appears as a completed
+minute-bar CLOSE near its own timestamp:
+
+```
+   stored entry == close of the bar it was detected in       18   ( 8.5%)
+   == a close within +/- 1 bar                               22   (10.4%)
+   == a close within +/- 2                                    7   ( 3.3%)
+   == a close within +/- 3                                    6   ( 2.8%)
+   == a close within +/- 5                                   12   ( 5.7%)
+   == a close within +/- 10                                  10   ( 4.7%)
+   NO bar close within +/- 10 bars                          137   (64.6%)
+```
+
+The replay's `ltp` is a completed bar's close by construction. **On roughly 91%
+of recorded detections the live system decided on a price that is not any bar
+close in the neighbourhood.** The number is not in the data, so no schedule for
+reading the data can recover it.
+
+### 2 — THE SWEEP: WHAT EACH HYPOTHESIS IS ACTUALLY WORTH
+
+`tools/replay/conventions.py` makes "when does the replay look, and what may it
+know" an explicit, named object instead of an assumption buried in a loop. Five,
+same day, same bars, same code:
+
+```
+convention       repro     pct  missed  extras   keys   reads a price
+                                                        before it printed?
+bar_close          169   79.7%      43      18    187   no
+cadence_15s        169   79.7%      43      18    187   no
+next_open          172   81.1%      40      21    193   no
+ltp_bracket        197   92.9%      15      39    236   YES
+full_overlay       197   92.9%      15      40    237   YES
+```
+
+**Hypothesis 1 — a 15 s cadence over minute bars. Worth exactly zero.** Not
+"little": zero. 169/43/18 under both, to the key. Four looks a minute at an
+identical context are four identical answers, and
+`test_cadence_alone_cannot_change_a_single_detection` asserts the mechanism
+directly — every extra look `cadence_15s` emits carries the same `(upto, ltp)`
+pair as the bar-close look it follows.
+
+**Hypothesis 2 — interpolated VWAP. Ruled out, twice.** `full_overlay` adds the
+whole live quote overlay — VWAP, day range and session volume advanced into the
+forming bar — on top of `ltp_bracket`, and reproduces the *same 197 keys*. And
+`intraday_quote_parity` recorded that session directly, 9,154 samples per field:
+
+```
+   field         n   mean|diff|%     p50     p90      max   identical
+   day_high   9154       0.0066  0.0000  0.0000   3.3896     8737 (95.4%)
+   day_low    9154       0.0037  0.0000  0.0000   2.9162     8744 (95.5%)
+   prev_close 9154       0.0032  0.0000  0.0000   4.8995     9148 (99.9%)
+   vwap       9154       0.0020  0.0000  0.0031   0.3431     5745 (62.8%)
+   volume     9154       4.7658  2.3003  6.7068  99.9508        0
+```
+
+Live VWAP and bar VWAP are median-identical and 0.003% apart at p90. Only
+`session_volume` genuinely diverges (4.8% mean), and it is the bar-sum
+approximation the design already flagged. **The residual is the LTP alone.**
+
+**Hypothesis 3 — a different bar-close convention. Worth 3 keys.** The only
+sub-bar sample that is *not* lookahead is the forming bar's OPEN: at 09:16:15
+the first trade of 09:16 has already printed, while its high and low may not
+print until 09:16:50. `next_open` reaches 81.1%. Its high/low siblings reach
+92.9% by asserting a price before it happened.
+
+### 3 — THE ANSWER: IT DOES NOT CLOSE, AND THE TWO BARS MOVE APART
+
+**Every convention that reads no price before it printed stays under 82%. Every
+convention that clears 85% does so by lookahead — and its extras rise as its
+misses fall: 18 → 21 → 39.** There is no point in the family where 85% and zero
+extras hold together, and extras are the bar the design says matters more,
+because an extra means the replay is more permissive than live and inflates
+every downstream n.
+
+Minute bars bound the live information set (`bars` known exactly; `ltp` known
+only to lie in `[low, high]`) but do not determine it. **Closing this needs
+sub-minute data.** Kite's smallest historical interval is `minute`, so it cannot
+come from history; it can only be recorded going forward from the tick stream
+the daemon already receives. That is a separate piece of work and it does not
+help March.
+
+**What the residual means for every number the replay would produce**, at the
+shipped `bar_close` convention:
+
+```
+   fam     stored  repro  missed  extra   net
+   SDN        102    101       1      3    +2      100% SHORT
+   VWR         54     37      17     10    -7      LONG
+   ORB         21     17       4      1    -3      LONG
+   VCE         17      0      17      0   -17      LONG
+   RNG         17     13       4      3    -1      LONG
+   GDB          1      1       0      1    +1      LONG
+```
+
+- **The bias is toward FEWER detections** — 43 missed against 18 extra, net −25
+  on 212, ~12% short before any gate.
+- **It is not evenly spread, and it is collinear with direction.** SDN, the only
+  short engine, reproduces 101 of 102 and is net +2. Every long engine is net
+  negative. A long-versus-short comparison out of this replay would favour the
+  short book for a reason that is purely an artefact of the harness — the same
+  collinearity REPLAY_DESIGN §1 flags for Q2, biting somewhere new.
+- **VCE reproduces 0 of 17, and it is structural rather than statistical.**
+  `squeeze.py:57-77` takes `r_hi = max(b.high for b in bars[-n:])` and then
+  refuses unless `ctx.ltp > r_hi`. At a bar close `ctx.ltp` is `bars[-1].close`
+  and `bars[-1]` is inside that window, so `ltp <= bars[-1].high <= r_hi` holds
+  on every bar of every symbol on every day. **`SqueezeExpansion` cannot fire at
+  all under a bar-close replay.** A full replay would have reported "VCE: no
+  detections in 75 days" — which is the exact inversion the design warns about
+  for lifecycle filtering, arriving through a different door.
+  `test_the_bar_close_convention_cannot_fire_the_squeeze_engine` pins both
+  halves: never at a close, and it MUST fire at a price 20 bps above its own
+  coil, so "the convention blinds the engine" stays distinguishable from "the
+  engine never fires".
+
+### 4 — TWO REAL HARNESS DEFECTS, FOUND WHILE DIAGNOSING
+
+**F-29 — the universe was ranked on the replayed day's OWN rows, which is
+lookahead.** `scanner._latest_date()` returns the newest `stock_data_daily` date
+carrying a non-null `value_cr`, and `value_cr` comes from the bhavcopy, which is
+not published until after the close. At 09:15 on D the newest usable date is
+**D-1**, so the 40 names the daemon streamed on D were ranked on D-1's close,
+turnover and ATR. `build_universe_at(D)` used D's own row — selecting the day's
+universe with the day's own outcome. Measured:
+
+```
+   universe from 2026-08-14 (own rows) , top 40 : 30 of 40 in the live record (75%)
+   universe from 2026-08-13 (prior)    , top 40 : 35 of 40                    (88%)
+   the two top-40s share 27 names; symmetric difference 26
+```
+
+`universe.scan_date_for_session()` now resolves it, strictly `< day`.
+
+**F-30 — `skip_flagged` was forced off by reasoning about the wrong table.** The
+harness disabled the ASM/F&O filter citing REPLAY_DESIGN §4.2 — `safety_lists`
+has no date column and cannot be reconstructed. True, and irrelevant here:
+`build_universe` never reads `safety_lists`. It reads `asm_flag` and
+`fo_ban_flag` **off the `stock_data_daily` row it is already ranking**
+(`scanner.py:209`), and those are written by
+`ingest_asm_gsm.update_stock_data_flags` with `.eq("date", today)` — that date's
+own row, on that date. **Point-in-time all along.** On 2026-08-13: 10 rows carry
+`asm_flag`, 4 carry `fo_ban_flag`, none null. Forcing the filter off admitted
+HFCL and KALYANKJIL (ASM) and MANAPPURAM and SAIL (F&O ban) into a universe the
+daemon had excluded. §4.2's warning still stands for the SWING arm, which does
+read `safety_lists`; it should not have been carried across.
+
+Together: **extras 29 → 18.** Reproduction is unchanged at 169/212, and that is
+correct rather than disappointing — the replayed symbol set is the union of the
+universe and every symbol the live record names, so universe membership cannot
+cause a miss. An earlier version of the classifier made it one and would have
+credited the universe fix with 25 misses it does not touch.
+
+Full §10.2 classification, 2026-08-14, `bar_close`:
+
+```
+   MISSES (43)   live LTP is intra-minute .................. 30   cause 1
+                 engine silent on a reachable price ........ 13   residual
+   EXTRAS (18)   symbol watched live, family never fired ... 15
+                 symbol absent from the live record ........  3
+   cause 2  live_rerank promotion ......................... 0 (the union covers it)
+   cause 3  config drift ................................... 0  MEASURED
+   cause 4  code drift ..................................... 0  MEASURED
+```
+
+Cause 3 and 4 are measurements, not assumptions: `git log --since=2026-08-14`
+over `intraday/strategies/`, `intraday/session.py` and
+`intraday/market_context.py` is empty, and of the 89 engine/scanner/session
+config keys present in `system_config`, **0 have an `updated_at` later than the
+replayed session**. The previous entry called running without a freeze
+"near-harmless for a two-day-old session"; that is now a number rather than a
+hope.
+
+### 5 — THE §8 PARAMETER FREEZE, AND FOUR DEMONSTRATIONS
+
+`tools/replay/freeze.py` + `tools/replay/holdout.py`.
+
+```
+   wrote backend/tools/replay/params/frozen.json
+     sha  : ecca2add0ff4129c8d43a47d2ea99e90c481c4e0bf47a6f3692367de1ddf2ae2
+     keys : 177  {'system_config': 150, 'source_default': 27}
+     backend/intraday/strategies            6695d6b952559eb0560733cbb4fb7955fcb7a872
+     backend/intraday/exit_policy.py        5f54e6a557349bfdf3235e1bb237e5dc35c53526
+     backend/control/position_lifecycle.py  95541123ca80582d07f8081c29fc4115d15830e7
+     backend/analysis/risk_model.py         ef5d80e79bb63438e1a0f6569d7006084b76ebf5
+     backend/intraday/scanner.py            c4177dd3eee381577adb3b12a50bae057a2a9e3e
+```
+
+**The seam is one dict, not four patched functions.** `cfg`, `cfg_bool`,
+`cfg_int` and `cfg_float` all resolve through `config._sys_config`
+(`config.py:369-401`), so `frozen_config` substitutes that dict and restores it
+on exit. No engine is modified, wrapped, or aware of it.
+
+**27 of the 177 keys are not in `system_config` at all** — `cfg` returns the
+caller's literal, so the freeze records the RESOLVED value with its source.
+Freezing only the table would have left those 27 free to move whenever someone
+edited a default inside an engine, silently changing a "frozen" replay.
+
+Refusals, each demonstrated REFUSING before it was believed:
+
+```
+A. clean tree, committed params, no prior result
+     all preconditions met                                          EXIT=0
+
+B. R3  a result already exists for this params SHA
+     [X] R3 a holdout result already exists for params ecca2add0ff4
+         (holdout_ecca2add0ff4.json, run 2026-06-30T18:00:00+05:30)
+         — the holdout is ONE look, and this would be the second     EXIT=1
+
+C. R1  dirty working tree
+     [X] R1 working tree is dirty (1 path(s)):
+         M backend/intraday/strategies/squeeze.py                    EXIT=1
+
+D. R2  params tracked but EDITED since commit
+       (vce_max_contraction_ratio 0.65 -> 0.99, no re-freeze)
+     [X] R1 working tree is dirty (1 path(s)): M .../frozen.json
+     [X] R2 frozen.json differs from its committed version
+         (HEAD 9fd14542e7b2, disk aa39ec380f1a)
+     [X] R2 recorded sha ecca2add0ff4 does not match its own contents
+         (5d7dc0b5fdb9) — the file was edited by hand                EXIT=1
+```
+
+D catches the quiet tweak twice over, by two independent routes — the git blob
+comparison and the file's own self-hash.
+
+**F-31 — the freeze could not have worked, because `frozen.json` was
+unstageable.** The root `.gitignore` blanket-ignores `*.json` as a credentials
+guard (line 19). `backend/tools/replay/.gitignore` carried a paragraph saying
+"params/ is DELIBERATELY NOT ignored ... ignoring it would silently disable that
+gate" — **as a comment, with no rule under it.** So R2, "the parameters must
+resolve to a committed git object", was unsatisfiable by any sequence of
+actions. A gate that cannot PASS is the same defect as one that cannot fail, and
+this project has now shipped one of each. Negation rules added and proven with
+`git check-ignore -v`. The root rule is untouched everywhere else, and the
+narrow exemption is paired with a refusal: `freeze.build()` aborts on any key
+whose `system_config` row is marked `is_secret`, because this file is committed.
+
+**F-32 — `config.get_system_config()` is an unpaged `.select("key,value")`** —
+the F-19 idiom on the reader every `cfg()` call in the system goes through. 510
+rows today, under the 1000 cap, so nothing is truncating. But a freeze silently
+missing 400 keys would resolve every one of them to a source default and look
+entirely normal. `freeze.build()` now counts the returned rows against an exact
+server count and refuses. **The production reader is recorded, not fixed** — it
+is out of this stage's scope.
+
+### 6 — WHAT WAS BUILT OR CHANGED
+
+```
+ NEW  tools/replay/conventions.py   the evaluation-point generator + 5 conventions
+ NEW  tools/replay/freeze.py        §8 freeze, 177 keys, 5 code SHAs, secret guard
+ NEW  tools/replay/holdout.py       preflight R1/R2/R3, one-look enforcement
+      tools/replay/contexts.py      `upto` split from `now`; apply_forming_bar
+      tools/replay/detect.py        takes a Convention; Detection carries `look`
+      tools/replay/universe.py      scan_date_for_session; skip_flagged honoured
+      tools/replay/verify_known_day.py  residual classification, --sweep, bps
+      tools/replay/.gitignore       the negation that makes R2 satisfiable
+      tests/test_replay_harness.py  15 -> 25 checks
+```
+
+**No live engine, gate, exit rule, config key, migration or `system_config` row
+was touched.** `python -m tools.verify`: **all 541 checks passed across 60
+modules** (was 531).
+
+### 7 — NOT DONE
+
+- **The harness is still NOT TRUSTED and no window was scored.** 79.7% against
+  85%, 18 extras against 0. `tools/replay/holdout.py` refuses to score anything
+  for that reason and says so in its own output.
+- **F-27 not investigated** — out of scope for this session by instruction. The
+  outcome check re-ran unchanged: 2263 of 2289 (98.9%), all 26 residuals
+  reproducing exactly under a whole-day window, **0 unexplained**.
+- **The one-look record is local.** `results/holdout_<sha>.json` is caught by the
+  root `*.json` ignore, so deleting it restores the second look and nothing in
+  git would show that it happened. R3 is a filesystem guarantee, not an audited
+  one.
+- **F-30's correction was not applied to the swing arm.** `swing_inputs.py`
+  still runs with empty ASM/F&O sets, correctly — that path reads `safety_lists`,
+  which genuinely has no history.
+- **The 13 `engine_silent_on_a_reachable_price` misses are unexplained.** Config
+  drift and code drift are both measured at zero, so the cause is elsewhere —
+  most likely the remaining scalar differences (`session_volume` diverges 4.8%)
+  or the stored LTP matching a nearby close by coincidence rather than because
+  the replay stood at that instant. Not separated.
+
+### 8 — COULD NOT DETERMINE
+
+- **Whether sub-minute reproduction would clear both bars**, because sub-minute
+  history does not exist to test it with. `ltp_bracket` shows 92.9% is reachable
+  from the bar envelope; it does not show that a real tick path would have
+  produced those same keys, and it produced 23 detections that exist only at a
+  sub-bar look.
+- **Whether the 3 `symbol_absent_from_live_record` extras are genuine
+  permissiveness** or names the daemon's bench never reached that day. The live
+  watch list is not recorded anywhere, so it cannot be reconstructed.
+- **Whether 2026-08-14 is representative.** One session. The entry-versus-bar-
+  close measurement costs a full bar fetch per session and was not extended.
+
+**Recommends:** the detection arm cannot be verified against the live record at
+minute resolution, and no amount of convention design changes that — so either
+(a) record ticks forward from the daemon and re-verify on a session captured
+that way, or (b) scope the replay to questions that do not depend on reproducing
+individual detections, and say plainly in every output that per-engine detection
+counts are biased low for long engines and unusable for VCE. **Q1 (the swing
+target sweep) is untouched by all of this** — it replays plans, not intraday
+detections — and is the one arm that could proceed on the current harness.
+
+**Gate: BLOCKED, for a now-diagnosed reason.** The harness reproduces the
+outcome rule with zero unexplained residuals across 2,289 rows and reproduces
+79.7% of stored detections against a pre-registered 85%. The shortfall is
+measured, not guessed: 30 of 43 misses are prices that exist only inside a
+minute, cadence is worth zero, VWAP is worth zero, and every convention that
+clears the bar does so by reading a price before it printed. **The bar was not
+moved.**
+
+---
