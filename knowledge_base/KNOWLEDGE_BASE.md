@@ -1,11 +1,17 @@
 # TradeOS Knowledge Base — Living Document
 
-**Last updated:** 13 August 2026 (6 sessions of evidence, plus direct
+**Last updated:** 14 August 2026 (7 sessions of evidence, plus direct
 `final_score` and `implied_rr` tercile measurements against the full
 historical sample)
 **Source reviews:** `daily/2026-08-06.md`, `daily/2026-08-07.md`,
 `daily/2026-08-10.md`, `daily/2026-08-11.md`, `daily/2026-08-12.md`,
-`daily/2026-08-13.md`
+`daily/2026-08-13.md`, `daily/2026-08-14.md`
+
+**18-Aug note:** this file (and `daily/2026-08-13.md`) briefly reverted to
+its 12-Aug state — this branch's history changed underneath the review
+session between the 13-Aug and 14-Aug reviews. Both were reconstructed
+from the reviewing session's own record and re-applied; content below is
+intact, not reconstructed-and-guessed.
 
 Read this before starting a new day's review. Update it after, per the
 workflow in `README.md`. An item's confidence should track its sample
@@ -53,8 +59,30 @@ contradiction.)*
   **12-Aug: VIJAYA (swing), fifth occurrence.** Peaked +0.92R (+7.40%),
   gave back exactly 50%, exited +0.45R/+3.65%. n=3 occurrences (2
   sessions) → n=5 occurrences (4 sessions). Confidence unchanged at High.
-  **13-Aug: no new evidence** — zero triggers (nothing cleared 0.5R MFE
-  that also reversed). Explicitly checked and empty.
+  **13-Aug: no new evidence** — zero triggers. Explicitly checked and
+  empty.
+  **14-Aug: extended to SHORT positions for the first time.** TMPV
+  (+0.955R), CONCOR (+0.278R), SWIGGY (+0.988R) — all SDN, all SHORT, all
+  `GAVE_BACK_THE_MOVE`. Every prior confirmation had been LONG. n=5
+  occurrences (4 sessions) → **n=8 occurrences (5 sessions)**. Confidence
+  stays High — this strengthens the existing rule across a new dimension
+  rather than changing it.
+
+- **The stall exit closes a swing position that peaked and then reversed
+  without ever earning its own conviction, rather than letting the slot
+  sit — PROMOTED from Ideas Requiring More Evidence, 14 Aug.**
+  Sessions: 10 Aug (n=1 — CIPLA: 11 sessions, never cleared 0.5R, exited
+  +0.089R rather than sit dead). 14 Aug (n=1 — MANAPPURAM: 10 sessions,
+  peaked +0.43R/+2.56%, reversed to −0.75R; guard fired correctly at
+  −0.69R). n=2 confirming sessions — the bar this item's own "needed
+  before any verdict" note set on 10 Aug.
+  Confidence: Medium-high — two live confirmations, both the mechanism
+  correctly recognizing a stalled-then-reversing position, not just a
+  stalled one. MANAPPURAM's case additionally surfaced a real execution-
+  timing finding (see Ideas Requiring More Evidence) that is about
+  EXECUTION, not the decision to exit, so it doesn't weaken this rule.
+  Next evidence needed: a third confirmation would move this toward
+  High, matching the give-back guard's own path.
 
 - **`final_score` does not predict forward R within the CONTINUATION swing
   family, on the full resolved sample measured so far.**
@@ -163,8 +191,14 @@ contradiction.)*
   failure**.
   Confidence: Medium → **Medium-high**. One more clean session would
   support promoting this to Validated Rules.
-  **13-Aug: no new evidence** — zero swing exits, no order attempted.
-  Stays "2 successes, 1 failure." Explicitly checked and empty.
+  **13-Aug: no new evidence** — zero swing exits. Stays "2 successes, 1
+  failure."
+  **14-Aug: no new evidence for THIS hypothesis specifically.** A
+  different execution failure appeared today (a pre-market-triggered
+  stall exit blocked repeatedly by `MARKET_CLOSED`, not the IP allowlist)
+  — tracked as its own new item in Ideas Requiring More Evidence rather
+  than counted toward or against this one. Stays "2 successes, 1
+  failure," Medium-high confidence.
 
 - **The swing allocator's "slots spent" decline reflects real slot
   scarcity — DEMOTED from Validated Rules, 7 Aug.**
@@ -190,8 +224,11 @@ contradiction.)*
   VIJAYA's give-back exit; day ended with the counter matching reality
   (2/3 used). 3 of 4 sessions now clean. Confidence unchanged at Medium —
   majority-clean still doesn't retire the open 7-Aug investigation.
-  **13-Aug: no new evidence** — zero qualifying candidates, nothing for
-  the allocator to accept or decline. Explicitly checked and empty.
+  **13-Aug: no new evidence** — zero qualifying candidates. Explicitly
+  checked and empty.
+  **14-Aug: one more clean data point.** Three entries (SUMICHEM,
+  TRAVELFOOD, HINDCOPPER) landed as slots freed, count matched reality.
+  Confidence unchanged at Medium.
 
 ---
 
@@ -215,20 +252,14 @@ review knows to keep watching, not to re-derive from scratch.)*
   real constraint — noted, not yet a separate tracked claim. Sample
   unchanged at ~8-9 legs.
   **13 Aug: first close in three sessions.** TATACHEM (+0.06R,
-  `TIME_EXIT`) — small, but real. ~8-9 legs, 2 wins → **~9-10 legs, 3
-  wins**.
+  `TIME_EXIT`). ~8-9 legs, 2 wins → **~9-10 legs, 3 wins**.
+  **14 Aug: biggest single-session sample by far.** 9 more trades, 4
+  wins (TMPV, CONCOR, SWIGGY, BAJFINANCE) vs 5 losses. ~9-10 legs, 3 wins
+  → **~18-19 legs, 7 wins** — approaching the `MIN_SAMPLE=20` floor for
+  the first time.
   Needed before any verdict: ~20 resolved outcomes across ≥10 sessions
   (this project's own `MIN_SAMPLE`/`MIN_SESSIONS` standard from
   `tools/weekly_review.py`).
-
-- **CIPLA-style stall exit (swing, 11 sessions never clearing 0.5R).**
-  Sessions: 10 Aug (n=1 — CIPLA, exited +0.089R rather than let a dead
-  slot sit).
-  Needed before any verdict: a second confirming session, same bar the
-  give-back guard cleared on its way to Validated.
-  **12 Aug: no new evidence** — zero `EXIT_STALL` events. Explicitly
-  checked and empty, not skipped. Stays at n=1.
-  **13 Aug: no new evidence.** Stays at n=1.
 
 - **Whether `swing_max_new_per_day` is too conservative.**
   Sessions: 6 Aug (n=1 — slot count was the binding constraint on 11 of 17
@@ -242,6 +273,19 @@ review knows to keep watching, not to re-derive from scratch.)*
   sessions now for "does a soft regime empty the candidate pool," a
   separate question from the original one about whether the cap itself is
   too tight.
+
+- **Pre-market evaluation producing an exit decision that must wait for
+  market open, adding execution slippage.**
+  Sessions: 14 Aug (n=1 — MANAPPURAM's stall exit fired 09:00:41 IST, 14
+  minutes before market open, diagnosing −0.69R; the automated SELL
+  retried 56 times against `MARKET_CLOSED` until finally executing at
+  09:16:08 at −0.75R, roughly 0.06R worse than the trigger moment).
+  Distinct from the IP-allowlist hypothesis: self-resolving the moment
+  the market opens, no manual intervention needed, small cost — but the
+  same family of risk (a correct decision, delayed execution, real if
+  small cost).
+  Needed before any verdict: whether this recurs, and how large the
+  slippage typically runs.
 
 - **Small CNC clip sizes turning gross wins into net losses on fixed
   charges.**
@@ -343,11 +387,19 @@ still supports the bet, rather than re-deriving the original decision.)*
   made, with no additional evidence either direction — worth a direct
   look the day any MOM position finally resolves.
   **13 Aug: still zero resolved, priority carried forward.** Zero swing
-  exits means zero new MOM/RVS/VCE/RNG evidence for a second consecutive
-  reviewed session. The 12-Aug priority — give the next resolved MOM/RVS
-  position its own explicit look, not just a scorecard line — remains
-  open and unaddressed; restating it here so it isn't lost to a run of
-  quiet sessions.
+  exits for a second consecutive reviewed session — restated so it isn't
+  lost to a run of quiet sessions.
+  **14 Aug: first three resolved outcomes since promotion.**
+  MANAPPURAM/MOM: −0.75R (peaked +0.43R, stalled 10 sessions, reversed —
+  correctly caught by the newly-promoted stall exit, with a real if minor
+  execution-timing footnote, see Ideas Requiring More Evidence).
+  PPLPHARMA/MOM+SEC: +0.863R (14 sessions, peaked 12.49%, banked 8.05%).
+  AIIL/MOM: +0.377R (2 sessions). **2 wins, 1 loss (67%) on n=3** — better
+  than MOM's 50% pre-promotion win rate, but n=3 is far short of anything
+  actionable. Encouraging, not confirming. VCE/RNG: no new closes.
+  Next: this thread no longer needs restating as "still zero" every
+  session — it has real data now and can return to normal per-session
+  tracking rather than standing as the review's top priority.
 
 ---
 
