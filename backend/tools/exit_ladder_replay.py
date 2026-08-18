@@ -82,7 +82,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import get_supabase, cfg_float, today_ist
+from config import get_supabase, cfg_float, today_ist, fetch_all
 from intraday import direction as D
 
 # IMPORTED, NOT REDEFINED — 10-Aug-2026. See tools.exit_audit's own header for
@@ -113,20 +113,13 @@ GIVEBACK_KEYS = {
 
 
 def _rows(sb, since: str, framework: str = "INTRADAY") -> list[dict]:
-    out, off = [], 0
-    while True:
-        page = (sb.table("closed_positions")
-                .select("symbol,entry_price,direction,r_multiple,"
-                        "exit_reason,high_water_mark,planned_stop_at_entry,"
-                        "framework,entry_date")
-                .eq("framework", framework)
-                .gte("entry_date", since)
-                .range(off, off + PAGE - 1).execute().data) or []
-        out += page
-        if len(page) < PAGE:
-            break
-        off += PAGE
-    return out
+    # SORTED PAGING — closed_positions is a live book that only grows.
+    return fetch_all(lambda: sb.table("closed_positions")
+                     .select("symbol,entry_price,direction,r_multiple,"
+                             "exit_reason,high_water_mark,"
+                             "planned_stop_at_entry,framework,entry_date,id")
+                     .eq("framework", framework)
+                     .gte("entry_date", since), page=PAGE)
 
 
 def replay(days: int, giveback_pct: float, giveback_min_r: float, sb=None,

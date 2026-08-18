@@ -269,6 +269,10 @@ def report(sb) -> int:
     # rows out of 38,683 that exist. A verdict on "all of them" computed from
     # an arbitrary subset is the same class of defect as the truncation it was
     # written to avoid. config.fetch_all orders by a unique column.
+    #
+    # Independently re-derived on diagnostic/rescore-complete-prices, merged
+    # 18-Aug-2026, against a measurement of the same table at 178,545 rows —
+    # the largest paged read in the codebase. Same fix, same primitive.
     from config import fetch_all
     rows = fetch_all(lambda: sb.table("intraday_quote_parity")
                                .select("symbol,field,live_value,fetched_value,diff_pct,ts"))

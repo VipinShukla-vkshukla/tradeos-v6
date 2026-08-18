@@ -55,7 +55,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import TOTAL_CAPITAL, capital_for, cfg, cfg_float, get_supabase, today_ist
+from config import (TOTAL_CAPITAL, capital_for, cfg, cfg_float, fetch_all,
+                    get_supabase, today_ist)
 from tools.weekly_review import (MIN_SAMPLE, MIN_SESSIONS, _RUN_ID,
                                  _tradeable_floor, dedupe_setups)
 
@@ -470,14 +471,14 @@ def _write(sb, recs: list[Rec], kind: str) -> int:
 
 def _load_setups(sb, days: int) -> list:
     since = (today_ist() - timedelta(days=days)).isoformat()
-    rows, off = [], 0
-    while True:
-        chunk = (sb.table("intraday_setups").select("*").gte("trade_date", since)
-                   .range(off, off + 999).execute().data or [])
-        rows += chunk
-        if len(chunk) < 1000:
-            break
-        off += 1000
+    # SORTED PAGING — see engine_scorecard._fetch. Measured on the live book
+    # 15-Aug-2026 over this 14-day window: trial 1 returned 7864 rows / 5000
+    # distinct, trials 2 and 3 returned 7864/7864. `dedupe_setups` collapses to
+    # one row per (symbol, engine, day), so a duplicate-laden read does not
+    # inflate the count — it DROPS the 2,864 distinct setups that never
+    # arrived, and the advisor then recommends against a book it cannot see.
+    rows = fetch_all(lambda: sb.table("intraday_setups").select("*")
+                     .gte("trade_date", since))
     return [r for r in dedupe_setups(rows) if r.get("outcome")]
 
 
