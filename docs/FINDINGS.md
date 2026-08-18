@@ -8488,3 +8488,174 @@ the alternative is the 17-Aug state.
 the reprice pass, and no evening pipeline has run under frozen levels. Both need
 one live session before they are trusted.
 
+## 2026-08-18 — F-33 (change, intraday stop geometry + per-engine priors) — eight engines falsified their own stop whenever the structure was unaffordable, and it cost 0.5348R per affected trade across 798 of 1,766 rows. Refusing instead of clamping moves the measured book from −0.2403R to +0.0154R gross. Separately: engines were priced on their FAMILY's record (GAP +0.587R scored on ORB's −0.534R), and the prior builder never fetched the column its keying reads. SDN's confidence is inversely related to its own outcomes
+
+### 1 — THE OPERATOR'S QUESTION, AND WHY THE ANSWER IS "A, NOT B"
+
+Asked why `alloc_edge_absolute_floor` refuses every intraday proposal on a new
+system, and whether the prior feeding it is wrong.
+
+The floor is not negative. `alloc_edge_absolute_floor` is `0.0`. The number in
+the warning line (~−0.80) is `base`, the unclamped percentile of the arrival
+population, confirmed independently by `tools.hurdle_population_audit
+--framework INTRADAY`: raw p75 −0.7726.
+
+The population is genuinely negative, and the resolver is sound — 1-minute
+bars, direction-aware, pessimistic when stop and target fall inside one bar.
+Joined against the 66 closed positions where both exist, the naive resolver and
+the real exit ladder agree to 0.028R in the mean (−0.071 vs −0.043), so the
+prior is not measuring a strategy the book does not trade.
+`tools.expectancy_ledger` states it directly:
+
+    INTRADAY / MIS (n=62)
+      gross R    mean -0.131 +/-0.089     <- indistinguishable from zero
+      friction   mean +0.126 +/-0.005
+      NET R      mean -0.257 +/-0.091     <- significantly negative
+
+The engines have no measurable gross edge and friction converts that into a
+real loss. The allocator was correct. The defect was upstream of it.
+
+### 2 — THE STOP WAS BEING FALSIFIED, AND THAT IS WHERE THE MONEY WENT
+
+Eight engines carried the same four lines: find a structural stop, then, if it
+is wider than `*_max_risk_pct`, move the stop to a price the structure never
+named — usually inside the range that created the setup.
+
+Over 1,766 TAKEN-and-resolved rows, split on whether the stop survived:
+
+    stop pinned to the cap   n=798   gross mean R  -0.5348
+    structural stop kept     n=968   gross mean R  +0.0154
+    whole book              n=1766   gross mean R  -0.2403
+
+    pinned vs structural, per engine
+    GAP   139 @ -0.235   vs   144 @ +0.587
+    VWR    23 @ -0.245   vs   148 @ +0.123
+    VCE    30 @ -0.598   vs   120 @ -0.175
+    ORB   604 @ -0.631   vs   186 @ -0.534
+
+GAP is the clean experiment: one engine, one universe, one set of sessions,
+separated only by whether its own stop survived. 0.82R.
+
+`base.risk_from_structure()` refuses instead of clamping.
+`intraday_stop_cap_mode=tighten` reverts it. Commit 4f859cd.
+
+### 3 — WHAT WAS DELIBERATELY NOT SHIPPED
+
+**The ATR-anchored stop.** No row in `intraday_setups` stores ATR or the
+pre-cap stop, so an ATR-multiple rule cannot be calibrated from anything on
+disk, and "refuse vs size down" cannot be settled either. Instrumentation is
+owed before this question is answerable at all.
+
+**A minimum stop distance.** The 0.0-0.6% band stops out 84.3% of the time
+(n=172) and every engine in it is negative — but that band is populated
+entirely by the four engines with the tightest caps (PBK 0.80, PDL 0.80, RNG
+0.70, VCE 1.00), so this data cannot separate "stop too tight" from "engine is
+bad". `intraday_min_risk_pct` ships inert.
+
+**A target-distance filter.** The apparent effect does not survive the stop
+fix. On structural-stop rows only, every filter makes the book worse:
+
+    refuse target > 1.5% away   keeps 335/794   meanR -0.092
+    refuse target > 2.0% away   keeps 567/794   meanR -0.066
+    refuse target > 2.5% away   keeps 782/794   meanR -0.054
+    no filter                         794       meanR -0.051
+
+What it removes is near-flat timeouts. The raw-data signal lived in the capped
+rows.
+
+### 4 — AN ENGINE WAS PRICED ON ITS FAMILY'S RECORD, AND THE BUILDER NEVER FETCHED THE COLUMN ITS KEYING READS
+
+`registry.FAMILIES` merges GAP and PDL into ORB, PBK into VWR. Its own comment
+calls that reversible reporting. It became PRICING because `_prior_for()` looks
+up `p.source`, which `from_intraday` sets to the family. GAP (+0.587R) was
+scored on ORB's record (−0.534R) — the difference between clearing a 0.0 floor
+and never clearing it, decided by another engine's evidence.
+
+Priors are now keyed per engine with the family as fallback. Fixing that
+surfaced a second defect: `intraday_priors`' select string did not fetch
+`meta`, so `_engine_of` fell back to `strategy` — which since the merge holds
+the FAMILY. Every per-engine key was built from pre-merge July rows while
+August filed silently under its family. A key nobody fetched: one word long,
+invisible in every log, and the reason the first version of this change was
+entirely inert.
+
+Asserted through the CONSUMER's lookup, never by reading the dict:
+
+    GAP -> INTRADAY/GAP  n= 42     PDL -> INTRADAY/PDL  n=111
+    ORB -> INTRADAY/ORB  n= 85     PBK -> INTRADAY/PBK  n=204
+    VWR -> INTRADAY/VWR  n= 61     SDN -> INTRADAY/SDN/SHORT  n=69
+    GDB -> INTRADAY/ALL  n=256     (GDB n=2, correctly falls through)
+
+### 5 — SDN'S CONFIDENCE RUNS BACKWARDS, AND CONFIDENCE IS THE SELECTOR
+
+All 265 TAKEN-and-resolved SDN rows, bucketed by the confidence assigned at
+detection:
+
+    confidence      n    STOP%    TGT%   mean gross R
+    0.55 - 0.62    33    15.2%   42.4%      +0.769
+    0.62 - 0.66    44     9.1%   38.6%      +0.880
+    0.66 - 0.70    68    36.8%   16.2%      +0.326
+    0.70 - 0.75    79    30.4%   27.8%      +0.411
+    0.75 +         41    63.4%   12.2%      -0.273
+
+`registry.evaluate_all` sorts by `-s.confidence`, so the book funded SDN's
+worst detections first — and SDN receives most of the paper book's slots
+through `floor_only_rank`. The operator reported SDN "fires but does not pick
+the right trades" before this was measured; that was a correct read of the book
+from the outside.
+
+`intraday_short_max_confidence` ships INERT. One cut, one engine, 41 rows
+carrying the decision, no out-of-sample confirmation. The real repair is to the
+confidence FORMULA — a score that predicts its own failure is mis-specified,
+not merely mis-thresholded — which needs the per-condition split
+(VWAP-rejection vs trap vs breakdown) this table does not separate.
+
+### 6 — THE GIVE-BACK GUARD WAS VALIDATED, NOT CHANGED
+
+Migration 059 armed it at 50% / min 0.5R by borrowing SWING's number — which
+`exit_policy.py`'s own comment said not to do. Calibrated now on the 49
+intraday positions carrying usable excursion:
+
+    peak reached    n   final meanR   median kept   ended negative
+    0.0-0.5R       26      -0.429        -238%          22/26
+    0.5-1.0R       10      -0.152         -28%           6/10
+    1.0-1.5R        7      +0.691        69.1%           1/7
+    1.5-2.0R        4      +0.973        59.1%           0/4
+    2.0R+           2      +1.746        80.2%           0/2
+
+50% is well placed: winners peaking 1.0-2.0R keep 59-69%, so the guard does not
+clip them, while 30% would. No change made. The trail (`trail_after_r=1.5`) was
+left alone — only 11 trades ever exceeded a 1.0R peak, and below 2R the
+give-back guard already binds tighter than the trail.
+
+### 7 — COULD NOT DETERMINE
+
+- **Why SDN detections exploded on 12-Aug** — 88-102 symbols per session since,
+  against 25-30 before. SDN now fires on essentially the whole universe daily.
+  Not investigated; it dominates the paper book through `floor_only_rank`.
+- **Whether the 9 INTRADAY trades closed as CNC** (NET R -1.110, friction
+  1.451R) were a square-off failure or product tagging. The operator reports
+  this is since fixed and new trades record as MIS; the historical rows remain
+  and still carry the loss.
+- **Whether refusing a capped setup beats sizing down.** The counterfactual for
+  refusal is on disk — those rows ARE the -0.5348R population. The
+  counterfactual for a widened stop is not, and cannot be without
+  instrumentation.
+- **Whether the per-engine priors survive out of sample.** They are built from
+  rows dominated by the OLD geometry and will move as structural-stop trades
+  accumulate. Nothing in this entry is a forward result.
+
+### 8 — NOT DONE, AND ONE PROCESS FINDING
+
+Instrumentation (`atr_pct_daily`, pre-cap structural stop, target distance at
+detection) is designed and not written. Migrations 082 and 077 remain
+outstanding. `quote_parity` is red at 274 of 70,698 comparisons against a check
+with no tolerance band, and is another session's active work area.
+
+**Recorded because it destroyed work twice.** A second session was committing
+to this repository concurrently — it committed onto this session's branch,
+cherry-picked to `main`, and reset, discarding the whole change set on two
+occasions roughly fifteen minutes apart. The set was rebuilt from scripts held
+outside the repo and committed immediately the third time. Two agents in one
+working tree with no lock is not a merge problem, it is a data-loss problem,
+and nothing in this repository currently prevents it.
