@@ -1593,7 +1593,14 @@ _SHORT_SPINE = [
     ("invalidation",     "intraday/exit_policy.py",        "D.is_better_price(ref, breached, d)"),
     ("cost model",       "intraday/cost_model.py",         "D.reward_per_share(entry_price, target_price, direction)"),
     ("allocator scorer", "allocation/scoring.py",          "D.validate(entry, stop, target, direction)"),
-    ("priors",           "allocation/scoring.py",          'f"{key}/SHORT"'),
+    # 18-Aug-2026: the keying became a LIST comprehension when priors gained a
+    # per-engine key alongside the family one (`keys = [f"{k}/SHORT" ...]`), so
+    # the old `f"{key}/SHORT"` literal stopped matching while the behaviour was
+    # unchanged. A marker that tracks a variable name rather than the property
+    # it stands for fails on a rename; this one is still a grep, so it is still
+    # weak — `tests/test_allocator_direction.py` and `test_engine_own_prior.py`
+    # are what actually prove a short resolves to INTRADAY/SDN/SHORT.
+    ("priors",           "allocation/scoring.py",          '/SHORT" for k in keys'),
     ("outcome resolver", "intraday/outcomes.py",           "hi >= stop, lo <= tgt"),
     # `dirn`, not `d`, since 15-Aug-2026 — and the rename is the POINT, not
     # cosmetic. `d` was already bound to the TRADE DATE at the top of
