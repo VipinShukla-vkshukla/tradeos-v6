@@ -52,6 +52,7 @@ from datetime import datetime, timedelta
 from config import IST
 from intraday.session import PRIME
 from intraday.strategies.base import Bar, SymbolContext, confirmation_pct
+from tests import cfg_ctx
 
 
 # ── confirmation_pct(), pure ─────────────────────────────────────────────
@@ -138,10 +139,18 @@ def test_orb_produces_no_setup_on_a_two_paise_break_but_does_on_a_real_one():
     bars = _range_bars(1066.40, 1081.80)
     common = dict(atr_pct_daily=3.0, prev_high=1000.0, rs_vs_index_pct=0.4)
 
-    quote = eng.evaluate(_ctx("SBIN", bars, 1082.00, **common), PRIME)
-    assert quote is None, "a 0.02% break must not become a Setup"
+    # ORB's stop sits below the RANGE LOW, so its risk is always at least the
+    # range width -- 1.44% here, past orb_max_risk_pct=1.20. Until 18-Aug the
+    # engine clamped the stop and fired anyway; base.risk_from_structure now
+    # refuses instead. This module tests BREAK CONFIRMATION, so the risk cap is
+    # lifted to isolate that one variable. The production consequence (ORB
+    # cannot honestly fund a break of a range this wide) is deliberate and is
+    # pinned by tests/test_structural_stop.py, not waved away here.
+    with cfg_ctx({"orb_max_risk_pct": "5.0"}):
+        quote = eng.evaluate(_ctx("SBIN", bars, 1082.00, **common), PRIME)
+        assert quote is None, "a 0.02% break must not become a Setup"
 
-    real = eng.evaluate(_ctx("SBIN", bars, 1086.00, **common), PRIME)
+        real = eng.evaluate(_ctx("SBIN", bars, 1086.00, **common), PRIME)
     assert real is not None, "a 0.39% break of a 1.44% range must still trade"
     assert real.direction == "LONG"
     assert real.coherent()[0]
@@ -167,8 +176,16 @@ def test_orb_confidence_no_longer_rewards_the_weakest_break():
     just_confirmed = 1081.80 * (1 + (min_break + 0.02) / 100.0)
     nearly_chased = 1081.80 * (1 + (max_chase - 0.02) / 100.0)
 
-    a = eng.evaluate(_ctx("SBIN", bars, just_confirmed, **common), PRIME)
-    b = eng.evaluate(_ctx("SBIN", bars, nearly_chased, **common), PRIME)
+    # ORB's stop sits below the RANGE LOW, so its risk is always at least the
+    # range width -- 1.44% here, past orb_max_risk_pct=1.20. Until 18-Aug the
+    # engine clamped the stop and fired anyway; base.risk_from_structure now
+    # refuses instead. This module tests BREAK CONFIRMATION, so the risk cap is
+    # lifted to isolate that one variable. The production consequence (ORB
+    # cannot honestly fund a break of a range this wide) is deliberate and is
+    # pinned by tests/test_structural_stop.py, not waved away here.
+    with cfg_ctx({"orb_max_risk_pct": "5.0"}):
+        a = eng.evaluate(_ctx("SBIN", bars, just_confirmed, **common), PRIME)
+        b = eng.evaluate(_ctx("SBIN", bars, nearly_chased, **common), PRIME)
     assert a is not None and b is not None
     assert min_break < midpoint < max_chase
     assert a.confidence >= b.confidence, (

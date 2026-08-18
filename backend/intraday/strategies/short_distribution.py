@@ -95,6 +95,50 @@ from intraday.strategies.base import Setup, SymbolContext
 NAME = "SDN"
 
 
+def confidence_is_usable(conf: float) -> bool:
+    """
+    SDN's own confidence runs BACKWARDS against its outcomes (18-Aug-2026).
+
+    Measured on all 265 TAKEN-and-resolved SDN rows, bucketed by the confidence
+    the engine assigned at detection:
+
+        confidence      n    STOP%    TGT%   mean gross R
+        ------------------------------------------------
+        0.55 - 0.62    33    15.2%   42.4%      +0.769
+        0.62 - 0.66    44     9.1%   38.6%      +0.880
+        0.66 - 0.70    68    36.8%   16.2%      +0.326
+        0.70 - 0.75    79    30.4%   27.8%      +0.411
+        0.75 +         41    63.4%   12.2%      -0.273
+
+    The top bucket is the only losing one and it stops out four times as often
+    as the bottom one. The ordering is monotone from 0.62 upward.
+
+    IT IS WORSE THAN A WASTED FIELD, BECAUSE CONFIDENCE IS A SELECTOR.
+    `registry.evaluate_all` sorts by `-s.confidence` and `evaluate_intraday_
+    setups` ranks on it, so the detections SDN is most sure about are the ones
+    preferentially funded -- and SDN receives most of the paper book's slots
+    through `floor_only_rank`. The book was not ignoring a bad signal; it was
+    using it upside down. That is the mechanism behind the operator's own
+    observation that SDN "fires but does not pick the right trades", which was
+    a correct read of the book from the outside, before this was measured.
+
+    SHIPPED INERT, AND THAT IS NOT HEDGING. This is one cut, on one engine,
+    found by scanning buckets in a single session, with 41 rows in the bucket
+    that carries the decision, and no out-of-sample confirmation. The honest
+    form of a finding that strong and that thin is a switch the operator arms
+    deliberately -- the same way `intraday_giveback_pct` waited for its own
+    calibration rather than borrowing SWING's. Set
+    `intraday_short_max_confidence` to 0.75 to act on it.
+
+    The right long-term repair is to the confidence FORMULA -- a score that
+    predicts its own failure is mis-specified, not merely mis-thresholded --
+    but that needs the per-condition split (VWAP-rejection vs trap vs
+    breakdown) this table does not separate.
+    """
+    cap = cfg_float("intraday_short_max_confidence", 0.0)
+    return cap <= 0 or conf <= cap
+
+
 class ShortDistribution:
     """Supply overwhelming demand, in three recognisable shapes."""
 
@@ -190,6 +234,8 @@ class ShortDistribution:
         if vr and vr > 1.2:
             conf += 0.06
 
+        if not confidence_is_usable(round(min(conf, 0.92), 2)):
+            return None            # see confidence_is_usable()
         return Setup(
             symbol=ctx.symbol, strategy=NAME, direction="SHORT",
             entry=round(ctx.ltp, 2), stop=stop, target=target,
@@ -265,6 +311,8 @@ class ShortDistribution:
         if ctx.rs_vs_index_pct is not None and ctx.rs_vs_index_pct < 0:
             conf += 0.04
 
+        if not confidence_is_usable(round(min(conf, 0.94), 2)):
+            return None            # see confidence_is_usable()
         return Setup(
             symbol=ctx.symbol, strategy=NAME, direction="SHORT",
             entry=round(ctx.ltp, 2), stop=stop, target=target,
@@ -309,6 +357,8 @@ class ShortDistribution:
         if chg < -1.0:
             conf += 0.06
 
+        if not confidence_is_usable(round(min(conf, 0.90), 2)):
+            return None            # see confidence_is_usable()
         return Setup(
             symbol=ctx.symbol, strategy=NAME, direction="SHORT",
             entry=round(ctx.ltp, 2), stop=stop, target=target,

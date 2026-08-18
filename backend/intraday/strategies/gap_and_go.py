@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config import cfg_float, cfg_int
 from intraday.session import PRIME
-from intraday.strategies.base import Setup, SymbolContext
+from intraday.strategies.base import Setup, SymbolContext, risk_from_structure
 
 
 class GapAndGo:
@@ -95,13 +95,15 @@ class GapAndGo:
 
         # Stop below the opening range low — below the gap itself is usually too
         # far to size, and the range low is the level actually being defended.
-        stop = or_low * (1 - cfg_float("gap_stop_buffer_pct", 0.10) / 100.0)
-        max_risk = cfg_float("gap_max_risk_pct", 1.30)
-        if (ctx.ltp - stop) / ctx.ltp * 100.0 > max_risk:
-            stop = ctx.ltp * (1 - max_risk / 100.0)
-        risk = ctx.ltp - stop
-        if risk <= 0:
+        # The stop is STRUCTURAL and stays structural. When it is wider than
+        # this engine can afford the setup is REFUSED, not re-priced onto a
+        # level the structure never named -- base.risk_from_structure has the
+        # measurement (pinned -0.5348R vs structural +0.0154R, n=1766).
+        frame = risk_from_structure(ctx.ltp, or_low * (1 - cfg_float("gap_stop_buffer_pct", 0.10) / 100.0), "LONG",
+                                    max_risk_pct=cfg_float("gap_max_risk_pct", 1.30))
+        if frame is None:
             return None
+        stop, risk = frame.stop, frame.risk
 
         target = ctx.ltp + risk * cfg_float("gap_target_r", 2.0)
 

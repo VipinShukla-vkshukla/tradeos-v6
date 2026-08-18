@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config import cfg_float, cfg_int
 from intraday.session import PRIME, AFTERNOON
-from intraday.strategies.base import Setup, SymbolContext
+from intraday.strategies.base import Setup, SymbolContext, risk_from_structure
 
 
 class TrendPullback:
@@ -95,14 +95,15 @@ class TrendPullback:
         # Stop just under the anchor: losing VWAP on a trend day is the trend
         # ending, so the stop and the invalidation are the same event — which is
         # exactly what makes this entry efficient.
-        stop = ctx.vwap * (1 - cfg_float("pbk_stop_buffer_pct", 0.15) / 100.0)
-        risk = ctx.ltp - stop
-        if risk <= 0:
+        # The stop is STRUCTURAL and stays structural. When it is wider than
+        # this engine can afford the setup is REFUSED, not re-priced onto a
+        # level the structure never named -- base.risk_from_structure has the
+        # measurement (pinned -0.5348R vs structural +0.0154R, n=1766).
+        frame = risk_from_structure(ctx.ltp, ctx.vwap * (1 - cfg_float("pbk_stop_buffer_pct", 0.15) / 100.0), "LONG",
+                                    max_risk_pct=cfg_float("pbk_max_risk_pct", 0.80))
+        if frame is None:
             return None
-        max_risk = cfg_float("pbk_max_risk_pct", 0.80)
-        if risk / ctx.ltp * 100.0 > max_risk:
-            stop = ctx.ltp * (1 - max_risk / 100.0)
-            risk = ctx.ltp - stop
+        stop, risk = frame.stop, frame.risk
 
         # Target the day high — proven reachable — falling back to an R
         # multiple only when the high is too close to be worth the trip.

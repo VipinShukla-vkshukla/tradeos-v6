@@ -23,7 +23,7 @@ from typing import Protocol
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config import IST, cfg_float
+from config import IST, cfg, cfg_float
 from intraday import direction as D
 
 
@@ -59,6 +59,102 @@ def confirmation_pct(structure_width_pct: float, frac: float) -> float:
     """
     buf = cfg_float("intraday_invalidation_buffer_pct", 0.12)
     return max(frac * max(structure_width_pct, 0.0), buf)
+
+
+@dataclass
+class RiskFrame:
+    """The stop an engine actually gets, and an audit trail of how it got it."""
+    stop: float
+    risk: float
+    risk_pct: float
+    structural_stop: float
+    capped: bool
+
+
+def risk_from_structure(entry: float, structural_stop: float, direction: str,
+                        *, max_risk_pct: float) -> "RiskFrame | None":
+    """
+    Turn a structural stop into the stop the trade will actually carry.
+
+    IT NEVER TIGHTENS THE STOP. THAT IS THE ENTIRE POINT.
+
+    WHAT IT REPLACED, AND WHAT THAT COST -- 18-Aug-2026.
+
+    Eight engines carried the identical four lines:
+
+        stop = <structure> * (1 - buffer/100)
+        if (ltp - stop) / ltp * 100 > max_risk:
+            stop = ltp * (1 - max_risk / 100)      # <-- here
+        risk = ltp - stop
+
+    That last assignment silently discards the structure. The engine finds the
+    range low, decides the thesis dies below it, then -- when that stop is
+    wider than the account can afford -- moves the stop to a price with no
+    structural meaning at all, usually INSIDE the range that produced the
+    setup. The trade keeps the structure's prose and loses its geometry.
+    `registry._invalidation_is_reachable` (12-Aug, NATIONALUM) is this same
+    defect caught at its extreme; it left the ordinary cases alone, and the
+    ordinary cases are where the money went.
+
+    MEASURED, on the 1,766 TAKEN-and-resolved rows in `intraday_setups`:
+
+        population              n     gross mean R
+        ------------------------------------------
+        stop pinned to the cap  798        -0.5348
+        structural stop kept    968        +0.0154
+        whole book             1766        -0.2403
+
+        per engine, pinned vs structural
+        GAP   139 @ -0.235   vs   144 @ +0.587
+        VWR    23 @ -0.245   vs   148 @ +0.123
+        VCE    30 @ -0.598   vs   120 @ -0.175
+        ORB   604 @ -0.631   vs   186 @ -0.534
+
+    GAP is the clean experiment: one engine, one universe, one set of
+    sessions, separated only by whether its own stop survived. 0.82R.
+
+    REFUSING IS NOT THE SAME AS SIZING DOWN, AND THE DIFFERENCE IS NOT
+    MEASURABLE HERE. A setup whose structural stop is unaffordable could also
+    be taken with fewer shares. But `intraday_setups` stores no ATR and no
+    pre-cap stop, so what a widened stop would have done cannot be
+    reconstructed from any row on disk. Refusal is the conservative branch: it
+    is the one whose counterfactual IS on disk, because the trades it declines
+    are exactly the ones already recorded at -0.5348R.
+    `intraday_stop_cap_mode` keeps the old behaviour one config row away.
+
+    A FLOOR IS AVAILABLE AND INERT BY DEFAULT. The 0.0-0.6% risk band stops
+    out 84.3% of the time across 172 rows and every engine in it is negative,
+    which argues for a minimum stop distance too. It is not shipped armed,
+    because that band is populated entirely by the four engines with the
+    tightest caps (PBK 0.80, PDL 0.80, RNG 0.70, VCE 1.00) and this data
+    cannot separate "the stop was too tight" from "those engines are bad".
+    `intraday_min_risk_pct` is there for when it can.
+
+    Returns None when the setup must be refused. The caller returns None too --
+    an engine that cannot place an honest stop has not found a trade.
+    """
+    risk = D.risk_per_share(entry, structural_stop, direction)
+    if risk <= 0 or entry <= 0:
+        return None                     # coherent() owns this failure
+    risk_pct = risk / entry * 100.0
+
+    floor_pct = cfg_float("intraday_min_risk_pct", 0.0)
+    if floor_pct > 0 and risk_pct < floor_pct:
+        return None
+
+    if risk_pct <= max_risk_pct:
+        return RiskFrame(structural_stop, risk, risk_pct, structural_stop, False)
+
+    if (cfg("intraday_stop_cap_mode", "refuse") or "refuse").lower() != "tighten":
+        return None
+
+    # LEGACY BRANCH, kept so the change is one config row from reversible.
+    capped_stop = entry - D.sign(direction) * entry * max_risk_pct / 100.0
+    capped_risk = D.risk_per_share(entry, capped_stop, direction)
+    if capped_risk <= 0:
+        return None
+    return RiskFrame(round(capped_stop, 2), capped_risk,
+                     capped_risk / entry * 100.0, structural_stop, True)
 
 
 @dataclass

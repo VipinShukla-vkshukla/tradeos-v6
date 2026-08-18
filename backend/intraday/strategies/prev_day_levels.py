@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config import cfg_float, cfg_int
 from intraday.session import PRIME, DRIFT, AFTERNOON
-from intraday.strategies.base import Setup, SymbolContext
+from intraday.strategies.base import Setup, SymbolContext, risk_from_structure
 
 
 class PrevDayLevelRetest:
@@ -129,15 +129,17 @@ class PrevDayLevelRetest:
         # under, so invalidation always triggered first and the stop was
         # decorative — every PDL exit was an invalidation, never a stop, and the
         # R the position was sized against was never the R that could be lost.
-        stop = min(pdh * (1 - cfg_float("pdl_stop_buffer_pct", 0.25) / 100.0),
-                   inval_level * (1 - 0.05 / 100.0))
-        risk = ctx.ltp - stop
-        if risk <= 0:
+        # The stop is STRUCTURAL and stays structural. When it is wider than
+        # this engine can afford the setup is REFUSED, not re-priced onto a
+        # level the structure never named -- base.risk_from_structure has the
+        # measurement (pinned -0.5348R vs structural +0.0154R, n=1766).
+        frame = risk_from_structure(
+            ctx.ltp, min(pdh * (1 - cfg_float("pdl_stop_buffer_pct", 0.25) / 100.0),
+                         inval_level * (1 - 0.05 / 100.0)),
+            "LONG", max_risk_pct=cfg_float("pdl_max_risk_pct", 0.80))
+        if frame is None:
             return None
-        max_risk = cfg_float("pdl_max_risk_pct", 0.80)
-        if risk / ctx.ltp * 100.0 > max_risk:
-            stop = ctx.ltp * (1 - max_risk / 100.0)
-            risk = ctx.ltp - stop
+        stop, risk = frame.stop, frame.risk
 
         day_hi = ctx.day_high or ctx.ltp
         by_r = ctx.ltp + risk * cfg_float("pdl_target_r", 2.5)

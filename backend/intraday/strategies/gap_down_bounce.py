@@ -74,7 +74,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config import cfg_float, cfg_int
 from intraday.session import OPENING, PRIME
-from intraday.strategies.base import Setup, SymbolContext, confirmation_pct
+from intraday.strategies.base import Setup, SymbolContext, confirmation_pct, risk_from_structure
 
 
 class GapDownBounce:
@@ -151,13 +151,15 @@ class GapDownBounce:
         # Stop under the low made while below VWAP — the panic low. Losing
         # it again means the bounce failed, same logic as VWR's swing_low.
         swing_low = min(b.low for b in below) if below else min(b.low for b in recent)
-        stop = swing_low * (1 - cfg_float("gdb_stop_buffer_pct", 0.10) / 100.0)
-        max_risk = cfg_float("gdb_max_risk_pct", 1.10)
-        if (ctx.ltp - stop) / ctx.ltp * 100.0 > max_risk:
-            stop = ctx.ltp * (1 - max_risk / 100.0)
-        risk = ctx.ltp - stop
-        if risk <= 0:
+        # The stop is STRUCTURAL and stays structural. When it is wider than
+        # this engine can afford the setup is REFUSED, not re-priced onto a
+        # level the structure never named -- base.risk_from_structure has the
+        # measurement (pinned -0.5348R vs structural +0.0154R, n=1766).
+        frame = risk_from_structure(ctx.ltp, swing_low * (1 - cfg_float("gdb_stop_buffer_pct", 0.10) / 100.0), "LONG",
+                                    max_risk_pct=cfg_float("gdb_max_risk_pct", 1.10))
+        if frame is None:
             return None
+        stop, risk = frame.stop, frame.risk
 
         # Target the day's high once it clears a worthwhile distance — a
         # level the stock already proved it can reach today — falling back

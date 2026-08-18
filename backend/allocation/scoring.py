@@ -44,6 +44,7 @@ because it is indistinguishable from a measured one downstream.
 from __future__ import annotations
 
 import re
+import json
 import statistics
 import sys
 from dataclasses import dataclass, field
@@ -184,8 +185,15 @@ def intraday_priors(sb, rows: list[dict] | None = None) -> dict[str, Prior]:
                   # runs this function through a fetch that honours the
                   # select string, which is the only place the two can be
                   # compared.
+                  # `meta` IS FETCHED BECAUSE `_engine_of` READS IT -- 18-Aug.
+                  # Post-merge rows carry the FAMILY in `strategy` and the
+                  # ENGINE in `meta.sub_engine`; without this column every
+                  # Aug-onward row silently keys as its family and the
+                  # per-engine priors are built from July rows alone. A key
+                  # nobody fetched is this project's most-repeated defect,
+                  # it is one word long, and it is invisible in every log.
                   .select("symbol,trade_date,strategy,outcome,outcome_pct,"
-                          "entry,stop,direction,cost_verdict,cost_pct")
+                          "entry,stop,direction,cost_verdict,cost_pct,meta")
                   .not_.is_("outcome_pct", "null"))
         return q.gte("trade_date", since) if since else q
 
@@ -257,6 +265,49 @@ def _row_gross_r(r: dict) -> float | None:
         return gross_pct / risk_pct
     except (TypeError, ValueError, ZeroDivisionError):
         return None
+
+
+# WHICH ENGINE A ROW BELONGS TO, ACROSS BOTH STORAGE ERAS -- 18-Aug-2026.
+#
+# `intraday_setups.strategy` has meant two different things. Before the family
+# merge it held the ENGINE (GAP, PDL, PBK rows exist with those literal
+# values); after it, `evaluate_all` writes the FAMILY there and puts the engine
+# in `meta.sub_engine`. Reading either column alone mislabels one era of the
+# table, and both eras price live proposals.
+#
+# WHY THIS MATTERS MORE THAN IT LOOKS. `_prior_for` used the family key alone,
+# so GAP was scored on ORB's record. Measured over the 1,766 TAKEN-and-resolved
+# rows, split by whether the stop survived the cap (base.risk_from_structure):
+#
+#     GAP  n=144  +0.587R          ORB  n=186  -0.534R
+#
+# Those are the same family. Pooling them hands GAP a prior 1.1R below its own
+# evidence and, under `alloc_edge_absolute_floor`, refuses every GAP proposal
+# on a record that is not GAP's. registry.FAMILIES was a REPORTING decision --
+# its own comment says a family exists "so a family can be split back apart
+# without a deploy". It was never meant to be a pricing one.
+#
+# Both keys are still built. The allocator prefers the engine's own prior and
+# falls back to the family's when the engine is below the sample floor, so a
+# thin new engine inherits its family's evidence rather than nothing.
+def _engine_of(r: dict) -> str:
+    meta = r.get("meta") or {}
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except (ValueError, TypeError):
+            meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    return str(meta.get("sub_engine") or r.get("strategy") or "?").upper()
+
+
+def _family_of_row(r: dict) -> str:
+    from intraday.strategies.registry import family_of
+    try:
+        return family_of(_engine_of(r))
+    except Exception:
+        return _engine_of(r)
 
 
 def _intraday_priors_from_rows(rows: list[dict], floor: int) -> dict[str, Prior]:
@@ -387,7 +438,7 @@ def _intraday_priors_from_rows(rows: list[dict], floor: int) -> dict[str, Prior]
         collapsed: dict[tuple, list[dict]] = {}
         for r in rows:
             collapsed.setdefault(
-                (r.get("symbol"), r.get("strategy"), r.get("trade_date")), []).append(r)
+                (r.get("symbol"), _engine_of(r), r.get("trade_date")), []).append(r)
         deduped = []
         for grp in collapsed.values():
             # A group's verdict is TAKEN if the setup was EVER taken that day —
@@ -410,9 +461,12 @@ def _intraday_priors_from_rows(rows: list[dict], floor: int) -> dict[str, Prior]
     for r in rows:
         try:
             d = D.normalise(r.get("direction"))
-            key = r["strategy"] or "?"
+            keys = [_engine_of(r)]
+            fam = _family_of_row(r)
+            if fam and fam != keys[0]:
+                keys.append(fam)
             if D.is_short(d):
-                key = f"{key}/SHORT"
+                keys = [f"{k}/SHORT" for k in keys]
             # A deduplicated row already carries the group's mean R, computed
             # per member against that member's own risk. Recomputing it from
             # `base`'s entry/stop is exactly the defect fixed above.
@@ -421,9 +475,11 @@ def _intraday_priors_from_rows(rows: list[dict], floor: int) -> dict[str, Prior]
                 r_mult = _row_gross_r(r)
             if r_mult is None:
                 continue
-            by.setdefault(key, []).append(r_mult)
-            if (r.get("cost_verdict") or "").upper() == "TAKEN":
-                by_taken.setdefault(key, []).append(r_mult)
+            taken = (r.get("cost_verdict") or "").upper() == "TAKEN"
+            for key in keys:
+                by.setdefault(key, []).append(r_mult)
+                if taken:
+                    by_taken.setdefault(key, []).append(r_mult)
         except (TypeError, ValueError, ZeroDivisionError):
             continue
 

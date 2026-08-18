@@ -41,7 +41,13 @@ from tests._fixtures import OPEN, bars as _bars
 
 
 def _ctx(closes, ltp, day_high=None, vwap=100.0, prev_close=99.5, rs=0.5):
-    bs = _bars([(c - 0.3, c + 0.3, c - 0.4, c, 10_000) for c in closes])
+    # LOW OFFSET 0.10, NOT 0.40 -- 18-Aug-2026. A 0.4 low on a Rs 100 stock is
+    # a 0.7%-range minute bar, which put the swing low 1.3% under LTP and made
+    # every fixture here unaffordable under vwr_max_risk_pct=0.90. That went
+    # unnoticed while the engine silently clamped the stop; with the clamp
+    # removed (base.risk_from_structure) the fixture, not the engine, is what
+    # fails. These bars are now shaped like the reclaim the engine trades.
+    bs = _bars([(c - 0.08, c + 0.08, c - 0.10, c, 10_000) for c in closes])
     return SymbolContext(
         symbol="VWRCO", ltp=ltp, bars=bs, vwap=vwap,
         day_open=closes[0],
@@ -65,7 +71,7 @@ def test_a_reclaim_that_happened_several_bars_ago_is_refused():
     only required ANY bar in a 3-bar window to have been below VWAP, which
     9 bars of prior noise trivially satisfied."""
     from intraday.strategies.vwap_reclaim import VwapReclaim
-    closes = [97, 97, 97, 97, 97, 97, 98, 98, 99, 100.1, 100.15, 100.2]
+    closes = [99.4, 99.4, 99.4, 99.4, 99.4, 99.4, 99.6, 99.6, 99.8, 100.1, 100.15, 100.2]
     ctx = _ctx(closes, ltp=100.25)
     with cfg_ctx({}):
         s = VwapReclaim().evaluate(ctx, PRIME)
@@ -75,7 +81,7 @@ def test_a_reclaim_that_happened_several_bars_ago_is_refused():
 def test_a_fresh_single_bar_crossing_still_fires():
     """The happy path this engine exists for must survive the fix."""
     from intraday.strategies.vwap_reclaim import VwapReclaim
-    closes = [99.5, 99.5, 99.5, 99.5, 99.5, 99.5, 99.5, 99.5, 99.5, 99.6, 99.7, 100.2]
+    closes = [99.8, 99.8, 99.8, 99.8, 99.8, 99.8, 99.8, 99.8, 99.8, 99.85, 99.9, 100.2]
     ctx = _ctx(closes, ltp=100.3)
     with cfg_ctx({}):
         s = VwapReclaim().evaluate(ctx, PRIME)
@@ -89,7 +95,7 @@ def test_still_below_vwap_on_the_last_bar_is_refused():
     """Regression guard: the OTHER branch of the old OR (last bar still
     below VWAP) must keep refusing, unchanged by this fix."""
     from intraday.strategies.vwap_reclaim import VwapReclaim
-    closes = [99.5] * 11 + [99.8]  # never actually closes above vwap=100
+    closes = [99.8] * 11 + [99.9]  # never actually closes above vwap=100
     ctx = _ctx(closes, ltp=100.2)  # ltp itself is above, bars are not
     with cfg_ctx({}):
         s = VwapReclaim().evaluate(ctx, PRIME)
@@ -98,7 +104,7 @@ def test_still_below_vwap_on_the_last_bar_is_refused():
 
 # ── target construction ────────────────────────────────────────────────────
 
-_FRESH_CLOSES = [99.5, 99.5, 99.5, 99.5, 99.5, 99.5, 99.5, 99.5, 99.5, 99.6, 99.7, 100.2]
+_FRESH_CLOSES = [99.8, 99.8, 99.8, 99.8, 99.8, 99.8, 99.8, 99.8, 99.8, 99.85, 99.9, 100.2]
 
 
 def test_target_prefers_a_worthwhile_day_high_over_the_r_multiple():

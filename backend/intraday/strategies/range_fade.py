@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config import cfg_float, cfg_int
 from intraday.session import DRIFT, AFTERNOON
-from intraday.strategies.base import Setup, SymbolContext
+from intraday.strategies.base import Setup, SymbolContext, risk_from_structure
 
 
 class RangeFade:
@@ -95,14 +95,15 @@ class RangeFade:
         if vr is not None and vr > cfg_float("rng_max_volume_ratio", 1.80):
             return None
 
-        stop = lo * (1 - cfg_float("rng_stop_buffer_pct", 0.25) / 100.0)
-        risk = ctx.ltp - stop
-        if risk <= 0:
+        # The stop is STRUCTURAL and stays structural. When it is wider than
+        # this engine can afford the setup is REFUSED, not re-priced onto a
+        # level the structure never named -- base.risk_from_structure has the
+        # measurement (pinned -0.5348R vs structural +0.0154R, n=1766).
+        frame = risk_from_structure(ctx.ltp, lo * (1 - cfg_float("rng_stop_buffer_pct", 0.25) / 100.0), "LONG",
+                                    max_risk_pct=cfg_float("rng_max_risk_pct", 0.70))
+        if frame is None:
             return None
-        max_risk = cfg_float("rng_max_risk_pct", 0.70)
-        if risk / ctx.ltp * 100.0 > max_risk:
-            stop = ctx.ltp * (1 - max_risk / 100.0)
-            risk = ctx.ltp - stop
+        stop, risk = frame.stop, frame.risk
 
         # Target the opposite edge, shaded inside it — exiting where the sellers
         # are known to be beats asking for the last few paise.

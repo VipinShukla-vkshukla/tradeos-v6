@@ -39,7 +39,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config import cfg_float, cfg_int
 from intraday.session import DRIFT, PRIME, AFTERNOON
-from intraday.strategies.base import Setup, SymbolContext, confirmation_pct
+from intraday.strategies.base import (Setup, SymbolContext, confirmation_pct,
+                                      risk_from_structure)
 
 
 class VwapReclaim:
@@ -113,14 +114,16 @@ class VwapReclaim:
         # Stop under the low made while below VWAP — that low is where the
         # sellers were, and losing it means they were not absorbed after all.
         swing_low = min(b.low for b in below) if below else min(b.low for b in recent)
-        stop = swing_low * (1 - cfg_float("vwr_stop_buffer_pct", 0.08) / 100.0)
-        max_risk = cfg_float("vwr_max_risk_pct", 0.90)
-        if (ctx.ltp - stop) / ctx.ltp * 100.0 > max_risk:
-            stop = ctx.ltp * (1 - max_risk / 100.0)
-
-        risk = ctx.ltp - stop
-        if risk <= 0:
+        # The stop is STRUCTURAL and stays structural. When it is wider than
+        # this engine can afford the setup is REFUSED, not re-priced onto a
+        # level the structure never named -- base.risk_from_structure has the
+        # measurement (pinned -0.5348R vs structural +0.0154R, n=1766).
+        frame = risk_from_structure(
+            ctx.ltp, swing_low * (1 - cfg_float("vwr_stop_buffer_pct", 0.08) / 100.0),
+            "LONG", max_risk_pct=cfg_float("vwr_max_risk_pct", 0.90))
+        if frame is None:
             return None
+        stop, risk = frame.stop, frame.risk
 
         # Target the day's high — the level the stock already proved it can
         # reach — rather than an abstract multiple, falling back to R when the

@@ -116,6 +116,12 @@ MODULES = [
     ("resolve_day session guard (F-27 mechanism A)",
      "tests.test_resolve_day_session_guard"),
     ("single daemon startup lock", "tests.test_daemon_lock"),
+    ("structural stop (engines keep their own stop)",
+     "tests.test_structural_stop"),
+    ("engine priced on its own record, not its family's",
+     "tests.test_engine_own_prior"),
+    ("SDN confidence cap (shipped inert)",
+     "tests.test_sdn_confidence_cap"),
 ]
 
 

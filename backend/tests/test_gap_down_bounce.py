@@ -20,7 +20,12 @@ from tests._fixtures import OPEN, bars as _bars
 
 
 def _ctx(closes, ltp, prev_close, day_high=None, vwap=98.9):
-    bs = _bars([(c - 0.3, c + 0.3, c - 0.4, c, 20_000) for c in closes])
+    # LOW OFFSET 0.10, NOT 0.40 -- 18-Aug-2026, same reason as
+    # test_vwap_reclaim. A 0.4 low on a Rs 99 stock put the panic low 1.36%
+    # under LTP, past gdb_max_risk_pct=1.10. The engine used to clamp the
+    # stop and fire anyway; with base.risk_from_structure it refuses, so the
+    # fixture had to stop describing a bar shape no minute candle has.
+    bs = _bars([(c - 0.08, c + 0.08, c - 0.10, c, 20_000) for c in closes])
     return SymbolContext(
         symbol="GDBCO", ltp=ltp, bars=bs, vwap=vwap,
         day_open=closes[0],

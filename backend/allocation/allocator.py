@@ -151,8 +151,25 @@ class Allocator:
         # book-level distribution. A short would be scored against a
         # population that excludes every short ever observed, which is the
         # exact cross-class borrowing this docstring's own next line forbids.
+        # THE ENGINE'S OWN RECORD FIRST, THEN ITS FAMILY'S -- 18-Aug-2026.
+        #
+        # `p.source` is the FAMILY (proposal.from_intraday sets it from
+        # family_of()). Pricing on the family alone means GAP is scored on
+        # ORB's record: over 1,766 TAKEN-and-resolved rows, structural-stop
+        # only, GAP is +0.587R (n=144) and ORB is -0.534R (n=186) -- and they
+        # are the same family. Under `alloc_edge_absolute_floor` that is the
+        # difference between a proposal that clears zero and one that never
+        # can, decided by evidence belonging to another engine.
+        #
+        # The family remains the FALLBACK, which is what makes the merge
+        # still worth having: a new or thin engine inherits its family's
+        # sample rather than dropping to the whole book. `_usable()` gates
+        # each rung on the sample floor, so an engine only prices on itself
+        # once it has earned the observations.
+        sub = str((p.meta or {}).get("sub_engine") or p.source or "").upper()
         if (p.direction or "LONG").upper() == "SHORT":
-            return (_usable(f"{p.framework}/{p.source}/SHORT")
+            return (_usable(f"{p.framework}/{sub}/SHORT")
+                    or _usable(f"{p.framework}/{p.source}/SHORT")
                     or _usable(f"{p.framework}/ALL/SHORT")
                     or S._dist(f"{p.framework}/NONE/SHORT", [], floor=10**9))
 
@@ -160,7 +177,8 @@ class Allocator:
         # below-floor class prior is NOT borrowed from a neighbour — it falls
         # back to the book's own distribution and is flagged, because an
         # invented prior is indistinguishable from a measured one downstream.
-        return (_usable(f"{p.framework}/{p.source}")
+        return (_usable(f"{p.framework}/{sub}")
+                or _usable(f"{p.framework}/{p.source}")
                 or _usable(f"{p.framework}/ALL")
                 or S._dist(f"{p.framework}/NONE", [], floor=10**9))
 
