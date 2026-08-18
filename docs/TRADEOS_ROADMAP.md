@@ -325,3 +325,106 @@ command pasted. "Could not determine" is a required section — use it.
 End by stating which side of Gate 1 we are on: is planned_stop_at_entry
 coverage above or below 60%?
 ```
+
+---
+
+# SWING TRACK — AI CHASE CEILING (separate from Stages 0–7 above)
+
+**Added 2026-08-18.** Not part of the intraday-diagnostic sequence above and
+does not renumber it. A session should only pick this track up when told to by
+name — "confirm which stage we are in" above still means Stages 0–7.
+
+**Conflict to resolve before Stage C1 starts:** "What keeps running throughout"
+says *"Swing live book: unchanged. Keep trading it. Nothing modifies it before
+Gate 3."* That line was written for the current intraday-diagnostic effort,
+and swing and intraday are separate books on separate code paths — a
+swing-only change should not corrupt anything Stage 1–3 is measuring on
+`intraday_setups`. But that is a read, not a ruling. **Vipin decides** whether
+this track runs in parallel now or waits for Gate 3.
+
+## Why this exists
+
+Evening-alert review, 18-Aug-2026. Full trace in that session's transcript;
+restated here so a later session does not have to re-derive it.
+
+`ai_decision_engine` (step 19) already computes `ai_max_chase_pct` /
+`ai_zone_high_extended` every evening — an AI-approved entry ceiling above the
+mechanical zone, for a stock trending well enough that its pullback zone may
+never get touched. The evening alert already shows this to the operator as a
+manual "chase" GTT suggestion.
+
+`analysis/trade_decision.py`'s `decide()` — the one function both the alert
+and the live auto-entry engine call (`intraday/engine.py`, confirmed firing
+live: AARTIIND and TATATECH both auto-entered for real money on 2026-08-17) —
+never reads either field. Its only ceiling is `max_entry_for_rr()`
+(`trade_decision.py:89`), purely mechanical. So the AI's chase clearance is
+informational-only for a human with a manual GTT; the automated path cannot
+act on it and silently passes on any name that runs away without a pullback.
+
+The idea: let `max_entry_for_rr`'s result be raised — never lowered — by
+`ai_zone_high_extended` when `ai_max_chase_pct` is set, so the live engine can
+capture what the pipeline already told a human was worth chasing.
+
+## Non-negotiables
+
+- **No live behaviour change until it is earned.** For every row where
+  `ai_max_chase_pct` / `ai_zone_high_extended` are null — which is every
+  historical row, and every future row the AI didn't chase-clear — `decide()`
+  must be provably byte-identical to today. This is the whole of what "does
+  not break what already works" means here; prove it with a check, not a
+  reading of the diff.
+- **New switch, default OFF** (`swing_chase_ceiling_enabled`), same pattern as
+  `overlay_liquidity_enabled` in Stage 4 — the feature ships inert until
+  deliberately armed.
+- **Shadow before live**, mirroring Stage 5's discipline: log what it would
+  have taken, take nothing, for a stated minimum period, before Stage C3.
+  Rollback is flipping the switch back — no schema change, no migration.
+- **Every number sourced from a real command**, pasted into the ledger, same
+  as the rules governing Stages 0–7.
+
+## Stage C1 — Quantify (read-only, no branch)
+
+Before writing any code: how often would this actually have mattered, and
+would the trades it would have taken have been any good?
+
+- Count candidates with non-null `ai_max_chase_pct` where `decide()` declined
+  solely because price never re-entered `entry_zone_low`–`entry_zone_high`.
+- For those symbols, what did price do afterward — would the AI-cleared entry
+  have beaten the plan's `planned_stop`/`planned_target`, or lost?
+
+**Gate C1:** a real count and a real "what would it have been worth" number,
+both from a query, in the ledger. If this rarely happens, or the skipped
+trades mostly would have lost, **stop here — no code follows.** That is a
+valid, complete outcome for this stage, not a failure of it.
+
+## Stage C2 — Build behind the switch, shadow-mode only
+
+**Branch:** `feat/swing-chase-ceiling`.
+
+- `swing_chase_ceiling_enabled` (default `False`) gates the whole feature.
+- In `trade_decision.py`, when armed AND the row carries a non-null
+  `ai_max_chase_pct`: raise (never lower) `max_entry_for_rr`'s ceiling toward
+  `ai_zone_high_extended`. Every other path is untouched.
+- `tools.verify` check: with the flag off, or with the AI fields null,
+  `decide()`'s output is identical to current behaviour on the same fixture
+  rows. **Demonstrate this check failing first** — feed it a build without the
+  guard — before trusting it to pass, per this project's standing rule that a
+  check that cannot fail is not a check.
+- Armed but log-only: record what it would have entered, place nothing live.
+
+**Gate C2:** `tools.verify` green including the new inert-by-default check,
+plus a stated minimum of shadow-log entries in the ledger with how those
+symbols actually resolved.
+
+## Stage C3 — Arm it live
+
+Only after Stage C2's shadow log shows the trades it would have taken were
+net positive. **Needs Vipin's explicit sign-off, logged in the ledger** — same
+as Gate 3 above, this is not automatic.
+
+Consider a cap on live chase-ceiling entries for the first weeks (e.g. one at
+a time) so a bad first read is cheap to reverse. Rollback is the switch, not a
+revert.
+
+**Gate C3:** sign-off recorded, plus a stated review date (2–3 weeks out) to
+check armed behaviour against what the shadow log predicted.

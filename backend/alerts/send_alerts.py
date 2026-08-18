@@ -960,7 +960,7 @@ def load_data(sb, today: str) -> dict:
               "breakeven_moved,trail_activated,partial_booked_qty,"
               "entry_signal_type,regime_at_entry,reconcile_status,kite_qty,"
               "ai_recommended_action,ai_action_reason,ai_action_confidence,"
-              "ai_action_urgency,ai_action_updated_at"
+              "ai_action_urgency,ai_action_updated_at,lifecycle_at_entry"
           )
           .eq("status", "ACTIVE")
           .execute().data
@@ -1263,11 +1263,23 @@ def build_position_block(
     action_req = p.get("action_required") or "HOLD"
     exit_sig   = p.get("exit_signal") or ""
 
+    # open_positions.lifecycle has no writer — it is always NULL, which is why
+    # this used to render "[?]" on every single position. sig_map (today's
+    # signal_output_daily row for this symbol, when it's still on today's
+    # shortlist) carries the CURRENT lifecycle classification, the same field
+    # the AI advisory below reads. When the position has since dropped off
+    # today's shortlist, fall back to lifecycle_at_entry — but say so, since a
+    # position bought FRESH weeks ago is not necessarily still FRESH.
+    lifecycle_now = today_sig.get("lifecycle")
+    lifecycle_tag = lifecycle_now or (
+        f"{p['lifecycle_at_entry']}@entry" if p.get("lifecycle_at_entry") else "?"
+    )
+
     lines: list[str] = []
 
     # ── Header ──
     lines.append(
-        f"\n  {ico} <b>{sym}</b> [{p.get('strategy', '?')}] [{p.get('lifecycle', '?')}]"
+        f"\n  {ico} <b>{sym}</b> [{p.get('strategy', '?')}] [{lifecycle_tag}]"
         f"  P&L: <b>{fmt_pct(pnl)}</b>  Held: {days_held(p.get('entry_date'))}{sl_w}"
     )
 
@@ -1809,10 +1821,18 @@ def build_evening(data: dict, sb=None) -> str:
                 _msl  = msl_map.get(_sym, {})
                 _zl   = float(_msl.get("entry_zone_low")  or 0)
                 _er   = float(_msl.get("expected_r")      or 2.0)
-                _sl   = round(_zl * (1 - STOP_BUFFER), 0) if _zl else None
-                _t1   = round(_zl * (1 + STOP_BUFFER * _er), 0) if _zl else None
-                _rr   = (round((_t1 - _zl) / (_zl - _sl), 1)
-                         if _t1 and _sl and _zl and _sl < _zl else None)
+                # ── Use the PERSISTED trade plan, do not re-derive it ──────
+                # This used to be a flat-STOP_BUFFER re-derivation — a second,
+                # uncoordinated risk model that can print a stop/target the
+                # signal was never actually validated against, on the one
+                # section whose entire purpose is "place this exact order
+                # with your broker." Same fix already applied to the Tier-1
+                # card above and to build_morning; see the comment there.
+                _sl   = _num(_msl.get("planned_stop"))
+                _t1   = _num(_msl.get("planned_target"))
+                _rr   = _num(_msl.get("implied_rr"))
+                if _rr is None and _sl and _t1 and _zl and _sl < _zl:
+                    _rr = round((_t1 - _zl) / (_zl - _sl), 1)
                 _sig  = sig_map.get(_sym, {})
                 _vref = float(_sig.get("vol_ratio")    or 0)
                 _dref = float(_sig.get("delivery_pct") or 0)
@@ -1842,11 +1862,16 @@ def build_evening(data: dict, sb=None) -> str:
                 _ai_zone_ext  = _msl.get("ai_zone_high_extended")
                 if _ai_chase_pct > 0 and _cmp_gtt:
                     _chase_entry = round(min(_cmp_gtt, _ai_zone_ext) if _ai_zone_ext else _cmp_gtt, 0)
-                    _chase_sl    = round(_chase_entry * (1 - STOP_BUFFER), 0)
-                    _chase_t1    = round(_chase_entry * (1 + STOP_BUFFER * _er), 0)
+                    # Same absolute stop/target as the primary order above —
+                    # the plan is FROZEN at those price levels (compute_msl),
+                    # not re-derived off the chase price. Chasing should show
+                    # up as a worse R:R against the same fixed risk, which is
+                    # the honest chase penalty; a flat-% re-derivation hid it.
+                    _chase_sl    = _sl
+                    _chase_t1    = _t1
                     _chase_rr    = (
                         round((_chase_t1 - _chase_entry) / (_chase_entry - _chase_sl), 1)
-                        if _chase_sl < _chase_entry else None
+                        if _chase_sl and _chase_t1 and _chase_sl < _chase_entry else None
                     )
                     lines.append(
                         f"   🟡 If no pullback — AI-cleared chase: Entry₹{_chase_entry:,.0f}"
