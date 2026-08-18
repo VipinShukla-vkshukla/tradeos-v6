@@ -6508,6 +6508,268 @@ window scored, no parameter moved, nothing written outside this ledger.
 
 ---
 
+## 2026-08-16 — F-27 follow-up (diagnostic, outcome-writer integrity) — it is systemic and it is NOT about stop distance: 111 groups of IDENTICAL setups carry contradictory outcomes, and 58 of them are impossible inside a single run. Resolution is a function of WHEN `resolve_day` happened to fire, not of the setup. VWR survives; ORB survives by 0.01R
+
+READ-ONLY. Nothing was written outside this ledger, no row re-scored, no fix
+applied. Branch `diagnostic/outcome-writer-integrity`.
+
+### 1 — IS IT SYSTEMIC? YES, AND THE F-27 DETECTOR UNDERSTATES IT
+
+F-27's definition — same symbol/engine/direction, identical entry and target,
+**different** stops, nearer stop resolving better — across all 14 sessions and
+all 8324 resolved rows:
+
+```
+  date         comparable pairs   inverted   (nearer stop resolved better)
+  2026-07-28          11              0
+  2026-07-31           1              0
+  2026-08-06          78             10
+  2026-08-07          40              4
+  2026-08-10          28              1
+  2026-08-11          15              2
+  2026-08-12         181              6
+  2026-08-13         154              5
+  2026-08-14         306              5
+  ------------------------------------------
+  TOTAL              814             33      = 4.1% of comparable pairs
+```
+
+**33 inversions across 7 of 14 sessions.** 14-Aug is not special; 08-06 is the
+worst by rate (12.8%). So: systemic, and present since at least 06-Aug.
+
+**But the stop-distance framing is a red herring.** Dropping the "different
+stops" requirement and grouping on setups that are identical in *every* field
+the writer reads — `(trade_date, symbol, strategy, direction, entry, stop,
+target)` — finds a much larger and cleaner defect. These are the same setup
+recorded more than once, so they have no legitimate way to differ at all:
+
+```
+  date         duplicate groups   groups that CONTRADICT themselves   rows
+  2026-07-28          49                    0                           -
+  2026-07-30           1                    0                           -
+  2026-07-31           7                    3                           7
+  2026-08-03           6                    0                           -
+  2026-08-05         165                   20                          72
+  2026-08-06          35                    2                           4
+  2026-08-07          49                    7                          27
+  2026-08-10         210                   44                         173
+  2026-08-11          16                    1                           2
+  2026-08-12         128                   15                          34
+  2026-08-13         134                    7                          21
+  2026-08-14         293                   12                          46
+  ---------------------------------------------------------------------
+  TOTAL            1,093                  111  (10.2%)                386
+```
+
+**386 rows = 4.6% of the 8324-row population; 49 of the 1102 deduplicated
+observations = 4.4%.** The cleanest single example, 12-Aug MAXHEALTH/SDN, needs
+no stop-distance argument at all — ids **3634** and **3637**, 2.3 seconds apart,
+entry 1017.4, stop 1026.65, target 1003.49, *every field identical*:
+
+```
+  id 3634  ts 04:08:57.893697Z   ->  TARGET   +1.161
+  id 3637  ts 04:09:00.221930Z   ->  STOP     -1.115
+```
+
+Same setup. Opposite answers. 2.276R apart.
+
+### 2 — MECHANISM: TWO OF THEM, AND THE DOMINANT ONE IS NOT THE WINDOW
+
+Split the 1093 duplicate groups by whether their rows share a replay window:
+
+```
+  class                          groups   contradict   rate
+  all rows inside ONE minute       627        58       9.3%
+  straddles a minute boundary      466        53      11.4%
+```
+
+**A — Resolution is not reproducible across runs. (dominant, ~9.3pp of 11.4pp)**
+
+The 58 same-minute contradictions are *arithmetically impossible within a single
+`resolve_day` call*, and that is a proof, not an inference. Inside one run, rows
+in such a group share: symbol, direction, entry, stop, target; one per-symbol
+`bar_cache` entry (`outcomes.py:148-149`); and the same bar slice, because
+`bars = [b for b in bar_cache[sym] if b["date"] >= after]` (`outcomes.py:150`)
+quantises every `after` in the same minute onto the same first bar. The one edge
+case that could break that — a `ts` of exactly `.000000`, which would admit its
+own minute's bar — occurs in **0 of 8324 rows** (checked). The scan at
+`outcomes.py:181-198` is pure and deterministic. Identical inputs, identical
+scan, identical output. They contradict anyway, so **they were scored by
+different runs against different bar series.**
+
+What differs between runs is *how much of the session existed yet*:
+
+- `_session_bars` calls `kite.historical_data(token, day, day)` at whatever
+  wall-clock moment the run happens (`outcomes.py:60`). Mid-session, that
+  returns a truncated series.
+- `resolve_day` is reached only from the intraday daemon's `finally` block
+  (`intraday/run.py:416`). **Every** daemon exit fires it — crash, hard kill,
+  restart, lid — not just the 15:20 square-off. CLAUDE.md already records that
+  mid-session restarts happen and re-record the morning.
+- On a truncated series, `outcome, exit_px = "TIMEOUT", float(bars[-1]["close"])`
+  (`outcomes.py:180`) prices TIMEOUT at *the mid-session price*, and any
+  stop/target hit after that instant is invisible.
+- The work queue is `.is_("outcome", "null")` (`outcomes.py:100-101`), so once a
+  row is scored it is **never revisited**. Idempotence — the property that makes
+  re-running free — is what freezes the truncated answer in permanently, while
+  its twin, still NULL, gets the full-day answer from a later pass.
+
+The signature confirms it: **STOP+TIMEOUT is 42 of the 58** same-minute
+contradictions (and 41 of 53 cross-minute) — exactly the shape of "one pass saw
+the whole day and found the stop, the other ended early and found nothing".
+Note 08-05 has 530 rows, well under the PostgREST cap, and still carries 14 of
+them, so this is **not** a re-run of F-19's row cap; it is daemon lifecycle.
+
+**B — The replay window is quantised to the whole minute. (minor, ~2.1pp)**
+
+`b["date"] >= after` compares a bar's **open** timestamp against a detection
+timestamp carrying sub-second precision, so the detection's own minute is always
+discarded entire: a mean ~30s, and up to 60s, of price action that occurred
+*after the setup existed* is never replayed. Two detections seconds apart on
+opposite sides of `:00` therefore replay bar sets differing by one whole bar.
+
+This is F-27's own pair. 14-Aug GODREJCP/SDN, ids 6136 and 6155:
+
+```
+  id 6136  ts 09:32:46.010 IST  stop 938.12 (farther)  first bar 09:33  -> STOP
+  id 6155  ts 09:33:01.426 IST  stop 937.12 (nearer)   first bar 09:34  -> TARGET
+```
+
+The 09:33 bar is replayed by one row and not the other, which is the only way
+the farther stop can resolve worse. The control group agrees: of 253 pairs where
+the nearer stop starts **earlier** (sees more bars), **0** invert; of 507 where
+it starts **later**, 28 do.
+
+Mechanism B is real and touches every row in the table, not only duplicated
+ones — but it explains only about 2 percentage points of the contradiction rate.
+A is the defect that matters.
+
+*Reasoned, not measured:* B should bias gross R **upward**. Discarding the first
+partial minute drops the earliest hits, and in these engines the stop sits
+nearer than the target (the SDN example above: stop +0.91%, target -1.37%), so
+more early stop-outs are dropped than early target hits. Correcting B should
+therefore make engines look **worse**, not better. This is geometry, not a
+measurement — see §5.
+
+### 3 — WHAT IT CONTAMINATES
+
+**Not `tools/expectancy_ledger.py`.** That reads `closed_positions`
+(`expectancy_ledger.py:94,102`), whose intraday rows are PAPER fills written by
+the live 15s loop, not by this writer. Its intraday population is small — SDN
+17, ORB 11, VWR 10, GAP 9, PDL 7, VCE 7, PBK 5 — and untouched by F-27.
+
+**The six-engine gross-R table F-27 cites is a different artefact**, derived
+from `intraday_setups`, and it *is* contaminated. Confirmed by reproducing it:
+dedup key `(symbol, strategy, trade_date)`, population = all rows with
+`outcome_pct` not null. n matches the published table **exactly on all nine
+engines** (SDN 398, VWR 307, VCE 138, ORB 119, RNG 60, PBK 32, PDL 25, GAP 22,
+GDB 1 = 1102).
+
+Also reading this table, and so also contaminated: `allocation/scoring.py`
+(`intraday_priors`), `allocation/hurdle.py` (the arrival distribution),
+`outcomes.engine_scorecard`, `tools/engine_scorecard.py`, `tools/weekly_review.py`,
+`tools/discover_engines.py`, `tools/allocator_replay.py`,
+`tools/proposal_backtest.py`, `ai/post_trade_analysis.py`.
+
+**Could a verdict flip?** Each self-contradicting group proves at least one
+member is wrong and the truth is one of the values observed, so replacing every
+member with the group's worst (pessimistic) and best (optimistic) gross figure
+brackets that error exactly:
+
+```
+  engine  n     as-is          pessimistic     optimistic      contaminated
+  VWR    307  -0.335 (-5.1 SE) -0.343 (-5.2)  -0.332 (-5.0)      1.0%
+  ORB    119  -0.238 (-2.4 SE) -0.278 (-2.9)  -0.209 (-2.1)     11.8%
+  SDN    398  -0.047 (-0.8 SE) -0.058 (-1.0)  -0.037 (-0.6)      5.8%
+  VCE    138  -0.261 (-2.6 SE) -0.290 (-2.9)  -0.232 (-2.2)      3.6%
+  RNG     60  +0.061 (+0.4 SE) +0.061 (+0.4)  +0.062 (+0.4)      1.7%
+  PBK     32  -0.288 (-1.1 SE) -0.288 (-1.1)  -0.288 (-1.1)      0.0%
+```
+
+- **VWR survives comfortably.** Worst case -5.0 SE; the 2 SE interval reaches
+  only -0.199. "ALREADY NO" holds under any resolution of the observed error.
+- **ORB survives by 0.01R.** Its optimistic bound is -0.209 ± 0.0995, so the
+  2 SE upper limit is **-0.010** — still excluding positive gross R, by one
+  hundredth of an R. ORB is also the **most contaminated engine at 11.8%**. It
+  is not robust in any meaningful sense; it is on the right side of the line by
+  a rounding error.
+- **No verdict flips on the observable error.** §6182's scope decision stands as
+  written — but ORB's margin should not be described as settled.
+
+**A separate defect on the same table, found in passing.** The estimator takes
+`risk_pct` from `grp[0]` while averaging `outcome_pct` across the whole group
+(`tools/engine_scorecard.py:86-104`), and the dedup key
+`(symbol, strategy, trade_date)` pools setups at genuinely different price
+levels — 14-Aug GODREJCP/SDN is **11 rows with 7 distinct entries in one
+group**. The published numbers therefore depend on row order within the group.
+Ordering by `id`, VWR (-0.335 vs -0.345), ORB (-0.238 vs -0.241), SDN and PBK
+reproduce closely, but **VCE reads -0.261 against a published -0.155, and RNG
+reads +0.061 against a published -0.137 — a sign flip.** Not F-27, but it sits
+on the same table and moves the same verdicts.
+
+### 4 — RECOMMENDED FIX (NOT IMPLEMENTED)
+
+In priority order. 1 is the one that matters.
+
+1. **Refuse to score a session that is not over.** `resolve_day` should hard-
+   refuse unless the day has closed — wall clock past the square-off, or
+   `bars[-1]` at/after the close bar — returning the `complete=False,
+   reason="session_open"` shape it already uses for `no_broker`. This kills
+   mechanism A at the source and needs no schema change.
+2. **Record provenance.** Add `resolved_at` (and `resolved_bars_to`) to
+   `intraday_setups`. Today, "which run scored this row" is unanswerable; every
+   claim in §2 had to be *inferred* from contradictions rather than read. A
+   number whose origin cannot be stated cannot be defended.
+3. **Make re-resolution possible.** Idempotence currently means "never revisit",
+   which is what froze the truncated answers in. Add `--rescore` to recompute
+   rows whose `resolved_at` precedes the session close.
+4. **Make the window a function of the setup, not the fractional second.** Filter
+   on bar *close* (`bar_open + interval > ts`) so the detection minute is
+   replayed from the detection instant; or anchor deliberately to the next bar
+   open and record which bar was used. Either is defensible. A rule whose answer
+   changes with the sub-second component is not.
+5. **A check that FAILS on contradiction.** Group resolved setups by
+   `(trade_date, symbol, strategy, direction, entry, stop, target)` and assert
+   one distinct outcome per group. It fails on today's data (111 groups) —
+   demonstrate it failing before trusting it, per CLAUDE.md. Logic check into
+   `backend/tests/` + `tools/verify.py::MODULES`; the live-book variant into
+   `tools/health.py`.
+6. **Separately, fix the dedup estimator** (§3) — narrow the key to include
+   entry/stop/target, or carry risk per row. RNG's *sign* currently depends on
+   fetch order.
+
+**Do not re-score the book until 1-4 land.** Re-resolving with the current
+writer would replace one arbitrary answer with another and destroy the
+contradictions that are currently the only evidence the defect exists.
+
+### 5 — NOT DONE / COULD NOT DETERMINE
+
+- **No bar-level confirmation of any single row.** There is no broker session in
+  this environment (`kite` returned "Please log in first"), so `_session_bars`
+  could not be exercised and no claim here rests on observed OHLC. Mechanism B's
+  per-row effect is inferred from the code path and the timestamps; the §2 proof
+  of mechanism A does not need bars.
+- **Which run scored which row is inferred, never read** — there is no
+  `resolved_at`. That is recommendation 2.
+- **The optimistic-bias direction of mechanism B is reasoning from stop/target
+  geometry, not a measurement.**
+- **The unobservable error is not bounded.** §3's bracket covers only rows that
+  contradict a surviving twin. Rows with no duplicate, and groups where every
+  member was scored in the same truncated pass, carry the same defect and leave
+  no trace. **True uncertainty on every engine figure is strictly wider than the
+  table shows**, and only a full re-resolution against complete bars measures it.
+- **`meta.sub_engine` is NULL in all 8324 rows**, so "same engine" could only be
+  tested at family (`strategy`) granularity. CLAUDE.md states `_setup_is_new`
+  dedups on `meta.sub_engine`; if that field is genuinely never written, the
+  dedup key is degenerate. Not investigated — it is adjacent, not F-27.
+
+**Gate: MEASURED. No fix implemented, no row re-scored, nothing written outside
+this ledger.** F-27 is confirmed systemic but re-characterised: the defect is
+non-reproducible resolution across runs, of which stop-distance inversion is one
+visible symptom.
+
+---
+
 ## 2026-08-16 — F-27 mechanism A (change, `resolve_day` session guard) — the scorer had no clock: it is called from the daemon's `finally` block, prices TIMEOUT at whatever bar it was last handed, and never revisits a row it has written. Guard + provenance built, 15 of 18 checks demonstrated failing first. Task 2's config changes are WRITTEN AS MIGRATION 081 AND NOT APPLIED — live database writes were denied to this session
 
 **Ran:**
