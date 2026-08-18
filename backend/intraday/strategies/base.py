@@ -116,6 +116,24 @@ class SymbolContext:
     as_of: datetime | None = None            # when the reference levels were built
     live_fields: tuple[str, ...] = ()        # which fields came from the tick stream
 
+    # WHAT THE NON-LIVE SIDE SAID, KEPT SO PARITY HAS SOMETHING TO COMPARE
+    # AGAINST — 17-Aug-2026.
+    #
+    # `apply_live_quotes()` overwrites day_high/day_low/vwap/prev_close in
+    # place with the tick values, because that is what every engine must read.
+    # The parity logger then read those same attributes and compared them to
+    # the tick stream — i.e. to the value it had itself written one cycle
+    # earlier. Measured over 38,683 comparisons: prev_close differed on ZERO
+    # of them and day_high on 4.5%, and those 4.5% land almost entirely in the
+    # two samples right after a context is first built, which is the only
+    # moment the attribute still held a fetched number.
+    #
+    # A check comparing a feed to a copy of itself cannot fail. This dict is
+    # written ONLY by refresh_contexts()/merge_live_bars() — the bar and
+    # database sides — and never by the overlay, so the comparison stays
+    # between two independent sources for as long as it runs.
+    fetched: dict = field(default_factory=dict)
+
     # Cumulative traded volume for the session, from the exchange rather than
     # summed from bars. Separate from avg_volume_20d, which is a daily average
     # and answers a different question ("is today busy?" vs "how busy so far?").

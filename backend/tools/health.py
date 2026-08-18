@@ -113,6 +113,87 @@ def check_selects() -> tuple[bool, str]:
     return True, "every SELECT names columns that exist (checked strictly)"
 
 
+def check_sort_keys() -> tuple[bool, str]:
+    """
+    Does every `fetch_all` sort on a column that actually exists?
+
+    THIS IS check_selects' BLIND SPOT, AND IT COST THE SWING OUTCOME SCORER.
+
+    `fetch_all(order_by="id")` is the default, and `id` is not universal in this
+    schema: `stock_data_daily`, `signal_output_daily`, `open_positions` and the
+    views have no such column. PostgREST answers a sort on a missing column with
+    42703 and fails the WHOLE query, so the reader returns nothing at all.
+
+    `check_selects` cannot see this. It validates the columns named in
+    `.select()`; the sort key is an ARGUMENT to a Python function, never appears
+    in a select string, and is supplied by a default the call site does not
+    write down.
+
+    Found 15-Aug-2026: the previous session converted the two 91%-truncating
+    price reads — its own headline fix, "the worst thing found in this stage" —
+    to `fetch_all` without a sort key. Both read `stock_data_daily`. Calling
+    `performance_tracker._load_outcomes_for_date_range` raised 42703 on the
+    first page, so the swing brain's forward-return scorer went from silently
+    reading 9% of the prices to reading none and raising. Two of 45 call sites
+    were wrong and 43 were fine, which is exactly the ratio that survives
+    review by eye.
+
+    A live schema probe, not a grep: "the code names this column" and "this
+    column exists" are different claims, and only one of them can be checked
+    offline.
+    """
+    import re as _re
+    from pathlib import Path as _Path
+    from config import get_supabase
+    sb = get_supabase()
+    root = _Path(__file__).resolve().parent.parent
+
+    seen: dict[str, set] = {}
+
+    def _cols(table: str) -> set:
+        if table not in seen:
+            try:
+                r = sb.table(table).select("*").limit(1).execute().data
+                seen[table] = set(r[0].keys()) if r else set()
+            except Exception:
+                seen[table] = set()
+        return seen[table]
+
+    bad, checked = [], 0
+    for path in sorted(root.rglob("*.py")):
+        if any(x in path.parts for x in ("__pycache__", "db")) or " - Copy" in path.name:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for m in _re.finditer(r'fetch_all\(', text):
+            seg = text[m.end():m.end() + 700]
+            tm = _re.search(r'\.table\(\s*["\'](\w+)["\']\s*\)', seg)
+            if not tm:
+                continue
+            table = tm.group(1)
+            cols = _cols(table)
+            if not cols:                      # empty or unreadable — cannot judge
+                continue
+            checked += 1
+            ob = _re.search(r'order_by\s*=\s*["\']([^"\']+)["\']', seg)
+            key = ob.group(1) if ob else "id"
+            missing = [k.strip() for k in key.split(",") if k.strip() not in cols]
+            if missing:
+                line = text[:m.start()].count("\n") + 1
+                bad.append(f"{path.relative_to(root).as_posix()}:{line} sorts "
+                           f"{table} on {missing} which it does not have")
+
+    # A SCANNER THAT MATCHES NOTHING PASSES FOREVER.
+    if checked < 20:
+        return False, (f"only {checked} fetch_all call sites were resolved against the "
+                       f"schema — the scanner has stopped recognising them, and a check "
+                       f"that cannot fail is not a check")
+    if bad:
+        return False, ("; ".join(bad[:3]) +
+                       f" ({len(bad)} total) — PostgREST fails the WHOLE query on an "
+                       f"unknown sort column, so these readers return nothing at all")
+    return True, f"all {checked} fetch_all reads sort on a column that exists"
+
+
 def check_broker_consistency() -> tuple[bool, str]:
     """
     Do the resting broker orders match the positions they are supposed to protect?
@@ -441,6 +522,60 @@ def check_daemon() -> tuple[bool, str]:
                    f"during market hours — positions are unwatched{split}")
 
 
+def check_open_exits() -> tuple[bool, str]:
+    """
+    Is a SELL that this system decided on still sitting unfilled?
+
+    17-Aug-2026, GABRIEL. EXIT_STALL fired at 09:15:13 and placed a SELL LIMIT
+    at 1460.60. gtt_manager cancelled the protective GTT 48 seconds later,
+    because the position had gone to status CLOSING and no longer looked held.
+    The order then rested above a falling market, unfilled, until 11:48 — when
+    the OPERATOR repriced it by hand. For two and a half hours a live CNC
+    position held real stock with no stop and an unfillable limit, and nothing
+    anywhere reported it.
+
+    `pending` is the mirror of this check and does not cover it: it watches
+    unfilled ENTRIES, where the failure mode is a phantom position. Here the
+    failure mode is the opposite and worse — a real position, already decided
+    against, still exposed and no longer protected.
+
+    FAILS rather than warns. An exit the system has committed to and not
+    completed is the one state in this book where doing nothing keeps costing
+    money, and it is invisible on the dashboard, which reads open_positions
+    rather than the order book.
+    """
+    from config import cfg_float
+    from datetime import datetime
+    from config import IST
+    try:
+        from kite import kite_client
+        kite = kite_client.get_kite()
+        if not kite:
+            return True, "no broker session — cannot check open exits"
+        orders = kite.orders() or []
+    except Exception as e:
+        return False, f"could not read the order book to check for stranded exits: {e}"
+
+    from execution.exit_orders import stale_exits
+    limit_s = cfg_float("exit_order_stale_alert_s", 300.0)
+    stale = stale_exits(orders, datetime.now(IST), limit_s)
+    if not stale:
+        working = sum(1 for o in orders
+                      if (o.get("transaction_type") or "").upper() == "SELL")
+        return True, (f"no SELL order has been open longer than {limit_s / 60:.0f} min "
+                      f"({working} sell order(s) seen today)")
+
+    worst = max(stale, key=lambda o: o["_age_s"])
+    names = ", ".join(sorted({str(o.get("tradingsymbol")) for o in stale})[:4])
+    return False, (
+        f"{len(stale)} SELL order(s) unfilled past {limit_s / 60:.0f} min — {names}"
+        f" (worst {worst.get('tradingsymbol')} @ ₹{worst.get('price')}, "
+        f"{worst['_age_s'] / 60:.0f} min old). The position is still held, its GTT "
+        f"may already be cancelled, and the decision to exit has not completed. "
+        f"Reprice it or send it MARKET; enable exit_order_reprice_enabled to have "
+        f"the daemon do this itself")
+
+
 def check_pending_fills() -> tuple[bool, str]:
     """
     Is any entry stuck awaiting fill confirmation past when it should have
@@ -679,6 +814,10 @@ def storage_snapshot() -> dict:
     ceiling  = cfg_float("storage_ceiling_mb", 500.0) * 1024 * 1024
     fail_pct = cfg_float("storage_fail_pct", 80.0)
 
+    # sort-exempt: v_storage_usage is one row per public table — 56 rows,
+    # measured 15-Aug-2026. It is a catalogue view, not a data table, and
+    # cannot approach the cap without the schema itself having 1000 tables.
+    # It also has no `id`; the natural key is table_name.
     rows, off = [], 0
     while True:
         page = (sb.table("v_storage_usage")
@@ -869,8 +1008,26 @@ def check_quote_parity() -> tuple[bool, str]:
     detail string for visibility, never as the reason this returns False.
     RANGE is different: it measured clean, so any fault there is new
     information, not a re-statement of what was already known and accepted.
+
+    17-Aug-2026 — WHAT "CLEAN AT BASELINE" WAS ACTUALLY MEASURING. This fired
+    RANGE REGRESSED on 19 of 402 comparisons. Both halves of that sentence
+    were wrong.
+
+    The 402 was a silently truncated read: the select below had no paging, and
+    PostgREST caps a response at 1000 rows without saying so. Five days of
+    parity logging is ~190,000 rows, so the check was judging a regression on
+    an arbitrary, unordered 0.5% sample of the window it claimed to cover. It
+    now pages through `fetch_all`.
+
+    The baseline was worse. 07-Aug read clean because the daemon started at
+    10:08 that day — and 10-Aug (09:41), 11-Aug (09:30) and 13-Aug (09:52)
+    also read clean, while every day whose first sample was at 09:21 (12-Aug,
+    14-Aug, 17-Aug) read FAULT. The fault is not a feed regression; it is a
+    pre-open artifact that a late start never sees, and the "clean" baseline
+    this check was defending was a measurement taken an hour after the window
+    where the defect lives. See intraday/bar_builder.py's SESSION_OPEN.
     """
-    from config import cfg_bool, get_supabase, today_ist
+    from config import cfg_bool, fetch_all, get_supabase, today_ist
     from datetime import timedelta
 
     range_on = cfg_bool("intraday_quote_mode_range", False)
@@ -887,11 +1044,44 @@ def check_quote_parity() -> tuple[bool, str]:
 
     sb = get_supabase()
     cutoff = (today_ist() - timedelta(days=5)).isoformat()
+    # THIS READ WAS UNPAGED, AND IT INVERTED THE VERDICT.
+    #
+    # `intraday_quote_parity` is 178,545 rows; this 5-day window is 167,025 of
+    # them. Unpaged, PostgREST returned 1000 — 0.6% — with no error. Measured
+    # 15-Aug-2026, both verdicts computed from the same cutoff:
+    #
+    #   truncated (1000 rows):  True  — "400 day_high/day_low comparisons, all clean"
+    #   complete (100,215):     False — "176 of 66810 day_high/day_low comparisons behind"
+    #
+    # So the check reported RANGE clean while RANGE had regressed, and
+    # `intraday_quote_mode_range` has been trusted on that all-clear. This is
+    # the project's own "a check that cannot fail is not a check" landmine: it
+    # could fail in principle, but never on the evidence it was given.
+    #
+    # Filtered to the three fields the verdicts actually read (the other
+    # ~66,810 rows were fetched and discarded in Python) and paged. Costs ~8s.
+    # A health check that takes eight seconds and tells the truth is worth more
+    # than an instant one that says what you hoped.
+    from config import fetch_all
     try:
-        rows = (sb.table("intraday_quote_parity")
-                  .select("field,diff_pct,ts")
-                  .gte("ts", cutoff)
-                  .execute().data or [])
+        # PAGED, AND ORDERED WHILE PAGING. An unpaged select stops at 1000
+        # rows with no error; unordered LIMIT/OFFSET paging is worse still and
+        # returns duplicates in place of rows it never fetched. See
+        # config.fetch_all's docstring for the measurement.
+        #
+        # FILTERED TO THE THREE FIELDS THE VERDICTS ACTUALLY READ, SERVER
+        # SIDE — from diagnostic/rescore-complete-prices, merged 18-Aug-2026.
+        # range_verdict/vwap_verdict only ever look at day_high/day_low/vwap;
+        # everything else (prev_close, volume — measured at ~66,810 of the
+        # ~178,545-row table on 15-Aug) was being fetched and discarded in
+        # Python. This table is the single largest paged read in the
+        # codebase, so pushing the filter to the database instead of the
+        # client is the difference between an 8-second check and one that
+        # takes much longer for no better an answer.
+        rows = fetch_all(lambda: sb.table("intraday_quote_parity")
+                                   .select("field,diff_pct,ts")
+                                   .gte("ts", cutoff)
+                                   .in_("field", ["day_high", "day_low", "vwap"]))
     except Exception as e:
         return False, f"could not read intraday_quote_parity: {e}"
 
@@ -909,9 +1099,15 @@ def check_quote_parity() -> tuple[bool, str]:
     if range_on:
         ok, detail = range_verdict(rows)
         if ok is False:
-            return False, (f"RANGE REGRESSED — {detail}. day_high/day_low measured clean "
-                           f"on 07-Aug; this is new, worth investigating before trusting "
-                           f"intraday_quote_mode_range further.")
+            return False, (f"RANGE FAULT — {detail}. The live side leads by construction "
+                           f"(the socket's day range is the exchange's; the bar side is up "
+                           f"to 300s behind it), so a live value BEHIND the bar side means "
+                           f"the bar side holds a price today never traded at. Do NOT turn "
+                           f"intraday_quote_mode_range off — that switch is what keeps the "
+                           f"bad number out of the engines. Run "
+                           f"`python -m tools.quote_parity` and check what the fetched "
+                           f"value equals; when it equals the previous close, the bar "
+                           f"series has picked up an out-of-session print.")
         notes.append(f"range: {detail}")
     if vwap_on:
         _, detail = vwap_verdict(rows)
@@ -1397,7 +1593,11 @@ _SHORT_SPINE = [
     ("invalidation",     "intraday/exit_policy.py",        "D.is_better_price(ref, breached, d)"),
     ("cost model",       "intraday/cost_model.py",         "D.reward_per_share(entry_price, target_price, direction)"),
     ("allocator scorer", "allocation/scoring.py",          "D.validate(entry, stop, target, direction)"),
-    ("priors",           "allocation/scoring.py",          'f"{key}/SHORT"'),
+    # `k`, not `key`, since 18-Aug-2026 (diagnostic/rescore-complete-prices).
+    # Same story as `invalidation` above: the loop variable that builds the
+    # `/SHORT` suffix was renamed, the SHORT-vs-LONG separation it produces is
+    # unchanged, and this check caught the rename rather than missing it.
+    ("priors",           "allocation/scoring.py",          'f"{k}/SHORT"'),
     ("outcome resolver", "intraday/outcomes.py",           "hi >= stop, lo <= tgt"),
     # `dirn`, not `d`, since 15-Aug-2026 — and the rename is the POINT, not
     # cosmetic. `d` was already bound to the TRADE DATE at the top of
@@ -1730,6 +1930,7 @@ CHECKS = [
     ("exits",    "an exit rule can sell without alerting, or fires from only one caller", check_exit_actions, False),
     ("costs",    "charges are priced off a stale or wrong-product rate",         check_cost_rates, False),
     ("selects",  "a query reads a column the schema no longer has",              check_selects,  False),
+    ("sort_keys", "a paged read sorts on a column the table does not have, so it returns nothing", check_sort_keys, False),
     ("kite",     "no broker session, or the IP is not allowlisted",              check_kite,     False),
     ("data",     "decisions would run on stale inputs",                          check_data_freshness, False),
     ("broker",   "resting orders do not match the positions they protect",       check_broker_consistency, False),
@@ -1737,6 +1938,7 @@ CHECKS = [
     ("qty_fields", "current_qty/actual_qty/kite_qty silently disagree, hiding drift from the dashboard", check_quantity_fields, False),
     ("daemon",   "nothing is watching your positions right now",                 check_daemon,   False),
     ("pending",  "an entry order that never filled is being tracked as a real position", check_pending_fills, False),
+    ("exits_open", "a SELL the system decided on is still unfilled and the position is unprotected", check_open_exits, False),
     ("learning", "engines are being judged on evidence that was never collected", check_learning_loop, False),
     ("simulate", "a stage completes while producing nothing",                    check_simulate, True),
 ]

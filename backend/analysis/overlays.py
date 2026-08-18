@@ -206,7 +206,8 @@ def vol_exposure(sb=None) -> tuple[float, str]:
 # 3. LIQUIDITY AND CIRCUIT-BAND ELIGIBILITY
 # ─────────────────────────────────────────────────────────────────────────────
 
-def liquidity_ok(stock: dict, planned_value: float) -> tuple[bool, str]:
+def liquidity_ok(stock: dict, planned_value: float,
+                 framework: str = "") -> tuple[bool, str]:
     """
     Can this position be got OUT of at something like the plan?
 
@@ -250,6 +251,34 @@ def liquidity_ok(stock: dict, planned_value: float) -> tuple[bool, str]:
     if value_cr < min_cr:
         return False, (f"daily traded value Rs {value_cr:.1f} cr is below the "
                        f"Rs {min_cr:.1f} cr floor — a stop here is a suggestion")
+
+    # A SECOND, HIGHER FLOOR FOR THE SWING BOOK — 18-Aug-2026.
+    #
+    # The share-of-turnover test above asks whether THIS position can be got
+    # out of, and a 2-share position passes it in almost any listed name. That
+    # is the right question for a market order and the wrong one for a stop
+    # held over multiple sessions: what hurts a swing position is not its own
+    # footprint, it is the name's willingness to trade continuously between
+    # sessions when it is being sold by everyone at once.
+    #
+    # GABRIEL cleared every test above — Rs 123 cr on its best day, a 2-share
+    # position at 0.0003% of turnover — and then its exit sat unfilled for two
+    # and a half hours on 17-Aug while the price fell 1.5% away from the limit.
+    # By 14-Aug its turnover was Rs 17 cr, below where it started. HINDCOPPER,
+    # the same book's best trade, traded Rs 816 cr.
+    #
+    # This is a floor on the NAME, not on the position, which is why it cannot
+    # be expressed as a share and why it is separate from min_cr above. It
+    # applies to SWING only: the intraday book is flat by 15:15 and never holds
+    # a gap.
+    if (framework or "").upper() == "SWING" and cfg_bool(
+            "swing_liquidity_floor_enabled", False):
+        swing_min = cfg_float("swing_min_value_cr", 200.0)
+        if value_cr < swing_min:
+            return False, (f"daily traded value Rs {value_cr:.1f} cr is below the "
+                           f"Rs {swing_min:.0f} cr swing floor — thin names gap "
+                           f"through stops and their exits do not fill "
+                           f"(GABRIEL Rs 123 cr, HINDCOPPER Rs 816 cr)")
 
     # Circuit-band proxy. NSE does not publish the band in any feed this system
     # ingests, so it is inferred from realised range: a name repeatedly closing

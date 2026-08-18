@@ -57,7 +57,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import get_supabase, cfg_float, cfg_int, today_ist
+from config import get_supabase, cfg_float, cfg_int, today_ist, fetch_all
 from allocation import scoring as S
 from intraday import direction as D
 
@@ -69,19 +69,18 @@ INTRADAY_HOLD_DAYS = 0.5
 
 
 def _fetch_setups(sb, since: str) -> list[dict]:
-    rows, off = [], 0
-    while True:
-        page = (sb.table("intraday_setups")
-                .select("id,trade_date,symbol,strategy,entry,stop,target,direction,"
-                        "outcome,outcome_pct,cost_verdict,cost_pct,meta")
-                .gte("trade_date", since)
-                .not_.is_("outcome_pct", "null")
-                .range(off, off + PAGE - 1).execute().data) or []
-        rows += page
-        if len(page) < PAGE:
-            break
-        off += PAGE
-    return rows
+    # SORTED PAGING — see engine_scorecard._fetch for the mechanism. Measured
+    # on the live book 15-Aug-2026 with this exact filter: trial 1 returned
+    # 8324 rows / 5000 distinct, trials 2 and 3 returned 8324/8324. A replay
+    # that silently reads three thousand duplicate rows in place of three
+    # thousand real ones is not a counterfactual, and the row COUNT it prints
+    # is right in both cases.
+    return fetch_all(lambda: sb.table("intraday_setups")
+                     .select("id,trade_date,symbol,strategy,entry,stop,target,"
+                             "direction,outcome,outcome_pct,cost_verdict,"
+                             "cost_pct,meta")
+                     .gte("trade_date", since)
+                     .not_.is_("outcome_pct", "null"), page=PAGE)
 
 
 def _dedupe_candidates(rows: list[dict]) -> list[dict]:

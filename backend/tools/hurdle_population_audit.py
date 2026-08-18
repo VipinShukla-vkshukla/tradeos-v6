@@ -56,25 +56,21 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from loguru import logger
-from config import cfg_int, get_supabase, today_ist
+from config import cfg_int, get_supabase, today_ist, fetch_all
 
 PAGE = 1000
 
 
 def _fetch_all(sb, framework: str, since: str) -> list[dict]:
-    out, off = [], 0
-    while True:
-        page = (sb.table("allocation_decisions")
-                  .select("symbol,edge,regime_bucket,trade_date,decided_at")
-                  .eq("framework", framework)
-                  .gte("trade_date", since)
-                  .not_.is_("edge", "null")
-                  .range(off, off + PAGE - 1).execute().data) or []
-        out += page
-        if len(page) < PAGE:
-            break
-        off += PAGE
-    return out
+    # SORTED PAGING. `allocation_decisions` is 20,873 rows — twenty-one pages,
+    # and this audit is what the hurdle's own percentile base is inspected
+    # through. An unsorted pager returns the right COUNT with the wrong rows,
+    # so a percentile taken over it is biased and its row total says nothing.
+    return fetch_all(lambda: sb.table("allocation_decisions")
+                     .select("symbol,edge,regime_bucket,trade_date,decided_at")
+                     .eq("framework", framework)
+                     .gte("trade_date", since)
+                     .not_.is_("edge", "null"), page=PAGE)
 
 
 def _quantile(sorted_vals: list[float], q: float) -> float:

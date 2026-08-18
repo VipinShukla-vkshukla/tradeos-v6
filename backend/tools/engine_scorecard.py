@@ -47,22 +47,26 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import get_supabase, cfg_int
+from config import get_supabase, cfg_int, fetch_all
 
 PAGE = 1000
 
 
 def _fetch(sb, table: str, cols: str) -> list[dict]:
-    rows, off = [], 0
-    while True:
-        page = (sb.table(table).select(cols)
-                .not_.is_("outcome_pct", "null")
-                .range(off, off + PAGE - 1).execute().data) or []
-        rows += page
-        if len(page) < PAGE:
-            break
-        off += PAGE
-    return rows
+    # SORTED PAGING. This paged on `.range()` alone. LIMIT/OFFSET without an
+    # ORDER BY has no stable row order across requests, so pages may repeat
+    # rows and skip others while the TOTAL stays exactly right — which is why
+    # nothing ever raised. Measured on the live book 15-Aug-2026, this very
+    # query, three trials: 8324/8324 distinct, then 8324 rows / 5000 distinct,
+    # then 8324/8324. The bad trial silently dropped 3,324 real detections and
+    # triple-counted others, and every per-engine hit rate below is a MEAN over
+    # these rows.
+    #
+    # Note this reader was invisible to F-23's own census and to
+    # tests/test_static_analysis.py, because both match `.table("literal")` and
+    # this one passes the table name as a PARAMETER.
+    return fetch_all(lambda: sb.table(table).select(cols)
+                     .not_.is_("outcome_pct", "null"), page=PAGE)
 
 
 def _intraday_observations(sb) -> list[dict]:

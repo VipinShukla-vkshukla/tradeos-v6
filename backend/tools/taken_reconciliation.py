@@ -60,24 +60,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import get_supabase, today_ist
+from config import get_supabase, today_ist, fetch_all
 
 PAGE = 1000
 
 
-def _rows(sb, table: str, cols: str, date_col: str, since: str, extra=None) -> list[dict]:
-    out, off = [], 0
-    while True:
+def _rows(sb, table: str, cols: str, date_col: str, since: str, extra=None,
+          order_by: str = "id") -> list[dict]:
+    # SORTED PAGING. One caller passes `intraday_setups` — 8,324 rows, nine
+    # pages — so this is the same defect F-23 catalogued, hidden behind a
+    # table-name PARAMETER where neither F-23's `git grep 'table("intraday_
+    # setups")'` census nor the literal-name static check could see it.
+    def _build():
         q = sb.table(table).select(cols).gte(date_col, since)
-        if extra:
-            for k, v in extra.items():
-                q = q.eq(k, v)
-        page = (q.range(off, off + PAGE - 1).execute().data) or []
-        out += page
-        if len(page) < PAGE:
-            break
-        off += PAGE
-    return out
+        for k, v in (extra or {}).items():
+            q = q.eq(k, v)
+        return q
+    return fetch_all(_build, page=PAGE, order_by=order_by)
 
 
 def reconcile(days: int, sb=None) -> int:

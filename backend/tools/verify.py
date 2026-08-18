@@ -51,6 +51,7 @@ from loguru import logger
 #: path guards the book that holds real money and the only track record this
 #: system owns — if it fails, nothing below it matters.
 MODULES = [
+    ("gabriel gap",        "tests.test_gabriel_gap"),
     ("static analysis",     "tests.test_static_analysis"),
     ("replay harness",      "tests.test_replay_harness"),
     ("long path unchanged", "tests.test_long_path_unchanged"),
@@ -112,6 +113,8 @@ MODULES = [
      "tests.test_planner_regime_and_cost"),
     ("outcome resolution gap (row cap + loud alert)",
      "tests.test_outcome_resolution_gap"),
+    ("resolve_day session guard (F-27 mechanism A)",
+     "tests.test_resolve_day_session_guard"),
     ("single daemon startup lock", "tests.test_daemon_lock"),
 ]
 

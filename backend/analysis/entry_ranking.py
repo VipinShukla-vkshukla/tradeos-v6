@@ -37,7 +37,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import cfg_float
+from config import cfg_bool, cfg_float
 
 # AI tier is a bucket, not a number. These are the weights it contributes.
 # WATCH_CLOSELY is the model's default when it does not promote a name, so it
@@ -266,11 +266,73 @@ def score_plan(p: dict) -> Ranked:
         comp["asm"] = -12.0
         reasons.append("ASM/GSM -12")
 
+    # ── THE AI'S OWN WARNING, WHICH USED TO COST NOTHING — 18-Aug-2026 ──────
+    #
+    # `eap_action` and `ai_risks` have been written to every plan row since the
+    # AI review was built, and NEITHER reached this function. On GABRIEL the
+    # 29-Jul review said "Extended RSvN could lead to mean reversion" and the
+    # 03-Aug one returned eap_action = AVOID_ENTRY. The trade was taken on
+    # 06-Aug at rank 91, the highest in the book, and closed at -7.86%.
+    #
+    # AVOID_ENTRY is a REFUSAL and is not handled here — see entry_refusals(),
+    # because this function is a ranking and "nothing here is a gate" is a
+    # property worth keeping. What lands here is the softer case: a review that
+    # named a risk without asking for a refusal. That is worth points, not a
+    # veto, and the weight is deliberately smaller than the screener term it
+    # argues against so it colours the order rather than deciding it.
+    if str(p.get("ai_risks") or "").strip():
+        w = cfg_float("rank_w_ai_risk", 6.0)
+        comp["ai_risk"] = -w
+        reasons.append(f"AI flagged risk -{w:.0f}")
+
     total = round(sum(comp.values()), 2)
     # Largest absolute contributions first, so `why` leads with what decided it.
     reasons.sort(key=lambda r: -abs(comp.get(r.split()[0].lower(), 0.0)))
     return Ranked(symbol=p.get("symbol") or "?", total=total, annotations=annot,
                   components=comp, reasons=reasons)
+
+
+def entry_refusals(p: dict) -> list[str]:
+    """
+    Reasons this plan must NOT be entered, regardless of how it ranks.
+
+    Separate from score_plan() on purpose. That function is a ranking and its
+    docstring promises "nothing here is a gate" — a promise worth keeping,
+    because a refusal buried in an additive score can be outvoted by any other
+    term that happens to be large that day, which is exactly how GABRIEL's
+    screener score of 82 drowned out everything else about it.
+
+    Pure and no I/O, so `tools.simulate` and `tools.verify` reach the same
+    verdict as the live daemon rather than approximating it.
+
+    Returns an empty list when the plan may proceed.
+    """
+    out: list[str] = []
+
+    # eap_action is the AI review's verdict on ENTERING, as distinct from
+    # ai_tier which is its view of the OPPORTUNITY. GABRIEL carried
+    # AVOID_ENTRY on 03-Aug 2026 and was bought three sessions later; nothing
+    # in the entry path had ever read this column. Note the direction of the
+    # asymmetry: a refusal is honoured, a recommendation is not — the AI can
+    # veto a trade here but can never promote one, which is the same
+    # "annotation, never promotion" rule the conviction score already follows.
+    if cfg_bool("entry_rank_respect_ai_avoid", False):
+        if str(p.get("eap_action") or "").strip().upper() == "AVOID_ENTRY":
+            note = str(p.get("ai_note") or p.get("ai_risks") or "").strip()
+            out.append("AI review returned AVOID_ENTRY"
+                       + (f" — {note[:110]}" if note else ""))
+
+    # The plan's own quality gate already refused this row tonight. GABRIEL
+    # carried filter_reason `insufficient_rr_0.78x` on 03, 04 AND 05 August and
+    # was bought on the 6th; the daemon never looked at the column. Only
+    # refusals are honoured — `holding`, `lifecycle_reduce` and the like are
+    # states, not vetoes.
+    if cfg_bool("entry_respect_filter_reason", False):
+        fr = str(p.get("filter_reason") or "").strip().lower()
+        if fr.startswith(("insufficient_rr", "blocked", "rejected", "veto")):
+            out.append(f"the evening pipeline refused this plan: {fr}")
+
+    return out
 
 
 def rank(plans: list[dict]) -> list[Ranked]:

@@ -52,7 +52,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import get_supabase, today_ist
+from config import get_supabase, today_ist, fetch_all
 
 BENCH_DIR = Path(__file__).parent.parent / "benchmarks"
 
@@ -77,17 +77,11 @@ def _f(v):
 def _closed_trade_stats(sb, framework: str, days: int) -> dict:
     """Ground-truth win rate / R / P&L from closed_positions, no model math."""
     since = (today_ist() - timedelta(days=days)).isoformat()
-    rows, off = [], 0
-    while True:
-        page = (sb.table("closed_positions")
-                .select("r_multiple,realized_pnl,charges,entry_date")
-                .eq("framework", framework)
-                .gte("entry_date", since)
-                .range(off, off + 999).execute().data) or []
-        rows += page
-        if len(page) < 1000:
-            break
-        off += 1000
+    # SORTED PAGING — closed_positions is a live book that only grows.
+    rows = fetch_all(lambda: sb.table("closed_positions")
+                     .select("r_multiple,realized_pnl,charges,entry_date,id")
+                     .eq("framework", framework)
+                     .gte("entry_date", since))
 
     rs = [_f(r.get("r_multiple")) for r in rows if _f(r.get("r_multiple")) is not None]
     pnls = [_f(r.get("realized_pnl")) or 0.0 for r in rows]

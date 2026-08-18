@@ -5300,6 +5300,441 @@ path, F-12 stale allowlist) are recorded and not silently fixed.
 
 ---
 
+## 2026-08-15 — F-23 reconciliation + the price re-score — the priority reader was already fixed, three survivors were not, the guard left behind could not see either of the two families it was built for, and the previous session's headline fix does not run at all
+
+**Branch:** `diagnostic/rescore-complete-prices`, off `main` at `03b3529` (all
+session work merged to main first; `fix/single-daemon-lease` deliberately NOT
+merged — see §9). `python -m tools.verify` → **all 502 checks passed across 58
+modules**. `python -m tools.health` → **22 checks, 1 problem: `quote_parity`,
+which is this entry's F-27 and is the check finally telling the truth**.
+`python -m tools.simulate` → SWING LIVE 6 positions, 8 buyable plans, unchanged.
+
+READ-ONLY on outcome DATA: nothing re-resolved, nothing written back. Every
+number below is computed and printed.
+
+---
+
+### 0 — F-23, RECONCILED AGAINST HEAD
+
+F-23 listed its readers under a heading saying **NINE**; the code block beneath
+it holds **TEN** entries. The tenth (`engine.py:959`) is annotated "already
+flagged by F-19", so the count is either an off-by-one or an unstated exclusion
+— the same species of tally error §8 of the previous entry corrected about
+itself. Recorded, not guessed at.
+
+Each of the ten, checked against `HEAD` rather than against the prose:
+
+```
+FIXED BY SESSION 2 (6)
+  allocation/scoring.py:166   intraday_priors       <== F-23's OWN PRIORITY
+  allocation/scoring.py:1077  regime-segmented priors
+  tools/weekly_review.py:457  review_gates
+  tools/discover_engines.py:144  pass A
+  tools/discover_engines.py:274  pass B
+  tools/simulate.py:101       engine scorecard
+
+EXEMPT, WITH A MEASUREMENT (1)
+  intraday/engine.py:959      runway requeue — `paging-exempt:`, 15 rows
+
+STILL OPEN AT HEAD (3)  — all three fixed by this entry
+  tools/engine_scorecard.py:55   _fetch
+  tools/allocator_replay.py:74   _fetch_setups
+  tools/control_room.py:475      _load_setups
+```
+
+**The brief asked to prioritise `allocation/scoring.py:166` and fix it if still
+open. It is not still open.** Session 2 converted it to `config.fetch_all` and
+left the reasoning in place above the call. The thing F-23 called "the serious
+one" — the prior that prices every candidate the allocator sees — was repaired
+before this session started. Stating that plainly matters more than finding
+something to do to it.
+
+### 1 — THE THREE SURVIVORS, MEASURED BEFORE BEING TOUCHED
+
+Each reproduced exactly as it stood at HEAD, three trials, against
+`count=exact`:
+
+| reader | true rows | unsorted trials (rows / distinct) | lost |
+|---|---|---|---|
+| `engine_scorecard._fetch` | 8324 | 8324/8324 · 8324/8324 · 8324/8324 | — |
+| `allocator_replay._fetch_setups` | 8324 | **8324/5000** · 8324/8324 · 8324/8324 | **3324** |
+| `control_room._load_setups` | 7864 | **7864/5000** · 7864/7864 · 7864/7864 | **2864** |
+
+**Two of the three broke live, on the first trial.** The previous entry could
+only say of this idiom that it "came back clean this time"; here it did not.
+The count is right in both the good and the bad trial, which is the entire
+defect — 3,324 rows arrived twice and 3,324 never arrived, and nothing about
+the shape of the result says so.
+
+`control_room`'s companion read of `closed_positions` carries `.limit(1000)`
+and is bounded in fact: 148 rows over the 365-day filter. Checked, not assumed.
+
+### 2 — F-23 CENSUSED ONE TABLE. THE IDIOM WAS ON SIX.
+
+F-23 enumerated its readers with `git grep 'table("intraday_setups")'`. That is
+a census of one table, and the finding's scope silently became the scope of its
+grep. Scanning for the *idiom* instead — a `.range()` pager with no `.order()`,
+any table — found **21 sites**, of which ten read a table over the cap:
+
+```
+PRODUCTION
+  allocation/scoring.py:528   swing_priors()      <== THE LIVE SWING BOOK'S PRIOR
+  allocation/scoring.py:847   tier weight
+  allocation/scoring.py:955   rr fallback
+  swing/signals/engines_stage8.py:195  PEAD results-day bars (stock_data_daily)
+  swing/signals/outcomes.py:272        status report
+  allocation/outcomes.py:93 · allocation/swing_hold_days.py:71  (closed_positions)
+TOOLS
+  hurdle_population_audit:67 · swing_family_maturity_audit:59
+  weekly_review:626 · :714 · :796 · benchmark:82 · exit_ladder_replay:118
+  expectancy_ledger:102 · exit_audit:78 · taken_reconciliation:71
+  quote_parity:229 · backup:84 · :124 · health:684
+```
+
+**`swing_priors()` is the exact counterpart of the reader F-23 called "the
+serious one", on the LIVE book, and F-23 could not see it because it reads a
+different table.** Measured: its population is 1,681 rows (two pages), clean on
+three trials — lower exposure than the intraday side, not zero.
+
+**`taken_reconciliation._rows` pages `intraday_setups` itself** — 8,324 rows,
+the very table F-23 censused — and was invisible to that census because the
+table name is a *parameter*, `sb.table(table)`. So was
+`engine_scorecard._fetch`, one of the two readers that measured a live loss.
+
+**`intraday_quote_parity` is 178,545 rows** — by a wide margin the largest table
+in this schema, absent from the previous session's `_LARGE_TABLES` list, and
+paged unsorted across 179 pages by `quote_parity.report()`. A "known large
+tables" list is only as good as the census behind it.
+
+All 21 now go through `config.fetch_all`. Four kept their hand-rolled form
+behind an explicit `sort-exempt:` marker with its measurement (`v_storage_usage`
+is a 56-row catalogue view).
+
+**`signal_output_daily` has no `id` column**, so eight of these conversions had
+to pass `order_by="symbol,date"` — verified unique, 2430 distinct of 2430.
+`fetch_all`'s default would have raised on every one of them. That detail is
+not incidental; it is §6.
+
+### 3 — THE GUARD SESSION 2 LEFT COULD NOT SEE EITHER FAMILY
+
+`test_no_unpaged_read_of_a_table_that_exceeds_the_row_cap` is a good check for
+the defect it was built for, and it has two structural blind spots:
+
+- **`.range(` is treated as evidence of boundedness** (`if re.search(r'\.(limit|
+  range|single|maybe_single)\(...')`). Correct for truncation; it means the
+  entire *unsorted-paging* family — every reader in §1 and §2 — is invisible to
+  it. F-23 named that family and the guard written alongside F-23 does not
+  watch it.
+- **It matches `.table("literal")` only**, so the two variable-name readers
+  above are not merely unflagged, they are not even counted in `scanned`.
+
+`tests/test_static_analysis.py::test_no_range_pager_without_a_sort_key` closes
+both. **Demonstrated failing** by reverting `quote_parity.py`:
+
+```
+guard FIRED as it should:
+  tools/quote_parity.py:236 pages intraday_quote_parity with no sort key
+```
+
+**Its anti-vacuous guard is a positive control, not a row count, and that is a
+correction to the pattern this project has been using.** The sibling check
+asserts `scanned > 40`, which is sound because reads of large tables are
+plentiful and stay plentiful. That reasoning does not transfer: *this* check's
+own fixes DELETE `.range()` sites, so the population it counts shrinks every
+time it succeeds. The scan went **19 → 10** in this session. A floor set from
+the "before" number fails on the "after" — and the obvious repair, lowering the
+floor until it passes, is how a threshold becomes decoration. It asserts
+instead that the detector still flags a known-bad sample and still passes a
+known-good one, neither of which erodes.
+
+### 4 — F-27: `health.check_quote_parity` WAS GREEN ON 0.6% OF ITS EVIDENCE
+
+Adding `intraday_quote_parity` to the large-table list immediately surfaced an
+unpaged read the previous census never had a reason to look at:
+`tools/health.py:895`. Its 5-day window is **167,025 rows**. Unpaged, PostgREST
+returned 1,000.
+
+Both verdicts computed from the same cutoff, same function, 15-Aug-2026:
+
+```
+truncated (1000 rows)   True   "400 day_high/day_low comparisons, all clean"
+complete  (100,215)     False  "176 of 66810 day_high/day_low comparisons behind"
+```
+
+**The check has been reporting RANGE clean while RANGE was regressed, and
+`intraday_quote_mode_range` is ON and trusted on that all-clear.** This is the
+sixth green-while-broken check found in this project and it fits the house
+description exactly: it *could* fail, but never on the evidence it was handed.
+
+Fixed by filtering to the three fields the verdicts actually read — the other
+~66,810 rows were fetched and discarded in Python — and paging. Costs ~8s. A
+health check that takes eight seconds and tells the truth is worth more than an
+instant one that says what you hoped.
+
+`health` now reports **1 PROBLEM: quote_parity**. That is not a regression
+introduced here; it is a real fault that was already true this morning and is
+now visible. **It is unexplained and worth the operator's attention.**
+
+### 5 — F-28: SESSION 2's HEADLINE FIX DOES NOT RUN
+
+The previous entry's worst finding was the two 91% price losses —
+`data_aggregator` and `performance_tracker`, "the forward-price history every
+swing outcome is scored against". Both were converted to `fetch_all(...)` with
+no `order_by`.
+
+**`stock_data_daily` has no `id` column.** `fetch_all` defaults to `id`.
+PostgREST answers a sort on a missing column with 42703 and fails the WHOLE
+query.
+
+Verified by calling the production function directly, not by reading it:
+
+```
+>>> _load_outcomes_for_date_range(sb, date(2026,5,1), date(2026,8,10), 5)
+RAISED: APIError {'code': '42703', 'message': 'column stock_data_daily.id does not exist'}
+```
+
+So the swing brain's forward-return scorer went from silently reading 9% of the
+prices to reading none and raising. Both call sites fixed with
+`order_by="symbol,date"` (unique: 16,489 of 16,489).
+
+Audited against the live schema, every `fetch_all` site in the backend: **2 of
+45 wrong, 43 fine** — the ratio that survives review by eye.
+
+`health.check_sort_keys` is new and is a live schema probe, because "the code
+names this column" and "this column exists" are different claims and only one is
+answerable offline. `check_selects` cannot cover this: it validates columns
+named in `.select()`, and a sort key is a Python argument supplied by a default
+the call site never writes down. **Demonstrated failing**, then passing:
+
+```
+REVERTED -> FAIL: performance_tracker.py:114 sorts stock_data_daily on ['id'] which it does not have
+RESTORED -> PASS: all 45 fetch_all reads sort on a column that exists
+```
+
+### 6 — THE RE-SCORE: THE PREMISE IS WRONG, AND THE REAL ANSWER IS NARROWER
+
+The brief states the truncation means "every swing R figure in this ledger may
+be wrong, including the live book's". That is a claim about a DEPENDENCY, and it
+was tested rather than assumed. There are two different swing "R" populations:
+
+**A — `closed_positions.r_multiple`.** From `position_lifecycle.py:880`:
+
+```python
+risk   = D.risk_per_share(entry, stop0, d)
+r_mult = round((realized_pnl / total_qty) / risk, 3)
+```
+
+`realized_pnl` is built from the ACTUAL FILL prices; `risk` from
+`planned_stop`. **No `stock_data_daily` anywhere in it.** And neither
+`tools/expectancy_ledger.py` nor `tools/unit_economics.py` — the two tools every
+swing R figure in this ledger is quoted from — reads that table at all (0
+occurrences; they touch `closed_positions`, `signal_output_daily`,
+`system_config`).
+
+⇒ **No closed swing position's R changes. Not one, gross or net. The 91%
+truncation cannot have touched any swing R figure in this ledger, including the
+live book's.**
+
+**B — plan-level `outcome_*`,** scored FROM prices by `performance_tracker`.
+That is the population the truncated readers actually feed, and there the effect
+is not bias but annihilation. Same function, same window
+(2026-05-01..08-10, horizon 5), price fetch switched:
+
+```
+TRUNCATED   2,000 price rows    0 of 3896 signals scored   (0.0%)
+COMPLETE   21,656 price rows  3818 of 3896 signals scored  (98.0%)
+                              mean fwd +0.152%  hit 21.5%  loss 10.4%
+```
+
+Note this is the path that has been RAISING since §5's defect landed, so it has
+most recently produced neither number.
+
+The swing outcome resolver that actually writes `outcome_category` —
+`swing/signals/outcomes.py:82` — was never in this blast radius: it pages, and
+it sorts. See §9 for the one thing wrong with it.
+
+**Per trade.** 82 closed SWING positions; 12 carry the `planned_stop_at_entry`
+needed to express R. "recorded" is the fill-derived figure; "re-scored" walks
+the complete price frame to the close on the recorded exit date — a DIFFERENT
+measurement, not a correction of the first.
+
+```
+symbol       exit         recorded   truncated   complete
+PPLPHARMA    2026-07-30      2.095       n/a        1.956
+GABRIEL      2026-07-31      0.192       n/a        0.330
+BHEL         2026-08-03      0.081       n/a        0.160
+TRAVELFOOD   2026-08-06      0.267       n/a       -0.293
+KIMS         2026-08-06      0.394       n/a        0.278
+ETERNAL      2026-08-10      0.289       n/a        0.189
+CIPLA        2026-08-10      0.089       n/a       -0.028
+VIJAYA       2026-08-12      0.452       n/a        1.076
+MANAPPURAM   2026-08-14     -0.750       n/a       -0.659
+PPLPHARMA    2026-08-14      0.863       n/a        0.694
+AIIL         2026-08-14      0.377       n/a        0.238
+AUBANK       2026-08-14      0.366       n/a        0.409
+```
+
+**The truncated frame priced ZERO of the twelve.** Under truncation these trades
+have no re-scored R at all — again absent, not wrong.
+
+**Aggregate.**
+
+```
+recorded (fills)        n=12   gross R +0.3929   hit 91.7%
+re-scored COMPLETE      n=12   gross R +0.3625   hit 75.0%
+re-scored TRUNCATED     n=0    —
+net R (recorded)        n=12   net   R +0.2568   hit 66.7%
+```
+
+`tools.expectancy_ledger`, authoritative, agreeing to the third decimal:
+
+```
+· SWING / CNC (n=12)
+  gross R          n=12  mean +0.393 ±0.188  median +0.328
+  friction, in R   n=12  mean +0.171 ±0.055  median +0.113
+  NET R  <- number n=12  mean +0.222 ±0.197  median +0.151
+  SWING CNC by rupees: n=82  net-win 34/82
+```
+
+### 7 — LEDGER FINDINGS WHOSE NUMBERS CHANGE, AND WHY
+
+**None of them change because of the truncation.** They change because the book
+grew from 8 R-computable swing trades to 12.
+
+| finding | was | is now |
+|---|---|---|
+| Stage 1 "+0.482 gross R (n=8)" | +0.482, n=8 | **+0.393, n=12** |
+| line 297 "SWING / CNC (n=8) NET R mean +0.278" | +0.278, n=8 | **+0.222, n=12** |
+| Stage 2b / C.4 "SWING 39.7% (n=78)" | 39.7%, n=78 | **41.5% (34/82)** |
+| the "zero losers" caveat (line ~1467) | 8 of 8 gross winners | **VOID — 11 of 12** |
+
+**The "zero losers" caveat is the one that matters.** The ledger has repeatedly
+and correctly refused to call +0.482R an estimate of swing edge because the
+subsample contained no losing trade. It now contains one — MANAPPURAM, −0.750,
+14-Aug. The caveat as written is no longer true; the *caution* it encodes still
+is, at n=12 with one loser.
+
+**`tools/unit_economics.py` hardcodes `SWING 39.7% (n=78)` in a log line.** It
+prints a measured-sounding figure that is now a literal. Not fixed here — it is
+a one-line change in a tool this ledger quotes, and it should be changed
+deliberately rather than as a side effect of a paging session.
+
+### 8 — DISCOVER_ENGINES: BOTH HYPOTHESES SURVIVE
+
+Re-run at `--days 30` to match Stage 1's window, because the tool now defaults
+to 14 and comparing across windows would measure the window, not the fix.
+
+```
+                        STAGE 1 (truncated)        NOW (complete)
+pass A population       1000 -> 236 -> 99          8324 -> 1102 -> 330
+taken baseline          21% (n=53)                 19% (n=121)
+refused slices beating  none                       BLOCKED_EVENT/VWR 33% of 6
+gap up   > 1%           lift 1.6x (32% of 95)      lift 1.8x (35% of 89)
+                        24 missed, avg 6.06%       23 missed, avg 5.10%
+gap down > 1%           lift 1.9x (39% of 31)      lift 1.9x (38% of 32)
+                        11 missed, avg 4.86%        7 missed, avg 4.06%
+```
+
+**H1 survives and strengthens: 1.6x → 1.8x. H2 survives unchanged at 1.9x.
+Neither is void.**
+
+**And the reason is worth recording, because it corrects the previous entry's
+reasoning about its own fix.** Session 2 argued pass B's truncation "inverts the
+tool — the better the engines get the more it invents". Directionally right;
+quantitatively small here. The LIFT is computed from `stock_data_daily` bars and
+never touched `intraday_setups` at all — only the MISSED counts read `seen`. So
+truncation could never have manufactured a lift, only inflated a miss count, and
+it did: gap-down 11 → 7 (36% overstated), gap-up 24 → 23 (4%). The hypotheses
+were never the fragile part.
+
+**What did change is Stage 1's pass A conclusion.** It read "no refused slice
+beats the taken baseline — the gates are declining worse setups than they
+allow, which is their job", and was cited as "independent evidence that the
+gates are not inverted". On the complete population one slice does beat it
+(`BLOCKED_EVENT`/VWR, 33% of 6; at 14d also `BLOCKED_STRUCTURE`/VCE, 27% of 11).
+At n=6 and n=11 this is not evidence of anything and must not be acted on — but
+the sentence as written is no longer supported.
+
+Two `ENGINE_CANDIDATE` rows written (id 192, 193), both `PENDING`. Nothing
+auto-applied.
+
+### 9 — `outcomes_watch`: INSTALLED, CORRECTLY WIRED, HAS NOT FIRED
+
+**Installed — verified against the remote, not the working tree.** Only the
+default branch is ever scheduled, so the working tree proves nothing:
+
+```
+origin/main blob .github/workflows/brain_scheduler.yml
+  cron: '30 3 * * *'   # 09:00 IST, daily
+  job outcomes_watch:  if github.event.schedule == '30 3 * * *'   <- exact match
+  workflow_dispatch options include outcomes_watch  <- manually triggerable
+  runs: python -m intraday.outcomes --check-and-alert
+```
+
+The gate string and the cron string match exactly. In a multi-cron workflow a
+mismatch there is the standard way a job is scheduled and never runs; it is not
+the failure here.
+
+The entrypoint exists and was executed:
+`outcomes: every past session is scored`.
+
+**Has not fired, and could not have.** The commit that added it, `956a38b`,
+landed **2026-08-15 20:38:56 IST** — about eleven and a half hours after today's
+09:00 window. First possible run is **16-Aug 09:00 IST**.
+
+**Not verified from run history.** There is no `gh` CLI and no GitHub token in
+this environment, so the Actions log was not read. "Has never fired" is inferred
+from the commit timestamp — which is decisive for today and is not the same
+claim as having seen an empty run list. First proof remains its 09:00 IST run.
+
+### 10 — RECOMMENDS
+
+**No retirements**, per the brief and independently on the evidence: the two
+pass-A slices that beat baseline sit at n=6 and n=11, and F-25's stop-floor
+finding still means several engines' R statistics describe setups the cost model
+would refuse today.
+
+### 11 — NOT DONE
+
+- **`swing/signals/outcomes.py:82` pages on `.order("date")` — a NON-UNIQUE
+  key.** Ties within a date are ordered arbitrarily across requests, so the same
+  drift is available to it; it is a weaker version of the §1 defect, not an
+  instance of safety. Measured over a 250-symbol / 14-page window: 13,451 of
+  13,451 distinct on two trials, both orderings. **Not fixed — this is the
+  outcome resolver and the brief is READ-ONLY on outcomes.** The new static
+  check does NOT catch it: it tests for the presence of `.order(`, not for the
+  uniqueness of what is ordered on. That is the next member of this family.
+- **The `quote_parity` RANGE regression (§4) is real and unexplained.** 176 of
+  66,810 day_high/day_low comparisons are behind, against a clean 07-Aug
+  baseline. `intraday_quote_mode_range` is ON.
+- **`tools/unit_economics.py`'s hardcoded `SWING 39.7% (n=78)`** (§7).
+- **`local main is 3 commits ahead of origin/main` and unpushed**, so none of
+  this session's or the previous session's fixes are on the branch GitHub
+  actually schedules from. `outcomes_watch` itself IS there; the paging fixes
+  the weekly jobs depend on are not.
+- **`fix/single-daemon-lease` is still unmerged** — one commit, `e5738a7`,
+  carrying migration 077 and `order_manager` changes. Promoting a live-order
+  path and a DB migration is a different decision from consolidating diagnostic
+  work, and it conflicts in `FINDINGS.md`. Left for the operator.
+- **Nothing addresses why 14-Aug produced 2289 detections** against 28-Jul's
+  236. Unchanged and still the largest single influence on every pooled number
+  in this ledger.
+
+**Gate: PASS** — F-23 reconciled against HEAD line by line with its own count
+corrected, the three survivors measured breaking live before being repaired, the
+idiom traced past F-23's one-table census to twenty-one sites on six tables
+including the live swing prior, a guard added for the family the previous guard
+could not see and given a positive control instead of a threshold its own
+successes erode, a health check found green on 0.6% of its evidence and now
+failing truthfully, the previous session's headline fix found non-functional and
+repaired with a schema probe that would have caught it, the re-score's premise
+tested and shown not to reach closed-position R, and both discovery hypotheses
+confirmed to survive. `tools.verify` 502/502, `tools.health` 22 checks / 1 real
+problem, `tools.simulate` unchanged.
+
+---
+---
+
 ## 2026-08-16 — Stage 2f (change, `fetch_all` sort keys) — the paging fix broke the two readers it was fixing: `stock_data_daily` has no `id`, so both price readers raised 42703 on page one. Confirmed live, fixed, and a check that resolves every paged read's sort key back to its table
 
 ### 0 — THE CLAIM, INDEPENDENTLY CONFIRMED
@@ -6508,6 +6943,564 @@ window scored, no parameter moved, nothing written outside this ledger.
 
 ---
 
+## 2026-08-16 — F-27 follow-up (diagnostic, outcome-writer integrity) — it is systemic and it is NOT about stop distance: 111 groups of IDENTICAL setups carry contradictory outcomes, and 58 of them are impossible inside a single run. Resolution is a function of WHEN `resolve_day` happened to fire, not of the setup. VWR survives; ORB survives by 0.01R
+
+READ-ONLY. Nothing was written outside this ledger, no row re-scored, no fix
+applied. Branch `diagnostic/outcome-writer-integrity`.
+
+### 1 — IS IT SYSTEMIC? YES, AND THE F-27 DETECTOR UNDERSTATES IT
+
+F-27's definition — same symbol/engine/direction, identical entry and target,
+**different** stops, nearer stop resolving better — across all 14 sessions and
+all 8324 resolved rows:
+
+```
+  date         comparable pairs   inverted   (nearer stop resolved better)
+  2026-07-28          11              0
+  2026-07-31           1              0
+  2026-08-06          78             10
+  2026-08-07          40              4
+  2026-08-10          28              1
+  2026-08-11          15              2
+  2026-08-12         181              6
+  2026-08-13         154              5
+  2026-08-14         306              5
+  ------------------------------------------
+  TOTAL              814             33      = 4.1% of comparable pairs
+```
+
+**33 inversions across 7 of 14 sessions.** 14-Aug is not special; 08-06 is the
+worst by rate (12.8%). So: systemic, and present since at least 06-Aug.
+
+**But the stop-distance framing is a red herring.** Dropping the "different
+stops" requirement and grouping on setups that are identical in *every* field
+the writer reads — `(trade_date, symbol, strategy, direction, entry, stop,
+target)` — finds a much larger and cleaner defect. These are the same setup
+recorded more than once, so they have no legitimate way to differ at all:
+
+```
+  date         duplicate groups   groups that CONTRADICT themselves   rows
+  2026-07-28          49                    0                           -
+  2026-07-30           1                    0                           -
+  2026-07-31           7                    3                           7
+  2026-08-03           6                    0                           -
+  2026-08-05         165                   20                          72
+  2026-08-06          35                    2                           4
+  2026-08-07          49                    7                          27
+  2026-08-10         210                   44                         173
+  2026-08-11          16                    1                           2
+  2026-08-12         128                   15                          34
+  2026-08-13         134                    7                          21
+  2026-08-14         293                   12                          46
+  ---------------------------------------------------------------------
+  TOTAL            1,093                  111  (10.2%)                386
+```
+
+**386 rows = 4.6% of the 8324-row population; 49 of the 1102 deduplicated
+observations = 4.4%.** The cleanest single example, 12-Aug MAXHEALTH/SDN, needs
+no stop-distance argument at all — ids **3634** and **3637**, 2.3 seconds apart,
+entry 1017.4, stop 1026.65, target 1003.49, *every field identical*:
+
+```
+  id 3634  ts 04:08:57.893697Z   ->  TARGET   +1.161
+  id 3637  ts 04:09:00.221930Z   ->  STOP     -1.115
+```
+
+Same setup. Opposite answers. 2.276R apart.
+
+### 2 — MECHANISM: TWO OF THEM, AND THE DOMINANT ONE IS NOT THE WINDOW
+
+Split the 1093 duplicate groups by whether their rows share a replay window:
+
+```
+  class                          groups   contradict   rate
+  all rows inside ONE minute       627        58       9.3%
+  straddles a minute boundary      466        53      11.4%
+```
+
+**A — Resolution is not reproducible across runs. (dominant, ~9.3pp of 11.4pp)**
+
+The 58 same-minute contradictions are *arithmetically impossible within a single
+`resolve_day` call*, and that is a proof, not an inference. Inside one run, rows
+in such a group share: symbol, direction, entry, stop, target; one per-symbol
+`bar_cache` entry (`outcomes.py:148-149`); and the same bar slice, because
+`bars = [b for b in bar_cache[sym] if b["date"] >= after]` (`outcomes.py:150`)
+quantises every `after` in the same minute onto the same first bar. The one edge
+case that could break that — a `ts` of exactly `.000000`, which would admit its
+own minute's bar — occurs in **0 of 8324 rows** (checked). The scan at
+`outcomes.py:181-198` is pure and deterministic. Identical inputs, identical
+scan, identical output. They contradict anyway, so **they were scored by
+different runs against different bar series.**
+
+What differs between runs is *how much of the session existed yet*:
+
+- `_session_bars` calls `kite.historical_data(token, day, day)` at whatever
+  wall-clock moment the run happens (`outcomes.py:60`). Mid-session, that
+  returns a truncated series.
+- `resolve_day` is reached only from the intraday daemon's `finally` block
+  (`intraday/run.py:416`). **Every** daemon exit fires it — crash, hard kill,
+  restart, lid — not just the 15:20 square-off. CLAUDE.md already records that
+  mid-session restarts happen and re-record the morning.
+- On a truncated series, `outcome, exit_px = "TIMEOUT", float(bars[-1]["close"])`
+  (`outcomes.py:180`) prices TIMEOUT at *the mid-session price*, and any
+  stop/target hit after that instant is invisible.
+- The work queue is `.is_("outcome", "null")` (`outcomes.py:100-101`), so once a
+  row is scored it is **never revisited**. Idempotence — the property that makes
+  re-running free — is what freezes the truncated answer in permanently, while
+  its twin, still NULL, gets the full-day answer from a later pass.
+
+The signature confirms it: **STOP+TIMEOUT is 42 of the 58** same-minute
+contradictions (and 41 of 53 cross-minute) — exactly the shape of "one pass saw
+the whole day and found the stop, the other ended early and found nothing".
+Note 08-05 has 530 rows, well under the PostgREST cap, and still carries 14 of
+them, so this is **not** a re-run of F-19's row cap; it is daemon lifecycle.
+
+**B — The replay window is quantised to the whole minute. (minor, ~2.1pp)**
+
+`b["date"] >= after` compares a bar's **open** timestamp against a detection
+timestamp carrying sub-second precision, so the detection's own minute is always
+discarded entire: a mean ~30s, and up to 60s, of price action that occurred
+*after the setup existed* is never replayed. Two detections seconds apart on
+opposite sides of `:00` therefore replay bar sets differing by one whole bar.
+
+This is F-27's own pair. 14-Aug GODREJCP/SDN, ids 6136 and 6155:
+
+```
+  id 6136  ts 09:32:46.010 IST  stop 938.12 (farther)  first bar 09:33  -> STOP
+  id 6155  ts 09:33:01.426 IST  stop 937.12 (nearer)   first bar 09:34  -> TARGET
+```
+
+The 09:33 bar is replayed by one row and not the other, which is the only way
+the farther stop can resolve worse. The control group agrees: of 253 pairs where
+the nearer stop starts **earlier** (sees more bars), **0** invert; of 507 where
+it starts **later**, 28 do.
+
+Mechanism B is real and touches every row in the table, not only duplicated
+ones — but it explains only about 2 percentage points of the contradiction rate.
+A is the defect that matters.
+
+*Reasoned, not measured:* B should bias gross R **upward**. Discarding the first
+partial minute drops the earliest hits, and in these engines the stop sits
+nearer than the target (the SDN example above: stop +0.91%, target -1.37%), so
+more early stop-outs are dropped than early target hits. Correcting B should
+therefore make engines look **worse**, not better. This is geometry, not a
+measurement — see §5.
+
+### 3 — WHAT IT CONTAMINATES
+
+**Not `tools/expectancy_ledger.py`.** That reads `closed_positions`
+(`expectancy_ledger.py:94,102`), whose intraday rows are PAPER fills written by
+the live 15s loop, not by this writer. Its intraday population is small — SDN
+17, ORB 11, VWR 10, GAP 9, PDL 7, VCE 7, PBK 5 — and untouched by F-27.
+
+**The six-engine gross-R table F-27 cites is a different artefact**, derived
+from `intraday_setups`, and it *is* contaminated. Confirmed by reproducing it:
+dedup key `(symbol, strategy, trade_date)`, population = all rows with
+`outcome_pct` not null. n matches the published table **exactly on all nine
+engines** (SDN 398, VWR 307, VCE 138, ORB 119, RNG 60, PBK 32, PDL 25, GAP 22,
+GDB 1 = 1102).
+
+Also reading this table, and so also contaminated: `allocation/scoring.py`
+(`intraday_priors`), `allocation/hurdle.py` (the arrival distribution),
+`outcomes.engine_scorecard`, `tools/engine_scorecard.py`, `tools/weekly_review.py`,
+`tools/discover_engines.py`, `tools/allocator_replay.py`,
+`tools/proposal_backtest.py`, `ai/post_trade_analysis.py`.
+
+**Could a verdict flip?** Each self-contradicting group proves at least one
+member is wrong and the truth is one of the values observed, so replacing every
+member with the group's worst (pessimistic) and best (optimistic) gross figure
+brackets that error exactly:
+
+```
+  engine  n     as-is          pessimistic     optimistic      contaminated
+  VWR    307  -0.335 (-5.1 SE) -0.343 (-5.2)  -0.332 (-5.0)      1.0%
+  ORB    119  -0.238 (-2.4 SE) -0.278 (-2.9)  -0.209 (-2.1)     11.8%
+  SDN    398  -0.047 (-0.8 SE) -0.058 (-1.0)  -0.037 (-0.6)      5.8%
+  VCE    138  -0.261 (-2.6 SE) -0.290 (-2.9)  -0.232 (-2.2)      3.6%
+  RNG     60  +0.061 (+0.4 SE) +0.061 (+0.4)  +0.062 (+0.4)      1.7%
+  PBK     32  -0.288 (-1.1 SE) -0.288 (-1.1)  -0.288 (-1.1)      0.0%
+```
+
+- **VWR survives comfortably.** Worst case -5.0 SE; the 2 SE interval reaches
+  only -0.199. "ALREADY NO" holds under any resolution of the observed error.
+- **ORB survives by 0.01R.** Its optimistic bound is -0.209 ± 0.0995, so the
+  2 SE upper limit is **-0.010** — still excluding positive gross R, by one
+  hundredth of an R. ORB is also the **most contaminated engine at 11.8%**. It
+  is not robust in any meaningful sense; it is on the right side of the line by
+  a rounding error.
+- **No verdict flips on the observable error.** §6182's scope decision stands as
+  written — but ORB's margin should not be described as settled.
+
+**A separate defect on the same table, found in passing.** The estimator takes
+`risk_pct` from `grp[0]` while averaging `outcome_pct` across the whole group
+(`tools/engine_scorecard.py:86-104`), and the dedup key
+`(symbol, strategy, trade_date)` pools setups at genuinely different price
+levels — 14-Aug GODREJCP/SDN is **11 rows with 7 distinct entries in one
+group**. The published numbers therefore depend on row order within the group.
+Ordering by `id`, VWR (-0.335 vs -0.345), ORB (-0.238 vs -0.241), SDN and PBK
+reproduce closely, but **VCE reads -0.261 against a published -0.155, and RNG
+reads +0.061 against a published -0.137 — a sign flip.** Not F-27, but it sits
+on the same table and moves the same verdicts.
+
+### 4 — RECOMMENDED FIX (NOT IMPLEMENTED)
+
+In priority order. 1 is the one that matters.
+
+1. **Refuse to score a session that is not over.** `resolve_day` should hard-
+   refuse unless the day has closed — wall clock past the square-off, or
+   `bars[-1]` at/after the close bar — returning the `complete=False,
+   reason="session_open"` shape it already uses for `no_broker`. This kills
+   mechanism A at the source and needs no schema change.
+2. **Record provenance.** Add `resolved_at` (and `resolved_bars_to`) to
+   `intraday_setups`. Today, "which run scored this row" is unanswerable; every
+   claim in §2 had to be *inferred* from contradictions rather than read. A
+   number whose origin cannot be stated cannot be defended.
+3. **Make re-resolution possible.** Idempotence currently means "never revisit",
+   which is what froze the truncated answers in. Add `--rescore` to recompute
+   rows whose `resolved_at` precedes the session close.
+4. **Make the window a function of the setup, not the fractional second.** Filter
+   on bar *close* (`bar_open + interval > ts`) so the detection minute is
+   replayed from the detection instant; or anchor deliberately to the next bar
+   open and record which bar was used. Either is defensible. A rule whose answer
+   changes with the sub-second component is not.
+5. **A check that FAILS on contradiction.** Group resolved setups by
+   `(trade_date, symbol, strategy, direction, entry, stop, target)` and assert
+   one distinct outcome per group. It fails on today's data (111 groups) —
+   demonstrate it failing before trusting it, per CLAUDE.md. Logic check into
+   `backend/tests/` + `tools/verify.py::MODULES`; the live-book variant into
+   `tools/health.py`.
+6. **Separately, fix the dedup estimator** (§3) — narrow the key to include
+   entry/stop/target, or carry risk per row. RNG's *sign* currently depends on
+   fetch order.
+
+**Do not re-score the book until 1-4 land.** Re-resolving with the current
+writer would replace one arbitrary answer with another and destroy the
+contradictions that are currently the only evidence the defect exists.
+
+### 5 — NOT DONE / COULD NOT DETERMINE
+
+- **No bar-level confirmation of any single row.** There is no broker session in
+  this environment (`kite` returned "Please log in first"), so `_session_bars`
+  could not be exercised and no claim here rests on observed OHLC. Mechanism B's
+  per-row effect is inferred from the code path and the timestamps; the §2 proof
+  of mechanism A does not need bars.
+- **Which run scored which row is inferred, never read** — there is no
+  `resolved_at`. That is recommendation 2.
+- **The optimistic-bias direction of mechanism B is reasoning from stop/target
+  geometry, not a measurement.**
+- **The unobservable error is not bounded.** §3's bracket covers only rows that
+  contradict a surviving twin. Rows with no duplicate, and groups where every
+  member was scored in the same truncated pass, carry the same defect and leave
+  no trace. **True uncertainty on every engine figure is strictly wider than the
+  table shows**, and only a full re-resolution against complete bars measures it.
+- **`meta.sub_engine` is NULL in all 8324 rows**, so "same engine" could only be
+  tested at family (`strategy`) granularity. CLAUDE.md states `_setup_is_new`
+  dedups on `meta.sub_engine`; if that field is genuinely never written, the
+  dedup key is degenerate. Not investigated — it is adjacent, not F-27.
+
+**Gate: MEASURED. No fix implemented, no row re-scored, nothing written outside
+this ledger.** F-27 is confirmed systemic but re-characterised: the defect is
+non-reproducible resolution across runs, of which stop-distance inversion is one
+visible symptom.
+
+---
+
+## 2026-08-16 — F-27 mechanism A (change, `resolve_day` session guard) — the scorer had no clock: it is called from the daemon's `finally` block, prices TIMEOUT at whatever bar it was last handed, and never revisits a row it has written. Guard + provenance built, 15 of 18 checks demonstrated failing first. Task 2's config changes are WRITTEN AS MIGRATION 081 AND NOT APPLIED — live database writes were denied to this session
+
+**Ran:**
+
+```bash
+git checkout -b fix/resolve-day-session-guard
+python -m tools.verify --module resolve_day_session_guard   # x3, see section 3
+python -m tools.verify                                      # 562 checks
+python -m tools.health                                      # all green
+python -m tools.rollback --status
+```
+
+No row was re-scored. No row was repaired. Nothing was written to the database.
+
+### 0 — A PREMISE CORRECTION, BEFORE ANYTHING BELOW IS READ
+
+The brief says "follow section 4 of the F-27 entry". **There is no section 4, and
+no F-27 entry with sections.** F-27 exists in this ledger only as a 19-line note
+inside section 6 (FOUND ALONG THE WAY) of the 2026-08-16 replay-harness entry,
+and that note explicitly records the mechanism as **unexplained**:
+*"`outcomes.py:210` is the only writer of the column, and its window logic is
+unchanged since commit `042217e`, so the mechanism is not yet explained."* The
+later entries carry it forward as `F-27 not investigated`.
+
+So the diagnosis in the brief — the `finally` block, `bars[-1]["close"]`, the
+never-revisited row, 58 contradictions of which 42 are STOP+TIMEOUT — is **not
+in the repository**. It is taken as given from the operator and **verified in
+the code below**, which is the half I can check. The 58/42 counts are the
+operator's measurement and are quoted, not reproduced: database reads were
+available at the start of this session and denied partway through, so no
+independent count was possible.
+
+**What this means for the work:** the design decisions below are mine, derived
+from the mechanism, not transcribed from a spec. Anywhere a section 4 would
+have decided something differently, this entry is the place that record lives.
+
+### 1 — THE MECHANISM, CONFIRMED IN THE CODE
+
+Three properties, each defensible alone:
+
+```
+intraday/run.py:416          resolve_day(sb=sb) in the daemon's `finally` block
+intraday/outcomes.py:180     outcome, exit_px = "TIMEOUT", float(bars[-1]["close"])
+intraday/outcomes.py:100-101 work queue = .eq(trade_date, d).is_("outcome","null")
+```
+
+`finally` runs on **every** exit — a clean 15:40 cool-down, yes, but equally a
+crash at 10:12, a Ctrl-C at 11:30, a closed laptop, a restart to pick up a
+config change. On any of those `historical_data` returns the session **so far**,
+every still-open setup is scored TIMEOUT at a mid-morning close, and the third
+property makes it permanent: the row is no longer NULL, so the evening
+pipeline's `backfill` will not come back for it.
+
+That table is what `scoring.intraday_priors()` and `hurdle`'s arrival
+distribution are both built from, so one frozen row prices every candidate that
+arrives after it. This is the same class of defect as the priors-built-from-
+refused-rows landmine already in `CLAUDE.md`: the learning loop is fed a
+population that is an artefact of the system's own operations.
+
+**The `--once` path shares it.** `run.py --once` runs one cycle and breaks into
+the same `finally`, so a single diagnostic invocation at any hour would have
+scored and frozen the whole outstanding book. Nothing in the tool says so.
+
+### 2 — WHAT WAS BUILT
+
+**`outcomes.session_is_over(trade_date, now=None) -> (ok, why)`.** A past date is
+always over — that is the entire `backfill` population and refusing it would
+blind the one mechanism that repairs unscored sessions. A future date never is,
+which is a real case: a host whose clock or timezone is behind would otherwise
+score a day whose bars do not exist and write TIMEOUT across the whole book.
+Today's date is over at `MARKET_CLOSE` plus a settling buffer.
+
+**The bar reads `intraday/config`'s `MARKET_CLOSE` and `COOLDOWN_TO`, not copies
+of them,** because of the case that decides whether this fix is inert or
+harmful. The daemon leaves its loop when `is_trading_session()` goes false, at
+`COOLDOWN_TO` = 15:40, and calls `resolve_day` on the way out. A bar at or past
+15:40 would mean **the daemon can never score its own session again** and every
+day silently waits for the next evening's pipeline — a guard that cannot pass,
+which this project has already paid for twice. `outcomes_close_buffer_min`
+defaults to 5 (bar at 15:35, five minutes of headroom) and is **clamped to 9
+with a WARNING** if set higher, rather than being allowed to disable the path it
+exists to protect.
+
+**Provenance (migration 080):**
+
+| column | what it answers |
+|---|---|
+| `scored_at` | WHEN — separates a re-score from the original write |
+| `scored_by` | WHICH RUN — `lease.instance_id()`, host-pid-uuid |
+| `scored_through` | THROUGH WHICH BAR — the last bar in the window that priced it |
+
+`scored_through` is the one that matters. A TIMEOUT is priced at that bar's
+close, so a TIMEOUT whose `scored_through` reads 11:30 on a session that ran to
+15:30 **is** a frozen row — findable in one query instead of by reasoning about
+which daemon died when. `scored_by` is the process id and not the hostname
+because F-5 and R-1 both established that two daemons run on one machine here,
+and a hostname cannot separate them.
+
+**No row is re-scored or repaired, by instruction and on merit.** The
+contradictory pairs are the only evidence the defect exists and the population
+that will measure whether the guard worked. NULL provenance on an existing row
+is itself the marker for "scored before 16-Aug-2026, window end unknown".
+
+### 3 — EACH CHECK FAILED FIRST, AND ONE CHECK CHANGED THE DESIGN
+
+18 checks written before the implementation, run against unchanged code:
+
+```
+  15 of 18 checks FAILED.
+```
+
+The three that passed are the two fake-vacuity guards and
+`backfill still scores every past session` — the regression guard, which must
+pass before and after or it is not testing what it claims.
+
+**Then `tools.health` rejected the first implementation, and it was right.** The
+schema probe was a one-off `select("scored_at,scored_by,scored_through")`, which
+turned the `selects` check RED:
+
+```
+X  selects   intraday\outcomes.py:171 — intraday_setups has no column(s):
+             scored_at, scored_by, scored_through
+```
+
+That is `tools/validate_selects.py` doing exactly its job — and a health check
+that is red for a known pending migration is how a real warning stops being
+read. Three ways to ask the schema question and only one is free of its own
+defect:
+
+```
+  strip-and-retry (the position_lifecycle idiom)  3 failed round trips PER ROW
+                                                   = ~6,900 on a 2,289-row day
+  a one-off probe select                          1 call, but names columns that
+                                                   do not exist in a SELECT list
+  read the KEYS of a work-queue row               ZERO calls
+```
+
+The work queue is already `.select("*")`, so every column of every row is in
+hand and `set(rows[0])` answers it for free. `selects` is green again.
+`test_the_work_queue_still_selects_star` pins the property that makes it
+correct, because narrowing that select would switch provenance off silently.
+
+Final: **21 checks, `tools.verify` all 562 passed across 61 modules** (was 541),
+`tools.health` all green.
+
+### 4 — TASK 2: BASELINE RECORDED, MIGRATION WRITTEN, **NOT APPLIED**
+
+`python -m tools.rollback --status` — all four Phase 4 switches ON
+(`alloc_live_swing`, `alloc_live_intraday`, `alloc_shadow_enabled`,
+`storage_rolloff_enabled`); it reports those four only.
+
+**Values before, read directly:**
+
+```
+  intraday_engine_vwr_lifecycle    ACTIVE      intraday_min_confidence         0.55
+  intraday_engine_orb_lifecycle    ACTIVE      intraday_min_confidence_scarce  0.80
+  overlay_liquidity_enabled        true  <-- ALREADY ARMED, see section 5
+  risk_regime_scales_target        ABSENT FROM system_config  <-- see section 5
+  all nine engines                 ACTIVE
+```
+
+**The comparison baseline — last 5 sessions (10,11,12,13,14-Aug), 6,179
+detections:**
+
+```
+  BLOCKED_SHORTS_MARKET  1343  21.7%    VETOED_AI               589   9.5%
+  REJECTED_COST           847  13.7%    BLOCKED_STRUCTURE       418   6.8%
+  TAKEN                   816  13.2%    BLOCKED_SHORTABILITY    253   4.1%
+  BELOW_CONVICTION        809  13.1%    BLOCKED_SHORTS_OFF      138   2.2%
+  ALLOCATOR_DECLINED      748  12.1%    BLOCKED_REENTRY          66   1.1%
+                                        BLOCKED_EVENT            61   1.0%
+                                        BLOCKED_CROSS_FRAMEWORK  53   0.9%
+                                        BLOCKED_PAPER_CAPACITY   24   0.4%
+                                        BLOCKED_ENTRY_RESERVED   14   0.2%
+
+  entries/session   14-Aug 334 - 13-Aug 93 - 12-Aug 108 - 11-Aug 4 - 10-Aug 277
+  by engine (detections/taken)
+    ORB 1189/572 - SDN 3837/104 - PBK 334/23 - VWR 279/40 - VCE 230/71
+    RNG 160/0 - PDL 98/0 - GAP 51/6 - GDB 1/0
+```
+
+**ORB is 572 of 816 entries — 70.1%.** With VWR's 40 that is **three quarters of
+the intraday book's entries** being withdrawn. The book is PAPER so it costs no
+money; it costs detections-that-become-trades, and the histogram above is how
+that is measured rather than assumed.
+
+**Migration 081 was written with all four changes and the reasoning behind each,
+and it is NOT APPLIED.** Live database writes were denied to this session
+partway through — the DDL for migration 080 first, then read access as well. The
+repo has no migration runner (both 077 and 079 are also written-and-unapplied on
+`main`), so a written migration is the normal completed form of a config change
+here; but **nothing in section 4 or 5 is in force on the book.**
+
+Recorded in 081, so the reasoning is not lost:
+
+- **VWR to SHADOW is settled.** 307 detections, gross -0.345R +/- 0.071 SE,
+  -4.9 SE from zero, optimistic 2 SE upper limit -0.199 — still negative. No
+  reading of this sample makes VWR positive-expectancy.
+- **ORB to SHADOW is NOT settled, and that difference must survive the two
+  engines sharing a state.** 119 detections, -0.241R +/- 0.100, optimistic upper
+  limit **-0.010** — it survives the bound by one hundredth of an R, inside the
+  width of every measurement error this book has. And ORB is the **most
+  contaminated engine at 11.8%**, the highest share of rows carrying the very
+  defect section 1 stops. So: *VWR answered NO with room to spare; ORB answered
+  NO by 0.01R on the dirtiest data in the book.* Provisional stand-down.
+  **Revisit on sessions scored entirely after migration 080**, identifiable by
+  `scored_through` landing at the session close. Neither is RETIRED, because
+  retiring destroys the evidence that would reverse it.
+- **The conviction floor is flattened by setting `scarce` equal to `base`
+  (0.55).** `engine._confidence_floor()` returns `base + (scarce-base)*used`, so
+  the bar rises 0.55 -> 0.80 as the entry budget is spent, on the premise that a
+  scarcer slot deserves a more convinced setup. Gross R falls **monotonically**
+  across the top four confidence bands (-0.097 -> -0.400), so conviction does not
+  merely fail to order outcomes, it orders them backwards — and a rising floor
+  spends the last slots of the day on the worst population. Setting the two keys
+  equal zeroes the linear term with **no code change**, and leaves re-arming the
+  ramp one UPDATE away. 0.55 is the current base, unchanged: this removes a
+  slope, it does not lower a bar.
+- **`risk_regime_scales_target` to true** — the only item that touches the LIVE
+  swing book. Migration 079 shipped it inert and said arming it "changes what
+  the account does with money and is a separate decision on separate evidence".
+  This is that decision. Effect in NEUTRAL — the only regime all 1,000 plans in
+  the 28-Jul->13-Aug window have ever read — is 1.9048R -> 2.0R, **+5.0% on
+  planned R, ATR-stop plans only, no stop moves.**
+
+### 5 — FOUND ALONG THE WAY
+
+**`overlay_liquidity_enabled` was ALREADY `true`.** It has been since migration
+040 (05-Aug). There was nothing to arm. Recorded because "we armed it" and "it
+was already armed" are different facts and only one is true; migration 081
+carries a no-op UPSERT that states the intended value rather than leaving it
+assumed.
+
+**Migration 079 is entirely unapplied on this book.** All six of its keys —
+`risk_regime_scales_target`, `risk_min_planned_r_enabled`, `risk_plan_hit_rate`,
+`risk_plan_r_margin`, `risk_plan_product`, `risk_plan_capital` — are absent from
+`system_config`. `risk_model.py` reads each through `cfg_*` with an in-code
+default, so behaviour today is **identical to 079 having been applied and left
+inert**, and nothing is broken. But it means arming `risk_regime_scales_target`
+is an INSERT, not an UPDATE, and 081 does that. 079 uses `ON CONFLICT DO
+NOTHING`, so applying it afterwards will not reset the armed value to false.
+
+**`intraday_max_new_per_day` is 20, not the 4 its in-code fallback assumes.**
+`_entry_cap()` falls back to 4 and `_confidence_floor()` divides by it, so on any
+book where that key were absent the floor would reach `scarce` after four
+entries instead of twenty — a fifth of the way through the budget. Not a defect
+today (the key is present at 20), and untouched here. Noted because it is the
+same shape as the `_entry_cap` bug already documented in that function's own
+docstring.
+
+### 6 — NOT DONE
+
+- **Migrations 080 and 081 are NOT APPLIED.** The guard in section 2 is live in
+  code the moment this branch is deployed and needs no migration; **provenance
+  records nothing until 080 is applied**, and every config change in section 4 is
+  inert until 081 is. Both were written to be applied by hand in the Supabase
+  SQL editor, which is this repo's only mechanism.
+- **No existing row was re-scored, repaired, or counted.** By instruction, and
+  because those rows are the measurement.
+- **The 58/42 contradiction counts were not independently reproduced.** Quoted
+  from the operator's measurement; database access was withdrawn before a
+  verifying query could be run.
+- **`run.py --once` still routes through the same `finally`.** Harmless now that
+  the guard refuses an open session, but the tool's own help does not say it
+  attempts to score the day.
+
+### 7 — COULD NOT DETERMINE
+
+- **Whether any session other than 2026-08-14 carries frozen rows, and how
+  many.** It needs a per-session query the session no longer has access to. The
+  guard stops new ones regardless; `scored_through` is what will make the
+  question answerable in one query from the next scored session onward.
+- **Whether the 42 STOP+TIMEOUT pairs are all mechanism A.** A STOP is priced at
+  the stop, not at `bars[-1]`, so a truncated window explains the TIMEOUT half
+  cleanly and the STOP half only if the two rows were scored by different runs.
+  Provenance answers this prospectively and cannot answer it retrospectively.
+- **Whether ORB's 11.8% contamination rate is the reason its interval reaches
+  -0.010 rather than clearly negative.** That is precisely the question a clean
+  window answers and no current window can.
+
+**Recommends:** apply 080 before 081. The provenance columns are what make the
+ORB decision reversible on evidence, and shadowing 70% of the book's entries
+without them means the next session inherits the same unanswerable question this
+one did. After the first session scored entirely under the guard, the single
+query worth running is `scored_through` versus the session close on every
+TIMEOUT — that is the check that this fix worked, and it did not exist before
+today.
+
+**Gate: TASK 1 COMPLETE AND COMMITTED. TASK 2 WRITTEN, NOT IN FORCE.** The guard
+and its provenance are in code with 21 checks, 15 of 18 demonstrated failing
+first, `tools.verify` 562 across 61 modules and `tools.health` all green. No
+outcome row was touched. The five config changes exist only as migration 081 on
+this branch and change nothing until an operator applies it.
+
+---
+
 ## 2026-08-16 — F-28 (change, dedup estimator risk basis) — the defect is real and indefensible (42.9% of multi-row groups scored outside their own members' range) but it is NOT what moved VCE and RNG off the published table: that is a REPRESENTATION choice, first-detection vs group-mean, and it survives the fix. No engine verdict changes. VWR survives at −4.70 SE
 
 **Ran:**
@@ -7249,3 +8242,249 @@ NEEDS DECISION from the operator on recommendations 1–3, which restate one
 verdict (VCE) and one sign (RNG). Nothing was implemented.**
 
 ---
+
+## 2026-08-17 — F-30 (change, quote parity) — RANGE did not regress: the LIVE feed was right on every one of the 212 faulting comparisons and the FETCHED side held the previous close, because the pre-open call auction was being folded into the tick-built bar series. The "clean at baseline" it was measured against was a day the daemon started at 10:08
+
+**The health check said the wrong thing twice.** `quote_parity` reported *"RANGE
+REGRESSED — 19 of 402 day_high/day_low comparisons behind"*. The feed had not
+regressed, the denominator was not 402, and the baseline it was defending was
+not a measurement of the window the defect lives in.
+
+**Which side was wrong.** Pulled the faulting rows for 17-Aug and compared both
+sides against `kite.historical_data(token, today, today, "minute")` fetched
+live:
+
+| symbol | field | live | fetched | true, from today's bars at 09:26 |
+|---|---|---|---|---|
+| BELRISE | day_high | 247.77 | **255.35** | 247.77 — and 255.35 is its 14-Aug **close** |
+| SBIN | day_high | 1064.20 | **1067.70** | 1064.20 — 1067.70 is its 14-Aug close |
+| HINDPETRO | day_high | 372.00 | **373.50** | 372.00 — 373.50 is its 14-Aug close |
+| MAZDOCK | day_low | 2593.00 | **2580.00** | 2593.00 — 2580.00 is its 14-Aug close |
+| SYRMA | day_low | 1472.00 | **1465.20** | 1472.00 — 1465.20 is its 14-Aug close |
+
+The live value matched the session's own bars exactly in every case. In 13 of
+19 faulting names on 17-Aug the fetched HIGH equalled the previous close (a
+gap-down name), and in the other 6 the fetched LOW did (a gap-up name) — one
+extra bar sitting at yesterday's close, extending the range in whichever
+direction the stock gapped. Same signature on 12-Aug and 14-Aug: 18 of 24, and
+15 of 15 in the 13:12–13:22 cluster.
+
+**Mechanism.** The socket is subscribed from 09:00. Through the pre-open call
+auction Kite delivers ticks whose `last_price` is the previous close, and
+`BarBuilder.record_tick` folded them like any other tick, so every tick-built
+series began with a ~09:00 bar priced at yesterday's close. `merge_live_bars()`
+takes `max`/`min` over that series for a bench-only context's day_high/day_low.
+`base.range_between()` was immune by accident — it anchors on a hardcoded 09:15
+and offsets from there, so a 09:00 bar lands at minute −15 and falls out of
+every window. Nothing else was.
+
+**Why it read clean for ten days: the daemon's start time, not the market's.**
+
+| date | first parity sample | verdict |
+|---|---|---|
+| 07-Aug | 10:08 | clean ← *this is the "baseline"* |
+| 10-Aug | 09:41 | clean |
+| 11-Aug | 09:30 | clean |
+| 12-Aug | **09:20** | FAULT |
+| 13-Aug | 09:52 | clean |
+| 14-Aug | **09:21** | FAULT |
+| 17-Aug | **09:21** | FAULT |
+
+Perfect correlation. The artifact is washed out of the series within ~15
+minutes of the open as real prices ratchet past the previous close, so a late
+start never sees it. The check was defending a number measured an hour after
+the only window in which the defect is observable.
+
+**The larger finding: the check could not fail.** `apply_live_quotes._overlay()`
+overwrites `ctx.day_high/day_low/vwap/prev_close` **in place** with the tick
+values, because that is what the engines must read — and the parity logger then
+read those same attributes as the "fetched" side. From the second cycle onward
+it was comparing the feed against a value it had itself written 300 seconds
+earlier. Measured over 38,931 comparisons:
+
+```
+day_high      37183 of  38931 identical to the paisa ( 95.5%)
+day_low       37152 of  38931 identical to the paisa ( 95.4%)
+prev_close    38916 of  38931 identical to the paisa (100.0%)  <- degenerate
+vwap          22864 of  38931 identical to the paisa ( 58.7%)
+```
+
+`prev_close` differed on **zero** rows in every sample on 17-Aug. The 4.5% of
+`day_high` rows that did differ land almost entirely in the two samples right
+after a context is first built — the only moment the attribute still held a
+fetched number. That is also why the defect showed up at all, and why it showed
+up at 09:26/09:31 and then appeared to "heal".
+
+This reframes the vwap conclusion this module has carried since 07-Aug. `vwap`
+is 58.7% degenerate rather than 100% only because a live VWAP moves during the
+300 seconds between samples; the comparison was live-now against live-then, a
+staleness measurement, not the live-versus-bar-formula difference the docstring
+attributes it to. **The 848 comparisons said to cross `vwr_stop_buffer_pct` are
+not evidence of a formula gap.** They are not evidence of anything yet.
+
+**Two more defects found on the way, both in how the evidence was read.**
+
+- `health.check_quote_parity` selected the 5-day window **unpaged**. PostgREST
+  caps at 1000 rows silently, so "19 of 402" was an arbitrary, unordered 0.5%
+  sample of ~190,000 rows. Paged now: the same window is **212 of 57,620**.
+- `quote_parity.report()` paged on `.range()` with **no ORDER BY** — the exact
+  failure `config.fetch_all`'s docstring documents. It returned 38,559 day_high
+  rows of the 38,683 that existed, and not as a truncation: an arbitrary subset
+  with repeats. Both readers now go through `fetch_all`; `intraday_quote_parity`
+  probed 2026-08-17 (191,775 rows, `.order("id")` page one → 1000 rows, 1000
+  distinct, ids 1..1000) and recorded in `_FETCH_ALL_SORT_KEY`.
+
+**Changed:**
+
+- `intraday/bar_builder.py` — `SESSION_OPEN`/`SESSION_CLOSE` (09:15–15:30);
+  `record_tick` drops out-of-session prints. The day-rollover reset stays
+  *outside* that filter deliberately: returning early before it would leave
+  `closed_bars()` serving yesterday's session to anything reading between 09:00
+  and 09:15, which is strictly worse than the bug being fixed.
+- `intraday/strategies/base.py` — `SymbolContext.fetched`, written only by the
+  bar/database side and never by the overlay.
+- `intraday/engine.py` — `_fetched_snapshot()`, populated by `refresh_contexts`
+  and by BOTH branches of `merge_live_bars` (recomputed as bars extend, so a
+  bench-only context — never rebuilt — cannot freeze it); parity now logs
+  against the snapshot, and counts and WARNS on any context that carries none,
+  because a parity table that quietly stops filling looks exactly like a feed
+  that agrees.
+- `tools/health.py`, `tools/quote_parity.py` — paged reads; the degeneracy
+  report; and both remediation strings corrected. Both used to advise turning
+  `intraday_quote_mode_range` OFF, which is backwards — that switch is what
+  keeps the bad number out of the engines.
+- `tests/test_quote_parity.py` (+6 checks), `tests/test_apply_live_quotes.py`,
+  `tests/test_static_analysis.py`.
+
+**Verified:**
+
+```bash
+cd backend && python -m tools.verify        # all 551 checks passed across 60 modules
+cd backend && python -m tools.simulate      # clean, nothing written
+cd backend && python -m tools.quote_parity  # 191,775 rows now read (was 189,915)
+```
+
+The new checks were demonstrated FAILING with the fix backed out — the pre-open
+test reports `got 255.35`, reproducing BELRISE's recorded fetched value exactly.
+
+**Not verified in this session:** that a live session now logs clean. The
+daemon runs on `tradeos-vcn` and must be restarted to pick this up. Until then,
+and for five days after, `health` will keep reporting the 212 pre-fix
+comparisons — they are real observations of a real defect and were not deleted.
+
+**Still open:** the vwap verdict needs re-measuring from scratch once genuinely
+independent comparisons exist; `prev_close`'s "FAULT" rests on 15 rows and the
+`stock_data_daily` global-LIMIT bug behind it is untouched.
+
+---
+
+## 2026-08-18 — F-31 (change, six gates) — GABRIEL was REFUSED by the pipeline on 3, 4 and 5 August and bought on the 6th, when it was more extended than on any of them. Every gate needed to stop it already existed: three were inert and one — min_rr_to_enter — was arithmetically incapable of firing, because implied_rr is pinned at a constant whenever the stop is re-anchored to price
+
+**The operator closed GABRIEL by hand.** That is the finding that reframes the
+rest. The broker log has one `PLACED` and no `MODIFY`: left alone, the ₹1,460.60
+limit placed at 09:15:13 would still be resting above a market that has since
+traded to ₹1,420, with the protective GTT cancelled since 09:16:01. Not a
+slippage problem with a 1.92% price tag — **an exit path that does not
+terminate**, applying to every LIVE swing exit in the book.
+
+SCI is on the same path: entered 10-Aug at 300.60, peak 301.60 (+0.05R),
+currently −3.31% and −0.46R at 5 sessions.
+
+**Why the R:R gate could not fire.** `analysis/risk_model.py`'s own docstring
+states the discipline — *"the stop is a property of the SETUP, not of what you
+paid… that is the correct, honest penalty for chasing"* — and it did not hold,
+because `compute_trade_plan` derives every level from `ez_low`, recomputed
+nightly from the current price:
+
+| date | price | stop | source | implied_rr | vs 0.80 bar |
+|---|---|---|---|---|---|
+| 29-Jul | 1414.80 | 1248.49 | structure | 0.806 | passes |
+| 30-Jul | 1392.00 | 1248.49 | structure | **0.925** | passes |
+| 03-Aug | 1527.40 | 1347.61 | atr | **0.777** | refused |
+| 04-Aug | 1530.80 | 1346.20 | atr | **0.777** | refused |
+| 05-Aug | 1587.70 | 1403.97 | atr | **0.777** | refused |
+| 06-Aug | 1531.80 | 1353.73 | structure | 0.805 | **passes by 0.005** — bought |
+
+With `stop = price × (1−a)` and `target = price × (1+b)` the ratio is `b/a` and
+the price cancels. Reproduced offline with the switch off: `expected_r` returns
+**1.905 at ₹1,414.80 and 1.905 at ₹1,527.40**. A gate comparing a threshold
+against a constant does not discriminate; GABRIEL was finally admitted on the
+one evening the stop source flipped back to `structure`.
+
+`filter_reason` read `insufficient_rr_0.78x` on 03, 04 AND 05 August, and
+03-Aug also returned `eap_action = AVOID_ENTRY`. Nothing in the entry path read
+either column.
+
+**The event was not considered, and could not be.** `pre_results_flag` false and
+`upcoming_event_type` null on all 12 GABRIEL plan rows; `upcoming_events` null on
+all 15 sessions; **`event_calendar` has no `symbol` column** — it is keyed on
+`event_category` and `affected_sectors`. There is no per-stock event feed. The
+only event that reached the plan was "Southwest Monsoon · POSITIVE · moderate",
+a sector tailwind. The volume recorded it exactly: vol_ratio 0.24 → 1.01/0.84/
+0.84 (₹134/117/123 cr, 3–5 Aug) → **0.38 on 6 Aug, the day of entry** (₹55 cr) →
+0.15 by 14 Aug, with delivery% rising 29.7 → 55.0 as price fell.
+
+**Changed** (migration 080, all six switch-gated):
+
+1. **`EXIT_FASTFAIL`** — `sessions_held ≥ 4 AND peak_r < 0.25 AND gain_r ≤ −0.5`,
+   above the 10-session stall. GABRIEL qualified on 10-Aug at −5.5%/−0.56R with
+   a peak of 0.00R. **OFF by default** (`exit_fastfail_enabled`): it is the only
+   rule in the ladder that sells while the ordinary stop is still far away.
+2. **Frozen plan levels** (`plan_levels_frozen`, ON). `planned_stop`/
+   `planned_target` are inherited from the live plan and expire only when price
+   passes the target or breaks the stop — `plan_levels_still_live()`. Expected_r
+   is recomputed against the frozen stop, so it decays as price runs. That decay
+   is the chase penalty `min_rr_to_enter` was always supposed to read. Against
+   the frozen 29-Jul levels, a ₹1,554.80 fill is above the plan's own target.
+3. **Swing liquidity floor** (`swing_min_value_cr` 200, ON). The existing
+   share-of-turnover test passes a 2-share position in almost any name — it is a
+   floor on the POSITION; this is a floor on the NAME. Intraday is unaffected.
+4. **AI refusals bind** (`entry_rank_respect_ai_avoid`, ON). `entry_refusals()`
+   is a separate pure function, deliberately NOT inside `score_plan()` — a veto
+   that is an additive term can be outvoted, which is exactly how a screener
+   score of 82 drowned out everything else. The asymmetry is intentional: the AI
+   can veto, never promote. `ai_risks` costs rank points via `rank_w_ai_risk`.
+   `entry_respect_filter_reason` is built and left OFF pending a sweep.
+5. **The exit terminates.** New `execution/exit_orders.py`:
+   - `exit_limit_price` = `ltp × (1 − max(exit_slip_bps, 0.25 × atr_pct))`. On
+     GABRIEL that is ₹1,447.9, not ₹1,460.6 — and the 09:15 tape traded ₹1,447
+     inside the first minute.
+   - `reprice_stale_exits` on the slow timer: reprice after 60s, MARKET after 3
+     attempts, attempt count read from the broker's own order history so it
+     survives a daemon restart. Cancel-before-market is fail-closed — if the
+     cancel errors it does NOT place, because two live sells is worse.
+   - `symbols_with_open_exit` — `gtt_manager.sync()` now releases a stop on FILL
+     CONFIRMATION, never on placement. An unreachable broker cancels nothing.
+   - health check `exits_open`: FAILS on any SELL open > 5 min.
+6. **One clock.** `sessions_between()` is pure and shared; the daemon caches the
+   session calendar once per day rather than reading per position per cycle.
+   GABRIEL was reported as "11 sessions" when held 8.
+
+**Verified:**
+
+```bash
+cd backend && python -m tools.verify        # all 574 checks passed across 61 modules
+cd backend && python -m tools.health --quick # green except quote_parity (F-30 pre-fix rows)
+cd backend && python -m tools.simulate      # 6 swing, 0 needing action; nothing written
+cd backend && python -m tools.validate_selects  # 362 sites match the live schema
+```
+
+All 23 new checks in `tests/test_gabriel_gap.py` were demonstrated FAILING with
+each fix backed out. Two pre-existing checks caught real mistakes in this work:
+`validate_selects` rejected `planned_entry` (not a column on
+`signal_output_daily`), and the `fetch_all` sort-key check rejected `symbol`
+as a paging key on a table with ten rows per name — `(symbol, date)` probed
+unique at 2,511 of 2,511 and is recorded.
+
+**Live state after this session.** Nothing has been sold. `exit_fastfail_enabled`
+is OFF; run the dry-run before switching it on. Today's book under the rule:
+AARTIIND, CARBORUNIV, HINDCOPPER, TATATECH, TRAVELFOOD all HOLD, and **SCI at
+−0.46R sits just inside the −0.5 bar** — it does not qualify yet.
+`exit_order_reprice_enabled` IS on and will place real MARKET orders on an exit
+that will not fill at a limit; that is the behaviour the operator asked for and
+the alternative is the 17-Aug state.
+
+**Not verified in this session:** no swing exit has run under the new pricing or
+the reprice pass, and no evening pipeline has run under frozen levels. Both need
+one live session before they are trusted.
+

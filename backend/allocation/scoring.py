@@ -590,17 +590,19 @@ def swing_priors(sb) -> dict[str, Prior]:
     against an invented denominator.
     """
     floor = cfg_int("priors_min_sample_swing", 30)
-    rows, off = [], 0
-    while True:
-        page = (sb.table("signal_output_daily")
-                  .select("strategy,outcome_category,outcome_return_pct,"
-                          "outcome_entered,entry_zone_high,planned_stop")
-                  .not_.is_("outcome_category", "null")
-                  .range(off, off + PAGE - 1).execute().data) or []
-        rows += page
-        if len(page) < PAGE:
-            break
-        off += PAGE
+    # SORTED PAGING. This is the LIVE swing book's prior and it paged on
+    # `.range()` alone — the identical defect F-23 called "the serious one"
+    # about intraday_priors(), which F-23 could not see here because its census
+    # was `git grep 'table("intraday_setups")'` and this reads a different
+    # table. `signal_output_daily` HAS NO `id` COLUMN, so fetch_all's default
+    # order key raises 42703; (symbol, date) is unique on it — verified
+    # 15-Aug-2026, 2430 distinct of 2430 rows.
+    rows = fetch_all(lambda: sb.table("signal_output_daily")
+                     .select("strategy,outcome_category,outcome_return_pct,"
+                             "outcome_entered,entry_zone_high,planned_stop,"
+                             "symbol,date")
+                     .not_.is_("outcome_category", "null"),
+                     page=PAGE, order_by="symbol,date")
 
     if not rows:
         return {}
@@ -909,17 +911,14 @@ def tercile_report(sb=None) -> int:
     """
     floor = cfg_int("priors_min_sample_swing", 30)
     sb = sb or get_supabase()
-    rows, off = [], 0
-    while True:
-        page = (sb.table("signal_output_daily")
-                  .select("strategy,outcome_return_pct,outcome_entered,"
-                          "entry_zone_high,planned_stop,final_score,ai_tier")
-                  .not_.is_("outcome_category", "null")
-                  .range(off, off + PAGE - 1).execute().data) or []
-        rows += page
-        if len(page) < PAGE:
-            break
-        off += PAGE
+    # SORTED PAGING, (symbol, date) — see swing_priors() above for why the
+    # default `id` key cannot be used on this table.
+    rows = fetch_all(lambda: sb.table("signal_output_daily")
+                     .select("strategy,outcome_return_pct,outcome_entered,"
+                             "entry_zone_high,planned_stop,final_score,ai_tier,"
+                             "symbol,date")
+                     .not_.is_("outcome_category", "null"),
+                     page=PAGE, order_by="symbol,date")
 
     triples: list[tuple[str, float, float, str]] = []   # (family, final_score, R, ai_tier)
     for r in rows:
@@ -1017,18 +1016,13 @@ def rr_tercile_report(sb=None) -> int:
     """
     floor = cfg_int("priors_min_sample_swing", 30)
     sb = sb or get_supabase()
-    rows, off = [], 0
-    while True:
-        page = (sb.table("signal_output_daily")
-                  .select("strategy,outcome_return_pct,outcome_entered,"
-                          "entry_zone_high,planned_stop,implied_rr,expected_r,"
-                          "ai_tier")
-                  .not_.is_("outcome_category", "null")
-                  .range(off, off + PAGE - 1).execute().data) or []
-        rows += page
-        if len(page) < PAGE:
-            break
-        off += PAGE
+    # SORTED PAGING, (symbol, date) — see swing_priors() above.
+    rows = fetch_all(lambda: sb.table("signal_output_daily")
+                     .select("strategy,outcome_return_pct,outcome_entered,"
+                             "entry_zone_high,planned_stop,implied_rr,"
+                             "expected_r,ai_tier,symbol,date")
+                     .not_.is_("outcome_category", "null"),
+                     page=PAGE, order_by="symbol,date")
 
     def _rr_value(r: dict) -> float | None:
         # Mirrors analysis.entry_ranking.score_plan()'s own fallback chain

@@ -59,7 +59,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import cfg_float, cfg_int, get_supabase, today_ist
+from config import cfg_float, cfg_int, get_supabase, today_ist, fetch_all
 
 PAGE = 1000
 
@@ -88,20 +88,20 @@ def _bars(sb, symbols: list[str], since: str) -> dict[str, list[dict]]:
 
 def _realised(sb, since: str) -> dict[tuple, float]:
     """(symbol, product, entry_date) -> r_multiple, for positions that closed."""
-    out, off = {}, 0
-    while True:
-        rows = (sb.table("closed_positions")
-                  .select("symbol,product,entry_date,r_multiple")
-                  .gte("entry_date", since)
-                  .range(off, off + PAGE - 1).execute().data) or []
-        for r in rows:
-            if r.get("r_multiple") is None:
-                continue
-            out[(r["symbol"], (r.get("product") or "CNC").upper(),
-                 str(r["entry_date"])[:10])] = float(r["r_multiple"])
-        if len(rows) < PAGE:
-            break
-        off += PAGE
+    # SORTED PAGING. `closed_positions` is 148 rows today, so this reads in one
+    # page and the sort changes nothing NOW — which is exactly why it was easy
+    # to leave. It is a live book that only grows, and the day it crosses 1000
+    # an unsorted pager starts returning the right count built from the wrong
+    # rows, silently, in the map the allocator scores realised R from.
+    out: dict[tuple, float] = {}
+    rows = fetch_all(lambda: sb.table("closed_positions")
+                     .select("symbol,product,entry_date,r_multiple,id")
+                     .gte("entry_date", since), page=PAGE)
+    for r in rows:
+        if r.get("r_multiple") is None:
+            continue
+        out[(r["symbol"], (r.get("product") or "CNC").upper(),
+             str(r["entry_date"])[:10])] = float(r["r_multiple"])
     return out
 
 

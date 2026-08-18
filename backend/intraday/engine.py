@@ -177,6 +177,31 @@ def _gap_continuation_shorts(runway_rows: list[dict], y_closes: dict[str, float]
     return out
 
 
+def _fetched_snapshot(bars, vwap, prev_close) -> dict:
+    """
+    The day range as the NON-LIVE sources describe it, for parity logging.
+
+    Pure and tiny, but it is a named function rather than a dict literal
+    repeated three times because all three call sites must agree on what
+    "fetched" means. They did not before: the parity logger read
+    `ctx.day_high`, which `apply_live_quotes()` had already overwritten with
+    the tick value, so the comparison was between the feed and itself.
+
+    Recomputed wherever bars change, so a context that is never rebuilt (a
+    bench-only one — refresh_contexts() only rebuilds the historical
+    universe) does not freeze this at whatever its first five minutes of
+    bars happened to say.
+    """
+    return {
+        "day_open":   bars[0].open if bars else None,
+        "day_high":   max(b.high for b in bars) if bars else None,
+        "day_low":    min(b.low for b in bars) if bars else None,
+        "vwap":       vwap,
+        "prev_close": prev_close,
+        "volume":     sum(b.volume for b in bars) if bars else None,
+    }
+
+
 class IntradayEngine:
     def __init__(self, sb=None, notifier: Notifier | None = None):
         self.sb = sb or get_supabase()
@@ -211,6 +236,12 @@ class IntradayEngine:
         # every 15s cycle and logging on every one would be noise, not
         # visibility. See merge_live_bars().
         self._last_bars_log_at = datetime.fromtimestamp(0, IST)
+        # Trading-session calendar, loaded once a day — see
+        # _sessions_held(). Not a cache of convenience: it is what lets
+        # the 15s loop use the pipeline's session clock without a
+        # database read per position per cycle.
+        self._session_cal: list[str] = []
+        self._session_cal_day = None
         self._allocator = None
         # The intraday universe, selected on its OWN criteria. Until this
         # existed the engines only saw swing shortlist names — stocks chosen for
@@ -526,6 +557,10 @@ class IntradayEngine:
                 # Stamped so every consumer can ask how old this is. Contexts
                 # are rebuilt on the 300 s timer and read on the 15 s one.
                 as_of=datetime.now(IST),
+                # The bar/database side, kept where the live overlay cannot
+                # reach it — see SymbolContext.fetched.
+                fetched=_fetched_snapshot(
+                    bars, vwap, float(p.get("close") or 0) or None),
             )
             if sym == INDEX_SYMBOL:
                 # The index is not in stock_data_daily — that table holds
@@ -654,25 +689,43 @@ class IntradayEngine:
                 try:
                     from tools import quote_parity
                     batch = []
+                    no_snapshot = 0
                     for sym, ctx in (self._contexts or {}).items():
                         q = feed.quote(sym)
                         if not q:
                             continue
-                        # Bar-summed volume is the "fetched" side of the
-                        # comparison — quote_parity.py already reports it
-                        # unscored (see SCORED there), but nothing computed a
-                        # fetched value to log it against until now, so it was
-                        # documented as logged and never actually collected.
-                        bar_vol = sum(b.volume for b in ctx.bars) if ctx.bars else None
-                        for field, fetched in (("day_high", ctx.day_high),
-                                               ("day_low", ctx.day_low),
-                                               ("vwap", ctx.vwap),
-                                               ("prev_close", ctx.prev_close),
-                                               ("volume", bar_vol)):
-                            row = quote_parity.compare(sym, field, q.get(field), fetched)
+                        # A context built by a path that does not populate
+                        # `fetched` logs NOTHING, and a parity table that
+                        # quietly stops filling looks exactly like a feed that
+                        # agrees. Counted and reported below rather than left
+                        # to be inferred from a row count nobody watches.
+                        if not ctx.fetched:
+                            no_snapshot += 1
+                            continue
+                        # READ FROM ctx.fetched, NOT FROM ctx — 17-Aug-2026.
+                        # These four attributes are overwritten in place by
+                        # _overlay() below with the very tick values this loop
+                        # compares them against, so from the second cycle
+                        # onward every comparison was the feed against a copy
+                        # of itself: prev_close differed on 0 of 38,683 rows
+                        # and day_high on 4.5%, essentially all of them in the
+                        # first two samples after a context was built. See
+                        # SymbolContext.fetched. Bar-summed volume is in the
+                        # snapshot too — quote_parity.py reports it unscored
+                        # (see SCORED there) because the socket's cumulative
+                        # session volume and a sum of completed bars are
+                        # different quantities.
+                        for field in quote_parity.LOGGED:
+                            row = quote_parity.compare(
+                                sym, field, q.get(field), ctx.fetched.get(field))
                             if row:
                                 batch.append(row)
                     quote_parity.record_many(self.sb, batch)
+                    if no_snapshot:
+                        logger.warning(
+                            f"  parity: {no_snapshot} context(s) carry no fetched "
+                            f"snapshot and were not compared — whatever built them "
+                            f"does not set SymbolContext.fetched")
                 except Exception as e:
                     logger.debug(f"  parity logging skipped: {e}")
 
@@ -789,6 +842,15 @@ class IntradayEngine:
                 new = [b for b in live if b.ts not in existing_ts]
                 if new:
                     ctx.bars = sorted(ctx.bars + new, key=lambda b: b.ts)
+                    # The bar side moved, so the number parity compares the
+                    # tick stream against must move with it. Reuses whatever
+                    # vwap/prev_close the last full build established — this
+                    # function does not recompute either, and inventing a
+                    # value here would put a third definition of vwap in the
+                    # system.
+                    ctx.fetched = _fetched_snapshot(
+                        ctx.bars, ctx.fetched.get("vwap"),
+                        ctx.fetched.get("prev_close"))
                     touched += 1
                 continue
 
@@ -816,6 +878,8 @@ class IntradayEngine:
                 sector=ref.get("sector") or "",
                 as_of=datetime.now(IST),
                 live_fields=("bars",),
+                fetched=_fetched_snapshot(
+                    live, vwap, float(ref.get("close") or 0) or None),
             )
             touched += 1
             bench_only_new += 1
@@ -1558,6 +1622,30 @@ class IntradayEngine:
             logger.debug(f"  live universe re-rank skipped: {e}")
 
     # ── evaluation ──────────────────────────────────────────────────────────
+    def _sessions_held(self, entry_date) -> int:
+        """
+        Trading sessions since entry, on the SAME definition the pipeline uses.
+
+        The session calendar is fetched once per day and held in memory:
+        `control.position_lifecycle.sessions_between` is pure, so the only I/O
+        is the one list load, and the 15-second loop stays free of per-position
+        database reads.
+        """
+        if not entry_date:
+            return 0
+        from control.position_lifecycle import sessions_between, session_dates
+        today = datetime.now(IST).date()
+        if self._session_cal_day != today:
+            # 400 days back covers any position this book could still hold.
+            since = (today - timedelta(days=400)).isoformat()
+            self._session_cal = session_dates(self.sb, since)
+            self._session_cal_day = today
+            if not self._session_cal:
+                logger.warning(
+                    "  session calendar unavailable — holding periods fall back "
+                    "to an approximation and time-based exits may run late")
+        return sessions_between(self._session_cal, entry_date, today.isoformat())
+
     def evaluate_positions(self, prices: dict[str, float]) -> list[dict]:
         """Run the shared exit state machine against live prices."""
         from control.position_lifecycle import evaluate_exit
@@ -1569,13 +1657,16 @@ class IntradayEngine:
             if not sym or not ltp:
                 continue
 
-            held = 0
-            if p.get("entry_date"):
-                try:
-                    d0 = datetime.fromisoformat(str(p["entry_date"])[:10]).date()
-                    held = max(0, (datetime.now(IST).date() - d0).days)
-                except Exception:
-                    held = 0
+            # SESSIONS, NOT CALENDAR DAYS — 18-Aug-2026. This read
+            # `(datetime.now(IST).date() - entry_date).days`, while the
+            # pipeline's caller of the same function counted trading sessions.
+            # GABRIEL was held 8 sessions from 06-Aug to 17-Aug and this loop
+            # told the operator "11 sessions", so exit_stall_days = 10 —
+            # a number calibrated in sessions — actually fired at 7 of them in
+            # the only process that ever fires it. Cached per day, so this
+            # costs one database read a session rather than one per position
+            # per 15-second cycle.
+            held = self._sessions_held(p.get("entry_date"))
 
             # An INTRADAY position must NOT be managed by the swing policy: a
             # 3R target overrides the setup's own 2R, and a 15-SESSION time stop
@@ -1897,6 +1988,7 @@ class IntradayEngine:
         if action not in ("EXIT_STOP", "EXIT_TARGET", "EXIT_TIME",
                           "EXIT_INVALIDATED", "EXIT_SQUAREOFF",
                           "EXIT_DETERIORATION", "EXIT_GIVEBACK", "EXIT_STALL",
+                          "EXIT_FASTFAIL",
                           "BOOK_PARTIAL"):
             return
 
@@ -1953,7 +2045,20 @@ class IntradayEngine:
             return
         # Marketable limit: priced through the bid so it fills like a market
         # order without accepting an unbounded price in a thin book.
-        limit = round(ltp * (1 - cfg_int("intraday_exit_slip_bps", 30) / 10000.0), 1)
+        #
+        # THE BUFFER SCALES WITH THE NAME FOR SWING — 18-Aug-2026. A flat 30bps
+        # is a reasonable allowance for an intraday MIS exit that will be
+        # force-squared anyway, and it is not one for a CNC position on a
+        # 4.7%-ATR stock: GABRIEL's 17-Aug exit was priced this way, sat
+        # unfilled for 2h33m above a falling market with its GTT already
+        # cancelled, and was finally filled by the operator by hand. The
+        # intraday book keeps its own key because its exits are minutes long
+        # and its names are chosen for liquidity.
+        if fw == "SWING":
+            from execution.exit_orders import exit_limit_price, atr_pct_for
+            limit = exit_limit_price(float(ltp), atr_pct_for(self.sb, p["symbol"]))
+        else:
+            limit = round(ltp * (1 - cfg_int("intraday_exit_slip_bps", 30) / 10000.0), 1)
         # framework decides which caps preflight applies and how the order is
         # attributed in the broker log. Omitting it defaulted every exit —
         # including intraday ones — to the SWING rails.
@@ -2407,9 +2512,28 @@ class IntradayEngine:
             {"value_cr": vcr,
              "atr_pct": sctx.atr_pct_daily if sctx else None},
             planned_value=qty * ltp,
+            # Names the swing floor is meant to keep out clear the
+            # share-of-turnover test easily on a 2-share position — see
+            # liquidity_ok(). The framework is what selects the second floor.
+            framework="SWING",
         )
         if not liq_ok:
             logger.info(f"  {sym}: swing entry blocked — {liq_why}")
+            return
+
+        # REFUSALS THE PLAN ITSELF ALREADY CARRIES — 18-Aug-2026.
+        #
+        # Placed at this choke point rather than inside score_plan() for the
+        # reason entry_refusals()'s own docstring gives: a veto that is an
+        # additive term can be outvoted. Placed AFTER the liquidity gate and
+        # BEFORE the order so it is the last thing consulted that reads the
+        # plan, and so a refusal is logged in the same shape as every other
+        # stand-down here.
+        from analysis.entry_ranking import entry_refusals
+        refusals = entry_refusals(c)
+        if refusals:
+            for why in refusals:
+                logger.info(f"  {sym}: swing entry refused — {why}")
             return
 
         rationale = f"rank {here.total:.0f} — {here.why()}" if here else None

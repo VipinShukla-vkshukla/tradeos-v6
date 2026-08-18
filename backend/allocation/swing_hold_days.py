@@ -44,7 +44,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import cfg_int
+from config import cfg_int, fetch_all
 
 PAGE = 1000
 
@@ -66,17 +66,11 @@ def expected_hold_days_by_family(sb) -> dict[str, tuple[float, int]]:
     from allocation.scoring import swing_family
     floor = cfg_int("hold_days_min_sample", 5)
 
-    rows, off = [], 0
-    while True:
-        page = (sb.table("closed_positions")
-                  .select("strategy,hold_days")
-                  .eq("framework", "SWING")
-                  .not_.is_("hold_days", "null")
-                  .range(off, off + PAGE - 1).execute().data) or []
-        rows += page
-        if len(page) < PAGE:
-            break
-        off += PAGE
+    # SORTED PAGING — closed_positions is a live book that only grows.
+    rows = fetch_all(lambda: sb.table("closed_positions")
+                     .select("strategy,hold_days,id")
+                     .eq("framework", "SWING")
+                     .not_.is_("hold_days", "null"), page=PAGE)
 
     by_family: dict[str, list[float]] = {}
     for r in rows:

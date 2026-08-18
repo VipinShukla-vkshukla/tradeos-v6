@@ -79,6 +79,10 @@ PAGE = 1000
 
 def _tables(sb) -> list[str]:
     """Every public table, from the storage view that already enumerates them."""
+    # sort-exempt: v_storage_usage is one row per public table — 56 rows,
+    # measured 15-Aug-2026 — and the result is sorted by name on return
+    # anyway. A catalogue view cannot reach the cap without the schema having
+    # 1000 tables.
     rows, off = [], 0
     while True:
         page = (sb.table("v_storage_usage").select("table_name")
@@ -119,13 +123,23 @@ def _redact(name: str, rows: list[dict]) -> tuple[list[dict], int]:
 
 
 def _dump_table(sb, name: str) -> tuple[list[dict], int]:
-    out, off = [], 0
-    while True:
-        page = (sb.table(name).select("*").range(off, off + PAGE - 1).execute().data) or []
-        out += page
-        if len(page) < PAGE:
-            break
-        off += PAGE
+    # SORTED PAGING, AND THIS ONE IS THE BACKUP. Unsorted LIMIT/OFFSET can
+    # return the right row COUNT built from duplicated and skipped rows —
+    # measured on this book at 8324 rows / 5000 distinct. A backup written that
+    # way is corrupt in the one way nobody checks: the file is the right size.
+    #
+    # The sort key cannot be hardcoded because this runs over EVERY table and
+    # several have no `id` — `signal_output_daily`, `open_positions` (keyed on
+    # (symbol, product) since migration 028) and the views. So probe one row
+    # and prefer `id`, falling back to the first column, which PostgREST
+    # returns in declaration order.
+    from config import fetch_all
+    probe = sb.table(name).select("*").limit(1).execute().data or []
+    cols = list(probe[0].keys()) if probe else []
+    if not cols:
+        return _redact(name, [])
+    key = "id" if "id" in cols else cols[0]
+    out = fetch_all(lambda: sb.table(name).select("*"), page=PAGE, order_by=key)
     return _redact(name, out)
 
 
