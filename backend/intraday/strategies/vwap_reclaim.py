@@ -171,6 +171,6 @@ class VwapReclaim:
                           f"means the sellers were not absorbed, and that is knowable "
                           f"before the stop at {stop:.2f}"),
             valid_phases=self.phases,
-            meta={"vwap": round(ctx.vwap, 2), "bars_below": len(below),
+            meta={**frame.meta(), "vwap": round(ctx.vwap, 2), "bars_below": len(below),
                   "swing_low": round(swing_low, 2), "volume_ratio": vr},
         )

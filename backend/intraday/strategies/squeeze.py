@@ -132,7 +132,7 @@ class SqueezeExpansion:
             invalidation=(f"a return inside the coil below {r_hi:.2f} — an expansion that "
                           f"goes back in has resolved nothing"),
             valid_phases=self.phases,
-            meta={"contraction_ratio": round(ratio, 3), "coil_high": round(r_hi, 2),
+            meta={**frame.meta(), "contraction_ratio": round(ratio, 3), "coil_high": round(r_hi, 2),
                   "coil_low": round(r_lo, 2), "measured_target": round(measured, 2),
                   "volume_ratio": vr},
         )

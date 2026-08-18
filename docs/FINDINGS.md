@@ -8659,3 +8659,118 @@ occasions roughly fifteen minutes apart. The set was rebuilt from scripts held
 outside the repo and committed immediately the third time. Two agents in one
 working tree with no lock is not a merge problem, it is a data-loss problem,
 and nothing in this repository currently prevents it.
+
+## 2026-08-18 — F-34 (correction + change, follow-up to F-33) — F-33 §8's "migrations 082 and 077 remain outstanding" was never checked against the live database and was wrong; both are applied. Detection instrumentation (ATR, pre-cap structural stop) is now shipped. quote_parity's warm-up hypothesis explains 61% of the residual and stops there — a distinct, unexplained cluster remains and was not touched
+
+### 1 — THE MIGRATION CLAIM IN F-33 WAS AN ASSERTION, NOT A VERIFICATION
+
+F-33 §8 stated "Migrations 082 and 077 remain outstanding," sourced from
+`tools.verify`'s console output during that session — specifically the
+warning `outcomes: intraday_setups is missing scored_at, scored_by,
+scored_through — apply migration 082`. That warning did not come from a live
+database read. It came from `tests/test_resolve_day_session_guard.py:375`,
+which deliberately constructs fake rows *without* those columns to exercise
+`_provenance_supported()`'s pre-migration fallback path offline — the test
+harness working exactly as designed, not a live gap.
+
+A direct schema probe against the actual Supabase project:
+
+    intraday_setups.scored_at        OK
+    intraday_setups.scored_by        OK
+    intraday_setups.scored_through   OK
+    intraday_broker_log.host         OK
+    intraday_broker_log.pid          OK
+
+Both migrations are applied. This project's own rule is "verify, never
+assert" — checking `tools.verify`'s test-harness log instead of the database
+is exactly the mistake that rule exists to prevent, applied to itself. F-33
+§8's migration line is superseded; nothing there needs action.
+
+### 2 — DETECTION INSTRUMENTATION, SHIPPED
+
+F-33 §3/§8 named the gap in `base.risk_from_structure`'s own docstring: "no
+row stores ATR or the pre-cap stop, so what a widened stop would have done
+cannot be reconstructed from any row on disk." Two stamps, closed separately
+because they need different justifications for why they are safe to add:
+
+**`atr_pct_daily`**, stamped once in `registry.evaluate_all` — the same hook
+that already writes `sub_engine`/`family`/`lifecycle` — so it covers all nine
+engines uniformly, including RNG and SDN, which never call
+`risk_from_structure` at all. Recorded as an explicit `None` when the context
+has no ATR, not omitted: an absent key and a recorded-unknown value must not
+collapse into the same reading on a later query, per this project's own
+cold-start rule (`hurdle._cold_start`, `intraday_min_risk_pct`).
+
+**`RiskFrame.meta()`**, merged into each of the eight engines' own `meta={}`
+dict at the point they already build one. It returns `{}` under the default
+`refuse` mode — under `refuse`, `structural_stop` is always identical to the
+`stop` column already on the row, and a field that always duplicates another
+column is the "silent default" this project warns against, not
+instrumentation. It only carries data under the LEGACY `intraday_stop_cap_
+mode=tighten` branch, where the two diverge — which is the one case this
+project has already lost information in once, inside this same change (see
+F-33 §2's own "what it replaced" arithmetic).
+
+**Target distance was deliberately NOT stamped.** `entry` and `target` are
+already direct columns on `intraday_setups` (migration 014); target distance
+is `(target - entry) / entry`, fully recoverable from data already on disk.
+Adding a third copy of arithmetic every reader can already do is duplication,
+not instrumentation.
+
+`tests/test_detection_instrumentation.py`, 8 checks, end to end through the
+real ORB engine (not a stub) for both stamps, plus a fake-engine check that
+the ATR stamp cannot be skipped by a new engine. Every assertion demonstrated
+against a one-line removal of the stamp it pins.
+
+`tools.verify`: 619 checks, 66 modules, all green.
+
+### 3 — QUOTE_PARITY: THE WARM-UP HYPOTHESIS IS CONFIRMED, PARTIALLY
+
+Tested against `intraday_quote_parity` directly rather than against
+`health.py`'s summary. `day_high`/`day_low` comparisons, ranked by position
+within each `(symbol, field, trade_date)` sequence:
+
+    sample #    n       behind    rate
+    0          1688       106    6.28%
+    1          1688        57    3.38%
+    2          1688        36    2.13%
+    3          1688         2    0.12%
+    4-9        ~10,100      0    0.00%
+    10+       91,454       124    0.14%
+
+The first three samples of every symbol-day carry 199 of 325 behind-flags
+(61%) at rates far above the steady-state 0.14% — base.py's own 17-Aug
+comment ("almost entirely in the two samples right after a context is first
+built") is directionally right and now measured precisely: it is the first
+THREE samples, not two, and the decay to near-zero by sample 4 is sharp
+rather than gradual.
+
+**It does not explain the rest.** The residual 126 comparisons beyond
+warm-up do not scatter — they cluster at two repeating sample-index bands
+(42-44 and 57-59) across many different symbols and three separate trading
+days (14-Aug: 55, 17-Aug: 18, 18-Aug: 51), and 84 of 126 are NOT each
+symbol-day's first post-warm-up occurrence, meaning the same (symbol, field)
+pair goes behind more than once in a session. Magnitude: median 0.224%, p90
+0.737%, worst 3.39% — not all of these are noise-sized. Sample-index bands
+repeating across unrelated symbols on specific days reads as a scheduled or
+systematic event (a periodic re-fetch, a reconnect, a cache-refresh cadence)
+rather than incidental drift, but which mechanism was not identified and the
+hypothesis was not tested further.
+
+`quote_parity.py`/`health.py` were NOT edited. That file is another
+session's active work area (`fix/quote-parity-and-gabriel-gap-gates`); the
+mandate here was to test the warm-up hypothesis, not to fix the check, and
+the residual finding is handed off rather than acted on.
+
+### 4 — NOT DONE
+
+- The quote_parity residual's mechanism (sample-index clustering at 42-44 and
+  57-59) is unidentified.
+- Whether the residual affects any live trading decision, or only the parity
+  audit's own bookkeeping, was not checked.
+- No change was made to `intraday_stop_cap_mode`, `intraday_min_risk_pct`, or
+  `priors_intraday_lookback_days` — all three remain at their shipped
+  defaults (`refuse`, unset/0.0, 90 days) per the operator's explicit
+  decision this session: no change until roughly two weeks of
+  structural-stop trading has given each engine that matters ~30 TAKEN rows
+  of its own.

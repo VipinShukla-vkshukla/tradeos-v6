@@ -152,7 +152,7 @@ class OpeningRangeBreakout:
             invalidation=(f"a close back below {hi:.2f} — the break failing is the "
                           f"thesis dying, and it happens well before the stop"),
             valid_phases=self.phases,
-            meta={"range_high": round(hi, 2), "range_low": round(lo, 2),
+            meta={**frame.meta(), "range_high": round(hi, 2), "range_low": round(lo, 2),
                   "range_pct": round(range_pct, 2), "volume_ratio": vr,
                   "break_pct": round(break_pct, 2)},
         )

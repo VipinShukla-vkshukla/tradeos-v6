@@ -164,5 +164,5 @@ class PrevDayLevelRetest:
             invalidation=(f"a close back under {pdh:.2f} — old resistance failing to become "
                           f"support means the break was a spike, not a decision"),
             valid_phases=self.phases,
-            meta={"pdh": round(pdh, 2), "dist_pct": round(dist * 100, 3), "volume_ratio": vr},
+            meta={**frame.meta(), "pdh": round(pdh, 2), "dist_pct": round(dist * 100, 3), "volume_ratio": vr},
         )

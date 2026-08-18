@@ -195,7 +195,7 @@ class GapDownBounce:
                           f"means the panic low was not actually absorbed, knowable "
                           f"before the stop at {stop:.2f}"),
             valid_phases=self.phases,
-            meta={"gap_pct": round(gap_pct, 2), "vwap": round(ctx.vwap, 2),
+            meta={**frame.meta(), "gap_pct": round(gap_pct, 2), "vwap": round(ctx.vwap, 2),
                   "bars_below": len(below), "swing_low": round(swing_low, 2),
                   "volume_ratio": vr, "source_proposal": "brain_proposals#190"},
         )

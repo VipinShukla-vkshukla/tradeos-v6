@@ -122,6 +122,8 @@ MODULES = [
      "tests.test_engine_own_prior"),
     ("SDN confidence cap (shipped inert)",
      "tests.test_sdn_confidence_cap"),
+    ("detection instrumentation (ATR + pre-cap stop recorded)",
+     "tests.test_detection_instrumentation"),
 ]
 
 

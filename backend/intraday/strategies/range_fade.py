@@ -132,7 +132,7 @@ class RangeFade:
             # checked range_high first, so a LONG taken at the range LOW got an
             # invalidation level ABOVE its own entry and was invalidated on the
             # first evaluation, every time. RNG has never completed a trade.
-            meta={"range_low": round(lo, 2), "range_high": round(hi, 2),
+            meta={**frame.meta(), "range_low": round(lo, 2), "range_high": round(hi, 2),
                   "invalidation_level": round(lo, 2),
                   "width_pct": round(width_pct, 2), "low_touches": low_touches,
                   "high_touches": high_touches, "volume_ratio": vr},

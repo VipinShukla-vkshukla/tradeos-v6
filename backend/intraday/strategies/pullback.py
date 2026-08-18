@@ -148,7 +148,7 @@ class TrendPullback:
             # the invalidation check never fired on a PBK trade. VWAP is the
             # anchor the whole thesis rests on; it is also where the stop sits,
             # which is what makes this entry efficient.
-            meta={"frac_above_vwap": round(frac_above, 2), "touches": touches,
+            meta={**frame.meta(), "frac_above_vwap": round(frac_above, 2), "touches": touches,
                   "vwap": round(ctx.vwap, 2), "invalidation_level": round(ctx.vwap, 2),
                   "dist_vwap_pct": round(dist_vwap, 2), "off_high_pct": round(off_high, 2)},
         )

@@ -129,6 +129,6 @@ class GapAndGo:
             invalidation=(f"a close below {or_low:.2f} — the gap being given back is the "
                           f"repricing failing, and it is visible long before the stop"),
             valid_phases=self.phases,
-            meta={"gap_pct": round(gap_pct, 2), "retrace_pct": round(retrace, 1),
+            meta={**frame.meta(), "gap_pct": round(gap_pct, 2), "retrace_pct": round(retrace, 1),
                   "or_low": round(or_low, 2), "volume_ratio": vr},
         )

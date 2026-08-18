@@ -70,6 +70,30 @@ class RiskFrame:
     structural_stop: float
     capped: bool
 
+    def meta(self) -> dict:
+        """
+        What survives on disk when the LEGACY branch (`intraday_stop_cap_mode
+        =tighten`) is armed -- 18-Aug-2026.
+
+        Under the default `refuse` mode `structural_stop == stop` always, so
+        this returns `{}` and adds nothing: a field that is always identical
+        to a column already stored (`stop`) is exactly the "silent default"
+        this project's own rule warns about, not instrumentation.
+
+        Under `tighten`, `structural_stop` and `stop` diverge, and this is the
+        ONLY place that divergence would otherwise be lost -- `_record_setup`
+        persists `s.stop` (the capped price), so the level the structure
+        actually named was previously discarded before it ever reached disk.
+        Recorded here, keyed into the Setup's own `meta` jsonb column, so a
+        future operator who re-arms `tighten` to compare against `refuse`
+        does not repeat this session's finding blind.
+        """
+        if not self.capped:
+            return {}
+        return {"structural_stop": round(self.structural_stop, 2),
+                "stop_capped": True,
+                "capped_risk_pct": round(self.risk_pct, 3)}
+
 
 def risk_from_structure(entry: float, structural_stop: float, direction: str,
                         *, max_risk_pct: float) -> "RiskFrame | None":

@@ -248,6 +248,21 @@ def evaluate_all(ctx: SymbolContext, phase: str) -> tuple[Setup | None, list[Set
                 # scored as. Keeping both is what makes the merge reversible.
                 s.meta["sub_engine"] = s.strategy
                 s.meta["family"] = family_of(eng.name)
+                # ATR AT DETECTION -- 18-Aug-2026. `base.risk_from_structure`'s
+                # own docstring says it plainly: "intraday_setups stores no
+                # ATR ... so what a widened stop would have done cannot be
+                # reconstructed from any row on disk." Neither the
+                # ATR-anchored stop nor "refuse vs size down" is answerable
+                # without this, on any engine, whether or not that engine's
+                # own logic reads ATR today. Stamped HERE rather than per
+                # engine so it is uniform across all nine and cannot be
+                # skipped by a new one — the same reasoning as sub_engine and
+                # family two lines up. `ctx.atr_pct_daily` is None on a symbol
+                # missing daily history; recorded as None rather than omitted,
+                # so an absent value in `meta` means "not available" and not
+                # "forgot to ask", per this project's own rule that a check
+                # which cannot fail is not a check.
+                s.meta["atr_pct_daily"] = ctx.atr_pct_daily
                 found.append(s)
         except Exception as ex:
             # One misbehaving engine must not stop the others. A scanner that
