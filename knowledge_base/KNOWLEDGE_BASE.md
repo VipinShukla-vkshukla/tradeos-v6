@@ -1,17 +1,22 @@
 # TradeOS Knowledge Base — Living Document
 
-**Last updated:** 14 August 2026 (7 sessions of evidence, plus direct
+**Last updated:** 17 August 2026 (8 sessions of evidence, plus direct
 `final_score` and `implied_rr` tercile measurements against the full
 historical sample)
 **Source reviews:** `daily/2026-08-06.md`, `daily/2026-08-07.md`,
 `daily/2026-08-10.md`, `daily/2026-08-11.md`, `daily/2026-08-12.md`,
-`daily/2026-08-13.md`, `daily/2026-08-14.md`
+`daily/2026-08-13.md`, `daily/2026-08-14.md`, `daily/2026-08-17.md`
 
 **18-Aug note:** this file (and `daily/2026-08-13.md`) briefly reverted to
-its 12-Aug state — this branch's history changed underneath the review
-session between the 13-Aug and 14-Aug reviews. Both were reconstructed
-from the reviewing session's own record and re-applied; content below is
-intact, not reconstructed-and-guessed.
+its 12-Aug state twice — the `fix/quote-parity-and-gabriel-gap-gates`
+branch this review was committing to turned out to have an in-progress,
+unresolved merge (`fix/resolve-day-session-guard` → this branch, conflict
+in `docs/FINDINGS.md`) sitting underneath it, which is almost certainly
+why commits kept appearing to vanish. From 17-Aug onward this file lives
+on `main`, which was already carrying the correct, intact history through
+14-Aug (commit `bbe6059`) even while the feature branch's copy kept
+reverting — content below is restored from that stable copy, not
+reconstructed from memory.
 
 Read this before starting a new day's review. Update it after, per the
 workflow in `README.md`. An item's confidence should track its sample
@@ -67,6 +72,9 @@ contradiction.)*
   occurrences (4 sessions) → **n=8 occurrences (5 sessions)**. Confidence
   stays High — this strengthens the existing rule across a new dimension
   rather than changing it.
+  **17-Aug: SUMICHEM, ninth occurrence.** Peaked +0.67R (+5.05%), gave
+  back exactly 50%, exited +0.34R/+2.57%, clean execution (4 minutes,
+  zero blocks). n=8 → **n=9**. Confidence stays High.
 
 - **The stall exit closes a swing position that peaked and then reversed
   without ever earning its own conviction, rather than letting the slot
@@ -83,6 +91,25 @@ contradiction.)*
   EXECUTION, not the decision to exit, so it doesn't weaken this rule.
   Next evidence needed: a third confirmation would move this toward
   High, matching the give-back guard's own path.
+  **17-Aug: third confirmation — moves to High.** GABRIEL: 11 sessions,
+  best-ever +0.00R (+0.03%, essentially never favorable), reversed to
+  −0.64R at trigger. Same shape as MANAPPURAM and CIPLA. n=2 → **n=3
+  confirming sessions**. Confidence Medium-high → **High**, matching the
+  give-back guard's own path as anticipated.
+
+- **Automated live-order execution can be trusted once a decision fires —
+  PROMOTED from Promising Hypotheses, 17 Aug.**
+  Sessions: 6 Aug (n=1 failure — KIMS + TRAVELFOOD SELL both blocked by
+  IP allowlist). 10 Aug (n=1 success — ETERNAL + CIPLA). 12 Aug (n=1
+  success — VIJAYA). 17 Aug (n=1 success — SUMICHEM, fired 09:42, closed
+  09:46, zero blocks of any kind). **3 successes, 1 failure.**
+  Confidence: Medium-high → **High**. The 6-Aug failure stays on record
+  as a known, understood risk category (IP-allowlist can drift) rather
+  than being erased — this promotion says the mechanism is trusted by
+  default now, not that it is infallible.
+  Next evidence needed: none pressing, matching the give-back guard's own
+  "settled unless contradicted" status. A recurrence of an IP-allowlist-
+  style block would be the thing to watch for, not routine confirmation.
 
 - **`final_score` does not predict forward R within the CONTINUATION swing
   family, on the full resolved sample measured so far.**
@@ -168,38 +195,6 @@ contradiction.)*
   evidence bar `rank_weight_screener` and `rank_weight_rr` were both raised
   on, not the theory alone.
 
-- **Automated live-order execution cannot be trusted unattended — a
-  broker-side block can pass every readiness check and only surface when
-  the order itself is placed.**
-  Sessions: 6 Aug (n=1 — KIMS + TRAVELFOOD SELL both blocked by IP
-  allowlist; TRAVELFOOD's give-back guard re-fired 4x over 20 minutes
-  without landing). 7 Aug: no swing exit fired, untested. 10 Aug (n=1 —
-  ETERNAL + CIPLA SELLs both succeeded cleanly, zero IP blocks, GTT
-  cancel + re-entry inside the same 20-second window).
-  Confidence: Low-medium → **Medium** — one failure, one clean success;
-  early lean toward "6 Aug was a one-off," not yet confirmed.
-  Next evidence needed: one more clean session to move this toward
-  Validated, or a recurrence to move it the other way — currently 1-1.
-  **11-Aug: still 1-1, untested for a second session** — zero swing exits,
-  no order attempted. Separately (not the same thing): `tools.health`
-  confirms the IP-allowlist mismatch itself is still live and unresolved
-  as of this evening — see Standing Operational Watch Items. The
-  hypothesis stays untested; the underlying risk it is about has not gone
-  away.
-  **12-Aug: second clean success.** VIJAYA's SELL executed cleanly, zero
-  IP blocks, GTT cancelled within 3 minutes. Now **2 successes, 1
-  failure**.
-  Confidence: Medium → **Medium-high**. One more clean session would
-  support promoting this to Validated Rules.
-  **13-Aug: no new evidence** — zero swing exits. Stays "2 successes, 1
-  failure."
-  **14-Aug: no new evidence for THIS hypothesis specifically.** A
-  different execution failure appeared today (a pre-market-triggered
-  stall exit blocked repeatedly by `MARKET_CLOSED`, not the IP allowlist)
-  — tracked as its own new item in Ideas Requiring More Evidence rather
-  than counted toward or against this one. Stays "2 successes, 1
-  failure," Medium-high confidence.
-
 - **The swing allocator's "slots spent" decline reflects real slot
   scarcity — DEMOTED from Validated Rules, 7 Aug.**
   Sessions: 6 Aug (n=1 — GABRIEL: slots genuinely occupied, freed, admitted
@@ -229,6 +224,28 @@ contradiction.)*
   **14-Aug: one more clean data point.** Three entries (SUMICHEM,
   TRAVELFOOD, HINDCOPPER) landed as slots freed, count matched reality.
   Confidence unchanged at Medium.
+  **17-Aug: one more clean data point.** TATATECH and AARTIIND entered
+  15 and 5 minutes after their respective freed slots — looser timing
+  than prior sessions but the same mechanism. Confidence unchanged at
+  Medium.
+
+- **Pre-market evaluation producing an exit decision that must wait for
+  market open, adding execution slippage — PROMOTED from Ideas Requiring
+  More Evidence, 17 Aug.**
+  Sessions: 14 Aug (n=1 — MANAPPURAM's stall exit fired 09:00:41 IST, 14
+  minutes before market open, diagnosing −0.69R; retried 56 times against
+  `MARKET_CLOSED`, executed 09:16:08 at −0.75R, ~0.06R worse). 17 Aug
+  (n=1 — GABRIEL, essentially the SAME trigger time, 09:00:40, retried
+  against `MARKET_CLOSED` again, executed at −0.81R vs a −0.64R trigger,
+  ~0.17R worse).
+  Confidence: none → **Low-medium** — two occurrences with near-identical
+  clock times and the same failure shape is enough to treat as a real,
+  systematic pattern (likely a fixed pre-market evaluation schedule) not
+  a coincidence, though n=2 sessions is still short of full confidence.
+  Next evidence needed: a third occurrence, and whether the ~09:00 IST
+  timing is exactly fixed. Worth a real code look (defer pre-market
+  evaluation until market-open confirmation) if it recurs once more —
+  not yet, per this file's own discipline against acting on two sessions.
 
 ---
 
@@ -257,6 +274,8 @@ review knows to keep watching, not to re-derive from scratch.)*
   wins (TMPV, CONCOR, SWIGGY, BAJFINANCE) vs 5 losses. ~9-10 legs, 3 wins
   → **~18-19 legs, 7 wins** — approaching the `MIN_SAMPLE=20` floor for
   the first time.
+  **17 Aug: no new evidence** — zero intraday trades closed today (first
+  such session on real detection volume, 185 setups). Stays ~18-19 legs.
   Needed before any verdict: ~20 resolved outcomes across ≥10 sessions
   (this project's own `MIN_SAMPLE`/`MIN_SESSIONS` standard from
   `tools/weekly_review.py`).
@@ -273,19 +292,6 @@ review knows to keep watching, not to re-derive from scratch.)*
   sessions now for "does a soft regime empty the candidate pool," a
   separate question from the original one about whether the cap itself is
   too tight.
-
-- **Pre-market evaluation producing an exit decision that must wait for
-  market open, adding execution slippage.**
-  Sessions: 14 Aug (n=1 — MANAPPURAM's stall exit fired 09:00:41 IST, 14
-  minutes before market open, diagnosing −0.69R; the automated SELL
-  retried 56 times against `MARKET_CLOSED` until finally executing at
-  09:16:08 at −0.75R, roughly 0.06R worse than the trigger moment).
-  Distinct from the IP-allowlist hypothesis: self-resolving the moment
-  the market opens, no manual intervention needed, small cost — but the
-  same family of risk (a correct decision, delayed execution, real if
-  small cost).
-  Needed before any verdict: whether this recurs, and how large the
-  slippage typically runs.
 
 - **Small CNC clip sizes turning gross wins into net losses on fixed
   charges.**
@@ -400,6 +406,12 @@ still supports the bet, rather than re-deriving the original decision.)*
   Next: this thread no longer needs restating as "still zero" every
   session — it has real data now and can return to normal per-session
   tracking rather than standing as the review's top priority.
+  **17 Aug: two more resolutions.** SUMICHEM/MOM: +0.341R win (3
+  sessions, peaked 5.05%, banked 2.57%). GABRIEL/MOM+SEC: −0.81R loss
+  (11 sessions, essentially never favorable, caught by the stall exit —
+  see Validated Rules). n=3 → **n=5 resolved** (3 wins, 2 losses, 60%),
+  continuing to track at or above the 50% pre-promotion MOM baseline.
+  VCE/RNG: no new closes.
 
 ---
 
