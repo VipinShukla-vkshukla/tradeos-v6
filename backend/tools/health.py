@@ -1593,11 +1593,7 @@ _SHORT_SPINE = [
     ("invalidation",     "intraday/exit_policy.py",        "D.is_better_price(ref, breached, d)"),
     ("cost model",       "intraday/cost_model.py",         "D.reward_per_share(entry_price, target_price, direction)"),
     ("allocator scorer", "allocation/scoring.py",          "D.validate(entry, stop, target, direction)"),
-    # `k`, not `key`, since 18-Aug-2026 (diagnostic/rescore-complete-prices).
-    # Same story as `invalidation` above: the loop variable that builds the
-    # `/SHORT` suffix was renamed, the SHORT-vs-LONG separation it produces is
-    # unchanged, and this check caught the rename rather than missing it.
-    ("priors",           "allocation/scoring.py",          'f"{k}/SHORT"'),
+    ("priors",           "allocation/scoring.py",          'f"{key}/SHORT"'),
     ("outcome resolver", "intraday/outcomes.py",           "hi >= stop, lo <= tgt"),
     # `dirn`, not `d`, since 15-Aug-2026 — and the rename is the POINT, not
     # cosmetic. `d` was already bound to the TRADE DATE at the top of
