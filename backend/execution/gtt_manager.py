@@ -351,12 +351,39 @@ def sync(positions: list[dict], prices: dict[str, float], notifier=None) -> dict
 
     # A GTT resting for a symbol no longer held is a live sell order against
     # stock that is not there — it must not be allowed to linger.
-    held = {p.get("symbol") for p in positions}
+    #
+    # PROTECTION IS RELEASED ON FILL, NOT ON PLACEMENT — 18-Aug-2026.
+    #
+    # `positions` is built from status='ACTIVE'. The moment an exit order is
+    # placed the position becomes CLOSING, drops out of that list, and its
+    # still-resting GTT looks orphaned to the loop below. On 17-Aug GABRIEL's
+    # exit was placed at 09:15:13 and this branch cancelled its stop at
+    # 09:16:01 — but the order did not fill until 11:48, so for two and a half
+    # hours a live position held real stock with no protection at all and an
+    # unfillable limit above the market.
+    #
+    # The shares are still there until the sell FILLS. So a symbol with a
+    # working SELL order is treated as held. An unreachable broker returns
+    # None and cancels nothing this cycle: over-keeping a GTT produces a
+    # duplicate that the branch above cleans up next pass, while
+    # over-cancelling one produces an unprotected live position. Those costs
+    # are not comparable, and the ambiguous case resolves toward protection.
+    from execution.exit_orders import symbols_with_open_exit
+    exiting = symbols_with_open_exit()
+    if exiting is None:
+        logger.warning("  gtt: cannot confirm which exits are still working — "
+                       "not cancelling any resting stop this cycle")
+        return result
+
+    held = {p.get("symbol") for p in positions} | exiting
     for sym, gs in existing.items():
         if sym not in held:
             for g in gs:
                 if g.gtt_id and cancel_stop(g.gtt_id, sym):
                     result["cancelled"] += 1
+        elif sym in exiting:
+            logger.info(f"  gtt: {sym} has a SELL still working — keeping its stop "
+                        f"until the exit actually fills")
 
     return result
 

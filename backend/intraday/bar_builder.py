@@ -51,10 +51,41 @@ from __future__ import annotations
 import sys
 import threading
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+
+# THE CONTINUOUS SESSION, AND WHY TICKS OUTSIDE IT ARE NOT BARS — 17-Aug-2026.
+#
+# The socket is subscribed from 09:00, fifteen minutes before the continuous
+# session opens, and Kite delivers ticks throughout the pre-open call auction.
+# Their last_price is the PREVIOUS CLOSE until the auction publishes an
+# equilibrium price. `record_tick` folded them like any other tick, so every
+# tick-built series began with a ~09:00 bar priced at yesterday's close.
+#
+# That bar is not a price this stock traded at today, and it sits OUTSIDE
+# today's real range in whichever direction the stock gapped. Any max/min over
+# the series therefore returns the previous close instead of the day's true
+# extreme: on 17-Aug BELRISE's tick-built day_high read 255.35 (its 14-Aug
+# close) against a real session high of 247.77, and MAZDOCK's day_low read
+# 2580.00 (its 14-Aug close) against a real session low of 2593.00 at that
+# moment. Nineteen of the forty names carrying a bench-only context were wrong
+# that way inside the first fifteen minutes.
+#
+# `base.range_between()` was already immune by accident — it anchors on a
+# hardcoded 09:15 and offsets from there, so a 09:00 bar lands at minute -15
+# and falls out of every window. `volume_ratio()`, `merge_live_bars()`'s
+# day_open/day_high/day_low, and anything else taking a plain max/min over
+# `ctx.bars` were not. The fix belongs here, at the one place a tick becomes a
+# bar, rather than in each consumer remembering to skip a bar it should never
+# have been given.
+#
+# Same reasoning at the other end: the closing session runs to 15:40 and its
+# prints are not continuous-session candles either.
+SESSION_OPEN = time(9, 15)
+SESSION_CLOSE = time(15, 30)
 
 
 @dataclass
@@ -102,12 +133,23 @@ class BarBuilder:
             return
         d = ts.date()
         minute = ts.replace(second=0, microsecond=0)
+        # Pre-open and post-close prints are not session candles — see
+        # SESSION_OPEN above. The day-rollover reset stays OUTSIDE this filter,
+        # deliberately: the socket is subscribed from 09:00 and the first tick
+        # of the day used to be what cleared yesterday's buckets. Returning
+        # early before that reset would leave `closed_bars()` serving
+        # yesterday's session to anything that read it between 09:00 and 09:15
+        # — a stale-range bug strictly worse than the pre-open one this filter
+        # exists to remove.
+        in_session = SESSION_OPEN <= ts.time() < SESSION_CLOSE
         with self._lock:
             if self._session_date != d:
                 # A NEW SESSION MUST START FROM ZERO BARS, NOT YESTERDAY'S.
                 self._closed.clear()
                 self._open.clear()
                 self._session_date = d
+            if not in_session:
+                return
 
             cur = self._open.get(symbol)
             if cur is None or cur.minute != minute:

@@ -7249,3 +7249,250 @@ NEEDS DECISION from the operator on recommendations 1–3, which restate one
 verdict (VCE) and one sign (RNG). Nothing was implemented.**
 
 ---
+
+## 2026-08-17 — F-30 (change, quote parity) — RANGE did not regress: the LIVE feed was right on every one of the 212 faulting comparisons and the FETCHED side held the previous close, because the pre-open call auction was being folded into the tick-built bar series. The "clean at baseline" it was measured against was a day the daemon started at 10:08
+
+**The health check said the wrong thing twice.** `quote_parity` reported *"RANGE
+REGRESSED — 19 of 402 day_high/day_low comparisons behind"*. The feed had not
+regressed, the denominator was not 402, and the baseline it was defending was
+not a measurement of the window the defect lives in.
+
+**Which side was wrong.** Pulled the faulting rows for 17-Aug and compared both
+sides against `kite.historical_data(token, today, today, "minute")` fetched
+live:
+
+| symbol | field | live | fetched | true, from today's bars at 09:26 |
+|---|---|---|---|---|
+| BELRISE | day_high | 247.77 | **255.35** | 247.77 — and 255.35 is its 14-Aug **close** |
+| SBIN | day_high | 1064.20 | **1067.70** | 1064.20 — 1067.70 is its 14-Aug close |
+| HINDPETRO | day_high | 372.00 | **373.50** | 372.00 — 373.50 is its 14-Aug close |
+| MAZDOCK | day_low | 2593.00 | **2580.00** | 2593.00 — 2580.00 is its 14-Aug close |
+| SYRMA | day_low | 1472.00 | **1465.20** | 1472.00 — 1465.20 is its 14-Aug close |
+
+The live value matched the session's own bars exactly in every case. In 13 of
+19 faulting names on 17-Aug the fetched HIGH equalled the previous close (a
+gap-down name), and in the other 6 the fetched LOW did (a gap-up name) — one
+extra bar sitting at yesterday's close, extending the range in whichever
+direction the stock gapped. Same signature on 12-Aug and 14-Aug: 18 of 24, and
+15 of 15 in the 13:12–13:22 cluster.
+
+**Mechanism.** The socket is subscribed from 09:00. Through the pre-open call
+auction Kite delivers ticks whose `last_price` is the previous close, and
+`BarBuilder.record_tick` folded them like any other tick, so every tick-built
+series began with a ~09:00 bar priced at yesterday's close. `merge_live_bars()`
+takes `max`/`min` over that series for a bench-only context's day_high/day_low.
+`base.range_between()` was immune by accident — it anchors on a hardcoded 09:15
+and offsets from there, so a 09:00 bar lands at minute −15 and falls out of
+every window. Nothing else was.
+
+**Why it read clean for ten days: the daemon's start time, not the market's.**
+
+| date | first parity sample | verdict |
+|---|---|---|
+| 07-Aug | 10:08 | clean ← *this is the "baseline"* |
+| 10-Aug | 09:41 | clean |
+| 11-Aug | 09:30 | clean |
+| 12-Aug | **09:20** | FAULT |
+| 13-Aug | 09:52 | clean |
+| 14-Aug | **09:21** | FAULT |
+| 17-Aug | **09:21** | FAULT |
+
+Perfect correlation. The artifact is washed out of the series within ~15
+minutes of the open as real prices ratchet past the previous close, so a late
+start never sees it. The check was defending a number measured an hour after
+the only window in which the defect is observable.
+
+**The larger finding: the check could not fail.** `apply_live_quotes._overlay()`
+overwrites `ctx.day_high/day_low/vwap/prev_close` **in place** with the tick
+values, because that is what the engines must read — and the parity logger then
+read those same attributes as the "fetched" side. From the second cycle onward
+it was comparing the feed against a value it had itself written 300 seconds
+earlier. Measured over 38,931 comparisons:
+
+```
+day_high      37183 of  38931 identical to the paisa ( 95.5%)
+day_low       37152 of  38931 identical to the paisa ( 95.4%)
+prev_close    38916 of  38931 identical to the paisa (100.0%)  <- degenerate
+vwap          22864 of  38931 identical to the paisa ( 58.7%)
+```
+
+`prev_close` differed on **zero** rows in every sample on 17-Aug. The 4.5% of
+`day_high` rows that did differ land almost entirely in the two samples right
+after a context is first built — the only moment the attribute still held a
+fetched number. That is also why the defect showed up at all, and why it showed
+up at 09:26/09:31 and then appeared to "heal".
+
+This reframes the vwap conclusion this module has carried since 07-Aug. `vwap`
+is 58.7% degenerate rather than 100% only because a live VWAP moves during the
+300 seconds between samples; the comparison was live-now against live-then, a
+staleness measurement, not the live-versus-bar-formula difference the docstring
+attributes it to. **The 848 comparisons said to cross `vwr_stop_buffer_pct` are
+not evidence of a formula gap.** They are not evidence of anything yet.
+
+**Two more defects found on the way, both in how the evidence was read.**
+
+- `health.check_quote_parity` selected the 5-day window **unpaged**. PostgREST
+  caps at 1000 rows silently, so "19 of 402" was an arbitrary, unordered 0.5%
+  sample of ~190,000 rows. Paged now: the same window is **212 of 57,620**.
+- `quote_parity.report()` paged on `.range()` with **no ORDER BY** — the exact
+  failure `config.fetch_all`'s docstring documents. It returned 38,559 day_high
+  rows of the 38,683 that existed, and not as a truncation: an arbitrary subset
+  with repeats. Both readers now go through `fetch_all`; `intraday_quote_parity`
+  probed 2026-08-17 (191,775 rows, `.order("id")` page one → 1000 rows, 1000
+  distinct, ids 1..1000) and recorded in `_FETCH_ALL_SORT_KEY`.
+
+**Changed:**
+
+- `intraday/bar_builder.py` — `SESSION_OPEN`/`SESSION_CLOSE` (09:15–15:30);
+  `record_tick` drops out-of-session prints. The day-rollover reset stays
+  *outside* that filter deliberately: returning early before it would leave
+  `closed_bars()` serving yesterday's session to anything reading between 09:00
+  and 09:15, which is strictly worse than the bug being fixed.
+- `intraday/strategies/base.py` — `SymbolContext.fetched`, written only by the
+  bar/database side and never by the overlay.
+- `intraday/engine.py` — `_fetched_snapshot()`, populated by `refresh_contexts`
+  and by BOTH branches of `merge_live_bars` (recomputed as bars extend, so a
+  bench-only context — never rebuilt — cannot freeze it); parity now logs
+  against the snapshot, and counts and WARNS on any context that carries none,
+  because a parity table that quietly stops filling looks exactly like a feed
+  that agrees.
+- `tools/health.py`, `tools/quote_parity.py` — paged reads; the degeneracy
+  report; and both remediation strings corrected. Both used to advise turning
+  `intraday_quote_mode_range` OFF, which is backwards — that switch is what
+  keeps the bad number out of the engines.
+- `tests/test_quote_parity.py` (+6 checks), `tests/test_apply_live_quotes.py`,
+  `tests/test_static_analysis.py`.
+
+**Verified:**
+
+```bash
+cd backend && python -m tools.verify        # all 551 checks passed across 60 modules
+cd backend && python -m tools.simulate      # clean, nothing written
+cd backend && python -m tools.quote_parity  # 191,775 rows now read (was 189,915)
+```
+
+The new checks were demonstrated FAILING with the fix backed out — the pre-open
+test reports `got 255.35`, reproducing BELRISE's recorded fetched value exactly.
+
+**Not verified in this session:** that a live session now logs clean. The
+daemon runs on `tradeos-vcn` and must be restarted to pick this up. Until then,
+and for five days after, `health` will keep reporting the 212 pre-fix
+comparisons — they are real observations of a real defect and were not deleted.
+
+**Still open:** the vwap verdict needs re-measuring from scratch once genuinely
+independent comparisons exist; `prev_close`'s "FAULT" rests on 15 rows and the
+`stock_data_daily` global-LIMIT bug behind it is untouched.
+
+---
+
+## 2026-08-18 — F-31 (change, six gates) — GABRIEL was REFUSED by the pipeline on 3, 4 and 5 August and bought on the 6th, when it was more extended than on any of them. Every gate needed to stop it already existed: three were inert and one — min_rr_to_enter — was arithmetically incapable of firing, because implied_rr is pinned at a constant whenever the stop is re-anchored to price
+
+**The operator closed GABRIEL by hand.** That is the finding that reframes the
+rest. The broker log has one `PLACED` and no `MODIFY`: left alone, the ₹1,460.60
+limit placed at 09:15:13 would still be resting above a market that has since
+traded to ₹1,420, with the protective GTT cancelled since 09:16:01. Not a
+slippage problem with a 1.92% price tag — **an exit path that does not
+terminate**, applying to every LIVE swing exit in the book.
+
+SCI is on the same path: entered 10-Aug at 300.60, peak 301.60 (+0.05R),
+currently −3.31% and −0.46R at 5 sessions.
+
+**Why the R:R gate could not fire.** `analysis/risk_model.py`'s own docstring
+states the discipline — *"the stop is a property of the SETUP, not of what you
+paid… that is the correct, honest penalty for chasing"* — and it did not hold,
+because `compute_trade_plan` derives every level from `ez_low`, recomputed
+nightly from the current price:
+
+| date | price | stop | source | implied_rr | vs 0.80 bar |
+|---|---|---|---|---|---|
+| 29-Jul | 1414.80 | 1248.49 | structure | 0.806 | passes |
+| 30-Jul | 1392.00 | 1248.49 | structure | **0.925** | passes |
+| 03-Aug | 1527.40 | 1347.61 | atr | **0.777** | refused |
+| 04-Aug | 1530.80 | 1346.20 | atr | **0.777** | refused |
+| 05-Aug | 1587.70 | 1403.97 | atr | **0.777** | refused |
+| 06-Aug | 1531.80 | 1353.73 | structure | 0.805 | **passes by 0.005** — bought |
+
+With `stop = price × (1−a)` and `target = price × (1+b)` the ratio is `b/a` and
+the price cancels. Reproduced offline with the switch off: `expected_r` returns
+**1.905 at ₹1,414.80 and 1.905 at ₹1,527.40**. A gate comparing a threshold
+against a constant does not discriminate; GABRIEL was finally admitted on the
+one evening the stop source flipped back to `structure`.
+
+`filter_reason` read `insufficient_rr_0.78x` on 03, 04 AND 05 August, and
+03-Aug also returned `eap_action = AVOID_ENTRY`. Nothing in the entry path read
+either column.
+
+**The event was not considered, and could not be.** `pre_results_flag` false and
+`upcoming_event_type` null on all 12 GABRIEL plan rows; `upcoming_events` null on
+all 15 sessions; **`event_calendar` has no `symbol` column** — it is keyed on
+`event_category` and `affected_sectors`. There is no per-stock event feed. The
+only event that reached the plan was "Southwest Monsoon · POSITIVE · moderate",
+a sector tailwind. The volume recorded it exactly: vol_ratio 0.24 → 1.01/0.84/
+0.84 (₹134/117/123 cr, 3–5 Aug) → **0.38 on 6 Aug, the day of entry** (₹55 cr) →
+0.15 by 14 Aug, with delivery% rising 29.7 → 55.0 as price fell.
+
+**Changed** (migration 080, all six switch-gated):
+
+1. **`EXIT_FASTFAIL`** — `sessions_held ≥ 4 AND peak_r < 0.25 AND gain_r ≤ −0.5`,
+   above the 10-session stall. GABRIEL qualified on 10-Aug at −5.5%/−0.56R with
+   a peak of 0.00R. **OFF by default** (`exit_fastfail_enabled`): it is the only
+   rule in the ladder that sells while the ordinary stop is still far away.
+2. **Frozen plan levels** (`plan_levels_frozen`, ON). `planned_stop`/
+   `planned_target` are inherited from the live plan and expire only when price
+   passes the target or breaks the stop — `plan_levels_still_live()`. Expected_r
+   is recomputed against the frozen stop, so it decays as price runs. That decay
+   is the chase penalty `min_rr_to_enter` was always supposed to read. Against
+   the frozen 29-Jul levels, a ₹1,554.80 fill is above the plan's own target.
+3. **Swing liquidity floor** (`swing_min_value_cr` 200, ON). The existing
+   share-of-turnover test passes a 2-share position in almost any name — it is a
+   floor on the POSITION; this is a floor on the NAME. Intraday is unaffected.
+4. **AI refusals bind** (`entry_rank_respect_ai_avoid`, ON). `entry_refusals()`
+   is a separate pure function, deliberately NOT inside `score_plan()` — a veto
+   that is an additive term can be outvoted, which is exactly how a screener
+   score of 82 drowned out everything else. The asymmetry is intentional: the AI
+   can veto, never promote. `ai_risks` costs rank points via `rank_w_ai_risk`.
+   `entry_respect_filter_reason` is built and left OFF pending a sweep.
+5. **The exit terminates.** New `execution/exit_orders.py`:
+   - `exit_limit_price` = `ltp × (1 − max(exit_slip_bps, 0.25 × atr_pct))`. On
+     GABRIEL that is ₹1,447.9, not ₹1,460.6 — and the 09:15 tape traded ₹1,447
+     inside the first minute.
+   - `reprice_stale_exits` on the slow timer: reprice after 60s, MARKET after 3
+     attempts, attempt count read from the broker's own order history so it
+     survives a daemon restart. Cancel-before-market is fail-closed — if the
+     cancel errors it does NOT place, because two live sells is worse.
+   - `symbols_with_open_exit` — `gtt_manager.sync()` now releases a stop on FILL
+     CONFIRMATION, never on placement. An unreachable broker cancels nothing.
+   - health check `exits_open`: FAILS on any SELL open > 5 min.
+6. **One clock.** `sessions_between()` is pure and shared; the daemon caches the
+   session calendar once per day rather than reading per position per cycle.
+   GABRIEL was reported as "11 sessions" when held 8.
+
+**Verified:**
+
+```bash
+cd backend && python -m tools.verify        # all 574 checks passed across 61 modules
+cd backend && python -m tools.health --quick # green except quote_parity (F-30 pre-fix rows)
+cd backend && python -m tools.simulate      # 6 swing, 0 needing action; nothing written
+cd backend && python -m tools.validate_selects  # 362 sites match the live schema
+```
+
+All 23 new checks in `tests/test_gabriel_gap.py` were demonstrated FAILING with
+each fix backed out. Two pre-existing checks caught real mistakes in this work:
+`validate_selects` rejected `planned_entry` (not a column on
+`signal_output_daily`), and the `fetch_all` sort-key check rejected `symbol`
+as a paging key on a table with ten rows per name — `(symbol, date)` probed
+unique at 2,511 of 2,511 and is recorded.
+
+**Live state after this session.** Nothing has been sold. `exit_fastfail_enabled`
+is OFF; run the dry-run before switching it on. Today's book under the rule:
+AARTIIND, CARBORUNIV, HINDCOPPER, TATATECH, TRAVELFOOD all HOLD, and **SCI at
+−0.46R sits just inside the −0.5 bar** — it does not qualify yet.
+`exit_order_reprice_enabled` IS on and will place real MARKET orders on an exit
+that will not fill at a limit; that is the behaviour the operator asked for and
+the alternative is the 17-Aug state.
+
+**Not verified in this session:** no swing exit has run under the new pricing or
+the reprice pass, and no evening pipeline has run under frozen levels. Both need
+one live session before they are trusted.
+
+---

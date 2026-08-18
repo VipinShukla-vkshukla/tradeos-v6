@@ -55,7 +55,7 @@ from intraday.strategies.base import Bar
 
 # Actions that end the position, from `position_lifecycle.py:283-300`.
 SWING_TERMINAL = {"EXIT_TARGET", "EXIT_STOP", "EXIT_TIME", "EXIT_GIVEBACK",
-                  "EXIT_STALL", "EXIT_DETERIORATION"}
+                  "EXIT_STALL", "EXIT_FASTFAIL", "EXIT_DETERIORATION"}
 
 
 @dataclass

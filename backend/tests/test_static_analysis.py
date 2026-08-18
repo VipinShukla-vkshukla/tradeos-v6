@@ -250,6 +250,20 @@ _FETCH_ALL_SORT_KEY = {
     # Measured 2026-08-16: 51 rows, `id` present and unique. Note it has
     # start_date/end_date and NO `event_date`.
     "event_calendar":       "id",
+    # Probed 2026-08-17 on the live table: 191,775 rows; `.order("id")` page
+    # one returned 1000 rows, 1000 distinct, ids 1..1000. This table is why
+    # both readers were paging in the first place — the unpaged health check
+    # was silently truncating at 1000 of ~190,000, and quote_parity.report()'s
+    # own unordered .range() loop was returning 38,559 day_high rows out of
+    # the 38,683 that exist.
+    "intraday_quote_parity": "id",
+    # Probed 2026-08-18 on the live table: 2,511 rows, 2,511 distinct
+    # (symbol, date), 257 distinct symbols. NO `id` column — CLAUDE.md names
+    # this table specifically for that. `symbol` ALONE is emphatically not
+    # unique (ten dates per name in the current window), which is the
+    # non-unique-sort trap this map exists to catch: it pages without error
+    # and silently repeats and drops rows.
+    "signal_output_daily":  "symbol,date",
 }
 
 

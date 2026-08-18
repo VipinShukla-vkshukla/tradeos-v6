@@ -240,6 +240,14 @@ def load_exit_policy() -> dict:
         "cost_buffer_pct":    cfg_float("exit_breakeven_cost_pct", 0.20),
         "stall_days":         cfg_int("exit_stall_days",           10),
         "stall_peak_r":       cfg_float("exit_stall_peak_r",       0.5),
+        # The fast arm of the same idea — see the EXIT_FASTFAIL block in
+        # evaluate_exit(). Enabled by its own switch because it is the only
+        # rule here that closes a position while the ordinary stop is still
+        # a long way off.
+        "fastfail_enabled":   cfg_bool("exit_fastfail_enabled",    False),
+        "fastfail_days":      cfg_int("exit_fastfail_days",        4),
+        "fastfail_peak_r":    cfg_float("exit_fastfail_peak_r",    0.25),
+        "fastfail_gain_r":    cfg_float("exit_fastfail_gain_r",   -0.5),
     }
 
 
@@ -293,6 +301,7 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
         EXIT_STOP      stop breached
         EXIT_TIME      time stop, position going nowhere
         EXIT_GIVEBACK  was a winner, handed back too much of the move
+        EXIT_FASTFAIL  never worked and is well underwater, four sessions in
         EXIT_STALL     never went anywhere, the slot is worth more elsewhere
         RUN            at target with the trend intact — hold as a runner
         EXIT_DETERIORATION  profitable but the thesis broke
@@ -543,6 +552,61 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
     # 1R when the trend breaks, and the time stop closes anything going nowhere.
     # Neither needs a percentage invented on the day.
 
+    # Peak excursion in R, shared by both arms below. `hwm_px <= entry` reads
+    # as a peak of exactly zero rather than a negative number: a trade that
+    # never traded above entry has no favourable excursion, it does not have a
+    # bad one.
+    hwm_px = float(pos.get("high_water_mark") or 0)
+    peak_r = (hwm_px - entry) / risk if hwm_px > entry else 0.0
+
+    # ── 4a. FAST FAIL — the same question, asked four sessions sooner ────────
+    #
+    # 18-Aug-2026. The stall exit below is correct and its evidence is sound,
+    # but its clock is ten sessions, and nothing between entry and day ten asks
+    # whether a position has ever worked. GABRIEL sat in that gap for its whole
+    # life: entered 06-Aug at 1554.80, its high-water mark was 1555.20 — forty
+    # paise, +0.003R — and it was never once profitable. Every profit-side rule
+    # above (target, partial, breakeven trail, give-back) is unreachable by
+    # construction on such a trade, and EXIT_DETERIORATION is gated at +1.0R.
+    # The stop was 9.7% away, so the only rule that could see it was the stall,
+    # on day ten. It closed at -7.86%.
+    #
+    # On 10-Aug — four sessions in — GABRIEL was at -5.5% and -0.56R with a peak
+    # of 0.00R. Every term this rule reads was already true and had been for
+    # days. The same is true of SCI right now: entered 10-Aug at 300.60, peak
+    # 301.60 (+0.05R), currently -0.61R.
+    #
+    # WHY THREE CONDITIONS AND NOT A PERCENTAGE. `peak_r` is what separates
+    # "never worked" from "worked and gave it back" — the give-back guard owns
+    # the second case and would be wrong to fire here. `gain_r` requires the
+    # position to be meaningfully underwater NOW, so a flat trade going nowhere
+    # is left to the stall rule rather than being cut on noise. `sessions_held`
+    # is the patience: fewer than four sessions is inside the normal wobble of
+    # an entry and cutting there would cost more in good trades than it saves.
+    #
+    # OFF BY DEFAULT (`exit_fastfail_enabled`). This is the one rule in the
+    # ladder that sells while the ordinary stop is still far away, which means
+    # a miscalibration here shows up as real money rather than as a missed
+    # opportunity. It should be switched on deliberately, with the book watched
+    # for a few sessions afterwards.
+    if (policy.get("fastfail_enabled")
+            and policy["fastfail_days"] > 0
+            and sessions_held >= policy["fastfail_days"]
+            and peak_r < policy["fastfail_peak_r"]
+            and gain_r <= policy["fastfail_gain_r"]):
+        return {
+            "action": "EXIT_FASTFAIL",
+            "reason": "NEVER_WORKED_FAST",
+            "detail": (f"{sessions_held} sessions, never better than "
+                       f"{peak_r:+.2f}R ({(hwm_px - entry) / entry * 100 if hwm_px else 0:+.2f}%), "
+                       f"now {gain_r:+.2f}R. A swing trade that has not worked in "
+                       f"{policy['fastfail_days']} sessions and is {abs(policy['fastfail_gain_r'])}R "
+                       f"down is the book's worst bucket — cutting here rather than "
+                       f"waiting {policy['stall_days'] - sessions_held} more sessions "
+                       f"for the stall rule"),
+            "new_sl": None, "book_qty": 0,
+        }
+
     # ── 4b. STALL EXIT — the trade that never worked at all ──────────────────
     #
     # The give-back guard above needs a position to have made a full R before it
@@ -578,8 +642,6 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
     # swing trading and is not in doubt; the exact 10-session and 0.5R numbers
     # are a judgement and should be re-derived once the current book has 20+
     # closes of its own. Both are config keys for exactly that reason.
-    hwm_px = float(pos.get("high_water_mark") or 0)
-    peak_r = (hwm_px - entry) / risk if hwm_px > entry else 0.0
     if (policy["stall_days"] > 0
             and sessions_held >= policy["stall_days"]
             and peak_r < policy["stall_peak_r"]
@@ -1455,20 +1517,59 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
 # LIVE MANAGEMENT
 # ─────────────────────────────────────────────────────────────────────────────
 
+def session_dates(sb, since: str) -> list[str]:
+    """
+    Every trading session on or after `since`, as ISO date strings.
+
+    Split out from _sessions_held so the LIVE DAEMON can hold one cached copy
+    for the day instead of issuing a database read per position per 15-second
+    cycle. `market_regime` has exactly one row per session, which is what makes
+    it the calendar of record here.
+    """
+    try:
+        rows = (sb.table("market_regime").select("date")
+                  .gte("date", str(since)[:10])
+                  .order("date").execute().data) or []
+        return [str(r["date"])[:10] for r in rows]
+    except Exception:
+        return []
+
+
+def sessions_between(dates: list[str], entry_date: str, trade_date: str) -> int:
+    """
+    Sessions held, counted from a calendar. Pure — no I/O — so both callers of
+    evaluate_exit() can reach the same answer without both hitting the database.
+
+    ONE QUANTITY, ONE DEFINITION — 18-Aug-2026. This function exists because
+    there were two. The pipeline counted trading sessions; intraday/engine.py's
+    live loop counted CALENDAR days off datetime.now(). GABRIEL, entered 06-Aug
+    and exited 17-Aug, was reported to the operator as "11 sessions" when it had
+    been held for 8 — so `exit_stall_days = 10`, calibrated in sessions, was
+    really firing at 7 sessions in the only process that ever fires it.
+
+    A gate and the thing it gates must be the same quantity; a gate reached
+    through two callers must be the same quantity in both.
+    """
+    e, t = str(entry_date)[:10], str(trade_date)[:10]
+    if not dates:
+        # A missing calendar must not silently become a DIFFERENT clock. Fall
+        # back to calendar days, which is the only thing left, but understate
+        # rather than overstate: five calendar days are at most five sessions
+        # and usually fewer, and an exit that fires late is recoverable where
+        # one that fires early on bad arithmetic is not.
+        try:
+            gap = (date.fromisoformat(t) - date.fromisoformat(e)).days
+            return max(0, int(gap * 5 / 7))
+        except Exception:
+            return 0
+    return sum(1 for d in dates if e < d <= t)
+
+
 def _sessions_held(sb, entry_date: str, trade_date: str) -> int:
     """Trading sessions between two dates — calendar days badly overstate a
     time stop across weekends and NSE holidays."""
-    try:
-        rows = (sb.table("market_regime").select("date")
-                  .gt("date", str(entry_date)[:10]).lte("date", trade_date)
-                  .execute().data)
-        return len(rows)
-    except Exception:
-        try:
-            return (date.fromisoformat(trade_date)
-                    - date.fromisoformat(str(entry_date)[:10])).days
-        except Exception:
-            return 0
+    return sessions_between(
+        session_dates(sb, str(entry_date)[:10]), entry_date, trade_date)
 
 
 def manage_open_positions(sb, trade_date: str, require_live: bool = False) -> dict:
@@ -1627,7 +1728,7 @@ def manage_open_positions(sb, trade_date: str, require_live: bool = False) -> di
                 update[k] = decision[k]
 
         if act in ("EXIT_STOP", "EXIT_TARGET", "EXIT_TIME", "EXIT_GIVEBACK",
-                   "EXIT_STALL"):
+                   "EXIT_STALL", "EXIT_FASTFAIL"):
             # RECORD ONLY. This module never places orders — it raises the
             # alert and waits for the sale to appear in Kite, at which point
             # reconcile_with_broker writes the closed_positions row.
@@ -1683,7 +1784,7 @@ def manage_open_positions(sb, trade_date: str, require_live: bool = False) -> di
         # switch would force a decision there is no reason to make.
         if act in ("EXIT_STOP", "EXIT_TARGET", "EXIT_TIME",
                    "EXIT_DETERIORATION", "EXIT_GIVEBACK", "EXIT_STALL",
-                   "BOOK_PARTIAL"):
+                   "EXIT_FASTFAIL", "BOOK_PARTIAL"):
             try:
                 from execution.gates import auto_exit_enabled
                 fw = (pos.get("framework") or "SWING").upper()
@@ -1692,9 +1793,16 @@ def manage_open_positions(sb, trade_date: str, require_live: bool = False) -> di
                     qty = int(decision.get("book_qty") or 0) or int(
                         pos.get("current_qty") or pos.get("actual_qty") or 0)
                     if qty > 0 and ltp:
-                        slip = cfg_int("exit_slip_bps", 30) / 10000.0
+                        # BUFFER SCALED TO THE NAME, NOT A FLAT 30bps — see
+                        # execution/exit_orders.py::exit_limit_price. A fixed
+                        # 0.30% under the last trade is inside the noise of a
+                        # 4.7%-ATR stock, so the limit is behind the market the
+                        # moment it arrives; GABRIEL's 17-Aug exit rested
+                        # unfilled for 2h33m and was eventually filled by hand.
+                        from execution.exit_orders import exit_limit_price, atr_pct_for
+                        px = exit_limit_price(float(ltp), atr_pct_for(sb, sym))
                         place(OrderRequest(
-                            sym, "SELL", qty, "LIMIT", round(ltp * (1 - slip), 1),
+                            sym, "SELL", qty, "LIMIT", px,
                             reason=f"{act}: {decision['detail']}"), sb)
             except Exception as e:
                 logger.warning(f"  {sym}: auto-exit failed, alert still sent — {e}")
@@ -1723,13 +1831,14 @@ def send_action_alerts(actions: list[dict]):
     # were not told about. This list and the order-placing list are the same set
     # for that reason, and adding a rule to one without the other is the bug.
     SELLABLE = ("EXIT_STOP", "EXIT_TARGET", "EXIT_TIME", "EXIT_DETERIORATION",
-                "EXIT_GIVEBACK", "EXIT_STALL", "BOOK_PARTIAL")
+                "EXIT_GIVEBACK", "EXIT_STALL", "EXIT_FASTFAIL", "BOOK_PARTIAL")
     urgent = [a for a in actions if a["action"] in SELLABLE]
     if not urgent:
         return
     icons = {"EXIT_STOP": "🔴", "EXIT_TARGET": "🎯", "EXIT_TIME": "⏰",
              "EXIT_DETERIORATION": "⚠️", "EXIT_GIVEBACK": "🩸",
-             "EXIT_STALL": "🐌", "BOOK_PARTIAL": "💰", "RUN": "🏃"}
+             "EXIT_STALL": "🐌", "EXIT_FASTFAIL": "✂️",
+             "BOOK_PARTIAL": "💰", "RUN": "🏃"}
     lines = ["<b>⚡ Position Actions Required</b>", ""]
     for a in urgent:
         lines.append(f"{icons.get(a['action'], '•')} <b>{a['symbol']}</b> — {a['action']}")

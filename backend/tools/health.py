@@ -441,6 +441,60 @@ def check_daemon() -> tuple[bool, str]:
                    f"during market hours — positions are unwatched{split}")
 
 
+def check_open_exits() -> tuple[bool, str]:
+    """
+    Is a SELL that this system decided on still sitting unfilled?
+
+    17-Aug-2026, GABRIEL. EXIT_STALL fired at 09:15:13 and placed a SELL LIMIT
+    at 1460.60. gtt_manager cancelled the protective GTT 48 seconds later,
+    because the position had gone to status CLOSING and no longer looked held.
+    The order then rested above a falling market, unfilled, until 11:48 — when
+    the OPERATOR repriced it by hand. For two and a half hours a live CNC
+    position held real stock with no stop and an unfillable limit, and nothing
+    anywhere reported it.
+
+    `pending` is the mirror of this check and does not cover it: it watches
+    unfilled ENTRIES, where the failure mode is a phantom position. Here the
+    failure mode is the opposite and worse — a real position, already decided
+    against, still exposed and no longer protected.
+
+    FAILS rather than warns. An exit the system has committed to and not
+    completed is the one state in this book where doing nothing keeps costing
+    money, and it is invisible on the dashboard, which reads open_positions
+    rather than the order book.
+    """
+    from config import cfg_float
+    from datetime import datetime
+    from config import IST
+    try:
+        from kite import kite_client
+        kite = kite_client.get_kite()
+        if not kite:
+            return True, "no broker session — cannot check open exits"
+        orders = kite.orders() or []
+    except Exception as e:
+        return False, f"could not read the order book to check for stranded exits: {e}"
+
+    from execution.exit_orders import stale_exits
+    limit_s = cfg_float("exit_order_stale_alert_s", 300.0)
+    stale = stale_exits(orders, datetime.now(IST), limit_s)
+    if not stale:
+        working = sum(1 for o in orders
+                      if (o.get("transaction_type") or "").upper() == "SELL")
+        return True, (f"no SELL order has been open longer than {limit_s / 60:.0f} min "
+                      f"({working} sell order(s) seen today)")
+
+    worst = max(stale, key=lambda o: o["_age_s"])
+    names = ", ".join(sorted({str(o.get("tradingsymbol")) for o in stale})[:4])
+    return False, (
+        f"{len(stale)} SELL order(s) unfilled past {limit_s / 60:.0f} min — {names}"
+        f" (worst {worst.get('tradingsymbol')} @ ₹{worst.get('price')}, "
+        f"{worst['_age_s'] / 60:.0f} min old). The position is still held, its GTT "
+        f"may already be cancelled, and the decision to exit has not completed. "
+        f"Reprice it or send it MARKET; enable exit_order_reprice_enabled to have "
+        f"the daemon do this itself")
+
+
 def check_pending_fills() -> tuple[bool, str]:
     """
     Is any entry stuck awaiting fill confirmation past when it should have
@@ -869,8 +923,26 @@ def check_quote_parity() -> tuple[bool, str]:
     detail string for visibility, never as the reason this returns False.
     RANGE is different: it measured clean, so any fault there is new
     information, not a re-statement of what was already known and accepted.
+
+    17-Aug-2026 — WHAT "CLEAN AT BASELINE" WAS ACTUALLY MEASURING. This fired
+    RANGE REGRESSED on 19 of 402 comparisons. Both halves of that sentence
+    were wrong.
+
+    The 402 was a silently truncated read: the select below had no paging, and
+    PostgREST caps a response at 1000 rows without saying so. Five days of
+    parity logging is ~190,000 rows, so the check was judging a regression on
+    an arbitrary, unordered 0.5% sample of the window it claimed to cover. It
+    now pages through `fetch_all`.
+
+    The baseline was worse. 07-Aug read clean because the daemon started at
+    10:08 that day — and 10-Aug (09:41), 11-Aug (09:30) and 13-Aug (09:52)
+    also read clean, while every day whose first sample was at 09:21 (12-Aug,
+    14-Aug, 17-Aug) read FAULT. The fault is not a feed regression; it is a
+    pre-open artifact that a late start never sees, and the "clean" baseline
+    this check was defending was a measurement taken an hour after the window
+    where the defect lives. See intraday/bar_builder.py's SESSION_OPEN.
     """
-    from config import cfg_bool, get_supabase, today_ist
+    from config import cfg_bool, fetch_all, get_supabase, today_ist
     from datetime import timedelta
 
     range_on = cfg_bool("intraday_quote_mode_range", False)
@@ -888,10 +960,13 @@ def check_quote_parity() -> tuple[bool, str]:
     sb = get_supabase()
     cutoff = (today_ist() - timedelta(days=5)).isoformat()
     try:
-        rows = (sb.table("intraday_quote_parity")
-                  .select("field,diff_pct,ts")
-                  .gte("ts", cutoff)
-                  .execute().data or [])
+        # PAGED, AND ORDERED WHILE PAGING. An unpaged select stops at 1000
+        # rows with no error; unordered LIMIT/OFFSET paging is worse still and
+        # returns duplicates in place of rows it never fetched. See
+        # config.fetch_all's docstring for the measurement.
+        rows = fetch_all(lambda: sb.table("intraday_quote_parity")
+                                   .select("field,diff_pct,ts")
+                                   .gte("ts", cutoff))
     except Exception as e:
         return False, f"could not read intraday_quote_parity: {e}"
 
@@ -909,9 +984,15 @@ def check_quote_parity() -> tuple[bool, str]:
     if range_on:
         ok, detail = range_verdict(rows)
         if ok is False:
-            return False, (f"RANGE REGRESSED — {detail}. day_high/day_low measured clean "
-                           f"on 07-Aug; this is new, worth investigating before trusting "
-                           f"intraday_quote_mode_range further.")
+            return False, (f"RANGE FAULT — {detail}. The live side leads by construction "
+                           f"(the socket's day range is the exchange's; the bar side is up "
+                           f"to 300s behind it), so a live value BEHIND the bar side means "
+                           f"the bar side holds a price today never traded at. Do NOT turn "
+                           f"intraday_quote_mode_range off — that switch is what keeps the "
+                           f"bad number out of the engines. Run "
+                           f"`python -m tools.quote_parity` and check what the fetched "
+                           f"value equals; when it equals the previous close, the bar "
+                           f"series has picked up an out-of-session print.")
         notes.append(f"range: {detail}")
     if vwap_on:
         _, detail = vwap_verdict(rows)
@@ -1737,6 +1818,7 @@ CHECKS = [
     ("qty_fields", "current_qty/actual_qty/kite_qty silently disagree, hiding drift from the dashboard", check_quantity_fields, False),
     ("daemon",   "nothing is watching your positions right now",                 check_daemon,   False),
     ("pending",  "an entry order that never filled is being tracked as a real position", check_pending_fills, False),
+    ("exits_open", "a SELL the system decided on is still unfilled and the position is unprotected", check_open_exits, False),
     ("learning", "engines are being judged on evidence that was never collected", check_learning_loop, False),
     ("simulate", "a stage completes while producing nothing",                    check_simulate, True),
 ]

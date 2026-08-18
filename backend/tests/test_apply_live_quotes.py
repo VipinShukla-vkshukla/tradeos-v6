@@ -58,11 +58,24 @@ def _engine():
     return IntradayEngine(sb=_NoDB())
 
 
-def _ctx(symbol: str):
+def _ctx(symbol: str, bars=None):
+    """
+    A context shaped the way refresh_contexts() builds one — INCLUDING the
+    `fetched` snapshot. 17-Aug-2026: the parity logger no longer reads
+    ctx.day_high, because _overlay() overwrites that attribute with the very
+    tick value the comparison is against. A context without a snapshot logs
+    nothing, which is the correct behaviour and is what this helper must
+    reproduce rather than paper over.
+    """
     from intraday.strategies.base import SymbolContext
+    from intraday.engine import _fetched_snapshot
+    bars = bars or []
     return SymbolContext(
-        symbol=symbol, ltp=100.0, bars=[],
+        symbol=symbol, ltp=100.0, bars=bars,
         day_high=101.0, day_low=99.0, vwap=100.2, prev_close=98.0,
+        fetched=_fetched_snapshot(bars, 100.2, 98.0) if bars
+                else {"day_high": 101.0, "day_low": 99.0, "vwap": 100.2,
+                      "prev_close": 98.0, "volume": None},
     )
 
 
@@ -184,8 +197,7 @@ def test_parity_batch_includes_volume_unscored():
         eng = _engine()
         eng.sb = _RecordingSB()
         bar = Bar(datetime(2026, 8, 7, 10, 0, tzinfo=IST), 100, 101, 99, 100.5, 5000)
-        ctx = _ctx("RELIANCE")
-        ctx.bars = [bar]
+        ctx = _ctx("RELIANCE", bars=[bar])
         eng._contexts = {"RELIANCE": ctx}
         feed = _FakeFeed({"RELIANCE": {**_LIVE_TICK, "volume": 5200.0}})
         eng.apply_live_quotes(feed)

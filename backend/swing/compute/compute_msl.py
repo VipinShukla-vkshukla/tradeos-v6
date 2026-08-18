@@ -542,6 +542,43 @@ def load_data(sb, today: str, mode: str) -> dict:
         if sym:
             history_map[sym].append(r)
 
+    # ── 3b. The levels each live plan was BORN with ───────────────────────────
+    #
+    # 18-Aug-2026. analysis/risk_model.py states the discipline this restores:
+    # "The stop is a property of the SETUP (structure), not of what you paid. If
+    # price runs up before you enter, your stop does not move up with it — your
+    # risk grows and your R:R shrinks. That is the correct, honest penalty for
+    # chasing, and it is what makes min_rr a meaningful discipline rather than
+    # an arbitrary wall."
+    #
+    # It did not hold, because compute_trade_plan() derives every level from
+    # ez_low, and ez_low is recomputed nightly from the current price. GABRIEL's
+    # stop therefore tracked the stock up: 1248.49 on 29-Jul, 1403.97 by 05-Aug,
+    # a 12.5% rise against a 12.2% price rise. With both legs as ATR multiples
+    # of the same price, implied_rr is arithmetically pinned — it read exactly
+    # 0.777 on three consecutive GABRIEL rows spanning a 4% price range, and on
+    # HINDCOPPER's rows too. min_rr_to_enter was comparing a threshold against
+    # a constant.
+    #
+    # One extra SELECT for the whole universe, paged, on a table that already
+    # holds the answer.
+    prior_plan: dict = {}
+    try:
+        from config import fetch_all
+        rows = fetch_all(lambda: sb.table("signal_output_daily")
+                                   .select("symbol,date,planned_stop,planned_target,"
+                                           "planned_risk_pct,planned_stop_source")
+                                   .in_("symbol", symbols)
+                                   .gte("date", str(today_ist() - timedelta(days=30)))
+                                   .lt("date", str(today_ist())),
+                         order_by="symbol,date")
+        for r in sorted(rows, key=lambda x: str(x.get("date") or "")):
+            if r.get("planned_stop") and r.get("planned_target"):
+                prior_plan[r["symbol"]] = r          # last write wins = most recent
+    except Exception as e:
+        logger.warning(f"  prior plan levels unavailable, plans will re-anchor "
+                       f"to today's price — {e}")
+
     # ── 4. Market regime ─────────────────────────────────────────────────────
     # NOTE: step 10 (compute_indicators) now runs BEFORE step 11 (compute_regime).
     # above_200dma_pct uses today's freshly reconciled sma_200 values.
@@ -712,6 +749,7 @@ def load_data(sb, today: str, mode: str) -> dict:
         "msl_map":      msl_map,
         "stock_map":    stock_map,
         "history_map":  dict(history_map),
+        "prior_plan":   prior_plan,
         "regime":       regime,
         "sector_rank":  sector_rank,
         "open_syms":    open_syms,
@@ -2118,8 +2156,39 @@ def compute_holding_score(s: dict, regime_ctx: dict, lifecycle: str,
     return round(min(max(score, 0.0), 100.0), 1)
 
 
+def plan_levels_still_live(prior: dict, close: float) -> bool:
+    """
+    May yesterday's plan levels be carried into today?
+
+    Pure — no I/O, no config — so tools.verify can assert both branches.
+
+    A frozen plan is not an immortal one. It stays alive while the trade it
+    described is still available, and it dies the moment price resolves it in
+    either direction:
+
+      · price at or through the TARGET — the move the plan was written for has
+        happened. Buying here is buying what you were waiting to sell.
+      · price at or through the STOP — the thesis is broken. A new plan must be
+        born from wherever structure now is, not inherited from a level the
+        market has already rejected.
+
+    Between those two the levels do NOT move, and that is the whole point:
+    price rising toward the target is exactly the case where re-anchoring
+    silently restores the R:R the chase should have destroyed.
+    """
+    try:
+        stop = float(prior.get("planned_stop") or 0)
+        target = float(prior.get("planned_target") or 0)
+        close = float(close or 0)
+    except (TypeError, ValueError):
+        return False
+    if stop <= 0 or target <= 0 or close <= 0 or target <= stop:
+        return False
+    return stop < close < target
+
+
 def compute_trade_plan(s: dict, ez_low: float, ez_high: float,
-                       regime_ctx: dict) -> dict:
+                       regime_ctx: dict, prior: dict | None = None) -> dict:
     """
     Build the full trade plan (stop, target, R:R) via the shared risk model and
     return it for persistence.
@@ -2142,6 +2211,35 @@ def compute_trade_plan(s: dict, ez_low: float, ez_high: float,
         return {"expected_r": None, "planned_entry": None, "planned_stop": None,
                 "planned_target": None, "planned_risk_pct": None,
                 "planned_stop_source": None}
+
+    # ── FROZEN LEVELS — 18-Aug-2026 ─────────────────────────────────────────
+    #
+    # If this symbol already has a live plan, keep ITS stop and target rather
+    # than deriving new ones from today's price. See the note in load_data()
+    # for what re-anchoring did to GABRIEL and why implied_rr was a constant.
+    #
+    # Expected_r and risk_pct are recomputed against the FROZEN stop and today's
+    # entry zone, so they degrade honestly as price runs away from the plan.
+    # That degradation is the chase penalty; it is the number min_rr_to_enter
+    # was always supposed to be reading.
+    if prior and cfg_bool("plan_levels_frozen", False):
+        close_now = float(s.get("close") or s.get("current_price") or 0)
+        if plan_levels_still_live(prior, close_now):
+            stop = float(prior["planned_stop"])
+            target = float(prior["planned_target"])
+            risk = ez_low - stop
+            return {
+                "expected_r":       round((target - ez_low) / risk, 4) if risk > 0 else None,
+                "planned_entry":    ez_low,
+                "planned_stop":     stop,
+                "planned_target":   target,
+                "planned_risk_pct": round(risk / ez_low * 100, 3) if ez_low else None,
+                # The source string records that these are INHERITED, so a row
+                # whose R:R has decayed can be told apart from one whose model
+                # simply produced a poor ratio today.
+                "planned_stop_source": f"frozen:{prior.get('planned_stop_source') or 'unknown'}"
+                                       f"@{str(prior.get('date') or '')[:10]}",
+            }
 
     # Structural stop candidate: supertrend sits where the trend thesis breaks.
     # The risk model only adopts it when it is TIGHTER than the ATR stop and
@@ -2268,6 +2366,7 @@ def compute_all(sb, data: dict, today: str) -> list:
     msl_map      = data["msl_map"]
     stock_map    = data["stock_map"]
     history_map  = data["history_map"]
+    prior_plan   = data.get("prior_plan") or {}
     sector_rank  = data["sector_rank"]
     open_syms    = data["open_syms"]
     blocked_syms = data["blocked_syms"]
@@ -2386,7 +2485,8 @@ def compute_all(sb, data: dict, today: str) -> list:
             institutional_score = compute_institutional_score(s, vwap_ctx, vol_trend, fii_data)
             breakout_readiness  = compute_breakout_readiness(s, bb_ctx, psar_ctx)
             risk_score          = compute_risk_score(s, regime_ctx, fund_ctx, msl_row)
-            trade_plan          = compute_trade_plan(s, ez_low, ez_high, regime_ctx)
+            trade_plan          = compute_trade_plan(s, ez_low, ez_high, regime_ctx,
+                                                     prior=prior_plan.get(sym))
             expected_r          = trade_plan["expected_r"]
             days_trigger        = compute_days_to_trigger(s, ez_low)
 

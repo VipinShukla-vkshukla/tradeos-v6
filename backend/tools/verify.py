@@ -51,6 +51,7 @@ from loguru import logger
 #: path guards the book that holds real money and the only track record this
 #: system owns — if it fails, nothing below it matters.
 MODULES = [
+    ("gabriel gap",        "tests.test_gabriel_gap"),
     ("static analysis",     "tests.test_static_analysis"),
     ("replay harness",      "tests.test_replay_harness"),
     ("long path unchanged", "tests.test_long_path_unchanged"),

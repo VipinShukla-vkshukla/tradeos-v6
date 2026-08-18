@@ -338,6 +338,22 @@ def main(once: bool = False, dry: bool = False) -> None:
                 # see requeue_runway_refused_shorts(). Self-gated to run once,
                 # only in the OPENING phase; off by default.
                 engine.requeue_runway_refused_shorts()
+                # UNFILLED EXITS GET WALKED FORWARD. On the slow timer for
+                # the same reason gtt_manager.sync() is: a modify is a broker
+                # write. Placed before refresh_advisory so an exit that is
+                # still working is chased before anything advisory runs, and
+                # ahead of the fill confirmation below so a reprice and its
+                # confirmation cannot land in the same pass.
+                try:
+                    from execution.exit_orders import reprice_stale_exits
+                    r = reprice_stale_exits(engine.sb, prices=None)
+                    if r.get("repriced") or r.get("marketed"):
+                        logger.info(
+                            f"  exits: {r['repriced']} repriced, "
+                            f"{r['marketed']} escalated to MARKET")
+                except Exception as e:
+                    logger.warning(f"  exit reprice pass skipped — {e}")
+
                 # Event data and AI advice — both too slow and too static for
                 # the fast loop, both purely advisory to it.
                 engine.refresh_advisory()

@@ -77,6 +77,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
 
 
+# What the daemon writes a comparison row for. Named here rather than inlined
+# at the call site so this module — the one that decides what each field means
+# and how it is scored — also decides what gets collected. `ctx.fetched` (see
+# SymbolContext) carries day_open as well; it is deliberately not logged,
+# because a tick-built context whose first bar is later than 09:15 has a
+# legitimately different day_open and would report a fault that is not one.
+LOGGED = ("day_high", "day_low", "vwap", "prev_close", "volume")
+
 # Fields whose disagreement would change a decision. Volume is logged but not
 # scored — see the module docstring.
 SCORED = ("day_high", "day_low", "vwap", "prev_close")
@@ -223,16 +231,47 @@ def _vwap_engine_relevance(diffs: list[float]) -> None:
         log(f"    {key:<32} {tol:>5.2f}%  {where:<48} {note}")
 
 
+def _degeneracy(by: dict[str, list[float]]) -> None:
+    """
+    How much of this evidence is the feed compared against a copy of itself?
+
+    17-Aug-2026. Until today the daemon logged `ctx.day_high` as the fetched
+    side, and `apply_live_quotes()._overlay()` had already written the tick
+    value into that same attribute one cycle earlier. So the comparison was
+    live-against-live for every cycle except the one right after a context was
+    built. It showed up as exact zeros: prev_close differed on 0 of 38,683
+    rows, day_high on 4.5%.
+
+    Nothing in the output distinguished that from genuine agreement, which is
+    what let a passing verdict mean nothing for ten days. A field that never
+    once differs is not evidence of a healthy feed — it is evidence that
+    whatever is being compared is not two things. Reported every run, on the
+    principle that a check has to be able to say it cannot see.
+    """
+    logger.info("")
+    logger.info("  how much of this is two independent sources? "
+                "(a field that NEVER differs is comparing something to itself)")
+    for fld in sorted(by):
+        d = by[fld]
+        zeros = sum(1 for x in d if x == 0.0)
+        pct = zeros / len(d) * 100.0 if d else 0.0
+        log = logger.warning if pct >= 99.0 else logger.info
+        note = "  <- degenerate, this field proves nothing" if pct >= 99.0 else ""
+        log(f"    {fld:<12} {zeros:>6} of {len(d):>6} identical to the paisa "
+            f"({pct:5.1f}%){note}")
+
+
 def report(sb) -> int:
-    rows, off = [], 0
-    while True:
-        page = (sb.table("intraday_quote_parity")
-                  .select("symbol,field,live_value,fetched_value,diff_pct,ts")
-                  .range(off, off + 999).execute().data) or []
-        rows += page
-        if len(page) < 1000:
-            break
-        off += 1000
+    # ORDERED PAGING, via the shared primitive — 17-Aug-2026. The loop this
+    # replaces paged on .range() alone. PostgreSQL guarantees no row order
+    # without an ORDER BY, so successive windows over the same filter may
+    # repeat rows and skip others; measured here, it returned 38,559 day_high
+    # rows out of 38,683 that exist. A verdict on "all of them" computed from
+    # an arbitrary subset is the same class of defect as the truncation it was
+    # written to avoid. config.fetch_all orders by a unique column.
+    from config import fetch_all
+    rows = fetch_all(lambda: sb.table("intraday_quote_parity")
+                               .select("symbol,field,live_value,fetched_value,diff_pct,ts"))
 
     if not rows:
         logger.error("  no parity rows collected")
@@ -280,6 +319,8 @@ def report(sb) -> int:
         log = logger.info if note.startswith(("OK", "not scored")) else logger.error
         log(f"  {field:<12} {len(d):>5} {med:>8.3f}% {mean:>8.3f}% {worst:>8.3f}%  {note}")
 
+    _degeneracy(by)
+
     if "vwap" in by:
         _vwap_engine_relevance(by["vwap"])
 
@@ -295,9 +336,13 @@ def report(sb) -> int:
         logger.success(f"  RANGE: {range_detail}. Consistent with intraday_quote_mode_range "
                        f"staying ON.")
     elif range_ok is False:
-        logger.error(f"  RANGE: {range_detail}. This is new — day_high/day_low measured "
-                     "clean on 07-Aug; worth turning intraday_quote_mode_range off and "
-                     "investigating before trusting it further.")
+        logger.error(f"  RANGE: {range_detail}. The live side leads by construction, so "
+                     "'behind' means the FETCHED side holds a price today never traded "
+                     "at — check what fetched_value equals for the faulting rows. Equal "
+                     "to the previous close means an out-of-session print reached the bar "
+                     "series (intraday/bar_builder.py, SESSION_OPEN). Leave "
+                     "intraday_quote_mode_range ON: it is what keeps that number out of "
+                     "the engines.")
     else:
         logger.info(f"  RANGE: {range_detail}.")
 
