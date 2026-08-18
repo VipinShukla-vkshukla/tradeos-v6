@@ -6508,6 +6508,302 @@ window scored, no parameter moved, nothing written outside this ledger.
 
 ---
 
+## 2026-08-16 — F-27 mechanism A (change, `resolve_day` session guard) — the scorer had no clock: it is called from the daemon's `finally` block, prices TIMEOUT at whatever bar it was last handed, and never revisits a row it has written. Guard + provenance built, 15 of 18 checks demonstrated failing first. Task 2's config changes are WRITTEN AS MIGRATION 081 AND NOT APPLIED — live database writes were denied to this session
+
+**Ran:**
+
+```bash
+git checkout -b fix/resolve-day-session-guard
+python -m tools.verify --module resolve_day_session_guard   # x3, see section 3
+python -m tools.verify                                      # 562 checks
+python -m tools.health                                      # all green
+python -m tools.rollback --status
+```
+
+No row was re-scored. No row was repaired. Nothing was written to the database.
+
+### 0 — A PREMISE CORRECTION, BEFORE ANYTHING BELOW IS READ
+
+The brief says "follow section 4 of the F-27 entry". **There is no section 4, and
+no F-27 entry with sections.** F-27 exists in this ledger only as a 19-line note
+inside section 6 (FOUND ALONG THE WAY) of the 2026-08-16 replay-harness entry,
+and that note explicitly records the mechanism as **unexplained**:
+*"`outcomes.py:210` is the only writer of the column, and its window logic is
+unchanged since commit `042217e`, so the mechanism is not yet explained."* The
+later entries carry it forward as `F-27 not investigated`.
+
+So the diagnosis in the brief — the `finally` block, `bars[-1]["close"]`, the
+never-revisited row, 58 contradictions of which 42 are STOP+TIMEOUT — is **not
+in the repository**. It is taken as given from the operator and **verified in
+the code below**, which is the half I can check. The 58/42 counts are the
+operator's measurement and are quoted, not reproduced: database reads were
+available at the start of this session and denied partway through, so no
+independent count was possible.
+
+**What this means for the work:** the design decisions below are mine, derived
+from the mechanism, not transcribed from a spec. Anywhere a section 4 would
+have decided something differently, this entry is the place that record lives.
+
+### 1 — THE MECHANISM, CONFIRMED IN THE CODE
+
+Three properties, each defensible alone:
+
+```
+intraday/run.py:416          resolve_day(sb=sb) in the daemon's `finally` block
+intraday/outcomes.py:180     outcome, exit_px = "TIMEOUT", float(bars[-1]["close"])
+intraday/outcomes.py:100-101 work queue = .eq(trade_date, d).is_("outcome","null")
+```
+
+`finally` runs on **every** exit — a clean 15:40 cool-down, yes, but equally a
+crash at 10:12, a Ctrl-C at 11:30, a closed laptop, a restart to pick up a
+config change. On any of those `historical_data` returns the session **so far**,
+every still-open setup is scored TIMEOUT at a mid-morning close, and the third
+property makes it permanent: the row is no longer NULL, so the evening
+pipeline's `backfill` will not come back for it.
+
+That table is what `scoring.intraday_priors()` and `hurdle`'s arrival
+distribution are both built from, so one frozen row prices every candidate that
+arrives after it. This is the same class of defect as the priors-built-from-
+refused-rows landmine already in `CLAUDE.md`: the learning loop is fed a
+population that is an artefact of the system's own operations.
+
+**The `--once` path shares it.** `run.py --once` runs one cycle and breaks into
+the same `finally`, so a single diagnostic invocation at any hour would have
+scored and frozen the whole outstanding book. Nothing in the tool says so.
+
+### 2 — WHAT WAS BUILT
+
+**`outcomes.session_is_over(trade_date, now=None) -> (ok, why)`.** A past date is
+always over — that is the entire `backfill` population and refusing it would
+blind the one mechanism that repairs unscored sessions. A future date never is,
+which is a real case: a host whose clock or timezone is behind would otherwise
+score a day whose bars do not exist and write TIMEOUT across the whole book.
+Today's date is over at `MARKET_CLOSE` plus a settling buffer.
+
+**The bar reads `intraday/config`'s `MARKET_CLOSE` and `COOLDOWN_TO`, not copies
+of them,** because of the case that decides whether this fix is inert or
+harmful. The daemon leaves its loop when `is_trading_session()` goes false, at
+`COOLDOWN_TO` = 15:40, and calls `resolve_day` on the way out. A bar at or past
+15:40 would mean **the daemon can never score its own session again** and every
+day silently waits for the next evening's pipeline — a guard that cannot pass,
+which this project has already paid for twice. `outcomes_close_buffer_min`
+defaults to 5 (bar at 15:35, five minutes of headroom) and is **clamped to 9
+with a WARNING** if set higher, rather than being allowed to disable the path it
+exists to protect.
+
+**Provenance (migration 080):**
+
+| column | what it answers |
+|---|---|
+| `scored_at` | WHEN — separates a re-score from the original write |
+| `scored_by` | WHICH RUN — `lease.instance_id()`, host-pid-uuid |
+| `scored_through` | THROUGH WHICH BAR — the last bar in the window that priced it |
+
+`scored_through` is the one that matters. A TIMEOUT is priced at that bar's
+close, so a TIMEOUT whose `scored_through` reads 11:30 on a session that ran to
+15:30 **is** a frozen row — findable in one query instead of by reasoning about
+which daemon died when. `scored_by` is the process id and not the hostname
+because F-5 and R-1 both established that two daemons run on one machine here,
+and a hostname cannot separate them.
+
+**No row is re-scored or repaired, by instruction and on merit.** The
+contradictory pairs are the only evidence the defect exists and the population
+that will measure whether the guard worked. NULL provenance on an existing row
+is itself the marker for "scored before 16-Aug-2026, window end unknown".
+
+### 3 — EACH CHECK FAILED FIRST, AND ONE CHECK CHANGED THE DESIGN
+
+18 checks written before the implementation, run against unchanged code:
+
+```
+  15 of 18 checks FAILED.
+```
+
+The three that passed are the two fake-vacuity guards and
+`backfill still scores every past session` — the regression guard, which must
+pass before and after or it is not testing what it claims.
+
+**Then `tools.health` rejected the first implementation, and it was right.** The
+schema probe was a one-off `select("scored_at,scored_by,scored_through")`, which
+turned the `selects` check RED:
+
+```
+X  selects   intraday\outcomes.py:171 — intraday_setups has no column(s):
+             scored_at, scored_by, scored_through
+```
+
+That is `tools/validate_selects.py` doing exactly its job — and a health check
+that is red for a known pending migration is how a real warning stops being
+read. Three ways to ask the schema question and only one is free of its own
+defect:
+
+```
+  strip-and-retry (the position_lifecycle idiom)  3 failed round trips PER ROW
+                                                   = ~6,900 on a 2,289-row day
+  a one-off probe select                          1 call, but names columns that
+                                                   do not exist in a SELECT list
+  read the KEYS of a work-queue row               ZERO calls
+```
+
+The work queue is already `.select("*")`, so every column of every row is in
+hand and `set(rows[0])` answers it for free. `selects` is green again.
+`test_the_work_queue_still_selects_star` pins the property that makes it
+correct, because narrowing that select would switch provenance off silently.
+
+Final: **21 checks, `tools.verify` all 562 passed across 61 modules** (was 541),
+`tools.health` all green.
+
+### 4 — TASK 2: BASELINE RECORDED, MIGRATION WRITTEN, **NOT APPLIED**
+
+`python -m tools.rollback --status` — all four Phase 4 switches ON
+(`alloc_live_swing`, `alloc_live_intraday`, `alloc_shadow_enabled`,
+`storage_rolloff_enabled`); it reports those four only.
+
+**Values before, read directly:**
+
+```
+  intraday_engine_vwr_lifecycle    ACTIVE      intraday_min_confidence         0.55
+  intraday_engine_orb_lifecycle    ACTIVE      intraday_min_confidence_scarce  0.80
+  overlay_liquidity_enabled        true  <-- ALREADY ARMED, see section 5
+  risk_regime_scales_target        ABSENT FROM system_config  <-- see section 5
+  all nine engines                 ACTIVE
+```
+
+**The comparison baseline — last 5 sessions (10,11,12,13,14-Aug), 6,179
+detections:**
+
+```
+  BLOCKED_SHORTS_MARKET  1343  21.7%    VETOED_AI               589   9.5%
+  REJECTED_COST           847  13.7%    BLOCKED_STRUCTURE       418   6.8%
+  TAKEN                   816  13.2%    BLOCKED_SHORTABILITY    253   4.1%
+  BELOW_CONVICTION        809  13.1%    BLOCKED_SHORTS_OFF      138   2.2%
+  ALLOCATOR_DECLINED      748  12.1%    BLOCKED_REENTRY          66   1.1%
+                                        BLOCKED_EVENT            61   1.0%
+                                        BLOCKED_CROSS_FRAMEWORK  53   0.9%
+                                        BLOCKED_PAPER_CAPACITY   24   0.4%
+                                        BLOCKED_ENTRY_RESERVED   14   0.2%
+
+  entries/session   14-Aug 334 - 13-Aug 93 - 12-Aug 108 - 11-Aug 4 - 10-Aug 277
+  by engine (detections/taken)
+    ORB 1189/572 - SDN 3837/104 - PBK 334/23 - VWR 279/40 - VCE 230/71
+    RNG 160/0 - PDL 98/0 - GAP 51/6 - GDB 1/0
+```
+
+**ORB is 572 of 816 entries — 70.1%.** With VWR's 40 that is **three quarters of
+the intraday book's entries** being withdrawn. The book is PAPER so it costs no
+money; it costs detections-that-become-trades, and the histogram above is how
+that is measured rather than assumed.
+
+**Migration 081 was written with all four changes and the reasoning behind each,
+and it is NOT APPLIED.** Live database writes were denied to this session
+partway through — the DDL for migration 080 first, then read access as well. The
+repo has no migration runner (both 077 and 079 are also written-and-unapplied on
+`main`), so a written migration is the normal completed form of a config change
+here; but **nothing in section 4 or 5 is in force on the book.**
+
+Recorded in 081, so the reasoning is not lost:
+
+- **VWR to SHADOW is settled.** 307 detections, gross -0.345R +/- 0.071 SE,
+  -4.9 SE from zero, optimistic 2 SE upper limit -0.199 — still negative. No
+  reading of this sample makes VWR positive-expectancy.
+- **ORB to SHADOW is NOT settled, and that difference must survive the two
+  engines sharing a state.** 119 detections, -0.241R +/- 0.100, optimistic upper
+  limit **-0.010** — it survives the bound by one hundredth of an R, inside the
+  width of every measurement error this book has. And ORB is the **most
+  contaminated engine at 11.8%**, the highest share of rows carrying the very
+  defect section 1 stops. So: *VWR answered NO with room to spare; ORB answered
+  NO by 0.01R on the dirtiest data in the book.* Provisional stand-down.
+  **Revisit on sessions scored entirely after migration 080**, identifiable by
+  `scored_through` landing at the session close. Neither is RETIRED, because
+  retiring destroys the evidence that would reverse it.
+- **The conviction floor is flattened by setting `scarce` equal to `base`
+  (0.55).** `engine._confidence_floor()` returns `base + (scarce-base)*used`, so
+  the bar rises 0.55 -> 0.80 as the entry budget is spent, on the premise that a
+  scarcer slot deserves a more convinced setup. Gross R falls **monotonically**
+  across the top four confidence bands (-0.097 -> -0.400), so conviction does not
+  merely fail to order outcomes, it orders them backwards — and a rising floor
+  spends the last slots of the day on the worst population. Setting the two keys
+  equal zeroes the linear term with **no code change**, and leaves re-arming the
+  ramp one UPDATE away. 0.55 is the current base, unchanged: this removes a
+  slope, it does not lower a bar.
+- **`risk_regime_scales_target` to true** — the only item that touches the LIVE
+  swing book. Migration 079 shipped it inert and said arming it "changes what
+  the account does with money and is a separate decision on separate evidence".
+  This is that decision. Effect in NEUTRAL — the only regime all 1,000 plans in
+  the 28-Jul->13-Aug window have ever read — is 1.9048R -> 2.0R, **+5.0% on
+  planned R, ATR-stop plans only, no stop moves.**
+
+### 5 — FOUND ALONG THE WAY
+
+**`overlay_liquidity_enabled` was ALREADY `true`.** It has been since migration
+040 (05-Aug). There was nothing to arm. Recorded because "we armed it" and "it
+was already armed" are different facts and only one is true; migration 081
+carries a no-op UPSERT that states the intended value rather than leaving it
+assumed.
+
+**Migration 079 is entirely unapplied on this book.** All six of its keys —
+`risk_regime_scales_target`, `risk_min_planned_r_enabled`, `risk_plan_hit_rate`,
+`risk_plan_r_margin`, `risk_plan_product`, `risk_plan_capital` — are absent from
+`system_config`. `risk_model.py` reads each through `cfg_*` with an in-code
+default, so behaviour today is **identical to 079 having been applied and left
+inert**, and nothing is broken. But it means arming `risk_regime_scales_target`
+is an INSERT, not an UPDATE, and 081 does that. 079 uses `ON CONFLICT DO
+NOTHING`, so applying it afterwards will not reset the armed value to false.
+
+**`intraday_max_new_per_day` is 20, not the 4 its in-code fallback assumes.**
+`_entry_cap()` falls back to 4 and `_confidence_floor()` divides by it, so on any
+book where that key were absent the floor would reach `scarce` after four
+entries instead of twenty — a fifth of the way through the budget. Not a defect
+today (the key is present at 20), and untouched here. Noted because it is the
+same shape as the `_entry_cap` bug already documented in that function's own
+docstring.
+
+### 6 — NOT DONE
+
+- **Migrations 080 and 081 are NOT APPLIED.** The guard in section 2 is live in
+  code the moment this branch is deployed and needs no migration; **provenance
+  records nothing until 080 is applied**, and every config change in section 4 is
+  inert until 081 is. Both were written to be applied by hand in the Supabase
+  SQL editor, which is this repo's only mechanism.
+- **No existing row was re-scored, repaired, or counted.** By instruction, and
+  because those rows are the measurement.
+- **The 58/42 contradiction counts were not independently reproduced.** Quoted
+  from the operator's measurement; database access was withdrawn before a
+  verifying query could be run.
+- **`run.py --once` still routes through the same `finally`.** Harmless now that
+  the guard refuses an open session, but the tool's own help does not say it
+  attempts to score the day.
+
+### 7 — COULD NOT DETERMINE
+
+- **Whether any session other than 2026-08-14 carries frozen rows, and how
+  many.** It needs a per-session query the session no longer has access to. The
+  guard stops new ones regardless; `scored_through` is what will make the
+  question answerable in one query from the next scored session onward.
+- **Whether the 42 STOP+TIMEOUT pairs are all mechanism A.** A STOP is priced at
+  the stop, not at `bars[-1]`, so a truncated window explains the TIMEOUT half
+  cleanly and the STOP half only if the two rows were scored by different runs.
+  Provenance answers this prospectively and cannot answer it retrospectively.
+- **Whether ORB's 11.8% contamination rate is the reason its interval reaches
+  -0.010 rather than clearly negative.** That is precisely the question a clean
+  window answers and no current window can.
+
+**Recommends:** apply 080 before 081. The provenance columns are what make the
+ORB decision reversible on evidence, and shadowing 70% of the book's entries
+without them means the next session inherits the same unanswerable question this
+one did. After the first session scored entirely under the guard, the single
+query worth running is `scored_through` versus the session close on every
+TIMEOUT — that is the check that this fix worked, and it did not exist before
+today.
+
+**Gate: TASK 1 COMPLETE AND COMMITTED. TASK 2 WRITTEN, NOT IN FORCE.** The guard
+and its provenance are in code with 21 checks, 15 of 18 demonstrated failing
+first, `tools.verify` 562 across 61 modules and `tools.health` all green. No
+outcome row was touched. The five config changes exist only as migration 081 on
+this branch and change nothing until an operator applies it.
+
+---
+
 ## 2026-08-16 — F-28 (change, dedup estimator risk basis) — the defect is real and indefensible (42.9% of multi-row groups scored outside their own members' range) but it is NOT what moved VCE and RNG off the published table: that is a REPRESENTATION choice, first-detection vs group-mean, and it survives the fix. No engine verdict changes. VWR survives at −4.70 SE
 
 **Ran:**

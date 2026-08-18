@@ -39,8 +39,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from datetime import date, datetime, timedelta
 from loguru import logger
-from config import IST, get_supabase, cfg, today_ist, fetch_all
+from config import IST, get_supabase, cfg, cfg_int, today_ist, fetch_all
 from intraday import direction as D
+# THE SAME CONSTANTS THE DAEMON'S OWN EXIT READS, not copies of them. run.py
+# leaves its loop when `is_trading_session()` goes false, which is COOLDOWN_TO;
+# the guard below must clear before that instant or the daemon can never score
+# its own session again. Two files holding two 15:30s is how a gate and the
+# thing it gates drift apart.
+from intraday.config import COOLDOWN_TO, MARKET_CLOSE
 
 
 def _session_bars(kite, token: int, day: date, interval: str) -> list:
@@ -70,12 +76,132 @@ def _session_bars(kite, token: int, day: date, interval: str) -> list:
     return out
 
 
-def resolve_day(trade_date: str | None = None, sb=None) -> dict:
+def session_is_over(trade_date: str, now: datetime | None = None) -> tuple[bool, str]:
+    """
+    True when no further bars can arrive for `trade_date`. F-27, mechanism A.
+
+    WHY A SCORER NEEDS A CLOCK AT ALL.
+
+    `resolve_day` prices a TIMEOUT at `bars[-1]["close"]` — whatever the last
+    bar it was handed happens to be — and its work queue is
+    `.is_("outcome", "null")`, so a row it has written is never looked at
+    again. Both are reasonable alone. Together they are a data-corruption
+    engine, because of where the function is called from: `run.py:416`, the
+    daemon's `finally` block, which runs on EVERY exit. A crash at 10:12, a
+    Ctrl-C at 11:30, a restart to pick up a config change — each one asks Kite
+    for the session so far, scores every still-open setup TIMEOUT at a
+    mid-morning price, and freezes it there. The evening pipeline's `backfill`
+    will not come back for it; it is no longer NULL.
+
+    That is not a rounding error. `intraday_setups` is the table
+    `scoring.intraday_priors()` and `hurdle`'s arrival distribution are both
+    built from, so one frozen row prices every candidate that arrives after
+    it. The measured signature on the live book is 58 same-window
+    contradictions, 42 of them a STOP and a TIMEOUT over overlapping windows
+    of one symbol — one row scored against the whole session, one against a
+    truncated one, and nothing stored saying which was which.
+
+    THE BAR IS THE MARKET CLOSE PLUS A SETTLING BUFFER, AND IT MUST SIT INSIDE
+    THE DAEMON'S COOL-DOWN. Kite publishes the closing minute a little after
+    15:30, so scoring at 15:30:01 can still price a TIMEOUT at the 15:28
+    close — the same defect, one minute wide. But the daemon exits at
+    COOLDOWN_TO (15:40) and calls this on the way out, so a buffer that
+    reached 15:40 would mean no session is ever scored by the daemon again and
+    every day waits for the next evening's pipeline. The key is therefore
+    CLAMPED to leave a minute of headroom, loudly, rather than silently
+    disabling the path it is meant to protect.
+
+    A PAST date is always over — that is the whole `backfill` population, and
+    refusing it would blind the one mechanism that repairs unscored sessions.
+    A FUTURE date is never over: a host whose clock or timezone is behind
+    would otherwise score a day whose bars do not exist and write TIMEOUT
+    across the entire book.
+
+    Returns (ok, why) — `why` is a stable reason string when refusing, and a
+    human sentence when allowing.
+    """
+    now = now or datetime.now(IST)
+    try:
+        d = date.fromisoformat(str(trade_date))
+    except (TypeError, ValueError):
+        return False, "unparseable_date"
+
+    today = now.date()
+    if d > today:
+        return False, "future_session"
+    if d < today:
+        return True, f"{d} is a past session"
+
+    buf = cfg_int("outcomes_close_buffer_min", 5)
+    headroom = int((datetime.combine(date.min, COOLDOWN_TO)
+                    - datetime.combine(date.min, MARKET_CLOSE)).total_seconds() // 60)
+    if buf >= headroom:
+        # Never silently. A key that can push the bar past the daemon's own
+        # exit takes the daemon out of the scoring path entirely, and the only
+        # symptom would be days quietly arriving at the pipeline unscored.
+        logger.warning(
+            f"  outcomes_close_buffer_min={buf} would push the scoring bar to or "
+            f"past the daemon's {COOLDOWN_TO} exit — clamped to {headroom - 1} "
+            f"so the daemon can still score its own session")
+        buf = max(headroom - 1, 0)
+
+    bar = IST.localize(datetime.combine(d, MARKET_CLOSE)) + timedelta(minutes=buf)
+    if now >= bar:
+        return True, f"{now:%H:%M} is past the {bar:%H:%M} bar"
+    return False, "session_open"
+
+
+PROVENANCE_COLS = ("scored_at", "scored_by", "scored_through")
+
+
+def _provenance_supported(rows: list[dict]) -> bool:
+    """
+    Does this book carry migration 082's provenance columns? Asked ONCE, free.
+
+    PostgREST fails the WHOLE statement on one unknown column, so sending
+    `scored_at` to a book without it would lose the `outcome` write riding
+    along with it — a diagnostic column taking down the very data it exists to
+    diagnose. Code lands before its migration here as a matter of routine, so
+    this cannot be assumed.
+
+    THREE WAYS TO ASK, AND ONLY ONE OF THEM IS FREE OF ITS OWN DEFECT.
+    Strip-and-retry (the `_update_stripping_unknown` idiom) costs three failed
+    round trips PER ROW, and 14-Aug was 2,289 rows — that is how a diagnostic
+    becomes an outage. A one-off `.select("scored_at,...")` probe costs one
+    call, but names columns that do not exist in a SELECT list, which is
+    exactly what `tools/validate_selects.py` was built to catch: it turned the
+    `selects` health check RED, and a health check that is red for a known
+    pending migration is how a real warning stops being read.
+
+    The work queue above is already `.select("*")`, so every column of every
+    row is in hand. Reading the KEYS of a row costs nothing, cannot raise, and
+    cannot go stale. `test_the_work_queue_still_selects_star` pins the
+    property this depends on.
+    """
+    if not rows:
+        return False
+    missing = [c for c in PROVENANCE_COLS if c not in rows[0]]
+    if missing:
+        logger.warning(
+            f"  outcomes: intraday_setups is missing {', '.join(missing)} — "
+            f"apply migration 082. Outcomes are still scored; WHICH RUN scored "
+            f"them, and through which bar, is not recorded.")
+        return False
+    return True
+
+
+def resolve_day(trade_date: str | None = None, sb=None,
+                now: datetime | None = None) -> dict:
     """
     Resolve every unresolved setup for a date. Idempotent.
 
     Run after the close — from the evening pipeline, or by hand. Setups already
     carrying an outcome are skipped, so re-running is free.
+
+    `now` exists so the session guard is testable without a clock, and so the
+    date this scores and the date the guard checks are derived from ONE
+    instant. Two clocks would let the guard clear one day while the query
+    scored another.
 
     THE WORK QUEUE IS PAGED, AND THE RESULT SAYS WHETHER IT FINISHED.
 
@@ -95,7 +221,20 @@ def resolve_day(trade_date: str | None = None, sb=None) -> dict:
     every caller did.
     """
     sb = sb or get_supabase()
-    d = trade_date or today_ist().isoformat()
+    now = now or datetime.now(IST)
+    d = trade_date or now.date().isoformat()
+
+    # BEFORE ANY READ. A refusal must not cost a paged fetch of 2,000 rows,
+    # and — the point — must not cost a write. `remaining` is None rather than
+    # 0 because this run does not know how many are outstanding and must not
+    # claim it does; `complete` False is what run.py branches on.
+    over, why = session_is_over(d, now=now)
+    if not over:
+        logger.info(f"  outcomes: {d} is not over ({why}) — scoring refused. "
+                    f"A TIMEOUT priced now would be frozen at an intra-session "
+                    f"price and never revisited.")
+        return {"resolved": 0, "date": d, "remaining": None,
+                "complete": False, "reason": why}
 
     rows = fetch_all(lambda: sb.table("intraday_setups").select("*")
                              .eq("trade_date", d).is_("outcome", "null"))
@@ -133,6 +272,14 @@ def resolve_day(trade_date: str | None = None, sb=None) -> dict:
     tally = {"TARGET": 0, "STOP": 0, "TIMEOUT": 0, "UNKNOWN": 0}
     resolved = 0
     bar_cache: dict[str, list] = {}
+
+    # WHO SCORED THIS ROW, AND THROUGH WHICH BAR. One probe, one identity, for
+    # the whole run. `instance_id()` is host-pid-uuid — the same string the
+    # daemon lease writes — because two daemons on one machine, or a daemon
+    # and the pipeline, are different RUNS and a hostname cannot separate them.
+    prov = _provenance_supported(rows)
+    from intraday.lease import instance_id
+    run_id, scored_at = instance_id(), now.isoformat()
 
     for r in rows:
         sym = r["symbol"]
@@ -205,11 +352,20 @@ def resolve_day(trade_date: str | None = None, sb=None) -> dict:
         # Net of the round trip, because a gross win under 0.21% is a loss and
         # recording it as a win would teach the wrong lesson.
         cost = float(r.get("cost_pct") or 0)
+        payload = {"outcome": outcome, "outcome_pct": round(pct - cost, 3)}
+        if prov:
+            # `scored_through` is the diagnostic that did not exist. A TIMEOUT
+            # is priced at bars[-1]["close"], so THIS is the number that
+            # decided it — and a TIMEOUT whose window ends at 11:30 on a
+            # session that ran to 15:30 is a frozen row, visible in one query
+            # instead of by reasoning about which daemon died when.
+            payload.update({
+                "scored_at": scored_at,
+                "scored_by": run_id,
+                "scored_through": bars[-1]["date"].isoformat(),
+            })
         try:
-            sb.table("intraday_setups").update({
-                "outcome": outcome,
-                "outcome_pct": round(pct - cost, 3),
-            }).eq("id", r["id"]).execute()
+            sb.table("intraday_setups").update(payload).eq("id", r["id"]).execute()
             tally[outcome] += 1
             resolved += 1
         except Exception as e:
