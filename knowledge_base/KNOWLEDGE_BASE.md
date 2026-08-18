@@ -1,10 +1,11 @@
 # TradeOS Knowledge Base — Living Document
 
-**Last updated:** 12 August 2026 (5 sessions of evidence, plus direct
+**Last updated:** 13 August 2026 (6 sessions of evidence, plus direct
 `final_score` and `implied_rr` tercile measurements against the full
 historical sample)
 **Source reviews:** `daily/2026-08-06.md`, `daily/2026-08-07.md`,
-`daily/2026-08-10.md`, `daily/2026-08-11.md`, `daily/2026-08-12.md`
+`daily/2026-08-10.md`, `daily/2026-08-11.md`, `daily/2026-08-12.md`,
+`daily/2026-08-13.md`
 
 Read this before starting a new day's review. Update it after, per the
 workflow in `README.md`. An item's confidence should track its sample
@@ -52,6 +53,8 @@ contradiction.)*
   **12-Aug: VIJAYA (swing), fifth occurrence.** Peaked +0.92R (+7.40%),
   gave back exactly 50%, exited +0.45R/+3.65%. n=3 occurrences (2
   sessions) → n=5 occurrences (4 sessions). Confidence unchanged at High.
+  **13-Aug: no new evidence** — zero triggers (nothing cleared 0.5R MFE
+  that also reversed). Explicitly checked and empty.
 
 - **`final_score` does not predict forward R within the CONTINUATION swing
   family, on the full resolved sample measured so far.**
@@ -160,6 +163,8 @@ contradiction.)*
   failure**.
   Confidence: Medium → **Medium-high**. One more clean session would
   support promoting this to Validated Rules.
+  **13-Aug: no new evidence** — zero swing exits, no order attempted.
+  Stays "2 successes, 1 failure." Explicitly checked and empty.
 
 - **The swing allocator's "slots spent" decline reflects real slot
   scarcity — DEMOTED from Validated Rules, 7 Aug.**
@@ -185,6 +190,8 @@ contradiction.)*
   VIJAYA's give-back exit; day ended with the counter matching reality
   (2/3 used). 3 of 4 sessions now clean. Confidence unchanged at Medium —
   majority-clean still doesn't retire the open 7-Aug investigation.
+  **13-Aug: no new evidence** — zero qualifying candidates, nothing for
+  the allocator to accept or decline. Explicitly checked and empty.
 
 ---
 
@@ -207,6 +214,9 @@ review knows to keep watching, not to re-derive from scratch.)*
   shortability infrastructure maturing while the regime gate remains the
   real constraint — noted, not yet a separate tracked claim. Sample
   unchanged at ~8-9 legs.
+  **13 Aug: first close in three sessions.** TATACHEM (+0.06R,
+  `TIME_EXIT`) — small, but real. ~8-9 legs, 2 wins → **~9-10 legs, 3
+  wins**.
   Needed before any verdict: ~20 resolved outcomes across ≥10 sessions
   (this project's own `MIN_SAMPLE`/`MIN_SESSIONS` standard from
   `tools/weekly_review.py`).
@@ -218,12 +228,20 @@ review knows to keep watching, not to re-derive from scratch.)*
   give-back guard cleared on its way to Validated.
   **12 Aug: no new evidence** — zero `EXIT_STALL` events. Explicitly
   checked and empty, not skipped. Stays at n=1.
+  **13 Aug: no new evidence.** Stays at n=1.
 
 - **Whether `swing_max_new_per_day` is too conservative.**
   Sessions: 6 Aug (n=1 — slot count was the binding constraint on 11 of 17
   candidates, most missing the edge bar by a narrow margin).
   Needed before any verdict: several more sessions in a similar regime, to
   see if slot-exhaustion is typical or 6 Aug was unusually candidate-rich.
+  **11 & 13 Aug: a different condition, worth distinguishing.** Both
+  sessions had ZERO qualifying candidates all day under a soft-NEUTRAL
+  regime (score 48-49) — the cap never bound because nothing reached it,
+  the opposite texture from 6 Aug's candidate-rich, cap-binding day. n=2
+  sessions now for "does a soft regime empty the candidate pool," a
+  separate question from the original one about whether the cap itself is
+  too tight.
 
 - **Small CNC clip sizes turning gross wins into net losses on fixed
   charges.**
@@ -324,6 +342,12 @@ still supports the bet, rather than re-deriving the original decision.)*
   that real money exposure to this bet is now larger than when it was
   made, with no additional evidence either direction — worth a direct
   look the day any MOM position finally resolves.
+  **13 Aug: still zero resolved, priority carried forward.** Zero swing
+  exits means zero new MOM/RVS/VCE/RNG evidence for a second consecutive
+  reviewed session. The 12-Aug priority — give the next resolved MOM/RVS
+  position its own explicit look, not just a scorecard line — remains
+  open and unaddressed; restating it here so it isn't lost to a run of
+  quiet sessions.
 
 ---
 
