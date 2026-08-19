@@ -75,13 +75,13 @@ from __future__ import annotations
 
 import statistics
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import (cfg, cfg_bool, cfg_float, cfg_int, get_supabase,
+from config import (IST, cfg, cfg_bool, cfg_float, cfg_int, get_supabase,
                     today_ist, fetch_all)
 
 
@@ -216,6 +216,146 @@ def _effective_percentile(pct0: float, time_mult: float, scarcity: float,
     return max(pct0, min(pct0 + (cap - pct0) * frac, cap))
 
 
+# ── THE PICK LABEL — an arrival-aware bar that DOES NOT gate anything ───────
+#
+# `bar` above decides TAKE vs DECLINE and is unchanged by any of this. What
+# follows answers a different, additive question: "of what WAS taken, was this
+# specific one a genuine top pick, or was it kept mainly to keep the prior
+# learning?" — 19-Aug-2026, in response to the operator's own framing: paper
+# trading should stay high-volume (more data is free and helps every prior
+# converge faster), so the fix cannot be to shrink `intraday_max_new_per_day`.
+# It has to be a LABEL applied to whatever is taken, not a gate on how much is.
+
+_arrival_cache: dict = {}
+
+
+def arrival_histogram(sb, framework: str = "INTRADAY",
+                      lookback_days: int | None = None) -> dict[int, float]:
+    """
+    Average TAKEN-quality detections per IST HOUR, from real history.
+
+    Cached once per calendar day per (framework, lookback) pair — this is
+    called from inside the 15s decision loop and must not add a query to every
+    cycle. Empty on any failure or on a genuinely quiet history, which
+    `remaining_expected()` below treats as "no opinion", not zero.
+
+    Deliberately EMPIRICAL rather than a hand-set curve: 13-19 Aug 2026 showed
+    ~19 of a typical day's ~26 detections inside the first 45 minutes and
+    single digits per hour after 11:00 — a shape nobody should hand-tune and
+    that will itself shift as F-33's stop fix changes what clears the cost
+    gate. Re-reading it from disk each day is what lets it track that.
+    """
+    lookback_days = lookback_days or cfg_int("alloc_arrival_curve_lookback_days", 20)
+    today = today_ist().isoformat()
+    key = (framework, lookback_days)
+    cached = _arrival_cache.get(key)
+    if cached and cached[0] == today:
+        return cached[1]
+
+    hist: dict[int, float] = {}
+    try:
+        since = (today_ist() - timedelta(days=lookback_days)).isoformat()
+        sb = sb or get_supabase()
+        # PAGED, SORTED ON THE TABLE'S ACTUAL UNIQUE KEY. static_analysis
+        # caught two things here in sequence, both on first build. First:
+        # unpaged — TAKEN detections alone ran 1,000-2,289 per SESSION in
+        # mid-August, so a 20-day window is routinely tens of thousands of
+        # rows and PostgREST's 1,000-row cap would have silently truncated it
+        # to roughly one day. Second, after adding paging: sorted on
+        # `trade_date`, which is NOT unique (thousands of rows share one), so
+        # LIMIT/OFFSET paging on it can repeat and skip rows across page
+        # boundaries with no error — scoring.intraday_priors() hit this exact
+        # defect (F-33 §"SORTED PAGING") and the fix there is the same fix
+        # here: sort on `id`, this table's verified unique key, and leave the
+        # date filtering to `.gte`/`.lt` where it belongs.
+        def _build():
+            return (sb.table("intraday_setups")
+                      .select("symbol,strategy,trade_date,ts")
+                      .eq("cost_verdict", "TAKEN")
+                      .gte("trade_date", since).lt("trade_date", today))
+        rows = fetch_all(_build)
+        by_day_hour: dict[tuple, set] = {}
+        for r in rows:
+            ts = r.get("ts")
+            if not ts:
+                continue
+            # `ts` COMES BACK UTC. String-slicing it (the first version of
+            # this function did) read the UTC hour directly and produced a
+            # histogram peaking at 04:00-05:00 — IST is UTC+5:30, so 09:15
+            # IST genuinely reads back as "03:45" in the stored value. Parsed
+            # and converted to IST explicitly, the same +5:30 every other IST
+            # timestamp in this codebase applies, rather than trusted to
+            # already be local. Caught by running this against the live
+            # database once before trusting it, not by review.
+            try:
+                dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=IST)
+                hour = dt.astimezone(IST).hour
+            except (ValueError, TypeError):
+                continue
+            # Deduplicated to (symbol, strategy, day) per hour, matching
+            # scoring._intraday_priors_from_rows — one setup lingering across
+            # a cycle must count once, not once per re-detection.
+            by_day_hour.setdefault((r.get("trade_date"), hour), set()).add(
+                (r.get("symbol"), r.get("strategy")))
+        sessions = len({d for d, _h in by_day_hour}) or 1
+        counts: dict[int, int] = {}
+        for (_d, h), syms in by_day_hour.items():
+            counts[h] = counts.get(h, 0) + len(syms)
+        hist = {h: c / sessions for h, c in counts.items()}
+    except Exception as e:
+        logger.debug(f"  arrival_histogram: could not build ({e}) — no opinion")
+        hist = {}
+
+    _arrival_cache[key] = (today, hist)
+    return hist
+
+
+def remaining_expected(hist: dict[int, float], now_ist_hour: int) -> float | None:
+    """
+    Pure. How many more TAKEN-quality detections are typically still coming
+    today, from this hour onward inclusive. None when the histogram is empty
+    — absence of a curve must not read as "nothing more is coming", which
+    would make every remaining candidate look artificially scarce and the
+    label artificially generous.
+    """
+    if not hist:
+        return None
+    return sum(c for h, c in hist.items() if h >= now_ist_hour)
+
+
+def label_quantile(slots_left: int, remaining: float | None,
+                   floor: float = 0.5, cap: float = 0.97) -> float:
+    """
+    Pure. How selective "top pick" should be, right now.
+
+        pickiness = 1 - slots_left / remaining_expected_arrivals
+
+    HIGH pickiness (many arrivals still coming, few slots left) means only the
+    genuine best of what's left should be labelled a top pick. LOW pickiness
+    (little left to compare against) means almost anything still taken is
+    honestly the best available, not a lax standard.
+
+    `remaining=None` (no curve yet, e.g. a fresh deploy with no history) and
+    `remaining<=0` (nothing left is expected) both return `floor`, for
+    different reasons: the first is "no opinion, do not manufacture one"; the
+    second is "supply is exhausted, so whatever is left IS the best available
+    by definition, not merely acceptable". Collapsing them would either
+    over-label a data-poor system's early trades or under-label its last ones.
+
+    `slots_left<=0` returns `cap` — nothing SHOULD be labelled a pick when
+    there is no slot to spend it in; this is a labelling artefact, not a real
+    case, since `hurdle()` itself already returns an infinite bar there.
+    """
+    if slots_left <= 0:
+        return cap
+    if remaining is None or remaining <= 0:
+        return floor
+    pickiness = 1.0 - (slots_left / remaining)
+    return max(floor, min(pickiness, cap))
+
+
 def hurdle(bucket: str, slots_left: int, minutes_left: int,
            framework: str = "INTRADAY", sb=None,
            max_slots: int | None = None) -> tuple[float, dict]:
@@ -326,7 +466,26 @@ def hurdle(bucket: str, slots_left: int, minutes_left: int,
         if bar < floor_edge:
             bar, floored = floor_edge, True
 
+    # ── LABEL BAR — additive, never gates, described at this function's own
+    # module-level comment above `arrival_histogram()`. Only computed when the
+    # normal arrival population exists (`edges`), because a label built from
+    # `base` alone (no percentile population) would compare a single number to
+    # itself and always agree.
+    label_bar = None
+    label_q = None
+    if cfg_bool("alloc_intraday_pick_label", False) and edges and framework == "INTRADAY":
+        try:
+            hist = arrival_histogram(sb, framework)
+            now_hour = int(datetime.now(IST).strftime("%H"))
+            remaining = remaining_expected(hist, now_hour)
+            label_q = label_quantile(slots_left, remaining)
+            label_bar = _quantile(edges, label_q)
+        except Exception as e:
+            logger.debug(f"  label bar skipped: {e}")
+
     return bar, {
+        "label_bar": None if label_bar is None else round(label_bar, 5),
+        "label_quantile": None if label_q is None else round(label_q, 4),
         "base": None if base == float("-inf") else round(base, 5),
         "bucket": bucket,
         "time_mult": round(time_mult, 3), "scarcity_mult": round(scarcity, 3),

@@ -124,8 +124,12 @@ def reconcile(days: int, sb=None) -> int:
     opened_syms: dict[str, set] = defaultdict(set)
     for table, date_col in (("open_positions", "entry_date"),
                             ("closed_positions", "entry_date")):
+        # order_by="id" (the default) crashes on open_positions: migration 028
+        # keyed it on (symbol, product), and it has never had an id column.
+        # entry_date exists on both tables and is what this reconciliation
+        # already groups by, so it is a safe, real sort key for both.
         for r in _rows(sb, table, f"symbol,{date_col},framework", date_col, since,
-                       extra={"framework": "INTRADAY"}):
+                       extra={"framework": "INTRADAY"}, order_by=date_col):
             d = str(r.get(date_col) or "")[:10]
             if d and r.get("symbol"):
                 opened_syms[d].add(r["symbol"])

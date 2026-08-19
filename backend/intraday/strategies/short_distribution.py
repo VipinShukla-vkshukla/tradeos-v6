@@ -79,6 +79,37 @@ paise against a full stop, and refused them all.
 Downside is faster than upside intraday, but it is also more likely to snap
 back. The cost model has the final word either way: `is_worth_taking` refuses
 anything whose target does not clear the round trip by the keep-ratio.
+
+STOPS ROUTED THROUGH base.risk_from_structure() — 19-Aug-2026, FOUND DURING
+AN ENGINE AUDIT, NOT REPORTED AS A DEFECT AND FIXED LATER
+------------------------------------------------------------------------------
+Every other engine in this package calls `risk_from_structure()` for its stop.
+This one built its own (`level * (1 + buffer)`, three times, once per
+condition) and never called it — which meant SDN, carrying the large majority
+of this book's live volume, was the one engine exempt from BOTH F-33's
+anti-falsification fix AND `intraday_min_risk_pct` (armed the same session):
+neither check runs on a stop this module never handed to the function that
+performs them.
+
+Not urgent by SDN's own history — its own risk distribution rarely sits
+under the 0.6% floor (7 of 265 TAKEN rows ever have) — but real: any FUTURE
+tightening of the shared stop logic would silently keep missing this engine,
+and there was no explicit maximum-risk cap here at all, only the indirect
+bound `_not_chasing()`'s distance-to-level check happens to produce. Fixed by
+routing all three conditions' stops through the same primitive every sibling
+engine uses. `intraday_short_max_risk_pct` (1.50, generously above the
+observed historical range rather than a routine filter — see this module's
+own §"TARGETS ARE DELIBERATELY MODEST" for why SDN's wide-stop trades are
+its best, not its worst, unlike the long engines) is new; the shared
+`intraday_min_risk_pct` needs no new key, it now simply reaches this engine.
+
+ONE SIDE FINDING, FIXED AS A BYPRODUCT OF GIVING THIS ONE AUDITABLE STOP
+CONSTRUCTION INSTEAD OF THREE BESPOKE ONES: `_trap`'s old stop was
+`round(min(ctx.day_high, ctx.prev_high * buf) * buf, 2)` — the outer `* buf`
+applied a SECOND buffer on top of `prev_high * buf` whenever that branch won
+the min. Small (buf is 0.12%, so ~0.024% of stacked, likely unintended,
+extra buffer) and now applied exactly once per branch, matching what the
+comment at that stop has always said it does.
 """
 
 from __future__ import annotations
@@ -90,7 +121,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config import cfg_float, cfg_int
 from intraday.session import PRIME, DRIFT, AFTERNOON
-from intraday.strategies.base import Setup, SymbolContext
+from intraday.strategies.base import Setup, SymbolContext, risk_from_structure
 
 NAME = "SDN"
 
@@ -220,7 +251,18 @@ class ShortDistribution:
         if not self._not_chasing(ctx, ctx.vwap):
             return None
 
-        stop = round(rej_high * (1 + cfg_float("intraday_short_stop_buffer_pct", 0.12) / 100.0), 2)
+        # The stop is STRUCTURAL and stays structural. When it is wider than
+        # this engine can afford the setup is REFUSED, not re-priced onto a
+        # level the structure never named -- base.risk_from_structure has the
+        # measurement (pinned -0.5348R vs structural +0.0154R, n=1766). Routed
+        # through the shared primitive 19-Aug-2026 -- see this module's own
+        # header note on why it previously wasn't.
+        structural_stop = round(rej_high * (1 + cfg_float("intraday_short_stop_buffer_pct", 0.12) / 100.0), 2)
+        frame = risk_from_structure(ctx.ltp, structural_stop, "SHORT",
+                                    max_risk_pct=cfg_float("intraday_short_max_risk_pct", 1.50))
+        if frame is None:
+            return None
+        stop, risk = frame.stop, frame.risk
         target = self._target(ctx, atr, stop)
         if not target:
             return None
@@ -261,7 +303,7 @@ class ShortDistribution:
             # meaningful; the thesis dies when the rejection high is reclaimed.
             invalidation=f"reclaims the rejection high {rej_high:.2f}",
             valid_phases=self.phases,
-            meta={"sub_engine": "VWR", "vwap": round(ctx.vwap, 2),
+            meta={**frame.meta(), "sub_engine": "VWR", "vwap": round(ctx.vwap, 2),
                   "rejection_high": round(rej_high, 2),
                   "invalidation_level": round(rej_high, 2)},
         )
@@ -291,11 +333,29 @@ class ShortDistribution:
         # Stopping above the spike high made the risk the entire overshoot — on
         # a sharp poke that is a 3% intraday stop, which no target reachable in
         # one session can pay for. The day high is used only when it is the
-        # TIGHTER of the two.
+        # TIGHTER of the two, compared AFTER prev_high's buffer is added (a
+        # tiny overshoot smaller than the buffer itself is the case day_high
+        # wins) — each candidate buffered exactly once before the comparison,
+        # not once more after it. See this module's own header note: the old
+        # `min(day_high, prev_high * buf) * buf` applied a second buffer to
+        # whichever candidate won when it was prev_high.
         buf = 1 + cfg_float("intraday_short_stop_buffer_pct", 0.12) / 100.0
-        stop = round(min(ctx.day_high, ctx.prev_high * buf) * buf, 2)
-        if stop <= ctx.ltp:
+        buffered_prev_high = ctx.prev_high * buf
+        if ctx.day_high < buffered_prev_high:
+            structural_stop = round(ctx.day_high * buf, 2)
+        else:
+            structural_stop = round(buffered_prev_high, 2)
+        if structural_stop <= ctx.ltp:
             return None
+        # The stop is STRUCTURAL and stays structural. When it is wider than
+        # this engine can afford the setup is REFUSED, not re-priced onto a
+        # level the structure never named -- base.risk_from_structure has the
+        # measurement (pinned -0.5348R vs structural +0.0154R, n=1766).
+        frame = risk_from_structure(ctx.ltp, structural_stop, "SHORT",
+                                    max_risk_pct=cfg_float("intraday_short_max_risk_pct", 1.50))
+        if frame is None:
+            return None
+        stop, risk = frame.stop, frame.risk
         target = self._target(ctx, atr, stop)
         if not target:
             return None
@@ -324,7 +384,7 @@ class ShortDistribution:
                        f"discretionary"),
             invalidation=f"reclaims {ctx.prev_high:.2f}",
             valid_phases=self.phases,
-            meta={"sub_engine": "TRP", "prev_high": round(ctx.prev_high, 2),
+            meta={**frame.meta(), "sub_engine": "TRP", "prev_high": round(ctx.prev_high, 2),
                   "overshoot_pct": round(overshoot, 2),
                   "invalidation_level": round(ctx.prev_high, 2)},
         )
@@ -346,9 +406,18 @@ class ShortDistribution:
         if not vr or vr < cfg_float("intraday_short_orb_min_vol_ratio", 1.1):
             return None
 
-        stop = round(min(hi, ctx.vwap) * (1 + cfg_float("intraday_short_stop_buffer_pct", 0.12) / 100.0), 2)
-        if stop <= ctx.ltp:
+        structural_stop = round(min(hi, ctx.vwap) * (1 + cfg_float("intraday_short_stop_buffer_pct", 0.12) / 100.0), 2)
+        if structural_stop <= ctx.ltp:
             return None
+        # The stop is STRUCTURAL and stays structural. When it is wider than
+        # this engine can afford the setup is REFUSED, not re-priced onto a
+        # level the structure never named -- base.risk_from_structure has the
+        # measurement (pinned -0.5348R vs structural +0.0154R, n=1766).
+        frame = risk_from_structure(ctx.ltp, structural_stop, "SHORT",
+                                    max_risk_pct=cfg_float("intraday_short_max_risk_pct", 1.50))
+        if frame is None:
+            return None
+        stop, risk = frame.stop, frame.risk
         target = self._target(ctx, atr, stop)
         if not target:
             return None
@@ -368,7 +437,7 @@ class ShortDistribution:
                        f"{ctx.vwap:.2f}"),
             invalidation=f"closes back above the range low {lo:.2f}",
             valid_phases=self.phases,
-            meta={"sub_engine": "ORB", "range_low": round(lo, 2),
+            meta={**frame.meta(), "sub_engine": "ORB", "range_low": round(lo, 2),
                   "range_high": round(hi, 2), "volume_ratio": vr,
                   "invalidation_level": round(lo, 2)},
         )

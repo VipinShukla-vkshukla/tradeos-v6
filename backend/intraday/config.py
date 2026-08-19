@@ -143,6 +143,25 @@ def eval_interval_s() -> int:
     return cfg_int("intraday_eval_interval_s", 15)
 
 
+def position_guard_interval_s() -> int:
+    """
+    How often OPEN POSITIONS are re-checked against the exit ladder.
+
+    Split out of `eval_interval_s()` on 19-Aug-2026. Finding a new setup and
+    defending an open one were sharing a timer sized for the expensive one:
+    the full scan costs ~120 symbols x 9 engines and writes detection rows,
+    while the exit check reads a handful of in-memory positions and writes
+    only when a rung actually fires. See `engine.guard_positions()` for why
+    the two do not belong on the same clock.
+
+    Returning a value >= eval_interval_s() disables the fast lane exactly —
+    the guard then never comes due between full cycles, which already run it.
+    That is the rollback, and it is the reason this is a floor rather than an
+    independent timer.
+    """
+    return cfg_int("intraday_position_guard_interval_s", 3)
+
+
 def gtt_sync_interval_s() -> int:
     """How often GTT triggers are reconciled against the intended stop."""
     return cfg_int("intraday_gtt_sync_interval_s", 300)

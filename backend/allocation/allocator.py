@@ -114,6 +114,28 @@ class Allocator:
         return S.score(entry, stop, target, qty, product, pri, days,
                        direction=direction).get("edge")
 
+    def expected_r_for(self, p: Proposal) -> float | None:
+        """
+        The prior mean R this proposal WOULD be priced on, or None when no
+        rung of the ladder has a usable sample.
+
+        Exists so a caller outside this module can ask "which of these
+        competing setups has the better measured record" without building a
+        second lookup. `intraday/engine.py` uses it to arbitrate between two
+        engines firing on the SAME symbol, a choice that was previously made
+        on raw `confidence` — a number measured 19-Aug-2026 to be inverted for
+        SDN/PDL/VWR and noise for ORB at n=1030, and which in any case means
+        something different in every engine that computes it.
+
+        Returns None rather than 0.0 for an absent prior, and the distinction
+        is the whole point: 0.0 is a MEASURED flat expectation, absence is no
+        opinion, and a caller that collapsed them would rank an unmeasured
+        engine ahead of one measured slightly negative. Same rule as
+        `_row_gross_r` and `confidence_band`.
+        """
+        pri = self._prior_for(p)
+        return pri.mean_r if (pri is not None and pri.usable) else None
+
     def _prior_for(self, p: Proposal):
         if self._priors is None:
             self.refresh_priors()
@@ -167,8 +189,36 @@ class Allocator:
         # each rung on the sample floor, so an engine only prices on itself
         # once it has earned the observations.
         sub = str((p.meta or {}).get("sub_engine") or p.source or "").upper()
+
+        # ── THE BAND RUNG — 19-Aug-2026 ─────────────────────────────────────
+        #
+        # `native_rank` is the setup's own confidence x100 (proposal.
+        # from_intraday), so the confidence the engine assigned is recoverable
+        # here without widening Proposal. Banded FIRST because it is the most
+        # specific evidence available: "what this engine's setups at THIS
+        # confidence level have actually returned", rather than that engine's
+        # record pooled across confidence levels it does not treat alike.
+        #
+        # THE BAND IS COMPUTED BY THE SAME FUNCTION THAT BUILT THE KEY.
+        # scoring.confidence_band() is called on both sides on purpose — see
+        # its docstring for the two occasions this repository has already
+        # shipped a builder and a consumer that disagreed about a key, each
+        # time producing a feature that was entirely inert and silent about
+        # it. `_usable()` still gates this rung on the sample floor, so a band
+        # with too few observations falls straight through to the un-banded
+        # engine key, which is exactly today's behaviour.
+        #
+        # When `alloc_intraday_confidence_bands` is false, band_edges() is
+        # never consulted: confidence_band() returns None, no rung is
+        # inserted, and this ladder is the one that shipped before.
+        band = (S.confidence_band(p.native_rank / 100.0)
+                if cfg_bool("alloc_intraday_confidence_bands", False)
+                and p.native_rank is not None else None)
+        banded = f"{sub}{S.BAND_SEP}{band}" if band else None
+
         if (p.direction or "LONG").upper() == "SHORT":
-            return (_usable(f"{p.framework}/{sub}/SHORT")
+            return ((_usable(f"{p.framework}/{banded}/SHORT") if banded else None)
+                    or _usable(f"{p.framework}/{sub}/SHORT")
                     or _usable(f"{p.framework}/{p.source}/SHORT")
                     or _usable(f"{p.framework}/ALL/SHORT")
                     or S._dist(f"{p.framework}/NONE/SHORT", [], floor=10**9))
@@ -177,7 +227,8 @@ class Allocator:
         # below-floor class prior is NOT borrowed from a neighbour — it falls
         # back to the book's own distribution and is flagged, because an
         # invented prior is indistinguishable from a measured one downstream.
-        return (_usable(f"{p.framework}/{sub}")
+        return ((_usable(f"{p.framework}/{banded}") if banded else None)
+                or _usable(f"{p.framework}/{sub}")
                 or _usable(f"{p.framework}/{p.source}")
                 or _usable(f"{p.framework}/ALL")
                 or S._dist(f"{p.framework}/NONE", [], floor=10**9))
@@ -263,11 +314,28 @@ class Allocator:
             verdicts = (policy(scored, bar, fw_slots, field) if fw == "SWING"
                         else policy(scored, bar, fw_slots,
                                     inputs.get("bar_before_floor")))
+            label_bar = inputs.get("label_bar")
             for v in verdicts:
                 v["hurdle"] = (None if bar in (float("inf"), float("-inf"))
                                else round(bar, 5))
                 v["hurdle_inputs"] = inputs
                 v["regime_bucket"] = bucket
+                # ── THE PICK LABEL — 19-Aug-2026 ────────────────────────────
+                #
+                # Additive to the verdict already decided above; changes
+                # nothing about TAKE vs DECLINE. `label_bar` is a STRICTER,
+                # time-aware quantile of the same arrival population `bar`
+                # itself is drawn from — see allocation/hurdle.py's own header
+                # comment on why this exists as a label rather than a second
+                # gate. Only meaningful for something actually TAKEN; a
+                # DECLINE has no pick to label. `label_bar is None` covers both
+                # "the switch is off" and "no edges population existed to
+                # build one from" — in either case this stays silent rather
+                # than guessing.
+                if fw == "INTRADAY" and v.get("verdict") == P.TAKE and label_bar is not None:
+                    edge = v.get("edge")
+                    v["pick_label"] = ("TOP_PICK" if edge is not None and edge >= label_bar
+                                       else "EXPLORATION")
             out += verdicts
 
         out = self._basket_recheck(out, open_positions or [])

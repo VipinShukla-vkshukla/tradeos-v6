@@ -33,9 +33,78 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import cfg_float, cfg_int
+from config import cfg_bool, cfg_float, cfg_int
 
 TAKE, DEFER, DECLINE = "TAKE", "DEFER", "DECLINE"
+
+
+def _edge_key(s: dict) -> float:
+    """
+    A proposal's edge for ordering, with an ABSENT edge sorted last.
+
+    Written out rather than `s.get("edge") or float("-inf")`, which was the
+    idiom here and is wrong for exactly one value: `0.0 or float("-inf")`
+    evaluates to `-inf`, because 0.0 is falsy. An edge of precisely zero —
+    a NEUTRAL prior against zero modelled cost — would have sorted BELOW
+    every loser instead of above them. Vanishingly rare in floating point
+    and completely silent when it happens, which is the only reason it
+    survived; `None` is the one case that genuinely means "no opinion" and
+    it is now the only case treated as such.
+    """
+    e = s.get("edge")
+    return float("-inf") if e is None else float(e)
+
+
+def _engine_of_scored(s: dict) -> str:
+    """Which engine produced this proposal. '' when it cannot be determined."""
+    p = s.get("proposal")
+    if p is None:
+        return ""
+    meta = getattr(p, "meta", None) or {}
+    return str(meta.get("sub_engine") or getattr(p, "source", "") or "")
+
+
+def _interleave_by_engine(scored: list[dict]) -> list[dict]:
+    """
+    Pure. Every engine's BEST candidate first, then every engine's second, and
+    so on — each round internally ordered by edge.
+
+    WHY THE POOLED SORT WAS NOT ENOUGH — 19-Aug-2026
+    ------------------------------------------------
+    `edge` is `prior.mean_r - cost_r`, and `prior` is keyed on the ENGINE. So
+    within one cycle every candidate from a given engine carries very nearly
+    the same edge — they share the prior, and only `cost_r` (friction over
+    that setup's own risk) separates them. A pooled descending sort therefore
+    does not rank SETUPS, it ranks ENGINES, and then hands the whole slot
+    budget to the top engine's candidates in whatever order friction happens
+    to break their near-tie.
+
+    Measured on the live book, 13-19 Aug 2026: 29 of 32 closed intraday
+    positions came from ONE engine (SDN), while ORB detected 561 TAKEN rows
+    across the same window and closed one position. That is not the allocator
+    preferring better trades; it is the allocator preferring a better ENGINE
+    and there being no mechanism by which a second engine's best idea competes
+    with a first engine's fifth-best.
+
+    THIS CANNOT ADMIT ANYTHING THAT FAILS THE BAR. Interleaving reorders the
+    queue; it does not lower `bar`, and the caller still declines every
+    proposal whose edge sits under it. The only outcomes that change are those
+    where a lower-ranked engine's candidate ALREADY cleared the bar and lost
+    its slot to a same-engine sibling — which is precisely the case this is
+    for, and precisely why it is safe to have on by default.
+    """
+    ordered = sorted(scored, key=lambda x: -_edge_key(x))
+    seen: dict[str, int] = {}
+    tagged = []
+    for s in ordered:
+        eng = _engine_of_scored(s)
+        rank = seen.get(eng, 0)
+        seen[eng] = rank + 1
+        tagged.append((rank, s))
+    # (round, then edge within the round). Fully determined by the pair, so
+    # this does not depend on the stability of the sort above for its result.
+    tagged.sort(key=lambda t: (t[0], -_edge_key(t[1])))
+    return [s for _, s in tagged]
 
 
 def intraday_stopping(scored: list[dict], bar: float, slots_left: int,
@@ -74,7 +143,15 @@ def intraday_stopping(scored: list[dict], bar: float, slots_left: int,
     out = []
     taken = 0
     taken_ex_floor = 0
-    for p in sorted(scored, key=lambda x: -(x.get("edge") or float("-inf"))):
+    # ONE ORDERING, USED BY BOTH THE VERDICT AND `floor_only_rank`. The
+    # exploration rank is computed inside this same loop precisely so paper
+    # and live cannot disagree about which proposals were best; changing the
+    # queue here therefore changes both together, which is the property that
+    # made it safe to change at all.
+    queue = (_interleave_by_engine(scored)
+             if cfg_bool("alloc_intraday_engine_fairness", True)
+             else sorted(scored, key=lambda x: -_edge_key(x)))
+    for p in queue:
         edge = p.get("edge")
         if edge is None:
             out.append({**p, "verdict": DECLINE,

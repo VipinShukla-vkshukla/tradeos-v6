@@ -317,6 +317,13 @@ def open_position(symbol: str, qty: int, fill_price: float, setup: dict,
             # even be measured. close_position copies the column through, so
             # recording it here is what makes the question askable later.
             "sector": setup.get("sector"),
+            # TOP_PICK / EXPLORATION / None. See allocation/hurdle.py's own
+            # header comment on why this is a label, not a gate, and
+            # intraday/engine.py::act_on_setups for where it is read from the
+            # allocator's own verdict. Carried through close_position() onto
+            # closed_positions the same way `sector` is, for the same reason:
+            # a field only on the open row cannot be queried against outcomes.
+            "pick_label": setup.get("pick_label"),
             "entry_signal_type": setup.get("strategy"),
             "source": "paper",
             # Entry-leg cost. Carried so the close can add the exit leg and

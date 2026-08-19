@@ -34,7 +34,8 @@ from loguru import logger
 from config import IST, cfg_int, get_supabase, get_system_config, is_kill_switch_active, today_ist
 from intraday.config import (is_trading_session, is_market_open, is_holiday,
                              autonomy_phase, gtt_enabled, orders_enabled,
-                             eval_interval_s, gtt_sync_interval_s, poll_interval_s)
+                             eval_interval_s, gtt_sync_interval_s, poll_interval_s,
+                             position_guard_interval_s)
 from intraday.engine import IntradayEngine
 from intraday.notifier import Notifier
 from intraday.price_feed import PriceFeed
@@ -170,6 +171,7 @@ def main(once: bool = False, dry: bool = False) -> None:
                        f"{poll_interval_s()}s instead of continuously")
 
     last_eval = 0.0
+    last_guard = 0.0
     last_lease = 0.0
     last_ws_try = time.time()
     blind_cycles = 0
@@ -299,6 +301,33 @@ def main(once: bool = False, dry: bool = False) -> None:
                         blind_cycles = 0
                         token_alert_sent = False
                 last_eval = now
+                last_guard = now
+
+            # ── FAST LANE: OPEN POSITIONS ONLY ──────────────────────────────
+            #
+            # Runs between full cycles, never instead of one — the full cycle
+            # above already evaluates positions first and stamps `last_guard`,
+            # so this only fires when a full cycle is NOT due.
+            #
+            # Gated on `was_active` for the same reason the full cycle is: a
+            # standby instance holds no lease and must commit nothing, and
+            # act_on_positions() places real exits. Gated on `once` so a
+            # single-shot invocation stays single-shot.
+            elif (was_active and not once
+                  and now - last_guard >= position_guard_interval_s()):
+                guard_prices = feed.all_prices()
+                if guard_prices:
+                    try:
+                        acted = engine.guard_positions(guard_prices)
+                        if acted:
+                            logger.info(f"  guard: {len(acted)} position action(s) "
+                                        f"between cycles")
+                    except Exception as e:
+                        # The fast lane must never be able to take the daemon
+                        # down — the slow cycle is the system of record and
+                        # will re-evaluate the same positions moments later.
+                        logger.warning(f"  position guard failed: {e}")
+                last_guard = now
 
             # Reload positions/candidates periodically so a fill reported through
             # Telegram, or a manual exit, is picked up without a restart.

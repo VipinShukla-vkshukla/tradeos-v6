@@ -8774,3 +8774,619 @@ the residual finding is handed off rather than acted on.
   decision this session: no change until roughly two weeks of
   structural-stop trading has given each engine that matters ~30 TAKEN rows
   of its own.
+
+## 2026-08-19 — F-35 (change, allocator queue + prior segmentation + exit cadence) — `edge` is keyed on the ENGINE, so a pooled sort ranked ENGINES and handed the whole slot budget to one: 29 of 32 closed positions came from SDN while ORB wrote 561 TAKEN rows and closed one. Fairness ships ARMED because it cannot admit anything that fails the bar. Confidence is not comparable across engines — inverted for three, noise for ORB at n=1030 — so bands ship INERT on a pre-F-33 sample. The exit ladder leaves the 15s timer; entries do not
+
+**Ran:** read-only SQL against the live database, the log's own cycle
+timestamps, `tools.verify` (636 checks), `tools.simulate`, `tools.health`.
+
+### 1 — THE OPERATOR'S QUESTION, AND THE MEASUREMENT THAT ANSWERS IT
+
+Asked why six of seven engines cannot take a trade, having rejected the framing
+that this is about engine QUALITY.
+
+`tools/taken_reconciliation.py` — the tool built for exactly this question on
+10-Aug — could not run: it paged `open_positions` on `order_by="id"`, and
+migration 028 keyed that table on `(symbol, product)`; it has never had an `id`
+column. PostgREST returned 42703 and the tool had been dead since. Fixed
+(`order_by=date_col`, real on both tables). Last six sessions:
+
+    date          taken symbols   real positions   ratio
+    2026-08-12         30              10           33%
+    2026-08-13         13               2           15%
+    2026-08-14         37              10           27%
+    2026-08-17         14               0            0%
+    2026-08-18         42              12           29%
+    2026-08-19         13               8           62%
+    TOTAL: 149 TAKEN symbol-days, 42 became a position (28%)
+
+    of the 112 that did not open:
+      29 ALLOCATOR_DECLINED   17 REJECTED_COST      17 BLOCKED_STRUCTURE
+      16 BLOCKED_SHORTABILITY 14 BELOW_CONVICTION   10 BLOCKED_SHORTS_MARKET
+       6 VETOED_AI             3 BLOCKED_PAPER_CAPACITY
+       0 unexplained
+
+Zero unexplained — `_maybe_open_paper`'s 10-Aug verdict instrumentation holds.
+Restricted to ORB+VCE alone the shape is the same and ALLOCATOR_DECLINED is
+again the largest single bucket (53 of ~170). Scanning is not the constraint:
+114-123 distinct symbols per session, 850-2,289 detections.
+
+**The first hypothesis was wrong and is recorded as such.** Confidence-sorting
+in `registry.evaluate_all` was assumed to crowd the other engines out. It does
+not: mean confidence of TAKEN rows is ORB 0.751 and VCE 0.777 against SDN
+0.678. The engines being starved carry the HIGHER confidence.
+
+### 2 — THE MECHANISM: A POOLED SORT ON A NUMBER THAT ONLY VARIES BY ENGINE
+
+`policies.intraday_stopping` sorted every candidate into one queue by `edge`.
+`score()` computes `edge = (prior.mean_r * regime_mult - cost_r) / hold_days`,
+and `prior` is keyed on the engine — so within one cycle, candidates from one
+engine differ ONLY through `cost_r` (friction over that setup's own risk).
+
+A pooled descending sort therefore does not rank SETUPS. It ranks ENGINES, and
+then fills the slot budget from the top engine's candidates in whatever order
+friction happens to break their near-tie. There was no mechanism by which a
+second engine's BEST idea could compete with a first engine's fifth-best.
+13-19 Aug: SDN 29 of 32 closed positions, VWR 2, GAP 1, and ORB — 561 TAKEN
+rows — one.
+
+`_interleave_by_engine` queues every engine's best before any engine's second,
+each round internally ordered by edge.
+
+**ARMED, not inert, and the reason is a safety property rather than
+confidence in the idea.** Interleaving reorders the QUEUE; `bar` is untouched
+and the caller still declines every proposal beneath it. The only outcomes that
+can change are those where a lower-ranked engine's candidate ALREADY cleared
+the bar and lost its slot to a same-engine sibling. It cannot admit a proposal
+that fails the bar, and `test_fairness_cannot_admit_a_proposal_that_fails_the_bar`
+pins exactly that. `alloc_intraday_engine_fairness=false` restores the pooled
+sort exactly.
+
+### 3 — CONFIDENCE IS NOT ONE QUANTITY, AND THAT IS WHY BANDS SHIP INERT
+
+Every TAKEN-and-resolved row, terciled WITHIN each engine so no engine's level
+contaminates another's slope. Gross R, low -> high tercile:
+
+    engine     n      low      mid     high    reading
+    ORB     1030   -0.424   -0.641   -0.220   noise, not monotone
+    PDL       56   -0.606   -0.816   -1.000   inverted
+    SDN      272   +0.725   +0.265   +0.191   inverted
+    VWR      204   +0.123   +0.347   -0.529   inverted at the top
+    VCE      159   -0.599   -0.510   +0.430   ordered as intended
+    GAP       46   +0.158   +0.366   +0.276   thin, roughly flat
+
+Confidence means something different in every engine that computes it. So the
+one number the allocator ranks on cannot be confidence — but what confidence
+has been WORTH, per engine, can be, and that is a prior key:
+`INTRADAY/{ENGINE}@{BAND}`, falling through to the engine, then the family,
+then the book, each rung still gated on `priors_min_sample_intraday`.
+
+**SHIPPED INERT (`alloc_intraday_confidence_bands=false`), and the reason is
+the sample, not the mechanism.** That table is dominated by rows recorded under
+the PRE-F-33 stop geometry. Post-fix TAKEN-and-resolved rows on 19-Aug: VCE 9,
+SDN 7, ORB 3, every other engine 0 — 19 rows total. Arming this now would pin
+each engine's slope to a strategy the book no longer trades.
+`priors_intraday_since` (also inert) is the operator's lever for that: a HARD
+floor date, combined with the rolling `priors_intraday_lookback_days` by taking
+the later of the two, because a rolling window cannot express "everything
+before this date measured different rules".
+
+**`confidence` had to be added to the prior builder's SELECT.** Without it
+every row bands as None, no band key is built, the feature is an elaborate
+no-op, and NOTHING IN ANY LOG SAYS SO — the ladder simply misses its first rung
+and falls through to the key it already used, indistinguishable from the switch
+being off. That is the same one-word defect as `meta` in F-33 §4, caught before
+shipping this time rather than after. `health.selects` passes strictly, which
+is the live schema probe that the column is real.
+
+### 4 — THE EXIT LADDER LEAVES THE 15-SECOND TIMER; ENTRIES DO NOT
+
+The operator's other concern: a decision arriving after the move has gone.
+Measured rather than assumed. Today's log, 09:30-15:00, 1,239 cycles:
+
+    median gap 16.0s · p90 18s · p99 28s · max 44s · none over 60s
+
+So the loop is healthy and the decision itself costs ~1s; the latency IS the
+interval. The AI advisor is already off the hot path (`refresh_advisory` on the
+slow timer — a DeepSeek call measured at 88.6s could never have sat in a 15s
+loop).
+
+Finding a setup and defending an open position were sharing one timer sized for
+the expensive one, and they are opposite on both cost and urgency. A scan is
+~120 symbols x 9 engines and writes detection rows; every entry engine also
+carries its own chase guard (`vce_max_chase_pct`, `confirmation_pct`) that
+refuses a move already gone, so scanning faster largely re-derives the same
+answer for more rows. The exit check reads `self.positions` — in memory, 0-4
+rows, no database read — and writes only when a rung fires, a handful of events
+per session.
+
+`engine.guard_positions()` runs the exit ladder alone, on
+`intraday_position_guard_interval_s` (3s), between full cycles and never
+instead of one. It cannot change which trades are ENTERED: it does not refresh
+contexts, merge bars, re-rank the universe, evaluate candidates or setups, or
+run the allocator. Setting it >= `intraday_eval_interval_s` disables it exactly.
+
+**Deliberately NOT done: lowering `intraday_eval_interval_s` itself.** That is
+the change that would address entry latency directly, and it is also the one
+that multiplies detection writes. `health.storage` reports 288 MB of 500 MB
+(57.7%) growing 71 MB/month, forecast 80% on 2026-10-05. Whether dedup
+(`_setup_is_new`, 0.35% drift) absorbs a 3x cycle rate is a guess, and it is
+not one to make against a bounded free tier without measuring first.
+
+### 5 — TWO SMALLER THINGS FOUND ON THE WAY
+
+**An edge of exactly 0.0 sorted below every loser.** The queue's key was
+`-(x.get("edge") or float("-inf"))`, and `0.0 or -inf` is `-inf` because 0.0 is
+falsy. A NEUTRAL prior against zero modelled cost would have ranked beneath a
+measured -0.9R. Vanishing in floating point and completely silent when it
+happens, which is why it survived. `_edge_key()` treats only `None` as absent.
+
+**A check that could not fail, caught by the demonstration rather than by
+review.** `test_turning_bands_on_does_not_move_the_pooled_fallback` stayed
+green with the BAND_SEP filter deleted from the `longs` comprehension, because
+every row in its fixture is TAKEN and `_prior_for("ALL", ...)` therefore only
+ever exercised the `by_taken` branch. The ungated branch was untested.
+`..._on_the_UNGATED_path_either` routes the same population through
+`priors_intraday_taken_only=false`. All six breaks are now detected.
+
+### 6 — NOT DONE / COULD NOT DETERMINE
+
+- **Whether any of this improves the book.** Nothing here is a forward result.
+  Fairness changes which bar-clearing candidates get slots; it does not create
+  edge, and `expectancy_ledger`'s INTRADAY/MIS gross R (-0.131 +/- 0.089) is
+  still indistinguishable from zero before friction.
+- **Whether the pre-F-33 verdicts on ORB and VWR survive re-measurement.** The
+  16-Aug "already NO at 2 SE" figures were computed on the same clamped-stop
+  population F-33 corrected two days later. They are not re-run here and should
+  not be treated as settled until they are.
+- **The engine+family double-count in the pooled fallback.** A GAP row lands in
+  both `GAP` and `ORB`, so `longs` counts it twice today. Real, pre-existing,
+  and left alone — correcting it moves every fallback prior in the book and
+  deserves its own before/after rather than a ride-along. Band keys are
+  excluded from the pool so this change does not make it worse.
+- **Whether `_setup_is_new`'s dedup absorbs a faster entry scan** — see §4.
+- **Gate 3 remains unmade.** No engine was retired, shadowed or promoted; the
+  operator's explicit decision this session was that every engine stays ACTIVE,
+  on the ground that `priors_intraday_taken_only` means a SHADOW engine can
+  never write the TAKEN row its own prior would need to recover. That reasoning
+  is correct and is recorded here because it changes what SHADOW MEANS in this
+  system: it is not a pause, it is a permanent freeze.
+
+### 7 — ADDENDUM, SAME SESSION: THE FAIRNESS FIX SAT DOWNSTREAM OF A FILTER I HAD NOT TRACED
+
+`_interleave_by_engine` (section 2) fixes competition BETWEEN symbols. It does
+nothing about competition WITHIN one, and that is where the operator's concern
+actually lived. `registry.evaluate_all` sorts `found` by `-confidence` and
+returns ONE setup per symbol, so when two engines fire on the same name the
+loser never reaches the allocator at all — and the tie-break is the number
+section 3 measures as inverted for SDN/PDL/VWR and noise for ORB at n=1030.
+
+Sequencing error, recorded because it cost a round trip: the fix was proposed
+and built before the full path was traced, and the filter was found afterwards.
+The correct order is trace, then propose.
+
+`_arbitrate_symbol` ranks the ACTIVE setups for a symbol on
+`Allocator.expected_r_for()` — the allocator's OWN prior ladder, so arbitration
+and selection cannot disagree about which engine is better regarded — with
+confidence and rr surviving as tie-breaks. Switch: `intraday_symbol_arbitration`
+(`prior` | `confidence`).
+
+**It degrades to today's behaviour whenever evidence is absent.**
+`expected_r_for` returns None, never 0.0, for a below-floor prior, and None
+cannot win the comparison. With no usable prior on either engine the tie-break
+falls through to confidence exactly as before. That branch is the common one
+right now: most of the population predates F-33, which is precisely why
+arbitration must not manufacture a preference it cannot support.
+
+**One test in this module cannot fail from a single break, and that is
+recorded rather than tidied away.** `..._never_promotes_a_shadowed_engine` is
+held by two independent guards — `_arbitrate_symbol`'s LIFECYCLE_ACTIVE filter
+and `proposal.from_intraday`'s own SHADOW refusal. Breaking either alone leaves
+it green; breaking both turns it red, which was demonstrated. It pins the
+PROPERTY across a deliberately redundant pair rather than either guard, and the
+redundancy is intentional on the one rule here that concerns capital rather
+than ranking.
+
+`tools.verify`: 642 checks, 67 modules, green. Six deliberate breaks
+demonstrated failing across sections 2, 3 and this one, plus the two-guard case
+above.
+
+**Still not addressed, and it is the third part of the operator's ask.** Slots
+are consumed in ARRIVAL order across the session: the day's budget can be spent
+by 10:00 on candidates that merely cleared the bar, and an excellent 14:00
+setup then competes for whatever is left. `hurdle`'s `time_mult` decays the bar
+DOWNWARD as the session runs out (deliberately, so the budget is not left
+unspent), which is the opposite of reserving capacity for a better arrival.
+`order_manager.entry_reserved()` and `intraday_max_entries_before_time` (0, off
+for intraday) are the existing lever and were NOT armed here — arming them
+trades a known quantity (fewer early entries) for an unknown one (whether later
+arrivals are better), and nothing measured in this session says they are.
+
+
+## 2026-08-19 — F-36 (change, arrival-aware pick label) — the operator's own instinct was right and mine was wrong: shrinking intraday_max_new_per_day fights priors_intraday_taken_only directly, since fewer TAKEN rows means every thin engine's prior converges SLOWER, not faster. Volume and selectivity are different levers. Built the second one without touching the first: a TOP_PICK/EXPLORATION label, additive to every verdict, driven by a real arrival curve read from history rather than a guessed one — caught reading it in the wrong timezone and unpaged before either reached the database live
+
+**Ran:** `tools.verify` (652 checks, 67 modules), `tools.simulate`, `tools.health`,
+one live smoke test of the new query against the real database.
+
+### 1 — THE OPERATOR CAUGHT A REAL CONTRADICTION IN F-35's OWN RECOMMENDATION
+
+F-35 proposed lowering `intraday_max_new_per_day` from 20 toward ~6 so the
+allocator's scarcity term would engage. Pushed back on directly: this is a
+PAPER book, more trades cost nothing and are free evidence, and
+`priors_intraday_taken_only` (this project's own design) means a prior can
+ONLY learn from TAKEN rows — so shrinking the budget doesn't create
+selectivity, it starves every prior of the exact data the rest of this
+session's work (bands, arbitration) depends on to mature. `allocator.py`'s own
+comment on the PAPER/LIVE floor carve-out says this already: *"the honest fix
+... is to make the floor stop binding — a positive prior — not to remove the
+only path that can produce one."* The recommendation was wrong on the
+project's own stated terms, not merely unwelcome.
+
+**Correction: volume and selectivity are two different questions and were
+being answered with one dial.** "How many trades does paper take" should stay
+generous — it is a learning-speed question with a free answer. "Which of
+today's trades were genuinely the best, versus kept mainly so a thin prior
+keeps learning" is a labelling question, and `intraday_max_new_per_day`
+cannot answer it no matter where it is set.
+
+### 2 — THE LABEL ALREADY PARTLY EXISTED, AND WASN'T VISIBLE
+
+`floor_only_rank` (12-Aug, `policies.intraday_stopping`) already computes
+almost this exact distinction for the exploration carve-out. Checked live: the
+last 8 declined proposals in `allocation_decisions` all show
+`hurdle_inputs->>'floor_only_rank'` as `null`. It exists, it is correct as far
+as it goes, and it is buried inside a JSON column on a table the operator does
+not query — not a defect, but not an answer to "was THIS trade a good one"
+either.
+
+### 3 — WHAT WAS BUILT, AND WHY IT CANNOT CHANGE WHICH TRADES ARE TAKEN
+
+`allocation/hurdle.py::arrival_histogram()` — average TAKEN-quality detections
+per IST hour, read from real history, cached once per calendar day. Live
+shape (18-19 Aug, timezone-corrected, see §4):
+
+    IST hour   9      10     11    12    13    14
+    avg n     11.57   5.79   1.50  0.64  0.93  0.43
+
+Front-loaded, matching the operator's own — and this session's — earlier
+measurement almost exactly.
+
+`label_quantile(slots_left, remaining_expected)` = `1 - slots_left/remaining`,
+clamped `[floor, cap]`. High when much more is coming and few slots remain
+(strict — only a genuine best-of-day counts as a pick); low when supply is
+nearly exhausted (permissive — whatever is left IS the best available by
+definition, not merely acceptable). `remaining=None` (no curve yet) and
+`remaining<=0` (nothing left expected) both land on `floor`, deliberately, for
+opposite reasons — see the function's own docstring; collapsing them would
+either over-label a data-poor system's early trades or under-label its last
+ones, the same cold-start distinction this module already draws elsewhere.
+
+Wired into `hurdle()` as `label_bar` — a STRICTER quantile of the SAME
+arrival-edge population `bar` is drawn from, returned in `inputs` alongside
+it. `Allocator.select()` stamps `pick_label` (`TOP_PICK` / `EXPLORATION`) onto
+any verdict already TAKE, using `edge >= label_bar`. **Nothing about TAKE vs
+DECLINE changes** — `bar` and the verdict branch it drives are untouched; this
+runs strictly after that decision and only annotates it.
+
+Threaded onto the actual trade record, not left in
+`allocation_decisions.hurdle_inputs`: `engine.act_on_setups` reads the label
+off the SAME verdict `allocator_permits` already consulted (so it cannot
+disagree with the decision that let the trade through), passes it to
+`_maybe_open_paper` -> `paper_broker.open_position` -> `open_positions.
+pick_label`, and `control.position_lifecycle.close_position` carries it onto
+`closed_positions.pick_label` the same way `sector` already is. Migration 085.
+
+**Ships INERT** (`alloc_intraday_pick_label=false`). The arrival curve above
+is built from `intraday_setups`, and F-33's stop-geometry fix is one day old
+— arming this now would label trades against an arrival shape recorded partly
+under a strategy the book no longer runs. Same posture as
+`intraday_short_max_confidence` and the confidence bands: built, tested, and
+deliberately not yet trusted with the current sample.
+
+### 4 — TWO DEFECTS FOUND BY RUNNING THE NEW CODE ONCE, BEFORE TRUSTING IT
+
+**Unpaged and then wrongly paged, caught by `tools.verify` itself, in two
+steps.** First build read `intraday_setups` with no paging at all —
+`static_analysis` failed immediately: TAKEN detections alone ran
+1,000-2,289/session in mid-August, so a 20-day window is routinely tens of
+thousands of rows against PostgREST's 1,000-row cap. Fixed with `fetch_all`,
+sorted on `trade_date` for readability — `static_analysis` failed AGAIN:
+`trade_date` is not unique, so LIMIT/OFFSET paging on it can repeat and skip
+rows across page boundaries with no error, the identical defect
+`intraday_priors()` carried before its 15-Aug fix. Corrected to sort on `id`,
+this table's verified unique key. Both were caught by the project's own
+tooling before either reached a live database call — recorded because it is
+the tooling working exactly as designed, not despite it.
+
+**The histogram was built in UTC and never converted.** `ts` comes back from
+PostgREST as a UTC timestamp; the first version read its hour by string slice
+and produced a histogram peaking at 04:00-05:00 — 09:15 IST genuinely stores
+as roughly 03:45 UTC. Not caught by any offline test, because every offline
+test supplies its own hour directly rather than parsing a timestamp — it was
+caught by running `arrival_histogram()` once against the real database before
+trusting it, exactly this project's own "verify, never assert" rule, applied
+to code that had just been written rather than only to code under suspicion.
+Fixed: parsed with `datetime.fromisoformat`, converted via `.astimezone(IST)`.
+Re-run live: 9:00 IST onward now reads 11.57, matching the shape measured by
+hand in §3 rather than a UTC-shifted one.
+
+### 5 — NOT DONE / COULD NOT DETERMINE
+
+- **Whether TOP_PICK trades actually outperform EXPLORATION ones.** That is
+  the entire point of building this, and it is unmeasured — the switch is
+  off and no trade has ever been labelled. The plan, stated to the operator:
+  watch the two populations separately once armed, not as a single blended
+  number.
+- **When to arm `alloc_intraday_pick_label`.** No date is set. The honest
+  gate is the same one `priors_intraday_since` is waiting on: enough post-F-33
+  sessions that the arrival curve itself is not still shaped by the old stop
+  geometry.
+- **`intraday_max_new_per_day` was left at 20, deliberately, and should stay
+  there.** Restated because F-35 recommended the opposite and this entry
+  reverses that specific recommendation, not the surrounding work.
+
+
+## 2026-08-19 — F-37 (change, ORB engine — retest confirmation + measured-move target) — validated the STRATEGY against established Opening Range Breakout practice before touching the ENGINE, per the operator's explicit request. The concept is sound and this codebase's own filters are not naive; two gaps were specific and named in the code's own docstring rather than guessed at, one of which was skipped on a stale premise. Both closed. A third (regime awareness) named and deliberately left alone
+
+**Ran:** `tools.verify` (666 checks, 68 modules), `tools.simulate`, `tools.health`.
+
+### 1 — THE STRATEGY, NOT JUST THE OUTCOMES
+
+Asked to validate whether ORB works as a strategy before enhancing the engine,
+rather than continuing to tune against outcome data (which the operator was
+right to distrust — most of it predates F-33's stop-geometry fix). Read
+`intraday/strategies/orb.py` against established Opening Range Breakout
+practice (Crabel; standard retail/professional day-trading treatment) rather
+than against `intraday_setups` again.
+
+**Verdict: the strategy concept is legitimate and this implementation is not
+naive.** Volume confirmation, range sanity scaled to the stock's own ATR, a
+chase limit, a previous-day-high filter and a structural stop at the range
+low are all real, standard discipline — more than most public ORB
+implementations carry. This is not a "bad idea" story.
+
+### 2 — THE RETEST ARM: NAMED, SKIPPED, AND THE REASON WAS FALSE
+
+The module's own docstring has specified `retest OR strength` since 12-Aug —
+"either the break has real distance behind it, or price has come back to the
+level and held" — and only ever implemented the first half. The comment
+explaining the omission said the retest arm "needs bar history this engine is
+not given."
+
+**Checked, not assumed. False.** `ctx.bars` is the same field `range_between()`
+two lines above already reads — every engine receives it. There was no data
+gap; there was an unbuilt filter with a stale comment attached.
+
+Built `_retest_and_held(bars, level, tolerance_pct)`: true when price already
+probed above the range high on an earlier CLOSED bar, came back within
+`orb_retest_tolerance_pct` (0.15) of that level, and every bar since closed at
+or above it — one failure anywhere in the sequence voids the whole thing, a
+level "held" once and lost later is not held. Wired as an ALTERNATIVE to the
+existing strength gate, not a relaxation of it: a strength-confirmed break is
+entirely unaffected; this only rescues a break that would otherwise be refused
+as "a quote, not a signal" but shows a genuine retest behind it — which
+day-trading practice generally treats as the HIGHER-confidence pattern, not a
+consolation prize for a weak break.
+
+`orb_retest_confirmed` stamped into `meta`, unread by anything yet — same
+instrument-first discipline as F-33's ATR stamp. Whether retest-confirmed
+ORBs actually outperform strength-only ones is a real, open, measurable
+question this makes askable, not a claim being made here.
+
+Switch: `orb_retest_confirmation_enabled` (true). `false` restores the
+strength-only gate exactly.
+
+### 3 — THE TARGET WAS A FLAT MULTIPLE WITH NO RELATIONSHIP TO THE STRUCTURE THAT PRODUCED THE TRADE
+
+Classic ORB practice projects the target from the range's own height — the
+"measured move." ORB's target was `entry + risk x orb_target_r` only, no
+relationship to the range at all. **VCE, a sibling breakout-style engine in
+this same codebase, already does this** (`squeeze.py`'s
+`measured = ctx.ltp + (p_hi - p_lo)`) — ORB was missing a feature its own
+better-performing sibling already had.
+
+`target = max(flat_R_target, entry + range_height)`. `max()` only: can widen a
+target the flat multiple already set, never shrink one — no existing trade's
+target moves closer.
+
+**Found while testing it, and recorded because it changes what to expect:**
+this rarely wins at ORB's own shipped default (`orb_target_r=2.0`). ORB's
+stop sits at the range low, so `risk = (entry - range_high) + range_height`
+— already at least the range height before the 2x multiple is even applied.
+The measured-move target is real and correctly wired, but under this engine's
+own stop placement it will only bind when a trade's risk is small relative to
+the range that produced it. Proven both ways in tests: the wider branch is
+real (demonstrated at `orb_target_r=0.3`), and the shipped default correctly
+does NOT reach it on the same fixture — `max()` is doing its job; it simply
+has little to act on given how this engine places its stop.
+
+Switch: `orb_measured_move_target_enabled` (true). `false` restores the flat
+multiple exactly.
+
+### 4 — WHAT WAS NAMED AND DELIBERATELY NOT BUILT
+
+**Regime awareness.** ORB is a trend-continuation pattern and the literature
+is consistent that it works in trending tape and fails in chop — a real gap,
+named in the module's own docstring now. Not built: the mechanism already
+exists (`allocation.scoring.regime_fit_multiplier`) and ships at weight 0.0
+specifically because arming a regime effect on theory rather than measurement
+is the mistake `hurdle.py`'s own docstring already paid for twice (05-Aug,
+10-Aug STRONG-bucket self-reference failures). Closing this gap on the same
+theoretical basis that has already cost this project real evidence-discipline
+twice would be repeating the mistake, not fixing ORB.
+
+**Breakdown (short) side of the pattern.** ORB is long-only by design — MIS
+squaring off and the long-only swing framework this feeds are real
+constraints, not oversights — but that structurally excludes the breakdown
+half of the same pattern family, which the literature treats as symmetric.
+Named in the docstring. Not addressed: this is a new engine (SDN already owns
+intraday-short architecture — `can_short()`, the cover-deadline runway), not
+a fix to this one.
+
+### 5 — VERIFIED, INCLUDING THE FIXTURE THAT WAS WRONG
+
+`tests/test_orb_retest_and_target.py`, 14 checks: 8 pure `_retest_and_held`
+cases (probe-then-hold, no-probe, probe-with-no-retest, a retest that fails to
+hold, a LATER bar breaking back below voiding an earlier good retest,
+out-of-tolerance pullback, empty bars, multiple holding retests), 3 through
+`evaluate()` end to end (weak break refused with the switch off, the SAME weak
+break rescued with it on, a weak break with NO retest still refused even with
+the switch on — the safety property), 3 for the target (widens, switch off
+restores the flat multiple, and the honest counterpart proving it does NOT
+widen at the shipped default, for the structural reason in §3).
+
+Two of the three target tests failed on first run — not the code, the
+fixture: `by_r > measured` under `orb_target_r=2.0` given the same stop-at-
+range-low relationship, exactly the fact §3 records. Recorded because it is
+the same "verify, never assert" discipline this project runs on, applied to a
+test rather than to production code — a wrong assumption about how the two
+numbers would compare would have shipped as two failing tests it might have
+been tempting to loosen instead of understanding.
+
+Six deliberate breaks demonstrated failing (both `_retest_and_held` guards,
+`evaluate()`'s wiring to each, `max()` itself). `tools.verify`: 666 checks, 68
+modules, green. `health.selects`/`sort_keys` unaffected.
+
+### 6 — NOT DONE / COULD NOT DETERMINE
+
+- **Whether either fix helps.** No post-fix ORB trade has been evaluated
+  under either switch yet — both ship armed by explicit instruction this
+  session, not because outcome evidence supports them; the evidence they can
+  be checked against is the same clean, still-thin post-F-33 sample every
+  other gate in this session is waiting on.
+- **The 15-minute opening-range window itself** is untested against
+  alternatives (5/30 min) — a single hardcoded default, not validated in
+  this session.
+- **Regime-split performance for ORB specifically** — named in §4, requires
+  `regime_at_detection` to accumulate real rows under the corrected stop
+  geometry before it is askable at all.
+
+
+## 2026-08-19 — F-38 (change, full engine audit + SDN structural stop) — all 9 intraday engine files read against established practice for each pattern type. One correction owed to the operator (VWR is SHADOW, not ACTIVE — a real 16-Aug decision this session should have checked before asserting otherwise). One real, live gap found and closed: SDN was the one engine exempt from F-33's anti-falsification fix and this session's own min-risk floor, by construction. Two watch items named, not fixed: RNG's 100% stop rate at n=11, PDL's narrowed band against the new floor
+
+**Ran:** `tools.verify` (671 checks, 68 modules), `tools.simulate`, `tools.health`,
+direct schema queries against `system_config` with `updated_at` timestamps.
+
+### 1 — A CORRECTION OWED, FOUND BY THE AUDIT ITSELF
+
+Told the operator three turns earlier "every engine stays ACTIVE... no one
+gets shadowed" without checking each engine's live lifecycle state first.
+False. `intraday_engine_vwr_lifecycle = SHADOW`, set 2026-08-16 11:47:56 UTC.
+
+Traced with timestamps rather than assumed: migration 083 (16-Aug, "VWR/ORB
+shadow, flat conviction") set BOTH engines to SHADOW at 11:47:56. Two minutes
+later, 11:49:59, `intraday_engine_orb_lifecycle` was updated back to ACTIVE —
+someone reviewed the migration's own differentiated reasoning (VWR: −4.9 SE
+on clean data, "no reading under which VWR is positive"; ORB: −2.4 SE on the
+MOST CONTAMINATED data in the book, surviving its bound by 0.01R) and made
+exactly the split call the file argued for. VWR's shadow stands on real
+evidence, made four days before this session started. Not a gap. My earlier
+blanket assertion was wrong to make without checking, and is corrected here.
+
+### 2 — THE FULL AUDIT: ALL 9 ENGINE FILES, READ AGAINST ESTABLISHED PRACTICE
+
+| Engine | Verdict |
+|---|---|
+| ORB | Fixed F-37 (retest arm, measured-move target) |
+| GAP | Solid — already has the one-sided-bound fix (NATIONALUM incident, cited). No gap. |
+| PDL | Most rigorously hardened file in the package — three real incidents already fixed and documented. No gap. Watch: own cap 0.80%, new floor 0.6% — a narrow 0.6-0.8% band. |
+| PBK | Solid, real incident history (day-high target, invalidation_level meta). No gap. |
+| RNG | Design sound; a real bug (inverted invalidation level, "RNG has never completed a trade") already fixed 12-Aug. **Live result since: n=11, 100% STOP.** Too thin to diagnose — watch, not fix. |
+| VWR | SHADOW since 16-Aug, correctly — §1. Code itself is excellent. |
+| VCE | Already has the measured-move target ORB was missing. No gap. |
+| GDB | Solid, data-driven origin (`brain_proposals#190`, cited), ACTIVE. |
+| SDN | **One real gap — §3.** |
+
+No grep-able "unbuilt/TODO"-style marker existed on any engine but ORB —
+every other file's gaps (if any) needed reading against practice, not
+searching for a stale comment a second time.
+
+### 3 — SDN NEVER CALLED THE FUNCTION EVERY OTHER ENGINE CALLS
+
+`base.risk_from_structure()` is where F-33's anti-falsification fix lives and
+where `intraday_min_risk_pct` (armed this session) actually gates. SDN built
+its stop directly in three places (`level * (1 + buffer)`) and called neither.
+Consequence: SDN — the large majority of this book's live volume — was the
+one engine exempt from both, by construction, not by choice, and had no
+explicit maximum-risk cap at all, only the indirect bound `_not_chasing()`'s
+distance-to-level check happens to produce.
+
+Routed all three conditions through `risk_from_structure(ctx.ltp,
+structural_stop, "SHORT", max_risk_pct=cfg_float("intraday_short_max_risk_pct",
+1.50))`. Confirmed `risk_from_structure(..., "SHORT", ...)` is already
+exercised at the base-function level (`tests/test_structural_stop.py`) before
+wiring a caller to it.
+
+**A real, measured live consequence, not hypothetical.** On this project's
+own "trap"/"vwap_reject" fixtures: risk_pct 0.573% and 0.576% — both now
+refused by the 0.6% floor once it reaches SDN. `breakdown` (0.645%) is
+unaffected. Recorded plainly rather than tuned away: the floor engaging on
+two of SDN's own three conditions in their default shape is the floor doing
+exactly what it was armed to do, and it should be watched over the next few
+sessions, not assumed benign from the earlier "7 of 265" reassurance — that
+number describes SDN's UN-gated history, not what happens now that the gate
+is live.
+
+**`intraday_short_max_risk_pct=1.50`, set above SDN's own best band, not at
+it.** SDN's measured n=80 "wide" bucket (>=0.9% risk) is its BEST, +0.442R —
+the opposite of every long engine, where wide means worse. Setting the cap
+near that band would have cut SDN's strongest cohort in the name of
+"symmetry" with engines it is not symmetric with.
+
+**Found while testing, not assumed: this cap is mostly a secondary gate
+today.** `_target()`'s ATR-capped reward (~1.2% of price at this account's
+settings) combined with `intraday_short_min_rr` (1.3) already refuses
+anything wider than roughly 0.9% risk before the new cap has a chance to
+bind. A first test built an 8.7%-risk fixture specifically to isolate the cap
+and it stayed refused even at cap=20% — not a test bug, a real property,
+recorded in the test itself rather than quietly reworked away. The cap is
+still worth having: defense in depth against a future change to the R:R
+floor or target multiplier, exactly the posture this project took with the
+redundant SHADOW-engine guard in F-35.
+
+**One side fix, found while giving this a single auditable stop construction
+instead of three bespoke ones.** `_trap`'s old stop —
+`min(day_high, prev_high * buf) * buf` — applied a SECOND buffer to the
+prev_high branch whenever it won the min (buf applied once going in, once
+more coming out). Small (buf is 0.12%, so ~0.024% of stacked, unintended
+buffer) and now applied exactly once per branch, matching what the comment at
+that stop has always said it does. Verified both branches directly: the
+tighter (day_high-wins) and the wider (prev_high-wins) case each land on the
+single-buffered value, not the old double-buffered one.
+
+`**frame.meta()` merged into all three conditions' `Setup.meta`, matching
+every sibling engine — empty under the default `refuse` mode, present for
+consistency and for the day `intraday_stop_cap_mode=tighten` is ever armed.
+
+### 4 — VERIFIED
+
+`tests/test_short_engine.py`, 5 new checks: the floor reaching SDN on real
+project fixtures (and its off-counterpart restoring exactly what the
+pre-existing three-conditions test expects), the cap refusing a stop wider
+than itself and passing the shipped default, both `_trap` buffer branches
+landing on the corrected single-buffer value, and `frame.meta()` reaching
+every condition (source-inspected, not just one instance). Three deliberate
+breaks demonstrated failing: the refusal path removed, `_trap` reverted to
+the double-buffer formula, `frame.meta()` dropped from one condition.
+`tools.verify`: 671 checks, 68 modules, green. `health.shorts` unaffected
+("all 27 direction-aware sites present"); `health.selects`/`sort_keys`
+unaffected (no new queries added).
+
+### 5 — NOT DONE / COULD NOT DETERMINE
+
+- **Whether the floor engaging on TRP/VWR meaningfully cuts SDN's real
+  volume.** The two synthetic fixtures sitting at 0.573%/0.576% are simple,
+  illustrative shapes built to test the chase rule — not calibrated to match
+  the true live distribution. The real historical data (265 rows, only 7
+  ever under 0.6%) argues most live detections already clear it naturally,
+  but that number describes the UN-gated history. Needs watching on real
+  post-fix sessions, not inferred from either number alone.
+- **RNG's 100% stop rate (n=11)** — named again, still not diagnosed. The
+  sample is too thin to separate a real problem from noise, and guessing at
+  a fix here would be exactly the "cleverness, not evidence" mistake this
+  project's own hurdle.py docstring already paid for twice.
+- **PDL's narrowed 0.6-0.8% permissible band** against the newly-armed floor
+  — a real interaction, not yet measured against a live session.
+- **Gate 3 remains unmade** for every engine but VWR (already decided) and
+  ORB (provisionally reverted, per §1). Nothing here retires, shadows, or
+  promotes RNG, PDL, PBK, GAP, GDB, or VCE.

@@ -952,6 +952,7 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
         "symbol":           sym,
         "company_name":     pos.get("company_name"),
         "sector":           pos.get("sector"),
+        "pick_label":       pos.get("pick_label"),
         "strategy":         pos.get("strategy"),
         # Carry mode and framework through. Both columns DEFAULT to LIVE/SWING,
         # so omitting them silently recorded every paper intraday trade as a

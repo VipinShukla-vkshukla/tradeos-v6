@@ -2894,6 +2894,7 @@ class IntradayEngine:
             ctx.ltp = float(ltp)
 
             best, _all = evaluate_all(ctx, st.phase)
+            best = self._arbitrate_symbol(best, _all)
 
             # SHADOWED ENGINES ARE RECORDED, NOT DISCARDED.
             #
@@ -3242,12 +3243,22 @@ class IntradayEngine:
                                    "ALLOCATOR_DECLINED", 0, mc_state=(mc.state if mc else None))
                 logger.info(f"      {st.symbol}: allocator declined — {why[:90]}")
                 continue
+            # TOP_PICK vs EXPLORATION — read from the same verdict
+            # `allocator_permits` just consulted, so the label can never
+            # disagree with the decision that let this setup through. None
+            # whenever `alloc_intraday_pick_label` is off or no arrival
+            # population existed to build a label bar from; carried onto the
+            # position itself (paper_broker.open_position -> closed_positions)
+            # rather than left in allocation_decisions' JSON, which is where it
+            # lived before and where nobody could query it.
+            pick_label = (self._verdicts.get((st.symbol, "MIS")) or {}).get("pick_label")
             # In PAPER mode, actually TAKE the setup. Without this the
             # simulation measures exits but never a full round trip, and a
             # system judged only on how it leaves trades tells you nothing
             # about which trades it should have entered.
             self._maybe_open_paper(st, qty, mc, phase=s["phase"],
-                                   cost_pct=s.get("cost_pct") or 0.0)
+                                   cost_pct=s.get("cost_pct") or 0.0,
+                                   pick_label=pick_label)
 
             if not self._intraday_alert_worthy(st):
                 logger.info(f"      {st.symbol}: {st.strategy} conf {st.confidence:.2f} "
@@ -3271,6 +3282,93 @@ class IntradayEngine:
                 meta={"strategy": st.strategy, "qty": qty, "rr": round(st.rr, 2)},
                 framework="INTRADAY",
             ))
+
+    def _ensure_allocator(self):
+        """The one Allocator instance, built lazily. Shared with _allocate_shadow
+        so arbitration and selection cannot end up on two different prior sets."""
+        if self._allocator is None:
+            from allocation.allocator import Allocator
+            self._allocator = Allocator(self.sb)
+            self._allocator.refresh_priors()
+        return self._allocator
+
+    def _arbitrate_symbol(self, best, found):
+        """
+        When two engines fire on the SAME symbol, which one proposes it.
+
+        WHY THIS IS NOT `registry.evaluate_all`'s JOB ANY MORE — 19-Aug-2026
+        --------------------------------------------------------------------
+        `evaluate_all` sorts `found` by `-confidence` and hands back the top
+        ACTIVE setup. One position per symbol is correct — the book cannot
+        hold two — but CONFIDENCE IS THE WRONG TIE-BREAK, and it is wrong in a
+        way that was measured rather than suspected. Over every
+        TAKEN-and-resolved row, terciled within each engine, gross R runs:
+
+            SDN  +0.725 / +0.265 / +0.191   inverted
+            PDL  -0.606 / -0.816 / -1.000   inverted
+            VWR  +0.123 / +0.347 / -0.529   inverted at the top
+            ORB  -0.424 / -0.641 / -0.220   noise, at n=1030
+            VCE  -0.599 / -0.510 / +0.430   ordered as intended
+
+        Confidence is computed by each engine from its own ingredients and is
+        not one quantity across engines, so comparing ORB's 0.78 with VCE's
+        0.78 is comparing two different measurements that share a scale by
+        coincidence. Every cross-engine comparison built on it inherits that.
+
+        The allocator already owns a number that IS comparable — the prior's
+        mean R, the engine's own realised record, on the same ladder
+        (band -> engine -> family -> book) that will price the proposal
+        seconds later. `expected_r_for` is that exact lookup, so arbitration
+        and selection cannot disagree about which engine is better regarded.
+
+        DEGRADES TO TODAY'S BEHAVIOUR WHENEVER THERE IS NO EVIDENCE. A prior
+        below `priors_min_sample_intraday` returns None, not 0.0, and a None
+        never wins the comparison — with no usable priors at all the tie-break
+        falls through to confidence exactly as before. That matters right now:
+        most of the population above predates the F-33 stop fix, so this must
+        not manufacture an opinion where the sample cannot support one.
+
+        Only runs when two or more ACTIVE engines fired on one symbol, which
+        is the only case it can change.
+        """
+        if not best or len(found or []) < 2:
+            return best
+        if (cfg("intraday_symbol_arbitration", "prior") or "prior").lower() != "prior":
+            return best
+        from intraday.strategies.registry import LIFECYCLE_ACTIVE
+        fundable = [s for s in found
+                    if (s.meta or {}).get("lifecycle") == LIFECYCLE_ACTIVE]
+        if len(fundable) < 2:
+            return best
+        try:
+            from allocation.proposal import from_intraday
+            alloc = self._ensure_allocator()
+            ranked = []
+            for s in fundable:
+                p = from_intraday(s, 1)          # qty=1: only the PRIOR is read
+                if p is None:
+                    continue
+                e_r = alloc.expected_r_for(p)
+                # None sorts last on the first key without being confused for a
+                # measured zero; confidence and rr remain the tie-breaks among
+                # engines whose evidence is equally absent.
+                ranked.append(((e_r is not None), e_r if e_r is not None else 0.0,
+                               float(s.confidence or 0.0), float(s.rr or 0.0), s))
+            if not ranked:
+                return best
+            ranked.sort(key=lambda t: t[:4], reverse=True)
+            picked = ranked[0][-1]
+            if picked is not best:
+                logger.info(f"      {picked.symbol}: {picked.strategy} proposes "
+                            f"(measured E[R] {ranked[0][1]:+.3f}) over "
+                            f"{best.strategy} conf {best.confidence:.2f}")
+            return picked
+        except Exception as e:
+            # Arbitration is an improvement on a tie-break, never a
+            # precondition for trading. A failure here returns the engine's
+            # own choice rather than dropping the symbol.
+            logger.debug(f"  symbol arbitration skipped for {best.symbol}: {e}")
+            return best
 
     def _setup_is_new(self, s, verdict: str) -> bool:
         """
@@ -3301,7 +3399,7 @@ class IntradayEngine:
         return bool(prev_entry and abs(s.entry - prev_entry) / prev_entry > drift)
 
     def _maybe_open_paper(self, st, qty: int, mc, phase: str = "?",
-                          cost_pct: float = 0.0) -> None:
+                          cost_pct: float = 0.0, pick_label: str | None = None) -> None:
         """
         Simulate the entry, so the paper book contains real round trips.
 
@@ -3438,6 +3536,7 @@ class IntradayEngine:
                 {"stop": st.stop, "target": st.target, "strategy": st.strategy,
                  "invalidation_level": inv_level, "invalidation_note": inv_note,
                  "sector": st.meta.get("sector"),
+                 "pick_label": pick_label,
                  # FOUND DURING MERGE REVIEW, migration 047: this was the one
                  # missing link. The entry FILL already used D.entry_side(
                  # st.direction) a few lines up, so a short's opening leg was
@@ -3874,6 +3973,47 @@ class IntradayEngine:
             logger.debug(f"  setup record failed for {s.symbol}: {e}")
 
     # ── one cycle ───────────────────────────────────────────────────────────
+    def guard_positions(self, prices: dict[str, float]) -> list[dict]:
+        """
+        The exit ladder alone, on a faster clock than the full cycle.
+
+        WHY THIS IS SEPARATE FROM cycle() — 19-Aug-2026
+        ------------------------------------------------
+        Two jobs share the 15-second timer and they do not have the same cost
+        or the same urgency.
+
+        FINDING a setup is expensive — ~120 symbols x 9 engines, plus the
+        allocator — and it is not urgent: an opening-range break is the same
+        trade fifteen seconds later, and every entry engine carries its own
+        chase guard (`vce_max_chase_pct`, `confirmation_pct`) that refuses a
+        move already gone. Scanning faster mostly re-derives the same answer
+        and writes more `intraday_setups` rows for it.
+
+        PROTECTING an open position is the opposite on both counts. It reads
+        `self.positions` — in memory, typically 0-4 rows, no database read at
+        all — and it is the one thing in this loop where a delay has a
+        directly measurable price: a stop breached at T is not acted on until
+        the next cycle boundary, so up to a full interval of adverse movement
+        is absorbed before the exit is even proposed. Measured on 19-Aug the
+        loop ran a 16.0s median and a 44s maximum, so that window is real.
+
+        WRITES NOTHING UNLESS AN EXIT ACTUALLY FIRES. `evaluate_positions` is
+        pure over in-memory state and `act_on_positions` only touches the
+        database when a rung triggers, which is a handful of events a session
+        — so raising this cadence does not move the Supabase footprint, which
+        is the constraint that ruled out simply lowering the whole cycle.
+
+        Deliberately does NOT: refresh contexts, merge live bars, re-rank the
+        universe, evaluate candidates or setups, or run the allocator. Those
+        stay on the slow timer where they belong, so this cannot change which
+        trades are entered — only how quickly the ones already open are
+        defended.
+        """
+        actions = self.evaluate_positions(prices)
+        if actions:
+            self.act_on_positions(actions)
+        return actions
+
     def cycle(self, prices: dict[str, float], sync_gtt: bool = False,
               feed=None) -> dict:
         # Live day range, volume and VWAP onto the contexts BEFORE anything

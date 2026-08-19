@@ -53,11 +53,81 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import (cfg_bool, cfg_float, cfg_int, get_supabase, today_ist,
+from config import (cfg, cfg_bool, cfg_float, cfg_int, get_supabase, today_ist,
                     fetch_all)
 
 
 PAGE = 1000
+
+# ── CONFIDENCE BANDS ────────────────────────────────────────────────────────
+#
+# The separator between an engine key and its confidence band. "@" is chosen
+# because no engine name, family name or direction suffix can contain it, so
+# `"SDN@C2/SHORT".split("@")` is unambiguous in both directions and an
+# un-banded key is exactly a key with no "@" in it.
+BAND_SEP = "@"
+
+
+def band_edges() -> list[float]:
+    """
+    The confidence cuts, ascending. Pure apart from the config read.
+
+    Parsed defensively rather than trusted: this value is operator-editable
+    text in `system_config`, and a malformed one must degrade to "no bands"
+    (which `confidence_band` renders as None -> no band key is built and no
+    band rung is consulted) rather than raise inside the allocator's hot path
+    or, worse, silently produce one giant band that reads like a measurement.
+    """
+    raw = cfg("intraday_prior_confidence_band_edges", "0.65,0.75") or ""
+    out = []
+    for part in str(raw).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(float(part))
+        except ValueError:
+            logger.warning(f"  intraday_prior_confidence_band_edges: "
+                           f"'{part}' is not a number — bands disabled")
+            return []
+    return sorted(out)
+
+
+def confidence_band(conf: float | None, edges: list[float] | None = None) -> str | None:
+    """
+    Which confidence band a detection falls in: "C0" (lowest) upward.
+
+    ONE FUNCTION, BOTH SIDES. The prior BUILDER (`_intraday_priors_from_rows`)
+    and the prior CONSUMER (`allocator._prior_for`) both call this. That is
+    deliberate and it is the whole reason this is a module-level function
+    rather than two inline expressions: this repository has already paid for
+    the alternative twice. `intraday_priors()` once returned `{"ORB": ...}`
+    while the consumer looked up `"INTRADAY/ORB"`, so no engine was ever
+    scored on its own prior; and the same function later keyed August rows by
+    family because it never fetched `meta`. A dict key and the key its
+    consumer looks up are two different claims unless one function makes both.
+
+    Returns None when confidence is missing or bands are switched off, and
+    None must propagate as "no band key at all" — never as a default band.
+    A recorded-unknown confidence and a measured-low one are different
+    readings and collapsing them is this module's own cold-start rule
+    inverted.
+    """
+    if conf is None:
+        return None
+    edges = band_edges() if edges is None else edges
+    if not edges:
+        return None
+    try:
+        c = float(conf)
+    except (TypeError, ValueError):
+        return None
+    i = 0
+    for e in edges:
+        if c < e:
+            break
+        i += 1
+    return f"C{i}"
 
 
 @dataclass(frozen=True)
@@ -163,6 +233,26 @@ def intraday_priors(sb, rows: list[dict] | None = None) -> dict[str, Prior]:
         from datetime import timedelta
         since = (today_ist() - timedelta(days=lookback)).isoformat()
 
+    # ── A HARD FLOOR DATE, FOR WHEN THE GEOMETRY ITSELF CHANGED ──────────────
+    #
+    # `priors_intraday_lookback_days` is a ROLLING window and cannot express
+    # "everything before this date was measuring different rules". On
+    # 18-Aug-2026 `base.risk_from_structure` stopped clamping a structural
+    # stop onto an affordable one (F-33): over 1,766 TAKEN-and-resolved rows
+    # the clamped population ran -0.5348R against +0.0154R for rows whose stop
+    # survived, so a prior spanning that date is averaging two different
+    # strategies and calling the result one engine's record.
+    #
+    # UNSET BY DEFAULT, DELIBERATELY. Arming it immediately would drop every
+    # engine below `priors_min_sample_intraday` at once (19 clean rows existed
+    # across three engines the day after the fix), which lands them all in
+    # `_cold_start` — permissive, per this module's rule, but also blind. The
+    # operator arms this once enough post-fix sessions have accumulated, the
+    # same posture `intraday_short_max_confidence` shipped with.
+    floor_date = (cfg("priors_intraday_since", "") or "").strip()
+    if floor_date:
+        since = max(since, floor_date) if since else floor_date
+
     # SORTED PAGING, via the shared primitive. This loop paged on .range()
     # alone, and LIMIT/OFFSET without ORDER BY has no stable row order across
     # requests: pages can repeat rows and skip others. Measured on this table
@@ -192,8 +282,19 @@ def intraday_priors(sb, rows: list[dict] | None = None) -> dict[str, Prior]:
                   # per-engine priors are built from July rows alone. A key
                   # nobody fetched is this project's most-repeated defect,
                   # it is one word long, and it is invisible in every log.
+                  # `confidence` IS FETCHED BECAUSE `confidence_band` READS IT
+                  # -- 19-Aug-2026, and it is the same one-word defect as
+                  # `meta` above, caught before it shipped rather than after.
+                  # Omitted, every row bands as None, no band key is ever
+                  # built, `alloc_intraday_confidence_bands` becomes an
+                  # elaborate no-op, and NOTHING IN ANY LOG SAYS SO -- the
+                  # ladder in allocator._prior_for would simply always miss
+                  # its first rung and fall through to the un-banded key it
+                  # already used, which is indistinguishable from the feature
+                  # being switched off.
                   .select("symbol,trade_date,strategy,outcome,outcome_pct,"
-                          "entry,stop,direction,cost_verdict,cost_pct,meta")
+                          "entry,stop,direction,cost_verdict,cost_pct,meta,"
+                          "confidence")
                   .not_.is_("outcome_pct", "null"))
         return q.gte("trade_date", since) if since else q
 
@@ -456,14 +557,49 @@ def _intraday_priors_from_rows(rows: list[dict], floor: int) -> dict[str, Prior]
             deduped.append(base)
         rows = deduped
 
+    # ── A BAND IS A SEGMENT OF ONE ENGINE, NEVER A POPULATION OF ITS OWN ─────
+    #
+    # Measured 19-Aug-2026 over every TAKEN-and-resolved row, terciled WITHIN
+    # each engine (so no engine's level contaminates another's slope), gross R
+    # per tercile low -> high:
+    #
+    #     ORB  n=1030   -0.424  -0.641  -0.220     noise, not monotone
+    #     PDL  n=56     -0.606  -0.816  -1.000     inverted
+    #     SDN  n=272    +0.725  +0.265  +0.191     inverted
+    #     VWR  n=204    +0.123  +0.347  -0.529     inverted at the top
+    #     VCE  n=159    -0.599  -0.510  +0.430     ordered as intended
+    #
+    # Confidence means something different in every engine that computes it,
+    # so the ONE number the allocator ranks on cannot be confidence itself —
+    # it has to be what confidence has historically been WORTH, per engine.
+    # That is what a band key buys: `score()` keeps ranking on realised R, and
+    # the band only decides which realised-R sample a proposal is priced from.
+    #
+    # SHIPPED INERT. `alloc_intraday_confidence_bands` defaults False, so no
+    # band key is built and the dict below is byte-identical to the one this
+    # function returned before. The table above is dominated by rows recorded
+    # under the PRE-F-33 stop geometry; arming this on that sample would pin
+    # each engine's slope to a strategy the book no longer trades.
+    bands_on = cfg_bool("alloc_intraday_confidence_bands", False)
+    edges = band_edges() if bands_on else []
+
     by: dict[str, list[float]] = {}
     by_taken: dict[str, list[float]] = {}
     for r in rows:
         try:
             d = D.normalise(r.get("direction"))
-            keys = [_engine_of(r)]
+            eng = _engine_of(r)
+            keys = [eng]
+            # A deduplicated group's `base` is `src[0]` — the FIRST TAKEN row
+            # when the setup was ever taken that day, otherwise its first
+            # detection. That is deliberately the row whose confidence the
+            # allocator actually saw when it decided, which is the only
+            # confidence a band can honestly classify the group by.
+            band = confidence_band(r.get("confidence"), edges) if edges else None
+            if band:
+                keys.append(f"{eng}{BAND_SEP}{band}")
             fam = _family_of_row(r)
-            if fam and fam != keys[0]:
+            if fam and fam != eng:
                 keys.append(fam)
             if D.is_short(d):
                 keys = [f"{k}/SHORT" for k in keys]
@@ -536,14 +672,33 @@ def _intraday_priors_from_rows(rows: list[dict], floor: int) -> dict[str, Prior]
         # Leaving these two on the raw detection population while every named
         # engine used the gated one would have put the contaminated prior back
         # underneath precisely the engines too young to have escaped it.
-        longs  = [x for k, v in by.items() if not k.endswith("/SHORT") for x in v]
-        shorts = [x for k, v in by.items() if k.endswith("/SHORT") for x in v]
+        # BAND KEYS ARE EXCLUDED FROM THE POOL, AND THAT IS NOT A DETAIL.
+        # Every banded observation is ALSO registered under its bare engine
+        # key three lines above, so summing both would count each row twice
+        # and reweight the book-level fallback toward whichever engines
+        # happen to have bands. Filtering on BAND_SEP makes these four lines
+        # produce byte-identical pools whether bands are on or off, which is
+        # what lets `alloc_intraday_confidence_bands` be a true no-op when
+        # false rather than "off, except it moved the fallback".
+        #
+        # NOT FIXED HERE, DELIBERATELY: the same double-count already exists
+        # between an engine key and its FAMILY key (a GAP row lands in both
+        # `GAP` and `ORB`, so `longs` counts it twice today). That is a real
+        # pre-existing defect in the pooled fallback and it is left alone in
+        # this change — correcting it moves every fallback prior in the book
+        # and deserves its own before/after, not a ride-along.
+        longs  = [x for k, v in by.items()
+                  if BAND_SEP not in k and not k.endswith("/SHORT") for x in v]
+        shorts = [x for k, v in by.items()
+                  if BAND_SEP not in k and k.endswith("/SHORT") for x in v]
         # _prior_for() reads by_taken[key], so the pooled keys need pooled
         # gated samples registered under the same names before it is called.
         by_taken["ALL"] = [x for k, v in by_taken.items()
-                           if not k.endswith("/SHORT") and k != "ALL" for x in v]
+                           if BAND_SEP not in k
+                           and not k.endswith("/SHORT") and k != "ALL" for x in v]
         by_taken["ALL/SHORT"] = [x for k, v in by_taken.items()
-                                 if k.endswith("/SHORT") for x in v]
+                                 if BAND_SEP not in k
+                                 and k.endswith("/SHORT") for x in v]
         out["INTRADAY/ALL"] = _prior_for("ALL", longs)
         out["INTRADAY/ALL/SHORT"] = _prior_for("ALL/SHORT", shorts)
     return out

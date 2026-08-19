@@ -287,6 +287,20 @@ class SymbolContext:
             return None
         return max(b.high for b in sel), min(b.low for b in sel)
 
+    def bars_after(self, start_min: int) -> list[Bar]:
+        """
+        Every CLOSED bar more than `start_min` minutes after the open, oldest
+        first. The sibling primitive to `range_between()` — that returns a
+        level, this returns the bars an engine needs to ask what happened to
+        price AFTER the level was set, e.g. whether a breakout was retested
+        and held rather than merely touched once.
+        """
+        if not self.bars:
+            return []
+        open_dt = self.bars[0].ts.replace(hour=9, minute=15, second=0, microsecond=0)
+        return [b for b in self.bars
+                if (b.ts - open_dt).total_seconds() / 60 >= start_min]
+
     def volume_ratio(self) -> float | None:
         """Today's volume so far against the 20-day average, time-adjusted."""
         if not self.bars or not self.avg_volume_20d:

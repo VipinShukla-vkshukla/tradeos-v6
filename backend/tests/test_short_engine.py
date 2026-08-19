@@ -194,6 +194,122 @@ def test_every_shortability_switch_is_actually_read():
             assert what, f"{key} has no description of what it protects"
 
 
+# ── stops routed through risk_from_structure() — 19-Aug-2026 ───────────────
+
+def test_min_risk_pct_now_reaches_sdn():
+    """
+    THE WHOLE POINT OF THE FIX, DEMONSTRATED ON THIS MODULE'S OWN FIXTURES.
+
+    Before 19-Aug-2026, SDN built its own stops directly and never called
+    risk_from_structure() — so intraday_min_risk_pct (armed the same session)
+    could refuse every OTHER engine's too-tight stop and never once see one
+    of SDN's, regardless of how it was set.
+
+    Measured on the project's own "trap" and "vwap_reject" fixtures at
+    floor=0.0: risk_pct 0.573% and 0.576% respectively — BOTH under the 0.6
+    floor armed this session. That is a real, live consequence of this fix,
+    not a hypothetical one, and it is recorded honestly rather than tuned
+    away: the floor is doing exactly what it was armed to do system-wide.
+    """
+    from intraday.strategies.short_distribution import ShortDistribution
+    with cfg_ctx({**SHORTS_ON, "intraday_min_risk_pct": "0.6"}):
+        eng = ShortDistribution()
+        assert eng.evaluate(ctx_for("trap"), PRIME) is None, \
+            "trap's 0.573%-risk fixture must be refused once the floor reaches SDN"
+        assert eng.evaluate(ctx_for("vwap_reject"), PRIME) is None, \
+            "vwap_reject's 0.576%-risk fixture must be refused once the floor reaches SDN"
+        # breakdown clears the floor (0.645% measured) and must be unaffected —
+        # the floor refuses what is genuinely too tight, not everything.
+        s = eng.evaluate(ctx_for("breakdown"), PRIME)
+        assert s is not None, "breakdown, comfortably above the floor, was wrongly refused"
+
+
+def test_min_risk_pct_off_restores_all_three():
+    """The counterpart — floor=0.0 (this repository's own no-op value) must
+    restore exactly what test_all_three_conditions_fire_on_their_own_shape
+    already expects, proving the floor is what changed, not something else."""
+    from intraday.strategies.short_distribution import ShortDistribution
+    with cfg_ctx({**SHORTS_ON, "intraday_min_risk_pct": "0.0"}):
+        eng = ShortDistribution()
+        for kind in ("trap", "vwap_reject", "breakdown"):
+            assert eng.evaluate(ctx_for(kind), PRIME) is not None, \
+                f"{kind} refused at floor=0.0 — the shared floor must be a true no-op there"
+
+
+def test_max_risk_pct_refuses_a_stop_wider_than_the_cap():
+    """
+    THE CEILING THIS ENGINE NEVER HAD, ISOLATED FROM THE OTHER GATE THAT
+    ALSO NARROWS IT. `breakdown`'s own measured risk (0.645%, see the
+    min_risk_pct test above) against a cap set BELOW it, then the shipped
+    default.
+
+    NOT TESTED WITH A DELIBERATELY EXTREME STOP, AND THE REASON IS RECORDED.
+    An early version built an 8.7%-risk fixture to prove this cleanly and it
+    stayed refused even with the cap raised to 20% — not a test bug, a real
+    property found by running it: `_target()`'s ATR-capped reward (~1.2% of
+    price under this account's settings) means `intraday_short_min_rr` (1.3)
+    already refuses anything wider than roughly 0.9% risk before this cap
+    gets a chance to bind. So under CURRENT settings this cap is a genuine
+    but SECONDARY safety net — defense in depth against a future change to
+    the R:R floor or target multiplier, not the first gate a wide SDN stop
+    meets today. 1.50 is set above the empirically BEST band (n=80,
+    +0.442R, >=0.9% risk) deliberately, so it protects against a broken
+    detection without cutting SDN's own strongest cohort.
+    """
+    from intraday.strategies.short_distribution import ShortDistribution
+    with cfg_ctx({**SHORTS_ON, "intraday_short_max_risk_pct": "0.5"}):
+        assert ShortDistribution().evaluate(ctx_for("breakdown"), PRIME) is None, \
+            "0.645%-risk breakdown must be refused against a 0.5% cap"
+    with cfg_ctx({**SHORTS_ON, "intraday_short_max_risk_pct": "1.50"}):
+        assert ShortDistribution().evaluate(ctx_for("breakdown"), PRIME) is not None, \
+            "the same setup must pass at the shipped default cap"
+
+
+def test_trap_stop_is_buffered_exactly_once_in_either_branch():
+    """
+    THE SIDE FIX. Old formula: `min(day_high, prev_high*buf) * buf` — a
+    second buffer stacked on the prev_high branch whenever it won the min.
+    Both branches asserted directly against the single-buffer arithmetic the
+    module's own comment has always described.
+    """
+    from intraday.strategies.short_distribution import ShortDistribution
+    buf = 1 + 0.12 / 100.0
+
+    # prev_high branch wins (day_high's overshoot exceeds the buffer size).
+    ctx = ctx_for("trap", prev_high=100.0, day_high=101.2)
+    with cfg_ctx(SHORTS_ON):
+        s = ShortDistribution().evaluate(ctx, PRIME)
+    assert s is not None
+    expected = round(100.0 * buf, 2)
+    assert abs(s.stop - expected) < 0.01, (
+        f"prev_high branch: stop={s.stop}, expected single-buffered {expected} "
+        f"(old double-buffered value would be {round(100.0 * buf * buf, 2)})")
+
+    # day_high branch wins (overshoot smaller than the buffer itself).
+    ctx2 = ctx_for("trap", prev_high=100.0, day_high=100.05)
+    with cfg_ctx(SHORTS_ON):
+        s2 = ShortDistribution().evaluate(ctx2, PRIME)
+    assert s2 is not None
+    expected2 = round(100.05 * buf, 2)
+    assert abs(s2.stop - expected2) < 0.01, f"day_high branch: stop={s2.stop}, expected {expected2}"
+
+
+def test_frame_meta_reaches_every_conditions_setup():
+    """`**frame.meta()` merged into all three — proving the wiring, not just
+    the stop VALUE, reaches every condition. Empty under the default refuse
+    mode (see base.RiskFrame.meta()'s own docstring), so this checks presence
+    of the merge rather than any specific key."""
+    from intraday.strategies.short_distribution import ShortDistribution
+    import inspect
+    src = inspect.getsource(ShortDistribution)
+    for cond, label in (("_vwap_rejection", "VWR"), ("_trap", "TRP"),
+                        ("_range_breakdown", "ORB")):
+        method_src = src[src.index(f"def {cond}"):]
+        method_src = method_src[:method_src.index("\n    def ", 10)]
+        assert "**frame.meta()" in method_src, \
+            f"{label} ({cond}) does not merge frame.meta() into its Setup"
+
+
 def test_sdn_receives_no_capital_while_shadowed():
     """
     SHADOW means evaluates and records, never receives capital. If a shadowed
@@ -217,4 +333,12 @@ TESTS = [
     ("shortability refuses uncoverable",      test_shortability_is_a_solvency_filter),
     ("every shortability switch is read",     test_every_shortability_switch_is_actually_read),
     ("a SHADOW engine gets no capital",       test_sdn_receives_no_capital_while_shadowed),
+    ("min_risk_pct now reaches SDN",          test_min_risk_pct_now_reaches_sdn),
+    ("min_risk_pct off restores all three",   test_min_risk_pct_off_restores_all_three),
+    ("max_risk_pct refuses a stop wider than the cap",
+     test_max_risk_pct_refuses_a_stop_wider_than_the_cap),
+    ("trap stop buffered exactly once in either branch",
+     test_trap_stop_is_buffered_exactly_once_in_either_branch),
+    ("frame.meta() reaches every condition's setup",
+     test_frame_meta_reaches_every_conditions_setup),
 ]
