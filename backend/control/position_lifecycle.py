@@ -216,27 +216,44 @@ def load_exit_policy() -> dict:
     for calm ones", which is backwards.
     """
     return {
-        "partial_book_r":    cfg_float("exit_partial_book_r",    1.5),
+        # REPRICED 20-Aug-2026 (F-43). The ladder above (1.5R partial, 2.0R
+        # trail, 1.0R breakeven) was calibrated for a distribution this book
+        # does not produce: median peak run across 13 closed swing trades was
+        # 0.67R, only 2 of 13 ever cleared 1.0R, and 1.5R was reached once.
+        # With 1R sitting at 5-9% of price here, a rung above where the book's
+        # own trades actually peak is not conservative, it is unreachable —
+        # which is why the give-back guard below (peaked, gave most of it
+        # back) ended up doing 100% of the profit-taking, at its own 50%
+        # setting, on 7 of 9 winners. Moved down to where the trades are.
+        "partial_book_r":    cfg_float("exit_partial_book_r",    1.0),
         "partial_book_pct":  cfg_float("exit_partial_book_pct",  50.0),
         "move_to_breakeven": cfg_bool("exit_move_to_breakeven",  True),
-        "trail_r":           cfg_float("exit_trail_r",           1.5),
-        "trail_after_r":     cfg_float("exit_trail_after_r",     2.0),
+        "trail_r":           cfg_float("exit_trail_r",           1.0),
+        "trail_after_r":     cfg_float("exit_trail_after_r",     1.5),
         "target_r":          cfg_float("exit_target_r",          3.0),
         "time_stop_days":    cfg_int("exit_time_stop_days",      15),
         "time_stop_min_r":   cfg_float("exit_time_stop_min_r",   0.5),
         # ── the four keys below exist because the ladder above was priced for
         #    a distribution this book does not produce. See evaluate_exit. ────
         "use_setup_target":   cfg_bool("swing_use_setup_target",   True),
-        "setup_target_min_r": cfg_float("swing_setup_target_min_r", 1.0),
-        "breakeven_at_r":     cfg_float("exit_breakeven_at_r",     1.0),
+        "setup_target_min_r": cfg_float("swing_setup_target_min_r", 0.6),
+        "breakeven_at_r":     cfg_float("exit_breakeven_at_r",     0.5),
         # Deliberately the SAME number as stall_peak_r, so the two profit-side
         # rules partition the space with no gap: a position whose peak never
         # reached 0.5R is handled by the stall exit, and one whose peak cleared
-        # 0.5R is handled by the give-back guard. At 1.0R there was a band —
-        # peaked at 0.8R, then faded — that neither rule could see and only the
-        # 15-session time stop would eventually catch.
+        # 0.5R is handled by the give-back guard.
         "giveback_min_r":     cfg_float("exit_giveback_min_r",     0.5),
         "giveback_pct":       cfg_float("exit_giveback_pct",       50.0),
+        # TIGHTENS ONCE A PARTIAL SHOULD ALREADY BE BANKED — F-43. Below
+        # giveback_runner_min_r this is the only thing standing between a
+        # winner and a loser, so it stays loose (50%): a trade that has not
+        # yet earned a partial should not be chopped on ordinary wobble.
+        # Past that line — matched to partial_book_r, so the two rules hand
+        # off with no gap — a partial should already be banked and the stop
+        # at breakeven, so the remaining size is risking PROFIT, not capital,
+        # and can afford to be defended harder. See evaluate_exit().
+        "giveback_pct_runner":     cfg_float("exit_giveback_pct_runner",     30.0),
+        "giveback_runner_min_r":   cfg_float("exit_giveback_runner_min_r",   1.0),
         "cost_buffer_pct":    cfg_float("exit_breakeven_cost_pct", 0.20),
         "stall_days":         cfg_int("exit_stall_days",           10),
         "stall_peak_r":       cfg_float("exit_stall_peak_r",       0.5),
@@ -471,12 +488,25 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
     # fixed-multiple exit that the runner logic was written to remove — the 5%
     # of trades that reach 3R are where the winners live, and they must not be
     # strangled by a rule built from the 63% that never clear 2%.
+    #
+    # TIERED BY PEAK — F-43, 20-Aug-2026. This guard was measured doing 100%
+    # of the book's profit-taking, at its flat 50% setting, on 7 of the last 9
+    # winning swing exits — because the ladder above never got reached (see
+    # the reprice note in load_exit_policy). That is correct BEFORE a partial
+    # has fired: below giveback_runner_min_r it is the only thing standing
+    # between a winner and a loser, so 50% stays deliberately loose. Once peak
+    # clears that line a partial should already be banked and the stop moved
+    # to breakeven, so what remains is risking PROFIT rather than capital and
+    # is worth defending harder than an ordinary retracement allowance.
     hwm_px = float(pos.get("high_water_mark") or 0)
     if (policy["giveback_pct"] > 0 and hwm_px > entry and gain_r < target_r):
         peak_r = (hwm_px - entry) / risk
         if peak_r >= policy["giveback_min_r"]:
+            gb_pct = (policy["giveback_pct_runner"]
+                      if peak_r >= policy["giveback_runner_min_r"]
+                      else policy["giveback_pct"])
             kept = gain_r / peak_r if peak_r > 0 else 1.0
-            if kept < (1.0 - policy["giveback_pct"] / 100.0):
+            if kept < (1.0 - gb_pct / 100.0):
                 return {
                     "action": "EXIT_GIVEBACK",
                     "reason": "GAVE_BACK_THE_MOVE",
@@ -484,7 +514,7 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
                         f"peaked at {peak_r:.2f}R ({(hwm_px - entry) / entry * 100:+.2f}%) "
                         f"and is back to {gain_r:+.2f}R ({gain_pct:+.2f}%) — "
                         f"{1 - kept:.0%} of the move handed back, over the "
-                        f"{policy['giveback_pct']:.0f}% limit. Taking what is left "
+                        f"{gb_pct:.0f}% limit. Taking what is left "
                         f"rather than watching a winner finish as a loser"),
                     "new_sl": None, "book_qty": 0,
                 }

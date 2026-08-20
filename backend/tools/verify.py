@@ -127,6 +127,8 @@ MODULES = [
      "tests.test_sdn_confidence_cap"),
     ("detection instrumentation (ATR + pre-cap stop recorded)",
      "tests.test_detection_instrumentation"),
+    ("F-43 swing book review (rank floor, regime min_rr, exit reprice)",
+     "tests.test_f43_swing_review"),
 ]
 
 

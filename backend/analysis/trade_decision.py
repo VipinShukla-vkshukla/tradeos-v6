@@ -98,6 +98,29 @@ def max_entry_for_rr(stop: float, target: float, min_rr: float) -> float | None:
     return (target + min_rr * stop) / (1.0 + min_rr)
 
 
+def regime_min_rr(regime: str | None) -> float:
+    """
+    The reward:risk floor for THIS regime, not a flat one regardless of tape.
+
+    generate_signals.py already computes min_rr_to_enter_<REGIME> for the
+    evening pipeline's own gate (NEUTRAL 1.0, TRENDING 0.9, RISK_ON 1.1,
+    RECOVERING 1.3, RISK_OFF 1.5 by default) — decide()'s live callers never
+    read it and passed nothing, so the daemon entered every regime at the
+    same flat 1.0R bar regardless of what the tape was doing. F-43,
+    20-Aug-2026: eight straight NEUTRAL sessions with Nifty red every one of
+    them and breadth fading 59.6% -> 57.8% is exactly the case a rising bar
+    exists for, and the live entry path could not raise it.
+
+    Same key convention as swing/brain/dynamic_registry.py's own regime->key
+    builder: space replaced with underscore. The swing regime is written
+    space-separated ("RISK ON") — see docs/TERMINOLOGY.md.
+    """
+    from config import cfg_float
+    key = str(regime or "NEUTRAL").strip().replace(" ", "_") or "NEUTRAL"
+    base = cfg_float("min_rr_to_enter", 1.0)
+    return cfg_float(f"min_rr_to_enter_{key}", base)
+
+
 def decide(
     row: dict,
     live_price: float | None,

@@ -9733,3 +9733,173 @@ Historical `allocation_decisions` rows before 2026-08-20 are not deleted or
 relabeled — they simply stop being read by `_empirical_base()` once this is
 live. `hurdle_population_audit.py` and any other tool reading that table
 directly still sees the full, unfiltered history.
+
+## 2026-08-20 — F-43 (change, full swing-book review) — reviewed the last 15
+closed swing trades against a live-trading-desk lens (entries, exit ladder,
+sizing, ranking). Five findings, all from real data: the give-back guard was
+doing 100% of the book's profit-taking at a flat 50% because the ladder above
+it was priced for a distribution this book never produces; every swing exit
+placed by the daemon (nearly all of them) was unlabelled, "BROKER_EXIT",
+because the 15s loop never stamped `exit_signal`; the evening pipeline's own
+R:R refusal was coded 18-Aug and never armed, so 5 of 6 open positions were
+entered on plans the pipeline itself had refused that same night; TRAVELFOOD
+entered 14-Aug at composite rank -16 because the only rank check in the swing
+order path is a RELATIVE top-N gate that switches itself off once the
+allocator is live; and the book was fragmented across 6 small positions
+(avg. Rs.2,989) paying a flat Rs.15.04 DP fee each, 36.6% of gross profit
+in charges over 15 trades.
+
+**Ran:** `tools.verify` (690 checks, 70 modules, green — 11 new, in
+`tests.test_f43_swing_review`, each demonstrated FAILING against the pre-fix
+source via `git stash` before being trusted to pass — see §4).
+`tools.simulate` (read-only, confirms live): HINDCOPPER, the one position
+currently past 1R, now shows `EXIT_GIVEBACK` — "peaked at 1.44R (+9.96%) and
+is back to +1.00R (+6.96%) — 30% of the move handed back" — where the
+pre-fix flat 50% guard would have stayed HOLD. No intraday-framework file
+(strategies, exit_policy.py, gates, registry) touched.
+
+### 1 — WHAT SURFACED IT
+
+Operator's request: evaluate the swing framework end to end from a live
+professional swing-trader's perspective, using the last 10-15 days of actual
+closed and open trades as evidence rather than reading the code's own
+comments at face value.
+
+### 2 — FIVE FINDINGS, EACH CONFIRMED AGAINST LIVE DATA
+
+**(a) The exit ladder was priced above where the book's trades actually
+peak.** Reconstructing peak-R for the 13 closed swing trades that carry a
+favourable-excursion figure: median 0.67R, only 2/13 ever cleared 1.0R, 1.5R
+reached once. The ladder's rungs (partial 1.5R, breakeven 1.0R, trail-on
+2.0R) were mostly unreachable, so `exit_giveback_pct` — built as a
+loss-prevention backstop, not a profit-taking rule — ended up the only rung
+any winner ever touched: 7 of the last 9 winning exits gave back within 1-6%
+of exactly half their peak.
+
+**(b) Every swing exit the daemon placed carries no rule label.** All 14
+recent `closed_positions.exit_reason` rows for SWING read `BROKER_EXIT`.
+`manage_open_positions()` (the once-a-day batch path) stamps `exit_signal`;
+the 15s daemon loop, which places nearly every real exit, never did —
+confirmed by grep, zero occurrences of `exit_signal` in `intraday/engine.py`
+before this fix. `weekly_review`, `post_trade_analysis` and `exit_audit` all
+group by `exit_reason`; the most heavily reasoned exit logic in this project
+had no feedback loop.
+
+**(c) The pipeline's own refusal was coded and never armed.** Five of six
+open swing positions (CARBORUNIV, TRAVELFOOD, HINDCOPPER, TATATECH,
+AARTIIND) carry `filter_reason = insufficient_rr_0.78x` (or similar) on the
+`signal_output_daily` row for their entry date. `entry_ranking.
+entry_refusals()` has honoured `filter_reason` since the 18-Aug GABRIEL fix,
+gated on `entry_respect_filter_reason` — which does not exist in
+`system_config`, so `cfg_bool` silently defaulted to `False`. The GABRIEL
+gap, reopened by an unset switch rather than a missing check.
+
+**(d) The only rank check in the swing order path is relative, and it
+switches itself off.** `_legacy_rank_gate_blocks` is a top-N-of-today gate,
+correctly disabled whenever `alloc_live_swing` is true (it is) because the
+allocator's edge is then the live veto. But edge is an opportunity-cost
+question — better than what else arrived this cycle — not a verdict on a
+plan's own quality, and `act_on_candidates()` sends every candidate outside
+the top `swing_alert_top_n` contenders straight to `_maybe_enter_swing` with
+no rank check of any kind. TRAVELFOOD entered 14-Aug at composite rank -16.
+
+**(e) The book is fragmented finer than the account's cost structure
+supports.** Average position Rs.2,989 against a Rs.6,000 order-value cap
+that was never binding; `risk_pct_per_trade` (1% of capital) was the actual
+constraint given 5-9%-wide ATR stops. Charges were 36.6% of gross profit
+over 15 closed trades (Rs.218.57 of Rs.597.29). `_replacement_case()` — the
+"swap a weak holding for a better one" logic — sends an alert only; nothing
+in the codebase executes a rotation. `STRATEGY ROTATION` appears 12 times in
+`closed_positions.exit_reason` with no writer anywhere in the codebase — it
+is a manual label the operator has been entering by hand.
+
+### 3 — FIX
+
+(a)+(b) reprice, in `control/position_lifecycle.py::load_exit_policy()`:
+`exit_partial_book_r` 1.5→1.0, `exit_breakeven_at_r` 1.0→0.5,
+`exit_trail_after_r` 2.0→1.5, `exit_trail_r` 1.5→1.0,
+`swing_setup_target_min_r` 1.0→0.6. The give-back guard is tiered rather
+than replaced: below the new `exit_giveback_runner_min_r` (1.0R, matched to
+the repriced partial) it stays at the existing loose 50% — the only thing
+protecting a winner before a partial can fire — and at or above that line it
+tightens to `exit_giveback_pct_runner` (30%), because a partial should
+already be banked and the stop at breakeven by then, so what remains is
+risking profit, not capital. `intraday/engine.py::_auto_exit` now stamps
+`exit_signal = d["reason"]` on every EXIT_* order it places, matching the
+convention `manage_open_positions()` already used.
+
+(c) migration 090 arms `entry_respect_filter_reason = true`. No code change
+— `entry_refusals()` was already correct and already tested
+(`tests/test_gabriel_gap.py`).
+
+(d) new pure function `intraday/engine.py::_rank_floor_blocks`, called from
+`_maybe_enter_swing` unconditionally (independent of `alloc_live_swing` and
+of the relative gate), reading `swing_min_rank_to_enter` (migration 090,
+default 0). Refuses a plan on its own composite score regardless of daily
+quota room or what the allocator scored it on a different axis.
+
+(e) migration 090: `risk_pct_per_trade` 1.0%→1.5%, `max_positions_neutral`
+6→4, `max_position_pct` 20%→25%, `swing_max_order_value` 6000→8000,
+`swing_max_new_per_day` 3→2 (also closes a docs-vs-config drift —
+`0_SYSTEM_BLUEPRINT.md` had always documented 2). Net effect: SAME total
+deployed risk (4 × 1.5% = 6%, same as the old 6 × 1.0% = 6%, against an
+unchanged 8% portfolio ceiling) concentrated into fewer, larger positions
+instead of split thin enough for transaction costs to dominate the
+outcome. Auto-rotation (closing the mechanism behind (e)'s alert-only swap
+logic) was deliberately NOT built this session — a new axis on which money
+would move automatically is exactly the kind of change this project's own
+"propose, never auto-apply" / staged-gate discipline exists for, not
+something to ship inside a same-session bundle of bug fixes.
+
+Also added: `analysis/trade_decision.py::regime_min_rr()` — the evening
+pipeline has computed `min_rr_to_enter_<REGIME>` since before this session
+(NEUTRAL 1.0, RISK_OFF 1.5, etc.) but `decide()`'s two live-daemon call
+sites never read it, entering every regime at the same flat 1.0R bar. Wired
+at both (`evaluate_candidates()`, the real entry gate, and `_log_swing_
+state()`, the preview line, so the two cannot disagree).
+
+### 4 — VERIFIED
+
+New file `tests/test_f43_swing_review.py`, 11 checks, registered in
+`tools.verify::MODULES`. Demonstrated failing first per this project's
+standing rule: `git stash push --keep-index` on the three touched source
+files (keeping the new test file staged), re-ran the 11 checks against the
+UNFIXED source — 9 of 11 failed (2 import errors for functions that did not
+exist yet, `regime_min_rr` and `_rank_floor_blocks`; 3 behavioural failures
+showing the OLD ladder holding where the new one must act) — then `git
+stash pop` restored the fix and all 11 passed. `tools.verify`: 690/690.
+`tools.simulate` (read-only, live data): HINDCOPPER — the one open position
+past 1R — now correctly returns `EXIT_GIVEBACK` where the pre-fix code
+would have returned `HOLD` (peak 1.44R, now 1.00R, 30.3% given back; the old
+flat 50% limit would not have tripped until 42.8% given back — a 40%-worse
+outcome).
+
+### 5 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+**Migration 090 was blocked by the auto-mode classifier from being applied
+directly to the live database** — parameter changes to a live-trading
+account's risk config are not something this session pushes through
+unattended. The SQL is written (`db/migrations/090_swing_exit_reprice_and_
+entry_discipline.sql`) and needs the operator's own hand or explicit
+in-session approval to run. Until it runs, `entry_respect_filter_reason`,
+`swing_min_rank_to_enter`, and the sizing keys (`risk_pct_per_trade`,
+`max_positions_neutral`, `max_position_pct`, `swing_max_order_value`,
+`swing_max_new_per_day`) stay at their PRE-fix values, because `cfg()`
+always prefers an existing database row over the code's own default. The
+two new give-back keys (`exit_giveback_pct_runner`,
+`exit_giveback_runner_min_r`) are the exception — they had no prior row, so
+the code's new defaults (30%, 1.0R) are already live, which is what let
+`tools.simulate` catch HINDCOPPER above without the migration.
+
+**Same gap as every recent finding: this ships in code only, not yet on the
+running daemon.** `tools.simulate` imports the current source directly and
+reflects every fix; the long-running `intraday/run.py` process does not
+pick any of it up until it is restarted. Market is closed for the day the
+data in this entry was pulled, so the practical cost of that gap is zero
+until the next session — but the daemon must be redeployed before market
+open for any of this to protect the book live.
+
+**Auto-rotation was scoped and deliberately not built** — see §3(e). Left
+as a named gap for a future, separately-gated session, in the style this
+project's own roadmap uses for anything that would let capital move on a
+new axis.

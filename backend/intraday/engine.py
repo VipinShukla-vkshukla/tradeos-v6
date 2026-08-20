@@ -97,6 +97,24 @@ def _legacy_rank_gate_blocks(here_total: float, field_totals: list[float],
     return here_total < field_totals[keep - 1]
 
 
+def _rank_floor_blocks(here_total: float, floor: float) -> bool:
+    """
+    True if this plan's own composite score is below the absolute floor.
+
+    F-43, 20-Aug-2026. Distinct from `_legacy_rank_gate_blocks` above on
+    purpose: that gate is RELATIVE to today's field and is switched off
+    once the allocator is live, because the allocator's edge is then the
+    ranking that matters. This one is not relative to anything and does not
+    defer to the allocator — edge answers "better than what else arrived
+    this cycle", not "is this plan any good on its own terms", and nothing
+    else asked the second question before an order could be placed.
+    TRAVELFOOD entered 14-Aug at rank -16 through exactly this gap: it was
+    outside the top swing_alert_top_n contenders, so act_on_candidates()
+    sent it straight to the order path with no rank check of any kind.
+    """
+    return here_total < floor
+
+
 def _runway_refusal_summary(runway_refused: list[str], out: list[dict]) -> str | None:
     """
     Pure. What to tell the operator when one or more shorts were refused on
@@ -1147,7 +1165,7 @@ class IntradayEngine:
 
     def _log_swing_state(self, prices: dict) -> None:
         """One line per cycle: what swing is eligible for, and why not more."""
-        from analysis.trade_decision import decide
+        from analysis.trade_decision import decide, regime_min_rr
         from analysis.entry_ranking import rank
         from config import capital_for
         from execution.gates import is_paper
@@ -1165,8 +1183,11 @@ class IntradayEngine:
             if not sym or not ltp:
                 continue
             try:
+                # Same regime-aware min_rr as evaluate_candidates() — this is
+                # a preview line and must not disagree with the real gate.
                 d = decide(c, float(ltp), total_capital=capital_for("SWING"),
                            open_positions=self._swing_positions(),
+                           min_rr=regime_min_rr(c.get("regime")),
                            vol_mult=self._overlay_vol_mult)
             except Exception:
                 continue
@@ -1846,8 +1867,15 @@ class IntradayEngine:
                 continue
             if any(p.get("symbol") == sym for p in self.positions):
                 continue  # already held
+            # min_rr FROM THE REGIME — F-43, 20-Aug-2026. decide() defaults to
+            # a flat 1.0 when no min_rr is passed, so this call site entered
+            # every regime at the same bar; the evening pipeline's own gate
+            # was already regime-aware (min_rr_to_enter_<REGIME>) and this
+            # simply never read it. See trade_decision.regime_min_rr().
+            from analysis.trade_decision import regime_min_rr
             d = decide(c, float(ltp), total_capital=capital_for("SWING"),
                        open_positions=self._swing_positions(), regime=regime,
+                       min_rr=regime_min_rr(regime),
                        max_chase_pct=c.get("ai_max_chase_pct") or None,
                        available_cash=cash, vol_mult=self._overlay_vol_mult)
             self._all_swing_decisions.append({"candidate": c, "decision": d})
@@ -2083,7 +2111,21 @@ class IntradayEngine:
         if res and res.ok:
             try:
                 if d["action"].startswith("EXIT"):
-                    upd = {"current_qty": 0, "status": "CLOSING"}
+                    # exit_signal WAS NEVER WRITTEN HERE — F-43, 20-Aug-2026.
+                    # manage_open_positions() (the once-a-day batch path)
+                    # stamps it; this 15s loop, which places nearly every real
+                    # exit, did not — so every swing exit later reconciled
+                    # against a vanished Kite holding fell back to reconcile's
+                    # own default, "BROKER_EXIT". All 14 recent swing closes
+                    # carry that label, which names no rule: EXIT_GIVEBACK,
+                    # EXIT_STALL, EXIT_TIME and the rest were indistinguishable
+                    # from a manual sell, so post_trade_analysis, exit_audit
+                    # and weekly_review could not tell which rule closed what
+                    # — the one exit ladder with real analysis behind it had
+                    # no feedback loop. Written on PLACED, matching the rest
+                    # of this block's own optimistic-write rule below.
+                    upd = {"current_qty": 0, "status": "CLOSING",
+                           "exit_signal": d["reason"]}
                 else:
                     left = int(p.get("current_qty") or p.get("actual_qty") or 0) - qty
                     upd = {
@@ -2463,6 +2505,28 @@ class IntradayEngine:
         try:
             from analysis.entry_ranking import score_plan, rank
             here = score_plan(c)
+
+            # ABSOLUTE RANK FLOOR — F-43, 20-Aug-2026. The top-N gate right
+            # below is a RELATIVE check against today's field, and it is
+            # switched OFF by design once the allocator is live
+            # (alloc_live_swing, true today) — see _legacy_rank_gate_blocks'
+            # own docstring. The allocator's edge is a different question
+            # (opportunity cost against what else arrived this cycle), not a
+            # verdict on this plan's own quality, so nothing was left
+            # checking the plan's own composite score on its own terms.
+            # TRAVELFOOD entered 14-Aug at rank -16 — sub-1.0 R:R, AI-flagged
+            # risk — because act_on_candidates() sends anything outside the
+            # top swing_alert_top_n contenders straight here with no rank
+            # check at all. This floor is unconditional: it holds whether or
+            # not the relative gate is armed, and whether or not the
+            # allocator approved the trade on a different axis.
+            floor = cfg_float("swing_min_rank_to_enter", 0.0)
+            if _rank_floor_blocks(here.total, floor):
+                logger.info(f"  {sym}: rank {here.total:.0f} below the floor "
+                           f"{floor:.0f} — refusing regardless of daily quota "
+                           f"room or allocator edge")
+                return
+
             field = rank(self.candidates)
             keep = min(max_new * 2, len(field))
             field_totals = [r.total for r in field]
