@@ -9498,3 +9498,89 @@ independent defects, and only one of them was being addressed.
   behind than previously believed, not closer.
 - **`priors_intraday_since`** — the reset lever named to the operator this
   session — was discussed but not armed. Remains the operator's call.
+
+
+## 2026-08-20 — F-40 (change, JSON double-encoding on two jsonb columns) — every row this project has ever written to intraday_setups.meta and allocation_decisions.hurdle_inputs stored a JSON STRING inside a jsonb column, not a JSON OBJECT. Found live, not from a comment, while trying to verify F-39's own fix actually reached the database. One defensive reader survived it by accident; every plain-SQL diagnostic this session ran against either column returned NULL, not absence
+
+**Ran:** live insert+select+delete against `intraday_setups` (real DB, real
+verification, immediately cleaned up), `tools.verify` (675 checks, 68
+modules), `tools.health` (selects strict).
+
+### 1 — HOW THIS SURFACED, DIRECTLY FROM THE OPERATOR'S OWN NEW INSTRUCTION
+
+Asked to verify F-39's sub_engine fix against real code and live data rather
+than trust it. Tried to read `meta->>'atr_pct_daily'` on today's TAKEN rows
+via plain SQL to cross-check the ORB retest/measured-move mechanisms — got
+NULL on every row. `jsonb_typeof(meta)` returned `'string'`, not `'object'`,
+on every checked date back to 18-Aug. The Python client the live daemon
+actually uses was checked directly, not assumed: `type(row['meta'])` is
+`str`, confirming this is not a SQL-only artifact.
+
+### 2 — ROOT CAUSE, FOUND BY READING THE WRITE CODE, NOT A COMMENT
+
+`intraday/engine.py::_record_setup`: `"meta": json.dumps({**s.meta, "qty":
+qty}, default=str)`. `allocation/allocator.py::_record`: `"hurdle_inputs":
+json.dumps(v.get("hurdle_inputs") or {}, default=str)`. Both columns are
+jsonb; the Supabase client already serializes a native dict into jsonb
+correctly. Pre-serializing to a string first means the client stores THAT
+STRING as the jsonb value — a JSON string scalar, not an object — and every
+`->>'key'` extraction against it, in SQL or in a client that doesn't already
+defend against it, returns NULL regardless of whether the key exists.
+
+**One function survived this by construction, not by design intent.**
+`allocation.scoring._engine_of()` already does `if isinstance(meta, str):
+meta = json.loads(meta)` before reading `sub_engine` — written, per its own
+history, to tolerate meta arriving as a string for other reasons. That
+defensive line is the entire reason the live prior-building and
+arbitration pipeline (which depends on `_engine_of`/`_family_of_row`) has
+been reading `sub_engine` correctly this whole session despite the
+underlying column being wrong. No other reader — including every ad-hoc SQL
+query this session has run, and `hurdle_inputs`, which has no equivalent
+defense anywhere — had that protection.
+
+### 3 — FIXED AT BOTH WRITE SITES
+
+`json.loads(json.dumps(x, default=str))` in place of `json.dumps(x,
+default=str)`. Same `default=str` sanitising for anything non-JSON-native
+in the dict (numpy floats, Decimal, datetime); the round trip lands on a
+plain dict, which the client then serializes as a native object exactly
+once, correctly.
+
+**Verified against the real database, not assumed from the code change
+alone.** Inserted a disposable row (`symbol='ZZFIXTEST'`) using the fixed
+construction, confirmed `jsonb_typeof(meta)='object'` and
+`meta->>'sub_engine'` resolves directly with no defensive re-parse needed,
+then deleted the row. This is the standard this session has held every
+other change to — F-39's own fix and this one both needed a live check, not
+a code-reading, to be trusted.
+
+**One stale test caught and corrected.** `test_paper_entry_verdicts.py`'s
+own assertion `json.loads(sb.inserted[0]["meta"])` was written against the
+bug and passed BECAUSE of it — a mocked insert path, not the real database,
+so it never surfaced the double-encoding, only exercised code that assumed
+it. Updated to assert `meta` is a dict directly.
+
+### 4 — VERIFIED
+
+One new check (`hurdle_inputs` is a dict at the point `_record()` hands it
+to the client) plus the live DB round-trip above for `meta`, which is not
+unit-testable offline — `_record_setup` calls `.execute()` inline with no
+injected client. One deliberate break (revert `hurdle_inputs` to
+`json.dumps()` alone) demonstrated failing. `tools.verify`: 675 checks, 68
+modules, green. `health.selects` strict-passes.
+
+### 5 — NOT DONE / COULD NOT DETERMINE
+
+- **`notifier.py:289`** (`"meta": json.dumps(a.meta) if a.meta else None`,
+  the alerts table) has the identical shape and was not checked live in
+  this pass — named, not assumed fixed, not assumed broken.
+- **Historical rows are not backfilled**, on both columns. Every diagnostic
+  this session ran against pre-20-Aug `meta`/`hurdle_inputs` content was
+  reading a JSON string, not an object — conclusions drawn from raw SQL
+  against those columns before this fix should be re-checked, not trusted,
+  if they mattered.
+- **Whether any OTHER consumer, beyond `_engine_of`, silently swallowed an
+  exception reading `meta` as a dict** was not audited exhaustively. Given
+  `_engine_of` is the one function the prior/arbitration/banding pipeline
+  actually routes through, this is believed to be the only load-bearing
+  path — not independently confirmed for every reader in the codebase.
