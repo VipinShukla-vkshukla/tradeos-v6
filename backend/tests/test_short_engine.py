@@ -310,6 +310,64 @@ def test_frame_meta_reaches_every_conditions_setup():
             f"{label} ({cond}) does not merge frame.meta() into its Setup"
 
 
+# ── sub_engine survives registry.evaluate_all() — 20-Aug-2026 ──────────────
+
+def test_registry_preserves_sdns_own_condition_in_sub_engine():
+    """
+    THE BUG. `registry.evaluate_all()`'s own comment says sub_engine is
+    "which condition actually fired" — but it used `s.meta["sub_engine"] =
+    s.strategy`, which unconditionally overwrote whatever short_distribution.
+    py's three methods had already set (VWR/TRP/ORB) with `s.strategy`
+    ("SDN", the same for every condition). Every historical SDN row reads
+    sub_engine="SDN", indistinguishable from strategy — which is exactly why
+    the per-condition confidence split this session tried to run against
+    live data came back empty. Driven through the REAL registry path, not
+    ShortDistribution() directly, because that is where the overwrite lived.
+    """
+    from intraday.strategies import registry
+    with cfg_ctx(SHORTS_ON):
+        best, _all = registry.evaluate_all(ctx_for("trap"), PRIME)
+    assert best is not None, "the trap fixture must still produce a setup"
+    assert best.strategy == "SDN", best.strategy
+    assert best.meta.get("sub_engine") == "TRP", (
+        f"sub_engine was overwritten to {best.meta.get('sub_engine')!r} — "
+        f"expected the CONDITION (TRP), not the family (SDN)")
+
+
+def test_registry_still_defaults_sub_engine_for_single_condition_engines():
+    """
+    THE NO-REGRESSION HALF. Every engine but SDN has exactly one condition,
+    so sub_engine == strategy was already the honest answer for them —
+    setdefault() must still produce it when the engine itself sets nothing.
+    """
+    from intraday.strategies.orb import OpeningRangeBreakout
+    from intraday.strategies.base import Setup
+    s = Setup("TEST", "ORB", "LONG", 100.0, 99.0, 103.0, 0.7, "r", "i", meta={})
+    assert "sub_engine" not in s.meta
+    s.meta.setdefault("sub_engine", s.strategy)
+    assert s.meta["sub_engine"] == "ORB"
+
+
+def test_allocator_record_carries_sub_engine_through():
+    """
+    allocation_decisions.source is the FAMILY (proposal.from_intraday sets it
+    that way), so GAP/PDL/ORB and PBK/VWR are indistinguishable in that
+    column — confirmed 20-Aug-2026 while trying to read GAP's own day
+    separately from ORB's and finding no way to. `_record()` now copies
+    `p.meta["sub_engine"]` through as its own column.
+    """
+    from allocation.allocator import Allocator
+    from allocation.proposal import Proposal
+    a = Allocator.__new__(Allocator)
+    p = Proposal(symbol="MCX", framework="INTRADAY", product="MIS",
+                entry=100.0, stop=99.0, target=103.0, quantity=10,
+                source="ORB", native_rank=80.0, direction="LONG",
+                meta={"sub_engine": "GAP"})
+    row = a._record({"proposal": p, "verdict": "DECLINE", "edge": -0.5})
+    assert row["source"] == "ORB", "family must still be the family"
+    assert row["sub_engine"] == "GAP", "the actual condition must be readable separately"
+
+
 def test_sdn_receives_no_capital_while_shadowed():
     """
     SHADOW means evaluates and records, never receives capital. If a shadowed
@@ -341,4 +399,10 @@ TESTS = [
      test_trap_stop_is_buffered_exactly_once_in_either_branch),
     ("frame.meta() reaches every condition's setup",
      test_frame_meta_reaches_every_conditions_setup),
+    ("registry preserves SDN's own condition in sub_engine",
+     test_registry_preserves_sdns_own_condition_in_sub_engine),
+    ("registry still defaults sub_engine for single-condition engines",
+     test_registry_still_defaults_sub_engine_for_single_condition_engines),
+    ("allocator record carries sub_engine through",
+     test_allocator_record_carries_sub_engine_through),
 ]

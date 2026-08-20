@@ -9390,3 +9390,111 @@ unaffected (no new queries added).
 - **Gate 3 remains unmade** for every engine but VWR (already decided) and
   ORB (provisionally reverted, per §1). Nothing here retires, shadows, or
   promotes RNG, PDL, PBK, GAP, GDB, or VCE.
+
+
+## 2026-08-20 — F-39 (correction + change, sub_engine overwritten since introduction) — registry.evaluate_all()'s own comment says sub_engine is "which condition actually fired"; the line under it overwrote every engine's value with the family name. Harmless for eight engines whose condition and family are the same word; silently destroyed SDN's three-way VWR/TRP/ORB distinction on every row it has ever written. Found live, same session, trying to answer the operator's own question about it
+
+**Ran:** `tools.verify` (674 checks, 68 modules), `tools.health` (selects strict,
+shorts unaffected), live schema check on `allocation_decisions`.
+
+### 1 — HOW THIS SURFACED
+
+Asked (1) whether SDN's confidence inversion is sharper split by its own
+condition (VWR/TRP/ORB) rather than pooled, and (2) why GAP's good day
+couldn't be read apart from ORB's. Both needed `meta.sub_engine` to hold what
+its own comment already claims it holds. Querying it directly: every one of
+SDN's historical TAKEN rows reads `sub_engine="SDN"` — never "VWR", "TRP", or
+"ORB" — despite `short_distribution.py`'s three methods explicitly setting
+exactly those three values.
+
+`registry.py:249`, before: `s.meta["sub_engine"] = s.strategy`. Its own
+comment two lines up: *"sub_engine is which condition actually fired."* The
+code did the opposite — unconditionally overwrote whatever the engine had
+set with `s.strategy`, which for SDN is always "SDN" (the class-level name
+every one of its three Setup constructions carries), regardless of which
+condition produced it.
+
+### 2 — BLAST RADIUS, MEASURED NOT ASSUMED
+
+Every engine but SDN has exactly one condition, so `sub_engine == strategy`
+was already the honest answer for ORB, GAP, PDL, VCE, PBK, RNG, VWR, GDB —
+the overwrite was a no-op for all eight. SDN is the only engine built as
+three conditions inside one class, and it is the one this line has been
+silently flattening since `sub_engine` was introduced.
+
+**Consequence, and it reaches further than the two questions that found
+it.** F-33's own §5 named the real repair for SDN's confidence inversion:
+*"needs the per-condition split (VWAP-rejection vs trap vs breakdown) this
+table does not separate."* That split was never possible — not because the
+data was thin, but because the column meant to carry it was being
+overwritten before the row was ever saved. Worse: this session's own
+banded-prior and arbitration machinery (`allocator._prior_for`,
+`expected_r_for`) already reads `meta.sub_engine` to key SDN's priors — both
+have been silently pricing every SDN condition as one pooled family the
+entire time they have existed, never once reaching the per-condition
+resolution they were built for. Neither was caught by this session's own
+tests, because every test fixture constructs `meta={"sub_engine": ...}`
+directly rather than running the real detection through `registry.
+evaluate_all()` — which is exactly where the overwrite lived.
+
+Fixed: `s.meta.setdefault("sub_engine", s.strategy)`. Sets the family-as-
+fallback for any engine that provides nothing of its own; never overwrites
+one that already has.
+
+**Historical rows are NOT backfilled.** Every SDN row written before this
+fix still reads `sub_engine="SDN"` and cannot be un-mixed after the fact —
+the three conditions' outcomes were pooled at write time, not merely
+mislabelled at read time. Per-condition SDN analysis is possible only from
+here forward.
+
+### 3 — SEPARATELY: `allocation_decisions` COULD NEVER SHOW GAP APART FROM ORB
+
+`source` on that table is the FAMILY (`proposal.from_intraday` sets it that
+way deliberately, for the prior fallback ladder) — so GAP/PDL/ORB and
+PBK/VWR have never been distinguishable in the one table every allocator
+decision is logged to. Found trying to check whether GAP's good 20-Aug
+session reflected a genuinely better prior than ORB's — no query could
+answer it.
+
+`Allocator._record()` now copies `p.meta.get("sub_engine")` through as its
+own column, mirroring what the prior ladder already reads. **Column added
+BEFORE the code that writes it** — `_record()`'s output goes through a raw
+`.insert()` with no unknown-column resilience (unlike `_upsert_position`'s
+strip-and-retry), so shipping the field first would have silently failed
+every allocator flush this session's own landmine list already warns about.
+Migration 088 adds it; verified present via live schema query before the
+code path could ever reach it.
+
+### 4 — VERIFIED
+
+Three new checks in `tests/test_short_engine.py`: sub_engine surviving the
+REAL `registry.evaluate_all()` path (not `ShortDistribution()` called
+directly, which is where the earlier tests in this file — and this bug —
+lived unnoticed), the no-regression case for single-condition engines, and
+`_record()` carrying `sub_engine` through separately from `source`. One
+deliberate break (revert `setdefault` to unconditional overwrite) detected.
+`tools.verify`: 674 checks, 68 modules, green. `health.selects` strict-passes
+(confirms the new column is real); `health.shorts` unaffected.
+
+### 5 — WHAT THIS CHANGES ABOUT EVERYTHING ELSE THIS SESSION SAID
+
+The per-condition SDN confidence split proposed as "the fix" for today's
+inversion (three highest-confidence trades all losses, three lowest all
+wins) is now buildable for the first time — it was not buildable before this
+fix landed, regardless of how much data existed. Same for confirming whether
+`alloc_intraday_confidence_bands` (still inert) would actually differentiate
+SDN's three conditions once armed: before this fix, arming it would have
+banded confidence WITHIN one undifferentiated "SDN" pool exactly as `_prior_
+for` already keys it — the band and the condition-mixing problem were
+independent defects, and only one of them was being addressed.
+
+### 6 — NOT DONE / COULD NOT DETERMINE
+
+- **No per-condition SDN measurement was run yet.** Clean, correctly-labelled
+  sub_engine data only exists from the moment this fix deploys — zero rows
+  as of writing.
+- **Whether `alloc_intraday_confidence_bands` should now be armed.** Still
+  gated on a clean, sufficient, NOW-correctly-labelled sample — further
+  behind than previously believed, not closer.
+- **`priors_intraday_since`** — the reset lever named to the operator this
+  session — was discussed but not armed. Remains the operator's call.

@@ -246,7 +246,26 @@ def evaluate_all(ctx: SymbolContext, phase: str) -> tuple[Setup | None, list[Set
                 # Provenance first, identity second. `sub_engine` is which
                 # condition actually fired; `family` is what the detection is
                 # scored as. Keeping both is what makes the merge reversible.
-                s.meta["sub_engine"] = s.strategy
+                #
+                # setdefault(), NOT =, FOUND 20-Aug-2026. This line's own
+                # comment says sub_engine is "which condition actually fired"
+                # — but `=` unconditionally overwrote whatever the engine had
+                # already set with `s.strategy`, which for every engine IS the
+                # condition (ORB, VCE, ...) except the one engine built with
+                # three conditions inside one class: short_distribution.py's
+                # three methods each set meta["sub_engine"] to "VWR"/"TRP"/
+                # "ORB" — the actual condition — and this line stomped every
+                # one of them back to "SDN" before the row was ever written.
+                # Every historical SDN row in intraday_setups therefore reads
+                # sub_engine="SDN", indistinguishable from strategy, and any
+                # per-condition analysis (confidence calibration, priors,
+                # this session's own banded-prior and arbitration machinery)
+                # has been silently pricing all three SDN conditions as one
+                # ever since sub_engine was introduced. Harmless for every
+                # other engine, where sub_engine == strategy was already the
+                # honest answer — setdefault() changes nothing for them and
+                # stops overwriting the one engine it was wrong for.
+                s.meta.setdefault("sub_engine", s.strategy)
                 s.meta["family"] = family_of(eng.name)
                 # ATR AT DETECTION -- 18-Aug-2026. `base.risk_from_structure`'s
                 # own docstring says it plainly: "intraday_setups stores no

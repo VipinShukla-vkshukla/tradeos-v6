@@ -1,0 +1,40 @@
+-- 088 — sub_engine no longer overwritten in registry; visible on allocation_decisions.
+-- 20-Aug-2026.
+--
+-- Found live, same day, while trying to answer two operator questions:
+-- (1) is the confidence inversion cleaner split by SDN's own condition, and
+-- (2) why can GAP's day not be read separately from ORB's. Both needed
+-- meta.sub_engine to actually hold what its own comment says it holds.
+--
+-- registry.py's own comment: "sub_engine is which condition actually
+-- fired". The code: `s.meta["sub_engine"] = s.strategy` — unconditional,
+-- so it overwrote whatever the engine had already set. Harmless for every
+-- engine but one, because every engine but SDN has exactly one condition
+-- (sub_engine == strategy is the honest answer there). short_distribution.py
+-- is the one engine built as three conditions in one class — its methods
+-- set meta["sub_engine"] to "VWR"/"TRP"/"ORB", and this line stomped every
+-- one of them back to "SDN" before the row was ever written. Every
+-- historical SDN row in intraday_setups reads sub_engine="SDN",
+-- indistinguishable from strategy, and every per-condition question this
+-- project has tried to ask of SDN (F-33's own "the right long-term repair
+-- ... needs the per-condition split this table does not separate", this
+-- session's banded-prior and arbitration machinery) has been silently
+-- priced on the family the whole time it thought it was reading the
+-- condition. Fixed: setdefault(), not =.
+--
+-- SEPARATELY: allocation_decisions.source is the FAMILY (proposal.
+-- from_intraday sets it that way), so GAP/PDL/ORB and PBK/VWR have never
+-- been distinguishable in that table. sub_engine is now copied through from
+-- p.meta the same way the prior ladder already reads it — read visibility,
+-- not new plumbing.
+--
+-- NOTHING HERE CHANGES A DECISION. Both are additive columns; no verdict,
+-- edge, bar, or ranking logic is touched by this migration.
+
+ALTER TABLE allocation_decisions ADD COLUMN IF NOT EXISTS sub_engine TEXT;
+
+-- Nothing to insert into system_config: both fixes are unconditional code
+-- behaviour, not config-gated. Recorded here for the reader who greps this
+-- file for a switch and expects to find one — there isn't one, on purpose:
+-- this is a correctness fix to what a comment already promised, not a new
+-- policy needing a rollback lever.

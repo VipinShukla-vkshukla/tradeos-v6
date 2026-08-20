@@ -426,6 +426,16 @@ class Allocator:
             "symbol": p.symbol, "framework": p.framework, "product": p.product,
             "direction": p.direction,
             "source": p.source, "verdict": v["verdict"], "reason": v.get("reason"),
+            # `source` is the FAMILY (proposal.from_intraday sets it that
+            # way), so GAP/PDL/ORB and PBK/VWR are indistinguishable in every
+            # report built from this table — confirmed 20-Aug-2026 while
+            # trying to compare GAP's own day against ORB's and finding no
+            # way to. `sub_engine` is the same field the prior ladder and
+            # this session's arbitration already key on
+            # (allocator._prior_for), so this is read visibility, not new
+            # plumbing: intraday_setups.meta.sub_engine, `p.meta` (from
+            # from_intraday), copied through here.
+            "sub_engine": (p.meta or {}).get("sub_engine"),
             "entry": p.entry, "stop": p.stop, "target": p.target,
             "quantity": p.quantity,
             "edge": v.get("edge"), "e_r": v.get("e_r"), "cost_r": v.get("cost_r"),
