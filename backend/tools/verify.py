@@ -73,6 +73,7 @@ MODULES = [
     ("paper capacity",      "tests.test_paper_capacity"),
     ("swing rank collision", "tests.test_swing_rank_collision"),
     ("hurdle dedup",         "tests.test_hurdle_dedup"),
+    ("hurdle since floor",   "tests.test_hurdle_since"),
     ("ai tier weight review", "tests.test_ai_tier_weight_review"),
     ("swing hold days",      "tests.test_swing_hold_days"),
     ("swing family maturity review", "tests.test_swing_family_maturity_review"),

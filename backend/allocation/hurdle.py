@@ -572,6 +572,32 @@ def _empirical_base(bucket: str, framework: str, sb=None
     fw    = (framework or "INTRADAY").upper()
 
     since = (today_ist() - timedelta(days=max(days, 1))).isoformat()
+
+    # ── A HARD FLOOR DATE, SAME CONTRACT AS scoring.intraday_priors()'s
+    # priors_intraday_since — 20-Aug-2026. That switch stops the per-ENGINE
+    # prior from averaging across a structural change (F-33's stop-clamping
+    # fix, the sub_engine/meta-encoding fixes); this bar's own population is
+    # built from `allocation_decisions.edge`, which is COMPUTED using
+    # whatever engine prior was in force at write time — so it inherits the
+    # identical contamination and had no equivalent floor. A 90-day rolling
+    # window reaches back to 22-May-2026 today; every fix that shipped this
+    # month (F-33 on 18-Aug, F-39/F-40 on 20-Aug) sits inside that window,
+    # so the bar's own percentile was being pulled from a population that
+    # mixes pre- and post-fix eras without knowing it.
+    #
+    # UNSET BY DEFAULT — same posture as priors_intraday_since. Arming this
+    # forces `settled_n` (below) to 0 for the remainder of the day it is set
+    # on, since "settled" excludes today's own rows and today would be the
+    # only day left in the window; the bar falls to -inf (fully permissive,
+    # see the cold-start branch below) until the NEXT trading day, at which
+    # point the floor date itself becomes "settled" evidence. Given roughly
+    # a thousand INTRADAY rows write per session — comfortably over
+    # `alloc_hurdle_min_sample` on its own — this reaches a real, clean
+    # segmented bar again after one settled day, not a multi-week blind
+    # spot the way the per-engine 30-sample floor can be.
+    floor_date = (cfg("alloc_hurdle_since", "") or "").strip()
+    if floor_date:
+        since = max(since, floor_date)
     pooled = False
     try:
         sb = sb or get_supabase()

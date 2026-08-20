@@ -9662,3 +9662,74 @@ filter on `trade_date` first. The allocator's live behaviour is unchanged —
 `_engine_of`/priors/arbitration key off `family` + `sub_engine` together, and
 `family` was never ambiguous; this closes a landmine in anything that reads
 `sub_engine` alone, before it could cost anything.
+
+
+## 2026-08-20 — F-42 (change, missing floor date) — the BAR's own arrival
+population had no equivalent of `priors_intraday_since`; added
+`alloc_hurdle_since` with the identical contract and armed it to 2026-08-20
+
+**Ran:** `tools.verify` (679 checks, 69 modules, green — 4 new), one
+deliberate break-then-fix demonstration, `tools.health` (green except the
+pre-existing, unrelated `quote_parity`), live config confirmed via `cfg()`.
+
+### 1 — WHAT SURFACED IT
+
+Operator's own question, following the correction on F-41's "1,062 TAKEN"
+number: *"bar's historical trades were before we put TradeOS in place so
+should we not reset bar too?"* Read as "before the fixes were in place," this
+was worth checking against the actual code rather than answered from memory.
+
+### 2 — ROOT CAUSE, CONFIRMED BY READING THE CODE
+
+`scoring.intraday_priors()` already has `priors_intraday_since` — a hard
+floor date stopping the per-ENGINE prior from averaging across a structural
+change (F-33's 18-Aug stop-clamping fix). `hurdle._empirical_base()` builds
+the BAR from a *different* table, `allocation_decisions.edge` — but that
+column is COMPUTED at write time using whatever engine prior was in force
+that cycle, so it inherits the identical contamination. It had no floor of
+its own: only `alloc_hurdle_lookback_days`, a 90-day ROLLING window. Checked
+live: `allocation_decisions` for INTRADAY only goes back to 2026-08-05 (15
+calendar days), well inside that 90-day window — every fix that shipped this
+month (F-33 on 18-Aug, F-39/F-40 on 20-Aug) sat inside the bar's own
+population with nothing to say so.
+
+### 3 — FIX
+
+`alloc_hurdle_since` added to `_empirical_base()`, same `since = max(rolling,
+floor)` arithmetic as `priors_intraday_since`. Migration 089, armed to
+`2026-08-20` in the same migration (not shipped inert) — the risk profile is
+different from the per-engine floor: that one can take days to clear its
+30-sample floor per engine; this one clears `alloc_hurdle_min_sample` (40)
+from a single trading day's volume (~1000+ INTRADAY rows/session, confirmed
+live today). Arming it mid-session forces `settled_n` to 0 for the rest of
+TODAY specifically (today's own rows are never "settled" evidence — see
+hurdle.py's 10-Aug comment on why), pushing the bar to `-inf` (fully
+permissive) until the next trading day — but the market is already closed
+for today, so the practical cost of arming now is zero, and from tomorrow
+the bar computes cleanly off post-fix data alone.
+
+### 4 — VERIFIED
+
+New file `tests/test_hurdle_since.py`, 4 checks: unset behaves exactly as
+before (regression guard), a floor date inside the rolling window wins, an
+ancient floor date does NOT loosen the window (guards `max()` against a
+future accidental `min()`), and a blank string is treated as unset (matches
+how the migration ships the key). Demonstrated failing first: neutered the
+`floor_date` line, watched `test_floor_date_later_than_the_rolling_window_
+wins` fail with the un-floored rolling date instead of 2026-08-20, restored
+the fix, re-ran green. `tools.verify`: 679 checks / 69 modules. Live config
+confirmed via the app's own `cfg()` reader, not raw SQL alone.
+
+### 5 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+**This ships in code only — not yet on the running daemon.** Same gap as
+F-39/F-40/F-41: the live daemon is still on commit `8e1b673`, predating all
+four of today's fixes. Arming `alloc_hurdle_since` in `system_config` has no
+live effect until `hurdle.py`'s wiring is deployed too. The config value is
+already armed in the database regardless, so the moment the daemon is
+updated, this takes effect immediately with no further action needed.
+
+Historical `allocation_decisions` rows before 2026-08-20 are not deleted or
+relabeled — they simply stop being read by `_empirical_base()` once this is
+live. `hurdle_population_audit.py` and any other tool reading that table
+directly still sees the full, unfiltered history.
