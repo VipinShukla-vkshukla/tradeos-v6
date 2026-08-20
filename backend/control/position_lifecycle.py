@@ -672,14 +672,37 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
     # swing trading and is not in doubt; the exact 10-session and 0.5R numbers
     # are a judgement and should be re-derived once the current book has 20+
     # closes of its own. Both are config keys for exactly that reason.
-    if (policy["stall_days"] > 0
-            and sessions_held >= policy["stall_days"]
+    #
+    # THE CLOCK IS NOW PER ENGINE FAMILY, NOT ONE NUMBER FOR THE WHOLE BOOK —
+    # F-46, 21-Aug-2026. `stall_days` above was a single judgement call; a
+    # CTL breakout and a MOM continuation trade do not resolve on the same
+    # clock, and swing/signals/outcomes.py already resolves enough of both to
+    # say by how much (see swing/signals/pace_calibration.py): CONTINUATION's
+    # own winners clear target in 6 sessions three times out of four (n=296),
+    # MOM's in 7 (n=86) — against this rule's flat 10. `policy[
+    # "stall_days_by_family"]` is built once per daemon start from that live
+    # data and can only ever TIGHTEN the clock below the configured
+    # `stall_days` (see that module's docstring for why loosening is not on
+    # the table); a family with too thin a sample, or no calibration
+    # available at all, simply falls back to `stall_days` unchanged — the
+    # exact behaviour this rule has always had.
+    from allocation.scoring import swing_family
+    family = swing_family(pos.get("strategy"))
+    stall_days = (policy.get("stall_days_by_family") or {}).get(
+        family, policy["stall_days"])
+    if (stall_days > 0
+            and sessions_held >= stall_days
             and peak_r < policy["stall_peak_r"]
             and gain_r < policy["stall_peak_r"]):
+        calibrated = family in (policy.get("stall_days_by_family") or {})
         return {
             "action": "EXIT_STALL",
             "reason": "NEVER_WORKED",
-            "detail": (f"{sessions_held} sessions and the best this ever showed was "
+            "detail": (f"{sessions_held} sessions"
+                       + (f" ({family}'s own calibrated clock is "
+                          f"{stall_days})" if calibrated else
+                          f" (>= {stall_days}, the book-wide default)")
+                       + f" and the best this ever showed was "
                        f"{peak_r:+.2f}R ({(hwm_px - entry) / entry * 100 if hwm_px else 0:+.2f}%), "
                        f"now {gain_r:+.2f}R. On this book a swing trade that never "
                        f"clears {policy['stall_peak_r']}R wins about one time in six — "

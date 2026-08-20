@@ -10130,3 +10130,141 @@ shadow period and measuring the outcome the way `giveback_pct` was, or
 extending `exit_ladder_replay`-style tooling to estimate it from bar
 history directly; neither attempted tonight. Like F-39 through F-44, this
 takes effect on the next daemon deploy, not before.
+
+## 2026-08-21 — F-46 (change, swing predictive/learning capability) —
+answered the operator's direct question: does the swing book actually
+PREDICT a trade will work, then LEARN from resolved decisions to
+self-improve? Pre-trade: yes, real, live — the allocator's edge/hurdle/
+priors already retune daily from resolved outcomes, no defect found.
+In-trade: no — the exit ladder is one fixed clock for every setup, and the
+one signal that reads like an in-trade prediction (`assess_trend`'s
+STRONG/INTACT/BROKEN read) had never once been graded against an outcome,
+because its own read never survived to a closed trade. Built and ARMED
+LIVE (operator's explicit instruction, overriding this project's usual
+shadow-first default for a new capability — see §5) a family-calibrated
+stall clock and the continuous telemetry needed to eventually grade
+`assess_trend` itself. No file under `allocation/` touched — shared with
+intraday, off-limits per the operator's explicit instruction this session.
+
+**Ran:** `tools.verify`: 726/726 across 73 modules (19 new checks this
+session — 11 from F-43, 8 from F-46 — running alongside a concurrent
+session's own 18 intraday-side checks, F-44/F-45, confirmed no collision).
+19 checks demonstrated failing against the pre-fix source first (git
+stash + a temporary hide of the new pace_calibration.py module, so the
+import errors were real, not assumed) before being trusted to pass.
+`tools.simulate` (read-only, live data): HINDCOPPER now correctly shows
+`BOOK_PARTIAL` — "1.00R >= 1.0R — book 4/8" — confirming migration 090
+(reported blocked in F-43, applied by the operator since) is fully live
+end to end.
+
+### 1 — THE QUESTION, ANSWERED WITH EVIDENCE
+
+Sitting at the desk and taking these trades live, from entry to exit:
+
+**Pre-trade — real, working, already self-updating.** `allocation/
+scoring.py::swing_priors()` builds a live R-distribution per engine family
+and regime bucket from every plan's resolved outcome (traded or not);
+`hurdle()` gates against it, rising through the day. Pulled live:
+STRONG-bucket TAKE averaged edge 0.045 against DECLINE's 0.035; WEAK-bucket
+TAKE 0.051 against DECLINE's 0.038 — discriminating in the right direction,
+at real sample sizes (prior_n 125-181). Not the gap; not touched.
+
+**In-trade — nothing predicts pace, and the one signal that looks
+predictive has never been graded.** `control/exit_rules.py::assess_trend()`
+scores STRONG/INTACT/FADING/BROKEN on structure/momentum/participation/RS/
+sector, but only ever RUNS inside `evaluate_exit()` when gain_r >= 1.0 (by
+design — the deterioration gate exists specifically to stop trend noise
+cutting a position below that floor). Its output — `runner_evidence`/
+`runner_verdict` — is written only by `manage_open_positions()`, the
+once-a-day batch path; the 15s daemon, which places nearly every real
+exit, never persisted it. Checked live: the last 20 closed swing trades —
+100% NULL on both fields. A well-reasoned rule that has never once been
+checked against what actually happened next.
+
+**The strategy currently holding 5 of 6 open positions has a measured
+negative edge of its own.** From `signal_output_daily`'s full entered-
+outcome record (every plan whose zone was touched, traded or not): MOM
+n=188, avg return **-0.56%**, 68% TIMEOUT (drift, neither target nor
+stop). CTL by contrast: n=360, avg **+1.57%**. Consistent with the KB's
+own pre-existing MOM finding (50% win / +0.05%), measured fresh and worse.
+
+### 2 — BUILT (armed live, not shadow, per explicit instruction)
+
+**(a) Family-calibrated stall clock.** New `swing/signals/pace_
+calibration.py::build_family_stall_days()` — from every plan resolved
+TARGET, grouped by `swing_family()` (imported read-only from `allocation/
+scoring.py`, never edited), p75 of `outcome_hold_days`, capped at the
+configured `exit_stall_days` (can only TIGHTEN, never loosen) and floored
+at `swing_stall_pace_floor_days` (3). Measured 21-Aug-2026:
+
+    family          n     median days-to-target   p75 (armed value)
+    CONTINUATION   296             3                6
+    MOM             86             4                7
+    RVS              6         too thin — stays at the flat default (10)
+
+Built once per daemon start (`intraday/engine.py`, same lifetime
+`load_exit_policy()` already has) and wired into `evaluate_exit()`'s
+existing STALL EXIT rung — no new exit rule, the existing one recalibrated
+per family. A CONTINUATION trade 7 sessions in, never above 0.3R, now
+stalls at session 6 instead of waiting until session 10; MOM gets 7 not
+10; RVS (and any family with no calibration) is unchanged. Self-sharpens
+with no code change as `swing/signals/outcomes.py` resolves more plans.
+
+**(b) Continuous trend telemetry.** New `intraday/engine.py::_track_
+trend_quality()`, called every cycle for every SWING position at ANY
+gain_r (not gated at 1.0 the way the deterioration check itself must
+stay) — pure additive telemetry, changes no decision. This is what makes
+(c) below eventually answerable.
+
+**(c) Runner-field forwarding.** Whenever `evaluate_exit()` DOES compute
+`runner_evidence`/`runner_verdict`/`runner_since_r` (the RUN/EXIT_TARGET/
+EXIT_DETERIORATION branches), the daemon now persists them — same gap
+class as F-43's `exit_signal` fix. Both (b) and (c) are SWING-only reads
+(`evaluate_intraday_exit` never sets these keys), so both are inert for
+every intraday action, not merely harmless.
+
+### 3 — VERIFIED
+
+`tests/test_f46_pace_calibration.py`, 8 checks: `_calibrate()` (pure,
+matches the measured CONTINUATION=6/MOM=7 numbers, respects the sample
+floor, the cap-never-loosen contract, and the floor-days minimum) plus
+`evaluate_exit()` wiring (a CTL position the flat 10-day default would
+still hold correctly stalls under the calibrated 6-day clock; a family
+absent from the calibration dict falls back to the flat default
+unchanged; a policy dict with no `stall_days_by_family` key at all —
+every pre-existing caller — behaves exactly as before). Demonstrated
+failing first: `git stash --keep-index` on the two touched source files
+plus a temporary rename hiding the new module, all 8 failed (5 on import,
+3 on reverted behaviour), then restored and re-ran green.
+
+A CONCURRENT SESSION landed two commits on `main` mid-session (F-44
+correcting a giveback claim + a feature-edge-study tool, F-45 an
+intraday-only volume-decay rung) — both properly tested, properly
+findings-logged, on files this session never touched. Collided only on
+finding numbers (this entry was drafted as F-44, renumbered to F-46) and
+on `tools/verify.py`'s MODULES list, which merged cleanly with no manual
+resolution needed since both sessions only ever appended.
+
+### 4 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+**`assess_trend` itself is still unvalidated — this session makes it
+measurable, not measured.** (b)/(c) close the recording gap; whether
+STRONG-labelled positions actually outperform BROKEN-labelled ones is a
+question that needs weeks of accumulated telemetry against resolved
+trades before it has an answer. Revisit once the current book has enough
+closes carrying non-NULL `runner_evidence`/`runner_verdict` to say
+something real.
+
+**Armed without a shadow period — the operator's explicit call, stated
+plainly rather than argued with.** This project's own default posture
+for a new capability is shadow-log-then-arm (see the swing-chase-ceiling
+stages in `docs/TRADEOS_ROADMAP.md`); this shipped straight to live on
+direct instruction. The mitigations built into the design instead of a
+shadow period: the calibration can only ever tighten an existing,
+already-live rule (never loosen it, never invent a new one), and every
+fallback path — thin sample, missing family, a fetch failure — resolves
+to the exact flat-default behaviour this book has always had.
+
+**Same daemon-deploy gap as every recent finding.** `tools.simulate`
+proves the code correct by importing it fresh; `intraday/run.py`'s
+long-running process does not pick any of this up until restarted.

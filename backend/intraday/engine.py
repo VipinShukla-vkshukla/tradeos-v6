@@ -461,6 +461,25 @@ class IntradayEngine:
         if self._policy is None:
             from control.position_lifecycle import load_exit_policy
             self._policy = load_exit_policy()
+            # FAMILY-CALIBRATED STALL CLOCK — F-46, 21-Aug-2026. Built once
+            # per daemon start (same lifetime load_exit_policy() already
+            # has) from every plan swing/signals/outcomes.py has resolved as
+            # TARGET so far. Fails safe: an empty dict here means every
+            # position falls back to the flat policy["stall_days"] — the
+            # exact behaviour this book has always had. See swing/signals/
+            # pace_calibration.py for why this can only tighten the clock.
+            try:
+                from swing.signals.pace_calibration import build_family_stall_days
+                self._policy["stall_days_by_family"] = build_family_stall_days(
+                    self.sb, global_default=self._policy["stall_days"])
+                if self._policy["stall_days_by_family"]:
+                    logger.info(f"  engine: swing stall clock calibrated per "
+                               f"family — {self._policy['stall_days_by_family']}"
+                               f" (book default {self._policy['stall_days']})")
+            except Exception as e:
+                logger.warning(f"  engine: family-calibrated stall days "
+                               f"unavailable, staying on the flat default — {e}")
+                self._policy["stall_days_by_family"] = {}
 
     def refresh_contexts(self) -> int:
         """
@@ -1711,6 +1730,7 @@ class IntradayEngine:
                     last_close=last_completed_close(_bars), bars=_bars)
             else:
                 d = evaluate_exit(p, float(ltp), held, self._policy)
+                self._track_trend_quality(p)
 
             # LIVE METRICS ON EVERY CYCLE, INCLUDING WHEN NOTHING IS TO BE DONE.
             #
@@ -1736,6 +1756,54 @@ class IntradayEngine:
                 continue
             actions.append({"position": p, "decision": d, "ltp": float(ltp)})
         return actions
+
+    def _track_trend_quality(self, p: dict) -> None:
+        """
+        Continuous STRONG/INTACT/FADING/BROKEN telemetry for SWING
+        positions — F-46, 21-Aug-2026.
+
+        control.exit_rules.assess_trend()/deterioration_check() only ever
+        RUN inside evaluate_exit() when gain_r >= exit_deterioration_min_r
+        (1.0 by default), by design — cutting a position on trend noise
+        below that floor is the exact mistake the deterioration gate exists
+        to prevent. But that also meant the trend read was never even
+        COMPUTED for a position sitting below 1.0R, which on this book is
+        most of the time. Checked live: runner_evidence/runner_verdict on
+        the last 20 closed swing trades — 100% NULL. The one signal in this
+        codebase that reads like an in-trade prediction had never once been
+        graded against an outcome, because its own read never reached a
+        closed trade to be graded against.
+
+        This does not change what evaluate_exit() decides — it is pure
+        telemetry, the same category as _track_excursion()'s MFE/MAE/HWM,
+        and is read at ANY gain_r rather than gated at 1.0R: a
+        deteriorating structural read is more useful on record EARLY,
+        before much is at risk, than only once a position happens to have
+        crossed into profit. Whether this actually predicts anything is
+        exactly the question this instrumentation exists to make
+        answerable — see docs/FINDINGS.md F-46.
+        """
+        if (p.get("framework") or "SWING").upper() != "SWING":
+            return
+        try:
+            ctx = (self._policy or {}).get("_trend_ctx") or {}
+            sig = ctx.get(p.get("symbol"))
+            if not sig:
+                return
+            from control.exit_rules import assess_trend
+            tq = assess_trend(sig, p)
+            if not tq.has_evidence:
+                return
+            # Only write on change — same debounce _track_excursion() uses,
+            # so a quiet position does not cost a DB round trip every cycle.
+            if (p.get("runner_verdict") == tq.verdict
+                    and p.get("runner_evidence") == tq.checks):
+                return
+            upd = {"runner_evidence": tq.checks, "runner_verdict": tq.verdict}
+            self._update_position(p, upd)
+            p.update(upd)
+        except Exception as e:
+            logger.debug(f"  {p.get('symbol')}: trend telemetry skipped — {e}")
 
     def _track_excursion(self, p: dict, ltp: float) -> None:
         """Keep high_water_mark, MFE and MAE current. Cheap, and only on change."""
@@ -1957,6 +2025,28 @@ class IntradayEngine:
                     p.update(upd)
                 except Exception as e:
                     logger.warning(f"  engine: trail persist failed for {sym} — {e}")
+
+            # RUNNER TELEMETRY, WHENEVER evaluate_exit() COMPUTED IT —
+            # F-46, 21-Aug-2026. control.exit_rules' target_decision()/
+            # deterioration_check() populate runner_evidence/runner_verdict/
+            # runner_since_r on the RUN/EXIT_TARGET/EXIT_DETERIORATION
+            # branches, but nothing in this daemon ever persisted them —
+            # manage_open_positions() (the once-a-day batch path) does, and
+            # by the time it runs the position has usually already been
+            # closed by THIS loop. Forwarded generically rather than gated
+            # on the action: these keys are SWING-only (evaluate_intraday_
+            # exit never sets them), so this is inert — not just harmless —
+            # for every intraday action.
+            runner_fields = {k: d[k] for k in
+                             ("runner_evidence", "runner_verdict", "runner_since_r")
+                             if d.get(k) is not None}
+            if runner_fields:
+                try:
+                    self._update_position(p, runner_fields)
+                    p.update(runner_fields)
+                except Exception as e:
+                    logger.debug(f"  engine: runner telemetry persist failed "
+                                f"for {sym} — {e}")
 
             # Gate on the POSITION's framework, not a fixed key. This read
             # cfg_bool("intraday_auto_exit") for every position, so a swing

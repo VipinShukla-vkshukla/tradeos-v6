@@ -131,6 +131,8 @@ MODULES = [
      "tests.test_detection_instrumentation"),
     ("F-43 swing book review (rank floor, regime min_rr, exit reprice)",
      "tests.test_f43_swing_review"),
+    ("F-46 pace calibration (family stall clock, trend telemetry)",
+     "tests.test_f46_pace_calibration"),
 ]
 
 
