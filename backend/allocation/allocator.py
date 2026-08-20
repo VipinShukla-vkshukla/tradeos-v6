@@ -443,7 +443,18 @@ class Allocator:
             "hold_days": v.get("hold_days"), "prior_n": v.get("prior_n"),
             "prior_below_floor": v.get("prior_floor"),
             "hurdle": v.get("hurdle"),
-            "hurdle_inputs": json.dumps(v.get("hurdle_inputs") or {}, default=str),
+            # NATIVE DICT, NOT A JSON STRING — same fix as intraday/engine.py
+            # ::_record_setup's meta field, 20-Aug-2026, and found the same
+            # way: jsonb_typeof(hurdle_inputs)='string' on every row this
+            # session ever wrote, confirmed live. hurdle_inputs is a jsonb
+            # column; the client already serializes a dict into it natively.
+            # json.dumps() first meant every row stored a JSON STRING inside
+            # the jsonb column — hurdle_inputs->>'floor_only_rank' (this
+            # session's own diagnostic queries) returned NULL on every row,
+            # not because the rank was absent. round-tripped through loads
+            # (default=str still sanitises non-JSON-native values) to land
+            # on a plain dict instead of a second layer of string.
+            "hurdle_inputs": json.loads(json.dumps(v.get("hurdle_inputs") or {}, default=str)),
             # The bucket the bar was drawn for, as a COLUMN rather than only
             # inside hurdle_inputs. _empirical_base segments the arrival
             # distribution on it, and a segmentation that has to parse JSON to

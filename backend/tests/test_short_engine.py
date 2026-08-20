@@ -368,6 +368,32 @@ def test_allocator_record_carries_sub_engine_through():
     assert row["sub_engine"] == "GAP", "the actual condition must be readable separately"
 
 
+def test_allocator_record_hurdle_inputs_is_a_dict_not_a_string():
+    """
+    THE JSON DOUBLE-ENCODING BUG. `hurdle_inputs` is a jsonb column; the
+    Supabase client already serializes a dict into it natively.
+    `json.dumps(...)` before handing it to `.insert()` meant the client
+    serialized a STRING — confirmed live 20-Aug-2026,
+    jsonb_typeof(hurdle_inputs)='string' on every row this project has ever
+    written, which is why hurdle_inputs->>'floor_only_rank' always returned
+    NULL from plain SQL regardless of whether the rank was ever set. Pinned
+    at the boundary that actually matters: the row _record() hands to the
+    client, not the DB round trip (proven separately, live, by this fix).
+    """
+    from allocation.allocator import Allocator
+    from allocation.proposal import Proposal
+    a = Allocator.__new__(Allocator)
+    p = Proposal(symbol="X", framework="INTRADAY", product="MIS",
+                entry=100.0, stop=99.0, target=103.0, quantity=10,
+                source="ORB", native_rank=80.0, direction="LONG")
+    row = a._record({"proposal": p, "verdict": "DECLINE", "edge": -0.5,
+                     "hurdle_inputs": {"floor_only_rank": 2, "base": -0.3}})
+    assert isinstance(row["hurdle_inputs"], dict), (
+        f"hurdle_inputs is a {type(row['hurdle_inputs']).__name__}, not a dict — "
+        f"the client will store it as a JSON string inside the jsonb column")
+    assert row["hurdle_inputs"]["floor_only_rank"] == 2
+
+
 def test_sdn_receives_no_capital_while_shadowed():
     """
     SHADOW means evaluates and records, never receives capital. If a shadowed
@@ -405,4 +431,6 @@ TESTS = [
      test_registry_still_defaults_sub_engine_for_single_condition_engines),
     ("allocator record carries sub_engine through",
      test_allocator_record_carries_sub_engine_through),
+    ("allocator record hurdle_inputs is a dict, not a string",
+     test_allocator_record_hurdle_inputs_is_a_dict_not_a_string),
 ]

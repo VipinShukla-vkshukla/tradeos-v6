@@ -186,8 +186,13 @@ def test_the_exception_detail_lands_in_meta_not_the_verdict_column():
                side_effect=RuntimeError("PostgREST 503")):
         eng._maybe_open_paper(_FakeSetup(), 10, None, phase="PRIME")
     assert sb.inserted[0]["cost_verdict"] == "BLOCKED_EXCEPTION"
-    import json
-    meta = json.loads(sb.inserted[0]["meta"])
+    # meta is a native dict, not a JSON string — 20-Aug-2026 fix
+    # (intraday/engine.py::_record_setup no longer json.dumps()s it before
+    # handing it to the client, which was storing a JSON string inside the
+    # jsonb column instead of a JSON object; this test's own json.loads()
+    # was written against that bug and passed BECAUSE of it).
+    meta = sb.inserted[0]["meta"]
+    assert isinstance(meta, dict), f"meta is a {type(meta).__name__}, not a dict"
     assert "PostgREST 503" in meta.get("exception", "")
 
 

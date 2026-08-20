@@ -3965,7 +3965,27 @@ class IntradayEngine:
                 "invalidation": s.invalidation, "cost_pct": cost_pct,
                 "cost_verdict": verdict,
                 "corroborated_by": ",".join(s.meta.get("corroborated_by") or []) or None,
-                "meta": json.dumps({**s.meta, "qty": qty}, default=str),
+                # NATIVE DICT, NOT A JSON STRING — found 20-Aug-2026 while
+                # chasing why meta->>'atr_pct_daily' and meta->>'retest_
+                # confirmed' returned NULL from plain SQL. `meta` is a jsonb
+                # column; the Supabase client already serializes a dict into
+                # it natively. json.dumps()-ing it here first meant the
+                # client serialized a STRING, so every row since sub_engine
+                # (or ATR, or anything else) was added has stored a JSON
+                # STRING inside the jsonb column, not a JSON OBJECT — every
+                # historical row confirmed via jsonb_typeof(meta)='string'.
+                # `_engine_of()` (allocation/scoring.py) already defends
+                # against this with its own json.loads() fallback, which is
+                # the only reason the prior/arbitration pipeline has been
+                # reading sub_engine correctly at all — but any OTHER
+                # consumer, including plain SQL (this session's own repeated
+                # diagnostic queries), silently gets NULL instead of the
+                # data. json.loads(json.dumps(...)) round-trips through the
+                # same default=str sanitising (numpy/Decimal/datetime values
+                # in s.meta become plain strings) while landing on an
+                # ordinary dict — the input the client needs to serialize it
+                # as a native object, not a second layer of string.
+                "meta": json.loads(json.dumps({**s.meta, "qty": qty}, default=str)),
                 "regime_at_detection": mc_state,
             }).execute()
             self._recorded[f"{s.symbol}:{s.strategy}"] = (s.entry, verdict)
