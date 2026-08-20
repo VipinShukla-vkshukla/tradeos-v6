@@ -265,6 +265,15 @@ def evaluate_all(ctx: SymbolContext, phase: str) -> tuple[Setup | None, list[Set
                 # other engine, where sub_engine == strategy was already the
                 # honest answer — setdefault() changes nothing for them and
                 # stops overwriting the one engine it was wrong for.
+                #
+                # NAMING COLLISION, same day. "VWR" and "ORB" as SDN condition
+                # labels collide with the standalone long engines of the same
+                # name — a SQL group-by on sub_engine could not tell SDN's
+                # VWAP-rejection short from the unrelated VWR engine's long.
+                # short_distribution.py's three methods now write "VREJ" and
+                # "BRKD" instead (TRP had no collision, unchanged). Rows
+                # written before this rename still read "VWR"/"ORB"; do not
+                # pool them with the renamed values without checking dates.
                 s.meta.setdefault("sub_engine", s.strategy)
                 s.meta["family"] = family_of(eng.name)
                 # ATR AT DETECTION -- 18-Aug-2026. `base.risk_from_structure`'s

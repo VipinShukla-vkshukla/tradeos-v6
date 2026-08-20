@@ -62,7 +62,7 @@ def test_all_three_conditions_fire_on_their_own_shape():
             assert ok, f"{kind}: engine emitted incoherent levels — {why}"
             assert s.rr >= 1.3, f"{kind}: R:R {s.rr:.2f} below the engine's own floor"
             seen[s.meta["sub_engine"]] = kind
-        assert set(seen) == {"TRP", "VWR", "ORB"}, \
+        assert set(seen) == {"TRP", "VREJ", "BRKD"}, \
             f"expected all three conditions, got {seen}"
 
 
@@ -302,8 +302,8 @@ def test_frame_meta_reaches_every_conditions_setup():
     from intraday.strategies.short_distribution import ShortDistribution
     import inspect
     src = inspect.getsource(ShortDistribution)
-    for cond, label in (("_vwap_rejection", "VWR"), ("_trap", "TRP"),
-                        ("_range_breakdown", "ORB")):
+    for cond, label in (("_vwap_rejection", "VREJ"), ("_trap", "TRP"),
+                        ("_range_breakdown", "BRKD")):
         method_src = src[src.index(f"def {cond}"):]
         method_src = method_src[:method_src.index("\n    def ", 10)]
         assert "**frame.meta()" in method_src, \

@@ -12,14 +12,18 @@ families run under.
 
 THE THREE CONDITIONS
 --------------------
-**VWR — VWAP rejection.** Price rallies INTO VWAP from below and is turned away.
+sub_engine labels renamed 20-Aug-2026 — "VWR" and "ORB" here USED to collide
+with the standalone long engines of the same name (vwap_reclaim.py, orb.py).
+Same three conditions, same code, only the labels changed: VREJ, BRKD, TRP.
+
+**VREJ — VWAP rejection.** Price rallies INTO VWAP from below and is turned away.
 This is the highest-quality intraday short in the Indian market and it is not a
 mirror of anything: institutional sell programmes are benchmarked to VWAP, so a
 desk with stock to move sells there deliberately. Price approaching VWAP from
 below and failing is the visible footprint of that. Entry on the rejection, stop
 above VWAP (if it reclaims, the thesis is simply wrong), target the session low.
 
-**ORB — opening-range breakdown.** The first fifteen minutes set a range; price
+**BRKD — opening-range breakdown.** The first fifteen minutes set a range; price
 breaks the LOW of it on expanding volume. The mirror of the ORB long, included
 because the structure genuinely is symmetric — an opening range is a two-sided
 auction and its resolution has no directional preference.
@@ -303,7 +307,7 @@ class ShortDistribution:
             # meaningful; the thesis dies when the rejection high is reclaimed.
             invalidation=f"reclaims the rejection high {rej_high:.2f}",
             valid_phases=self.phases,
-            meta={**frame.meta(), "sub_engine": "VWR", "vwap": round(ctx.vwap, 2),
+            meta={**frame.meta(), "sub_engine": "VREJ", "vwap": round(ctx.vwap, 2),
                   "rejection_high": round(rej_high, 2),
                   "invalidation_level": round(rej_high, 2)},
         )
@@ -437,7 +441,7 @@ class ShortDistribution:
                        f"{ctx.vwap:.2f}"),
             invalidation=f"closes back above the range low {lo:.2f}",
             valid_phases=self.phases,
-            meta={**frame.meta(), "sub_engine": "ORB", "range_low": round(lo, 2),
+            meta={**frame.meta(), "sub_engine": "BRKD", "range_low": round(lo, 2),
                   "range_high": round(hi, 2), "volume_ratio": vr,
                   "invalidation_level": round(lo, 2)},
         )

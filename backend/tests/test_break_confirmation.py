@@ -525,7 +525,7 @@ def test_sdn_range_breakdown_uses_the_low_it_broke():
     s = Setup(symbol="X", strategy="SDN", direction="SHORT", entry=94.9, stop=98.1,
               target=90.0, confidence=0.7, rationale="",
               invalidation="closes back above the range low 95.00", valid_phases=(),
-              meta={"sub_engine": "ORB", "range_low": 95.0, "range_high": 100.0,
+              meta={"sub_engine": "BRKD", "range_low": 95.0, "range_high": 100.0,
                     "invalidation_level": 95.0})
     level, _ = invalidation_level_from(s)
     assert level == 95.0, f"a breakdown dies at the low it broke, got {level}"

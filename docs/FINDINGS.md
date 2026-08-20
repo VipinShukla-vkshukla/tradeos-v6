@@ -9584,3 +9584,81 @@ modules, green. `health.selects` strict-passes.
   `_engine_of` is the one function the prior/arbitration/banding pipeline
   actually routes through, this is believed to be the only load-bearing
   path — not independently confirmed for every reader in the codebase.
+
+
+## 2026-08-20 — F-41 (change, naming collision) — SDN's internal condition
+labels "VWR" and "ORB" collided with the standalone long engines of the same
+name in `sub_engine`; renamed to VREJ/BRKD
+
+**Ran:** `tools.verify` (675 checks, 68 modules, green), `tools.health` (all
+green except a pre-existing, unrelated `quote_parity` drift — not touched by
+this change, not introduced by it).
+
+### 1 — WHAT SURFACED IT
+
+Reviewing SDN's three-condition structure after F-39's sub_engine fix, in
+preparation for a per-condition confidence/prior split. `short_distribution.py`
+writes `sub_engine` values `"VWR"` (VWAP rejection), `"TRP"` (the trap), `"ORB"`
+(range breakdown) — but two of those three strings are ALSO the `strategy`
+names of two unrelated, standalone LONG engines: `vwap_reclaim.py` (VWR) and
+`orb.py` (ORB). Any query, dashboard, or future per-condition prior that
+groups by `sub_engine` without ALSO checking `strategy`/`family` cannot tell
+SDN's VWAP-rejection SHORT from the standalone VWR engine's mean-reversion
+LONG, or SDN's breakdown SHORT from the standalone ORB engine's breakout LONG.
+`_engine_of()`/`_family_of_row()` (the one path that reads `sub_engine` today)
+key off `INTRADAY/<family>/<sub_engine>` — family is `SDN` for all three SDN
+conditions and `ORB`/`VWR` for the standalone engines, so the CURRENT
+allocator pipeline does not actually collide (the family prefix disambiguates
+it). The risk was entirely in future/ad-hoc use: any confidence-band key,
+weekly-review breakdown, or raw SQL grouped on `sub_engine` alone, without the
+family qualifier, silently merges two unrelated strategies. Confirmed via grep
+that nothing today pattern-matches these specific SDN string values outside
+of dict-key/label context — this was a landmine being defused, not a live bug
+being fixed. No allocator/prior mechanism produced a wrong number because of
+this; it is closed before it became one, per the operator's "fix it
+holistically" instruction.
+
+### 2 — FIX
+
+`short_distribution.py`: `_vwap_rejection`'s `meta["sub_engine"]` "VWR" →
+"VREJ"; `_range_breakdown`'s "ORB" → "BRKD"; `_trap`'s "TRP" unchanged (no
+collision — "this one has no long equivalent worth trading", per the module's
+own docstring). Module docstring's "THE THREE CONDITIONS" section headers
+updated to match, plus a note dating the rename. `registry.py`'s F-39 comment
+(describing the historical overwrite bug) left as an accurate historical
+record, with an addendum noting the same-day rename and that pre-rename rows
+still read the old labels.
+
+**Two test fixtures that hardcoded the actual SDN condition strings** (not
+the unrelated standalone-engine ones) updated to match:
+`test_short_engine.py::test_all_three_conditions_fire_on_their_own_shape`
+(asserted `{"TRP","VWR","ORB"}`, now `{"TRP","VREJ","BRKD"}`) and its sibling
+`test_frame_meta_reaches_every_conditions_setup`; and
+`test_break_confirmation.py::test_sdn_range_breakdown_uses_the_low_it_broke`'s
+fixture. Every other hit on the strings `"VWR"`/`"ORB"` in the codebase
+(`vwap_reclaim.py`, `scoring.py`'s regime map, five more test files) checked
+individually and confirmed to be the unrelated standalone engines, not SDN —
+left untouched.
+
+**Not touched:** migration 088's SQL comment, which describes the F-39 bug as
+it stood at the time it was written (`sub_engine` WAS "VWR"/"TRP"/"ORB" then)
+— an applied migration is a historical record, not live code; rewriting it
+would misrepresent what that migration actually did when it ran.
+
+### 3 — VERIFIED
+
+`tools.verify`: 675 checks, 68 modules, all green — same count as before the
+rename (no test added or removed, only string literals inside existing
+assertions changed). `tools.health`: all green except `quote_parity`, which
+this change does not touch (a live-quote-vs-historical field drift, flagged
+separately, not chased in this pass).
+
+### 4 — WHAT THIS DOES NOT CHANGE
+
+Historical `intraday_setups.meta.sub_engine` rows written before this commit
+still read `"VWR"`/`"ORB"` for SDN's conditions. Any future per-condition
+query spanning both sides of this rename must handle both spellings, or
+filter on `trade_date` first. The allocator's live behaviour is unchanged —
+`_engine_of`/priors/arbitration key off `family` + `sub_engine` together, and
+`family` was never ambiguous; this closes a landmine in anything that reads
+`sub_engine` alone, before it could cost anything.
