@@ -35,7 +35,7 @@ the invalidation check exists specifically to cut before the stop.
 from __future__ import annotations
 
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -100,6 +100,26 @@ def load_intraday_policy() -> dict:
         # grows — n=27 is real but still thin; treat this as the data's
         # current best answer, not a settled one.
         "giveback_min_r":     cfg_float("intraday_giveback_min_r", 0.5),
+
+        # VOLUME DECAY — a LEADING signal ahead of the time stop, off by
+        # default for the same reason giveback_pct shipped off: this exact
+        # question (does follow-through volume drying up predict a bad
+        # outcome, on THIS book) has never been measured against this
+        # book's own resolved trades. Every other rung here is priced off
+        # something already calibrated (structure, an MFE quantile, a
+        # fixed time floor from the closed book's own numbers); this one
+        # is a plausible, professionally-grounded hypothesis with zero
+        # hours of live evidence behind the specific threshold. Ship
+        # correctly wired, arm once tools.exit_ladder_replay-style
+        # evidence exists — same arc as giveback_pct (0cdd3c8).
+        "volume_decay_enabled":     cfg_bool("intraday_volume_decay_enabled", False),
+        "volume_decay_window_min": cfg_int("intraday_volume_decay_window_min", 15),
+        # Recent-vs-initial pace below this fraction is "decaying".
+        "volume_decay_floor_pct":  cfg_float("intraday_volume_decay_floor_pct", 40.0),
+        # How far to tighten when it fires — same linear-toward-price shape
+        # as rung 6b's short_runway_tighten_floor_pct, reused rather than a
+        # third tightening formula in one file.
+        "volume_decay_tighten_pct": cfg_float("intraday_volume_decay_tighten_pct", 50.0),
     }
 
 
@@ -132,6 +152,52 @@ def last_completed_close(bars: list, now: datetime | None = None) -> float | Non
     except (AttributeError, TypeError):
         return None
     return None
+
+
+def _volume_decay_ratio(bars: list, entry_ts: datetime, now: datetime,
+                        window_min: int) -> float | None:
+    """
+    Recent per-bar volume pace against the pace the trade OPENED on —
+    self-referential, not against avg_volume_20d, deliberately: the question
+    is not "is today busy" (that's SymbolContext.volume_ratio(), a detection-
+    time signal), it is "is the participation THIS TRADE was entered on still
+    there". A breakout that cleared its level on 3x volume and is still going
+    on 3x volume is a different trade, ten minutes on, than one still going
+    on 0.5x — same price action, opposite conviction that it continues.
+
+    `initial` is the first `window_min` minutes after entry; `recent` is the
+    last `window_min` minutes up to `now`. Returns recent/initial, or None
+    when either window has fewer than 2 closed bars — not enough to average,
+    and specifically true for the first ~2*window_min minutes of every
+    trade's life, when this has nothing yet to compare against.
+
+    THE TWO WINDOWS MUST NOT OVERLAP. Early in a trade `recent_start` (now
+    minus one window) can fall BEFORE `initial_end` (entry plus one window)
+    — the same handful of bars then satisfies both filters, and the
+    function would return a "ratio" comparing a window to a copy of
+    itself, silently near 1.0, exactly when there is genuinely nothing yet
+    to compare. Caught by a test asserting None on 2 bars 2 minutes apart,
+    which passed the length check but should never have reached it.
+
+    PURE. Bars are `intraday.strategies.base.Bar` in production; a plain
+    object with `.ts` and `.volume` in tests.
+    """
+    if not bars or not entry_ts:
+        return None
+    window = timedelta(minutes=window_min)
+    initial_end = entry_ts + window
+    recent_start = now - window
+    if recent_start < initial_end:
+        return None
+
+    initial = [b.volume for b in bars if entry_ts <= b.ts < initial_end]
+    recent = [b.volume for b in bars if recent_start <= b.ts <= now]
+    if len(initial) < 2 or len(recent) < 2:
+        return None
+    initial_avg = sum(initial) / len(initial)
+    if initial_avg <= 0:
+        return None
+    return (sum(recent) / len(recent)) / initial_avg
 
 
 def _invalidated(pos: dict, ltp: float,
@@ -202,11 +268,17 @@ def _invalidated(pos: dict, ltp: float,
 
 def evaluate_intraday_exit(pos: dict, ltp: float, policy: dict,
                            now: datetime | None = None,
-                           last_close: float | None = None) -> dict:
+                           last_close: float | None = None,
+                           bars: list | None = None) -> dict:
     """
     What to do with one intraday position. Pure — no I/O.
 
     Checked in order of how expensive it is to be wrong about each one.
+
+    `bars` is the symbol's live closed-bar series (same list the invalidation
+    check's `last_close` is derived from), optional and additive — every
+    caller that does not pass it gets exactly today's behaviour, since the
+    one rung that reads it (7a, volume decay) is also off by default.
     """
     now = now or datetime.now(IST)
     entry = float(pos.get("entry_price") or 0)
@@ -491,6 +563,40 @@ def evaluate_intraday_exit(pos: dict, ltp: float, policy: dict,
                                f"square-off ({gain_pct:+.2f}%, {gain_r:+.2f}R)"),
                     "new_sl": round(tightened, 2), "book_qty": 0,
                 }
+
+    # ── 7a. VOLUME DECAY — off by default, and deliberately (see policy dict) ─
+    #
+    # A LEADING version of the question rung 7 answers with a fixed clock.
+    # Only while the trade has not yet proven itself (below partial_book_r —
+    # once it has, breakeven/trail/giveback are already the right protection
+    # and this would just be a second, redundant tightening rule fighting
+    # them for the same stop). Tightens toward the live price, same shape as
+    # 6b's runway tightening; never a full exit, because this is a
+    # statistical signal with zero hours of calibration behind it, not a
+    # structural break — see _invalidated for what a real thesis-death rule
+    # looks like once it HAS been earned.
+    if policy.get("volume_decay_enabled") and bars and gain_r < policy["partial_book_r"]:
+        opened = pos.get("entry_date") or pos.get("synced_at")
+        entry_ts = None
+        if opened and "T" in str(opened):
+            try:
+                entry_ts = datetime.fromisoformat(str(opened).replace("Z", "+00:00")).astimezone(IST)
+            except (ValueError, TypeError):
+                entry_ts = None
+        if entry_ts:
+            ratio = _volume_decay_ratio(bars, entry_ts, now, policy["volume_decay_window_min"])
+            if ratio is not None and ratio < policy["volume_decay_floor_pct"] / 100.0:
+                frac = policy["volume_decay_tighten_pct"] / 100.0
+                tightened = ltp - D.sign(d) * risk * frac
+                if D.is_better_price(tightened, sl, d):
+                    return {
+                        "action": "TRAIL_SL", "reason": "VOLUME_DECAY",
+                        "detail": (f"follow-through volume down to {ratio:.0%} of what "
+                                   f"this trade opened on — tightening to {frac:.0%} of "
+                                   f"risk width rather than waiting for the time stop "
+                                   f"({gain_pct:+.2f}%, {gain_r:+.2f}R)"),
+                        "new_sl": round(tightened, 2), "book_qty": 0,
+                    }
 
     # ── 7. Time stop, in MINUTES ────────────────────────────────────────────
     # A position that has gone nowhere is holding capital and attention that a

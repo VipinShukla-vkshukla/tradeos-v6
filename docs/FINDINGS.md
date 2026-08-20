@@ -10026,3 +10026,107 @@ noise) before it touches a gate. This tool ships in code only tonight;
 like F-39 through F-42, it takes effect on the next daemon deploy and the
 next Sunday chain run, whichever comes first. `giveback_pct`/`giveback_
 min_r` are unchanged — re-verified, not re-armed.
+
+
+## 2026-08-20 — F-45 (new, guarded) — a LEADING volume-decay signal, rung
+7a of the intraday exit ladder: tighten the stop when follow-through
+volume fades below what the trade opened on, ahead of the fixed-clock
+time stop. Ships correctly wired, OFF by default (migration 091)
+
+**Ran:** `tools.verify` (718 checks, 72 modules, green — 11 new),
+`tools.health` (green except the pre-existing, unrelated `quote_parity`),
+live config confirmed via `cfg()`.
+
+### 1 — WHY THIS EXISTS
+
+Every rung in `evaluate_intraday_exit` before this one is LAGGING —
+elapsed time (rung 7), a level already broken (rung 3), a realised
+pullback (rung 5b). None watches for a trade's thesis fading BEFORE price
+or the clock says so. A discretionary trader watches follow-through
+volume constantly for exactly this: a breakout that cleared its level on
+3x volume and is still running on 3x ten minutes later is a different
+trade than one now running on 0.5x, same price action, opposite
+conviction it continues.
+
+### 2 — MECHANISM
+
+`_volume_decay_ratio(bars, entry_ts, now, window_min)`: average per-bar
+volume in the last `window_min` minutes, divided by the average in the
+FIRST `window_min` minutes after entry — self-referential against the
+trade's own opening pace, not `SymbolContext.volume_ratio()`'s "is today
+busy against the 20-day average" (a different, detection-time question).
+None until both windows are genuinely non-overlapping (>= 2*window_min
+minutes held) and each has >= 2 closed bars.
+
+New rung 7a: only considered while `gain_r < partial_book_r` (the trade
+has not yet proven itself — once it has, breakeven/trail/giveback are
+already the right protection and this would just fight them for the same
+stop). When armed and the ratio falls under
+`intraday_volume_decay_floor_pct` (40%), tightens the stop toward the
+live price by `intraday_volume_decay_tighten_pct` (50%) of the original
+risk width — same linear-toward-price shape as rung 6b's
+`short_runway_tighten`, reused rather than a third tightening formula in
+one file. Never loosens (`is_better_price` guard, same invariant every
+other rung holds). `bars` threaded through from `engine.py`'s existing
+live `SymbolContext` — no new data source, the same list `last_completed_
+close` already reads for the invalidation rung.
+
+**OFF BY DEFAULT, DELIBERATELY** — same posture `intraday_giveback_pct`
+shipped with before migration 059 armed it. Every other rung here is
+priced off something already measured (a structural level, an MFE
+quantile from the closed book's own numbers, a fixed time floor). This one
+is a plausible, professionally-grounded hypothesis with zero hours of
+calibration against this book's own resolved trades. Arm once
+`tools.exit_ladder_replay`-style evidence exists for this specific
+signal — the same arc, not skipped.
+
+### 3 — TWO REAL BUGS CAUGHT BY THE TESTS, NOT ASSUMED CORRECT
+
+**pytz's classic LMT gotcha**, in the test file, not production code:
+`datetime(2026, 8, 20, 9, 30, tzinfo=IST)` attaches the pre-1945 Kolkata
+LMT offset (+05:53:20) instead of the standard +05:30 — `IST.localize()`
+is required. Three tests failed with plausible-looking `HOLD`s instead of
+an exception: the test's own bars were timestamped 23 minutes off from
+the `entry_ts` `evaluate_intraday_exit` computes via
+`.astimezone(IST)` from `pos["entry_date"]`, shifting the comparison
+window clean off the bars. Checked whether the sibling file using the
+same risky pattern (`test_intraday_short_runway_tighten.py`) is actually
+affected: it is not — the function it exercises reads `.hour`/`.minute`
+directly, never doing cross-timestamp arithmetic — so it produces a
+correct answer despite the same construction, and was left alone rather
+than "fixed" for a bug that isn't live there.
+
+**A real logic gap in `_volume_decay_ratio` itself**: with under
+2×window_min minutes held, the "initial" and "recent" windows overlap,
+and the SAME bars satisfied both filters — the function would return a
+near-1.0 "ratio" comparing a window to a copy of itself, exactly when
+there is genuinely nothing yet to compare. Fixed with an explicit
+`recent_start < initial_end` guard before either filter runs.
+
+### 4 — VERIFIED
+
+11 new offline checks (`test_intraday_volume_decay.py`): the ratio
+computes correctly in both directions, None on too-few-bars and on
+overlapping windows, the rung is silent when the switch is off (the most
+important test here — a textbook-decaying-volume trade must behave
+IDENTICALLY to today's shipped code with the switch unset), fires
+correctly when armed with the exact expected tightened price, stays
+silent once the trade has proven itself (isolated from rungs 5/5c via a
+single-share qty and a stop already past breakeven, so an earlier rung
+firing can't make the assertion trivially true), never loosens the stop,
+correct direction for a short, and a missing `bars` argument does not
+crash any existing caller. `tools.verify`: 718 checks, 72 modules, green.
+`tools.health`: clean except `quote_parity` (pre-existing, unrelated).
+Live config confirmed via `cfg()`, not raw SQL alone.
+
+### 5 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+**Ships inert.** No live position is tightened by this until an operator
+arms `intraday_volume_decay_enabled`, and there is currently no
+resolved-trade evidence to arm it on — this signal has never existed
+before tonight, so nothing in `closed_positions` carries it yet. Building
+the calibration data requires either running with the switch on for a
+shadow period and measuring the outcome the way `giveback_pct` was, or
+extending `exit_ladder_replay`-style tooling to estimate it from bar
+history directly; neither attempted tonight. Like F-39 through F-44, this
+takes effect on the next daemon deploy, not before.

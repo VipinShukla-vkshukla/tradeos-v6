@@ -1705,9 +1705,10 @@ class IntradayEngine:
                 # than falling back to the tick. Only consumed when
                 # `intraday_invalidation_require_close` is on.
                 _c = self._contexts.get(p["symbol"])
+                _bars = getattr(_c, "bars", None) or []
                 d = evaluate_intraday_exit(
                     p, float(ltp), self._intraday_policy,
-                    last_close=last_completed_close(getattr(_c, "bars", None) or []))
+                    last_close=last_completed_close(_bars), bars=_bars)
             else:
                 d = evaluate_exit(p, float(ltp), held, self._policy)
 
