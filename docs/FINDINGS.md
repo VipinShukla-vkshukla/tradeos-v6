@@ -9903,3 +9903,126 @@ open for any of this to protect the book live.
 as a named gap for a future, separately-gated session, in the style this
 project's own roadmap uses for anything that would let capital move on a
 new axis.
+
+
+## 2026-08-20 — F-44 (correction + new tool) — give-back guard was ALREADY
+armed (I told the operator otherwise), re-verified on fresh data; new
+`tools.feature_edge_study` mines per-setup FEATURES against outcome, wired
+into the weekly chain, first live run raised 42 findings
+
+**Ran:** `tools.exit_ladder_replay` (grid sweep + a fresh winners/losers
+quantile check), `tools.feature_edge_study` (live, `--since 2026-08-11`,
+42 findings written), `tools.verify` (707 checks, 71 modules, green — 17
+new).
+
+### 1 — CORRECTION: THE GIVE-BACK GUARD WAS NEVER OFF
+
+Told the operator this session that `intraday_giveback_pct` "ships OFF,
+worth arming" — based on reading `exit_policy.py`'s in-code DEFAULT
+(`cfg_float("intraday_giveback_pct", 0.0)`), not the live `system_config`
+value. The live value is `50.0`, armed in migration/commit `0cdd3c8`
+("Enable the intraday give-back guard") from a session before this one.
+This is exactly the class of mistake the operator's own standing
+instruction exists to catch — read the code that decides, not the
+fallback that only matters if nobody set it. Correcting the record rather
+than letting it stand.
+
+### 2 — RE-VERIFIED THE ARMED THRESHOLD ON FRESH, POST-FIX DATA
+
+The original calibration (11-Aug, n=27 closed positions) is now a small
+fraction of what exists. Pulled 90 days of closed INTRADAY positions and
+found 22 of 94 carry `high_water_mark == entry_price` exactly — every one
+dated 29-Jul to 3-Aug, before the engine started maintaining MFE at all
+(the same gap the 11-Aug comment names: "the engine never maintained it").
+Excluded that pre-fix residue (floor at 2026-08-11) rather than let stale
+zeros pull a live threshold.
+
+**Clean sample, n=51 (21 winners / 30 losers):** winners' peak_r runs
+0.25-1.50R; losers who reached a real peak top out at 0.56R. Less clean
+separation than the original n=27 read ("coincide almost exactly") — a
+real, honest finding: more data reveals more of the true overlap, not
+less. `giveback_min_r=0.5` still sits inside the gap (above 28 of 30
+losers' peaks, below 15 of 21 winners' — the ones above it are protected
+by trail/breakeven regardless). A grid sweep (`exit_ladder_replay --pct
+{30,40,50,60} --min-r {0.5,0.75,1.0}`) shows every combination estimating
+a positive ceiling, monotonically larger at tighter thresholds — flagged
+rather than chased, since the tool's own docstring names that as its
+overstatement bias (a trigger-happy guard "wins more races" in an
+estimate that cannot see rung order). **No config change** — 50%/0.5R
+remains defensible on the fresh data; re-run
+`exit_ladder_replay` again once the daemon has been on tonight's fixes
+for a few weeks.
+
+### 3 — NEW: `tools/feature_edge_study.py`
+
+Every prior/allocator mechanism in this project answers "is this ENGINE
+worth a trade" — one number per engine, blind to whether the specific
+candidate is the engine's best work or its worst. This asks the question
+a discretionary trader asks constantly: of the trades actually taken,
+what did winners have in common that losers didn't? Mines `volume_ratio`,
+`atr_pct_daily`, `confidence`, `sector`, `regime_at_detection`, and
+hour-of-detection (OPEN/MID/LATE) against realised TARGET/STOP outcome,
+per (engine, sub_engine) — reusing `scoring._engine_of()` rather than a
+second definition.
+
+**Same discipline as `discover_engines.py`, deliberately reused, not
+reinvented:** propose-never-apply, writes `brain_proposals` with
+`proposal_type='FEATURE_FILTER'`, a sample floor per engine (40) and per
+segment (15) before any split is even attempted, and a reporting bar
+(20pp win-rate gap OR 0.15pp mean-outcome gap) high enough that a flat
+relationship reports nothing — demonstrated in tests, not assumed.
+Terciles (bottom third vs top third, middle dropped), matching the exact
+convention this project's own 19-Aug confidence-band measurement already
+used, rather than a fresh median-split invention.
+
+**One bug caught before this went live, not after:** the first version
+keyed a `brain_proposals` dedup on `f"{engine}/{feature}"` alone. A
+categorical feature (sector) that fires for MULTIPLE categories in one
+pass — SDN disliking both "i.t." and "metals & mining" — collided on that
+one key, and each subsequent category's `_propose()` call overwrote the
+PENDING row the previous category had just written, silently discarding
+every finding but the last one processed for that feature. Caught by
+inspecting the live run's actual written rows (42 findings logged, first
+attempt would have left far fewer than 42 distinct rows in the table),
+not by reading the code and assuming it was right. Fixed via
+`target_key_for()`, which folds the category into the key when present;
+re-ran live and confirmed 42 of 42 written rows have distinct
+`target_key`.
+
+**First live run, `--since 2026-08-11`** (the floor `priors_intraday_since`
+itself would use tonight is `2026-08-20`, i.e. almost no data yet post the
+F-39/F-40/F-41 redeploy — the wider window is a deliberate one-off for a
+real first look, not the tool's own default going forward): 2,004
+TAKEN-and-resolved rows, 42 findings written, largest and most credible
+being sector-conditioned — GAP in "i.t." 6% win rate (n=357) vs 59% (n=372)
+everywhere else; SDN in "auto" 85% (n=18) vs 38% (n=318) elsewhere; SDN in
+"metals & mining" 0% (n=23) vs 44% elsewhere. Every one is a PENDING
+proposal, nothing acted on.
+
+**Wired into `.github/workflows/brain_sunday_chain.yml`** as its own
+`continue-on-error: true` step alongside `weekly_review`/`discover_engines`
+— runs automatically every Sunday, honouring `priors_intraday_since` as
+its default floor from here forward (so it naturally goes quiet until
+enough post-fix data exists, then resumes reporting on clean data only).
+
+### 4 — VERIFIED
+
+17 new offline checks (`test_feature_edge_study.py`): a real separation
+fires, a flat relationship is silent, a huge-looking gap on n=3 is refused,
+a feature absent from every row fabricates nothing, `meta`-as-JSON-string
+is tolerated (same defence as `_engine_of`), `confidence` reads the real
+column not a `meta` shadow, the hour-bucket boundaries land exactly on
+09:15/10:00/13:00 IST, the `priors_intraday_since` floor is honoured the
+same way `alloc_hurdle_since` honours it, and the category-collision fix
+is demonstrated directly. `tools.verify`: 707 checks, 71 modules, green.
+Live run's 42 written rows independently confirmed to have 42 distinct
+`target_key` values via a fresh query, not inferred from the log.
+
+### 5 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+No `brain_proposals` row here changes anything by itself — every finding
+needs an operator decision (build a floor on the feature, or file it as
+noise) before it touches a gate. This tool ships in code only tonight;
+like F-39 through F-42, it takes effect on the next daemon deploy and the
+next Sunday chain run, whichever comes first. `giveback_pct`/`giveback_
+min_r` are unchanged — re-verified, not re-armed.

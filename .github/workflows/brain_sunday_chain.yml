@@ -101,6 +101,21 @@ jobs:
         run: |
           cd backend && python -m tools.discover_engines --days 21
 
+      # Which SPECIFIC setups within an engine work, not just whether the
+      # engine does — volume_ratio, ATR, sector, regime, hour-of-day, mined
+      # against realised outcome, per (engine, condition). Same
+      # propose-never-apply contract as the two steps above: writes
+      # FEATURE_FILTER rows to brain_proposals, changes nothing on its own.
+      - name: "Feature-level edge study (which setup traits predict outcome)"
+        continue-on-error: true
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TOTAL_CAPITAL:        ${{ secrets.TOTAL_CAPITAL }}
+          TZ: Asia/Kolkata
+        run: |
+          cd backend && python -m tools.feature_edge_study
+
       # Resolve anything the daemon left unscored BEFORE the two analyses above
       # would have read it. Kept as its own step rather than folded into them,
       # so a broker-session failure here is visible instead of silently
