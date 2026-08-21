@@ -1,12 +1,12 @@
 # TradeOS Knowledge Base — Living Document
 
-**Last updated:** 19 August 2026 (10 sessions of evidence, plus direct
+**Last updated:** 20 August 2026 (11 sessions of evidence, plus direct
 `final_score` and `implied_rr` tercile measurements against the full
 historical sample)
 **Source reviews:** `daily/2026-08-06.md`, `daily/2026-08-07.md`,
 `daily/2026-08-10.md`, `daily/2026-08-11.md`, `daily/2026-08-12.md`,
 `daily/2026-08-13.md`, `daily/2026-08-14.md`, `daily/2026-08-17.md`,
-`daily/2026-08-18.md`, `daily/2026-08-19.md`
+`daily/2026-08-18.md`, `daily/2026-08-19.md`, `daily/2026-08-20.md`
 
 **18-Aug note:** this file (and `daily/2026-08-13.md`) briefly reverted to
 its 12-Aug state twice — the `fix/quote-parity-and-gabriel-gap-gates`
@@ -82,6 +82,8 @@ contradiction.)*
   **19-Aug: three more, all SDN/SHORT.** HEG (+0.057R, MFE 0.871R — a
   large peak, most given back but still banked), TCS (+0.257R), TECHM
   (+0.401R). n=13 → **n=16**. Confidence stays High.
+  **20-Aug: two more, both SDN/SHORT.** ITC (+0.256R), MOTHERSON
+  (+0.229R). n=16 → **n=18**. Confidence stays High.
 
 - **The stall exit closes a swing position that peaked and then reversed
   without ever earning its own conviction, rather than letting the slot
@@ -260,6 +262,9 @@ contradiction.)*
   **19-Aug: no new evidence** — zero swing exits, zero `MARKET_CLOSED`
   occurrences. Stays at n=2, Low-medium confidence. Explicitly checked
   and empty.
+  **20-Aug: no new evidence** — zero swing exits, zero `MARKET_CLOSED`
+  occurrences. Stays at n=2, Low-medium confidence. Explicitly checked
+  and empty.
 
 ---
 
@@ -303,6 +308,10 @@ review knows to keep watching, not to re-derive from scratch.)*
   consistent with prior sessions). Session count 6 → **7 of ~10** needed.
   Still no verdict — closer on both axes now, plausibly 2-3 sessions from
   one.
+  **20 Aug: 8th session.** 6 more trades (3 wins — ITC, SYRMA, MOTHERSON
+  — 3 losses — CUMMINSIND, M&M, BHEL). ~37-38 legs, 15 wins → **~43-44
+  legs, ~18 wins** (~41-42% cumulative). Session count 7 → **8 of ~10**
+  needed. Still no verdict — two sessions away.
   Needed before any verdict: ~20 resolved outcomes across ≥10 sessions
   (this project's own `MIN_SAMPLE`/`MIN_SESSIONS` standard from
   `tools/weekly_review.py`).
@@ -337,6 +346,17 @@ review knows to keep watching, not to re-derive from scratch.)*
   Needed before any verdict: a session where regime recovers and swing
   activity resumes (or regime worsens further while swing activity
   persists) would be the cleanest test of the causal claim specifically.
+  **20 Aug: fifth confirming session, first non-monotonic regime move in
+  the series.** Regime rose 38 → 41 (still soft NEUTRAL) — the first
+  uptick this file has recorded — and the pool stayed completely empty,
+  identical eligible-but-unbuyable watchlist shape. n=4 → **n=5**
+  sessions. Confidence on the raw correlation: Medium-high → **High** — a
+  genuine regime uptick still producing the same empty-pool outcome
+  argues against the pattern being only an artifact of a declining trend
+  over calendar time. Confidence on the CAUSAL mechanism: Medium →
+  **Medium-high** — partial progress, not full resolution: a 3-point
+  uptick to 41 is still soft NEUTRAL, so this doesn't yet show whether
+  the pool reopens once regime clears a materially firmer level (50+).
 
 - **Small CNC clip sizes turning gross wins into net losses on fixed
   charges.**
@@ -460,6 +480,8 @@ still supports the bet, rather than re-deriving the original decision.)*
   **18 Aug: no new evidence** — zero swing activity today. Stays at n=5
   resolved, 60% win rate.
   **19 Aug: no new evidence** — zero swing activity today. Stays at n=5
+  resolved, 60% win rate. Explicitly checked and empty.
+  **20 Aug: no new evidence** — zero swing activity today. Stays at n=5
   resolved, 60% win rate. Explicitly checked and empty.
 
 ---
