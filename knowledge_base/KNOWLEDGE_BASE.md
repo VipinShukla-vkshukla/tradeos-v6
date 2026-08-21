@@ -1,12 +1,12 @@
 # TradeOS Knowledge Base — Living Document
 
-**Last updated:** 18 August 2026 (9 sessions of evidence, plus direct
+**Last updated:** 19 August 2026 (10 sessions of evidence, plus direct
 `final_score` and `implied_rr` tercile measurements against the full
 historical sample)
 **Source reviews:** `daily/2026-08-06.md`, `daily/2026-08-07.md`,
 `daily/2026-08-10.md`, `daily/2026-08-11.md`, `daily/2026-08-12.md`,
 `daily/2026-08-13.md`, `daily/2026-08-14.md`, `daily/2026-08-17.md`,
-`daily/2026-08-18.md`
+`daily/2026-08-18.md`, `daily/2026-08-19.md`
 
 **18-Aug note:** this file (and `daily/2026-08-13.md`) briefly reverted to
 its 12-Aug state twice — the `fix/quote-parity-and-gabriel-gap-gates`
@@ -79,6 +79,9 @@ contradiction.)*
   **18-Aug: four more, all SDN/SHORT.** INOXWIND (+0.269R), TATASTEEL
   (+0.405R), COFORGE (+0.413R), GLAND (+0.160R). n=9 → **n=13**.
   Confidence stays High.
+  **19-Aug: three more, all SDN/SHORT.** HEG (+0.057R, MFE 0.871R — a
+  large peak, most given back but still banked), TCS (+0.257R), TECHM
+  (+0.401R). n=13 → **n=16**. Confidence stays High.
 
 - **The stall exit closes a swing position that peaked and then reversed
   without ever earning its own conviction, rather than letting the slot
@@ -254,6 +257,9 @@ contradiction.)*
   not yet, per this file's own discipline against acting on two sessions.
   **18-Aug: no new evidence** — zero swing exits, zero `MARKET_CLOSED`
   occurrences. Stays at n=2, Low-medium confidence.
+  **19-Aug: no new evidence** — zero swing exits, zero `MARKET_CLOSED`
+  occurrences. Stays at n=2, Low-medium confidence. Explicitly checked
+  and empty.
 
 ---
 
@@ -291,6 +297,12 @@ review knows to keep watching, not to re-derive from scratch.)*
   `MIN_SAMPLE=20` now cleared; the ≥10-session requirement is not (6 of
   10 sessions with closes so far: 6, 7, 10, 13, 14, 18 Aug). Reporting
   progress on one axis of the bar, not a verdict on the whole.
+  **19 Aug: 7th session, sample keeps growing.** 7 more trades (3 wins —
+  HEG, TCS, TECHM — 4 losses — BEL, MAXHEALTH, INOXWIND, TVSMOTOR).
+  ~30-31 legs, 12 wins → **~37-38 legs, 15 wins** (~40% cumulative,
+  consistent with prior sessions). Session count 6 → **7 of ~10** needed.
+  Still no verdict — closer on both axes now, plausibly 2-3 sessions from
+  one.
   Needed before any verdict: ~20 resolved outcomes across ≥10 sessions
   (this project's own `MIN_SAMPLE`/`MIN_SESSIONS` standard from
   `tools/weekly_review.py`).
@@ -312,6 +324,19 @@ review knows to keep watching, not to re-derive from scratch.)*
   swing candidates. n=2 → **n=3** sessions, all three among the lowest
   regime scores recorded. Confidence this is regime-linked rather than
   coincidence: Low → **Medium**.
+  **19 Aug: fourth confirming session, first consecutive-day occurrence.**
+  Score 38 — a new low, again zero buyable candidates, and the first
+  time this has happened on back-to-back sessions (18 and 19 Aug). n=3
+  → **n=4** sessions. Confidence on the correlation: Medium →
+  **Medium-high**. Confidence on the CAUSAL claim specifically stays at
+  Medium, with an explicit new caveat: regime score and calendar time
+  are confounded across this exact window — the score has moved mostly
+  in one direction the whole time this file has tracked it — so this
+  pattern cannot yet be cleanly separated from "this particular stretch
+  happened to feature both a declining regime and a quiet swing book."
+  Needed before any verdict: a session where regime recovers and swing
+  activity resumes (or regime worsens further while swing activity
+  persists) would be the cleanest test of the causal claim specifically.
 
 - **Small CNC clip sizes turning gross wins into net losses on fixed
   charges.**
@@ -434,6 +459,8 @@ still supports the bet, rather than re-deriving the original decision.)*
   VCE/RNG: no new closes.
   **18 Aug: no new evidence** — zero swing activity today. Stays at n=5
   resolved, 60% win rate.
+  **19 Aug: no new evidence** — zero swing activity today. Stays at n=5
+  resolved, 60% win rate. Explicitly checked and empty.
 
 ---
 
