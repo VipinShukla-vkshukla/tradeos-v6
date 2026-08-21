@@ -1,12 +1,21 @@
 # TradeOS Knowledge Base — Living Document
 
-**Last updated:** 20 August 2026 (11 sessions of evidence, plus direct
+**Last updated:** 21 August 2026 (12 sessions of evidence, plus direct
 `final_score` and `implied_rr` tercile measurements against the full
 historical sample)
 **Source reviews:** `daily/2026-08-06.md`, `daily/2026-08-07.md`,
 `daily/2026-08-10.md`, `daily/2026-08-11.md`, `daily/2026-08-12.md`,
 `daily/2026-08-13.md`, `daily/2026-08-14.md`, `daily/2026-08-17.md`,
-`daily/2026-08-18.md`, `daily/2026-08-19.md`, `daily/2026-08-20.md`
+`daily/2026-08-18.md`, `daily/2026-08-19.md`, `daily/2026-08-20.md`,
+`daily/2026-08-21.md`
+
+**21-Aug note:** no engine log existed for that session locally (23
+scattered restart/config-reload lines, zero `intraday.engine`/`swing:`
+activity), despite the database showing a genuinely active trading day
+(10 closes, 1 new entry). That day's review is grounded in
+`closed_positions`/`open_positions`/`market_regime` directly rather than
+the log — see `daily/2026-08-21.md`'s header note. Flagged for the
+operator; not something this file can resolve on its own.
 
 **18-Aug note:** this file (and `daily/2026-08-13.md`) briefly reverted to
 its 12-Aug state twice — the `fix/quote-parity-and-gabriel-gap-gates`
@@ -84,6 +93,10 @@ contradiction.)*
   (+0.401R). n=13 → **n=16**. Confidence stays High.
   **20-Aug: two more, both SDN/SHORT.** ITC (+0.256R), MOTHERSON
   (+0.229R). n=16 → **n=18**. Confidence stays High.
+  **21-Aug: one more, first SWING-side occurrence since 12-Aug.**
+  CARBORUNIV (+0.281R) — every recent confirmation had been SDN/SHORT/
+  intraday; this diversifies the evidence back toward the swing book.
+  n=18 → **n=19**. Confidence stays High.
 
 - **The stall exit closes a swing position that peaked and then reversed
   without ever earning its own conviction, rather than letting the slot
@@ -105,6 +118,9 @@ contradiction.)*
   −0.64R at trigger. Same shape as MANAPPURAM and CIPLA. n=2 → **n=3
   confirming sessions**. Confidence Medium-high → **High**, matching the
   give-back guard's own path as anticipated.
+  **21-Aug: fourth confirmation.** SCI: 10 sessions, peaked only +0.05R,
+  never earned conviction, closed −0.38R via `NEVER_WORKED`. n=3 →
+  **n=4**. Confidence stays High.
 
 - **Automated live-order execution can be trusted once a decision fires —
   PROMOTED from Promising Hypotheses, 17 Aug.**
@@ -265,6 +281,10 @@ contradiction.)*
   **20-Aug: no new evidence** — zero swing exits, zero `MARKET_CLOSED`
   occurrences. Stays at n=2, Low-medium confidence. Explicitly checked
   and empty.
+  **21-Aug: no new evidence found** — zero `MARKET_CLOSED` occurrences,
+  though this session's check is weaker than usual: no engine log
+  existed to check against (see 21-Aug note at the top of this file).
+  Stays at n=2, Low-medium confidence.
 
 ---
 
@@ -312,6 +332,10 @@ review knows to keep watching, not to re-derive from scratch.)*
   — 3 losses — CUMMINSIND, M&M, BHEL). ~37-38 legs, 15 wins → **~43-44
   legs, ~18 wins** (~41-42% cumulative). Session count 7 → **8 of ~10**
   needed. Still no verdict — two sessions away.
+  **21 Aug: no new evidence** — zero SDN closes on a session with the
+  strongest breadth reading in the series (SDN, the SHORT engine, quiet
+  on a RISK_ON-leaning day). Stays at ~43-44 legs, ~18 wins, 8 of ~10
+  sessions.
   Needed before any verdict: ~20 resolved outcomes across ≥10 sessions
   (this project's own `MIN_SAMPLE`/`MIN_SESSIONS` standard from
   `tools/weekly_review.py`).
@@ -357,6 +381,38 @@ review knows to keep watching, not to re-derive from scratch.)*
   **Medium-high** — partial progress, not full resolution: a 3-point
   uptick to 41 is still soft NEUTRAL, so this doesn't yet show whether
   the pool reopens once regime clears a materially firmer level (50+).
+  **21 Aug: sixth session, cleanest test yet — the pool reopened.**
+  Regime crossed to 50 (governing row, 20 Aug — the firmest reading in
+  the series, A/D ratio 1.57, Nifty +0.64%) and swing's five-session
+  empty pool broke with one new entry (HAL/CTL). n=5 → **n=6** sessions
+  (5 empty-pool + 1 reopened-pool). Confidence on the correlation: High,
+  unchanged. Confidence on the CAUSAL mechanism: Medium-high → **High**
+  — not yet the second confirmation of "regime 50+ reopens the pool"
+  this file's own bar wants before a full promotion, but the cleanest
+  single coincidence of a level-crossing and a pool-reopening this
+  pattern has produced. One more session confirming the pool stays open
+  at a comparable regime level (or empties again if regime drops back
+  below it) would be enough to consider promoting this to Validated
+  Rules.
+
+- **The fast-fail exit (`exit_fastfail_enabled`) — new item, first live
+  firing.**
+  Session: 21 Aug (n=1 — TRAVELFOOD, 6 sessions held since 14 Aug,
+  −0.51R, `NEVER_WORKED_FAST`/`EXIT_FASTFAIL`). Switch confirmed `true`
+  in `system_config` since 18-Aug-2026 (04:59 UTC); the code's own
+  comments (`control/position_lifecycle.py`) describe it as deliberately
+  off-by-default — "sells while the ordinary stop is still far away...
+  should be switched on deliberately, with the book watched for a few
+  sessions afterwards." Today is that watch window's first data point.
+  Related to, but a separate switch from, the stall exit: both close a
+  position that "never worked," but fastfail cuts sooner (6 sessions vs.
+  the stall clock's ~10-11) on a lower peak/gain threshold.
+  Confidence: none yet — n=1.
+  Needed before any verdict: several more firings, specifically watching
+  whether the trades it cuts would genuinely have gone on to a larger
+  loss (the risk its own code comments name) or whether it is cutting
+  trades the ordinary stop or the stall clock would have resolved
+  acceptably on their own.
 
 - **Small CNC clip sizes turning gross wins into net losses on fixed
   charges.**
@@ -483,6 +539,12 @@ still supports the bet, rather than re-deriving the original decision.)*
   resolved, 60% win rate. Explicitly checked and empty.
   **20 Aug: no new evidence** — zero swing activity today. Stays at n=5
   resolved, 60% win rate. Explicitly checked and empty.
+  **21 Aug: three more resolutions, converging toward the pre-promotion
+  baseline.** SCI/MOM −0.38R (`NEVER_WORKED`), TRAVELFOOD/MOM −0.51R
+  (`NEVER_WORKED_FAST`, see the new fast-fail item above), CARBORUNIV/MOM
+  +0.281R (`GAVE_BACK_THE_MOVE`). n=5 → **n=8 resolved (4 wins, 4
+  losses, 50%)** — converging toward MOM's original 50% pre-promotion
+  win rate rather than diverging from it. VCE/RNG: no new closes.
 
 ---
 
