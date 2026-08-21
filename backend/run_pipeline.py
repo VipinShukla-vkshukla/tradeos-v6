@@ -364,8 +364,24 @@ def main():
                 # independent prune could not run.
                 logger.warning(f"  staging roll-off skipped: {e}")
 
+        # ── Quote-parity diagnostic log ──────────────────────────────────────
+        # Unbounded since 04-Aug (see migration 092). Only check_quote_parity()
+        # reads it live, 5 days deep — this window is a 6x margin, not the
+        # learning record, so it's a plain delete like staging above.
+        qp = {}
+        if cfg_bool("storage_quote_parity_rolloff_enabled", False):
+            keep_qp = cfg_int("storage_quote_parity_keep_days", 30)
+            try:
+                row = (get_supabase().rpc("rolloff_quote_parity",
+                                          {"keep_days": keep_qp}).execute().data or [{}])[0]
+                qp = {"deleted": row.get("deleted", 0), "cutoff": row.get("cutoff")}
+                logger.info(f"  intraday_quote_parity: deleted {qp['deleted']} row(s) "
+                            f"before {qp['cutoff']}")
+            except Exception as e:
+                logger.warning(f"  quote-parity roll-off skipped: {e}")
+
         return {"archived": archived, "deleted": deleted, "cutoff": cutoff,
-                "keep_days": keep, "staging": staging}
+                "keep_days": keep, "staging": staging, "quote_parity": qp}
 
 
     # ── Phase 0 steps ─────────────────────────────────────────────────────────

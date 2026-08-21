@@ -1,0 +1,73 @@
+name: TradeOS Weekly Off-Platform Backup
+
+# Runs tools/backup.py (see backend/tools/backup.py) and commits the dump to
+# this repo — a second platform, independent of Supabase, at zero cost.
+#
+# WHY A NEW TOP-LEVEL backups/ FOLDER, NOT backend/data/backups/
+# backend/data/ is gitignored wholesale (logs, models, local scratch) and
+# that rule should stay broad. A dump written there locally stays local,
+# which is fine for an ad-hoc safety copy; this workflow writes to backups/
+# at the repo root instead, so CI's copy is the one that is actually versioned.
+#
+# WHY COMMIT RATHER THAN upload-artifact
+# backup.py already prunes to the last `--keep` dumps (default 8, ~2 months
+# of weeklies) by reading whatever is in --out. Artifacts expire on GitHub's
+# own clock and a fresh runner never sees a previous run's artifact, so the
+# tool's own pruning would never engage. Committing to the repo is the
+# storage the tool was already designed to manage.
+
+on:
+  schedule:
+    - cron: '30 2 * * 6'   # Saturday 08:00 IST — clear of market days and the Sunday brain chain
+  workflow_dispatch:        # manual "Run workflow" button, for testing
+
+permissions:
+  contents: write            # needed to push the dump back to the repo
+
+env:
+  TZ: Asia/Kolkata
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  backup:
+    name: "🗄️ Weekly Supabase dump"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Dump + verify + prune
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TOTAL_CAPITAL:        ${{ secrets.TOTAL_CAPITAL }}
+        run: python -m tools.backup --out ../backups
+
+      - name: Commit the dump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ../backups
+          git diff --cached --quiet && echo "nothing to commit" || \
+            git commit -m "backup: weekly off-platform dump ($(date -u +%Y-%m-%d))"
+          git push
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-logs-${{ github.run_id }}
+          path: backend/logs/
+          retention-days: 3
