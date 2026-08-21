@@ -1,11 +1,12 @@
 # TradeOS Knowledge Base — Living Document
 
-**Last updated:** 17 August 2026 (8 sessions of evidence, plus direct
+**Last updated:** 18 August 2026 (9 sessions of evidence, plus direct
 `final_score` and `implied_rr` tercile measurements against the full
 historical sample)
 **Source reviews:** `daily/2026-08-06.md`, `daily/2026-08-07.md`,
 `daily/2026-08-10.md`, `daily/2026-08-11.md`, `daily/2026-08-12.md`,
-`daily/2026-08-13.md`, `daily/2026-08-14.md`, `daily/2026-08-17.md`
+`daily/2026-08-13.md`, `daily/2026-08-14.md`, `daily/2026-08-17.md`,
+`daily/2026-08-18.md`
 
 **18-Aug note:** this file (and `daily/2026-08-13.md`) briefly reverted to
 its 12-Aug state twice — the `fix/quote-parity-and-gabriel-gap-gates`
@@ -75,6 +76,9 @@ contradiction.)*
   **17-Aug: SUMICHEM, ninth occurrence.** Peaked +0.67R (+5.05%), gave
   back exactly 50%, exited +0.34R/+2.57%, clean execution (4 minutes,
   zero blocks). n=8 → **n=9**. Confidence stays High.
+  **18-Aug: four more, all SDN/SHORT.** INOXWIND (+0.269R), TATASTEEL
+  (+0.405R), COFORGE (+0.413R), GLAND (+0.160R). n=9 → **n=13**.
+  Confidence stays High.
 
 - **The stall exit closes a swing position that peaked and then reversed
   without ever earning its own conviction, rather than letting the slot
@@ -228,6 +232,8 @@ contradiction.)*
   15 and 5 minutes after their respective freed slots — looser timing
   than prior sessions but the same mechanism. Confidence unchanged at
   Medium.
+  **18-Aug: no new evidence** — zero swing candidates to test. Explicitly
+  checked and empty.
 
 - **Pre-market evaluation producing an exit decision that must wait for
   market open, adding execution slippage — PROMOTED from Ideas Requiring
@@ -246,6 +252,8 @@ contradiction.)*
   timing is exactly fixed. Worth a real code look (defer pre-market
   evaluation until market-open confirmation) if it recurs once more —
   not yet, per this file's own discipline against acting on two sessions.
+  **18-Aug: no new evidence** — zero swing exits, zero `MARKET_CLOSED`
+  occurrences. Stays at n=2, Low-medium confidence.
 
 ---
 
@@ -276,6 +284,13 @@ review knows to keep watching, not to re-derive from scratch.)*
   the first time.
   **17 Aug: no new evidence** — zero intraday trades closed today (first
   such session on real detection volume, 185 setups). Stays ~18-19 legs.
+  **18 Aug: biggest single-session sample by a wide margin — sample-size
+  floor cleared, session-count floor not yet.** 12 trades (5 wins, 7
+  losses), all SDN/SHORT, on the lowest-regime-score session yet (44).
+  ~18-19 legs, 7 wins → **~30-31 legs, 12 wins** (~40% cumulative).
+  `MIN_SAMPLE=20` now cleared; the ≥10-session requirement is not (6 of
+  10 sessions with closes so far: 6, 7, 10, 13, 14, 18 Aug). Reporting
+  progress on one axis of the bar, not a verdict on the whole.
   Needed before any verdict: ~20 resolved outcomes across ≥10 sessions
   (this project's own `MIN_SAMPLE`/`MIN_SESSIONS` standard from
   `tools/weekly_review.py`).
@@ -292,6 +307,11 @@ review knows to keep watching, not to re-derive from scratch.)*
   sessions now for "does a soft regime empty the candidate pool," a
   separate question from the original one about whether the cap itself is
   too tight.
+  **18 Aug: third confirming session, confidence rises.** Score 44 — the
+  lowest regime reading in the series — again produced zero buyable
+  swing candidates. n=2 → **n=3** sessions, all three among the lowest
+  regime scores recorded. Confidence this is regime-linked rather than
+  coincidence: Low → **Medium**.
 
 - **Small CNC clip sizes turning gross wins into net losses on fixed
   charges.**
@@ -412,6 +432,8 @@ still supports the bet, rather than re-deriving the original decision.)*
   see Validated Rules). n=3 → **n=5 resolved** (3 wins, 2 losses, 60%),
   continuing to track at or above the 50% pre-promotion MOM baseline.
   VCE/RNG: no new closes.
+  **18 Aug: no new evidence** — zero swing activity today. Stays at n=5
+  resolved, 60% win rate.
 
 ---
 
