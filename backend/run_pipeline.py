@@ -380,8 +380,25 @@ def main():
             except Exception as e:
                 logger.warning(f"  quote-parity roll-off skipped: {e}")
 
+        # ── intraday_setups re-evaluation duplicates ────────────────────────
+        # Compacts, not deletes wholesale -- keeps the earliest row per
+        # (symbol, strategy, trade_date), matching dedupe_setups() exactly.
+        # See migration 093. Off by default: this is the learning record.
+        setups_compact = {}
+        if cfg_bool("storage_setups_compact_enabled", False):
+            keep_sc = cfg_int("storage_setups_compact_keep_days", 365)
+            try:
+                row = (get_supabase().rpc("compact_setups",
+                                          {"keep_days": keep_sc}).execute().data or [{}])[0]
+                setups_compact = {"deleted": row.get("deleted", 0), "cutoff": row.get("cutoff")}
+                logger.info(f"  intraday_setups: compacted {setups_compact['deleted']} "
+                            f"duplicate row(s) before {setups_compact['cutoff']}")
+            except Exception as e:
+                logger.warning(f"  setups compaction skipped: {e}")
+
         return {"archived": archived, "deleted": deleted, "cutoff": cutoff,
-                "keep_days": keep, "staging": staging, "quote_parity": qp}
+                "keep_days": keep, "staging": staging, "quote_parity": qp,
+                "setups_compact": setups_compact}
 
 
     # ── Phase 0 steps ─────────────────────────────────────────────────────────
