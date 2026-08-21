@@ -451,6 +451,31 @@ def check_kite() -> tuple[bool, str]:
                   + ", no broker config rejection today")
 
 
+def check_capital() -> tuple[bool, str]:
+    """
+    Does TOTAL_CAPITAL still match what the broker account actually holds?
+
+    capital_status() was only ever called from position_lifecycle, on its own
+    30-min GitHub Actions cadence — never from here, so a BLOCK-level gap
+    could sit on the dashboard while `health` reported nothing. Found
+    2026-08-21: configured Rs 30,000 vs Rs 20,307 actual, 32% short, invisible
+    to this command. Runs live and persists, refreshing the dashboard's
+    snapshot too.
+
+    UNKNOWN (no broker session when this ran) passes — "could not check" must
+    not read the same as a measured BLOCK.
+    """
+    from config import get_supabase
+    from control.capital_check import capital_status
+    sb = get_supabase()
+    st = capital_status(sb, persist=True)
+    if st["severity"] == "BLOCK":
+        return False, st["message"]
+    if st["severity"] == "UNKNOWN":
+        return True, f"not verified this run — {st['message']}"
+    return True, st["message"]
+
+
 def check_daemon() -> tuple[bool, str]:
     """
     Is a monitor alive, and WHERE?
@@ -1937,6 +1962,7 @@ CHECKS = [
     ("kite",     "no broker session, or the IP is not allowlisted",              check_kite,     False),
     ("data",     "decisions would run on stale inputs",                          check_data_freshness, False),
     ("broker",   "resting orders do not match the positions they protect",       check_broker_consistency, False),
+    ("capital",  "TOTAL_CAPITAL drifts from what the broker account actually holds", check_capital, False),
     ("stops",    "an open position is trading past the stop that should have closed it", check_stops_holding, False),
     ("qty_fields", "current_qty/actual_qty/kite_qty silently disagree, hiding drift from the dashboard", check_quantity_fields, False),
     ("daemon",   "nothing is watching your positions right now",                 check_daemon,   False),

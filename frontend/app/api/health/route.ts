@@ -346,29 +346,41 @@ export async function GET() {
         };
         const inr = (n: number | null | undefined) =>
           n == null ? '—' : `₹${Math.round(n).toLocaleString('en-IN')}`;
-        const stale = snapAt ? dayDiff(String(snapAt).slice(0, 10), todayIST) > 1 : false;
+        // Day-level staleness (last refresh predates today) OR, during market
+        // hours, a snapshot older than the job's own 30-min cadence — either
+        // means position_lifecycle has stopped refreshing this, which is its
+        // own problem distinct from whatever number it last recorded.
+        const dayStale = snapAt ? dayDiff(String(snapAt).slice(0, 10), todayIST) > 1 : false;
+        const ageMin = snapAt ? (Date.now() - new Date(String(snapAt)).getTime()) / 60000 : Infinity;
+        const marketHours = !isWeekend && ist.getUTCHours() >= 9 && ist.getUTCHours() < 16;
+        const stale = dayStale || (marketHours && ageMin > 45);
+        // UNKNOWN ("no broker session when this last ran") must never render
+        // as WARN — that is the same bucket a measured capital gap uses, and
+        // folding them together is exactly the "no opinion vs measured bad"
+        // trap this project has paid for before (see CLAUDE.md).
+        const severity: Sev = stale ? 'WARN' : s.severity === 'UNKNOWN' ? 'INFO' : s.severity;
         add({
           id: 'cap_reconcile', group: 'Capital', label: 'Sizing capital vs broker',
-          severity: stale ? 'WARN' : (s.severity === 'UNKNOWN' ? 'WARN' : s.severity),
+          severity,
           value: s.broker_total == null
             ? `configured ${inr(s.configured)}, broker unknown`
             : `configured ${inr(s.configured)} vs broker ${inr(s.broker_total)}`
               + (s.gap_pct != null ? ` (${s.gap_pct > 0 ? '+' : ''}${s.gap_pct.toFixed(0)}%)` : ''),
           expected: 'within 10% of the account',
           detail: stale
-            ? `Snapshot is from ${String(snapAt).slice(0, 10)} — run the position lifecycle to refresh it. ${s.message}`
+            ? `Snapshot is from ${String(snapAt).slice(0, 10)} (${ageMin < Infinity ? `${ageMin.toFixed(0)}m old` : 'age unknown'}) — position_lifecycle has not refreshed it. Run \`python -m tools.health\` for a live read. Last known: ${s.message}`
             : s.message + (s.broker_total != null
                 ? ` Cash ${inr(s.broker_cash)} + holdings ${inr(s.broker_invested)}.` : ''),
           fix: (s.gap ?? 0) < 0
             ? 'Set TOTAL_CAPITAL in backend/.env (and the GitHub secret) to the real figure, or fund the account.'
-            : undefined,
+            : stale ? 'python -m tools.health   (refreshes this snapshot live)' : undefined,
         });
       } else {
         add({
           id: 'cap_reconcile', group: 'Capital', label: 'Sizing capital vs broker',
           severity: 'INFO', value: 'not yet checked', expected: 'within 10% of the account',
           detail: 'Runs inside position_lifecycle, which needs a Kite session.',
-          fix: 'python -m control.capital_check',
+          fix: 'python -m tools.health   (or control.capital_check directly)',
         });
       }
     } catch {
