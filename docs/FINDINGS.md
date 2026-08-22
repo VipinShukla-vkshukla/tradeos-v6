@@ -10660,3 +10660,25 @@ discover_engines 4, weekly_review 7).
 `script_profiler`'s 28 proposals are now visible but were not reviewed —
 a tool this session did not otherwise touch tonight, named rather than
 investigated.
+
+
+## 2026-08-22 -- F-52 (decision, Gate 3) -- PDL, PBK, RNG, GDB: KEEP, all
+four, explicit operator sign-off
+
+Gate 3 (docs/TRADEOS_ROADMAP.md) requires an explicit per-engine
+retire/keep decision, never batched, never assumed by silence. Raised as
+an open question this session (thin samples: PBK/GDB near-zero rows,
+PDL/RNG rare-by-design). Operator's answer, verbatim in substance: keep
+all four -- retiring was never the right question. The mechanism this
+session built (F-48 confirmation priority, F-50 out-of-sample-validated
+priority) IS the intended alternative to retirement: evaluate what each
+engine's wins have in common, prioritize toward it, without needing to
+remove an engine that simply has not fired often yet. PDL and RNG are
+additionally understood to be RARE BY DESIGN (both require a hard
+confirmation prerequisite before they detect anything at all -- see
+F-49's own inventory) -- low frequency is not the same claim as low
+quality for either of them.
+
+No code change. No engine's lifecycle state was touched. Logged here
+because Gate 3 requires the decision recorded, not because anything
+needed to move.
