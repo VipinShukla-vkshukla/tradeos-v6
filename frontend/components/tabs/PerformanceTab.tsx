@@ -101,42 +101,88 @@ function MonthlyPnLChart({ data }: { data: ClosedPosition[] }) {
 }
 
 // ─── Strategy breakdown (from closed_positions) ───────────────────────────
+//
+// GROUPED BY sub_engine, NOT strategy — 22-Aug-2026 (migration 094).
+//
+// `strategy` is the FAMILY (SDN, ORB, VWR, ...), and for SDN specifically
+// that one label covers three conditions with wildly different records —
+// VREJ (VWAP rejection) resolving 83% winners over its clean post-fix
+// sample, BRKD (range breakdown) 8%, TRP (the trap) 0%. Averaged together
+// under "SDN" they read as one mediocre row and the split this whole panel
+// exists to show — which of these is actually working — disappears back
+// into the average.
+//
+// `sub_engine` is that condition, carried from `intraday_setups.meta.
+// sub_engine` through paper_broker.open_position() and position_lifecycle.
+// close() (see F-39/F-41 for the backend correctness, migration 094 for the
+// column). It equals `strategy` for every engine except SDN, so this
+// change is additive: an ORB row still reads "ORB", a SWING row (no
+// sub_engine vocabulary at all) still reads whatever `strategy` always
+// did. Only SDN's pooled row ever splits into three.
+const THIN_SAMPLE_FLOOR = 10;
+
 function StrategyBreakdown({ data }: { data: ClosedPosition[] }) {
-  const byStrategy: Record<string, { wins: number; losses: number; pnl: number }> = {};
+  const byEngine: Record<string, { wins: number; losses: number; pnl: number; family: string }> = {};
   for (const p of data) {
-    const s = p.strategy ?? 'UNKNOWN';
-    if (!byStrategy[s]) byStrategy[s] = { wins: 0, losses: 0, pnl: 0 };
-    if ((p.realized_pnl ?? 0) > 0) byStrategy[s].wins++;
-    else byStrategy[s].losses++;
-    byStrategy[s].pnl += p.realized_pnl ?? 0;
+    const family = p.strategy ?? 'UNKNOWN';
+    const s = p.sub_engine || family;
+    if (!byEngine[s]) byEngine[s] = { wins: 0, losses: 0, pnl: 0, family };
+    if ((p.realized_pnl ?? 0) > 0) byEngine[s].wins++;
+    else byEngine[s].losses++;
+    byEngine[s].pnl += p.realized_pnl ?? 0;
   }
 
-  const rows = Object.entries(byStrategy)
-    .map(([strategy, v]) => ({ strategy, ...v, wr: v.wins + v.losses > 0 ? (v.wins / (v.wins + v.losses)) * 100 : 0 }))
+  const rows = Object.entries(byEngine)
+    .map(([engine, v]) => ({
+      engine, ...v,
+      n: v.wins + v.losses,
+      wr: v.wins + v.losses > 0 ? (v.wins / (v.wins + v.losses)) * 100 : 0,
+    }))
+    // Winners first, losers last — the point of this panel is to make that
+    // ordering itself the answer to "what's differentiating them".
     .sort((a, b) => b.pnl - a.pnl);
 
   return (
     <div className="space-y-2">
-      {rows.map((r) => (
-        <div key={r.strategy} className="flex items-center gap-3 p-2.5 rounded-lg bg-panel-hover">
-          <div className="w-24 shrink-0">
-            <div className="font-medium text-sm">{r.strategy}</div>
-            <div className="text-xs text-muted-foreground">{r.wins + r.losses} trades</div>
-          </div>
-          <div className="flex-1">
-            <div className="flex justify-between text-xs mb-1">
-              <span className="text-muted-foreground">Win Rate</span>
-              <span className={r.wr >= 50 ? 'text-profit' : 'text-loss'}>{r.wr.toFixed(0)}%</span>
+      {rows.map((r) => {
+        const thin = r.n < THIN_SAMPLE_FLOOR;
+        return (
+          <div key={r.engine} className="flex items-center gap-3 p-2.5 rounded-lg bg-panel-hover">
+            <div className="w-24 shrink-0">
+              <div className="font-medium text-sm flex items-center gap-1">
+                {r.engine}
+                {thin && (
+                  <span
+                    className="text-[9px] px-1 py-0.5 rounded border border-border/60 text-muted-foreground"
+                    title={`Only ${r.n} closed trade(s) — below ${THIN_SAMPLE_FLOOR}, read this row as an early signal, not a verdict`}
+                  >
+                    thin
+                  </span>
+                )}
+              </div>
+              {/* Family shown only when sub_engine actually differs from it
+                  — i.e. only for SDN's three conditions — so every other
+                  row stays exactly as compact as it was before this change. */}
+              {r.engine !== r.family && (
+                <div className="text-[10px] text-muted-foreground/70">{r.family}</div>
+              )}
+              <div className="text-xs text-muted-foreground">{r.n} trades</div>
             </div>
-            <div className="h-1.5 bg-border rounded-full overflow-hidden">
-              <div className={`h-full rounded-full ${r.wr >= 50 ? 'bg-profit' : 'bg-loss'}`} style={{ width: `${r.wr}%` }} />
+            <div className="flex-1">
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-muted-foreground">Win Rate</span>
+                <span className={r.wr >= 50 ? 'text-profit' : 'text-loss'}>{r.wr.toFixed(0)}%</span>
+              </div>
+              <div className="h-1.5 bg-border rounded-full overflow-hidden">
+                <div className={`h-full rounded-full ${r.wr >= 50 ? 'bg-profit' : 'bg-loss'}`} style={{ width: `${r.wr}%` }} />
+              </div>
+            </div>
+            <div className={`text-right shrink-0 text-sm font-mono font-medium ${r.pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
+              {formatCurrency(r.pnl, { compact: true, showSign: true })}
             </div>
           </div>
-          <div className={`text-right shrink-0 text-sm font-mono font-medium ${r.pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
-            {formatCurrency(r.pnl, { compact: true, showSign: true })}
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

@@ -3689,6 +3689,11 @@ class IntradayEngine:
             paper_broker.open_position(
                 st.symbol, qty, f.fill_price,
                 {"stop": st.stop, "target": st.target, "strategy": st.strategy,
+                 # setdefault()'d onto every setup at detection (registry.py,
+                 # F-39) — st.strategy fallback here only guards a setup built
+                 # by a path that bypasses the registry entirely (tests,
+                 # mainly), not the live detection loop.
+                 "sub_engine": st.meta.get("sub_engine") or st.strategy,
                  "invalidation_level": inv_level, "invalidation_note": inv_note,
                  "sector": st.meta.get("sector"),
                  "pick_label": pick_label,

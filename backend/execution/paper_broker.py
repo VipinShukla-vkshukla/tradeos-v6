@@ -308,6 +308,17 @@ def open_position(symbol: str, qty: int, fill_price: float, setup: dict,
             "invalidation_note": setup.get("invalidation_note"),
             "strategy": setup.get("strategy"),
             "intraday_strategy": setup.get("strategy") if framework == "INTRADAY" else None,
+            # THE CONDITION, NOT JUST THE FAMILY — 22-Aug-2026. `strategy` is
+            # SDN for all three of its conditions alike (VREJ/BRKD/TRP), which
+            # is exactly the number closed_positions has never been able to
+            # answer: is THIS position's engine one of the ones actually
+            # working. `intraday_setups.meta.sub_engine` has carried this
+            # correctly since F-39/F-41 but died at the open_positions
+            # boundary — nothing here ever asked the setup for it. `None` for
+            # SWING (sub_engine is an intraday-only vocabulary; every SWING
+            # row falls back to `strategy` at read time, same shape as any
+            # older intraday row written before this column existed).
+            "sub_engine": setup.get("sub_engine") if framework == "INTRADAY" else None,
             # SECTOR, on every paper row. It was written by the live swing path
             # and by nothing else, so sector was NULL on all fourteen closed
             # intraday positions — which makes "did these engines put me in one

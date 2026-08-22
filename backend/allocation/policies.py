@@ -64,6 +64,43 @@ def _engine_of_scored(s: dict) -> str:
     return str(meta.get("sub_engine") or getattr(p, "source", "") or "")
 
 
+def _confirmation_key(s: dict) -> int:
+    """
+    0 when the proposal's own detection confirmed itself before firing
+    (currently: ORB's `retest_confirmed`, F-37), 1 otherwise — a pure
+    TIE-BREAKER among same-engine candidates that would otherwise be
+    ordered arbitrarily.
+
+    WHY THIS IS SAFE TO SHIP ARMED, UNLIKE EVERY OTHER NEW RULE THIS
+    SESSION. giveback_pct, short_runway_tighten and volume_decay each ship
+    inert because they can ADMIT or DECLINE a trade with zero calibration
+    behind the threshold. This cannot: `_interleave_by_engine` already
+    ranks same-engine candidates by edge, and within one engine's own
+    prior every candidate carries very nearly the same edge (see that
+    function's own 19-Aug finding) — so ties are already being broken by
+    something, today by whatever order cost_r happens to produce. This
+    just replaces an ARBITRARY tie-break with an EVIDENCE-BACKED one: of
+    21-Aug's 6 unconfirmed ORB trades, 0 won; the one confirmed trade
+    (POWERGRID) closed at +1.65R. The broader post-18-Aug sample agrees in
+    direction (confirmed 33% win / +0.18% mean vs unconfirmed 0% / -0.45%,
+    n=7 vs 17 — thin, but consistent). It cannot admit a candidate that
+    would otherwise have been declined, or decline one that would have
+    cleared — only change WHICH of several already-tied candidates gets a
+    shared slot. `alloc_intraday_confirmation_priority`, default true.
+
+    GENERIC ON PURPOSE. Reads `retest_confirmed` because that is the one
+    signal that exists today — but the key name is not ORB-specific, so
+    any engine that later stamps the same field (SDN's BRKD condition,
+    8% win rate with no retest-style check at all, is the clear next
+    candidate — not built tonight) is picked up with no change here.
+    """
+    if not cfg_bool("alloc_intraday_confirmation_priority", True):
+        return 0
+    p = s.get("proposal")
+    meta = (getattr(p, "meta", None) or {}) if p is not None else {}
+    return 0 if meta.get("retest_confirmed") is True else 1
+
+
 def _interleave_by_engine(scored: list[dict]) -> list[dict]:
     """
     Pure. Every engine's BEST candidate first, then every engine's second, and
@@ -93,7 +130,11 @@ def _interleave_by_engine(scored: list[dict]) -> list[dict]:
     its slot to a same-engine sibling — which is precisely the case this is
     for, and precisely why it is safe to have on by default.
     """
-    ordered = sorted(scored, key=lambda x: -_edge_key(x))
+    # Edge first, then confirmation as a tie-break — see _confirmation_key's
+    # own docstring for why this is the one new ranking rule this session
+    # ships armed. It never outranks edge; it only decides order among
+    # candidates edge already could not separate.
+    ordered = sorted(scored, key=lambda x: (-_edge_key(x), _confirmation_key(x)))
     seen: dict[str, int] = {}
     tagged = []
     for s in ordered:
@@ -101,9 +142,10 @@ def _interleave_by_engine(scored: list[dict]) -> list[dict]:
         rank = seen.get(eng, 0)
         seen[eng] = rank + 1
         tagged.append((rank, s))
-    # (round, then edge within the round). Fully determined by the pair, so
-    # this does not depend on the stability of the sort above for its result.
-    tagged.sort(key=lambda t: (t[0], -_edge_key(t[1])))
+    # (round, then edge, then confirmation within the round). Fully
+    # determined by the triple, so this does not depend on the stability of
+    # the sort above for its result.
+    tagged.sort(key=lambda t: (t[0], -_edge_key(t[1]), _confirmation_key(t[1])))
     return [s for _, s in tagged]
 
 

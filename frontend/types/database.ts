@@ -141,6 +141,12 @@ export interface ClosedPosition {
   mode?: string | null;
   framework?: string | null;
   intraday_strategy?: string | null;
+  // The CONDITION, not just the family — migration 094. `strategy` is SDN
+  // for all three of its conditions alike; this is what actually separates
+  // an 83%-win-rate condition from an 8%-win one that happened to share an
+  // engine label. NULL for SWING (sub_engine is intraday-only vocabulary)
+  // and for any row closed before this column existed.
+  sub_engine?: string | null;
 }
 
 // ---------------------------------------------------------------------------

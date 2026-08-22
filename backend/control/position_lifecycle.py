@@ -1019,6 +1019,16 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
         # existing row needed the alert log instead of just reading the row.
         "direction":        d,
         "intraday_strategy": pos.get("intraday_strategy"),
+        # THE CONDITION, NOT JUST THE FAMILY — 22-Aug-2026, mirrors why
+        # `pick_label`/`entry_rationale` are carried through above rather
+        # than left to be reconstructed later: closed_positions is the one
+        # table the dashboard's StrategyBreakdown panel actually reads, and
+        # it has never been able to tell SDN's 83%-win VREJ condition apart
+        # from its 8%-win BRKD one, because open_positions never carried
+        # this field to lose in the first place. None on rows opened before
+        # this column existed and on every SWING row (sub_engine is an
+        # intraday-only vocabulary) — both read back as `strategy` alone.
+        "sub_engine":       pos.get("sub_engine"),
         "entry_date":       pos.get("entry_date"),
         "entry_price":      entry,
         "actual_qty":       total_qty,

@@ -10268,3 +10268,174 @@ to the exact flat-default behaviour this book has always had.
 **Same daemon-deploy gap as every recent finding.** `tools.simulate`
 proves the code correct by importing it fresh; `intraday/run.py`'s
 long-running process does not pick any of this up until restarted.
+
+
+## 2026-08-22 — F-47 (new column, backend + frontend) — `sub_engine` never
+survived the paper-entry write; open_positions/closed_positions could not
+distinguish SDN's 83%-win VREJ from its 8%-win BRKD. Migration 094 adds it
+end to end, dashboard's "Strategy P&L Breakdown" now groups by it
+
+**Ran:** `tools.verify` (737 checks, 74 modules, green — 7 new), live
+disposable insert against `open_positions` confirming the column round-
+trips, `npx tsc --noEmit` confirming no new type errors in the changed
+frontend files.
+
+### 1 — WHAT SURFACED IT
+
+Operator's own ask, reviewing 21-Aug's numbers: "can we merge this view in
+Strategy P&L Breakdown... I want to identify what is differentiating
+winners vs losers." Checked the actual panel (`PerformanceTab.tsx`'s
+`StrategyBreakdown`) against the actual schema rather than assume it
+already showed this.
+
+### 2 — ROOT CAUSE
+
+`intraday_setups.meta.sub_engine` has correctly separated SDN's three
+conditions since F-39/F-41 — but `open_positions` and `closed_positions`
+never had an equivalent column. `paper_broker.open_position()` wrote
+`strategy` (the family) from the setup dict and nothing else; `position_
+lifecycle.close()` carried whatever `open_positions` had, which was never
+the condition. The correctness fix from two nights ago was real and
+verified at the detection layer, and evaporated at the exact boundary
+where a human would go to see it.
+
+### 3 — FIX, THREE WRITE SITES PLUS ONE SCHEMA CHANGE
+
+Migration 094: `sub_engine TEXT` added to both `open_positions` and
+`closed_positions`, additive, NULL on every historical row (nothing to
+backfill from — the value was never captured, not merely dropped).
+
+`paper_broker.py::open_position()`: writes `setup.get("sub_engine")` for
+INTRADAY, explicit `None` for SWING (sub_engine is an intraday-only
+vocabulary per `docs/TERMINOLOGY.md`).
+
+`engine.py::_maybe_open_paper()`: supplies the value from the setup's own
+meta — `st.meta.get("sub_engine") or st.strategy` — the identical fallback
+expression F-39's own `setdefault()` uses, so a setup that somehow bypassed
+the registry still records something sensible rather than None.
+
+`position_lifecycle.py::close()`: carries `pos.get("sub_engine")` from
+`open_positions` through to the `closed` dict, same pattern as `sector`/
+`pick_label` above it.
+
+**Frontend** (`PerformanceTab.tsx`): `StrategyBreakdown` now groups by
+`sub_engine || strategy` instead of `strategy` alone. Family shown as a
+secondary label only when it differs from the row's own name (i.e. only
+for SDN's three conditions — every other engine's row is exactly as
+compact as before). A "thin" badge appears under 10 closed trades so an
+early, small-sample row is not read with the same confidence as an
+established one — `MIN_MEANINGFUL_SAMPLE` existed for the tab's overall
+KPI already but was never applied per-row here. Dollar amount unchanged.
+`ClosedPosition` type updated; the query layer already selects `'*'`, so no
+query change was needed for the new column to reach the frontend.
+
+### 4 — VERIFIED
+
+New file `tests/test_sub_engine_on_positions.py`, 7 checks: `open_position`
+carries `sub_engine` for INTRADAY, falls back sensibly when the setup
+dict lacks it (a caller-level concern, checked separately from `open_
+position` itself, which records exactly what it is handed), never writes
+it for SWING even if a setup dict happens to carry the key, the `_maybe_
+open_paper` fallback expression itself, and `close()`'s carry-through for
+both a populated and a pre-migration (None) case. `tools.verify`: 737
+checks, 74 modules. Live round-trip: inserted and read back a disposable
+`open_positions` row with `sub_engine='VREJ'`, cleaned up. `npx tsc
+--noEmit`: zero new errors in `PerformanceTab.tsx`/`types/database.ts`
+(the wider codebase has pre-existing, unrelated type errors in other files
+— confirmed by diffing which files' errors appeared, not assumed absent).
+
+### 5 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+No historical row is backfilled — every closed position before this
+migration reads `sub_engine=NULL` and falls back to `strategy`, same as it
+always displayed. Could not visually verify the rendered dashboard in a
+live browser — this requires the operator's own configured Supabase
+environment, which this session does not have credentials for; verified
+via type-checking and full data-path tracing (query → type → component)
+instead. `EngineLeaderboard` (the adjacent panel, reading `performance_
+metrics.engine_stats`, a different pipeline) was not touched — out of
+scope, not what was asked.
+
+
+## 2026-08-22 — F-48 (new, shipped ARMED) — a same-engine tie-break
+prioritising retest-confirmed candidates in the exploration queue, without
+touching edge, the bar, or admission counts
+
+**Ran:** `tools.verify` (737 checks, 74 modules, green — 4 new),
+demonstrated failing before the fix landed, live config confirmed via
+`cfg_bool()`.
+
+### 1 — WHAT SURFACED IT
+
+Operator's own question, following the POWERGRID-vs-the-rest finding in
+21-Aug's ORB trades: "do we have this retest logic working for all
+engines? If yes, can we prioritize where retest is true but not block
+anything." Checked every engine file (`orb.py`, `short_distribution.py`,
+`squeeze.py`, `pullback.py`, `vwap_reclaim.py`, `gap_and_go.py`, `gap_
+down_bounce.py`, `range_fade.py`, `prev_day_levels.py`) rather than assume.
+
+**Inventory, not assumed:** only ORB has an optional, meta-stamped
+`retest_confirmed` signal (F-37). PDL and RNG require an equivalent
+confirmation as a hard PREREQUISITE for detection at all — every setup
+they produce already has it, nothing to prioritize. SDN's three
+conditions, VCE, PBK, VWR, GAP and GDB have no such signal today. SDN's
+BRKD condition (8% win rate over the post-fix sample, structurally the
+same "raw breakout, no hold check" shape as ORB's unconfirmed fallback,
+which measured 0% win rate over the same window) is the clear next
+candidate for one — not built tonight, named for a future pass.
+
+### 2 — MECHANISM
+
+`allocation/policies.py::_confirmation_key(s)`: reads `retest_confirmed`
+from the scored proposal's own `meta`; 0 when `True`, 1 otherwise
+(including absent — an engine with no signal at all is not scored as
+worse than one that checked and failed). Wired into `_interleave_by_
+engine`'s TWO sort calls as a secondary key, always after `-_edge_key(x)`:
+`sorted(scored, key=lambda x: (-_edge_key(x), _confirmation_key(x)))`.
+
+**Why this is a tie-break and not a gate.** `_interleave_by_engine`'s own
+19-Aug finding is that same-engine candidates in one cycle carry very
+nearly the SAME edge (they share a prior; only `cost_r` separates them),
+so a tie already exists today and is broken by whatever arbitrary order
+`cost_r` happens to produce. This replaces that arbitrary tie-break with
+an evidence-backed one. A worse-edge confirmed candidate can never jump a
+better-edge unconfirmed one — edge is checked first, always.
+
+### 3 — WHY THIS SHIPS ARMED, NOT INERT LIKE EVERY OTHER NEW RULE THIS
+SESSION
+
+`giveback_pct`, `short_runway_tighten_enabled` and `intraday_volume_decay_
+enabled` all ship OFF because each can ADMIT or DECLINE a trade with zero
+calibration behind its threshold. This cannot, by construction — it only
+reorders candidates edge already tied, never changes whether anything
+clears the bar, and the aggregate TAKE count for a cycle is unaffected. It
+also already has real, if thin, evidence behind it: of 21-Aug's 6
+unconfirmed ORB trades, 0 won; the 1 confirmed trade (POWERGRID) closed
++1.65R; the broader post-18-Aug sample agrees in direction (confirmed 33%
+win / +0.18% mean vs unconfirmed 0% / -0.45% mean, n=7 vs 17). Named as a
+deliberate departure from this session's own "ship inert" pattern, not a
+quiet exception to it — `alloc_intraday_confirmation_priority` remains a
+one-flag rollback if the operator would rather it start OFF.
+
+### 4 — VERIFIED
+
+4 new checks in `tests/test_engine_fairness_and_bands.py`: the exact live
+shape (two ORB candidates, one confirmed, one not, equal edge) orders the
+confirmed one first without touching either proposal's own `edge`; a
+worse-edge confirmed candidate never jumps a better-edge unconfirmed one;
+an engine with no `retest_confirmed` field at all is not penalised
+relative to an explicit `False`; the switch off restores plain edge order
+with no confirmation influence. Demonstrated failing first — reverted the
+sort key to `-_edge_key(x)` alone, watched the live-shape test fail
+(`['ABCAPITAL', 'POWERGRID']` instead of the expected order), restored the
+fix, re-ran green. `tools.verify`: 737 checks, 74 modules. Live config
+confirmed via `cfg_bool()`, armed `true`.
+
+### 5 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+Does not extend retest-style confirmation to any other engine — BRKD is
+named as the highest-value next candidate given the direct parallel to
+ORB's own unconfirmed-fallback finding, but reusing `_retest_and_held()`
+inside `short_distribution.py` was not attempted tonight; a real design
+pass, not a copy-paste. Like every other change tonight, ships in code
+only until the daemon is redeployed.

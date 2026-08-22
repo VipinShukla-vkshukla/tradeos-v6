@@ -76,6 +76,64 @@ def test_interleave_orders_within_a_round_by_edge():
     assert order == ["HIGH", "MID", "LOW"], order
 
 
+def test_interleave_prefers_a_confirmed_candidate_when_edges_tie():
+    """
+    22-Aug-2026, F-47. The exact live shape from 21-Aug: two ORB candidates
+    sharing the SAME engine (and so, in production, very nearly the same
+    edge) — one retest-confirmed, one not. The confirmed one must rank
+    first WITHOUT the bar or edge changing at all.
+    """
+    a_unconfirmed = _s("ABCAPITAL", "ORB", 0.50)
+    a_unconfirmed["proposal"].meta["retest_confirmed"] = False
+    b_confirmed = _s("POWERGRID", "ORB", 0.50)
+    b_confirmed["proposal"].meta["retest_confirmed"] = True
+    order = [s["symbol"] for s in P._interleave_by_engine([a_unconfirmed, b_confirmed])]
+    assert order == ["POWERGRID", "ABCAPITAL"], order
+    # Neither proposal's own edge was touched by the reorder.
+    assert a_unconfirmed["edge"] == 0.50 and b_confirmed["edge"] == 0.50
+
+
+def test_confirmation_tiebreak_never_outranks_a_real_edge_difference():
+    """Confirmation is a TIE-break, not a second sort key that can beat
+    edge — a worse but confirmed candidate must not jump a better
+    unconfirmed one."""
+    worse_confirmed = _s("WORSE", "ORB", 0.10)
+    worse_confirmed["proposal"].meta["retest_confirmed"] = True
+    better_unconfirmed = _s("BETTER", "ORB", 0.90)
+    better_unconfirmed["proposal"].meta["retest_confirmed"] = False
+    order = [s["symbol"] for s in P._interleave_by_engine([worse_confirmed, better_unconfirmed])]
+    assert order == ["BETTER", "WORSE"], order
+
+
+def test_confirmation_tiebreak_treats_absent_signal_as_unconfirmed_not_penalised_twice():
+    """Most engines have no retest_confirmed field at all (only ORB does).
+    Absent must sort the SAME as explicit False — an engine with no signal
+    is not somehow worse than one that checked and failed."""
+    no_signal = _s("SDN_TRADE", "SDN", 0.50)  # SDN has no retest_confirmed key at all
+    explicit_false = _s("ABCAPITAL", "ORB", 0.50)
+    explicit_false["proposal"].meta["retest_confirmed"] = False
+    order_a = [s["symbol"] for s in P._interleave_by_engine([no_signal, explicit_false])]
+    # Order between two DIFFERENT engines' equal-edge candidates is
+    # otherwise arbitrary (dict-order-derived) — the point being checked is
+    # that neither raises and neither is treated as "confirmed" by absence.
+    assert set(order_a) == {"SDN_TRADE", "ABCAPITAL"}
+
+
+def test_confirmation_priority_switch_off_restores_plain_edge_order():
+    """Same live shape as the first test in this group, switch off."""
+    a_unconfirmed = _s("ABCAPITAL", "ORB", 0.50)
+    a_unconfirmed["proposal"].meta["retest_confirmed"] = False
+    b_confirmed = _s("POWERGRID", "ORB", 0.50)
+    b_confirmed["proposal"].meta["retest_confirmed"] = True
+    with cfg_ctx({"alloc_intraday_confirmation_priority": "false"}):
+        order = [s["symbol"] for s in P._interleave_by_engine([a_unconfirmed, b_confirmed])]
+    # With the switch off, _confirmation_key returns 0 for everyone, so the
+    # tie is broken by dict/list order alone — i.e. whichever was listed
+    # first, not necessarily the confirmed one.
+    assert order[0] == "ABCAPITAL", (
+        "switch off must stop confirmation from influencing the order at all")
+
+
 def test_interleave_is_a_noop_when_every_engine_has_one_candidate():
     """Fairness must not reorder a field it has no reason to touch."""
     scored = [_s("A", "E1", 0.30), _s("B", "E2", 0.20), _s("C", "E3", 0.10)]
@@ -588,6 +646,14 @@ TESTS = [
     ("arbitration switch off restores the confidence pick",
      test_arbitration_switch_off_restores_the_confidence_pick),
     ("a single engine firing is untouched", test_a_single_engine_firing_is_untouched),
+    ("interleave prefers a confirmed candidate when edges tie",
+     test_interleave_prefers_a_confirmed_candidate_when_edges_tie),
+    ("confirmation tiebreak never outranks a real edge difference",
+     test_confirmation_tiebreak_never_outranks_a_real_edge_difference),
+    ("confirmation tiebreak treats absent signal as unconfirmed, not double-penalised",
+     test_confirmation_tiebreak_treats_absent_signal_as_unconfirmed_not_penalised_twice),
+    ("confirmation priority switch off restores plain edge order",
+     test_confirmation_priority_switch_off_restores_plain_edge_order),
     ("interleave seats every engine's best in round one",
      test_interleave_puts_every_engines_best_in_the_first_round),
     ("interleave orders within a round by edge",

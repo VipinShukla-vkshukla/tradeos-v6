@@ -76,6 +76,7 @@ MODULES = [
     ("hurdle since floor",   "tests.test_hurdle_since"),
     ("feature edge study",   "tests.test_feature_edge_study"),
     ("intraday volume decay", "tests.test_intraday_volume_decay"),
+    ("sub_engine on positions", "tests.test_sub_engine_on_positions"),
     ("ai tier weight review", "tests.test_ai_tier_weight_review"),
     ("swing hold days",      "tests.test_swing_hold_days"),
     ("swing family maturity review", "tests.test_swing_family_maturity_review"),
