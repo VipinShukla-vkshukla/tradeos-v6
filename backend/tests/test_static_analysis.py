@@ -247,6 +247,8 @@ _FETCH_ALL_SORT_KEY = {
     "allocation_decisions": "id",
     "intraday_setups":      "id",
     "signal_log":           "id",
+    # Probed 22-Aug-2026: 103 rows, id 135-237(ish), all distinct.
+    "brain_proposals":      "id",
     # 55,963 rows and no `id` column. (symbol, date) is the table's natural key.
     "stock_data_daily":     "symbol,date",
     # Measured 2026-08-16 on the live table: 2,716 rows, NO `id` column — the

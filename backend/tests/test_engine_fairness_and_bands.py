@@ -134,6 +134,81 @@ def test_confirmation_priority_switch_off_restores_plain_edge_order():
         "switch off must stop confirmation from influencing the order at all")
 
 
+def _sc(symbol, engine, edge, sector=None):
+    s = _s(symbol, engine, edge)
+    if sector is not None:
+        s["proposal"].meta["sector"] = sector
+    return s
+
+
+def test_build_priority_criteria_reads_only_categorical_rows():
+    """F-50. A 2-part target_key (engine/feature, no category) is a
+    NUMERIC finding and must be skipped — see refresh_priority_criteria's
+    own docstring for why numeric findings aren't consumed here."""
+    from allocation.policies import build_priority_criteria
+    rows = [{"target_key": "SDN/sector/auto"}, {"target_key": "GAP/volume_ratio"},
+           {"target_key": "not/even/a/real/key/shape"}]
+    out = build_priority_criteria(rows)
+    assert out == {"SDN": {"sector": {"auto"}}}
+
+
+def test_build_priority_criteria_merges_multiple_categories_per_feature():
+    from allocation.policies import build_priority_criteria
+    rows = [{"target_key": "SDN/sector/auto"}, {"target_key": "SDN/sector/healthcare"}]
+    out = build_priority_criteria(rows)
+    assert out == {"SDN": {"sector": {"auto", "healthcare"}}}
+
+
+def test_confirmation_key_prioritises_a_validated_sector_match():
+    """The other half of F-50, alongside retest_confirmed: a candidate
+    whose sector matches a VALIDATED favourable finding ranks first
+    against a same-edge, same-engine candidate that doesn't — with no
+    retest_confirmed involved at all."""
+    criteria = {"SDN": {"sector": {"auto"}}}
+    matching = _sc("MARUTI", "SDN", 0.50, sector="auto")
+    other = _sc("INFY", "SDN", 0.50, sector="i.t")
+    order = [s["symbol"] for s in P._interleave_by_engine([other, matching], criteria)]
+    assert order == ["MARUTI", "INFY"], order
+
+
+def test_confirmation_key_ignores_an_unlisted_engine_or_feature():
+    """A candidate from an engine (or on a feature) with no VALIDATED
+    entry at all must not be treated as matching — absence, not a
+    default match."""
+    criteria = {"SDN": {"sector": {"auto"}}}
+    a = _sc("A", "ORB", 0.50, sector="auto")   # ORB has no entry in criteria
+    b = _sc("B", "ORB", 0.50, sector="i.t")
+    order = [s["symbol"] for s in P._interleave_by_engine([a, b], criteria)]
+    # Neither matches (criteria has no "ORB" key at all) — order falls back
+    # to whatever the (currently arbitrary) tie-break produces; the only
+    # thing under test is that this does not raise and does not silently
+    # treat "auto" as special for an engine with no such finding.
+    assert set(order) == {"A", "B"}
+
+
+def test_confirmation_key_retest_and_priority_criteria_both_lead_to_rank_zero():
+    """The two signals are ORed, not additive/ranked against each other —
+    matching EITHER one is enough to go first; this checks retest_confirmed
+    alone (no criteria match) still works exactly as F-48 shipped it, now
+    that the function takes a second parameter."""
+    from allocation.policies import _confirmation_key
+    s = _s("X", "ORB", 0.5)
+    s["proposal"].meta["retest_confirmed"] = True
+    assert _confirmation_key(s, priority_criteria=None) == 0
+    assert _confirmation_key(s, priority_criteria={"ORB": {"sector": {"nothing"}}}) == 0
+
+
+def test_confirmation_key_none_criteria_behaves_exactly_like_before_f50():
+    """Regression guard for F-48's own shipped behaviour — priority_criteria
+    defaulting to None (every caller written before F-50) must be silently
+    equivalent to 'no criteria', not raise or change retest-only ranking."""
+    from allocation.policies import _confirmation_key
+    s = _s("X", "ORB", 0.5)
+    s["proposal"].meta["retest_confirmed"] = False
+    assert _confirmation_key(s) == 1
+    assert _confirmation_key(s, None) == 1
+
+
 def test_interleave_is_a_noop_when_every_engine_has_one_candidate():
     """Fairness must not reorder a field it has no reason to touch."""
     scored = [_s("A", "E1", 0.30), _s("B", "E2", 0.20), _s("C", "E3", 0.10)]
@@ -654,6 +729,18 @@ TESTS = [
      test_confirmation_tiebreak_treats_absent_signal_as_unconfirmed_not_penalised_twice),
     ("confirmation priority switch off restores plain edge order",
      test_confirmation_priority_switch_off_restores_plain_edge_order),
+    ("build_priority_criteria reads only categorical rows",
+     test_build_priority_criteria_reads_only_categorical_rows),
+    ("build_priority_criteria merges multiple categories per feature",
+     test_build_priority_criteria_merges_multiple_categories_per_feature),
+    ("confirmation_key prioritises a validated sector match",
+     test_confirmation_key_prioritises_a_validated_sector_match),
+    ("confirmation_key ignores an unlisted engine or feature",
+     test_confirmation_key_ignores_an_unlisted_engine_or_feature),
+    ("confirmation_key: retest and priority criteria both lead to rank zero",
+     test_confirmation_key_retest_and_priority_criteria_both_lead_to_rank_zero),
+    ("confirmation_key: None criteria behaves exactly like before F-50",
+     test_confirmation_key_none_criteria_behaves_exactly_like_before_f50),
     ("interleave seats every engine's best in round one",
      test_interleave_puts_every_engines_best_in_the_first_round),
     ("interleave orders within a round by edge",

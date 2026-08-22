@@ -817,24 +817,51 @@ def review_swing_reservation_engagement(sb, days: int = 14) -> None:
 
 
 def show_open(sb) -> int:
+    """
+    Every PENDING proposal, from every source — 22-Aug-2026.
+
+    THIS FILTERED TO `.eq("source", "weekly_review")` SINCE THE COMMAND WAS
+    NAMED. `discover_engines.py`'s own log line has told the operator to
+    "read them with `tradeos learn show`" since it existed — a promise this
+    function never kept, because it only ever displayed its OWN proposals.
+    Measured live, 22-Aug-2026: 81 PENDING rows in brain_proposals, of which
+    this command showed 7. The other 74 — 42 from feature_edge_study, 28
+    from script_profiler, 4 from discover_engines — were sitting in the
+    exact table this module's own header comment calls "the loop that keeps
+    learning honest," reachable by no command anyone had reason to run.
+
+    `brain_proposals` is deliberately ONE table, ONE review queue, so a
+    discovery is reviewed exactly like a retirement rather than through a
+    side channel (discover_engines.py's own docstring says this explicitly).
+    A viewer that only shows one source is that side channel by accident.
+    """
     _hdr("OPEN PROPOSALS")
     try:
-        rows = (sb.table("brain_proposals").select("*")
-                  .eq("status", "PENDING").eq("source", "weekly_review")
-                  .order("created_at", desc=True).execute().data or [])
+        rows = fetch_all(lambda: sb.table("brain_proposals").select("*")
+                         .eq("status", "PENDING").order("id"))
     except Exception as e:
         logger.error(f"  brain_proposals unreadable — {e}")
         return 1
     if not rows:
         logger.success("  none — nothing the evidence supports changing")
         return 0
+
+    by_source: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
-        logger.warning(f"  [{r.get('confidence')}] {r['proposal_type']} · "
-                       f"{r['target_key']}: {r.get('current_value')} -> "
-                       f"{r['proposed_value']}")
-        logger.info(f"      {r.get('evidence')}")
+        by_source[r.get("source") or "unknown"].append(r)
+
+    for source, grp in sorted(by_source.items(), key=lambda kv: -len(kv[1])):
+        grp.sort(key=lambda r: -(r.get("confidence") or 0))
+        logger.info("")
+        logger.info(f"  — {source} ({len(grp)}) —")
+        for r in grp:
+            logger.warning(f"  [{r.get('confidence')}] {r['proposal_type']} · "
+                           f"{r['target_key']}: {r.get('current_value')} -> "
+                           f"{r['proposed_value']}")
+            logger.info(f"      {str(r.get('evidence') or '')[:200]}")
     logger.info("")
-    logger.info("  These are PROPOSALS. Nothing changes until you act on one.")
+    logger.info(f"  {len(rows)} total, {len(by_source)} source(s). "
+               "These are PROPOSALS. Nothing changes until you act on one.")
     return 0
 
 

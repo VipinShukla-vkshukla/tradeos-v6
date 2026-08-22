@@ -154,6 +154,47 @@ def test_categorical_split_hour_bucket_reads_ts_not_meta():
     assert cats, "a clean OPEN-vs-LATE win-rate gap must be reported"
 
 
+# ── is_favourable — F-50 ─────────────────────────────────────────────────
+
+def test_is_favourable_true_when_hi_win_rate_beats_lo():
+    from tools.feature_edge_study import is_favourable
+    found = {"hi_win_rate": 0.85, "lo_win_rate": 0.38,
+            "hi_mean_pct": None, "lo_mean_pct": None}
+    assert is_favourable(found) is True
+
+
+def test_is_favourable_false_when_hi_win_rate_trails_lo():
+    from tools.feature_edge_study import is_favourable
+    found = {"hi_win_rate": 0.06, "lo_win_rate": 0.59,
+            "hi_mean_pct": None, "lo_mean_pct": None}
+    assert is_favourable(found) is False
+
+
+def test_is_favourable_falls_back_to_mean_pct_when_win_rate_ties():
+    """A segment made only of TIMEOUT/UNKNOWN has no win rate at all (see
+    _win_rate's own docstring) — mean_pct is the only signal left."""
+    from tools.feature_edge_study import is_favourable
+    found = {"hi_win_rate": None, "lo_win_rate": None,
+            "hi_mean_pct": 0.42, "lo_mean_pct": -0.10}
+    assert is_favourable(found) is True
+
+
+def test_is_favourable_none_when_nothing_can_decide_it():
+    from tools.feature_edge_study import is_favourable
+    found = {"hi_win_rate": None, "lo_win_rate": None,
+            "hi_mean_pct": None, "lo_mean_pct": None}
+    assert is_favourable(found) is None
+
+
+def test_is_favourable_none_on_an_exact_tie():
+    """A tie must read as 'cannot decide', never default toward either
+    direction — the same discipline _win_rate's None-on-empty already has."""
+    from tools.feature_edge_study import is_favourable
+    found = {"hi_win_rate": 0.5, "lo_win_rate": 0.5,
+            "hi_mean_pct": 0.1, "lo_mean_pct": 0.1}
+    assert is_favourable(found) is None
+
+
 # ── target_key_for ───────────────────────────────────────────────────────
 
 def test_target_key_includes_category_so_categories_do_not_collide():
@@ -213,6 +254,11 @@ TESTS = [
     ("categorical split fires for a standout bucket", test_categorical_split_fires_for_a_standout_bucket),
     ("categorical split ignores a thin category", test_categorical_split_ignores_a_thin_category),
     ("categorical split's hour bucket reads ts, not meta", test_categorical_split_hour_bucket_reads_ts_not_meta),
+    ("is_favourable true when hi win rate beats lo", test_is_favourable_true_when_hi_win_rate_beats_lo),
+    ("is_favourable false when hi win rate trails lo", test_is_favourable_false_when_hi_win_rate_trails_lo),
+    ("is_favourable falls back to mean_pct when win rate ties", test_is_favourable_falls_back_to_mean_pct_when_win_rate_ties),
+    ("is_favourable is None when nothing can decide it", test_is_favourable_none_when_nothing_can_decide_it),
+    ("is_favourable is None on an exact tie", test_is_favourable_none_on_an_exact_tie),
     ("target_key includes category so categories do not collide", test_target_key_includes_category_so_categories_do_not_collide),
     ("target_key for a numeric split has no category suffix", test_target_key_for_a_numeric_split_has_no_category_suffix),
     ("floor_since explicit override wins outright", test_floor_since_explicit_override_wins_outright),

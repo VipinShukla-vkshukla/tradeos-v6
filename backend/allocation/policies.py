@@ -28,6 +28,7 @@ though the currency does not.
 from __future__ import annotations
 
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -64,12 +65,53 @@ def _engine_of_scored(s: dict) -> str:
     return str(meta.get("sub_engine") or getattr(p, "source", "") or "")
 
 
-def _confirmation_key(s: dict) -> int:
+def build_priority_criteria(rows: list[dict]) -> dict[str, dict[str, set]]:
+    """
+    Pure. `{engine: {feature: {category, ...}}}` from VALIDATED,
+    favourable, CATEGORICAL `brain_proposals` rows — 22-Aug-2026, F-50.
+
+    Categorical only: a `target_key` with fewer than 3 `/`-separated parts
+    is a numeric finding (`engine/feature`, no category) and is skipped —
+    see `allocation.allocator.refresh_priority_criteria`'s own docstring
+    for why numeric findings are not read here. A malformed key (any other
+    shape) is skipped the same way rather than raising, matching this
+    module's existing tolerance for a proposal row that does not parse.
+    """
+    out: dict[str, dict[str, set]] = defaultdict(lambda: defaultdict(set))
+    for r in rows:
+        parts = str(r.get("target_key") or "").split("/")
+        if len(parts) != 3:
+            continue
+        engine, feature, category = parts
+        out[engine][feature].add(category)
+    return {eng: dict(feats) for eng, feats in out.items()}
+
+
+def _matches_priority_criteria(meta: dict, engine: str,
+                               criteria: dict[str, dict[str, set]] | None) -> bool:
+    """Pure. True when this candidate's own meta carries a value on ANY
+    VALIDATED, favourable feature for its engine — one match is enough,
+    this is a tie-break, not a scoring function that needs to weigh how
+    many criteria agree."""
+    if not criteria:
+        return False
+    for feature, categories in criteria.get(engine, {}).items():
+        if feature == "_hour_bucket":
+            continue  # computed from `ts` at study time, not a meta field
+        if str(meta.get(feature)) in categories:
+            return True
+    return False
+
+
+def _confirmation_key(s: dict, priority_criteria: dict | None = None) -> int:
     """
     0 when the proposal's own detection confirmed itself before firing
-    (currently: ORB's `retest_confirmed`, F-37), 1 otherwise — a pure
-    TIE-BREAKER among same-engine candidates that would otherwise be
-    ordered arbitrarily.
+    (currently: ORB's `retest_confirmed`, F-37) OR matches a VALIDATED,
+    favourable criterion from `feature_edge_study.py`'s out-of-sample
+    check (F-50) — 1 otherwise. A pure TIE-BREAKER among same-engine
+    candidates that would otherwise be ordered arbitrarily; never a
+    second signal on top of an already-decided one, just the same
+    priority question asked with more evidence than "was this retested".
 
     WHY THIS IS SAFE TO SHIP ARMED, UNLIKE EVERY OTHER NEW RULE THIS
     SESSION. giveback_pct, short_runway_tighten and volume_decay each ship
@@ -88,20 +130,29 @@ def _confirmation_key(s: dict) -> int:
     cleared — only change WHICH of several already-tied candidates gets a
     shared slot. `alloc_intraday_confirmation_priority`, default true.
 
-    GENERIC ON PURPOSE. Reads `retest_confirmed` because that is the one
-    signal that exists today — but the key name is not ORB-specific, so
-    any engine that later stamps the same field (SDN's BRKD condition,
-    8% win rate with no retest-style check at all, is the clear next
-    candidate — not built tonight) is picked up with no change here.
+    `priority_criteria` is a CACHE the caller loads once, on the slow
+    timer — `allocation.allocator.Allocator.refresh_priority_criteria()`
+    — never a live query from inside this pure function; see that
+    method's own docstring for why. Never widens beyond FAVOURABLE,
+    VALIDATED categorical findings: an unfavourable one (a category the
+    data says to avoid) is deliberately not read here at all, the
+    operator's own instruction being "priority criteria, not a hard
+    filter" — de-prioritising is a soft block by another name.
     """
     if not cfg_bool("alloc_intraday_confirmation_priority", True):
         return 0
     p = s.get("proposal")
     meta = (getattr(p, "meta", None) or {}) if p is not None else {}
-    return 0 if meta.get("retest_confirmed") is True else 1
+    if meta.get("retest_confirmed") is True:
+        return 0
+    engine = _engine_of_scored(s)
+    if _matches_priority_criteria(meta, engine, priority_criteria):
+        return 0
+    return 1
 
 
-def _interleave_by_engine(scored: list[dict]) -> list[dict]:
+def _interleave_by_engine(scored: list[dict],
+                          priority_criteria: dict | None = None) -> list[dict]:
     """
     Pure. Every engine's BEST candidate first, then every engine's second, and
     so on — each round internally ordered by edge.
@@ -134,7 +185,7 @@ def _interleave_by_engine(scored: list[dict]) -> list[dict]:
     # own docstring for why this is the one new ranking rule this session
     # ships armed. It never outranks edge; it only decides order among
     # candidates edge already could not separate.
-    ordered = sorted(scored, key=lambda x: (-_edge_key(x), _confirmation_key(x)))
+    ordered = sorted(scored, key=lambda x: (-_edge_key(x), _confirmation_key(x, priority_criteria)))
     seen: dict[str, int] = {}
     tagged = []
     for s in ordered:
@@ -145,12 +196,13 @@ def _interleave_by_engine(scored: list[dict]) -> list[dict]:
     # (round, then edge, then confirmation within the round). Fully
     # determined by the triple, so this does not depend on the stability of
     # the sort above for its result.
-    tagged.sort(key=lambda t: (t[0], -_edge_key(t[1]), _confirmation_key(t[1])))
+    tagged.sort(key=lambda t: (t[0], -_edge_key(t[1]), _confirmation_key(t[1], priority_criteria)))
     return [s for _, s in tagged]
 
 
 def intraday_stopping(scored: list[dict], bar: float, slots_left: int,
-                      bar_before_floor: float | None = None) -> list[dict]:
+                      bar_before_floor: float | None = None,
+                      priority_criteria: dict | None = None) -> list[dict]:
     """
     Each arrival against the bar, best first. A stopping rule.
 
@@ -190,7 +242,7 @@ def intraday_stopping(scored: list[dict], bar: float, slots_left: int,
     # and live cannot disagree about which proposals were best; changing the
     # queue here therefore changes both together, which is the property that
     # made it safe to change at all.
-    queue = (_interleave_by_engine(scored)
+    queue = (_interleave_by_engine(scored, priority_criteria)
              if cfg_bool("alloc_intraday_engine_fairness", True)
              else sorted(scored, key=lambda x: -_edge_key(x)))
     for p in queue:

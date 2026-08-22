@@ -130,6 +130,54 @@ from intraday.strategies.base import Setup, SymbolContext, risk_from_structure
 NAME = "SDN"
 
 
+def _retest_and_held_short(bars: list, level: float, tolerance_pct: float) -> bool:
+    """
+    Pure. The SHORT mirror of orb.py::_retest_and_held() — same contract,
+    breakdown instead of breakout — for BRKD, 22-Aug-2026 (F-49).
+
+    WHY A SEPARATE FUNCTION, NOT A `direction` PARAMETER ON THE ORIGINAL.
+    This project's own history — `open_positions.direction` (migration
+    047), `allocation/proposal.py`'s `Proposal` (no direction field at
+    all), the cost-gate call in `evaluate_intraday_setups` — is a repeated
+    pattern of a direction-aware function shipping with a LONG default
+    that every pre-shorting call site silently inherited. A shared,
+    branching version of a function this specific (bar-by-bar, sign-
+    sensitive on every comparison) is exactly the shape that risk repeats
+    in. Two small, obviously mirrored functions, each hardcoded to its own
+    direction, cannot drift into scoring a short as a long.
+
+    A retest is: price already traded BELOW `level` on some earlier CLOSED
+    bar (a genuine break, not the bar still forming), THEN came back UP to
+    within `tolerance_pct` of `level` (retested the old support as new
+    resistance), and every bar from that retest onward closed AT OR BELOW
+    `level` (held — the level was not reclaimed from below). One bar
+    closing back above `level` after the first touch invalidates the whole
+    sequence, the same "one failure kills the sequence" contract as the
+    long version.
+
+    INFORMATIONAL ONLY, NEVER A GATE. Unlike ORB, where a weak break
+    without a confirmed retest is refused outright, `_range_breakdown`
+    below stamps this result into meta and gates on NOTHING — every BRKD
+    setup that already clears today's checks keeps clearing them
+    regardless of what this returns. The only consumer is `allocation.
+    policies._confirmation_key`'s existing PRIORITY tie-break (F-48),
+    which the operator was explicit about: rank retest-confirmed
+    candidates first when a choice exists, never block an unconfirmed one.
+    """
+    probed = False
+    retested = False
+    for b in bars:
+        if not probed:
+            if b.low < level:
+                probed = True
+            continue
+        if not retested and b.high >= level * (1 - tolerance_pct / 100.0):
+            retested = True
+        if retested and b.close > level:
+            return False
+    return retested
+
+
 def confidence_is_usable(conf: float) -> bool:
     """
     SDN's own confidence runs BACKWARDS against its outcomes (18-Aug-2026).
@@ -432,6 +480,17 @@ class ShortDistribution:
 
         if not confidence_is_usable(round(min(conf, 0.90), 2)):
             return None            # see confidence_is_usable()
+
+        # RETEST, STAMPED NOT GATED — F-49, 22-Aug-2026. See
+        # _retest_and_held_short's own docstring for the full contract and
+        # why this never returns None the way ORB's equivalent can: the
+        # operator was explicit that BRKD should get a PRIORITY signal
+        # (allocation.policies._confirmation_key, F-48), not a second gate
+        # on top of the volume/structure/confidence checks already above.
+        retest_confirmed = _retest_and_held_short(
+            ctx.bars_after(cfg_int("intraday_orb_minutes", 15)), lo,
+            cfg_float("intraday_short_breakdown_retest_tolerance_pct", 0.15))
+
         return Setup(
             symbol=ctx.symbol, strategy=NAME, direction="SHORT",
             entry=round(ctx.ltp, 2), stop=stop, target=target,
@@ -443,6 +502,7 @@ class ShortDistribution:
             valid_phases=self.phases,
             meta={**frame.meta(), "sub_engine": "BRKD", "range_low": round(lo, 2),
                   "range_high": round(hi, 2), "volume_ratio": vr,
+                  "retest_confirmed": retest_confirmed,
                   "invalidation_level": round(lo, 2)},
         )
 

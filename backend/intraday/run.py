@@ -420,6 +420,7 @@ def main(once: bool = False, dry: bool = False) -> None:
                     if n:
                         logger.info(f"  allocator: flushed {n} verdict(s)")
                     engine._allocator.refresh_priors()
+                    engine._allocator.refresh_priority_criteria()
                 last_state = now
 
             if now - last_beat >= 900:

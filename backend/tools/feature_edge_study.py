@@ -276,6 +276,30 @@ def target_key_for(engine: str, found: dict) -> str:
     return key
 
 
+def is_favourable(found: dict) -> bool | None:
+    """
+    Does the "hi" side of this split (the category itself, for a
+    categorical finding) predict a BETTER outcome than the "lo" side (the
+    rest)? None when neither win-rate nor mean-pct can decide it (both
+    absent or exactly tied) — a caller must treat that as "do not know",
+    never as a default direction.
+
+    Win rate decides first; mean_pct is the tiebreak for the rare case
+    win rate ties or is unavailable on one side (a segment made only of
+    TIMEOUT/UNKNOWN — see _win_rate's own docstring). Kept as ONE pure
+    function, read by both `_propose()` (to store the direction) and this
+    module's own tests, so "favourable" can never mean something subtly
+    different in the two places that ask.
+    """
+    hi_wr, lo_wr = found.get("hi_win_rate"), found.get("lo_win_rate")
+    if hi_wr is not None and lo_wr is not None and hi_wr != lo_wr:
+        return hi_wr > lo_wr
+    hi_pct, lo_pct = found.get("hi_mean_pct"), found.get("lo_mean_pct")
+    if hi_pct is not None and lo_pct is not None and hi_pct != lo_pct:
+        return hi_pct > lo_pct
+    return None
+
+
 def _evidence(engine: str, found: dict) -> str:
     lo_wr = f"{found['lo_win_rate']:.0%}" if found['lo_win_rate'] is not None else "n/a"
     hi_wr = f"{found['hi_win_rate']:.0%}" if found['hi_win_rate'] is not None else "n/a"
@@ -322,8 +346,17 @@ def _propose(sb, run_id: str, engine: str, found: dict,
         logger.info(f"  [DRY RUN] would propose {target_key} (confidence {confidence})")
         logger.info(f"    {evidence}")
         return True
+    # DIRECTION, STORED STRUCTURED — not left to be parsed back out of the
+    # prose `evidence` string later. `current_value` is reused as this
+    # tag deliberately (it previously held a static, uninformative "no
+    # feature-level filter" for every row): "favourable"/"unfavourable"/
+    # "unclear" is a controlled, three-value vocabulary `allocation.
+    # allocator.refresh_priority_criteria()` can read with total
+    # confidence, where regexing a human-readable sentence could not.
+    fav = is_favourable(found)
+    direction = "favourable" if fav is True else "unfavourable" if fav is False else "unclear"
     row = {"analysis_run_id": run_id, "proposal_type": "FEATURE_FILTER",
-           "target_key": target_key, "current_value": "no feature-level filter",
+           "target_key": target_key, "current_value": direction,
            "proposed_value": f"review a floor/band on {found['feature']} for {engine}",
            "evidence": evidence, "rationale": evidence, "confidence": confidence,
            "status": "PENDING", "source": "feature_edge_study", "priority": 3}
@@ -339,6 +372,91 @@ def _propose(sb, run_id: str, engine: str, found: dict,
     except Exception as e:
         logger.warning(f"  could not record finding ({target_key}): {e}")
         return False
+
+
+def validate_pending(sb, min_segment: int = MIN_SEGMENT,
+                     dry_run: bool = False) -> tuple[int, int, int]:
+    """
+    OUT-OF-SAMPLE VALIDATION — 22-Aug-2026, F-50.
+
+    Every PENDING, CATEGORICAL FEATURE_FILTER proposal (3-part target_key
+    — `engine/feature/category`; numeric 2-part findings are not handled
+    here, same boundary as `refresh_priority_criteria`) gets re-checked
+    against rows that closed AFTER the proposal was first written — data
+    the original finding could not have seen. This is the difference
+    between "this pattern fit the data it was found in" (guaranteed,
+    trivially) and "this pattern predicts data it had not seen yet" (the
+    only claim that actually matters before anything acts on it).
+
+    THREE OUTCOMES, NOT TWO. A finding either (a) still shows the SAME
+    direction on fresh data at the same significance bar — VALIDATED,
+    eligible for `allocation.allocator.refresh_priority_criteria()`'s
+    cache; (b) shows the OPPOSITE direction, or falls below the bar —
+    REJECTED, and stays in the table as a record of a hypothesis that did
+    not hold, never deleted; or (c) there simply is not enough fresh data
+    yet to say either way — stays PENDING, unchanged. Collapsing (c) into
+    either of the other two is exactly the "measured bad" vs "no opinion"
+    confusion this project's own landmines warn about at the prior level,
+    one layer up.
+
+    Returns (validated, rejected, skipped_insufficient_data).
+    """
+    from datetime import date
+    rows = fetch_all(lambda: sb.table("brain_proposals").select("*")
+                     .eq("status", "PENDING").eq("proposal_type", "FEATURE_FILTER")
+                     .order("id"))
+    validated = rejected = skipped = 0
+    for r in rows:
+        parts = str(r.get("target_key") or "").split("/")
+        if len(parts) != 3:
+            continue  # numeric finding — not this pass's job
+        engine, feature, category = parts
+        created = r.get("created_at")
+        if not created:
+            skipped += 1
+            continue
+        try:
+            # Strictly AFTER the day the proposal was created — same-day
+            # overlap would let the "fresh" check re-graze data the
+            # original finding already used, which is not out-of-sample
+            # at all, just the same sample re-read.
+            fresh_since = (date.fromisoformat(str(created)[:10]) + timedelta(days=1)).isoformat()
+        except ValueError:
+            skipped += 1
+            continue
+
+        fresh_rows = [x for x in _rows(sb, fresh_since) if engine_key(x) == engine]
+        findings = categorical_splits(fresh_rows, feature, min_segment=min_segment)
+        match = next((f for f in findings if f.get("category") == category), None)
+        if match is None:
+            skipped += 1
+            continue
+
+        fresh_fav = is_favourable(match)
+        original_fav = r.get("current_value") == "favourable"
+        holds = fresh_fav is not None and fresh_fav == original_fav
+        new_status = "VALIDATED" if holds else "REJECTED"
+        logger.info(f"  {'✓ VALIDATED' if holds else '✗ REJECTED'} "
+                   f"{r['target_key']}: {_evidence(engine, match)}")
+        if dry_run:
+            if holds:
+                validated += 1
+            else:
+                rejected += 1
+            continue
+        try:
+            sb.table("brain_proposals").update({
+                "status": new_status, "reviewed_at": datetime.now().isoformat(),
+                "backtest_result": _evidence(engine, match),
+            }).eq("id", r["id"]).execute()
+            if holds:
+                validated += 1
+            else:
+                rejected += 1
+        except Exception as e:
+            logger.warning(f"  could not update validation status for {r['target_key']}: {e}")
+            skipped += 1
+    return validated, rejected, skipped
 
 
 def study(sb, since: str, run_id: str, min_engine_sample: int = MIN_ENGINE_SAMPLE,
@@ -389,6 +507,15 @@ def main(since: str | None = None, min_engine_sample: int = MIN_ENGINE_SAMPLE,
     logger.info("═" * 72)
     logger.info("TradeOS — feature-level edge study (proposes FEATURE_FILTER only)")
     logger.info("═" * 72)
+
+    # VALIDATE FIRST, THEN LOOK FOR NEW SPLITS — so a finding from a prior
+    # run gets its chance to earn (or lose) VALIDATED status on fresh data
+    # before this same run's new findings join the PENDING queue behind it.
+    v, rj, sk = validate_pending(sb, dry_run=dry_run)
+    if v or rj:
+        logger.info(f"  out-of-sample check: {v} validated, {rj} rejected, "
+                   f"{sk} not enough fresh data yet")
+
     n = study(sb, floor, run_id, min_engine_sample, dry_run=dry_run)
     logger.info("")
     if n:

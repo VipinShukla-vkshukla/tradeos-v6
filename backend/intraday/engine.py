@@ -3445,6 +3445,7 @@ class IntradayEngine:
             from allocation.allocator import Allocator
             self._allocator = Allocator(self.sb)
             self._allocator.refresh_priors()
+            self._allocator.refresh_priority_criteria()
         return self._allocator
 
     def _arbitrate_symbol(self, best, found):
@@ -3814,6 +3815,7 @@ class IntradayEngine:
         if self._allocator is None:
             self._allocator = Allocator(self.sb)
             self._allocator.refresh_priors()
+            self._allocator.refresh_priority_criteria()
 
         props = []
         for e in entries or []:

@@ -69,6 +69,9 @@ class Allocator:
         self._buffer: list[dict] = []
         self._deferred: dict[tuple, dict] = {}
         self._priors: dict | None = None
+        # {engine: {feature: {category, ...}}} — VALIDATED, favourable
+        # categorical findings only. See refresh_priority_criteria().
+        self._priority_criteria: dict | None = None
         self._hold_days: dict[str, tuple[float, int]] = {}
         # SWING ONLY — see allocation/swing_hold_days.py. Empty dict means
         # "nothing measured yet", and select()'s lookup already falls back to
@@ -95,6 +98,46 @@ class Allocator:
                                f"({e}) — using the book-pooled figure for every family")
         except Exception as e:
             logger.warning(f"  allocator: prior refresh failed ({e}) — keeping previous")
+
+    def refresh_priority_criteria(self) -> None:
+        """
+        Load VALIDATED, categorical `FEATURE_FILTER` findings from
+        `brain_proposals` into the same-shape cache `_confirmation_key`
+        reads — 22-Aug-2026, F-50.
+
+        Same refresh discipline as `refresh_priors()`: read on the slow
+        timer (`intraday/run.py`'s 300s tick), never inside the 15s
+        decision loop, so a Supabase read never sits on the hot path a
+        "Pure." function is documented to never touch.
+
+        FAVOURABLE FINDINGS ONLY. `feature_edge_study.py`'s categorical
+        splits can validate in either direction — a category the data
+        prefers (SDN/auto, 85% win) or one it avoids (GAP/i.t., 6% win).
+        This cache holds only the first kind. The operator's own
+        instruction was explicit: "add it as priority criteria and not
+        the hard filter to block everything" — de-prioritising a category
+        is functionally a soft block by another name, a materially
+        different and riskier mechanic than "prefer this when there is a
+        choice", and was not asked for. Avoid-findings stay visible via
+        `tradeos learn show`, for a human to act on directly.
+
+        NUMERIC FINDINGS ARE NOT READ HERE, DELIBERATELY. A validated
+        numeric split (e.g. GAP/atr_pct_daily) needs the tercile boundary
+        that produced it to be matched consistently against a live
+        candidate; that boundary exists today only inside a human-readable
+        `evidence` string, not a structured field. Reading it back
+        correctly is a real, separate piece of work — see this function's
+        own test file for the explicit refusal to guess at parsing it.
+        """
+        try:
+            rows = (self.sb.table("brain_proposals").select("target_key,current_value")
+                     .eq("status", "VALIDATED").eq("proposal_type", "FEATURE_FILTER")
+                     .eq("current_value", "favourable")
+                     .order("id").execute().data or [])
+        except Exception as e:
+            logger.warning(f"  allocator: priority-criteria refresh failed ({e}) — keeping previous")
+            return
+        self._priority_criteria = P.build_priority_criteria(rows)
 
     def score_hypothetical(self, symbol: str, entry: float, stop: float, target: float,
                            qty: int, product: str, source: str,
@@ -311,9 +354,17 @@ class Allocator:
                                "hold_days_n": p_n})
 
             policy = P.swing_assignment if fw == "SWING" else P.intraday_stopping
+            # getattr, not self._priority_criteria directly — several tests
+            # in this codebase build an Allocator via `Allocator.__new__
+            # (Allocator)` and set only the attributes their scenario
+            # needs, bypassing __init__ entirely (see
+            # test_engine_fairness_and_bands.py). A missing attribute
+            # there must read as "no criteria yet", the same fail-open
+            # shape self._priors already has via `if self._priors is None`.
             verdicts = (policy(scored, bar, fw_slots, field) if fw == "SWING"
                         else policy(scored, bar, fw_slots,
-                                    inputs.get("bar_before_floor")))
+                                    inputs.get("bar_before_floor"),
+                                    getattr(self, "_priority_criteria", None)))
             label_bar = inputs.get("label_bar")
             for v in verdicts:
                 v["hurdle"] = (None if bar in (float("inf"), float("-inf"))

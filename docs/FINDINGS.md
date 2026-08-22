@@ -10439,3 +10439,224 @@ ORB's own unconfirmed-fallback finding, but reusing `_retest_and_held()`
 inside `short_distribution.py` was not attempted tonight; a real design
 pass, not a copy-paste. Like every other change tonight, ships in code
 only until the daemon is redeployed.
+
+
+## 2026-08-22 — F-49 (new, priority-only) — SDN's BRKD condition gets a
+retest-and-held signal, the short mirror of ORB's own (F-37), informational
+only per the operator's explicit "priority criteria, not a hard filter"
+
+**Ran:** `tools.verify` (746 checks, 76 modules, green — 7 new), one test
+corrected after a wrong assumption about the shared "breakdown" fixture's
+actual shape, not the code.
+
+### 1 — WHY
+
+BRKD's 8% win rate over the post-fix sample is structurally the same "raw
+break, no hold requirement" shape ORB's own unconfirmed-fallback path
+measured 0% on. The operator asked directly whether retest logic exists
+for every engine — checked every strategy file rather than assume: only
+ORB has it, PDL and RNG require an equivalent as a hard detection
+prerequisite (nothing to prioritize, every setup already has it), and
+BRKD, VCE, PBK, VWR, GAP, GDB have nothing. BRKD is the clear next
+candidate given the direct parallel to ORB's own finding.
+
+### 2 — FIX
+
+`_retest_and_held_short()`, a new pure function in
+`short_distribution.py` — the SHORT mirror of `orb.py::_retest_and_held`,
+written as a SEPARATE function rather than a `direction` parameter on the
+original. This project's own history (`open_positions.direction`,
+`allocation/proposal.py`'s missing direction field, the cost-gate call in
+`evaluate_intraday_setups`) is a repeated pattern of a direction-aware
+function shipping LONG-default and every pre-shorting call site silently
+inheriting it — a shared, branching version of a bar-by-bar, sign-
+sensitive function this specific is exactly the shape that risk repeats
+in. Two small, obviously-mirrored functions instead.
+
+**Wired as pure information, never a gate** — `_range_breakdown` computes
+`retest_confirmed` and stamps it into `meta`, but the setup is returned
+regardless of the result. The only consumer is F-48's existing
+`_confirmation_key` priority tie-break, which already reads
+`retest_confirmed` generically — BRKD needed no new ranking mechanism,
+only to start populating the same field ORB already does.
+
+### 3 — VERIFIED
+
+7 new checks (`test_sdn_breakdown_retest.py`): the pure function's four
+core cases (never probed, probed-but-no-retest, retest-and-held,
+retest-then-reclaimed) plus wiring checks. **One test's own assumption
+was wrong, not the code**: the first version assumed the shared
+'breakdown' fixture would not retest and asserted `False`; it measured
+`True` — a post-range bar's high genuinely clears the retest tolerance
+band, matching ORB's own "no upper bound on the retest touch" shape
+exactly, mirrored deliberately. Corrected to isolate wiring from
+detection via mocking (matching the True-case test's own approach)
+rather than depend on a fixture's specific numeric shape. `tools.verify`:
+746 checks, 76 modules. Migration 096: `intraday_short_breakdown_retest_
+tolerance_pct=0.15`, armed live.
+
+---
+
+## 2026-08-22 — F-50 (new, ARMED, two safety boundaries) — out-of-sample
+validation for feature-study findings, and a generalised priority
+tie-break for VALIDATED, FAVOURABLE ones — never a hard filter
+
+**Ran:** `tools.verify` (757 checks, 76 modules, green — 11 new),
+demonstrated failing before the fix landed, live run against real data
+(2 validated, 1 rejected, 29 not-enough-fresh-data-yet, correctly
+produced an EMPTY priority cache because both validated findings that
+round were unfavourable).
+
+### 1 — WHY
+
+Operator's own question: "how can we make the system smarter so every
+win is being evaluated to find similar instances and prioritize them...
+or is that not a good choice?" Answered directly: the undisciplined
+version of this — finding a pattern in past wins and immediately chasing
+it — is the single most common way systematic books curve-fit to their
+own recent history and then act on noise. The guardrail that makes it
+safe is checking whether a finding predicts data it has not seen yet,
+before anything acts on it.
+
+### 2 — MECHANISM, TWO PARTS
+
+**Out-of-sample validation** (`feature_edge_study.py::validate_pending`):
+every PENDING, CATEGORICAL `FEATURE_FILTER` proposal (3-part `target_key`
+— numeric 2-part findings are explicitly out of scope, see below) gets
+re-checked against rows that closed strictly AFTER the day the proposal
+was created — data the original finding could not have seen. THREE
+outcomes, not two: same direction on fresh data at the same significance
+bar → VALIDATED; opposite direction or below the bar → REJECTED, kept as
+a record, never deleted; not enough fresh data yet → stays PENDING,
+unchanged. Reuses the existing `categorical_splits`/`is_favourable`
+machinery directly rather than a second definition of "significant."
+Runs automatically at the start of every `feature_edge_study` cycle
+(weekly, via the Sunday chain), validating older findings before this
+run's new ones join the queue behind them.
+
+**Generalised priority tie-break** (`allocation/policies.py`):
+`build_priority_criteria()` turns VALIDATED, FAVOURABLE categorical rows
+into `{engine: {feature: {category, ...}}}`; `_confirmation_key` now
+checks a candidate's `meta` against this cache IN ADDITION TO
+`retest_confirmed` — either signal is enough to rank first, same "0 or
+1" tie-break shape F-48 shipped, no new admission or decline path.
+Reuses `alloc_intraday_confirmation_priority` (already armed) rather than
+a second switch — one config question ("is any evidence-backed tie-break
+active"), not two.
+
+**FAVOURABLE ONLY, BY DESIGN.** A categorical split can validate in
+either direction — a category the data prefers, or one it avoids (GAP in
+"i.t.", 6% win rate). Only the first kind reaches the priority cache. The
+operator's own words: "add it as priority criteria and not the hard
+filter to block everything." De-prioritising a category is a soft block
+by another name — materially different from "prefer this when there is
+a choice" — and was not asked for. Unfavourable, validated findings stay
+fully visible via `tradeos learn show` for a human to act on directly.
+
+**NUMERIC FINDINGS NOT READ HERE.** A validated numeric split (e.g.
+GAP/atr_pct_daily) needs the exact tercile boundary that produced it to
+be matched consistently against a live candidate; that boundary exists
+today only inside a human-readable `evidence` string, not a structured
+field. Named as real, separate follow-on work rather than guessed at.
+
+**PURE FUNCTIONS STAY PURE.** `_confirmation_key`/`_interleave_by_engine`
+are documented "Pure" and must never do I/O on the 15s hot path.
+`Allocator.refresh_priority_criteria()` loads the cache on the SAME slow
+timer (300s, `intraday/run.py`) `refresh_priors()` already uses, and
+`select()` passes the cached dict down as a plain parameter — the ranking
+functions never query anything themselves.
+
+### 3 — BUG CAUGHT BEFORE COMMIT, NOT ASSUMED AWAY
+
+`tools.verify`'s own `static_analysis` check flagged `validate_pending`'s
+new paged read of `brain_proposals` for having no verified sort key —
+this project's own established trap (LIMIT/OFFSET with no stable ORDER BY
+repeats and drops rows across pages). Probed `id` live (103 rows, all
+distinct) before trusting it, added `.order("id")`, registered it in
+`_FETCH_ALL_SORT_KEY`. Caught by the check that exists specifically to
+catch it, not found by inspection.
+
+### 4 — VERIFIED
+
+11 new checks across two files: `build_priority_criteria` reads only
+3-part (categorical) target keys and merges multiple categories per
+feature correctly; the interleave queue actually reorders on a validated
+sector match; an engine/feature absent from the criteria cache is never
+treated as a default match; retest and priority-criteria signals both
+independently produce rank 0; a caller passing no criteria at all (every
+site written before this session) behaves identically to before F-50;
+`is_favourable` decides correctly from win rate, falls back to mean_pct
+on a tie, and returns None — never a guessed direction — when nothing
+can decide it. Demonstrated failing: reverted the priority-criteria check
+to a bare `return 1`, watched the live-shape test fail
+(`['INFY', 'MARUTI']` instead of the expected order), restored, re-ran
+green. Live run against real `brain_proposals`: validated 2 ORB findings
+on fresh data, rejected 1, left 29 PENDING (genuinely not enough fresh
+data since creation) — and confirmed the priority cache came back EMPTY,
+correctly, because both validated findings that round happened to be
+unfavourable (RISK_ON and the OPEN hour both predict WORSE ORB outcomes
+on the fresh sample) — the exact boundary this design exists to hold.
+
+### 5 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+No proposal's numeric findings feed the priority cache yet (see above).
+No hard filter exists anywhere in this mechanism — an unfavourable,
+validated finding is visible, never acted on automatically. Ships in
+code only until the daemon is redeployed, same as every other change
+tonight.
+
+---
+
+## 2026-08-22 — F-51 (bug fix) — `tools.weekly_review`'s own proposal
+viewer only ever showed its own proposals; 74 of 81 PENDING rows across
+three other sources were invisible to the command meant to surface them
+
+**Ran:** `tools.verify` (739 checks at the time, green — 2 new), live run
+against real `brain_proposals` confirming all sources now display.
+
+### 1 — WHAT SURFACED IT
+
+Operator, trying to review tonight's 42 feature-study proposals: "where
+do I see it? I am unable to find it to validate this part." Checked the
+actual command (`tradeos learn show` → `weekly_review.py --show` →
+`show_open()`) rather than assume it worked because `discover_engines.py`
+and this file's own weekly-review functions had been telling the operator
+to run it for weeks.
+
+### 2 — ROOT CAUSE
+
+`show_open()` read `brain_proposals` with `.eq("source", "weekly_review")`
+hardcoded — presumably written when this was the only source that
+existed, never revisited as `discover_engines.py` (`source=
+"discover_engines"`), `feature_edge_study.py`
+(`source="feature_edge_study"`), and an unrelated pre-existing tool
+(`source="script_profiler"`) all started writing to the same table.
+Measured live: 81 PENDING rows total, 7 shown. `discover_engines.py`'s
+own log line — "read them with `tradeos learn show`" — has been a
+promise this command never kept.
+
+### 3 — FIX
+
+Removed the source filter entirely; groups output by source instead
+(confidence-sorted within each group) so provenance stays visible without
+excluding anything. `brain_proposals` is deliberately ONE table so a
+discovery is reviewed exactly like a retirement rather than through a
+side channel (discover_engines.py's own docstring) — a viewer that shows
+only one source was that side channel by accident.
+
+### 4 — VERIFIED
+
+2 new checks (`test_weekly_review_show_open.py`): the built query never
+carries a `source` filter (the exact regression), and a clean zero-rows
+case reports cleanly. `tools.verify`'s `static_analysis` check caught a
+second, real issue in the same change — the new paged `fetch_all` call
+had no verified sort key; fixed with `.order("id")` and a probed,
+registered key, same as F-50 above. Live run: all 81 PENDING rows now
+print, grouped by source (feature_edge_study 42, script_profiler 28,
+discover_engines 4, weekly_review 7).
+
+### 5 — NOT DONE
+
+`script_profiler`'s 28 proposals are now visible but were not reviewed —
+a tool this session did not otherwise touch tonight, named rather than
+investigated.
