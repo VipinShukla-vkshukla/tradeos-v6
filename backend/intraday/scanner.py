@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -623,6 +624,63 @@ def _seed_baseline(sb, symbols: set[str]) -> None:
             return
 
 
+def _recently_listed(sb, symbols: set[str]) -> set[str]:
+    """
+    Which of `symbols` genuinely started trading within the last
+    `intraday_recent_listing_window_days` (30 default), rather than
+    merely being untracked by stock_data_daily/nifty_total_market.
+    Stage D2e, 23-Aug-2026 — the operator's own catch: MILKYMIST first
+    traded 18-Aug-2026, five days before new_listings() existed. Without
+    this, its bootstrap seed would have silently marked it "already
+    known" alongside 2,978 genuinely old symbols — indistinguishable
+    from RELIANCE from that moment on, forever. Caught only because the
+    operator asked "is Milky Mist part of it" and the honest answer
+    required checking, not asserting.
+
+    CORRECTED SAME SESSION, before this ever shipped: the first version
+    compared a symbol's first raw_prices row against raw_prices' OWN
+    ~120-day retention window start, not against today. That produced a
+    real, measured false-positive rate — checked against the full Kite
+    universe before trusting it, not assumed clean: ZEEMEDIA, a
+    long-listed company, has a genuine ~4-week GAP in raw_prices
+    coverage starting 19-May-2026 (a trading restriction, a data-
+    completeness gap, or something else not determined — the point is
+    it is NOT a listing event), well inside that window, and was
+    misclassified as a fresh listing. `raw_prices` has real per-symbol
+    coverage gaps unrelated to recency, so "started partway through the
+    120-day window" was never reliable evidence on its own. A fixed,
+    SHORT, TODAY-relative window is a materially stronger claim: real
+    IPOs are rare (a handful a month), so trading history older than 30
+    days is far more likely an established stock with a coverage gap
+    than a genuine new listing.
+
+    A symbol raw_prices has NEVER seen at all (zero rows) is included
+    too — the most extreme case of "no trading history", not excluded
+    from the recent-listing set.
+    """
+    if not symbols:
+        return set()
+
+    window_days = cfg_int("intraday_recent_listing_window_days", 30)
+    cutoff = (today_ist() - timedelta(days=window_days)).isoformat()
+
+    first_seen: dict[str, str] = {}
+    symbols_list = sorted(symbols)
+    try:
+        for i in range(0, len(symbols_list), 200):
+            rows = sb.rpc("get_raw_prices_first_seen",
+                          {"p_symbols": symbols_list[i:i + 200]}).execute().data or []
+            for r in rows:
+                if r.get("symbol") and r.get("first_date"):
+                    first_seen[r["symbol"]] = r["first_date"]
+    except Exception as e:
+        logger.debug(f"  scanner: raw_prices first-seen read skipped — {e}")
+        return set()
+
+    return {sym for sym in symbols
+           if first_seen.get(sym) is None or first_seen[sym] > cutoff}
+
+
 def new_listings(sb=None) -> set[str]:
     """
     Which Kite-known mainboard/ETF symbols have NEVER BEEN SEEN before —
@@ -640,11 +698,24 @@ def new_listings(sb=None) -> set[str]:
     `kite_symbol_baseline`, a table this function itself maintains: a
     symbol present today but never recorded before is genuinely new, and
     is written to the baseline immediately so it is never reported new
-    again. BOOTSTRAP: on the very first run ever (empty baseline table —
-    true the first time this ships), the WHOLE current universe (~2,979
-    names) is seeded as already-known and NONE of it is reported new —
-    there is no listing history yet to diff against, so "new" is
-    undefined, not "all of it".
+    again. Ongoing/steady-state, this needs nothing further — Kite's own
+    dump is authoritative on "does this exist right now", so a symbol
+    absent from every prior baseline IS a genuine first sighting; today
+    or any day forward, this half needs no other source.
+
+    BOOTSTRAP IS DIFFERENT, Stage D2e, 23-Aug-2026. On the very first run
+    ever (empty baseline table), the current universe (~2,979 names) is
+    NOT all genuinely new — most are old stocks this mechanism simply
+    never looked at before today. Blindly seeding all of them as "known"
+    (the original Stage D2d behaviour) would permanently hide anything
+    that listed shortly before this code existed — see `_recently_
+    listed()`'s own docstring for exactly the case that caught this.
+    `_recently_listed()` splits the bootstrap set using raw_prices' own
+    trading history: genuinely established names are seeded silently;
+    names that started trading within raw_prices' own ~120-day retention
+    window are seeded too (so they are not repeated indefinitely) but ARE
+    reported this one time, giving them the same first look any other
+    Population C candidate gets.
 
     Returns an empty set on any failure to read either side of the diff —
     advisory only, same contract as every other function that touches
@@ -664,7 +735,17 @@ def new_listings(sb=None) -> set[str]:
     today = today_ist().isoformat()
     if _baseline_cache["date"] != today or _baseline_cache["symbols"] is None:
         try:
-            rows = sb.table("kite_symbol_baseline").select("symbol").execute().data or []
+            # fetch_all(), NOT a plain .select().execute() — the table
+            # crossed PostgREST's 1000-row silent cap the same day it was
+            # created (2,979 rows from the bootstrap seed alone). A plain
+            # select here would have made THIS function re-discover 1,979+
+            # already-known symbols as "new" every single day forward,
+            # undoing the whole point of Stage D2d/e on its very first
+            # real run — caught before that happened, not after.
+            from config import fetch_all
+            rows = fetch_all(
+                lambda: sb.table("kite_symbol_baseline").select("symbol"),
+                order_by="symbol")
             _baseline_cache["date"] = today
             _baseline_cache["symbols"] = {r["symbol"] for r in rows if r.get("symbol")}
         except Exception as e:
@@ -673,9 +754,10 @@ def new_listings(sb=None) -> set[str]:
 
     known = _baseline_cache["symbols"]
     if not known:
-        _seed_baseline(sb, live)
+        recent = _recently_listed(sb, live)
+        _seed_baseline(sb, live)   # both halves recorded — recent AND established
         _baseline_cache["symbols"] = set(live)
-        return set()
+        return recent
 
     fresh = live - known
     if fresh:

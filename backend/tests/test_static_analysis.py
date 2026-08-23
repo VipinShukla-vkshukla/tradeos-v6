@@ -279,6 +279,13 @@ _FETCH_ALL_SORT_KEY = {
     # tools/expectancy_ledger.py) already page on the fetch_all default;
     # this only records the verification, it does not change any of them.
     "closed_positions":     "id",
+    # PRIMARY KEY (symbol) per its own migration (100). Confirmed live
+    # 23-Aug-2026 via pg_get_constraintdef — not assumed from the DDL text
+    # alone, the exact distinction this map exists to enforce. Added the
+    # same day intraday/scanner.py::new_listings() started paging it,
+    # after a plain unpaged .select() silently truncated a 2,979-row read
+    # to 1,000 on its very first live use.
+    "kite_symbol_baseline": "symbol",
 }
 
 

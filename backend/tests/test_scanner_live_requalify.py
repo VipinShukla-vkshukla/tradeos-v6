@@ -301,9 +301,11 @@ def test_live_requalify_carries_yesterdays_real_atr_through_honestly():
 class _TableRouter:
     """Routes .table(name) to whichever fixture rows that name should return
     — stock_data_daily, nifty_total_market and safety_lists need independent
-    contents in the same fake client."""
-    def __init__(self, by_table: dict[str, list[dict]]):
+    contents in the same fake client. .rpc(name, params) routes similarly,
+    keyed by rpc name, for get_raw_prices_first_seen()."""
+    def __init__(self, by_table: dict[str, list[dict]], by_rpc: dict[str, list[dict]] | None = None):
         self._by_table = by_table
+        self._by_rpc = by_rpc or {}
 
     def table(self, name):
         rows = self._by_table.get(name, [])
@@ -313,11 +315,25 @@ class _TableRouter:
             def select(self, *a, **k): return self
             def eq(self, *a, **k): return self
             def in_(self, *a, **k): return self
+            def order(self, *a, **k): return self
+            def limit(self, *a, **k): return self
+            def range(self, *a, **k): return self   # fixtures stay well under fetch_all()'s 1000-row page
             def execute(self): return self
             @property
             def data(self): return self._rows
 
         return _Query(rows)
+
+    def rpc(self, name, params=None):
+        rows = self._by_rpc.get(name, [])
+
+        class _RpcCall:
+            def __init__(self, rows): self._rows = rows
+            def execute(self): return self
+            @property
+            def data(self): return self._rows
+
+        return _RpcCall(rows)
 
 
 def test_unreferenced_candidates_finds_nifty_total_market_gap():
@@ -446,17 +462,124 @@ def test_unreferenced_candidates_survives_kite_master_unavailable():
 
 # ── new_listings() — the Kite-baseline diff itself ───────────────────────
 
-def test_new_listings_bootstrap_seeds_everything_and_reports_nothing_new():
+def _days_ago(n: int) -> str:
+    from datetime import date, timedelta
+    return (date.today() - timedelta(days=n)).isoformat()
+
+
+def test_new_listings_bootstrap_reports_nothing_when_no_symbol_is_within_the_window():
     """The exact case that made the ORIGINAL Population C definition
     unusable: on the very first run ever, an empty baseline must NOT mean
-    'every one of today's ~2,979 Kite symbols is a fresh IPO'. It means
-    there is no history yet -- seed it, report zero."""
+    'every one of today's ~2,979 Kite symbols is a fresh IPO'. With every
+    candidate's raw_prices history older than the recency window, nothing
+    is reported -- see the next test for the case where one genuinely is
+    recent (the Milky Mist case Stage D2e exists for)."""
     from intraday.scanner import new_listings
     _reset_scanner_caches()
-    sb = _TableRouter({"kite_symbol_baseline": []})
-    with patch("kite.kite_client.fetch_nse_eq_symbols",
-              return_value={"A", "B", "C"}):
+    sb = _TableRouter(
+        {"kite_symbol_baseline": []},
+        by_rpc={"get_raw_prices_first_seen": [
+            {"symbol": "A", "first_date": _days_ago(400), "row_count": 84},
+            {"symbol": "B", "first_date": _days_ago(400), "row_count": 84},
+            {"symbol": "C", "first_date": _days_ago(400), "row_count": 84}]},
+    )
+    with cfg_ctx({"intraday_recent_listing_window_days": "30"}), \
+         patch("kite.kite_client.fetch_nse_eq_symbols", return_value={"A", "B", "C"}):
         out = new_listings(sb)
+    assert out == set()
+
+
+def test_new_listings_bootstrap_reports_a_symbol_within_the_recency_window():
+    """Stage D2e, the actual Milky Mist fix: on the FIRST run ever, a
+    symbol whose raw_prices history clearly starts within the last 30
+    days must still be reported this once, not silently absorbed as
+    'already known' alongside the genuinely old symbols in the same
+    bootstrap batch."""
+    from intraday.scanner import new_listings
+    _reset_scanner_caches()
+    sb = _TableRouter(
+        {"kite_symbol_baseline": []},
+        by_rpc={"get_raw_prices_first_seen": [
+            {"symbol": "OLDSTOCK", "first_date": _days_ago(400), "row_count": 84},
+            {"symbol": "MILKYMIST", "first_date": _days_ago(5), "row_count": 4},
+        ]},
+    )
+    with cfg_ctx({"intraday_recent_listing_window_days": "30"}), \
+         patch("kite.kite_client.fetch_nse_eq_symbols",
+              return_value={"OLDSTOCK", "MILKYMIST"}):
+        out = new_listings(sb)
+    assert out == {"MILKYMIST"}
+
+
+# ── _recently_listed() — the raw_prices recency check itself ────────────
+
+def test_recently_listed_excludes_a_symbol_with_old_trading_history():
+    """The exact bug found live 23-Aug: an established stock (ZEEMEDIA)
+    with a genuine multi-week GAP in raw_prices coverage must not be
+    misread as a fresh listing just because that gap happens to sit
+    inside SOME window. A fixed, short, today-relative cutoff means
+    'old' history — however gapped — is correctly excluded."""
+    from intraday.scanner import _recently_listed
+    sb = _TableRouter(
+        {},
+        by_rpc={"get_raw_prices_first_seen": [
+            {"symbol": "ZEEMEDIA", "first_date": _days_ago(96), "row_count": 67}]},
+    )
+    with cfg_ctx({"intraday_recent_listing_window_days": "30"}):
+        out = _recently_listed(sb, {"ZEEMEDIA"})
+    assert out == set()
+
+
+def test_recently_listed_excludes_a_symbol_just_outside_the_window():
+    from intraday.scanner import _recently_listed
+    sb = _TableRouter(
+        {},
+        by_rpc={"get_raw_prices_first_seen": [
+            {"symbol": "JUST_OLD", "first_date": _days_ago(31), "row_count": 20}]},
+    )
+    with cfg_ctx({"intraday_recent_listing_window_days": "30"}):
+        out = _recently_listed(sb, {"JUST_OLD"})
+    assert out == set()
+
+
+def test_recently_listed_includes_a_symbol_clearly_inside_the_window():
+    from intraday.scanner import _recently_listed
+    sb = _TableRouter(
+        {},
+        by_rpc={"get_raw_prices_first_seen": [
+            {"symbol": "MILKYMIST", "first_date": _days_ago(5), "row_count": 4}]},
+    )
+    with cfg_ctx({"intraday_recent_listing_window_days": "30"}):
+        out = _recently_listed(sb, {"MILKYMIST"})
+    assert out == {"MILKYMIST"}
+
+
+def test_recently_listed_includes_a_symbol_with_zero_raw_prices_rows():
+    """No trading history at all is the most extreme case of 'recent' —
+    must not be excluded just because the RPC returned no row for it."""
+    from intraday.scanner import _recently_listed
+    sb = _TableRouter({}, by_rpc={"get_raw_prices_first_seen": []})
+    with cfg_ctx({"intraday_recent_listing_window_days": "30"}):
+        out = _recently_listed(sb, {"NEVER_TRADED"})
+    assert out == {"NEVER_TRADED"}
+
+
+def test_recently_listed_returns_empty_for_an_empty_symbol_set():
+    from intraday.scanner import _recently_listed
+    sb = _TableRouter({})
+    out = _recently_listed(sb, set())
+    assert out == set()
+
+
+def test_recently_listed_survives_rpc_raising():
+    from intraday.scanner import _recently_listed
+
+    class _RaisingSB(_TableRouter):
+        def rpc(self, name, params=None):
+            raise Exception("rpc not found")
+
+    sb = _RaisingSB({})
+    out = _recently_listed(sb, {"ANYTHING"})
     assert out == set()
 
 
@@ -559,7 +682,14 @@ TESTS = [
     ("unreferenced_candidates excludes a name on safety_lists", test_unreferenced_candidates_excludes_a_name_on_safety_lists),
     ("unreferenced_candidates admits flagged when skip_flagged false", test_unreferenced_candidates_admits_flagged_when_skip_flagged_false),
     ("unreferenced_candidates survives kite master unavailable", test_unreferenced_candidates_survives_kite_master_unavailable),
-    ("new_listings bootstrap seeds everything and reports nothing new", test_new_listings_bootstrap_seeds_everything_and_reports_nothing_new),
+    ("new_listings bootstrap reports nothing when no symbol is within the window", test_new_listings_bootstrap_reports_nothing_when_no_symbol_is_within_the_window),
+    ("new_listings bootstrap reports a symbol within the recency window", test_new_listings_bootstrap_reports_a_symbol_within_the_recency_window),
+    ("recently_listed excludes a symbol with old, gapped trading history", test_recently_listed_excludes_a_symbol_with_old_trading_history),
+    ("recently_listed excludes a symbol just outside the window", test_recently_listed_excludes_a_symbol_just_outside_the_window),
+    ("recently_listed includes a symbol clearly inside the window", test_recently_listed_includes_a_symbol_clearly_inside_the_window),
+    ("recently_listed includes a symbol with zero raw_prices rows", test_recently_listed_includes_a_symbol_with_zero_raw_prices_rows),
+    ("recently_listed returns empty for an empty symbol set", test_recently_listed_returns_empty_for_an_empty_symbol_set),
+    ("recently_listed survives rpc raising", test_recently_listed_survives_rpc_raising),
     ("new_listings steady state reports only truly new symbols", test_new_listings_steady_state_reports_only_truly_new_symbols),
     ("new_listings previously seen symbol never reported twice", test_new_listings_previously_seen_symbol_never_reported_twice),
     ("new_listings empty live set returns empty without crashing", test_new_listings_empty_live_set_returns_empty_without_crashing),

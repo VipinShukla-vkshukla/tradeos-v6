@@ -614,6 +614,39 @@ reads Population B needs (`stock_data_daily`, `nifty_total_market`,
 every 45s for a full session was pure waste, mirroring `kite_client.py`'s
 own `_instr_cache` pattern.
 
+**Stage D2e, 24-Aug-2026 — the "Milky Mist" gap, closed for the mechanism
+but NOT retroactively backfilled.** Population C's bootstrap silently
+absorbs everything Kite currently lists as "already known" (by design —
+see Stage D2d above), which means a name that listed shortly BEFORE this
+code existed is invisible forever, indistinguishable from a decades-old
+stock. `scanner.py::_recently_listed()` + RPC `get_raw_prices_first_seen`
+(migration 101) checks a symbol's own earliest `raw_prices` row against a
+30-day, TODAY-relative cutoff (`intraday_recent_listing_window_days`) —
+corrected mid-build from an earlier, wrong window-RELATIVE design after
+live-testing caught a real long-listed company (ZEEMEDIA) misclassified
+by it. Two more real bugs found and fixed in the same pass: 343 `INAV`
+(Indicative NAV — not a tradeable instrument, zero ever appeared in
+`raw_prices`) symbols were false-positiving through the recency check,
+fixed at the source in `kite_client.py::fetch_nse_eq_symbols()`; and
+`new_listings()`'s own read of its 2,979-row baseline table was silently
+truncated to 1,000 by PostgREST's cap — caught before it ever ran, would
+have undone Stage D2d's entire point on its first real production day.
+
+**What is NOT done:** re-checking the corrected design against the full
+live universe still returns 179 "recent" names, not the small handful a
+real IPO rate would produce — traced to a genuine ~170-symbol coverage
+jump in `raw_prices` itself around 17/18-Aug-2026 (confirmed via `git
+log` to be unrelated to any code change in this repo), which currently
+sits on top of Milky Mist's own listing date and makes the two
+indistinguishable from `raw_prices` data alone. The retroactive
+correction to `kite_symbol_baseline` (removing Milky Mist so `new_
+listings()`'s normal diff reports it) was deliberately NOT performed —
+doing so against the contaminated 179-name list would seed real false
+positives into the one table this whole mechanism depends on staying
+accurate. F-58 (docs/FINDINGS.md) has the full detail; resolving the
+`raw_prices` discontinuity is the next piece of this stage, not yet
+started.
+
 **Gate D2:** a live demonstration — a name outside yesterday's bench that
 moved hard today gets admitted mid-session, logged with which population
 admitted it (A/B/C), and resolved the same way every other detection is.

@@ -308,6 +308,25 @@ _instr_cache: dict = {"date": None, "symbols": None}
 _KITE_NON_MAINBOARD_SUFFIX = re.compile(r"-[A-Z0-9]+$")
 
 
+def _is_mainboard_symbol(tradingsymbol: str) -> bool:
+    """
+    PURE. The exact predicate `fetch_nse_eq_symbols()` filters on,
+    extracted so it can be tested without a live Kite session. True for a
+    plain mainboard-equity-or-ETF tradingsymbol; False for a bond/SDL/
+    SGB/T-Bill/SME/trade-to-trade `-XX` suffix, or an `INAV` reference-
+    price feed (never a tradeable instrument — zero of 343 have ever
+    appeared in raw_prices, checked against its full history, not
+    assumed).
+    """
+    if not tradingsymbol:
+        return False
+    if _KITE_NON_MAINBOARD_SUFFIX.search(tradingsymbol):
+        return False
+    if tradingsymbol.endswith("INAV"):
+        return False
+    return True
+
+
 def fetch_nse_eq_symbols() -> set[str]:
     """
     Every mainboard-equity-or-ETF symbol currently tradeable on NSE,
@@ -338,11 +357,25 @@ def fetch_nse_eq_symbols() -> set[str]:
     names, including a rename this filter caught correctly (ZOMATO's own
     old tradingsymbol is gone; ETERNAL — its 2024 rebrand — is present).
 
+    SECOND FILTER ADDED 23-Aug-2026 (Stage D2e), found while diagnosing
+    why intraday/scanner.py::_recently_listed()'s retroactive check
+    flagged ~190 of the first 1,000 baseline symbols as "recently
+    listed": 343 of the 2,979 plain symbols end in `INAV` (Indicative
+    NAV — an ETF's reference/creation-redemption price feed, not a
+    tradeable instrument in its own right) and — checked against
+    `raw_prices`' ENTIRE history, not assumed — ZERO of them have ever
+    appeared there. They were never "recently listed"; they structurally
+    never trade on the EQ-series bhavcopy at all, so every one looked
+    like a fresh listing to a check built on "no trading history yet".
+    Excluded here at the source rather than patched downstream, so every
+    consumer of this function benefits, not just the recency check.
+
     Returns bare tradingsymbols (no exchange prefix), filtered to
-    `segment == "NSE"` AND no `-XX` suffix. Empty set on any failure —
-    same "advisory only, never take the system down" contract every
-    other function in this module already holds; a caller must treat an
-    empty result as "could not check", not as "nothing is new today".
+    `segment == "NSE"`, no `-XX` suffix, and not ending in `INAV`. Empty
+    set on any failure — same "advisory only, never take the system
+    down" contract every other function in this module already holds; a
+    caller must treat an empty result as "could not check", not as
+    "nothing is new today".
     """
     from config import today_ist
     today = today_ist().isoformat()
@@ -355,8 +388,7 @@ def fetch_nse_eq_symbols() -> set[str]:
     try:
         rows = kite.instruments("NSE") or []
         symbols = {r["tradingsymbol"] for r in rows
-                  if r.get("segment") == "NSE" and r.get("tradingsymbol")
-                  and not _KITE_NON_MAINBOARD_SUFFIX.search(r["tradingsymbol"])}
+                  if r.get("segment") == "NSE" and _is_mainboard_symbol(r.get("tradingsymbol"))}
         _instr_cache["date"], _instr_cache["symbols"] = today, symbols
         return symbols
     except Exception as e:

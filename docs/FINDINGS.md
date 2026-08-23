@@ -11243,3 +11243,126 @@ unchanged this session. The one write outside a switch, same as F-56:
 bookkeeping with zero trading impact, not a decision gated behind
 `propose, never auto-apply`. On `feat/intraday-live-universe`, not
 merged — Gate D2 remains the operator's own sign-off.
+
+## 2026-08-24 — F-58 (new, three real fixes shipped; ONE mechanism
+deliberately NOT completed, contamination found and not yet resolved) —
+Stage D2e: the Milky Mist gap — closes it for the exact case checked,
+finds a second production bug and a data-quality problem in the same pass
+
+**Ran:** `tools.verify` (820 checks, 79 modules, green — 16 more than
+F-57's 804), live checks against production at every step rather than
+trusting the previous step's output, `tools.health` clean.
+
+### 1 — WHAT THIS ADDRESSES
+
+The operator asked directly: is Milky Mist (confirmed live: first traded
+18-Aug-2026, five days before F-57's `new_listings()` existed) covered
+by the mechanism just built? Checked, not assumed: **no** — its bootstrap
+seed had already silently marked it "already known," permanently
+indistinguishable from RELIANCE. The operator green-lit fixing this,
+scoped explicitly to `raw_prices` (NSE's own bhavcopy) rather than
+`stock_data_daily` (gated by an external Chartink dashboard export this
+project cannot reconfigure) or `nifty_total_market` (index membership,
+an NSE-timeline question, not a "backfill" question) — both traced and
+ruled out with the operator in the same conversation, not assumed.
+
+### 2 — THREE REAL FIXES, EACH FOUND BY CHECKING THE PREVIOUS ONE RATHER
+THAN TRUSTING IT
+
+**Fix 1 — the actual Milky Mist mechanism.** New `intraday/scanner.py::
+_recently_listed()` + RPC `get_raw_prices_first_seen()` (migration 101):
+a symbol's own earliest `raw_prices` row, compared against a cutoff.
+Wired into `new_listings()`'s bootstrap path so a symbol that predates
+the code but is itself recent gets one real look, instead of being
+silently absorbed.
+
+**Fix 2 — the INAV false-positive class.** Live-testing fix 1 against
+the FULL Kite universe (not a handful of hand-picked symbols) surfaced
+~190 non-Milky-Mist "recent" hits in the first batch checked, dominated
+by symbols ending `INAV` (Indicative NAV — an ETF's reference/creation-
+redemption feed, not a tradeable instrument). Checked against `raw_
+prices`' ENTIRE history: zero of 343 have EVER appeared there — not
+"recent", structurally never present. Fixed at the source,
+`kite_client.py::fetch_nse_eq_symbols()`, so every consumer benefits,
+not just this check. Extracted the whole filter into a pure
+`_is_mainboard_symbol()` predicate and gave it its own offline test file
+(`tests/test_kite_client.py`, 9 checks) — this exact function has now
+been wrong twice in one session (`instrument_type=="EQ"` filtered
+nothing; `-XX`-suffix-only left INAV in) in ways only live data caught,
+and a pure predicate is the only way to make it checkable without a
+live Kite session every time.
+
+**Fix 3 — a second silent-truncation production bug, caught before it
+ever ran.** While diagnosing fix 2, `sb.table("kite_symbol_baseline").
+select("symbol").execute()` — `new_listings()`'s own read of its own
+baseline table, 2,979 rows and growing — returned exactly 1,000. The
+same PostgREST cap this project has hit and fixed five times before
+(`config.py::fetch_all()`'s own docstring lists the casualties). Had
+this shipped, `new_listings()` would have re-discovered ~1,979 already-
+known symbols as "new" every single day, undoing F-57's entire point on
+its first real production run — never triggered live, because the
+switch this feeds is still off, but it was moments from being committed
+with the bug in it. Fixed with `fetch_all()`, the project's own
+established primitive; registered `kite_symbol_baseline`'s verified sort
+key (`symbol`, its primary key) in `test_static_analysis.py`'s own
+`_FETCH_ALL_SORT_KEY` map — the check built for exactly this failure
+mode caught the new call site immediately (`"whose sort key has never
+been measured"`) and would not pass until the key was recorded, not
+merely used.
+
+### 3 — A REDESIGN WITHIN THE SAME PASS, ALSO CAUGHT BY CHECKING RATHER
+THAN TRUSTING
+
+Fix 1's first version compared a symbol's first `raw_prices` row against
+`raw_prices`' OWN retention-window start (`rolloff_staging()`, migration
+032) plus a 14-day buffer — the idea being that a stock trading since
+before the window opened looks the same at 2 years old or 20. Checked
+against the full Kite universe rather than trusted: **ZEEMEDIA**, a
+long-listed company, has a genuine ~4-week GAP in `raw_prices` coverage
+starting 19-May-2026 — nothing to do with a listing event — and was
+misclassified as a fresh IPO. `raw_prices` has real per-symbol coverage
+gaps the window-relative design had no way to distinguish from a genuine
+first trade. **Corrected before it was ever committed**: `intraday_
+recent_listing_window_days` (30, replacing the wrong `_buffer_days` key
+— the old key deleted, not left stale) is now a fixed, TODAY-relative
+cutoff instead — real IPOs are rare enough that trading history older
+than 30 days is far more likely an established stock with a coverage
+gap than a fresh listing.
+
+### 4 — WHAT THIS ENTRY DOES **NOT** CLAIM, NAMED RATHER THAN GLOSSED
+OVER
+
+Re-checking the corrected 30-day design against the full live universe
+still returned **179 "recent" symbols**, not the small handful a real
+weekly IPO rate would produce. Investigated rather than shipped anyway:
+`raw_prices`' own distinct-symbol-per-day count jumped from 2,463
+(14-Aug) to 2,624 (17-Aug) to 2,632 (18-Aug) — a ~170-symbol coverage
+WIDENING, confirmed via `git log` to be UNRELATED to any code change in
+this repo (`ingest_bhavcopy.py` untouched across that window), most
+likely an NSE-side bhavcopy source or coverage change. Milky Mist's own
+first-seen date (18-Aug) sits inside that same jump, making it currently
+indistinguishable from the ~170 names swept in by the coverage change
+alone using `raw_prices` data by itself.
+
+**Consequence, stated plainly: the retroactive correction to `kite_
+symbol_baseline` — removing Milky Mist and any other genuinely recent
+name so `new_listings()`'s normal diff can report them going forward —
+was NOT performed this pass.** Doing it against the current 179-name
+list would seed real false positives into the one table the whole
+mechanism depends on staying accurate. `kite_symbol_baseline` is
+unchanged from F-57's bootstrap seed; Milky Mist remains, for now, in
+the same blind spot F-57 left it in. The three fixes above (recency
+mechanism, INAV filter, pagination) are real, tested, and shipped — the
+retroactive backfill they were meant to enable is not, and this is
+flagged for the operator's own direction on how to resolve the `raw_
+prices` discontinuity (narrow the window further, investigate the NSE-
+side cause, or cross-check survivors against Kite's own historical-data
+API) rather than guessed at silently.
+
+### 5 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+Both live-requalify switches remain `false`, unchanged this session —
+none of this reaches the live bench regardless of the section 4 finding.
+`nifty_total_market` and `stock_data_daily` are untouched by this entry.
+On `feat/intraday-live-universe`, not merged — Gate D2 remains the
+operator's own sign-off.
