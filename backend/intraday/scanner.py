@@ -561,27 +561,150 @@ def live_requalify(candidates: list[UniverseEntry], quotes: dict[str, dict],
     return out
 
 
+# Module-level, once-per-day cache for the three reference reads Population
+# B and the ASM/GSM/F&O-ban check need (stock_data_daily's known symbols,
+# nifty_total_market's members, safety_lists' flagged names). None of these
+# three change intraday — stock_data_daily and nifty_total_market are
+# EOD/weekly writes, safety_lists is a once-daily NSE surveillance ingest —
+# so re-querying them every 45s (500+ times across one session) was pure
+# waste. Mirrors kite_client.py's own `_instr_cache` pattern exactly.
+_ref_cache: dict = {"date": None, "known": None, "market_rows": None, "flagged": None}
+
+
+def _daily_reference_reads(sb) -> tuple[set[str], list[dict], set[str]]:
+    """Returns (known symbols in stock_data_daily, nifty_total_market rows,
+    ASM/GSM/FO_BAN-flagged symbols), cached for the rest of today."""
+    today = today_ist().isoformat()
+    if _ref_cache["date"] == today and _ref_cache["known"] is not None:
+        return _ref_cache["known"], _ref_cache["market_rows"], _ref_cache["flagged"]
+
+    d = _latest_date(sb)
+    known: set[str] = set()
+    if d:
+        sdd_rows = (sb.table("stock_data_daily").select("symbol")
+                     .eq("date", d).execute().data or [])
+        known = {r["symbol"] for r in sdd_rows if r.get("symbol")}
+
+    try:
+        market_rows = sb.table("nifty_total_market").select(
+            "symbol,company_name,industry").execute().data or []
+    except Exception as e:
+        logger.debug(f"  scanner: nifty_total_market read skipped — {e}")
+        market_rows = []
+
+    flagged: set[str] = set()
+    if cfg_bool("intraday_skip_flagged", True):
+        try:
+            sl_rows = (sb.table("safety_lists").select("symbol")
+                        .in_("list_type", ["ASM", "GSM", "FO_BAN"])
+                        .execute().data or [])
+            flagged = {r["symbol"] for r in sl_rows if r.get("symbol")}
+        except Exception as e:
+            logger.debug(f"  scanner: safety_lists read skipped — {e}")
+
+    _ref_cache.update(date=today, known=known, market_rows=market_rows, flagged=flagged)
+    return known, market_rows, flagged
+
+
+# Module-level, once-per-day cache for the Kite-instrument baseline diff —
+# same reasoning as _ref_cache above, plus fetch_nse_eq_symbols() is itself
+# a ~10k-row fetch best done once, not every 45s.
+_baseline_cache: dict = {"date": None, "symbols": None}
+
+
+def _seed_baseline(sb, symbols: set[str]) -> None:
+    rows = [{"symbol": s} for s in symbols]
+    for i in range(0, len(rows), 500):
+        try:
+            sb.table("kite_symbol_baseline").upsert(
+                rows[i:i + 500], on_conflict="symbol").execute()
+        except Exception as e:
+            logger.debug(f"  scanner: kite_symbol_baseline write skipped — {e}")
+            return
+
+
+def new_listings(sb=None) -> set[str]:
+    """
+    Which Kite-known mainboard/ETF symbols have NEVER BEEN SEEN before —
+    the actual "new listing" signal. Stage D2d, 23-Aug-2026 (docs/
+    TRADEOS_ROADMAP.md, Track D), replacing unreferenced_candidates()'
+    original Population C definition ("every Kite symbol not in
+    nifty_total_market or stock_data_daily"), which measured 2,081 names
+    live on 23-Aug — almost none of them actual IPOs, nearly all of them
+    small/micro-cap names simply outside both reference tables' own
+    coverage. Quoting ~2,100 names every 45s to catch an event that
+    happens a handful of times a MONTH was the operator's own, correct
+    objection — this fixes the definition, not just the size.
+
+    Diffs today's live `kite_client.fetch_nse_eq_symbols()` against
+    `kite_symbol_baseline`, a table this function itself maintains: a
+    symbol present today but never recorded before is genuinely new, and
+    is written to the baseline immediately so it is never reported new
+    again. BOOTSTRAP: on the very first run ever (empty baseline table —
+    true the first time this ships), the WHOLE current universe (~2,979
+    names) is seeded as already-known and NONE of it is reported new —
+    there is no listing history yet to diff against, so "new" is
+    undefined, not "all of it".
+
+    Returns an empty set on any failure to read either side of the diff —
+    advisory only, same contract as every other function that touches
+    Kite or a reference table in this module; an empty result means
+    "could not check", not "nothing is new today".
+    """
+    sb = sb or get_supabase()
+    try:
+        from kite.kite_client import fetch_nse_eq_symbols
+        live = fetch_nse_eq_symbols()
+    except Exception as e:
+        logger.debug(f"  scanner: Kite instrument fetch skipped — {e}")
+        return set()
+    if not live:
+        return set()
+
+    today = today_ist().isoformat()
+    if _baseline_cache["date"] != today or _baseline_cache["symbols"] is None:
+        try:
+            rows = sb.table("kite_symbol_baseline").select("symbol").execute().data or []
+            _baseline_cache["date"] = today
+            _baseline_cache["symbols"] = {r["symbol"] for r in rows if r.get("symbol")}
+        except Exception as e:
+            logger.debug(f"  scanner: kite_symbol_baseline read skipped — {e}")
+            return set()
+
+    known = _baseline_cache["symbols"]
+    if not known:
+        _seed_baseline(sb, live)
+        _baseline_cache["symbols"] = set(live)
+        return set()
+
+    fresh = live - known
+    if fresh:
+        _seed_baseline(sb, fresh)
+        _baseline_cache["symbols"] = known | fresh
+    return fresh
+
+
 def unreferenced_candidates(sb=None, exclude: set[str] | None = None
                             ) -> list[UniverseEntry]:
     """
     Tradeable NSE EQ names that are NOT in stock_data_daily at all — so no
     historical ATR exists to be relative to, and live_requalify()'s normal
     admission floor must be applied as an ABSOLUTE threshold instead.
-    Stage D2b, 23-Aug-2026 (docs/TRADEOS_ROADMAP.md, Track D).
+    Stage D2b/d, 23-Aug-2026 (docs/TRADEOS_ROADMAP.md, Track D).
 
-    TWO SOURCES, IN ORDER OF FRESHNESS:
+    TWO SOURCES:
 
-      nifty_total_market — 751 index-constituent rows, 253 of them
-      confirmed NOT in stock_data_daily (live query, 23-Aug). Known,
-      legitimate NSE names simply outside swing's own sheet-baseline
-      universe — not new listings, just untracked by that pipeline.
+      Population B — nifty_total_market members (754 rows after the
+      weekly refresh) not in stock_data_daily (231 of them, live-
+      confirmed 23-Aug). Known, legitimate NSE names simply outside
+      swing's own sheet-baseline universe — not new listings, just
+      untracked by that pipeline. Bounded and stable; not the population
+      that needed fixing.
 
-      Kite's own instrument master (kite_client.fetch_nse_eq_symbols())
-      — the one source that knows about a listing from its FIRST
-      tradeable day. nifty_total_market is index-membership and lags an
-      actual IPO by however long NSE takes to reconstitute an index
-      (weeks to months); this is the only path that can see a name
-      before that.
+      Population C — new_listings() above: Kite-known symbols never
+      seen before ANY prior run, not "every Kite symbol we don't already
+      track". Typically zero, occasionally a handful around a real IPO —
+      not the ~2,081-name flood the original, cruder definition produced.
 
     `atr_pct=0.0` on every returned entry, HONESTLY — there is nothing
     real to put there, and 0.0 combined with the `reason` string naming
@@ -602,32 +725,10 @@ def unreferenced_candidates(sb=None, exclude: set[str] | None = None
     sb = sb or get_supabase()
     exclude = exclude or set()
 
-    d = _latest_date(sb)
-    known: set[str] = set()
-    if d:
-        sdd_rows = (sb.table("stock_data_daily").select("symbol")
-                     .eq("date", d).execute().data or [])
-        known = {r["symbol"] for r in sdd_rows if r.get("symbol")}
-
-    flagged: set[str] = set()
-    if cfg_bool("intraday_skip_flagged", True):
-        try:
-            sl_rows = (sb.table("safety_lists").select("symbol")
-                        .in_("list_type", ["ASM", "GSM", "FO_BAN"])
-                        .execute().data or [])
-            flagged = {r["symbol"] for r in sl_rows if r.get("symbol")}
-        except Exception as e:
-            logger.debug(f"  scanner: safety_lists read skipped — {e}")
+    known, market_rows, flagged = _daily_reference_reads(sb)
 
     out: list[UniverseEntry] = []
     seen: set[str] = set()
-
-    try:
-        market_rows = sb.table("nifty_total_market").select(
-            "symbol,company_name,industry").execute().data or []
-    except Exception as e:
-        logger.debug(f"  scanner: nifty_total_market read skipped — {e}")
-        market_rows = []
 
     for r in market_rows:
         sym = r.get("symbol")
@@ -642,10 +743,9 @@ def unreferenced_candidates(sb=None, exclude: set[str] | None = None
         ))
 
     try:
-        from kite.kite_client import fetch_nse_eq_symbols
-        instrument_symbols = fetch_nse_eq_symbols()
+        instrument_symbols = new_listings(sb)
     except Exception as e:
-        logger.debug(f"  scanner: Kite instrument master read skipped — {e}")
+        logger.debug(f"  scanner: Kite new-listing diff skipped — {e}")
         instrument_symbols = set()
 
     for sym in sorted(instrument_symbols):
@@ -655,8 +755,8 @@ def unreferenced_candidates(sb=None, exclude: set[str] | None = None
         out.append(UniverseEntry(
             symbol=sym, close=0.0, value_cr=0.0, atr_pct=0.0, delivery_pct=None,
             sector="", score=0.0,
-            reason=("not in stock_data_daily or nifty_total_market — "
-                   "Kite instrument master only (likely a recent listing)"),
+            reason=("never seen in Kite's instrument master before today — "
+                   "genuine new listing, not in stock_data_daily or nifty_total_market"),
             avg_vol_20d=0.0,
         ))
 

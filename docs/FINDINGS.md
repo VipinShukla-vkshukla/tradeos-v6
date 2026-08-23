@@ -11153,3 +11153,93 @@ operator's own sign-off. The one exception to "ships OFF" in this
 entry's own header: the `nifty_total_market` WRITE itself is real and
 live, not gated by a switch — reference-data hygiene, not a trading
 decision, and the operator's own request this session.
+
+## 2026-08-23 — F-57 (new, shipped OFF except one live table seed) —
+Stage D2d: Population C redefined from "everything Kite knows we don't
+track" (2,081 names) to "genuinely new to Kite since the last check"
+(0-few) — the operator's own catch, same session as F-56
+
+**Ran:** `tools.verify` (804 checks, 78 modules, green — 5 more than
+F-56's 799), a live before/after measurement of Population C's actual
+size, a live confirmation the new `kite_symbol_baseline` table seeded
+correctly (2,979 rows, matching the plain-symbol Kite universe exactly).
+
+### 1 — THE QUESTION THAT SURFACED THIS: "we cannot scan 2900 stocks"
+
+Immediately after F-56 shipped, the operator asked the right follow-up:
+if Population C is meant to catch IPOs, how does quoting ~2,100 names
+every 45s make sense, and how does that even differentiate an IPO from
+anything else? It doesn't — checked live: Population C (as F-55/F-56
+defined it — "Kite mainboard symbol not in nifty_total_market or stock_
+data_daily") measured **2,081 names**, against Population A+B's
+combined **232**. That population was never actually "new listings"; a
+name can sit outside both reference tables for years without ever being
+one. The DEFINITION was wrong, not just the size — narrowing the
+threshold or sampling fewer of the 2,081 would still be scanning the
+wrong population.
+
+### 2 — WHAT GOT BUILT
+
+New `intraday/scanner.py::new_listings()`: diffs TODAY's live `kite_
+client.fetch_nse_eq_symbols()` against `kite_symbol_baseline` (migration
+100, new table, symbol + first_seen_date), which the function maintains
+itself — a symbol present today but never recorded before is genuinely
+new, written to the baseline the moment it's found so it is never
+reported new again. **Bootstrap handled explicitly:** the very first run
+ever (empty baseline) seeds the whole ~2,979-name universe as
+already-known and reports ZERO as new — there is no listing history yet
+to diff against, so "new" is undefined, not "all of it". Wrapped in its
+own try/except (F-56's version left the Kite fetch call inside
+`new_listings()` unguarded, relying only on the caller's try/except —
+caught and fixed in this same pass, before it shipped, once the test
+written to prove the contract failed against the actual code).
+
+`unreferenced_candidates()`'s Population C loop now calls `new_listings()`
+instead of `fetch_nse_eq_symbols()` directly — reason string changed from
+"Kite instrument master only (likely a recent listing)" to "never seen
+in Kite's instrument master before today", now honestly true rather than
+a guess.
+
+Also added `_ref_cache`, a once-per-day cache for the three reference
+reads Population B needs (`stock_data_daily`, `nifty_total_market`,
+`safety_lists`) — none of them change intraday, so re-querying full
+tables every 45s across a session (500+ times) was pure waste even
+before Population C's own problem. Mirrors `kite_client.py`'s existing
+`_instr_cache` pattern exactly.
+
+### 3 — LIVE-VERIFIED, PRECISELY
+
+Before: Population A = 1, Population B = 231, Population C = 2,081
+(total quote-fetch burden 2,313). After: Population A = 1, Population B
+= 231, **Population C = 0** (total burden 232) — this session's
+bootstrap run, confirmed by a direct count against `kite_symbol_
+baseline` showing exactly 2,979 rows, matching `fetch_nse_eq_symbols()`'s
+own live count exactly. The mechanism has NOT yet been observed
+reporting a real, non-zero "new" count, because today's run WAS the
+bootstrap — the next session (or the next time a genuinely new symbol
+appears in Kite's dump) is the first real test of the diff itself firing
+non-trivially. Named as not yet demonstrated, not assumed working.
+
+11 new offline tests (34 total in the scanner module, 804 across the
+suite) — bootstrap-reports-zero, steady-state-reports-only-the-diff,
+a previously-seen symbol never re-reported within the same process, and
+the graceful-degradation contract, demonstrated the same way as the rest
+of this stage: written, watched fail against the version that didn't
+guard the Kite call, then fixed and re-run green. Existing `unreferenced_
+candidates()` tests needed real rework, not just new fixtures — the OLD
+tests asserted Kite-only names appeared with an empty baseline fixture,
+which is now the bootstrap case (reports nothing) rather than the
+steady-state case (reports the diff); left unfixed, they would have
+falsely certified behaviour the redesign specifically removed.
+
+### 4 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+Delivery% and the ASM/GSM/F&O-ban check (closed for B/C in F-56) are
+unaffected by this entry — Population C candidates that DO surface from
+here forward still go through the same `min_price`/`safety_lists`
+checks as before. Both live-requalify switches remain `false`,
+unchanged this session. The one write outside a switch, same as F-56:
+`kite_symbol_baseline`'s bootstrap seed is real and live — reference-data
+bookkeeping with zero trading impact, not a decision gated behind
+`propose, never auto-apply`. On `feat/intraday-live-universe`, not
+merged — Gate D2 remains the operator's own sign-off.

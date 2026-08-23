@@ -26,7 +26,18 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import intraday.scanner as scanner_mod
 from tests import cfg_ctx
+
+
+def _reset_scanner_caches():
+    """_daily_reference_reads()/new_listings() cache once per real calendar
+    day at module level — correct in production, but it means two tests in
+    the SAME `tools.verify` process would otherwise share whatever the
+    first one populated, since both run on the same real date. Every test
+    touching unreferenced_candidates()/new_listings() must call this first."""
+    scanner_mod._ref_cache.update(date=None, known=None, market_rows=None, flagged=None)
+    scanner_mod._baseline_cache.update(date=None, symbols=None)
 
 
 # ── _qualifies ────────────────────────────────────────────────────────────
@@ -314,6 +325,7 @@ def test_unreferenced_candidates_finds_nifty_total_market_gap():
     stock_data_daily must come back with atr_pct=0.0 and a reason naming
     the source honestly — there is no history to be relative to."""
     from intraday.scanner import unreferenced_candidates
+    _reset_scanner_caches()
     sb = _TableRouter({
         "stock_data_daily": [{"symbol": "TRACKED"}],
         "nifty_total_market": [
@@ -330,26 +342,33 @@ def test_unreferenced_candidates_finds_nifty_total_market_gap():
 
 
 def test_unreferenced_candidates_finds_kite_only_names_beyond_both_tables():
-    """Population C: a name in neither table — the genuine new-listing
-    case — surfaces only through Kite's own instrument master."""
+    """Population C: a name in neither table AND never seen in a prior
+    kite_symbol_baseline diff — the genuine new-listing case. The baseline
+    fixture carries an unrelated already-known symbol so this exercises
+    the STEADY-STATE diff, not the bootstrap (see the dedicated bootstrap
+    test below for that path)."""
     from intraday.scanner import unreferenced_candidates
+    _reset_scanner_caches()
     sb = _TableRouter({
         "stock_data_daily": [{"symbol": "TRACKED"}],
         "nifty_total_market": [{"symbol": "TRACKED", "company_name": "x", "industry": "bank"}],
+        "kite_symbol_baseline": [{"symbol": "SOME_OLD_SYMBOL"}],
     })
     with patch("intraday.scanner._latest_date", return_value="2026-08-23"), \
          patch("kite.kite_client.fetch_nse_eq_symbols",
               return_value={"TRACKED", "FRESHLISTED"}):
         out = unreferenced_candidates(sb)
     assert [e.symbol for e in out] == ["FRESHLISTED"]
-    assert "Kite instrument master" in out[0].reason
+    assert "never seen in Kite's instrument master" in out[0].reason
 
 
 def test_unreferenced_candidates_never_duplicates_a_name_seen_in_both_sources():
     from intraday.scanner import unreferenced_candidates
+    _reset_scanner_caches()
     sb = _TableRouter({
         "stock_data_daily": [],
         "nifty_total_market": [{"symbol": "BOTH", "company_name": "x", "industry": "it"}],
+        "kite_symbol_baseline": [{"symbol": "SOME_OLD_SYMBOL"}],
     })
     with patch("intraday.scanner._latest_date", return_value="2026-08-23"), \
          patch("kite.kite_client.fetch_nse_eq_symbols", return_value={"BOTH"}):
@@ -359,6 +378,7 @@ def test_unreferenced_candidates_never_duplicates_a_name_seen_in_both_sources():
 
 def test_unreferenced_candidates_respects_exclude():
     from intraday.scanner import unreferenced_candidates
+    _reset_scanner_caches()
     sb = _TableRouter({
         "stock_data_daily": [],
         "nifty_total_market": [{"symbol": "ALREADY_BENCHED", "company_name": "x", "industry": "it"}],
@@ -375,6 +395,7 @@ def test_unreferenced_candidates_excludes_a_name_on_safety_lists():
     all for this population, so safety_lists is the only place that can
     answer it."""
     from intraday.scanner import unreferenced_candidates
+    _reset_scanner_caches()
     sb = _TableRouter({
         "stock_data_daily": [],
         "nifty_total_market": [
@@ -394,6 +415,7 @@ def test_unreferenced_candidates_admits_flagged_when_skip_flagged_false():
     """Same override _qualifies() itself honours -- skip_flagged=false must
     let a flagged name through here too, not silently keep blocking it."""
     from intraday.scanner import unreferenced_candidates
+    _reset_scanner_caches()
     sb = _TableRouter({
         "stock_data_daily": [],
         "nifty_total_market": [{"symbol": "BANNED", "company_name": "y", "industry": "metal"}],
@@ -411,6 +433,7 @@ def test_unreferenced_candidates_survives_kite_master_unavailable():
     an empty/failed instrument fetch must degrade to Population B only,
     never raise."""
     from intraday.scanner import unreferenced_candidates
+    _reset_scanner_caches()
     sb = _TableRouter({
         "stock_data_daily": [],
         "nifty_total_market": [{"symbol": "STILLFOUND", "company_name": "x", "industry": "it"}],
@@ -419,6 +442,70 @@ def test_unreferenced_candidates_survives_kite_master_unavailable():
          patch("kite.kite_client.fetch_nse_eq_symbols", side_effect=Exception("no token")):
         out = unreferenced_candidates(sb)
     assert [e.symbol for e in out] == ["STILLFOUND"]
+
+
+# ── new_listings() — the Kite-baseline diff itself ───────────────────────
+
+def test_new_listings_bootstrap_seeds_everything_and_reports_nothing_new():
+    """The exact case that made the ORIGINAL Population C definition
+    unusable: on the very first run ever, an empty baseline must NOT mean
+    'every one of today's ~2,979 Kite symbols is a fresh IPO'. It means
+    there is no history yet -- seed it, report zero."""
+    from intraday.scanner import new_listings
+    _reset_scanner_caches()
+    sb = _TableRouter({"kite_symbol_baseline": []})
+    with patch("kite.kite_client.fetch_nse_eq_symbols",
+              return_value={"A", "B", "C"}):
+        out = new_listings(sb)
+    assert out == set()
+
+
+def test_new_listings_steady_state_reports_only_truly_new_symbols():
+    from intraday.scanner import new_listings
+    _reset_scanner_caches()
+    sb = _TableRouter({"kite_symbol_baseline": [{"symbol": "OLD1"}, {"symbol": "OLD2"}]})
+    with patch("kite.kite_client.fetch_nse_eq_symbols",
+              return_value={"OLD1", "OLD2", "TRULY_NEW"}):
+        out = new_listings(sb)
+    assert out == {"TRULY_NEW"}
+
+
+def test_new_listings_previously_seen_symbol_never_reported_twice():
+    """The other half of the mechanism: once a symbol has been recorded
+    (by an earlier run, or earlier in THIS run via the in-process cache),
+    it must not keep showing up as 'new' on every subsequent check."""
+    from intraday.scanner import new_listings
+    _reset_scanner_caches()
+    sb = _TableRouter({"kite_symbol_baseline": [{"symbol": "OLD1"}]})
+    with patch("kite.kite_client.fetch_nse_eq_symbols",
+              return_value={"OLD1", "FRESH"}):
+        first = new_listings(sb)
+        second = new_listings(sb)   # same process, same cached day
+    assert first == {"FRESH"}
+    assert second == set(), "FRESH was already reported once this run — must not repeat"
+
+
+def test_new_listings_empty_live_set_returns_empty_without_crashing():
+    from intraday.scanner import new_listings
+    _reset_scanner_caches()
+    sb = _TableRouter({"kite_symbol_baseline": [{"symbol": "OLD1"}]})
+    with patch("kite.kite_client.fetch_nse_eq_symbols", return_value=set()):
+        out = new_listings(sb)
+    assert out == set()
+
+
+def test_new_listings_survives_kite_fetch_raising():
+    """Same 'advisory only, never take the system down' contract as every
+    other function that touches Kite in this module — new_listings() must
+    degrade to empty on its own, not rely on unreferenced_candidates()'
+    try/except around it as the only backstop."""
+    from intraday.scanner import new_listings
+    _reset_scanner_caches()
+    sb = _TableRouter({"kite_symbol_baseline": [{"symbol": "OLD1"}]})
+    with patch("kite.kite_client.fetch_nse_eq_symbols",
+              side_effect=Exception("no token")):
+        out = new_listings(sb)
+    assert out == set()
 
 
 def test_live_requalify_min_price_rejects_a_cheap_name_even_if_move_and_turnover_clear():
@@ -472,6 +559,11 @@ TESTS = [
     ("unreferenced_candidates excludes a name on safety_lists", test_unreferenced_candidates_excludes_a_name_on_safety_lists),
     ("unreferenced_candidates admits flagged when skip_flagged false", test_unreferenced_candidates_admits_flagged_when_skip_flagged_false),
     ("unreferenced_candidates survives kite master unavailable", test_unreferenced_candidates_survives_kite_master_unavailable),
+    ("new_listings bootstrap seeds everything and reports nothing new", test_new_listings_bootstrap_seeds_everything_and_reports_nothing_new),
+    ("new_listings steady state reports only truly new symbols", test_new_listings_steady_state_reports_only_truly_new_symbols),
+    ("new_listings previously seen symbol never reported twice", test_new_listings_previously_seen_symbol_never_reported_twice),
+    ("new_listings empty live set returns empty without crashing", test_new_listings_empty_live_set_returns_empty_without_crashing),
+    ("new_listings survives kite fetch raising", test_new_listings_survives_kite_fetch_raising),
     ("live_requalify min_price rejects a cheap name even if move/turnover clear", test_live_requalify_min_price_rejects_a_cheap_name_even_if_move_and_turnover_clear),
     ("live_requalify min_price=None means no price gate at all", test_live_requalify_min_price_none_means_no_price_gate_at_all),
 ]

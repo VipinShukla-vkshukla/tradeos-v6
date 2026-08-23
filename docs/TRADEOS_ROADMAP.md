@@ -591,6 +591,29 @@ names `_qualifies()`'s own flagged-check never could (no `asm_flag`
 column exists for a name with no `stock_data_daily` row). Reuses
 `intraday_skip_flagged`, the same switch `_qualifies()` already reads.
 
+**Population C redefined, 23-Aug-2026 (Stage D2d) — the operator's own
+catch.** "Kite-known symbols not in nifty_total_market or stock_data_
+daily" measured 2,081 names live — never actually "new listings", almost
+entirely small/micro-cap names outside both reference tables' own
+coverage. Quoting ~2,100 names every 45s to catch an event that happens
+a handful of times a MONTH was never viable, and it wasn't answering the
+IPO question either — a name can sit outside both tables for years
+without ever being a new listing. Fixed the DEFINITION, not just the
+size: `scanner.new_listings()` diffs today's live Kite list against
+`kite_symbol_baseline` (migration 100), a table it maintains itself — a
+symbol present today but never recorded before is genuinely new, and is
+written to the baseline the moment it's found so it is never reported
+new again. First run ever (empty baseline) seeds the whole ~2,979-name
+universe as already-known and reports ZERO as new — a bootstrap, not
+2,979 simultaneous IPOs. Live-verified: Population C went from 2,081 to
+0 (this session's bootstrap run); Population A+B (the two populations
+that were always bounded and never the actual problem) stayed at 232.
+Also added a once-per-day cache (`_ref_cache`) for the three reference
+reads Population B needs (`stock_data_daily`, `nifty_total_market`,
+`safety_lists`) — none of them change intraday, so re-querying them
+every 45s for a full session was pure waste, mirroring `kite_client.py`'s
+own `_instr_cache` pattern.
+
 **Gate D2:** a live demonstration — a name outside yesterday's bench that
 moved hard today gets admitted mid-session, logged with which population
 admitted it (A/B/C), and resolved the same way every other detection is.
