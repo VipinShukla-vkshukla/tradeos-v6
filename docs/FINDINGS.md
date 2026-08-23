@@ -10781,3 +10781,125 @@ against data closed after today, same out-of-sample discipline as
 always. No change to `discover_engines.py` or `weekly_review.py`'s own
 proposal tables — this pass was scoped to `FEATURE_FILTER` rows only, the
 ones the operator's question was actually about.
+
+
+## 2026-08-23 — F-54 (new, shipped OFF) — Stage D2, live universe
+re-qualification: a name outside today's ~120-name bench that moved and
+traded enough TODAY, not yesterday, can now be admitted mid-session
+
+**Ran:** `tools.verify` (783 checks, 77 modules, green — 20 new),
+demonstrated failing before the fix landed, live integration check
+against production `stock_data_daily` (real candidate found: HDFCBANK),
+live check of the Kite REST quote path under a real expired-token
+condition (confirmed graceful degradation, not assumed), `tools.health`
+(clean except the two pre-existing, unrelated items).
+
+### 1 — WHAT THIS ADDRESSES
+
+docs/TRADEOS_ROADMAP.md, Track D, Stage D2. `scanner.live_rerank()` can
+only reorder names already in the ~120-name daily bench; the bench itself
+is built once a day from YESTERDAY's turnover/ATR (`build_universe()`). A
+name too quiet yesterday to qualify, then gapping hard today, was
+invisible for the whole session regardless of the bench size — the
+constraint was never the number, it was WHEN the eligibility list gets
+decided.
+
+### 2 — WHAT GOT BUILT
+
+`intraday/scanner.py`: extracted the four static gates (price, ASM/F&O
+flag, liquidity, delivery) plus the ATR/movement gate into one shared
+`_qualifies()` function, `require_movement` togglable — so `build_universe()`
+and the new candidate-pool function can never independently drift on what
+"otherwise tradeable" means (this project's own repeated failure shape:
+hurdle/edge units, the sub_engine overwrite). `build_universe()` rewired
+to call it; behaviour proven unchanged via a direct fixture test, not
+assumed from the diff.
+
+New `movement_rejected_candidates()`: the population a live re-check may
+touch — qualifies on price/liquidity/delivery, failed ONLY yesterday's
+ATR band. New `live_requalify()`, pure: admits a candidate whose TODAY's
+own |% move from previous close| and today's-so-far turnover (crore)
+clear the same magnitude/liquidity floors, direction-agnostic (a stock
+down 10% qualifies exactly like one up 10%, matching the existing ATR
+band's own magnitude-only test). Both new config thresholds default to
+the SAME values `intraday_min_atr_pct`/`intraday_min_turnover_cr`
+already use — the same question, asked of today's live number instead of
+yesterday's full-day one.
+
+New `intraday/engine.py::live_requalify_universe()`: fetches quotes via
+the EXISTING `kite_client.fetch_quotes()` (already-established 200-batch
+REST helper, not the tick feed — a bench-excluded name has no websocket
+subscription yet, so `feed.quote()` cannot see it). COMPUTES AND LOGS
+UNCONDITIONALLY; only appends to `self._bench` (and so only reaches
+`watch_symbols()`/the websocket) when `intraday_live_requalify_enabled`
+is armed — same "propose before it can act" shape `floor_only_rank`
+already uses.
+
+Its own timer (`intraday_live_requalify_interval_s`, 45s default,
+`intraday/config.py::live_requalify_interval_s()`) — separate from the
+300s bench rebuild for the same reason the position guard has its own
+timer: the bench rebuild is a genuinely expensive ~500-row historical
+scan, this is a handful of REST calls against a small, pre-filtered list.
+Wired into `intraday/run.py` as its own independent block, calling
+`feed.resubscribe()` immediately when something is admitted rather than
+waiting for the next slow cycle — the entire point of a faster clock.
+
+### 3 — VERIFIED, PRECISELY WHAT WAS AND WAS NOT DEMONSTRATED LIVE
+
+20 new offline checks (`tests/test_scanner_live_requalify.py`): every
+`_qualifies()` rejection path individually, the `build_universe()`
+refactor's behaviour proven unchanged via a fixture, `movement_rejected_
+candidates()` correctly isolating the ATR-only-failure population and
+respecting `exclude`, and thorough `live_requalify()` coverage — both
+floors required independently, direction-agnostic admission, a missing
+quote skipped (not treated as evidence either way, same rule
+`live_rerank()` already applies), a zero previous-close defended against
+divide-by-zero. Demonstrated failing first: dropped the turnover check,
+watched the exact test built to catch that fail, restored, re-ran green.
+
+**Live-verified, for real:** `movement_rejected_candidates()` run against
+production `stock_data_daily` found a genuine real case —
+HDFCBANK, ATR 1.16% against the 1.20% floor, missed by four hundredths of
+a point, exactly the "just barely too quiet yesterday" shape this stage
+exists to catch. `fetch_quotes()` checked live under a REAL current
+condition (the Kite session is expired right now, confirmed via
+`tools.health`) and confirmed to degrade gracefully — returns `{}`,
+which `live_requalify()` correctly turns into zero admissions, no
+exception anywhere in the chain.
+
+**Not demonstrated live, and said so rather than implied otherwise:** an
+actual mid-session admission with a valid Kite token and the market open
+— this ran after hours, with an expired token, so the live-quote leg of
+the mechanism could only be proven to fail safely, not to succeed. That
+needs a session with both conditions true, which this was not.
+
+### 4 — A REAL FINDING SURFACED WHILE VERIFYING, NAMED NOT ASSUMED AWAY
+
+`stock_data_daily` (499 rows for 21-Aug) is narrower than the full daily
+bhavcopy ingest (`raw_prices`, 2,633 rows for the same date) — `build_
+universe()` and everything in this stage can only ever see the smaller,
+derived table. The Track D roadmap's own "not Nifty 500" correction
+(traced to `ingest_bhavcopy.py`, ~1,800-2,000 EQ names) describes the RAW
+ingest correctly; `stock_data_daily` itself is a further-filtered,
+indicator-computed table (`compute_indicators.py`) that only 499 of those
+names made it into on this date — for reasons not investigated this
+pass (likely history-length or a swing-pipeline-specific inclusion rule,
+not confirmed). This is a real, deeper gap beyond Stage D2's own scope —
+named here for Stage D2's own record and as a candidate for a future,
+separate look, not silently absorbed into today's claim.
+
+### 5 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+**Ships OFF** (`intraday_live_requalify_enabled=false`) — the check
+computes and logs on its own new timer the moment the daemon is
+redeployed, but admits nothing to the live bench until armed on the
+evidence that log accumulates, same posture as every other new rule this
+project ships. **The IPO/newly-listed path (Stage D2's own documented
+"genuinely separate case") is not built in this pass** — a stock with no
+`stock_data_daily` row at all (new listing, or excluded per finding #4
+above) needs Kite's instrument master and an absolute, not
+history-relative, qualification rule; named as the clear next piece of
+Stage D2, not silently dropped. This is on the `feat/intraday-live-
+universe` branch, not merged to `main` — Gate D2 is the operator's own
+sign-off, per the roadmap's own rule that the human decides at every
+gate, and the branch is where that evidence sits until given.

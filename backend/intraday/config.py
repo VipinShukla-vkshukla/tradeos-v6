@@ -162,6 +162,25 @@ def position_guard_interval_s() -> int:
     return cfg_int("intraday_position_guard_interval_s", 3)
 
 
+def live_requalify_interval_s() -> int:
+    """
+    How often the live universe re-qualification check runs — Stage D2,
+    23-Aug-2026 (docs/TRADEOS_ROADMAP.md, Track D).
+
+    Separate from `eval_interval_s()`'s 300s bench rebuild for the same
+    reason `position_guard_interval_s()` is separate from it: the bench
+    rebuild reads a fresh 1,800+-row `stock_data_daily` scan and is
+    genuinely expensive to run often; this check is a handful of REST
+    quote calls for a small, pre-filtered candidate list (names that
+    qualify on price/liquidity/delivery but missed only the ATR floor
+    yesterday) and is cheap enough to run several times a minute.
+
+    Returning a value >= eval_interval_s() disables the fast lane exactly,
+    same rollback shape as position_guard_interval_s().
+    """
+    return cfg_int("intraday_live_requalify_interval_s", 45)
+
+
 def gtt_sync_interval_s() -> int:
     """How often GTT triggers are reconciled against the intended stop."""
     return cfg_int("intraday_gtt_sync_interval_s", 300)

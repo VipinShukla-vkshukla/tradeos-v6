@@ -35,7 +35,7 @@ from config import IST, cfg_int, get_supabase, get_system_config, is_kill_switch
 from intraday.config import (is_trading_session, is_market_open, is_holiday,
                              autonomy_phase, gtt_enabled, orders_enabled,
                              eval_interval_s, gtt_sync_interval_s, poll_interval_s,
-                             position_guard_interval_s)
+                             position_guard_interval_s, live_requalify_interval_s)
 from intraday.engine import IntradayEngine
 from intraday.notifier import Notifier
 from intraday.price_feed import PriceFeed
@@ -178,6 +178,7 @@ def main(once: bool = False, dry: bool = False) -> None:
     was_active = ls.may_act
     last_gtt = 0.0
     last_state = 0.0
+    last_requalify = 0.0
     last_beat = 0.0
     last_poll = 0.0
     # Alerted once per stretch of blindness, not once per cycle — see
@@ -422,6 +423,23 @@ def main(once: bool = False, dry: bool = False) -> None:
                     engine._allocator.refresh_priors()
                     engine._allocator.refresh_priority_criteria()
                 last_state = now
+
+            # Stage D2, 23-Aug-2026 (docs/TRADEOS_ROADMAP.md, Track D). Its
+            # own, faster timer — see live_requalify_interval_s()'s own
+            # docstring for why this cannot share the 300s block above: that
+            # scan is a genuinely expensive 1,800+-row historical read, this
+            # is a handful of REST quote calls against a small, pre-filtered
+            # list. Resubscribing immediately when something new is admitted
+            # — not waiting for the next 300s cycle — is the entire point of
+            # giving this its own clock.
+            if was_active and now - last_requalify >= live_requalify_interval_s():
+                try:
+                    admitted = engine.live_requalify_universe()
+                    if admitted:
+                        feed.resubscribe(engine.watch_symbols())
+                except Exception as e:
+                    logger.warning(f"  live universe requalify failed: {e}")
+                last_requalify = now
 
             if now - last_beat >= 900:
                 notifier.heartbeat(

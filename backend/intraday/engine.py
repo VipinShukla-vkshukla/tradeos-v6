@@ -1661,6 +1661,52 @@ class IntradayEngine:
         except Exception as e:
             logger.debug(f"  live universe re-rank skipped: {e}")
 
+    def live_requalify_universe(self) -> int:
+        """
+        Stage D2, 23-Aug-2026 (docs/TRADEOS_ROADMAP.md, Track D). Checks
+        names OUTSIDE today's static bench against their own live numbers
+        — the gap rerank_universe_live() cannot close, because it can only
+        reorder names already in the bench, and the bench is built once a
+        day from yesterday's turnover/ATR.
+
+        Runs on `intraday.config.live_requalify_interval_s()` (45s
+        default), its own timer — see that function's docstring for why
+        it is separate from the 300s bench rebuild. Called from run.py
+        immediately followed by a resubscribe, so a newly-admitted name
+        starts ticking within one of THIS timer's cycles, not the slow
+        one's.
+
+        COMPUTES AND LOGS UNCONDITIONALLY; ONLY ADMITS WHEN ARMED. Same
+        "propose before it can act" shape as floor_only_rank — the check
+        and its evidence accumulate in the log regardless of the switch,
+        so there is something real to look at before deciding whether to
+        arm `intraday_live_requalify_enabled`.
+        """
+        if not self._bench:
+            return 0
+        try:
+            from intraday import scanner
+            from kite.kite_client import fetch_quotes
+            existing = {e.symbol for e in self._bench}
+            candidates = scanner.movement_rejected_candidates(self.sb, exclude=existing)
+            if not candidates:
+                return 0
+            quotes = fetch_quotes([c.symbol for c in candidates])
+            move_pct = cfg_float("intraday_live_requalify_move_pct", 1.20)
+            turnover_cr = cfg_float("intraday_live_requalify_turnover_cr", 25.0)
+            admitted = scanner.live_requalify(
+                candidates, quotes, move_pct=move_pct, turnover_cr=turnover_cr)
+            if not admitted:
+                return 0
+            for e in admitted:
+                logger.info(f"  live requalify: {e.symbol} — {e.reason}")
+            if cfg_bool("intraday_live_requalify_enabled", False):
+                self._bench = self._bench + admitted
+            return len(admitted)
+        except Exception as e:
+            logger.debug(f"  live universe requalify skipped: {e}")
+            return 0
+
     # ── evaluation ──────────────────────────────────────────────────────────
     def _sessions_held(self, entry_date) -> int:
         """

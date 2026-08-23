@@ -77,6 +77,7 @@ MODULES = [
     ("feature edge study",   "tests.test_feature_edge_study"),
     ("intraday volume decay", "tests.test_intraday_volume_decay"),
     ("sub_engine on positions", "tests.test_sub_engine_on_positions"),
+    ("scanner live requalify", "tests.test_scanner_live_requalify"),
     ("weekly_review show_open", "tests.test_weekly_review_show_open"),
     ("SDN breakdown retest", "tests.test_sdn_breakdown_retest"),
     ("ai tier weight review", "tests.test_ai_tier_weight_review"),

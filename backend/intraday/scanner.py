@@ -161,6 +161,52 @@ def _latest_date(sb) -> str | None:
     return older[0]["date"]
 
 
+def _qualifies(r: dict, *, min_price: float, min_value: float, min_atr: float,
+               max_atr: float, min_deliv: float, skip_flagged: bool,
+               require_movement: bool = True) -> tuple[bool, str | None]:
+    """
+    One `stock_data_daily` row's gate result: (passes, rejection_reason).
+    `rejection_reason` is one of "price"/"flagged"/"liquidity"/"movement"/
+    "delivery", or None when every check requested is cleared.
+
+    Extracted from build_universe()'s own inline loop, 23-Aug-2026 (Stage
+    D2, docs/TRADEOS_ROADMAP.md Track D) — SO THE TWO CAN NEVER DISAGREE
+    about what "otherwise tradeable" means. `require_movement=False` skips
+    the ATR floor/ceiling specifically: movement_rejected_candidates()
+    needs the population that fails ONLY on movement, and a second,
+    independently-maintained copy of these same checks is exactly the
+    shape of drift this project has been bitten by before (the hurdle/
+    edge units mismatch, the sub_engine overwrite) — one definition, both
+    callers read it.
+    """
+    sym = r.get("symbol")
+    close = float(r.get("close") or 0)
+    value = float(r.get("value_cr") or 0)
+    atr   = float(r.get("atr_pct") or 0)
+    deliv = r.get("delivery_pct")
+    deliv = float(deliv) if deliv is not None else None
+
+    if not sym or close < min_price:
+        return False, "price"
+    if skip_flagged and (r.get("asm_flag") or r.get("fo_ban_flag")):
+        # ASM widens spreads and imposes margin penalties; an F&O ban
+        # distorts the cash market for exactly the names it names.
+        return False, "flagged"
+    if value < min_value:
+        return False, "liquidity"
+    if require_movement:
+        if atr < min_atr:
+            # The cost-model filter. Below this the stock cannot produce a
+            # move that survives a round trip, so streaming it is a wasted
+            # slot.
+            return False, "movement"
+        if atr > max_atr:
+            return False, "movement"
+    if deliv is not None and deliv < min_deliv:
+        return False, "delivery"
+    return True, None
+
+
 def build_universe(sb=None, limit: int | None = None) -> list[UniverseEntry]:
     """
     Today's tradeable intraday universe, ranked.
@@ -203,27 +249,11 @@ def build_universe(sb=None, limit: int | None = None) -> list[UniverseEntry]:
         deliv = float(deliv) if deliv is not None else None
         avg_vol = float(r.get("avg_vol_20d") or 0)
 
-        if not sym or close < min_price:
-            rejected["price"] += 1
-            continue
-        if skip_flagged and (r.get("asm_flag") or r.get("fo_ban_flag")):
-            # ASM widens spreads and imposes margin penalties; an F&O ban
-            # distorts the cash market for exactly the names it names.
-            rejected["flagged"] += 1
-            continue
-        if value < min_value:
-            rejected["liquidity"] += 1
-            continue
-        if atr < min_atr:
-            # The cost-model filter. Below this the stock cannot produce a move
-            # that survives a round trip, so streaming it is a wasted slot.
-            rejected["movement"] += 1
-            continue
-        if atr > max_atr:
-            rejected["movement"] += 1
-            continue
-        if deliv is not None and deliv < min_deliv:
-            rejected["delivery"] += 1
+        passes, reason = _qualifies(r, min_price=min_price, min_value=min_value,
+                                    min_atr=min_atr, max_atr=max_atr,
+                                    min_deliv=min_deliv, skip_flagged=skip_flagged)
+        if not passes:
+            rejected[reason] += 1
             continue
 
         # Rank by movement AND liquidity together. Ranking on either alone
@@ -371,3 +401,124 @@ def live_rerank(bench: list[UniverseEntry], quotes: dict[str, dict],
 
     scored.sort(key=lambda t: -t[0])
     return [sym for _, sym in scored[:limit]]
+
+
+# ── STAGE D2 — LIVE UNIVERSE RE-QUALIFICATION — 23-Aug-2026 ──────────────────
+#
+# docs/TRADEOS_ROADMAP.md, Track D. The gap live_rerank() above cannot close:
+# it only reorders names ALREADY in today's bench, and the bench is built
+# once a day from YESTERDAY's turnover/ATR. A stock too quiet yesterday to
+# qualify, then gapping hard today, is invisible all session no matter how
+# large the bench cap is — the constraint was never the number, it was WHEN
+# the eligibility list gets decided.
+#
+# stock_data_daily is NOT Nifty 500 — traced to ingest_bhavcopy.py, which
+# ingests NSE's full daily bhavcopy filtered only to SERIES == 'EQ'
+# (~1,800-2,000 symbols). The reference data was never the constraint
+# either; only the ONE-A-DAY timing of the eligibility check was.
+
+def movement_rejected_candidates(sb=None, exclude: set[str] | None = None
+                                 ) -> list[UniverseEntry]:
+    """
+    EQ names that qualify on price/liquidity/delivery but missed ONLY
+    yesterday's ATR floor or ceiling — the exact population a live
+    re-check should re-test against TODAY's own numbers instead of
+    yesterday's. Everything that failed for a DIFFERENT reason (too
+    illiquid, too cheap, ASM/F&O-flagged, poor delivery) stays excluded
+    here too: a live gap does not fix a stock nobody could exit cleanly.
+
+    `exclude` is normally the caller's current bench — no reason to
+    re-fetch or re-check a name already being watched.
+    """
+    sb = sb or get_supabase()
+    exclude = exclude or set()
+    d = _latest_date(sb)
+    if not d:
+        return []
+
+    rows = (sb.table("stock_data_daily")
+              .select("symbol,close,value_cr,atr_pct,delivery_pct,volume,"
+                      "avg_vol_20d,sector,industry,asm_flag,fo_ban_flag,market_cap")
+              .eq("date", d).execute().data or [])
+    if not rows:
+        return []
+
+    min_price   = cfg_float("intraday_min_price", 50.0)
+    min_value   = cfg_float("intraday_min_turnover_cr", 25.0)
+    min_atr     = cfg_float("intraday_min_atr_pct", 1.20)
+    max_atr     = cfg_float("intraday_max_atr_pct", 8.00)
+    min_deliv   = cfg_float("intraday_min_delivery_pct", 20.0)
+    skip_flagged = cfg_bool("intraday_skip_flagged", True)
+
+    out: list[UniverseEntry] = []
+    for r in rows:
+        sym = r.get("symbol")
+        if not sym or sym in exclude:
+            continue
+        passes_ex_movement, _ = _qualifies(
+            r, min_price=min_price, min_value=min_value, min_atr=min_atr,
+            max_atr=max_atr, min_deliv=min_deliv, skip_flagged=skip_flagged,
+            require_movement=False)
+        if not passes_ex_movement:
+            continue
+        atr = float(r.get("atr_pct") or 0)
+        if min_atr <= atr <= max_atr:
+            continue  # would already be in the daily bench — not our population
+        out.append(UniverseEntry(
+            symbol=sym, close=float(r.get("close") or 0),
+            value_cr=round(float(r.get("value_cr") or 0), 1),
+            atr_pct=round(atr, 2),  # yesterday's REAL, sub-floor ATR, carried honestly
+            delivery_pct=(float(r["delivery_pct"]) if r.get("delivery_pct") is not None else None),
+            sector=r.get("sector") or "", score=0.0,
+            reason=f"yesterday ATR {atr:.2f}% missed the {min_atr:.2f}-{max_atr:.2f}% band",
+            avg_vol_20d=float(r.get("avg_vol_20d") or 0),
+        ))
+    return out
+
+
+def live_requalify(candidates: list[UniverseEntry], quotes: dict[str, dict],
+                   *, move_pct: float, turnover_cr: float) -> list[UniverseEntry]:
+    """
+    PURE. Which of `candidates` (from movement_rejected_candidates()) has,
+    by TODAY's own live numbers, moved and traded enough to be admitted
+    mid-session.
+
+    `quotes` is symbol -> kite_client.fetch_quotes()'s per-symbol dict
+    (ltp, open, high, low, close [PREVIOUS close, per fetch_quotes()'s own
+    docstring], volume, avg_price). A candidate with no quote — not
+    fetched, or Kite returned nothing for it — is silently skipped:
+    absence is not evidence either way, the same rule this module's
+    live_rerank() already applies to a missing tick.
+
+    `move_pct` is compared against the ABSOLUTE value of today's percent
+    change from previous close — a stock down 9% is exactly as
+    tradeable-for-movement as one up 9%, matching how build_universe()'s
+    own ATR floor is a magnitude test, not a directional one.
+    """
+    out = []
+    for c in candidates:
+        q = quotes.get(c.symbol)
+        if not q:
+            continue
+        prev_close = float(q.get("close") or 0)
+        ltp = float(q.get("ltp") or 0)
+        volume = float(q.get("volume") or 0)
+        avg_price = float(q.get("avg_price") or 0)
+        if prev_close <= 0 or ltp <= 0:
+            continue
+        today_move_pct = abs(ltp - prev_close) / prev_close * 100.0
+        today_turnover_cr = (volume * avg_price) / 1e7
+        if today_move_pct < move_pct or today_turnover_cr < turnover_cr:
+            continue
+        out.append(UniverseEntry(
+            symbol=c.symbol, close=ltp, value_cr=round(today_turnover_cr, 1),
+            atr_pct=c.atr_pct, delivery_pct=c.delivery_pct, sector=c.sector,
+            # Scored by live_rerank() once merged into the bench — a fresh
+            # entrant has no static score of its own to blend from.
+            score=0.0,
+            reason=(f"LIVE REQUALIFIED: {today_move_pct:.2f}% move, "
+                   f"₹{today_turnover_cr:.0f}cr today (yesterday ATR "
+                   f"{c.atr_pct:.2f}% had missed the floor)"),
+            avg_vol_20d=c.avg_vol_20d,
+        ))
+    return out
