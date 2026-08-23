@@ -289,8 +289,8 @@ def test_live_requalify_carries_yesterdays_real_atr_through_honestly():
 
 class _TableRouter:
     """Routes .table(name) to whichever fixture rows that name should return
-    — stock_data_daily and nifty_total_market need independent contents in
-    the same fake client."""
+    — stock_data_daily, nifty_total_market and safety_lists need independent
+    contents in the same fake client."""
     def __init__(self, by_table: dict[str, list[dict]]):
         self._by_table = by_table
 
@@ -301,6 +301,7 @@ class _TableRouter:
             def __init__(self, rows): self._rows = rows
             def select(self, *a, **k): return self
             def eq(self, *a, **k): return self
+            def in_(self, *a, **k): return self
             def execute(self): return self
             @property
             def data(self): return self._rows
@@ -368,6 +369,43 @@ def test_unreferenced_candidates_respects_exclude():
     assert out == []
 
 
+def test_unreferenced_candidates_excludes_a_name_on_safety_lists():
+    """The gap live_requalify()'s own min_price check can't close: an ASM/
+    GSM/FO_BAN name has no asm_flag/fo_ban_flag column to be read from at
+    all for this population, so safety_lists is the only place that can
+    answer it."""
+    from intraday.scanner import unreferenced_candidates
+    sb = _TableRouter({
+        "stock_data_daily": [],
+        "nifty_total_market": [
+            {"symbol": "CLEAN", "company_name": "x", "industry": "bank"},
+            {"symbol": "BANNED", "company_name": "y", "industry": "metal"},
+        ],
+        "safety_lists": [{"symbol": "BANNED"}],
+    })
+    with cfg_ctx({"intraday_skip_flagged": "true"}), \
+         patch("intraday.scanner._latest_date", return_value="2026-08-23"), \
+         patch("kite.kite_client.fetch_nse_eq_symbols", return_value=set()):
+        out = unreferenced_candidates(sb)
+    assert [e.symbol for e in out] == ["CLEAN"]
+
+
+def test_unreferenced_candidates_admits_flagged_when_skip_flagged_false():
+    """Same override _qualifies() itself honours -- skip_flagged=false must
+    let a flagged name through here too, not silently keep blocking it."""
+    from intraday.scanner import unreferenced_candidates
+    sb = _TableRouter({
+        "stock_data_daily": [],
+        "nifty_total_market": [{"symbol": "BANNED", "company_name": "y", "industry": "metal"}],
+        "safety_lists": [{"symbol": "BANNED"}],
+    })
+    with cfg_ctx({"intraday_skip_flagged": "false"}), \
+         patch("intraday.scanner._latest_date", return_value="2026-08-23"), \
+         patch("kite.kite_client.fetch_nse_eq_symbols", return_value=set()):
+        out = unreferenced_candidates(sb)
+    assert [e.symbol for e in out] == ["BANNED"]
+
+
 def test_unreferenced_candidates_survives_kite_master_unavailable():
     """Same 'advisory only' contract as everything else touching Kite —
     an empty/failed instrument fetch must degrade to Population B only,
@@ -431,6 +469,8 @@ TESTS = [
     ("unreferenced_candidates finds kite-only names beyond both tables", test_unreferenced_candidates_finds_kite_only_names_beyond_both_tables),
     ("unreferenced_candidates never duplicates a name seen in both sources", test_unreferenced_candidates_never_duplicates_a_name_seen_in_both_sources),
     ("unreferenced_candidates respects exclude", test_unreferenced_candidates_respects_exclude),
+    ("unreferenced_candidates excludes a name on safety_lists", test_unreferenced_candidates_excludes_a_name_on_safety_lists),
+    ("unreferenced_candidates admits flagged when skip_flagged false", test_unreferenced_candidates_admits_flagged_when_skip_flagged_false),
     ("unreferenced_candidates survives kite master unavailable", test_unreferenced_candidates_survives_kite_master_unavailable),
     ("live_requalify min_price rejects a cheap name even if move/turnover clear", test_live_requalify_min_price_rejects_a_cheap_name_even_if_move_and_turnover_clear),
     ("live_requalify min_price=None means no price gate at all", test_live_requalify_min_price_none_means_no_price_gate_at_all),

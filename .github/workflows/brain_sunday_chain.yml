@@ -145,6 +145,21 @@ jobs:
         run: |
           cd backend && python -m tools.control_room --propose
 
+      # Weekly, matching NSE's own index-reconstitution cadence — nothing
+      # about this changes daily. Feeds intraday/scanner.py::unreferenced_
+      # candidates() (Population B, Stage D2b) and compute_indicators.py's
+      # own nifty_200/nifty_500 tagging. Upsert-only, never deletes; a
+      # fetch failure on either sub-index leaves that one flag column
+      # untouched rather than overwriting it from nothing.
+      - name: "Refresh nifty_total_market (index constituents)"
+        continue-on-error: true
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TZ: Asia/Kolkata
+        run: |
+          cd backend && python -m swing.ingestion.ingest_nifty_total_market
+
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4

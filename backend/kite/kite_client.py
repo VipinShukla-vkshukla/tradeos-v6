@@ -23,6 +23,7 @@ move money.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -299,10 +300,18 @@ def is_available() -> bool:
 _instr_cache: dict = {"date": None, "symbols": None}
 
 
+# Matches the suffix Kite appends to a non-mainboard NSE cash instrument:
+# -SG/-N0../-GS/-TB/-GB (bonds, SDLs, G-Secs, T-Bills, SGBs — by FAR the
+# largest share, ~5,600 of ~10,086 rows in a live 23-Aug pull), -SM/-ST
+# (SME/Emerge board), -BE/-BZ (trade-to-trade). A plain mainboard equity
+# or ETF symbol (RELIANCE, NIFTYBEES) carries no such suffix.
+_KITE_NON_MAINBOARD_SUFFIX = re.compile(r"-[A-Z0-9]+$")
+
+
 def fetch_nse_eq_symbols() -> set[str]:
     """
-    Every symbol currently tradeable on NSE's EQ segment, straight from
-    Kite's own instrument master — Stage D2b, 23-Aug-2026
+    Every mainboard-equity-or-ETF symbol currently tradeable on NSE,
+    straight from Kite's own instrument master — Stage D2b, 23-Aug-2026
     (docs/TRADEOS_ROADMAP.md, Track D).
 
     THIS IS THE ONE SOURCE THAT KNOWS ABOUT A LISTING TODAY. Both
@@ -314,13 +323,26 @@ def fetch_nse_eq_symbols() -> set[str]:
     itself and includes a newly-listed symbol from its first tradeable
     day.
 
+    FILTER, VERIFIED LIVE 23-Aug-2026 rather than assumed:
+    `kite.instruments("NSE")` returned 10,222 rows, of which 136 are
+    `segment == "INDICES"` (excluded) and — the part worth naming —
+    `instrument_type` is `"EQ"` on every single one of the remaining
+    10,086, so it filters NOTHING on this endpoint (F&O/currency
+    instrument types only appear when you call a different segment).
+    The real signal is the tradingsymbol itself: 7,107 of those 10,086
+    carry a `-XX` suffix (bonds/SDLs/SGBs/T-Bills by far the largest
+    share at ~4,300+1,300 alone, plus SME board, trade-to-trade) — a
+    real, individually-tradeable NSE instrument, but not the "did a new
+    STOCK list today" question this function exists to answer. The
+    remaining 2,979 PLAIN symbols (no suffix) checked out against known
+    names, including a rename this filter caught correctly (ZOMATO's own
+    old tradingsymbol is gone; ETERNAL — its 2024 rebrand — is present).
+
     Returns bare tradingsymbols (no exchange prefix), filtered to
-    `exchange == "NSE"` and `segment == "NSE"` (excludes NSE's F&O/
-    currency/etc. segments, which share the same instrument dump). Empty
-    set on any failure — same "advisory only, never take the system down"
-    contract every other function in this module already holds; a caller
-    must treat an empty result as "could not check", not as "nothing is
-    new today".
+    `segment == "NSE"` AND no `-XX` suffix. Empty set on any failure —
+    same "advisory only, never take the system down" contract every
+    other function in this module already holds; a caller must treat an
+    empty result as "could not check", not as "nothing is new today".
     """
     from config import today_ist
     today = today_ist().isoformat()
@@ -333,7 +355,8 @@ def fetch_nse_eq_symbols() -> set[str]:
     try:
         rows = kite.instruments("NSE") or []
         symbols = {r["tradingsymbol"] for r in rows
-                  if r.get("segment") == "NSE" and r.get("tradingsymbol")}
+                  if r.get("segment") == "NSE" and r.get("tradingsymbol")
+                  and not _KITE_NON_MAINBOARD_SUFFIX.search(r["tradingsymbol"])}
         _instr_cache["date"], _instr_cache["symbols"] = today, symbols
         return symbols
     except Exception as e:

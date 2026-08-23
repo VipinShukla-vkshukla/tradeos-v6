@@ -545,18 +545,51 @@ A, because B/C is a materially wider, less-vetted population and folding
 it into a switch the operator armed for the narrower one would be exactly
 the "silently widen a gate" failure this project's rules forbid.
 
-**Not yet built:** a refresh pipeline for `nifty_total_market` itself
-(currently static — confirmed no freshness column, updated only when
-someone re-imports NSE's index-constituent CSV by hand). The operator
-named `https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_
-list.csv` as the source; a `WebFetch` against that URL timed out (60s),
-consistent with anti-automation protection on that host — a scheduled
-refresh will need to handle that (proper headers, retries) and must not
-corrupt the `nifty_200`/`nifty_500` boolean columns `compute_indicators.
-py::fetch_index_membership()` already depends on. Scoped as a separate,
-later piece: Population C (Kite's instrument master) already closes the
-IPO gap `nifty_total_market`'s staleness would otherwise leave open, so
-this is a freshness improvement to Population B, not a blocking gap.
+**Built, 23-Aug-2026 (Stage D2c):** a weekly refresh for `nifty_total_
+market` itself — `swing/ingestion/ingest_nifty_total_market.py`, wired
+into `brain_sunday_chain.yml`. Correction to this doc's own prior text:
+that first pass called the niftyindices.com CSV blocked, based on one
+`WebFetch`-tool timeout, and deferred the whole piece on that basis. A
+direct `requests.get()` with a plain browser header — no session warmup,
+unlike ASM/GSM — returned the real CSV on the first try; the site was
+never the obstacle. Fetches all THREE of NSE's own constituent CSVs
+(Total Market, Nifty 200, Nifty 500) and recomputes `nifty_200`/
+`nifty_500` as an explicit boolean per row from fresh set membership —
+not "set true if found, leave stale trues alone" — so a name that
+dropped OUT of an index this cycle is correctly cleared, not left
+stuck true. Either index CSV failing independently omits that ONE
+column from the whole run's payload (Postgres/PostgREST then leaves the
+existing value untouched on upsert) rather than writing it wrong from a
+failed fetch. Upsert-only, never deletes — a symbol in the table but
+absent from a fresh fetch is left exactly as-is and reported as stale in
+the log, respecting the swing-boundary caution this table's downstream
+reader (`compute_indicators.py`) already earned. First live run: 3 new
+symbols, 749 refreshed, 2 pre-existing rows correctly left untouched
+(one a hand-inserted test fixture, `DUMMYALCAR`; one, `JBCHEPHARM`, a
+real name absent from this week's fresh Total Market list — its stale
+`nifty_500=true` from before this run was correctly NOT touched, since
+it wasn't in this run's payload at all).
+
+Population C's own Kite-instrument-master filter was also corrected the
+same session: `instrument_type == "EQ"` (my first proposal) turned out
+to filter NOTHING — verified live, every one of 10,086 `segment=="NSE"`
+rows carries that same tag on this endpoint. The real signal is the
+tradingsymbol's own suffix — `kite.instruments("NSE")` returns 10,086
+rows for `segment=="NSE"`, of which 7,107 carry a `-XX` suffix (bonds/
+SDLs/SGBs/T-Bills by far the largest share, plus SME-board and
+trade-to-trade names) — real, individually-tradeable NSE instruments,
+just not the "is this a new STOCK" question this function exists to
+answer. `fetch_nse_eq_symbols()` now filters on that suffix, leaving
+2,979 plain mainboard/ETF symbols — checked against a real 2024 rename
+(ZOMATO → ETERNAL; the old symbol is correctly absent, the new one
+present).
+
+`unreferenced_candidates()` also now excludes any symbol on
+`safety_lists` (ASM/GSM/FO_BAN) — that table is keyed on bare symbol
+independent of `stock_data_daily`, so it can answer for Population B/C
+names `_qualifies()`'s own flagged-check never could (no `asm_flag`
+column exists for a name with no `stock_data_daily` row). Reuses
+`intraday_skip_flagged`, the same switch `_qualifies()` already reads.
 
 **Gate D2:** a live demonstration — a name outside yesterday's bench that
 moved hard today gets admitted mid-session, logged with which population

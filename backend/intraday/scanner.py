@@ -587,6 +587,17 @@ def unreferenced_candidates(sb=None, exclude: set[str] | None = None
     real to put there, and 0.0 combined with the `reason` string naming
     exactly which source found it is preferable to fabricating a number
     or borrowing an unrelated one.
+
+    ASM/GSM/F&O-BAN, CHECKED INDEPENDENTLY OF `stock_data_daily`. Neither
+    population has an `asm_flag`/`fo_ban_flag` column to read (that lives
+    on `stock_data_daily` rows, which these names are not), so
+    `_qualifies()`'s own "flagged" gate cannot see them at all without
+    this. `safety_lists` (`swing/ingestion/ingest_asm_gsm.py`) is keyed on
+    bare symbol independent of `stock_data_daily`, so it can answer this
+    for ANY name, tracked or not. Reuses `intraday_skip_flagged` — the
+    same switch `_qualifies()` reads — rather than a new one, so arming
+    it behaves identically everywhere this project checks surveillance
+    status.
     """
     sb = sb or get_supabase()
     exclude = exclude or set()
@@ -597,6 +608,16 @@ def unreferenced_candidates(sb=None, exclude: set[str] | None = None
         sdd_rows = (sb.table("stock_data_daily").select("symbol")
                      .eq("date", d).execute().data or [])
         known = {r["symbol"] for r in sdd_rows if r.get("symbol")}
+
+    flagged: set[str] = set()
+    if cfg_bool("intraday_skip_flagged", True):
+        try:
+            sl_rows = (sb.table("safety_lists").select("symbol")
+                        .in_("list_type", ["ASM", "GSM", "FO_BAN"])
+                        .execute().data or [])
+            flagged = {r["symbol"] for r in sl_rows if r.get("symbol")}
+        except Exception as e:
+            logger.debug(f"  scanner: safety_lists read skipped — {e}")
 
     out: list[UniverseEntry] = []
     seen: set[str] = set()
@@ -610,7 +631,7 @@ def unreferenced_candidates(sb=None, exclude: set[str] | None = None
 
     for r in market_rows:
         sym = r.get("symbol")
-        if not sym or sym in exclude or sym in known or sym in seen:
+        if not sym or sym in exclude or sym in known or sym in seen or sym in flagged:
             continue
         seen.add(sym)
         out.append(UniverseEntry(
@@ -628,7 +649,7 @@ def unreferenced_candidates(sb=None, exclude: set[str] | None = None
         instrument_symbols = set()
 
     for sym in sorted(instrument_symbols):
-        if sym in exclude or sym in known or sym in seen:
+        if sym in exclude or sym in known or sym in seen or sym in flagged:
             continue
         seen.add(sym)
         out.append(UniverseEntry(

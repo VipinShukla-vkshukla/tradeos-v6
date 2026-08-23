@@ -11029,3 +11029,127 @@ admission independently; the check computes and logs on its own timer
 the moment the daemon is redeployed regardless of either switch. This is
 on the `feat/intraday-live-universe` branch, not merged to `main` — Gate
 D2 remains the operator's own sign-off.
+
+## 2026-08-23 — F-56 (new, shipped OFF except one live write) — Stage
+D2c: real `nifty_total_market` refresh (corrects a wrong "blocked"
+finding in F-55/roadmap), the ASM/GSM/F&O-ban gap on Population B/C
+closed, Kite instrument filter corrected after live measurement, real
+`kite.instruments` count obtained
+
+**Ran:** `tools.verify` (799 checks, 78 modules, green — 11 more than
+F-55's 788), `tools.health` (Kite session now live — DSY688, confirmed
+via `k.profile()` — only the pre-existing, unrelated `quote_parity`
+item remains), a live `kite.instruments("NSE")` pull (10,222 rows) with
+its own suffix breakdown computed and sanity-checked against known real
+symbols including a live rename (ZOMATO → ETERNAL), three live
+niftyindices.com CSV fetches (all 200 OK), a dry-run then a REAL write
+of `nifty_total_market` against production with before/after row counts
+confirmed by direct SQL, and a live end-to-end run of the full
+Population A+B+C → quote-fetch → admission path with Kite connected.
+
+### 1 — THE CORRECTION: THE NIFTYINDICES.COM FETCH WAS NEVER BLOCKED
+
+F-55 and the roadmap both stated a direct fetch of
+`ind_niftytotalmarket_list.csv` had timed out and read that as
+anti-automation protection, deferring the refresh pipeline on that
+basis. **This was never re-tested with a real HTTP client before being
+written down as a finding — only assumed from one `WebFetch`-tool
+timeout.** A plain `requests.get()` with a browser `User-Agent` header —
+no session warmup, unlike `ingest_asm_gsm.py` needs for nseindia.com —
+returned 200 with the full CSV on the first try, and so did the Nifty
+200 and Nifty 500 constituent CSVs the refresh also needs. Per this
+project's own "own mistakes plainly" rule: the earlier finding was
+wrong, not merely incomplete, and is corrected here rather than quietly
+worked around.
+
+### 2 — WHAT GOT BUILT
+
+`swing/ingestion/ingest_nifty_total_market.py` (new), modelled on `ingest_
+asm_gsm.py`'s established shape (DRY_RUN, kill-switch guard, chunked
+upserts). Fetches all three CSVs; Total Market failing aborts the run
+(nothing to upsert), either index CSV failing independently OMITS that
+one boolean column from every row in the run's payload rather than
+writing it False from a failed fetch — Postgres/PostgREST then leaves
+the existing DB value for that column untouched on upsert. Recomputes
+`nifty_200`/`nifty_500` as an explicit boolean from fresh set membership
+for every row in the Total Market payload (not "set true if newly
+found, leave old trues alone") so a name dropped from an index this
+cycle is correctly cleared. Upsert-only, never deletes.
+
+Migration 099: `nifty_total_market` had no freshness column at all —
+added `refreshed_at`, nullable, no default.
+
+`intraday/scanner.py::unreferenced_candidates()` now also excludes any
+symbol present on `safety_lists` (list_type ASM/GSM/FO_BAN) — that table
+is keyed on bare symbol independent of `stock_data_daily`, closing the
+one vetting gap F-55 named and left open (Population B/C has no
+`asm_flag`/`fo_ban_flag` column to read at all, since that lives only on
+`stock_data_daily` rows). Reuses `intraday_skip_flagged`, not a new
+switch.
+
+`kite/kite_client.py::fetch_nse_eq_symbols()` filter corrected. F-55's
+own proposed fix (`instrument_type == "EQ"`) was measured live and found
+to filter NOTHING — every one of 10,086 `segment=="NSE"` rows on this
+specific endpoint carries that same tag; F&O/currency instrument types
+only appear from a *different* exchange argument. The real signal,
+found by inspecting real tradingsymbol suffixes: 7,107 of those 10,086
+carry a `-XX` suffix — by far the largest single group is bonds/SDLs/
+SGBs/T-Bills (`-SG`, `-N0`..`-N9`/`-NA`..`-NE`, `-GS`, `-TB`, `-GB`;
+~5,600 rows alone), plus SME/Emerge board (`-SM`/`-ST`) and
+trade-to-trade (`-BE`/`-BZ`) names — real, individually-tradeable NSE
+instruments, just not the "is this a new STOCK" question Population C
+exists to answer. Filtering to plain (no-suffix) symbols leaves 2,979 —
+checked against known real names (RELIANCE, TCS, HDFCBANK all present)
+and a genuine edge case: ZOMATO's own old tradingsymbol is correctly
+ABSENT and ETERNAL — its 2024 rebrand — is present, confirming the
+filter tracks real listing changes rather than a fixed snapshot.
+
+### 3 — THE REAL NUMBER, ANSWERING THE OPERATOR'S OWN QUESTION
+
+`kite.instruments("NSE")` returns **10,222 rows** (136 `segment==
+"INDICES"`, excluded; 10,086 `segment=="NSE"`). This is NOT "similar to
+Total Market" (751 rows before this session's refresh) — it is roughly
+13x larger, because Kite's dump is *everything currently tradeable* on
+that exchange segment (every bond ISIN, SGB, T-Bill, SME listing,
+trade-to-trade name), while Total Market is NSE Indices' own *curated*
+subset by market-cap/liquidity eligibility. After the suffix filter
+above, the genuinely comparable figure is 2,979 plain mainboard/ETF
+symbols — still ~4x Total Market's size, which is expected: Total
+Market excludes illiquid/small names Kite still lists as tradeable.
+
+### 4 — LIVE-VERIFIED, PRECISELY
+
+Real write against production: **3 new symbols added, 749 refreshed, 2
+pre-existing rows correctly left untouched** (confirmed by direct SQL
+before and after) — one of the two, `DUMMYALCAR`, is a hand-inserted
+test fixture; the other, `JBCHEPHARM`, a real company absent from this
+week's fresh Total Market list, whose stale `nifty_500=true` from
+before this run was correctly NOT overwritten, since it was not part of
+this run's payload. `nifty_200` count after: exactly 200, matching the
+fetched CSV. `nifty_500` count after: 501 — 500 from this run plus the
+one stale pre-existing `JBCHEPHARM` row, exactly the "upsert-only, never
+silently correct a row this run didn't touch" behaviour intended.
+
+End-to-end, Kite connected: Population A = 1 (HDFCBANK, same case F-54
+found), Population B/C = 2,312 (post safety_lists filter), live quotes
+returned for 394 of a 400-symbol sample, 0 admissions — run after market
+close, so a zero here is the CORRECT answer for an after-hours check,
+not evidence the mechanism works; an in-session run with real intraday
+movement is still the one demonstration this stage has not yet produced.
+
+### 5 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+`brain_sunday_chain.yml` gained one new `continue-on-error: true` step
+running the refresher weekly — not yet observed running on that
+schedule (added this session, next Sunday is the first real test).
+Delivery% remains the one Population B/C gap nothing in this entry
+closes — it is a bhavcopy-only figure with no live-quote or safety_lists
+equivalent, named in F-55 and still true. `intraday_live_requalify_
+enabled` (Population A) was re-confirmed still `false` this session —
+not re-armed here, left for the operator. `intraday_live_requalify_
+unreferenced_enabled` (Population B/C) also still `false`. This is on
+`feat/intraday-live-universe`, not merged — Gate D2 remains the
+operator's own sign-off. The one exception to "ships OFF" in this
+entry's own header: the `nifty_total_market` WRITE itself is real and
+live, not gated by a switch — reference-data hygiene, not a trading
+decision, and the operator's own request this session.
