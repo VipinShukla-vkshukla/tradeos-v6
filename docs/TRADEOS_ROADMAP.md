@@ -561,6 +561,35 @@ in the ledger (agreement rate, measured latency improvement in seconds,
 any case where the two cores would have disagreed and why), operator
 sign-off to promote to paper.
 
+**Built, 24-Aug-2026.** `intraday/price_feed.py` gained thread-safe
+"dirty symbol" tracking (`drain_dirty()`, fed by the same websocket
+thread that already writes prices — no new thread introduced,
+deliberately: `engine.py`'s mutable state was never built for concurrent
+access, and this stage's whole purpose is measuring a latency
+improvement, not chasing the smallest possible one at the cost of a new
+class of bug). `intraday/event_core.py::check()` runs from `run.py`'s own
+main loop on its own tight timer (2s default, still far tighter than the
+15s polling cycle), reuses the SAME `apply_live_quotes()`/`merge_live_
+bars()`/`registry.evaluate_all()` the trusted loop already calls, and
+writes ONLY to a new, fully separate table (`intraday_event_shadow`,
+migration 105) — never `intraday_setups`, never `paper_broker`, never
+the allocator. Also fixed a real gap found while building the
+comparison tool: `intraday_setups` had no detection timestamp at all
+(migration 106, `detected_at`), without which Gate D3's own "measured
+latency improvement in seconds" criterion was unmeasurable. `tools/
+event_core_compare.py` matches shadow vs. trusted detections by
+(symbol, sub_engine) within a window and reports the agreement rate and
+latency gap Gate D3 asks for — run live against production, correctly
+reports an honest zero (nothing has run in shadow yet). 35 new offline
+tests. F-54 (docs/FINDINGS.md, this branch's own sequence) has the full
+detail.
+
+**Ships OFF** (`intraday_event_core_enabled=false`). Per the operator's
+own stated plan, Gate D3 — like Gate D2 before it — is deferred to a
+single holistic pass across every Track D stage once all of them are
+built, not cleared stage-by-stage; the mechanism is ready to start
+accumulating real shadow evidence the moment it is armed.
+
 ## Stage D4 — Execution-quality depth gate
 
 **Branch:** `feat/intraday-depth-gate`.

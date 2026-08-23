@@ -180,6 +180,7 @@ def main(once: bool = False, dry: bool = False) -> None:
     last_state = 0.0
     last_beat = 0.0
     last_poll = 0.0
+    last_event_core = 0.0
     # Alerted once per stretch of blindness, not once per cycle — see
     # kite.token_manager.should_alert_now(). Reset alongside blind_cycles
     # itself whenever prices resume, so a LATER stretch (WiFi drops again
@@ -429,6 +430,24 @@ def main(once: bool = False, dry: bool = False) -> None:
                     f"prices via {feed.source}"
                 )
                 last_beat = now
+
+            # Stage D3, the event-driven core — SHADOW ONLY, ships behind
+            # intraday_event_core_enabled (false by default). Own timer, far
+            # tighter than eval_interval_s, on purpose — see intraday/
+            # event_core.py's own module docstring for why this stays on the
+            # SAME thread as the rest of this loop rather than a dedicated
+            # worker thread. `was_active` gated for the same reason the fast
+            # lane above is: a standby instance holds no lease and must not
+            # spend cycles on work whose only output is a log write.
+            if was_active and now - last_event_core >= cfg_int("intraday_event_core_interval_s", 2):
+                try:
+                    from intraday import event_core
+                    n = event_core.check(engine, feed)
+                    if n:
+                        logger.debug(f"  event_core: {n} shadow detection(s)")
+                except Exception as e:
+                    logger.debug(f"  event_core check failed: {e}")
+                last_event_core = now
 
             if once:
                 break

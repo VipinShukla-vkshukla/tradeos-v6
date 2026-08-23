@@ -4149,6 +4149,14 @@ class IntradayEngine:
                 # as a native object, not a second layer of string.
                 "meta": json.loads(json.dumps({**s.meta, "qty": qty}, default=str)),
                 "regime_at_detection": mc_state,
+                # Stage D3, 24-Aug-2026 (migration 106) — found while
+                # building tools/event_core_compare.py: this table had NO
+                # detection timestamp at all, only scored_at (end of day).
+                # Gate D3's own "measured latency improvement in seconds"
+                # criterion is unmeasurable without it. Nullable column,
+                # every row from here forward carries the real moment the
+                # trusted polling loop recorded this detection.
+                "detected_at": datetime.now(IST).isoformat(),
             }).execute()
             self._recorded[f"{s.symbol}:{s.strategy}"] = (s.entry, verdict)
         except Exception as e:

@@ -31,7 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import IST, cfg_bool
+from config import IST, cfg_bool, cfg_float
 from intraday.bar_builder import BarBuilder
 
 
@@ -61,6 +61,18 @@ class PriceFeed:
         self.source = "none"
         self.mode = "ltp"
         self._capture_quote = False
+        # "Dirty" symbols — Stage D3, 24-Aug-2026 (intraday/event_core.py).
+        # A symbol enters here the moment its price has moved meaningfully
+        # since event_core last looked at it, so a consumer running far more
+        # often than the 15s/eval_interval_s cycle can react to exactly the
+        # names that changed, not the whole watchlist. `_dirty_baseline`
+        # holds the price AS OF THE LAST DRAIN, not the last tick — comparing
+        # every tick to the immediately-prior one would mark a symbol dirty
+        # on ordinary tick-to-tick noise; comparing to "since last actually
+        # looked at" is the question that matters for deciding whether to
+        # re-run detection early.
+        self._dirty: set[str] = set()
+        self._dirty_baseline: dict[str, float] = {}
 
     # ── read side ───────────────────────────────────────────────────────────
     def get(self, symbol: str) -> float | None:
@@ -105,6 +117,42 @@ class PriceFeed:
         with self._lock:
             self._px[symbol] = price
             self._at[symbol] = datetime.now(IST)
+            # DIRTY-MARKING IS O(1) AND STAYS THAT WAY — same "no I/O, no
+            # logging" rule on_ticks() itself is built on. A cfg_float() call
+            # here would be a dict lookup against the process-wide config
+            # cache (already loaded, no I/O) on the websocket thread for
+            # every tick of the whole watchlist; kept cheap on purpose, not
+            # gated behind a slower path.
+            base = self._dirty_baseline.get(symbol)
+            if base and base > 0:
+                threshold = cfg_float("intraday_event_core_dirty_pct", 0.05)
+                if threshold > 0 and abs(price - base) / base * 100.0 >= threshold:
+                    self._dirty.add(symbol)
+            else:
+                # First price ever seen for this symbol — nothing to compare
+                # against yet. Seeds the baseline so the NEXT meaningful move
+                # is measured from a real prior price, not from zero.
+                self._dirty_baseline[symbol] = price
+
+    def drain_dirty(self) -> set[str]:
+        """
+        Every symbol marked dirty since the last drain, and resets the
+        baseline for each to its CURRENT price — the next dirty mark for
+        that symbol will be measured from here, not from whatever ticks
+        arrived while nobody was draining. Thread-safe: called from the
+        main daemon loop while `_set()` keeps running on the websocket
+        thread underneath it.
+        """
+        with self._lock:
+            if not self._dirty:
+                return set()
+            out = set(self._dirty)
+            self._dirty.clear()
+            for sym in out:
+                px = self._px.get(sym)
+                if px:
+                    self._dirty_baseline[sym] = px
+            return out
 
     @property
     def connected(self) -> bool:

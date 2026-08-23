@@ -136,6 +136,9 @@ MODULES = [
      "tests.test_f43_swing_review"),
     ("F-46 pace calibration (family stall clock, trend telemetry)",
      "tests.test_f46_pace_calibration"),
+    ("price feed dirty-symbol tracking", "tests.test_price_feed_dirty"),
+    ("event core shadow detection", "tests.test_event_core"),
+    ("event core vs trusted-loop comparison (Gate D3)", "tests.test_event_core_compare"),
 ]
 
 
