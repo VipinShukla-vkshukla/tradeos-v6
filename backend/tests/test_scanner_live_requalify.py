@@ -314,6 +314,7 @@ class _TableRouter:
             def __init__(self, rows): self._rows = rows
             def select(self, *a, **k): return self
             def eq(self, *a, **k): return self
+            def gt(self, *a, **k): return self
             def in_(self, *a, **k): return self
             def order(self, *a, **k): return self
             def limit(self, *a, **k): return self
@@ -467,120 +468,100 @@ def _days_ago(n: int) -> str:
     return (date.today() - timedelta(days=n)).isoformat()
 
 
-def test_new_listings_bootstrap_reports_nothing_when_no_symbol_is_within_the_window():
-    """The exact case that made the ORIGINAL Population C definition
-    unusable: on the very first run ever, an empty baseline must NOT mean
-    'every one of today's ~2,979 Kite symbols is a fresh IPO'. With every
-    candidate's raw_prices history older than the recency window, nothing
-    is reported -- see the next test for the case where one genuinely is
-    recent (the Milky Mist case Stage D2e exists for)."""
+def test_new_listings_bootstrap_seeds_everything_and_reports_nothing_new():
+    """Stage D2f, back to the simple F-57 shape: raw_prices-based recency
+    classification during bootstrap was scrapped by the operator (real
+    coverage-gap false positives found live -- see recent_ipo_candidates()
+    for the replacement, sourced from NSE's own confirmed IPO archive
+    instead). On the very first run ever, an empty baseline seeds the
+    whole current universe as already-known and reports NOTHING -- there
+    is no listing history to diff against, so 'new' stays undefined."""
     from intraday.scanner import new_listings
     _reset_scanner_caches()
-    sb = _TableRouter(
-        {"kite_symbol_baseline": []},
-        by_rpc={"get_raw_prices_first_seen": [
-            {"symbol": "A", "first_date": _days_ago(400), "row_count": 84},
-            {"symbol": "B", "first_date": _days_ago(400), "row_count": 84},
-            {"symbol": "C", "first_date": _days_ago(400), "row_count": 84}]},
-    )
-    with cfg_ctx({"intraday_recent_listing_window_days": "30"}), \
-         patch("kite.kite_client.fetch_nse_eq_symbols", return_value={"A", "B", "C"}):
+    sb = _TableRouter({"kite_symbol_baseline": []})
+    with patch("kite.kite_client.fetch_nse_eq_symbols",
+              return_value={"A", "B", "C"}):
         out = new_listings(sb)
     assert out == set()
 
 
-def test_new_listings_bootstrap_reports_a_symbol_within_the_recency_window():
-    """Stage D2e, the actual Milky Mist fix: on the FIRST run ever, a
-    symbol whose raw_prices history clearly starts within the last 30
-    days must still be reported this once, not silently absorbed as
-    'already known' alongside the genuinely old symbols in the same
-    bootstrap batch."""
-    from intraday.scanner import new_listings
+# ── recent_ipo_candidates() — NSE's own confirmed IPO archive ───────────
+
+def test_recent_ipo_candidates_returns_a_confirmed_recent_listing():
+    from intraday.scanner import recent_ipo_candidates
     _reset_scanner_caches()
-    sb = _TableRouter(
-        {"kite_symbol_baseline": []},
-        by_rpc={"get_raw_prices_first_seen": [
-            {"symbol": "OLDSTOCK", "first_date": _days_ago(400), "row_count": 84},
-            {"symbol": "MILKYMIST", "first_date": _days_ago(5), "row_count": 4},
-        ]},
-    )
-    with cfg_ctx({"intraday_recent_listing_window_days": "30"}), \
-         patch("kite.kite_client.fetch_nse_eq_symbols",
-              return_value={"OLDSTOCK", "MILKYMIST"}):
-        out = new_listings(sb)
-    assert out == {"MILKYMIST"}
+    sb = _TableRouter({
+        "ipo_listings": [
+            {"symbol": "MILKYMIST", "company_name": "Milky Mist Dairy Food Ltd",
+             "listing_date": _days_ago(6)},
+        ],
+    })
+    with cfg_ctx({"intraday_ipo_recency_days": "45"}), \
+         patch("intraday.scanner._latest_date", return_value="2026-08-23"):
+        out = recent_ipo_candidates(sb)
+    assert [e.symbol for e in out] == ["MILKYMIST"]
+    assert "NSE-confirmed IPO" in out[0].reason
+    assert out[0].atr_pct == 0.0
 
 
-# ── _recently_listed() — the raw_prices recency check itself ────────────
-
-def test_recently_listed_excludes_a_symbol_with_old_trading_history():
-    """The exact bug found live 23-Aug: an established stock (ZEEMEDIA)
-    with a genuine multi-week GAP in raw_prices coverage must not be
-    misread as a fresh listing just because that gap happens to sit
-    inside SOME window. A fixed, short, today-relative cutoff means
-    'old' history — however gapped — is correctly excluded."""
-    from intraday.scanner import _recently_listed
-    sb = _TableRouter(
-        {},
-        by_rpc={"get_raw_prices_first_seen": [
-            {"symbol": "ZEEMEDIA", "first_date": _days_ago(96), "row_count": 67}]},
-    )
-    with cfg_ctx({"intraday_recent_listing_window_days": "30"}):
-        out = _recently_listed(sb, {"ZEEMEDIA"})
-    assert out == set()
+def test_recent_ipo_candidates_respects_exclude():
+    from intraday.scanner import recent_ipo_candidates
+    _reset_scanner_caches()
+    sb = _TableRouter({
+        "ipo_listings": [
+            {"symbol": "MILKYMIST", "company_name": "x", "listing_date": _days_ago(6)}],
+    })
+    with cfg_ctx({"intraday_ipo_recency_days": "45"}), \
+         patch("intraday.scanner._latest_date", return_value="2026-08-23"):
+        out = recent_ipo_candidates(sb, exclude={"MILKYMIST"})
+    assert out == []
 
 
-def test_recently_listed_excludes_a_symbol_just_outside_the_window():
-    from intraday.scanner import _recently_listed
-    sb = _TableRouter(
-        {},
-        by_rpc={"get_raw_prices_first_seen": [
-            {"symbol": "JUST_OLD", "first_date": _days_ago(31), "row_count": 20}]},
-    )
-    with cfg_ctx({"intraday_recent_listing_window_days": "30"}):
-        out = _recently_listed(sb, {"JUST_OLD"})
-    assert out == set()
+def test_recent_ipo_candidates_excludes_a_symbol_already_in_stock_data_daily():
+    """A name already tracked has no business in Population C -- it's
+    already part of the main daily bench build_universe() produces."""
+    from intraday.scanner import recent_ipo_candidates
+    _reset_scanner_caches()
+    sb = _TableRouter({
+        "stock_data_daily": [{"symbol": "MILKYMIST"}],
+        "ipo_listings": [
+            {"symbol": "MILKYMIST", "company_name": "x", "listing_date": _days_ago(6)}],
+    })
+    with cfg_ctx({"intraday_ipo_recency_days": "45"}), \
+         patch("intraday.scanner._latest_date", return_value="2026-08-23"):
+        out = recent_ipo_candidates(sb)
+    assert out == []
 
 
-def test_recently_listed_includes_a_symbol_clearly_inside_the_window():
-    from intraday.scanner import _recently_listed
-    sb = _TableRouter(
-        {},
-        by_rpc={"get_raw_prices_first_seen": [
-            {"symbol": "MILKYMIST", "first_date": _days_ago(5), "row_count": 4}]},
-    )
-    with cfg_ctx({"intraday_recent_listing_window_days": "30"}):
-        out = _recently_listed(sb, {"MILKYMIST"})
-    assert out == {"MILKYMIST"}
+def test_recent_ipo_candidates_excludes_a_flagged_symbol():
+    from intraday.scanner import recent_ipo_candidates
+    _reset_scanner_caches()
+    sb = _TableRouter({
+        "ipo_listings": [
+            {"symbol": "BANNED", "company_name": "x", "listing_date": _days_ago(6)}],
+        "safety_lists": [{"symbol": "BANNED"}],
+    })
+    with cfg_ctx({"intraday_ipo_recency_days": "45", "intraday_skip_flagged": "true"}), \
+         patch("intraday.scanner._latest_date", return_value="2026-08-23"):
+        out = recent_ipo_candidates(sb)
+    assert out == []
 
 
-def test_recently_listed_includes_a_symbol_with_zero_raw_prices_rows():
-    """No trading history at all is the most extreme case of 'recent' —
-    must not be excluded just because the RPC returned no row for it."""
-    from intraday.scanner import _recently_listed
-    sb = _TableRouter({}, by_rpc={"get_raw_prices_first_seen": []})
-    with cfg_ctx({"intraday_recent_listing_window_days": "30"}):
-        out = _recently_listed(sb, {"NEVER_TRADED"})
-    assert out == {"NEVER_TRADED"}
-
-
-def test_recently_listed_returns_empty_for_an_empty_symbol_set():
-    from intraday.scanner import _recently_listed
-    sb = _TableRouter({})
-    out = _recently_listed(sb, set())
-    assert out == set()
-
-
-def test_recently_listed_survives_rpc_raising():
-    from intraday.scanner import _recently_listed
+def test_recent_ipo_candidates_survives_a_read_failure():
+    from intraday.scanner import recent_ipo_candidates
 
     class _RaisingSB(_TableRouter):
-        def rpc(self, name, params=None):
-            raise Exception("rpc not found")
+        def table(self, name):
+            if name == "ipo_listings":
+                raise Exception("table not found")
+            return super().table(name)
 
+    _reset_scanner_caches()
     sb = _RaisingSB({})
-    out = _recently_listed(sb, {"ANYTHING"})
-    assert out == set()
+    with cfg_ctx({"intraday_ipo_recency_days": "45"}), \
+         patch("intraday.scanner._latest_date", return_value="2026-08-23"):
+        out = recent_ipo_candidates(sb)
+    assert out == []
 
 
 def test_new_listings_steady_state_reports_only_truly_new_symbols():
@@ -682,14 +663,12 @@ TESTS = [
     ("unreferenced_candidates excludes a name on safety_lists", test_unreferenced_candidates_excludes_a_name_on_safety_lists),
     ("unreferenced_candidates admits flagged when skip_flagged false", test_unreferenced_candidates_admits_flagged_when_skip_flagged_false),
     ("unreferenced_candidates survives kite master unavailable", test_unreferenced_candidates_survives_kite_master_unavailable),
-    ("new_listings bootstrap reports nothing when no symbol is within the window", test_new_listings_bootstrap_reports_nothing_when_no_symbol_is_within_the_window),
-    ("new_listings bootstrap reports a symbol within the recency window", test_new_listings_bootstrap_reports_a_symbol_within_the_recency_window),
-    ("recently_listed excludes a symbol with old, gapped trading history", test_recently_listed_excludes_a_symbol_with_old_trading_history),
-    ("recently_listed excludes a symbol just outside the window", test_recently_listed_excludes_a_symbol_just_outside_the_window),
-    ("recently_listed includes a symbol clearly inside the window", test_recently_listed_includes_a_symbol_clearly_inside_the_window),
-    ("recently_listed includes a symbol with zero raw_prices rows", test_recently_listed_includes_a_symbol_with_zero_raw_prices_rows),
-    ("recently_listed returns empty for an empty symbol set", test_recently_listed_returns_empty_for_an_empty_symbol_set),
-    ("recently_listed survives rpc raising", test_recently_listed_survives_rpc_raising),
+    ("new_listings bootstrap seeds everything and reports nothing new", test_new_listings_bootstrap_seeds_everything_and_reports_nothing_new),
+    ("recent_ipo_candidates returns a confirmed recent listing", test_recent_ipo_candidates_returns_a_confirmed_recent_listing),
+    ("recent_ipo_candidates respects exclude", test_recent_ipo_candidates_respects_exclude),
+    ("recent_ipo_candidates excludes a symbol already in stock_data_daily", test_recent_ipo_candidates_excludes_a_symbol_already_in_stock_data_daily),
+    ("recent_ipo_candidates excludes a flagged symbol", test_recent_ipo_candidates_excludes_a_flagged_symbol),
+    ("recent_ipo_candidates survives a read failure", test_recent_ipo_candidates_survives_a_read_failure),
     ("new_listings steady state reports only truly new symbols", test_new_listings_steady_state_reports_only_truly_new_symbols),
     ("new_listings previously seen symbol never reported twice", test_new_listings_previously_seen_symbol_never_reported_twice),
     ("new_listings empty live set returns empty without crashing", test_new_listings_empty_live_set_returns_empty_without_crashing),

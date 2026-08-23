@@ -11366,3 +11366,108 @@ none of this reaches the live bench regardless of the section 4 finding.
 `nifty_total_market` and `stock_data_daily` are untouched by this entry.
 On `feat/intraday-live-universe`, not merged — Gate D2 remains the
 operator's own sign-off.
+
+## 2026-08-24 — F-59 (new, real fix shipped) — Stage D2f: the Milky Mist
+gap closed for real, via NSE's own confirmed IPO archive — replaces
+F-58's `raw_prices` approach after the operator scrapped it directly
+
+**Ran:** `tools.verify` (826 checks, 80 modules, green — 6 more than
+F-58's 820), `tools.health` clean, live checks against production at
+every step — the live fetch, the live write, the live end-to-end
+Population C read — not trusted from a dry run alone.
+
+### 1 — THE OPERATOR'S OWN CALL, ACTED ON DIRECTLY
+
+F-58 shipped three real fixes but deliberately did NOT close the Milky
+Mist gap itself — the `raw_prices`-based recency signal it depended on
+had just been shown to produce 179 false positives from a genuine
+coverage discontinuity in `raw_prices`. The operator's response was not
+"narrow the window further" — it was to reject the whole approach:
+**"you cannot use raw prices count to identify the new listings, it has
+n number of different records... unnecessarily complicating the
+things."** Instructed to load NSE's own confirmed-IPO data from
+`groww.in/ipo` instead and asked how the mechanism should operate going
+forward "using kite but I do not want the list of 100 or 200 stocks."
+
+### 2 — GROWW CHECKED FIRST, FOUND INSUFFICIENT, NSE'S OWN API USED
+INSTEAD
+
+`groww.in/ipo` was fetched and inspected before building anything: it
+shows only 5 closed IPOs via a plain fetch (JS-rendered "View All" not
+reachable), and critically **exposes no NSE/BSE trading symbol at all —
+company names only**. Using it would have required fuzzy company-name
+matching against Kite's own instrument dump, a real source of
+misattributed listing dates. Rather than build that, `https://www.
+nseindia.com/api/public-past-issues?index=equity` was found and
+verified live: a real JSON API behind NSE's own "All Upcoming Issues"
+page, **1,411 records back to 2003-01-02, every one carrying the actual
+NSE tradingsymbol directly**. The operator independently pasted a
+~50-row excerpt of this exact same NSE page mid-conversation, before the
+API was confirmed reachable — cross-validated: MILKYMIST's entry in both
+matches exactly (listed 18-Aug-2026, EQ, issue price ₹140).
+
+### 3 — WHAT GOT BUILT
+
+New table `ipo_listings` (migration 102: symbol, company_name,
+security_type, issue_price, price_range_low/high, issue_start/end_date,
+listing_date, source, refreshed_at) + `swing/ingestion/ingest_ipo_
+listings.py`, reusing `ingest_asm_gsm.py`'s proven nseindia.com session-
+warmup pattern rather than reinventing one. One real bug found and fixed
+before the first live write: NSE's archive carries one row per BOND/NCD
+TRANCHE, not per company — IBULHSG alone appeared 13 times, all sharing
+one symbol — so a raw upsert against `symbol` as primary key raised
+Postgres error 21000 ("cannot affect row a second time") before writing
+anything. Fixed with a dedup-on-symbol pass in `build_rows()`, kept
+pure and covered by 8 offline tests including the exact IBULHSG case.
+
+New `scanner.py::recent_ipo_candidates()`: mainboard (`security_type ==
+'EQ'`) listings within `intraday_ipo_recency_days` (45, migration 102) —
+measured **17 real names live**, 24-Aug-2026, matching real IPO cadence
+directly, not an artifact of a proxy signal. Wired into `unreferenced_
+candidates()` as a SECOND, independent Population C source alongside
+`new_listings()`'s Kite-diff — deliberately redundant: Kite's own dump
+updates daily and can flag a listing the same day it starts trading;
+`ipo_listings` only refreshes weekly (matching `nifty_total_market`'s
+cadence) but is authoritative. Either source missing a name on a given
+day does not silently drop it — `unreferenced_candidates()` merges and
+dedupes both. `new_listings()`'s bootstrap reverted to its simple F-57
+shape (seed everything, report nothing on the very first run) — the
+raw_prices-based recency-aware bootstrap logic is gone entirely, not
+patched; `recent_ipo_candidates()` covers the same gap correctly from
+authoritative data instead.
+
+Migration 103 drops the now-dead `get_raw_prices_first_seen` RPC and
+deletes `intraday_recent_listing_window_days` from `system_config` — F-58's
+migration 101 is committed history and is not rewritten; this is the
+correction of record, the same pattern migration 098 used for 097's
+stale text after it, too, was already committed.
+
+### 4 — LIVE-VERIFIED, PRECISELY
+
+Real write against production: **1,359 rows** (1,411 fetched, 52
+deduped bond/NCD tranches). MILKYMIST confirmed present: `listing_date
+= 2026-08-18`, `security_type = EQ` — exactly matching both the
+operator's own pasted NSE excerpt and F-58's earlier `raw_prices`
+finding. `recent_ipo_candidates()` run live returned exactly 17 names,
+MILKYMIST among them, zero contamination — no INAV, no ETF, no bond
+codes, no long-listed companies misclassified. Full `unreferenced_
+candidates()` end-to-end: Population A = 1, Population B = 231,
+Population C(i) Kite-diff = 0, Population C(ii) NSE IPO archive = 17 —
+**249 total, down from the 2,313 F-55 originally measured and the
+179-contaminated design F-58 correctly refused to ship.**
+
+No retroactive correction to `kite_symbol_baseline` was needed —
+`recent_ipo_candidates()` is a fully independent source that does not
+route through the baseline table at all, so Milky Mist is covered
+immediately, in this session, without touching the table F-57's
+bootstrap had already (harmlessly, as it turns out) seeded it into.
+
+### 5 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+`ipo_listings` covers listings NSE's own archive has recorded — SME/BE/
+IV/bond-series rows exist in the table (1,359 total vs 17 EQ-recent) but
+are deliberately excluded from Population C; a future stage could widen
+this if SME-board intraday coverage is ever wanted, not assumed needed
+now. Both live-requalify switches remain `false`, unchanged this
+session. On `feat/intraday-live-universe`, not merged — Gate D2 remains
+the operator's own sign-off.

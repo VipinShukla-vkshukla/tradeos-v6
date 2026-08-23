@@ -624,63 +624,6 @@ def _seed_baseline(sb, symbols: set[str]) -> None:
             return
 
 
-def _recently_listed(sb, symbols: set[str]) -> set[str]:
-    """
-    Which of `symbols` genuinely started trading within the last
-    `intraday_recent_listing_window_days` (30 default), rather than
-    merely being untracked by stock_data_daily/nifty_total_market.
-    Stage D2e, 23-Aug-2026 — the operator's own catch: MILKYMIST first
-    traded 18-Aug-2026, five days before new_listings() existed. Without
-    this, its bootstrap seed would have silently marked it "already
-    known" alongside 2,978 genuinely old symbols — indistinguishable
-    from RELIANCE from that moment on, forever. Caught only because the
-    operator asked "is Milky Mist part of it" and the honest answer
-    required checking, not asserting.
-
-    CORRECTED SAME SESSION, before this ever shipped: the first version
-    compared a symbol's first raw_prices row against raw_prices' OWN
-    ~120-day retention window start, not against today. That produced a
-    real, measured false-positive rate — checked against the full Kite
-    universe before trusting it, not assumed clean: ZEEMEDIA, a
-    long-listed company, has a genuine ~4-week GAP in raw_prices
-    coverage starting 19-May-2026 (a trading restriction, a data-
-    completeness gap, or something else not determined — the point is
-    it is NOT a listing event), well inside that window, and was
-    misclassified as a fresh listing. `raw_prices` has real per-symbol
-    coverage gaps unrelated to recency, so "started partway through the
-    120-day window" was never reliable evidence on its own. A fixed,
-    SHORT, TODAY-relative window is a materially stronger claim: real
-    IPOs are rare (a handful a month), so trading history older than 30
-    days is far more likely an established stock with a coverage gap
-    than a genuine new listing.
-
-    A symbol raw_prices has NEVER seen at all (zero rows) is included
-    too — the most extreme case of "no trading history", not excluded
-    from the recent-listing set.
-    """
-    if not symbols:
-        return set()
-
-    window_days = cfg_int("intraday_recent_listing_window_days", 30)
-    cutoff = (today_ist() - timedelta(days=window_days)).isoformat()
-
-    first_seen: dict[str, str] = {}
-    symbols_list = sorted(symbols)
-    try:
-        for i in range(0, len(symbols_list), 200):
-            rows = sb.rpc("get_raw_prices_first_seen",
-                          {"p_symbols": symbols_list[i:i + 200]}).execute().data or []
-            for r in rows:
-                if r.get("symbol") and r.get("first_date"):
-                    first_seen[r["symbol"]] = r["first_date"]
-    except Exception as e:
-        logger.debug(f"  scanner: raw_prices first-seen read skipped — {e}")
-        return set()
-
-    return {sym for sym in symbols
-           if first_seen.get(sym) is None or first_seen[sym] > cutoff}
-
-
 def new_listings(sb=None) -> set[str]:
     """
     Which Kite-known mainboard/ETF symbols have NEVER BEEN SEEN before —
@@ -703,19 +646,23 @@ def new_listings(sb=None) -> set[str]:
     absent from every prior baseline IS a genuine first sighting; today
     or any day forward, this half needs no other source.
 
-    BOOTSTRAP IS DIFFERENT, Stage D2e, 23-Aug-2026. On the very first run
-    ever (empty baseline table), the current universe (~2,979 names) is
-    NOT all genuinely new — most are old stocks this mechanism simply
-    never looked at before today. Blindly seeding all of them as "known"
-    (the original Stage D2d behaviour) would permanently hide anything
-    that listed shortly before this code existed — see `_recently_
-    listed()`'s own docstring for exactly the case that caught this.
-    `_recently_listed()` splits the bootstrap set using raw_prices' own
-    trading history: genuinely established names are seeded silently;
-    names that started trading within raw_prices' own ~120-day retention
-    window are seeded too (so they are not repeated indefinitely) but ARE
-    reported this one time, giving them the same first look any other
-    Population C candidate gets.
+    BOOTSTRAP (empty baseline table) seeds the entire current universe as
+    already-known and reports NOTHING — there is no listing history yet
+    to diff against. Stage D2e/f, 23/24-Aug-2026 tried to make this
+    bootstrap "recency-aware" using `raw_prices`, so a name that
+    genuinely listed shortly before this code existed (the operator's
+    own catch — MILKYMIST, five days before F-57 shipped) would not be
+    silently swallowed. That approach was scrapped — the operator's own
+    call, after live-testing found `raw_prices` has real per-symbol
+    coverage gaps unrelated to listing dates (ZEEMEDIA, a long-listed
+    company, misclassified as a fresh IPO by it) — "you cannot use raw
+    prices count to identify the new listings... unnecessarily
+    complicating the things". `recent_ipo_candidates()` below now covers
+    that same gap correctly, from NSE's own authoritative IPO archive
+    instead of an inferred proxy — see its own docstring. The one-time
+    catch-up for names already in Kite's dump before this bootstrap ran
+    is a manual correction against that same authoritative data, not
+    logic embedded in this hot path.
 
     Returns an empty set on any failure to read either side of the diff —
     advisory only, same contract as every other function that touches
@@ -754,16 +701,77 @@ def new_listings(sb=None) -> set[str]:
 
     known = _baseline_cache["symbols"]
     if not known:
-        recent = _recently_listed(sb, live)
-        _seed_baseline(sb, live)   # both halves recorded — recent AND established
+        _seed_baseline(sb, live)
         _baseline_cache["symbols"] = set(live)
-        return recent
+        return set()
 
     fresh = live - known
     if fresh:
         _seed_baseline(sb, fresh)
         _baseline_cache["symbols"] = known | fresh
     return fresh
+
+
+def recent_ipo_candidates(sb=None, exclude: set[str] | None = None
+                          ) -> list[UniverseEntry]:
+    """
+    Mainboard names NSE itself confirms listed within the last
+    `intraday_ipo_recency_days` (45 default). Stage D2f, 24-Aug-2026 —
+    REPLACES `_recently_listed()`'s raw_prices heuristic (F-58, scrapped
+    by the operator: "you cannot use raw prices count to identify the
+    new listings, it has n number of different records... unnecessarily
+    complicating the things") with `ipo_listings`, sourced from NSE's own
+    `public-past-issues` archive (`swing/ingestion/ingest_ipo_listings.
+    py`) — 1,359 real records, real symbols, real listing dates, no
+    fuzzy company-name matching, no coverage-gap ambiguity. MILKYMIST
+    confirmed present there: listed 18-Aug-2026, EQ.
+
+    WHY THIS STAYS SMALL, answering the operator's own "I do not want
+    the list of 100 or 200 stocks": mainboard (`security_type == 'EQ'`)
+    listings within a 45-day window measured 17 names live, 24-Aug-2026
+    — real IPO cadence, not an artifact of a proxy signal. SME/BE/IV and
+    the bond-series codes NSE's archive also carries are excluded; they
+    are not the "new stock intraday might trade" question this function
+    answers.
+
+    This is INDEPENDENT of `new_listings()`'s Kite-diff (Population C's
+    other source) — deliberately redundant, not a replacement for it:
+    Kite's own dump updates daily and can flag a listing the SAME day it
+    starts trading, while `ipo_listings` only refreshes as often as
+    `ingest_ipo_listings.py` runs (weekly, matching `nifty_total_market`).
+    Cross-referencing both means a gap in either source alone does not
+    silently drop a name — `unreferenced_candidates()` merges and dedupes
+    the two.
+    """
+    sb = sb or get_supabase()
+    exclude = exclude or set()
+
+    known, market_rows, flagged = _daily_reference_reads(sb)
+    days = cfg_int("intraday_ipo_recency_days", 45)
+    cutoff = (today_ist() - timedelta(days=days)).isoformat()
+
+    try:
+        rows = (sb.table("ipo_listings")
+                 .select("symbol,company_name,listing_date")
+                 .eq("security_type", "EQ")
+                 .gt("listing_date", cutoff)
+                 .execute().data or [])
+    except Exception as e:
+        logger.debug(f"  scanner: ipo_listings read skipped — {e}")
+        return []
+
+    out: list[UniverseEntry] = []
+    for r in rows:
+        sym = r.get("symbol")
+        if not sym or sym in exclude or sym in known or sym in flagged:
+            continue
+        out.append(UniverseEntry(
+            symbol=sym, close=0.0, value_cr=0.0, atr_pct=0.0, delivery_pct=None,
+            sector="", score=0.0,
+            reason=f"NSE-confirmed IPO, listed {r.get('listing_date')}",
+            avg_vol_20d=0.0,
+        ))
+    return out
 
 
 def unreferenced_candidates(sb=None, exclude: set[str] | None = None
@@ -774,7 +782,7 @@ def unreferenced_candidates(sb=None, exclude: set[str] | None = None
     admission floor must be applied as an ABSOLUTE threshold instead.
     Stage D2b/d, 23-Aug-2026 (docs/TRADEOS_ROADMAP.md, Track D).
 
-    TWO SOURCES:
+    THREE SOURCES:
 
       Population B — nifty_total_market members (754 rows after the
       weekly refresh) not in stock_data_daily (231 of them, live-
@@ -783,10 +791,20 @@ def unreferenced_candidates(sb=None, exclude: set[str] | None = None
       untracked by that pipeline. Bounded and stable; not the population
       that needed fixing.
 
-      Population C — new_listings() above: Kite-known symbols never
-      seen before ANY prior run, not "every Kite symbol we don't already
-      track". Typically zero, occasionally a handful around a real IPO —
-      not the ~2,081-name flood the original, cruder definition produced.
+      Population C — TWO independent, deliberately redundant sources,
+      merged and deduped:
+        (i)  new_listings() above — Kite-known symbols never seen before
+             ANY prior run. Updates daily; catches a listing the SAME
+             day it starts trading. Typically zero, occasionally a
+             handful — not the ~2,081-name flood the original, cruder
+             definition produced.
+        (ii) recent_ipo_candidates() below — NSE's own confirmed IPO
+             archive (`ipo_listings`), mainboard listings within the
+             last 45 days. Refreshes weekly, not daily, but is
+             AUTHORITATIVE (a real listing date, not an inferred one) —
+             replaces the raw_prices-based recency heuristic Stage D2e
+             tried and the operator had scrapped after live-testing
+             found real coverage-gap false positives in it.
 
     `atr_pct=0.0` on every returned entry, HONESTLY — there is nothing
     real to put there, and 0.0 combined with the `reason` string naming
@@ -841,5 +859,17 @@ def unreferenced_candidates(sb=None, exclude: set[str] | None = None
                    "genuine new listing, not in stock_data_daily or nifty_total_market"),
             avg_vol_20d=0.0,
         ))
+
+    try:
+        ipo_entries = recent_ipo_candidates(sb, exclude=exclude | known | flagged | seen)
+    except Exception as e:
+        logger.debug(f"  scanner: ipo_listings candidates skipped — {e}")
+        ipo_entries = []
+
+    for e in ipo_entries:
+        if e.symbol in seen:
+            continue
+        seen.add(e.symbol)
+        out.append(e)
 
     return out

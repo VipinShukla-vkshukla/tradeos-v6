@@ -160,6 +160,21 @@ jobs:
         run: |
           cd backend && python -m swing.ingestion.ingest_nifty_total_market
 
+      # Weekly — NSE closes a mainboard IPO a handful of times a week,
+      # not daily. Feeds intraday/scanner.py::recent_ipo_candidates()
+      # (Population C, Stage D2f) with AUTHORITATIVE listing dates
+      # straight from NSE's own archive, replacing the raw_prices-based
+      # heuristic the operator had scrapped after live-testing found
+      # real coverage-gap false positives in it.
+      - name: "Refresh ipo_listings (NSE confirmed IPO archive)"
+        continue-on-error: true
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TZ: Asia/Kolkata
+        run: |
+          cd backend && python -m swing.ingestion.ingest_ipo_listings
+
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
