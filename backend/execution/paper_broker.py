@@ -57,8 +57,33 @@ class PaperFill:
     message: str
 
 
-def _slippage_pct() -> float:
-    return cfg_float("cost_slippage_bps", 5.0) / 10000.0
+def _slippage_pct(value_cr: float | None = None) -> float:
+    """
+    Base slippage, scaled up for a thin name — Stage D2h, 24-Aug-2026.
+    Found while auditing Track D's widened intraday universe (docs/
+    FINDINGS.md F-61): this returned the SAME flat figure for every
+    symbol, so a Population B/C paper fill — structurally the thinnest
+    names in the whole universe, that being the entire reason they
+    needed their own admission mechanism — was modelled with the exact
+    same execution quality as a Nifty-50 name. Paper P&L for those names
+    was therefore systematically more optimistic than a real fill in
+    them would be, worst for the population least equipped to survive
+    that gap.
+
+    `value_cr=None` — every call site before this stage, and swing's own
+    entry, which this audit did not touch — preserves the EXACT prior
+    flat behaviour. This is additive, not a silent tightening of every
+    existing fill; only a caller that explicitly passes a thin `value_cr`
+    sees a different number.
+    """
+    base = cfg_float("cost_slippage_bps", 5.0) / 10000.0
+    if value_cr is None:
+        return base
+    value_cr = float(value_cr)
+    threshold = cfg_float("cost_slippage_thin_threshold_cr", 25.0)
+    if value_cr <= 0 or value_cr >= threshold:
+        return base
+    return base * cfg_float("cost_slippage_thin_multiplier", 3.0)
 
 
 def product_for(framework: str) -> str:
@@ -75,7 +100,7 @@ def product_for(framework: str) -> str:
 
 def simulate_fill(symbol: str, side: str, qty: int, order_type: str,
                   limit_price: float | None, ltp: float,
-                  product: str = "MIS") -> PaperFill:
+                  product: str = "MIS", value_cr: float | None = None) -> PaperFill:
     """
     Would this order have filled, and at what price?
 
@@ -83,11 +108,16 @@ def simulate_fill(symbol: str, side: str, qty: int, order_type: str,
     On a buy limit that means the market must be at or below the limit; on a
     sell limit, at or above. Treating a touch as a fill is exactly how paper
     equity curves come out ahead of live ones.
+
+    `value_cr`, Stage D2h: the name's own daily traded value, so slippage
+    can scale up for a thin one instead of using one flat figure for
+    every symbol — see `_slippage_pct()`'s own docstring. Optional and
+    `None` by default, so every call site before this stage is unchanged.
     """
     if qty <= 0 or not ltp or ltp <= 0:
         return PaperFill(False, None, None, 0, 0.0, "no quantity or price")
 
-    slip = _slippage_pct()
+    slip = _slippage_pct(value_cr)
     if order_type == "MARKET":
         # Pay the spread in the direction that hurts.
         fill = ltp * (1 + slip) if side == "BUY" else ltp * (1 - slip)

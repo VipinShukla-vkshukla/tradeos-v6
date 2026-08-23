@@ -536,6 +536,17 @@ class IntradayEngine:
         # prev_close/prev_high/prev_low/atr_pct/avg_volume_20d without
         # spending a single extra historical_data call.
         ref_symbols = sorted(set(symbols) | {e.symbol for e in (self._bench or [])})
+        # Stage D2h, 24-Aug-2026 — a Population B/C name has no stock_data_
+        # daily row (`prev` below stays empty for it), so ctx.value_cr was
+        # permanently None, and analysis.overlays.liquidity_ok() (which
+        # reads exactly that field) refused every one of them outright —
+        # "no traded-value data — cannot confirm an exit is possible", found
+        # while auditing this widened universe, not by design. Falls back to
+        # the bench entry's OWN value_cr — for a live-requalified name that
+        # is scanner.live_requalify()'s own admission-time turnover figure
+        # (real, just a snapshot as of whenever it was admitted, not this
+        # instant) — rather than leaving every B/C name permanently unsizeable.
+        bench_by_symbol = {e.symbol: e for e in (self._bench or [])}
         prev: dict = {}
         try:
             hist = (self.sb.table("stock_data_daily")
@@ -579,6 +590,7 @@ class IntradayEngine:
                 vwap = sum((b.high + b.low + b.close) / 3.0 for b in bars) / len(bars)
 
             p = prev.get(sym, {})
+            bench_entry = bench_by_symbol.get(sym)
             ctx = SymbolContext(
                 symbol=sym, ltp=float(meta.get("last_price") or bars[-1].close),
                 bars=bars, vwap=vwap,
@@ -590,7 +602,9 @@ class IntradayEngine:
                 prev_low=float(p.get("low") or 0) or None,
                 atr_pct_daily=float(p.get("atr_pct") or 0) or None,
                 avg_volume_20d=float(p.get("volume") or 0) or None,
-                value_cr=float(p.get("value_cr") or 0) or None,
+                value_cr=(float(p.get("value_cr") or 0) or
+                         (bench_entry.value_cr if bench_entry and bench_entry.value_cr else None)),
+                universe_population=bench_entry.source if bench_entry else "bench",
                 # Stamped so every consumer can ask how old this is. Contexts
                 # are rebuilt on the 300 s timer and read on the 15 s one.
                 as_of=datetime.now(IST),
@@ -3356,6 +3370,17 @@ class IntradayEngine:
             # real — multiplied together rather than one replacing the other.
             budget = min(capital_for("INTRADAY") * pos_pct * mc.size_multiplier * self._overlay_intraday_mult,
                          max_order_value("INTRADAY"))
+            # LIQUIDITY-SCALED, NOT FLAT — Stage D2h, 24-Aug-2026. Every name
+            # up to here was sized at the SAME fraction of capital regardless
+            # of its own liquidity — a name Population B/C just admitted got
+            # exactly RELIANCE's sizing. Caps the budget to what this name's
+            # own traded value can actually absorb BEFORE quantity is
+            # computed, so a thin name is sized down rather than sized flat
+            # and then refused outright by liquidity_ok() below. See
+            # analysis.overlays.liquidity_capped_budget()'s own docstring for
+            # exactly which cases this does and does not change.
+            from analysis.overlays import liquidity_capped_budget
+            budget = liquidity_capped_budget(ctx.value_cr, budget)
             qty = int(budget // best.entry) if best.entry else 0
             if qty <= 0:
                 continue
@@ -3363,7 +3388,11 @@ class IntradayEngine:
             # LIQUIDITY / CIRCUIT-BAND GATE — can this be got out of at plan?
             # Structural, not a pricing question, so it runs before the cost
             # check: a setup that cannot be exited at plan is not made viable
-            # by being cheap to enter.
+            # by being cheap to enter. Now mostly a backstop for the cases
+            # liquidity_capped_budget() above deliberately leaves alone (no
+            # data at all, or below the absolute floor) — a name sized down
+            # to fit its own turnover will very rarely trip the share check
+            # here too, by construction.
             from analysis.overlays import liquidity_ok
             liq_ok, liq_why = liquidity_ok(
                 {"value_cr": ctx.value_cr, "atr_pct": ctx.atr_pct_daily},
@@ -3760,7 +3789,8 @@ class IntradayEngine:
             # attributed to the entry leg rather than the exit one.
             f = paper_broker.simulate_fill(st.symbol, D.entry_side(st.direction),
                                            qty, "LIMIT", st.entry, st.entry,
-                                           product=paper_broker.product_for("INTRADAY"))
+                                           product=paper_broker.product_for("INTRADAY"),
+                                           value_cr=st.meta.get("value_cr"))
             if not f.ok:
                 logger.info(f"  📄 fill failed {st.symbol} — {f.message}")
                 _blocked("BLOCKED_FILL_FAILED")

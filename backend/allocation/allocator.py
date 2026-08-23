@@ -259,12 +259,43 @@ class Allocator:
                 and p.native_rank is not None else None)
         banded = f"{sub}{S.BAND_SEP}{band}" if band else None
 
+        # ── ESTABLISHED VS ADMITTED — Stage D2h, 24-Aug-2026 ─────────────────
+        #
+        # `p.meta["universe_population"]` (proposal.py::from_intraday(),
+        # threaded from Setup.meta, stamped at detection by registry.py) —
+        # "bench"/"population_a" for a name build_universe() or its own
+        # live-ATR requalification vetted with real stock_data_daily
+        # history; "population_b"/"population_c_*" for a name Track D's
+        # wider universe admitted with NONE. scoring.py's own "ESTABLISHED
+        # VS ADMITTED" section is the other half of this — it builds the
+        # `/ADMITTED`-suffixed keys this ladder now tries first for one.
+        #
+        # ADMITTED NEVER FALLS THROUGH TO ESTABLISHED'S OWN NUMBERS. Same
+        # rule the SHORT ladder above already enforces for direction — "a
+        # missing OR below-floor class prior is NOT borrowed from a
+        # neighbour" applies exactly as much across this axis. An admitted
+        # proposal with no prior of its own yet reaches the SAME neutral
+        # cold-start distribution the rest of this function reaches for
+        # everyone — never established's prior, which would silently
+        # re-introduce the contamination this split exists to prevent.
+        pop = str((p.meta or {}).get("universe_population") or "bench")
+        admitted = pop.startswith("population_b") or pop.startswith("population_c")
+
         if (p.direction or "LONG").upper() == "SHORT":
+            if admitted:
+                return (_usable(f"{p.framework}/{sub}/ADMITTED/SHORT")
+                        or _usable(f"{p.framework}/ALL/ADMITTED/SHORT")
+                        or S._dist(f"{p.framework}/NONE/ADMITTED/SHORT", [], floor=10**9))
             return ((_usable(f"{p.framework}/{banded}/SHORT") if banded else None)
                     or _usable(f"{p.framework}/{sub}/SHORT")
                     or _usable(f"{p.framework}/{p.source}/SHORT")
                     or _usable(f"{p.framework}/ALL/SHORT")
                     or S._dist(f"{p.framework}/NONE/SHORT", [], floor=10**9))
+
+        if admitted:
+            return (_usable(f"{p.framework}/{sub}/ADMITTED")
+                    or _usable(f"{p.framework}/ALL/ADMITTED")
+                    or S._dist(f"{p.framework}/NONE/ADMITTED", [], floor=10**9))
 
         # Most specific first, then the book, then neutral. A missing OR
         # below-floor class prior is NOT borrowed from a neighbour — it falls

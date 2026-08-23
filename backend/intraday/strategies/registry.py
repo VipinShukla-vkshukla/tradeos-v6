@@ -291,6 +291,21 @@ def evaluate_all(ctx: SymbolContext, phase: str) -> tuple[Setup | None, list[Set
                 # "forgot to ask", per this project's own rule that a check
                 # which cannot fail is not a check.
                 s.meta["atr_pct_daily"] = ctx.atr_pct_daily
+                # WHICH TRACK D POPULATION ADMITTED THIS NAME -- Stage D2h,
+                # 24-Aug-2026. Stamped HERE, same reasoning as sub_engine/
+                # family/atr_pct_daily above: uniform across all nine
+                # engines, cannot be skipped by a new one. Flows into
+                # Proposal.meta (allocation/proposal.py::from_intraday())
+                # and from there into allocation/scoring.py's prior split —
+                # see that module's "ESTABLISHED VS ADMITTED" section.
+                s.meta["universe_population"] = ctx.universe_population
+                # Same reasoning as atr_pct_daily two lines up, for the same
+                # reason -- execution/paper_broker.py::simulate_fill() needs
+                # this name's own liquidity to model slippage, and _maybe_
+                # open_paper() (intraday/engine.py) only receives the Setup,
+                # not ctx. Stamped here rather than threading ctx through
+                # another function signature. Stage D2h, 24-Aug-2026.
+                s.meta["value_cr"] = ctx.value_cr
                 found.append(s)
         except Exception as ex:
             # One misbehaving engine must not stop the others. A scanner that

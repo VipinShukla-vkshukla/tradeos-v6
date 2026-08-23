@@ -47,7 +47,7 @@ import re
 import json
 import statistics
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dc_replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -411,9 +411,19 @@ def _family_of_row(r: dict) -> str:
         return _engine_of(r)
 
 
-def _intraday_priors_from_rows(rows: list[dict], floor: int) -> dict[str, Prior]:
-    """The whole of intraday_priors() except the fetch. Pure, so a replay can
-    hand it a walk-forward slice and get the identical arithmetic."""
+def _intraday_priors_single_population(rows: list[dict], floor: int) -> dict[str, Prior]:
+    """
+    Everything `_intraday_priors_from_rows()` used to do by itself, before
+    Stage D2h (24-Aug-2026) split it into a population-aware wrapper and
+    this unchanged core. RENAMED, NOT REWRITTEN — every line below this
+    docstring is byte-identical to before the split, on purpose: this
+    function carries this project's own most heavily-documented failure
+    history (the 10-Aug prior-key mismatch, the 16-Aug dedup-arithmetic
+    fix, the taken-only inversion) and touching its internals to add a
+    population axis would risk all three at once for a feature that does
+    not need to live inside them. `_intraday_priors_from_rows()` below
+    calls this once per population and merges the results instead.
+    """
     # SEGMENTED BY DIRECTION, NOT POOLED.
     #
     # `stop < entry` excluded every short row outright, so a short engine would
@@ -701,6 +711,105 @@ def _intraday_priors_from_rows(rows: list[dict], floor: int) -> dict[str, Prior]
                                  and k.endswith("/SHORT") for x in v]
         out["INTRADAY/ALL"] = _prior_for("ALL", longs)
         out["INTRADAY/ALL/SHORT"] = _prior_for("ALL/SHORT", shorts)
+    return out
+
+
+# ── ESTABLISHED VS ADMITTED — Stage D2h, 24-Aug-2026 ────────────────────────
+#
+# WHY THIS EXISTS. Track D widened the intraday universe from ~40-120
+# stock_data_daily-vetted names to ~270 by adding Population B (nifty_
+# total_market members with no stock_data_daily row) and Population C
+# (Kite-diff / NSE-confirmed IPOs — no historical vetting of ANY kind).
+# Checked directly, not assumed sound: neither position sizing nor the
+# paper broker's slippage model knows the difference between these and an
+# established name (see docs/FINDINGS.md F-61) — but the ONE place a
+# silent mixing would do the most damage is here, in the prior every
+# future proposal on an engine gets scored against. A noisy run of thin,
+# newly-admitted trades on, say, ORB would otherwise drag INTRADAY/ORB's
+# mean R around for every established ORB proposal too — the same
+# "borrowed from a neighbouring class" failure this module's SHORT/LONG
+# split already exists to forbid, just on a different axis.
+#
+# THE SPLIT, NOT A NEW MECHANISM. `_intraday_priors_single_population()`
+# above is called TWICE — once on rows sourced from the bench/Population A
+# ("established": real stock_data_daily history existed for these, even
+# if Population A's own ATR happened to miss yesterday's band), once on
+# rows sourced from Population B/C ("admitted": no stock_data_daily row
+# ever existed). Established keeps the EXACT keys the allocator already
+# looks up (`INTRADAY/ORB`, `INTRADAY/ALL`, ...) — byte-identical to
+# before this split when there are no admitted rows yet, which is true
+# today: both live-requalify switches are still off, so this changes
+# NOTHING about current behaviour, only about what happens once they are
+# armed. Admitted rows get the SAME keys with `/ADMITTED` inserted before
+# any `/SHORT` suffix — `INTRADAY/ORB/ADMITTED`, `INTRADAY/ALL/ADMITTED`,
+# `INTRADAY/ORB/ADMITTED/SHORT` — mirroring exactly how this module
+# already isolates SHORT from LONG rather than borrowing across it.
+#
+# COLD START STAYS PERMISSIVE. Admitted has zero history the day the
+# switches are armed, same shape as every other segment this project has
+# ever introduced (the STRONG regime bucket, banded confidence). It is
+# not treated as measured-bad — `Allocator._prior_for()` (allocator.py)
+# falls through an admitted-specific ladder that ends at the SAME neutral
+# cold-start distribution the established ladder ends at, never at
+# established's own prior. Borrowing established's numbers for an
+# unrelated population would be exactly the mistake this split exists to
+# prevent, just committed one step later.
+def _population_class(r: dict) -> str:
+    """"established" (bench-built or Population A — real stock_data_daily
+    history existed) or "admitted" (Population B/C — never had a row
+    there at all). Same defensive str/json meta read _engine_of() already
+    uses, so a row whose meta landed as a JSON STRING (the 20-Aug finding
+    documented on _engine_of() itself) is read correctly here too."""
+    meta = r.get("meta") or {}
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except (ValueError, TypeError):
+            meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    pop = str(meta.get("universe_population") or "bench")
+    return "admitted" if pop.startswith("population_b") or pop.startswith("population_c") else "established"
+
+
+def _remap_admitted_keys(priors: dict[str, Prior]) -> dict[str, Prior]:
+    """`INTRADAY/ORB` -> `INTRADAY/ORB/ADMITTED`, `INTRADAY/ORB/SHORT` ->
+    `INTRADAY/ORB/ADMITTED/SHORT` — ADMITTED inserted before SHORT, not
+    after, so Allocator._prior_for()'s existing `f"{key}/SHORT"` suffix
+    logic keeps working unmodified against the remapped key.
+
+    `dataclasses.replace()`, NOT a hand-built `Prior(...)` — a first
+    version rebuilt the object field-by-field and silently dropped
+    median_r/stderr/p10/p90/trigger_rate/below_floor (Prior has more
+    fields than mean_r/n/note) and tried to pass `usable`, which is a
+    read-only @property, not a constructor argument. Caught before this
+    was ever run, not after — `replace()` copies every field except the
+    one named."""
+    out = {}
+    for key, prior in priors.items():
+        assert key.startswith("INTRADAY/")
+        rest = key[len("INTRADAY/"):]
+        new_key = (f"INTRADAY/{rest[:-len('/SHORT')]}/ADMITTED/SHORT"
+                  if rest.endswith("/SHORT") else f"INTRADAY/{rest}/ADMITTED")
+        out[new_key] = _dc_replace(prior, key=new_key)
+    return out
+
+
+def _intraday_priors_from_rows(rows: list[dict], floor: int) -> dict[str, Prior]:
+    """
+    Population-split entry point — see "ESTABLISHED VS ADMITTED" above.
+    Both `intraday_priors(sb, rows=None)` (the live fetch path) and
+    `tools/allocator_replay.py` (which calls `intraday_priors(None,
+    rows=...)`, per that function's own docstring on why nothing may
+    reimplement it) converge on this one function, so the split reaches
+    both without either needing its own copy.
+    """
+    established = [r for r in rows if _population_class(r) == "established"]
+    admitted = [r for r in rows if _population_class(r) == "admitted"]
+    out = _intraday_priors_single_population(established, floor)
+    if admitted:
+        out.update(_remap_admitted_keys(
+            _intraday_priors_single_population(admitted, floor)))
     return out
 
 

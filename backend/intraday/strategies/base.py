@@ -259,6 +259,16 @@ class SymbolContext:
     # and answers a different question ("is today busy?" vs "how busy so far?").
     session_volume: float | None = None
 
+    # Which Track D population admitted this name — Stage D2h, 24-Aug-2026.
+    # "bench" (default) is build_universe()'s own vetted daily population;
+    # scanner.UniverseEntry.source carries the real value across for anything
+    # admitted through live_requalify_universe(). Read by registry.evaluate_
+    # all() to stamp every Setup this symbol produces, so allocation/
+    # scoring.py can price bench-native and live-admitted names on separate
+    # evidence rather than pooling them — see that module's own "ESTABLISHED
+    # VS ADMITTED" section for why.
+    universe_population: str = "bench"
+
     def age_seconds(self, now: datetime | None = None) -> float | None:
         """Seconds since the reference levels were assembled. None if unknown."""
         if self.as_of is None:

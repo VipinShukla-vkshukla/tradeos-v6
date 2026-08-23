@@ -198,6 +198,7 @@ def test_movement_rejected_candidates_returns_only_the_atr_only_failures():
             out = movement_rejected_candidates(_SB(rows))
     assert [e.symbol for e in out] == ["QUIET"], (
         f"expected only QUIET, got {[e.symbol for e in out]}")
+    assert out[0].source == "population_a"
 
 
 def test_movement_rejected_candidates_respects_exclude():
@@ -228,11 +229,11 @@ def test_movement_rejected_candidates_respects_exclude():
 
 # ── live_requalify() ─────────────────────────────────────────────────────
 
-def _candidate(symbol="QUIET", atr_pct=0.5):
+def _candidate(symbol="QUIET", atr_pct=0.5, source="population_a"):
     from intraday.scanner import UniverseEntry
     return UniverseEntry(symbol=symbol, close=100.0, value_cr=50.0, atr_pct=atr_pct,
                          delivery_pct=30.0, sector="energy", score=0.0,
-                         reason="test fixture", avg_vol_20d=1000.0)
+                         reason="test fixture", avg_vol_20d=1000.0, source=source)
 
 
 def _quote(ltp=110.0, close=100.0, volume=3_000_000, avg_price=105.0):
@@ -245,6 +246,16 @@ def test_live_requalify_admits_a_candidate_clearing_both_floors():
     out = live_requalify([_candidate()], {"QUIET": _quote()}, move_pct=1.20, turnover_cr=25.0)
     assert len(out) == 1 and out[0].symbol == "QUIET"
     assert "LIVE REQUALIFIED" in out[0].reason
+
+
+def test_live_requalify_carries_the_candidates_own_source_through():
+    """Stage D2h: source must be the CANDIDATE's own population, not reset
+    on admission -- this is what lets scoring.py later tell a live-
+    requalified Population B/C trade apart from a Population A one."""
+    from intraday.scanner import live_requalify
+    out = live_requalify([_candidate(source="population_b")], {"QUIET": _quote()},
+                         move_pct=1.20, turnover_cr=25.0)
+    assert out[0].source == "population_b"
 
 
 def test_live_requalify_refuses_move_ok_but_turnover_too_thin():
@@ -356,6 +367,7 @@ def test_unreferenced_candidates_finds_nifty_total_market_gap():
     assert [e.symbol for e in out] == ["UNTRACKED"]
     assert out[0].atr_pct == 0.0
     assert "nifty_total_market" in out[0].reason
+    assert out[0].source == "population_b"
 
 
 def test_unreferenced_candidates_finds_kite_only_names_beyond_both_tables():
@@ -377,6 +389,7 @@ def test_unreferenced_candidates_finds_kite_only_names_beyond_both_tables():
         out = unreferenced_candidates(sb)
     assert [e.symbol for e in out] == ["FRESHLISTED"]
     assert "never seen in Kite's instrument master" in out[0].reason
+    assert out[0].source == "population_c_kite"
 
 
 def test_unreferenced_candidates_never_duplicates_a_name_seen_in_both_sources():
@@ -502,6 +515,7 @@ def test_recent_ipo_candidates_returns_a_confirmed_recent_listing():
     assert [e.symbol for e in out] == ["MILKYMIST"]
     assert "NSE-confirmed IPO" in out[0].reason
     assert out[0].atr_pct == 0.0
+    assert out[0].source == "population_c_ipo"
 
 
 def test_recent_ipo_candidates_respects_exclude():
@@ -682,6 +696,7 @@ TESTS = [
     ("movement_rejected_candidates returns only the atr-only failures", test_movement_rejected_candidates_returns_only_the_atr_only_failures),
     ("movement_rejected_candidates respects exclude", test_movement_rejected_candidates_respects_exclude),
     ("live_requalify admits a candidate clearing both floors", test_live_requalify_admits_a_candidate_clearing_both_floors),
+    ("live_requalify carries the candidate's own source through", test_live_requalify_carries_the_candidates_own_source_through),
     ("live_requalify refuses move ok but turnover too thin", test_live_requalify_refuses_move_ok_but_turnover_too_thin),
     ("live_requalify refuses turnover ok but move too small", test_live_requalify_refuses_turnover_ok_but_move_too_small),
     ("live_requalify admits a downward move same as upward", test_live_requalify_admits_a_downward_move_same_as_upward),

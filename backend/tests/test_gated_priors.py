@@ -98,7 +98,8 @@ class _SB:
 _SEQ = iter(range(1, 10_000_000))
 
 
-def _row(strategy, outcome_pct, verdict, direction="LONG", entry=100.0, stop=99.0):
+def _row(strategy, outcome_pct, verdict, direction="LONG", entry=100.0, stop=99.0,
+        population=None):
     """risk_pct is 1.0% by construction, so outcome_pct IS the R multiple.
 
     Each call gets a UNIQUE (symbol, trade_date) so these rows survive
@@ -106,14 +107,21 @@ def _row(strategy, outcome_pct, verdict, direction="LONG", entry=100.0, stop=99.
     on (symbol, engine, day), and a helper that emitted a constant identity
     would silently turn every multi-row fixture below into a sample of one.
     Tests that specifically exercise duplication override `symbol` explicitly.
+
+    `population`, Stage D2h: omitted (None) means no `meta` key at all,
+    which `_population_class()` reads as "bench" -> established -- every
+    existing test above this line is unaffected by that split.
     """
     if direction == "SHORT":
         entry, stop = 100.0, 101.0
     i = next(_SEQ)
-    return {"strategy": strategy, "outcome": None, "outcome_pct": outcome_pct,
-            "entry": entry, "stop": stop, "direction": direction,
-            "cost_verdict": verdict,
-            "symbol": f"SYM{i}", "trade_date": "2026-08-05"}
+    row = {"strategy": strategy, "outcome": None, "outcome_pct": outcome_pct,
+          "entry": entry, "stop": stop, "direction": direction,
+          "cost_verdict": verdict,
+          "symbol": f"SYM{i}", "trade_date": "2026-08-05"}
+    if population is not None:
+        row["meta"] = {"universe_population": population}
+    return row
 
 
 def test_refused_detections_do_not_drag_the_prior_down():
@@ -232,6 +240,134 @@ def test_the_prior_dict_is_keyed_the_way_the_allocator_looks_it_up():
     assert orb.key == "INTRADAY/ORB" and vwr.key == "INTRADAY/VWR"
 
 
+# ── ESTABLISHED VS ADMITTED — Stage D2h, 24-Aug-2026 ────────────────────────
+# Track D widened the intraday universe to ~270 names by adding Population
+# B/C (no stock_data_daily history at all). scoring.py splits the prior by
+# `meta.universe_population` so a noisy run of newly-admitted trades cannot
+# drag an established engine's mean around, and vice versa. Asserted through
+# the real Allocator lookup, same discipline as the test above it — the
+# 10-Aug bug this file exists for was exactly two strings that looked
+# interchangeable.
+
+def _proposal(source, population="bench", direction="LONG"):
+    from allocation.proposal import Proposal
+    return Proposal(symbol="X", framework="INTRADAY", product="MIS",
+                    entry=100.0, stop=99.0, target=103.0, quantity=10,
+                    source=source, native_rank=0.0, direction=direction,
+                    meta={"universe_population": population})
+
+
+def test_admitted_trades_do_not_move_the_established_prior():
+    """40 established ORB winners at +2R, 40 ADMITTED ORB losers at -2R.
+    Pre-fix (single pooled key) these average to ~0 and every proposal —
+    established or admitted — is scored on that wash. Post-fix, established
+    proposals must see ONLY their own +2R record."""
+    from allocation.scoring import intraday_priors
+    from allocation.allocator import Allocator
+
+    rows = ([_row("ORB", 2.0, "TAKEN", population="bench") for _ in range(40)]
+            + [_row("ORB", -2.0, "TAKEN", population="population_b") for _ in range(40)])
+    with cfg_ctx({"priors_min_sample_intraday": "30",
+                  "priors_intraday_taken_only": "true"}):
+        priors = intraday_priors(_SB(rows))
+        alloc = Allocator.__new__(Allocator)
+        alloc._priors = priors
+        established = alloc._prior_for(_proposal("ORB", population="bench"))
+
+    assert established.mean_r > 1.5, (
+        f"established ORB prior read {established.mean_r:+.3f} — the 40 "
+        f"admitted losers leaked into it")
+    assert established.key == "INTRADAY/ORB"
+
+
+def test_admitted_trades_get_their_own_prior_not_the_established_one():
+    """The other half: an admitted proposal must see the ADMITTED record,
+    not established's, even though established has plenty of history."""
+    from allocation.scoring import intraday_priors
+    from allocation.allocator import Allocator
+
+    rows = ([_row("ORB", 2.0, "TAKEN", population="bench") for _ in range(40)]
+            + [_row("ORB", -2.0, "TAKEN", population="population_b") for _ in range(40)])
+    with cfg_ctx({"priors_min_sample_intraday": "30",
+                  "priors_intraday_taken_only": "true"}):
+        priors = intraday_priors(_SB(rows))
+        alloc = Allocator.__new__(Allocator)
+        alloc._priors = priors
+        admitted = alloc._prior_for(_proposal("ORB", population="population_b"))
+
+    assert admitted.mean_r < -1.5, (
+        f"admitted ORB prior read {admitted.mean_r:+.3f} — it borrowed "
+        f"established's +2R record instead of its own -2R one")
+    assert admitted.key == "INTRADAY/ORB/ADMITTED"
+
+
+def test_an_admitted_proposal_with_no_admitted_history_reaches_neutral_not_established():
+    """Cold start must stay permissive (this module's own rule), but it must
+    ALSO stay isolated: an admitted engine with zero admitted-population
+    samples must not silently inherit established's prior, however good it
+    is — that is the exact contamination this split exists to prevent, one
+    step removed."""
+    from allocation.scoring import intraday_priors
+    from allocation.allocator import Allocator
+
+    rows = [_row("ORB", 2.0, "TAKEN", population="bench") for _ in range(40)]
+    with cfg_ctx({"priors_min_sample_intraday": "30",
+                  "priors_intraday_taken_only": "true"}):
+        priors = intraday_priors(_SB(rows))
+        alloc = Allocator.__new__(Allocator)
+        alloc._priors = priors
+        admitted = alloc._prior_for(_proposal("ORB", population="population_c_kite"))
+
+    assert admitted.mean_r == 0.0, (
+        f"admitted ORB prior read {admitted.mean_r:+.3f}, not neutral — it "
+        f"must have borrowed established's record with no admitted "
+        f"observations of its own")
+    assert admitted.key == "INTRADAY/NONE/ADMITTED", (
+        f"got {admitted.key!r} — must be the ADMITTED cold-start key, not "
+        f"a borrowed established one")
+
+
+def test_admitted_short_isolated_from_admitted_long_and_from_established():
+    """Three populations that must never average together: established
+    long, admitted long, admitted short."""
+    from allocation.scoring import intraday_priors
+    from allocation.allocator import Allocator
+
+    rows = ([_row("SDN", 2.0, "TAKEN", population="bench") for _ in range(40)]
+            + [_row("SDN", -1.0, "TAKEN", direction="SHORT", population="population_b")
+              for _ in range(40)])
+    with cfg_ctx({"priors_min_sample_intraday": "30",
+                  "priors_intraday_taken_only": "true"}):
+        priors = intraday_priors(_SB(rows))
+        alloc = Allocator.__new__(Allocator)
+        alloc._priors = priors
+        admitted_short = alloc._prior_for(
+            _proposal("SDN", population="population_b", direction="SHORT"))
+
+    assert admitted_short.mean_r < 0, (
+        f"admitted SHORT prior read {admitted_short.mean_r:+.3f} — did not "
+        f"find its own -1R record")
+    assert admitted_short.key == "INTRADAY/SDN/ADMITTED/SHORT"
+
+
+def test_population_class_defaults_absent_meta_to_established():
+    """A row with no `meta` at all (every row written before this stage, or
+    any non-intraday path) must classify as established, not admitted — the
+    split must be additive, never silently reclassifying old data."""
+    from allocation.scoring import _population_class
+    assert _population_class({"strategy": "ORB"}) == "established"
+
+
+def test_population_class_reads_meta_stored_as_a_json_string():
+    """Same defensive read _engine_of() needs, per its own 20-Aug docstring
+    finding: meta stored as a JSON string, not object, in some historical
+    rows."""
+    from allocation.scoring import _population_class
+    import json as _json
+    row = {"meta": _json.dumps({"universe_population": "population_c_ipo"})}
+    assert _population_class(row) == "admitted"
+
+
 def test_the_cost_is_charged_once_not_twice():
     """`outcomes.resolve_day` writes outcome_pct ALREADY NET of the round trip
     (`pct - cost`), and `score()` then subtracts the identical quantity again as
@@ -285,6 +421,18 @@ TESTS = [
      test_the_short_book_fallback_is_gated_too),
     ("longs and shorts still never pool together",
      test_longs_and_shorts_still_never_pool_together),
+    ("admitted trades do not move the established prior",
+     test_admitted_trades_do_not_move_the_established_prior),
+    ("admitted trades get their own prior, not the established one",
+     test_admitted_trades_get_their_own_prior_not_the_established_one),
+    ("an admitted proposal with no admitted history reaches neutral, not established",
+     test_an_admitted_proposal_with_no_admitted_history_reaches_neutral_not_established),
+    ("admitted short isolated from admitted long and from established",
+     test_admitted_short_isolated_from_admitted_long_and_from_established),
+    ("population_class defaults absent meta to established",
+     test_population_class_defaults_absent_meta_to_established),
+    ("population_class reads meta stored as a JSON string",
+     test_population_class_reads_meta_stored_as_a_json_string),
 ]
 
 

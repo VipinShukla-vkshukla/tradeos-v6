@@ -198,6 +198,11 @@ def from_intraday(setup, quantity: int, product: str = "MIS") -> Proposal | None
             "sub_engine":  (setup.meta or {}).get("sub_engine") or setup.strategy,
             "rationale":   getattr(setup, "rationale", ""),
             "phase":       (setup.meta or {}).get("phase"),
+            # Stage D2h, 24-Aug-2026 -- threaded through so Allocator.
+            # _prior_for() can price a live-admitted (Population B/C) name
+            # on its own evidence instead of the established bench's. See
+            # allocation/scoring.py's "ESTABLISHED VS ADMITTED" section.
+            "universe_population": (setup.meta or {}).get("universe_population") or "bench",
         },
     )
     return p if p.coherent else None

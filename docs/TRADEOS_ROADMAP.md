@@ -675,6 +675,28 @@ Kite diff cannot offer. Fixed with `kite_client.py::is_etf_name()` (the
 symbol_baseline` — an ETF is seeded once, same as before, just never
 reported as a "new listing". F-60 (docs/FINDINGS.md) has the full detail.
 
+**Stage D2h, 24-Aug-2026 — is the ~270-name universe actually SAFE to
+pick from, not just wide?** The operator's own question, dispatched to a
+dedicated audit rather than answered from memory. Good news: the 7
+engines do not misread Population B/C's missing history as zero —
+missing ATR/volume-average fall back to fixed assumptions or disable a
+check, never corrupt one, and no engine sizes a stop off ATR at all.
+Three real gaps found and closed: **sizing** was flat regardless of
+liquidity (`analysis/overlays.py::liquidity_capped_budget()`, reusing
+`liquidity_ok()`'s own math to size a thin name down instead of refusing
+it outright — which also fixed an incidental finding, `ctx.value_cr`
+permanently `None` for Population B/C, meaning `liquidity_ok()` would
+have refused every one of them regardless); **paper slippage** was flat
+regardless of liquidity (`execution/paper_broker.py::_slippage_pct()`,
+optional `value_cr`, 3x default below a 25cr threshold, `None` preserves
+every pre-existing call site exactly); and **priors were unsegmented**
+— `allocation/scoring.py` now splits established from admitted by `meta.
+universe_population` (byte-identical core arithmetic, unchanged, called
+once per population), `allocation/allocator.py::_prior_for()` gained a
+parallel admitted ladder that never borrows established's numbers,
+verified through the real `Allocator` lookup, not the key-builder alone.
+19 new tests. F-61 (docs/FINDINGS.md) has the full detail.
+
 **Gate D2:** a live demonstration — a name outside yesterday's bench that
 moved hard today gets admitted mid-session, logged with which population
 admitted it (A/B/C), and resolved the same way every other detection is.

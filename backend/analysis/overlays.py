@@ -290,3 +290,33 @@ def liquidity_ok(stock: dict, planned_value: float,
         return False, (f"ATR {atr:.1f}% suggests a band-limited or gap-prone name — "
                        f"a stop cannot be relied on to fill near its level")
     return True, f"Rs {value_cr:.1f} cr daily value, position is {share:.3%} of it"
+
+
+def liquidity_capped_budget(value_cr: float | None, budget: float) -> float:
+    """
+    Caps `budget` to `overlay_max_share_of_daily_value` of the name's OWN
+    daily traded value, sized DOWN before a position is built rather than
+    computed at a flat fraction of capital and refused outright afterward
+    by `liquidity_ok()` above. Stage D2h, 24-Aug-2026 — found while
+    auditing Track D's widened intraday universe: `intraday_max_position_
+    pct` is one flat fraction of capital, identical whether the name is
+    RELIANCE or one Population B/C just admitted with no trading history
+    at all. Reuses `liquidity_ok()`'s OWN math — the SAME quantity this
+    module already computes, not a second, competing one — so a thin name
+    gets right-sized instead of all-or-nothing.
+
+    Returns `budget` UNCHANGED when `value_cr` is None/0/negative or the
+    gate is disabled. That is deliberate, not an oversight: a position
+    cannot be sized down out of "no liquidity data at all" or "below the
+    absolute floor" (`overlay_min_daily_value_cr`) — those stay exactly
+    what `liquidity_ok()` already treats them as, a hard refusal, because
+    a smaller position in a name with NO data is still a bet on data that
+    does not exist.
+    """
+    if not cfg_bool("overlay_liquidity_enabled", False):
+        return budget
+    value_cr = float(value_cr or 0)
+    if value_cr <= 0:
+        return budget
+    max_share = cfg_float("overlay_max_share_of_daily_value", 0.005)
+    return min(budget, value_cr * 1e7 * max_share)

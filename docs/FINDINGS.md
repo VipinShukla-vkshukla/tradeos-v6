@@ -11552,3 +11552,140 @@ guarantees, which is the answer to the operator's own "why do we need
 both" question. Both live-requalify switches remain `false`, unchanged
 this session. On `feat/intraday-live-universe`, not merged — Gate D2
 remains the operator's own sign-off.
+
+## 2026-08-24 — F-61 (new, three real fixes shipped) — Stage D2h: is the
+~270-name universe actually SAFE to pick from, not just wide — audited,
+three real gaps found and closed, none of them assumed away
+
+**Ran:** `tools.verify` (852 checks, 82 modules, green — 19 more than
+F-60's 833), `tools.health` clean, every isolation property demonstrated
+through the REAL consumer (`Allocator._prior_for()`, `simulate_fill()`),
+not asserted from the key-builder alone.
+
+### 1 — THE QUESTION
+
+The operator's own follow-up, after F-60 closed the ETF gap: now that
+intraday's watched universe has grown to ~270 names spanning IPOs, small
+caps and large/mid caps, are the mechanisms that actually PICK a trade
+from that pool built for it — or only for the ~40-120 indicator-rich
+names it used to be? Dispatched to a dedicated audit (6 numbered
+questions: do the 7 engines misread Population B/C's missing history;
+does sizing scale with liquidity; does the paper broker model worse
+slippage for thin names; do priors segment by population; do engines
+need history a fresh IPO lacks; is anything treated more cautiously
+post-admission) rather than answered from memory.
+
+### 2 — WHAT THE AUDIT FOUND, VERIFIED AGAINST THE LIVE CONFIG
+
+Good news first: the 7 engines do NOT misread missing history as zero —
+a missing ATR falls back to a fixed 2.0%/1.5% assumption, a missing
+volume average disables (not corrupts) the volume-confirmation check,
+and no engine sizes a stop off ATR at all (`risk_from_structure()` uses
+structural price levels exclusively). Nothing crashes, nothing computes
+garbage.
+
+Three real, unaddressed gaps, confirmed rather than inferred:
+
+1. **Position sizing was flat** — `intraday_max_position_pct`, the same
+   fraction of capital for RELIANCE and a 5-day IPO alike.
+2. **Paper slippage was flat** — one `cost_slippage_bps` figure for
+   every symbol, so Population B/C's paper P&L (the population least
+   liquid, needing the MOST caution) would read more optimistic than a
+   real fill in those names would achieve.
+3. **Priors were unsegmented** — `_engine_of()`'s grouping had no
+   population axis, so a noisy run of newly-admitted trades on one
+   engine would move that engine's mean R for every established
+   proposal too — the same "borrowed from a neighbouring class" failure
+   this module's own SHORT/LONG split already exists to forbid, on a
+   different axis.
+
+One incidental finding, checked against the live `system_config` table
+rather than left as a static-analysis guess: `ctx.value_cr` was
+permanently `None` for any Population B/C name (no `stock_data_daily`
+row to source it from), and `overlay_liquidity_strict=true` (confirmed
+live) meant `liquidity_ok()` would refuse EVERY one of them outright —
+"no traded-value data — cannot confirm an exit is possible". Today this
+happens to double as a safety net (nothing armed can size a position at
+all), but it also meant the widened universe would not have actually
+DONE anything yet even with both switches armed, until fixed.
+
+### 3 — THREE FIXES, EACH REUSING AN EXISTING MECHANISM RATHER THAN
+INVENTING A NEW ONE
+
+**Sizing.** New `analysis/overlays.py::liquidity_capped_budget()` reuses
+`liquidity_ok()`'s OWN math (a position's share of the name's daily
+traded value) to cap the budget BEFORE quantity is computed, instead of
+sizing flat and refusing outright afterward. A thin name is now sized
+DOWN to what it can absorb rather than all-or-nothing. Fixed the root
+cause of the incidental finding in the same pass:
+`intraday/engine.py::refresh_contexts()` now falls back to the bench's
+own live-admission-time `value_cr` (`scanner.UniverseEntry.value_cr`,
+real for anything `live_requalify()` has admitted) when `stock_data_
+daily` has no row — so Population B/C names are sizeable at all, not
+just sizeable-and-immediately-refused.
+
+**Slippage.** `execution/paper_broker.py::_slippage_pct()` gained an
+optional `value_cr` parameter (`None` preserves the exact prior flat
+behaviour — every pre-existing call site, including swing's own entry,
+is unaffected) that scales slippage up (`cost_slippage_thin_multiplier`,
+3x default) below a liquidity threshold (`cost_slippage_thin_threshold_
+cr`, 25cr default — matching `intraday_min_turnover_cr`'s own figure
+rather than inventing a second one). Threaded from `Setup.meta["value_
+cr"]` (stamped at detection, registry.py, mirroring the existing `atr_
+pct_daily` pattern exactly) through the intraday paper-entry call site.
+
+**Priors.** The most delicate of the three, given this exact module's
+own documented history of prior-key bugs (the 10-Aug prefix mismatch,
+the 16-Aug dedup-arithmetic fix, the taken-only inversion). Deliberately
+NOT rewritten in place — `_intraday_priors_from_rows()` was RENAMED to
+`_intraday_priors_single_population()`, byte-identical internals, and a
+new thin `_intraday_priors_from_rows()` wrapper splits rows by `meta.
+universe_population` (via `_population_class()`, same defensive JSON-
+string read `_engine_of()` already needs) and calls the unchanged
+function once per population, remapping the admitted call's keys with
+`/ADMITTED` inserted before any `/SHORT` suffix — mirroring exactly how
+this module already isolates SHORT from LONG. `Allocator._prior_for()`
+(allocator.py) gained a parallel ladder for an admitted proposal (`meta.
+universe_population` threaded through `Proposal.meta`, `allocation/
+proposal.py::from_intraday()`) that NEVER falls through to established's
+own numbers — ending at the same neutral cold-start distribution the
+rest of the ladder ends at, exactly the same isolation the SHORT ladder
+already enforces for direction, just on a new axis.
+
+A real bug caught before it ever ran: the first version of the key-remap
+rebuilt `Prior` objects field-by-field, silently dropping `median_r`/
+`stderr`/`p10`/`p90`/`trigger_rate`/`below_floor` (the dataclass has more
+fields than `mean_r`/`n`/`note`) and passing `usable` as a constructor
+argument — it is a read-only `@property`, not a field. Fixed with
+`dataclasses.replace()`, which copies every field except the one named.
+
+### 4 — VERIFIED THROUGH THE ACTUAL CONSUMER, NOT THE KEY-BUILDER
+
+19 new offline tests. The population-isolation claim specifically is
+tested by building `Allocator._prior_for()` calls, not by inspecting
+`intraday_priors()`'s output dict — same discipline this file's own
+`test_the_prior_dict_is_keyed_the_way_the_allocator_looks_it_up` already
+established, for the same reason (the 10-Aug bug was two strings that
+looked interchangeable). Demonstrated the isolation test actually
+detects a regression, not just passing trivially: patched `_population_
+class` to always return "established" (simulating the split disabled)
+and confirmed the admitted-proposal test fails — it degrades to the
+neutral cold-start prior rather than silently reading established's
+positive one, because `Allocator._prior_for()`'s own admitted-ladder
+isolation is a second, independent backstop even when scoring.py's
+classification is wrong.
+
+### 5 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+Priors for Population B/C's OWN engines start at zero samples the day
+the switches are armed — correctly cold-start-permissive (neutral, not
+punitive), per this project's own hard-won rule, but genuinely unproven
+until real admitted trades accumulate; this fix does not and cannot
+manufacture that history early. Sizing and slippage changes apply
+uniformly by liquidity, not by population label specifically — an
+established name that happens to be thin gets the same treatment,
+which is correct (the real question was always liquidity, not which
+population found the name) but worth naming as a broader effect than
+"only Population B/C changed". Both live-requalify switches remain
+`false`, unchanged this session. On `feat/intraday-live-universe`, not
+merged — Gate D2 remains the operator's own sign-off.

@@ -99,6 +99,20 @@ class UniverseEntry:
     # elapsed session time to ask "is TODAY'S volume unusual". 0.0 (not None)
     # when absent, so downstream arithmetic never has to special-case a NULL.
     avg_vol_20d: float = 0.0
+    # WHICH POPULATION ADMITTED THIS NAME — Stage D2h, 24-Aug-2026. "bench"
+    # (the default) is build_universe()'s own ~120-name daily population,
+    # vetted on real stock_data_daily indicators. Every wider-universe path
+    # this Track sets its own explicit value: "population_a" (movement-
+    # rejected, live-requalified — real historical ATR, just missed
+    # yesterday's band), "population_b" (nifty_total_market member, no
+    # stock_data_daily row at all), "population_c_kite" (never seen in
+    # Kite's dump before today) or "population_c_ipo" (NSE-confirmed
+    # recent IPO). Threaded through SymbolContext -> Setup.meta ->
+    # Proposal.meta so scoring.py can price bench-native and admitted
+    # names on separate evidence — see allocation/scoring.py's own
+    # "ESTABLISHED VS ADMITTED" section for why this exists and what it
+    # does and does not do yet.
+    source: str = "bench"
 
 
 def _latest_date(sb) -> str | None:
@@ -491,6 +505,7 @@ def movement_rejected_candidates(sb=None, exclude: set[str] | None = None
             sector=r.get("sector") or "", score=0.0,
             reason=f"yesterday ATR {atr:.2f}% missed the {min_atr:.2f}-{max_atr:.2f}% band",
             avg_vol_20d=float(r.get("avg_vol_20d") or 0),
+            source="population_a",
         ))
     return out
 
@@ -558,6 +573,7 @@ def live_requalify(candidates: list[UniverseEntry], quotes: dict[str, dict],
             reason=(f"LIVE REQUALIFIED: {today_move_pct:.2f}% move, "
                    f"₹{today_turnover_cr:.0f}cr today ({c.reason})"),
             avg_vol_20d=c.avg_vol_20d,
+            source=c.source,   # carried through, not reset — the candidate's OWN population
         ))
     return out
 
@@ -795,6 +811,7 @@ def recent_ipo_candidates(sb=None, exclude: set[str] | None = None
             sector="", score=0.0,
             reason=f"NSE-confirmed IPO, listed {r.get('listing_date')}",
             avg_vol_20d=0.0,
+            source="population_c_ipo",
         ))
     return out
 
@@ -865,6 +882,7 @@ def unreferenced_candidates(sb=None, exclude: set[str] | None = None
             sector=r.get("industry") or "", score=0.0,
             reason="not tracked in stock_data_daily — nifty_total_market member",
             avg_vol_20d=0.0,
+            source="population_b",
         ))
 
     try:
@@ -883,6 +901,7 @@ def unreferenced_candidates(sb=None, exclude: set[str] | None = None
             reason=("never seen in Kite's instrument master before today — "
                    "genuine new listing, not in stock_data_daily or nifty_total_market"),
             avg_vol_20d=0.0,
+            source="population_c_kite",
         ))
 
     try:
