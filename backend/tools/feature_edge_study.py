@@ -374,6 +374,37 @@ def _propose(sb, run_id: str, engine: str, found: dict,
         return False
 
 
+def _validation_outcome(current_value: str | None,
+                        fresh_favourable: bool | None) -> bool | None:
+    """
+    Pure. Does a fresh out-of-sample check CONFIRM the original finding's
+    direction? True/False, or None when the question cannot be answered
+    at all — which must never be silently read as False.
+
+    THE 23-Aug-2026 BUG THIS EXISTS TO NOT REPEAT. The inline version of
+    this compared `current_value == "favourable"` directly — so ANY other
+    value, including "unclear" (a genuine original no-opinion) and the
+    placeholder text every row written before F-50's direction field
+    existed still carried ("no feature-level filter"), read as an
+    explicit UNFAVOURABLE claim nobody had actually made. Confirmed live:
+    ORB/_hour_bucket/MID's real Aug-20 finding said MID was the GOOD side;
+    the fresh check agreed; the bug still emitted REJECTED, because a row
+    predating this field was read as if it had confidently claimed the
+    opposite. The same "no opinion must not read as measured bad" mistake
+    this project's own priors have made before, one layer up, here in the
+    validator itself.
+
+    `current_value` must be a REAL tag — "favourable" or "unfavourable",
+    nothing else — or this returns None (cannot validate, caller must
+    skip, never guess a direction).
+    """
+    if current_value not in ("favourable", "unfavourable"):
+        return None
+    if fresh_favourable is None:
+        return None
+    return fresh_favourable == (current_value == "favourable")
+
+
 def validate_pending(sb, min_segment: int = MIN_SEGMENT,
                      dry_run: bool = False) -> tuple[int, int, int]:
     """
@@ -432,9 +463,14 @@ def validate_pending(sb, min_segment: int = MIN_SEGMENT,
             skipped += 1
             continue
 
-        fresh_fav = is_favourable(match)
-        original_fav = r.get("current_value") == "favourable"
-        holds = fresh_fav is not None and fresh_fav == original_fav
+        # See _validation_outcome's own docstring for the 23-Aug bug this
+        # replaced — reading a pre-F-50 row's placeholder current_value
+        # as an explicit "unfavourable" claim nobody had made.
+        outcome = _validation_outcome(r.get("current_value"), is_favourable(match))
+        if outcome is None:
+            skipped += 1
+            continue
+        holds = outcome
         new_status = "VALIDATED" if holds else "REJECTED"
         logger.info(f"  {'✓ VALIDATED' if holds else '✗ REJECTED'} "
                    f"{r['target_key']}: {_evidence(engine, match)}")

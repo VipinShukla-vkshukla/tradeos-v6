@@ -10682,3 +10682,102 @@ quality for either of them.
 No code change. No engine's lifecycle state was touched. Logged here
 because Gate 3 requires the decision recorded, not because anything
 needed to move.
+
+
+## 2026-08-23 — F-53 (bug fix + data reset) — `validate_pending()` read a
+pre-F-50 proposal's placeholder `current_value` as an explicit
+"unfavourable" claim nobody made; one finding was already wrongly
+REJECTED live. Fixed the comparison, superseded the 42 contaminated
+legacy findings, regenerated 33 clean ones from the Aug-20 floor
+
+**Ran:** `tools.verify` (763 checks, 76 modules, green — 6 new),
+demonstrated failing before the fix landed, live `brain_proposals` audit
+before and after, `tools.feature_edge_study` run live with its own
+default (non-override) floor.
+
+### 1 — WHAT SURFACED IT
+
+Operator's own question: "should [feature-study learning] not also reset
+based on the prior date? I want a clean intraday and accurate
+calculations from the date we reset." Read as a preference at first;
+checking the live `brain_proposals` table before acting turned it into a
+confirmed bug report.
+
+### 2 — ROOT CAUSE
+
+The 42 `FEATURE_FILTER` findings written the night before last (F-44)
+used a deliberate one-off override, `--since 2026-08-11`, to get a first
+real look — explicitly flagged at the time as non-default, not the
+floor-respecting behaviour `main()` uses. F-50 (built later that same
+session) added a structured `current_value` field
+("favourable"/"unfavourable"/"unclear") that `_propose()` stamps on every
+NEW finding — but the 42 existing rows predate that field and still
+carried the old placeholder text, `"no feature-level filter"`.
+
+`validate_pending()`'s comparison was `r.get("current_value") ==
+"favourable"` — so any OTHER value, including the placeholder AND the
+genuine "unclear" no-opinion state, silently read as an explicit
+UNFAVOURABLE claim. Confirmed live, not assumed: `ORB/_hour_bucket/MID`'s
+real Aug-20 finding said MID was the GOOD side of the split; the fresh
+out-of-sample check agreed; `validate_pending()` still emitted REJECTED,
+because a row written before the field existed was read as if it had
+confidently claimed the opposite. Two other legacy rows (`ORB/_hour_
+bucket/OPEN`, `ORB/regime_at_detection/RISK_ON`) landed on VALIDATED by
+the same broken comparison, coincidentally correctly this time — the bug
+does not fail loudly, it is right or wrong depending on what the
+original, never-recorded direction happened to be.
+
+**Not live-money-facing.** `Allocator.refresh_priority_criteria()`
+separately filters `.eq("current_value", "favourable")`, so the two
+falsely-VALIDATED legacy rows (whose `current_value` was still the
+placeholder text, not literally `"favourable"`) were never actually
+reachable by the priority cache — the bug corrupted the ledger's record
+of what held up, not a live trading decision.
+
+### 3 — FIX
+
+Extracted the comparison into its own pure function, `_validation_outcome
+(current_value, fresh_favourable)`, returning `None` — "cannot validate",
+caller must skip — unless `current_value` is literally `"favourable"` or
+`"unfavourable"`. `validate_pending()` now skips (does not guess at) any
+row whose original direction was never actually recorded, instead of
+defaulting it to "unfavourable" by omission.
+
+**Data reset, not a silent purge.** The 42 legacy rows were not deleted —
+marked `status='SUPERSEDED'` with a `backtest_result` note explaining why,
+so the row and its history stay queryable but no longer interfere with
+`validate_pending()`, `refresh_priority_criteria()`, or `tradeos learn
+show` (all three already filter to `PENDING`/`VALIDATED` states that
+`SUPERSEDED` falls outside of — confirmed by reading each consumer's own
+query before relying on it). Ran `tools.feature_edge_study` fresh with no
+override, honouring its own default floor (`priors_intraday_since` =
+2026-08-20): **33 new findings**, every one correctly tagged `favourable`
+(17) or `unfavourable` (16) from creation — structurally compatible with
+`validate_pending()` from day one this time.
+
+### 4 — VERIFIED
+
+6 new offline checks in `tests/test_feature_edge_study.py`: directions
+that agree confirm, directions that disagree reject, the exact pre-F-50
+placeholder value returns "cannot validate" (not a guessed direction),
+`"unclear"` likewise, a fresh check that itself cannot decide a direction
+returns "cannot validate", and a direct regression pin on the real
+`ORB/_hour_bucket/MID` case (`_validation_outcome("no feature-level
+filter", True)` must be `None`, never a verdict). Demonstrated failing
+first — reverted the placeholder guard, watched 3 of the 6 new checks
+fail against the un-fixed comparison, restored the fix, re-ran green.
+`tools.verify`: 763 checks, 76 modules. Live: confirmed all 42 legacy
+rows reached `SUPERSEDED` (42 of 42, zero remaining as `PENDING`/
+`VALIDATED`/`REJECTED`), confirmed the 33 regenerated rows all carry a
+real `current_value` tag. `git status` confirms only `tools/feature_edge_
+study.py` and its test file changed — nothing under `swing/`, per the
+operator's explicit instruction this pass touch none of it.
+
+### 5 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+The 33 fresh findings are new PENDING proposals, same as any other —
+nothing acts on them until a future `validate_pending()` run checks them
+against data closed after today, same out-of-sample discipline as
+always. No change to `discover_engines.py` or `weekly_review.py`'s own
+proposal tables — this pass was scoped to `FEATURE_FILTER` rows only, the
+ones the operator's question was actually about.

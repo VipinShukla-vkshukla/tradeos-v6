@@ -195,6 +195,53 @@ def test_is_favourable_none_on_an_exact_tie():
     assert is_favourable(found) is None
 
 
+# ── _validation_outcome — F-50 fix, 23-Aug-2026 ─────────────────────────
+
+def test_validation_outcome_confirms_when_directions_agree():
+    from tools.feature_edge_study import _validation_outcome
+    assert _validation_outcome("favourable", True) is True
+    assert _validation_outcome("unfavourable", False) is True
+
+
+def test_validation_outcome_rejects_when_directions_disagree():
+    from tools.feature_edge_study import _validation_outcome
+    assert _validation_outcome("favourable", False) is False
+    assert _validation_outcome("unfavourable", True) is False
+
+
+def test_validation_outcome_is_none_for_a_pre_f50_placeholder_value():
+    """The exact live bug: a row written before F-50's direction field
+    existed carries the old placeholder text. Must be 'cannot validate',
+    never silently read as an explicit unfavourable claim."""
+    from tools.feature_edge_study import _validation_outcome
+    assert _validation_outcome("no feature-level filter", True) is None
+    assert _validation_outcome("no feature-level filter", False) is None
+
+
+def test_validation_outcome_is_none_for_unclear():
+    """'unclear' is a genuine original no-opinion (is_favourable returned
+    None when the finding was made) — not a value with a real direction
+    to check consistency against."""
+    from tools.feature_edge_study import _validation_outcome
+    assert _validation_outcome("unclear", True) is None
+    assert _validation_outcome("unclear", False) is None
+
+
+def test_validation_outcome_is_none_when_the_fresh_check_cannot_decide():
+    from tools.feature_edge_study import _validation_outcome
+    assert _validation_outcome("favourable", None) is None
+
+
+def test_validation_outcome_regression_orb_mid_would_now_validate_correctly():
+    """The literal live case: ORB/_hour_bucket/MID's original finding
+    predates F-50 (placeholder current_value), and its fresh check agreed
+    MID was the good side. The old inline comparison emitted REJECTED;
+    this must emit 'cannot validate' (None -> skipped), not a verdict at
+    all, since the original claim was never actually recorded."""
+    from tools.feature_edge_study import _validation_outcome
+    assert _validation_outcome("no feature-level filter", True) is None
+
+
 # ── target_key_for ───────────────────────────────────────────────────────
 
 def test_target_key_includes_category_so_categories_do_not_collide():
@@ -259,6 +306,12 @@ TESTS = [
     ("is_favourable falls back to mean_pct when win rate ties", test_is_favourable_falls_back_to_mean_pct_when_win_rate_ties),
     ("is_favourable is None when nothing can decide it", test_is_favourable_none_when_nothing_can_decide_it),
     ("is_favourable is None on an exact tie", test_is_favourable_none_on_an_exact_tie),
+    ("validation_outcome confirms when directions agree", test_validation_outcome_confirms_when_directions_agree),
+    ("validation_outcome rejects when directions disagree", test_validation_outcome_rejects_when_directions_disagree),
+    ("validation_outcome is None for a pre-F50 placeholder value", test_validation_outcome_is_none_for_a_pre_f50_placeholder_value),
+    ("validation_outcome is None for unclear", test_validation_outcome_is_none_for_unclear),
+    ("validation_outcome is None when the fresh check cannot decide", test_validation_outcome_is_none_when_the_fresh_check_cannot_decide),
+    ("validation_outcome regression: ORB/MID would now validate correctly", test_validation_outcome_regression_orb_mid_would_now_validate_correctly),
     ("target_key includes category so categories do not collide", test_target_key_includes_category_so_categories_do_not_collide),
     ("target_key for a numeric split has no category suffix", test_target_key_for_a_numeric_split_has_no_category_suffix),
     ("floor_since explicit override wins outright", test_floor_since_explicit_override_wins_outright),
