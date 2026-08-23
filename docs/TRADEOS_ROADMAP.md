@@ -660,6 +660,21 @@ candidates()` merges and dedupes both. Migration 103 drops the now-dead
 `get_raw_prices_first_seen` RPC and its config key — F-59 (docs/
 FINDINGS.md) has the full detail.
 
+**Stage D2g, 24-Aug-2026 — the Kite diff was letting ETFs through as
+"new listings".** The operator's own follow-up: why keep the Kite diff
+at all now that `ipo_listings` exists, and how is it avoiding noise like
+ETFs? Checked live rather than assumed: it was NOT avoiding them — Kite's
+`instrument_type` field reads `"EQ"` for NIFTYBEES/GOLDBEES exactly as
+for RELIANCE/MILKYMIST, and 294 real ETFs sit in the same "plain"
+universe real stocks do. This is also the precise, structural reason
+`ipo_listings` matters beyond same-day latency: ETFs list via NFO, never
+via IPO, so they cannot appear in that archive at all — a guarantee the
+Kite diff cannot offer. Fixed with `kite_client.py::is_etf_name()` (the
+`name` field, the one signal Kite's data has for this) filtering what
+`new_listings()` REPORTS, without changing what it records to `kite_
+symbol_baseline` — an ETF is seeded once, same as before, just never
+reported as a "new listing". F-60 (docs/FINDINGS.md) has the full detail.
+
 **Gate D2:** a live demonstration — a name outside yesterday's bench that
 moved hard today gets admitted mid-session, logged with which population
 admitted it (A/B/C), and resolved the same way every other detection is.

@@ -574,6 +574,38 @@ def test_new_listings_steady_state_reports_only_truly_new_symbols():
     assert out == {"TRULY_NEW"}
 
 
+def test_new_listings_excludes_a_new_etf_from_what_is_reported():
+    """Stage D2g, the operator's own question: does the Kite same-day
+    diff let a new ETF launch through as if it were a stock IPO? Without
+    this, yes — Kite's instrument_type field cannot tell NIFTYBEES from
+    RELIANCE (both "EQ"), confirmed live."""
+    from intraday.scanner import new_listings
+    _reset_scanner_caches()
+    sb = _TableRouter({"kite_symbol_baseline": [{"symbol": "OLD1"}]})
+    with patch("kite.kite_client.fetch_nse_eq_symbols",
+              return_value={"OLD1", "TRULY_NEW", "NEWETF"}), \
+         patch("kite.kite_client.is_etf_name",
+              side_effect=lambda s: s == "NEWETF"):
+        out = new_listings(sb)
+    assert out == {"TRULY_NEW"}
+
+
+def test_new_listings_seeds_a_new_etf_into_baseline_even_though_not_reported():
+    """Not reported today must not mean re-checked forever -- an ETF is
+    still recorded, so it is never re-evaluated on a later run either."""
+    from intraday.scanner import new_listings
+    _reset_scanner_caches()
+    sb = _TableRouter({"kite_symbol_baseline": [{"symbol": "OLD1"}]})
+    with patch("kite.kite_client.fetch_nse_eq_symbols",
+              return_value={"OLD1", "NEWETF"}), \
+         patch("kite.kite_client.is_etf_name",
+              side_effect=lambda s: s == "NEWETF"):
+        first = new_listings(sb)
+        second = new_listings(sb)
+    assert first == set()
+    assert second == set(), "NEWETF must not be re-evaluated on the next call either"
+
+
 def test_new_listings_previously_seen_symbol_never_reported_twice():
     """The other half of the mechanism: once a symbol has been recorded
     (by an earlier run, or earlier in THIS run via the in-process cache),
@@ -670,6 +702,8 @@ TESTS = [
     ("recent_ipo_candidates excludes a flagged symbol", test_recent_ipo_candidates_excludes_a_flagged_symbol),
     ("recent_ipo_candidates survives a read failure", test_recent_ipo_candidates_survives_a_read_failure),
     ("new_listings steady state reports only truly new symbols", test_new_listings_steady_state_reports_only_truly_new_symbols),
+    ("new_listings excludes a new ETF from what is reported", test_new_listings_excludes_a_new_etf_from_what_is_reported),
+    ("new_listings seeds a new ETF into baseline even though not reported", test_new_listings_seeds_a_new_etf_into_baseline_even_though_not_reported),
     ("new_listings previously seen symbol never reported twice", test_new_listings_previously_seen_symbol_never_reported_twice),
     ("new_listings empty live set returns empty without crashing", test_new_listings_empty_live_set_returns_empty_without_crashing),
     ("new_listings survives kite fetch raising", test_new_listings_survives_kite_fetch_raising),

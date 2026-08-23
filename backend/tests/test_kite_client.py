@@ -13,6 +13,47 @@ until this predicate existed on its own to test directly.
 from __future__ import annotations
 
 
+def _with_name_cache(names: dict[str, str]):
+    """Populates kite_client._instr_cache["names"] the way fetch_nse_eq_
+    symbols() would, without a live Kite session — is_etf_name() reads
+    only that cache, never calls Kite itself."""
+    import kite.kite_client as kc
+    kc._instr_cache["names"] = names
+
+
+def test_is_etf_name_true_for_a_known_etf():
+    """Stage D2g, 24-Aug-2026 — the operator's own question: does the
+    Kite same-day diff let a new ETF through as if it were a stock IPO?
+    Checked live: Kite's instrument_type is "EQ" for NIFTYBEES exactly
+    as it is for RELIANCE — name is the only field that tells them apart."""
+    from kite.kite_client import is_etf_name
+    _with_name_cache({"NIFTYBEES": "NIPPON INDIA ETF NIFTY 50 BEES"})
+    assert is_etf_name("NIFTYBEES") is True
+
+
+def test_is_etf_name_false_for_a_real_stock():
+    from kite.kite_client import is_etf_name
+    _with_name_cache({"RELIANCE": "RELIANCE INDUSTRIES", "MILKYMIST": "MILKY MIST DAIRY FOOD L"})
+    assert is_etf_name("RELIANCE") is False
+    assert is_etf_name("MILKYMIST") is False
+
+
+def test_is_etf_name_false_for_a_symbol_not_in_the_cache():
+    """Advisory only — a symbol the cache has never seen must not be
+    treated as an ETF by default (that would silently drop it from
+    being reported as new, the opposite of this project's cold-start
+    rule: absence must not be read as a negative)."""
+    from kite.kite_client import is_etf_name
+    _with_name_cache({})
+    assert is_etf_name("UNKNOWN") is False
+
+
+def test_is_etf_name_case_insensitive():
+    from kite.kite_client import is_etf_name
+    _with_name_cache({"SOMEFUND": "some lowercase etf name"})
+    assert is_etf_name("SOMEFUND") is True
+
+
 def test_is_mainboard_symbol_accepts_a_plain_equity():
     from kite.kite_client import _is_mainboard_symbol
     assert _is_mainboard_symbol("RELIANCE") is True
@@ -65,6 +106,10 @@ def test_is_mainboard_symbol_does_not_reject_a_name_that_merely_contains_inav():
 
 
 TESTS = [
+    ("is_etf_name true for a known ETF", test_is_etf_name_true_for_a_known_etf),
+    ("is_etf_name false for a real stock", test_is_etf_name_false_for_a_real_stock),
+    ("is_etf_name false for a symbol not in the cache", test_is_etf_name_false_for_a_symbol_not_in_the_cache),
+    ("is_etf_name case insensitive", test_is_etf_name_case_insensitive),
     ("is_mainboard_symbol accepts a plain equity", test_is_mainboard_symbol_accepts_a_plain_equity),
     ("is_mainboard_symbol accepts a plain etf", test_is_mainboard_symbol_accepts_a_plain_etf),
     ("is_mainboard_symbol rejects bond/SDL suffix", test_is_mainboard_symbol_rejects_bond_sdl_suffix),

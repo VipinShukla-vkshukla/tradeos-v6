@@ -646,6 +646,19 @@ def new_listings(sb=None) -> set[str]:
     absent from every prior baseline IS a genuine first sighting; today
     or any day forward, this half needs no other source.
 
+    ETFs EXCLUDED FROM WHAT IS REPORTED, Stage D2g, 24-Aug-2026 — the
+    operator's own question: does this diff let a new ETF launch through
+    as if it were a stock IPO? Checked, not assumed: yes — Kite's
+    `instrument_type` field is `"EQ"` for NIFTYBEES/GOLDBEES exactly as
+    it is for RELIANCE/MILKYMIST; nothing in `fetch_nse_eq_symbols()`'s
+    own filter can tell them apart (294 existing ETFs confirmed live
+    sitting in the same "plain" universe real stocks do). `kite_client.
+    is_etf_name()` — the one signal Kite's data offers, its `name` field
+    read for the substring "ETF" — filters what gets RETURNED here; a
+    symbol is still recorded in the baseline either way, so a new ETF is
+    never re-evaluated tomorrow, it just is not reported as a "new
+    listing" today.
+
     BOOTSTRAP (empty baseline table) seeds the entire current universe as
     already-known and reports NOTHING — there is no listing history yet
     to diff against. Stage D2e/f, 23/24-Aug-2026 tried to make this
@@ -709,7 +722,19 @@ def new_listings(sb=None) -> set[str]:
     if fresh:
         _seed_baseline(sb, fresh)
         _baseline_cache["symbols"] = known | fresh
-    return fresh
+
+    # ETFs excluded from what gets REPORTED, not from what gets seeded —
+    # Stage D2g, 24-Aug-2026, the operator's own question: does this diff
+    # let a new ETF launch through as if it were a stock IPO? Checked,
+    # not assumed: yes, it did — Kite's own instrument_type field cannot
+    # tell NIFTYBEES from RELIANCE (both "EQ"), confirmed live. is_etf_
+    # name() is the one signal available (Kite's `name` field), text-
+    # based, imperfect, but real. A symbol still gets recorded in the
+    # baseline either way, so it is never re-evaluated tomorrow.
+    if not fresh:
+        return fresh
+    from kite.kite_client import is_etf_name
+    return {sym for sym in fresh if not is_etf_name(sym)}
 
 
 def recent_ipo_candidates(sb=None, exclude: set[str] | None = None

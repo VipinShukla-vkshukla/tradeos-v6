@@ -11471,3 +11471,84 @@ this if SME-board intraday coverage is ever wanted, not assumed needed
 now. Both live-requalify switches remain `false`, unchanged this
 session. On `feat/intraday-live-universe`, not merged — Gate D2 remains
 the operator's own sign-off.
+
+## 2026-08-24 — F-60 (new, real gap closed) — Stage D2g: the Kite
+same-day diff was letting ETF launches through as "new listings" — the
+operator's own question, checked live rather than assumed answered by
+F-59
+
+**Ran:** `tools.verify` (832 checks, 80 modules, green — 6 more than
+F-59's 826), `tools.health` clean, live checks against production
+before writing any code.
+
+### 1 — THE QUESTION
+
+Immediately after F-59, the operator asked two things: why keep the
+Kite same-day diff at all now that `ipo_listings` exists, and — sharper
+— how is that diff avoiding noise like ETFs and surfacing purely real
+newly-listed stocks? The honest answer required checking, not asserting
+the design was already sound.
+
+### 2 — WHAT WAS FOUND: IT WAS NOT AVOIDING THEM
+
+Checked live: `kite.instruments("NSE")`'s own `instrument_type` field
+reads `"EQ"` for NIFTYBEES and GOLDBEES (both ETFs) exactly as it does
+for RELIANCE and MILKYMIST. Nothing in `fetch_nse_eq_symbols()`'s
+existing filter (suffix pattern, INAV exclusion) can tell an ETF from a
+stock — Kite's structured data carries no field for that distinction at
+all. Counted: **294 ETFs** currently sit in the same 2,636-symbol "plain
+mainboard" universe real stocks occupy. Every one is harmlessly already
+in `kite_symbol_baseline` from F-57's original bootstrap, but a NEW ETF
+launch tomorrow would have been diffed and reported by `new_listings()`
+exactly like a genuine stock IPO — this was a real, live gap, not a
+hypothetical one, sitting in code already on this branch.
+
+### 3 — WHY `ipo_listings` DOES NOT HAVE THIS PROBLEM, CHECKED NOT
+ASSUMED
+
+Queried the 1,359-row archive for anything ETF-like: two hits, both
+false alarms on inspection — `SBIFUNDS` (SBI Funds Management Limited,
+the asset-management COMPANY's own equity IPO, correctly `EQ`) and
+`IRBINVIT` (an InvIT, correctly `security_type='IV'`, already excluded
+by `recent_ipo_candidates()`'s own `EQ`-only filter). Zero true ETFs.
+This is structural, not incidental: ETFs list on NSE via an NFO (New
+Fund Offer), a completely different mechanism from an IPO, so they can
+never appear in an IPO archive at all — this is the actual reason
+`ipo_listings` is the source that answers "genuine new listing"
+precisely, and the Kite diff, however useful for same-day latency,
+cannot.
+
+### 4 — THE FIX
+
+`kite_client.py`: `_instr_cache` now also caches each symbol's Kite
+`name` (already being fetched, previously discarded) alongside the
+existing symbol set — no extra API call. New `is_etf_name(symbol)`:
+the one signal Kite's data offers, a text check for "ETF" in that
+`name` field. Not perfect (text-based), but real, and the only field
+that distinguishes NIPPON INDIA ETF NIFTY 50 BEES from RELIANCE
+INDUSTRIES at all.
+
+`scanner.py::new_listings()`: filters `is_etf_name()` hits OUT of what
+gets REPORTED as new — but a filtered-out ETF is still written to
+`kite_symbol_baseline` exactly as before, so it is recorded once and
+never re-evaluated on a later run either; only reporting changes, not
+bookkeeping. Live-verified: `NIFTYBEES`/`GOLDBEES` correctly classified
+`True`, `RELIANCE`/`MILKYMIST` correctly `False`.
+
+6 new offline tests (4 for `is_etf_name()` in `test_kite_client.py`,
+covering the exact NIFTYBEES-vs-RELIANCE case plus the "unknown symbol
+defaults to not-ETF, not silently dropped" cold-start rule this project
+applies everywhere; 2 for `new_listings()`'s reporting-vs-seeding split
+in `test_scanner_live_requalify.py`).
+
+### 5 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+The ETF check is text-based against Kite's `name` field — an ETF whose
+name happens not to contain the literal substring "ETF" (uncommon on
+NSE, not verified to be impossible) would still pass through
+unfiltered; `recent_ipo_candidates()`'s structural exclusion (ETFs
+cannot appear in an IPO archive at all) remains the stronger of the two
+guarantees, which is the answer to the operator's own "why do we need
+both" question. Both live-requalify switches remain `false`, unchanged
+this session. On `feat/intraday-live-universe`, not merged — Gate D2
+remains the operator's own sign-off.

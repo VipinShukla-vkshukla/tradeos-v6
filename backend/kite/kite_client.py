@@ -297,7 +297,10 @@ def is_available() -> bool:
 # Module-level, single-process cache — Kite's own docs say this dump is
 # "generated once every day", so re-fetching it more than once per date is
 # pure waste (several hundred KB, tens of thousands of rows, one call).
-_instr_cache: dict = {"date": None, "symbols": None}
+# `names` (symbol -> Kite's own `name` field) rides along on the SAME
+# fetch, added 24-Aug-2026 (Stage D2g) — `is_etf_name()` below needs it
+# and there is no reason to fetch instruments() a second time to get it.
+_instr_cache: dict = {"date": None, "symbols": None, "names": None}
 
 
 # Matches the suffix Kite appends to a non-mainboard NSE cash instrument:
@@ -387,10 +390,35 @@ def fetch_nse_eq_symbols() -> set[str]:
         return set()
     try:
         rows = kite.instruments("NSE") or []
-        symbols = {r["tradingsymbol"] for r in rows
-                  if r.get("segment") == "NSE" and _is_mainboard_symbol(r.get("tradingsymbol"))}
-        _instr_cache["date"], _instr_cache["symbols"] = today, symbols
+        mainboard = [r for r in rows
+                    if r.get("segment") == "NSE" and _is_mainboard_symbol(r.get("tradingsymbol"))]
+        symbols = {r["tradingsymbol"] for r in mainboard}
+        names = {r["tradingsymbol"]: r.get("name") or "" for r in mainboard}
+        _instr_cache["date"], _instr_cache["symbols"], _instr_cache["names"] = today, symbols, names
         return symbols
     except Exception as e:
         logger.warning(f"  Kite instrument master fetch failed: {e}")
         return set()
+
+
+def is_etf_name(symbol: str) -> bool:
+    """
+    True when `symbol`'s Kite instrument `name` reads as an ETF — the
+    ONE signal available for this, found live 24-Aug-2026 (Stage D2g)
+    answering the operator's own question: does the Kite same-day diff
+    (`scanner.py::new_listings()`) let ETF launches through as if they
+    were stock IPOs? Checked, not assumed: Kite's `instrument_type` field
+    is `"EQ"` for NIFTYBEES and GOLDBEES exactly as it is for RELIANCE
+    and MILKYMIST — no structural field distinguishes them. `name` is
+    the only place the distinction shows ("NIPPON INDIA ETF NIFTY 50
+    BEES" vs "RELIANCE INDUSTRIES"); text-based, not perfect, but the
+    only signal Kite's own data offers.
+
+    Requires `fetch_nse_eq_symbols()` to have populated the name cache
+    already this session (it always has, by the time a caller has a
+    symbol to check — that symbol came FROM this same fetch). Returns
+    False, not an error, for a symbol the cache has not seen — advisory
+    only, same contract as every other function in this module.
+    """
+    name = (_instr_cache.get("names") or {}).get(symbol, "")
+    return "ETF" in name.upper()
