@@ -10781,3 +10781,173 @@ against data closed after today, same out-of-sample discipline as
 always. No change to `discover_engines.py` or `weekly_review.py`'s own
 proposal tables — this pass was scoped to `FEATURE_FILTER` rows only, the
 ones the operator's question was actually about.
+
+## 2026-08-24 — F-54 (new mechanism built + a real gate bug caught before
+shipping) — Stage D4: execution-quality depth gate. Branch
+`feat/intraday-depth-gate`, off `main` — NOTE: `feat/intraday-event-core`
+(Stage D3) and `feat/intraday-live-universe` (Stage D2) each independently
+continue this same ledger from their own F-54 onward, unmerged. Same
+convention as the note on D3's own F-54 above: each branch's sequence is
+internally consistent, not globally unique, until the branches merge.
+
+**Ran:** `tools.verify` — 790 checks, 79 modules, green (main's own 763
+plus 27 new). `tools.health` clean, 24/24. `tools.simulate` clean, no
+regression (session CLOSED at run time, so the entry path was exercised
+but nothing fired to reach the new gate).
+
+### 1 — WHAT THIS ADDRESSES
+
+`docs/TRADEOS_ROADMAP.md`, Track D, Stage D4: "a sanity gate at the
+moment of an already-decided entry — refuse or flag when the spread is
+abnormally wide relative to the stock's own norm, or resting depth cannot
+absorb the intended quantity without material slippage. Not prediction,
+protection — same shape as the existing `BLOCKED_LIQUIDITY`/
+`BLOCKED_STRUCTURE` gates, one more row in the same table."
+
+### 2 — SCOPE DECISION: FULL MODE ON context_symbols() ONLY, NOT THE BENCH
+
+Verified live (23-Aug-2026) rather than assumed: Kite's 3,000-instrument
+per-connection subscription ceiling applies uniformly across LTP/QUOTE/
+FULL — there is no separate, stricter cap for FULL mode. FULL mode is
+still scoped to `context_symbols()` (positions ∪ the live universe,
+~40-120 names) rather than the whole ~270-name bench for bandwidth, not
+subscription count: `price_feed.py`'s own existing comment already named
+"large bandwidth cost" as the reason FULL mode was never requested for
+everyone, and only `context_symbols()` can ever actually generate an
+entry decision — the engines only evaluate `self._contexts`, built from
+that same set.
+
+### 3 — DESIGN: DEPTH FLOWS THROUGH SymbolContext, NOT A THREADED PARAMETER
+
+`evaluate_intraday_setups()` does not receive `feed` in its own
+signature, and this codebase's established pattern for handing a live
+value to the engines is "carry it on the context, never call across"
+(the same shape `quote()`/`apply_live_quotes()` already use for
+day-range/VWAP). `SymbolContext.depth: dict | None = None` follows that
+precedent instead of adding a new parameter path.
+
+### 4 — TWO REAL BUGS, BOTH CAUGHT BEFORE SHIPPING ARMED
+
+**a) A capture that could not capture.** `on_ticks()`'s depth-capture
+block was originally written AFTER `if not self._capture_quote:
+continue`. `_capture_quote` is `intraday_quote_mode_range OR
+intraday_quote_mode_vwap` — a switch about OHLC/VWAP overlay that has
+nothing to do with FULL mode. Left as written, arming
+`intraday_depth_mode_enabled` alone would have put a symbol into FULL
+mode, real depth-carrying ticks would have arrived from Kite, and the
+handler would still never have stored one into `self._depth` unless an
+unrelated quote-capture switch also happened to be on. Fixed by moving
+the depth-capture block above the `_capture_quote` gate, unconditional
+like the `bars.record_tick()` call beside it.
+
+**b) A gate that could not gate — found while moving this work onto its
+own branch, before anything was committed.** `set_depth_symbols()` had NO
+config check of its own; `run.py`'s slow-timer call to it was
+unconditional. That means arming nothing at all — `intraday_depth_mode_
+enabled` left at its shipped `false` — would still have put every
+`context_symbols()` name into REAL Kite FULL mode on every daemon cycle,
+the moment this code ran. Migration 107's own comment describes both
+switches as "ships FALSE... pure capture, nothing changes downstream by
+itself" — that claim was false for the first version of this code. Fixed
+by checking `intraday_depth_mode_enabled` inside `set_depth_symbols()`
+itself (not only at the call site, so no future caller can reintroduce
+the gap), and by treating a disabled switch as "the desired depth set is
+empty" rather than an early return — the same revert-to-baseline path
+already used for a symbol dropped from `context_symbols()` now also
+un-asks for depth if the switch is turned off mid-session, not just
+refuses new asks. Both bugs are the identical shape CLAUDE.md already
+names — "a check that cannot fail is not a check" — applied here to a
+capture and a gate instead of a verdict.
+
+### 5 — WHAT GOT BUILT
+
+`price_feed.py`: `depth(symbol)` accessor (same "None means no data yet,
+never an empty book" contract as `quote()`, same shallow-copy-on-read
+defensive pattern); `set_depth_symbols(symbols)` — gated on
+`intraday_depth_mode_enabled`, self-contained (does NOT rely on
+`resubscribe()` having just run — that method only re-applies mode when
+the overall watch LIST changed; the depth-worthy subset can change
+composition on its own faster cadence without the watch list changing at
+all) — diffs against the current FULL-mode set, puts added symbols into
+`MODE_FULL`, reverts removed ones to the connection's own baseline mode
+and drops their now-stale depth.
+
+`engine.py::apply_live_depth(feed)`: same shape as `apply_live_quotes()`
+— gated on `intraday_depth_mode_enabled`, copies `feed.depth(sym)` onto
+`ctx.depth` for every context with data, returns the touched count,
+wired into `cycle()` beside the existing quote/bar overlays.
+
+`run.py`: `feed.set_depth_symbols(engine.context_symbols())` added to the
+existing 300s slow timer, right after `feed.resubscribe(...)`.
+
+`analysis/overlays.py::depth_ok(depth, side, planned_qty)`: same shape as
+`liquidity_ok()` — refuses when the live bid/ask spread exceeds
+`intraday_max_spread_pct` (0.25% default), or when the resting quantity
+on the CONSUMING side (asks for a BUY, bids for a SELL) summed across the
+top `intraday_depth_levels_checked` (3 default) levels is less than the
+planned quantity. `None`/empty/zero-price depth is waved through as
+advisory-only — capture-side plumbing must never be why a trade is
+blocked, only a measured bad book may block it. Wired into
+`evaluate_intraday_setups()` immediately after the existing
+`BLOCKED_LIQUIDITY` gate, recording a new `BLOCKED_DEPTH` verdict through
+the same `_record_setup()` path every other gate uses.
+
+Migration 107: `intraday_depth_mode_enabled` and `overlay_depth_enabled`
+as two SEPARATE switches (capture vs. act — the same split this project
+already uses for `intraday_event_core_enabled` vs. what reads it on the
+D3 branch), plus `intraday_max_spread_pct` and `intraday_depth_levels_
+checked`. All four ship at their stated defaults with the two bools
+`false`.
+
+27 new offline tests across three modules (`test_overlays_depth.py`,
+`test_price_feed_depth.py`, `test_apply_live_depth.py`), registered in
+`tools/verify.py`. `test_price_feed_depth.py` carries five tests aimed
+directly at bug (b) above: switch-off-by-default takes zero live action
+even when fully wired and connected, and a symbol already in FULL mode is
+actively reverted the next time the switch reads false.
+
+### 6 — A BRANCHING CORRECTION MADE MID-SESSION
+
+This work was first written directly onto `feat/intraday-event-core`
+(Stage D3's own branch), which would have carried D3's commit into a
+stage the roadmap specifies as independent. Caught before committing:
+the uncommitted D4 diff was stashed, `feat/intraday-depth-gate` was
+branched fresh off `main` per the roadmap's own naming, and the diff was
+reapplied there — two merge conflicts (D3's dirty-symbol-tracking `__init__`
+fields and its `tools/verify.py` registrations, both absent from `main`)
+resolved by keeping only the D4 content. `git log main..feat/intraday-
+depth-gate --oneline` was empty before this branch's first commit,
+confirming the base is clean.
+
+### 7 — VERIFIED, PRECISELY WHAT WAS AND WAS NOT DEMONSTRATED
+
+`tools.verify`: 790/790. `tools.health`: 24/24, including `kite` (live
+session confirmed) and `feed` (tick handler confirmed I/O-free at the
+current QUOTE mode). `tools.simulate`: ran the real entry path
+end-to-end with no exception — session was CLOSED at run time (02:10
+IST), so zero setups fired and the depth gate was never reached live.
+The offline tests demonstrate `depth_ok()` actually REFUSING a realistic
+wide-spread and thin-resting-depth book (not only passing a good one),
+and demonstrate `set_depth_symbols()` actually taking ZERO live action
+while its switch is off (not only acting correctly once armed) — this
+project's own "a check that cannot fail is not a check" rule, satisfied
+offline since no live thin book or live-armed session was available to
+test against tonight.
+
+**Not demonstrated, and cannot be from a single session:** Gate D4 itself
+— "depth data confirmed flowing and logged for the live universe; a
+demonstrated refusal on a real thin-book case; no change to any
+candidate that already had a healthy spread" — needs a live market
+session with `intraday_depth_mode_enabled` armed, which this session did
+not run during. Deferred to the same single holistic pass across every
+Track D stage as Gate D2 and Gate D3, per the operator's own stated plan.
+
+### 8 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+Both `intraday_depth_mode_enabled` and `overlay_depth_enabled` ship
+`false`. No FULL-mode subscription is requested, no context carries
+depth, and `depth_ok()` returns `(True, "depth gate disabled")`
+unconditionally until both are armed. Nothing in the existing entry path
+changed for any candidate — `BLOCKED_DEPTH` is a new possible verdict,
+not a replacement for any existing one. On `feat/intraday-depth-gate`,
+not merged.

@@ -136,6 +136,9 @@ MODULES = [
      "tests.test_f43_swing_review"),
     ("F-46 pace calibration (family stall clock, trend telemetry)",
      "tests.test_f46_pace_calibration"),
+    ("execution-quality depth gate (Stage D4)", "tests.test_overlays_depth"),
+    ("price feed depth (FULL-mode) plumbing (Stage D4)", "tests.test_price_feed_depth"),
+    ("engine depth overlay onto contexts (Stage D4)", "tests.test_apply_live_depth"),
 ]
 
 

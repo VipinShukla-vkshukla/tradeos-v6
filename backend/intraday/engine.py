@@ -939,6 +939,33 @@ class IntradayEngine:
                 f"historical_data names), {bench_only_new} new this cycle")
         return touched
 
+    def apply_live_depth(self, feed) -> int:
+        """
+        Overlay live 5-level market depth (Kite FULL mode) onto contexts —
+        Stage D4, 24-Aug-2026. Own switch (`intraday_depth_mode_enabled`),
+        independent of the range/VWAP overlay in `apply_live_quotes()`
+        above — CAPTURING depth and GATING on it are separate
+        commitments, same "propose, never auto-apply" split this project
+        draws everywhere else. `analysis.overlays.depth_ok()` is the
+        consumer; this function only keeps `ctx.depth` current.
+
+        Depth itself is only ever present for symbols `price_feed.py::
+        set_depth_symbols()` has put in FULL mode (`IntradayEngine.
+        context_symbols()`, called on the same slow timer resubscribe()
+        already runs on) — a symbol outside that set simply has
+        `ctx.depth` stay `None`, read by `depth_ok()` as "no data yet",
+        never as "empty book".
+        """
+        if feed is None or not cfg_bool("intraday_depth_mode_enabled", False):
+            return 0
+        touched = 0
+        for sym, ctx in (self._contexts or {}).items():
+            d = feed.depth(sym)
+            if d:
+                ctx.depth = d
+                touched += 1
+        return touched
+
     def refresh_trend_context(self) -> int:
         """
         Live evidence for assess_trend()'s runner/deterioration checks on
@@ -3294,6 +3321,23 @@ class IntradayEngine:
                 logger.info(f"      {sym}: {best.strategy} — {liq_why}")
                 continue
 
+            # EXECUTION-QUALITY DEPTH GATE — Stage D4, 24-Aug-2026. Same shape
+            # as the liquidity gate above but same-second, not same-day: is the
+            # book resting RIGHT NOW wide/thin enough that this fill would not
+            # land near plan? ctx.depth is None until FULL mode has ticked at
+            # least once for this symbol (set_depth_symbols() in run.py scopes
+            # FULL mode to context_symbols() only), so this is advisory-only —
+            # never refuses a candidate for lack of capture, only for a
+            # measured bad book. direction LONG opens with a BUY (consumes the
+            # ask side); SHORT opens with a SELL (consumes the bid side).
+            from analysis.overlays import depth_ok
+            side = "BUY" if best.direction == "LONG" else "SELL"
+            d_ok, d_why = depth_ok(ctx.depth, side, qty)
+            if not d_ok:
+                self._record_setup(best, st.phase, 0.0, "BLOCKED_DEPTH", 0, mc_state=(mc.state if mc else None))
+                logger.info(f"      {sym}: {best.strategy} — {d_why}")
+                continue
+
             # DIRECTION MUST BE PASSED, NOT DEFAULTED. is_worth_taking() was
             # made direction-aware in the sign-convention spine and defaults to
             # LONG so every pre-shorting caller keeps working unchanged — but
@@ -4217,6 +4261,13 @@ class IntradayEngine:
                 # leaves whatever bars refresh_contexts() last gave a symbol
                 # in place rather than taking the cycle down.
                 logger.debug(f"  live bar merge skipped: {e}")
+            try:
+                self.apply_live_depth(feed)
+            except Exception as e:
+                # Same contract — a failed depth overlay leaves ctx.depth
+                # exactly as it was, read as "no data yet" by depth_ok(),
+                # never as a reason to take the cycle down.
+                logger.debug(f"  live depth overlay skipped: {e}")
 
         # Re-rank the intraday universe from live relative volume, every
         # cycle. Cheap (pure arithmetic over already-ticking quotes) and has

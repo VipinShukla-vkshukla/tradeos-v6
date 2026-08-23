@@ -61,6 +61,12 @@ class PriceFeed:
         self.source = "none"
         self.mode = "ltp"
         self._capture_quote = False
+        # 5-level market depth (Kite FULL mode) — Stage D4, 24-Aug-2026.
+        # `_depth_symbols` is the CURRENT FULL-mode subset, tracked so
+        # set_depth_symbols() can tell "no change" from "something to do"
+        # without a redundant set_mode() call every slow tick.
+        self._depth: dict[str, dict] = {}
+        self._depth_symbols: set[str] = set()
 
     # ── read side ───────────────────────────────────────────────────────────
     def get(self, symbol: str) -> float | None:
@@ -83,6 +89,20 @@ class PriceFeed:
         with self._lock:
             q = self._quote.get(symbol)
             return dict(q) if q else None
+
+    def depth(self, symbol: str) -> dict | None:
+        """
+        Live 5-level market depth (Kite FULL mode), Stage D4, 24-Aug-2026.
+
+        None means "no depth yet" — the symbol has never been put in FULL
+        mode, or `set_depth_symbols()` only just applied and no FULL tick
+        has arrived — NOT "the book is empty". A caller (analysis.
+        overlays.depth_ok()) must treat absence as advisory-only, same
+        contract as `quote()` above.
+        """
+        with self._lock:
+            d = self._depth.get(symbol)
+            return dict(d) if d else None
 
     def bars(self, symbol: str, since: datetime | None = None) -> list:
         """
@@ -202,6 +222,25 @@ class PriceFeed:
                     self._bars.record_tick(
                         sym, float(px), datetime.now(IST),
                         cum_volume=t.get("volume_traded"))
+                    # 5-level market depth — Stage D4, 24-Aug-2026. Deliberately
+                    # ABOVE the _capture_quote gate below: _capture_quote is
+                    # intraday_quote_mode_range/vwap, a switch about OHLC/VWAP
+                    # capture that has nothing to do with FULL mode. Gating
+                    # depth capture on it would mean set_depth_symbols() could
+                    # successfully put a symbol in FULL mode, real depth-
+                    # carrying ticks would arrive, and this handler would still
+                    # never store them unless someone separately also armed an
+                    # unrelated quote-capture switch — a capture that cannot
+                    # capture, found before it ever shipped armed. Only a tick
+                    # from a symbol actually in FULL mode carries this key at
+                    # all; every other watched symbol's ticks simply have
+                    # nothing here. Same O(1), no-I/O rule as bars above — a
+                    # plain dict overwrite, not a merge, since depth is
+                    # replaced wholesale on every FULL tick, never partial.
+                    depth = t.get("depth")
+                    if depth:
+                        with self._lock:
+                            self._depth[sym] = depth
                     # A plain attribute read — no config lookup, no I/O. The flag
                     # is recomputed on the slow timer by _refresh_capture_flags.
                     if not self._capture_quote:
@@ -336,3 +375,64 @@ class PriceFeed:
                 logger.info(f"  price_feed: resubscribed to {len(tokens)} symbols")
             except Exception as e:
                 logger.warning(f"  price_feed: resubscribe failed — {e}")
+
+    def set_depth_symbols(self, symbols: list[str]) -> None:
+        """
+        Put exactly `symbols` in Kite's FULL (depth) mode; every other
+        currently-watched symbol stays at the connection's baseline mode
+        (LTP/QUOTE). Stage D4, 24-Aug-2026.
+
+        SELF-CONTAINED — does NOT rely on resubscribe() having just run.
+        resubscribe() only re-applies mode when the watch LIST itself
+        changed (`if new == self.symbols: return`), but the depth-worthy
+        subset (positions + the live universe, `IntradayEngine.context_
+        symbols()`) can change composition on its own faster cadence
+        without the overall watch list changing at all. Diffs against the
+        CURRENT depth set so a symbol dropped from it is explicitly
+        reverted to baseline mode and its now-stale depth dropped, rather
+        than left in FULL (and its book quietly aging) indefinitely.
+
+        Kite's per-connection instrument ceiling (3,000, verified live
+        23-Aug-2026) applies identically regardless of mode — this is
+        NOT competing for a smaller FULL-mode-specific budget, only for
+        the bandwidth of richer per-tick payloads, which is why this
+        stays scoped to context_symbols() (~40-120 names) rather than
+        the whole bench.
+
+        GATED ON intraday_depth_mode_enabled, not just at the run.py call
+        site — this is the one call that actually asks Kite for FULL mode,
+        and gating only the caller would still leave a symbol stuck in
+        FULL mode forever if the switch were ever turned off mid-session.
+        Treating a disabled switch as "the desired depth set is empty"
+        instead of returning early reuses the same revert-to-baseline path
+        below, so flipping the switch off actively un-asks for depth
+        rather than merely stopping new asks.
+        """
+        if not cfg_bool("intraday_depth_mode_enabled", False):
+            symbols = []
+        if not self._connected or not self._ticker:
+            return
+        new = set(symbols) & set(self._token_to_symbol.values())
+        if new == self._depth_symbols:
+            return
+        added = new - self._depth_symbols
+        removed = self._depth_symbols - new
+        try:
+            sym_to_token = {v: k for k, v in self._token_to_symbol.items()}
+            if added:
+                tokens = [sym_to_token[s] for s in added if s in sym_to_token]
+                if tokens:
+                    self._ticker.set_mode(self._ticker.MODE_FULL, tokens)
+            if removed:
+                base_mode = (self._ticker.MODE_QUOTE if self.mode == "quote"
+                            else self._ticker.MODE_LTP)
+                tokens = [sym_to_token[s] for s in removed if s in sym_to_token]
+                if tokens:
+                    self._ticker.set_mode(base_mode, tokens)
+                    with self._lock:
+                        for s in removed:
+                            self._depth.pop(s, None)
+            self._depth_symbols = new
+            logger.info(f"  price_feed: depth (FULL) mode on {len(new)} symbol(s)")
+        except Exception as e:
+            logger.warning(f"  price_feed: set_depth_symbols failed — {e}")

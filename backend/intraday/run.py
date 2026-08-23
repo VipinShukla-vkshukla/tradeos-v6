@@ -359,6 +359,17 @@ def main(once: bool = False, dry: bool = False) -> None:
                 # once a minute, and the historical endpoint is rate-limited far
                 # more tightly than quotes.
                 engine.refresh_contexts()
+                # Stage D4, 24-Aug-2026 — ships OFF (intraday_depth_mode_
+                # enabled defaults false, so set_depth_symbols() no-ops until
+                # armed). Depth (FULL) mode scoped to context_symbols()
+                # (positions + the live universe, ~40-120 names), not the
+                # whole bench — the only population that can ever actually
+                # generate an entry decision. Self-contained; does not
+                # depend on resubscribe() having just fired above.
+                try:
+                    feed.set_depth_symbols(engine.context_symbols())
+                except Exception as e:
+                    logger.warning(f"  depth-mode symbol refresh failed: {e}")
                 # Live evidence for the runner/deterioration exit checks —
                 # see refresh_trend_context(). Same slow timer as everything
                 # else here; off by default (exit_live_trend_ctx).
