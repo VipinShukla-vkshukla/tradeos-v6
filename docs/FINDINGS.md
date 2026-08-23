@@ -10903,3 +10903,129 @@ Stage D2, not silently dropped. This is on the `feat/intraday-live-
 universe` branch, not merged to `main` — Gate D2 is the operator's own
 sign-off, per the roadmap's own rule that the human decides at every
 gate, and the branch is where that evidence sits until given.
+
+## 2026-08-23 — F-55 (new, shipped OFF) — Stage D2b, closes the IPO/
+unreferenced-name gap F-54 named and left open; corrects F-54's own
+`stock_data_daily` population claim
+
+**Ran:** `tools.verify` (788 checks, 77 modules, green — 7 more than
+F-54's 20), live query confirming the 253-name `nifty_total_market` gap
+still holds today, live run of `unreferenced_candidates()` against
+production Supabase (real result: exactly 253, all Population B — Kite
+session expired, Population C degraded to empty exactly as designed, no
+exception), a deliberate demonstration that a penny-priced candidate
+clearing move%/turnover-cr alone is rejected once `min_price` is passed
+and admitted when it is not (the exact gap this stage exists to close),
+migration 098 applied live and read back to confirm.
+
+### 1 — THE CORRECTION TO F-54 ITSELF
+
+F-54's own "WHAT THIS ADDRESSES"/finding-#4 section, and the Track D
+roadmap's original Stage D2 text, both stated `stock_data_daily` was
+close to the full NSE EQ bhavcopy (~1,800–2,000 symbols) via `ingest_
+bhavcopy.py`. **This was wrong, caught by the operator, not internally.**
+`ingest_bhavcopy.py` ENRICHES rows already in `stock_data_daily`
+(`value_cr`/`delivery_pct`/`delivery_qty`) for symbols already present —
+it does not create new rows there. `stock_data_daily` is swing's own
+sheet-baseline table (`compute_indicators.py`'s own docstring: "sheet
+baseline"), confirmed 499 rows for 21-Aug — genuinely ~Nifty 500, the
+operator's original claim from before F-54 was written. The full bhavcopy
+ingest is `raw_prices` (2,633 rows, same date), read only to feed those
+three columns back. Per this ledger's own append-only rule, F-54 is not
+edited; this entry is the correction of record.
+
+### 2 — WHAT GOT BUILT
+
+`intraday/scanner.py::unreferenced_candidates()`: two populations F-54
+left as "not built in this pass" —
+
+- **Population B** — `nifty_total_market` (751 rows) members absent from
+  `stock_data_daily` (253 of them, live-confirmed today). Known NSE
+  names outside swing's own sheet-baseline table, not new listings.
+- **Population C** — names in NEITHER table: the genuine IPO/new-listing
+  case, visible only through `kite_client.fetch_nse_eq_symbols()`
+  (`kite.instruments("NSE")`, once-per-day cached) — the one source
+  current from a listing's first tradeable day, since `nifty_total_
+  market` lags an actual listing by NSE's index-reconstitution cycle.
+
+Both return `UniverseEntry` objects with `atr_pct=0.0`, honestly — no
+history exists to put there instead — and a `reason` naming exactly
+which source found the name.
+
+`live_requalify()` extended with an optional `min_price` argument, checked
+against the LIVE quote's `ltp`. Population A candidates already cleared
+`_qualifies()`'s own price gate on yesterday's close, so this is a no-op
+for them; Population B/C candidates never ran through `_qualifies()` at
+all (no `stock_data_daily` row to read a price from), so without this a
+penny-priced name could clear the move%/turnover-cr floors on raw share
+count alone. Delivery% and ASM/F&O-ban have no live-quote equivalent and
+stay unchecked for B/C — named here, not silently assumed covered. Its
+reason-string construction was also revised to quote the candidate's OWN
+`reason` as context instead of hardcoding "yesterday ATR" — that framing
+was only ever true for Population A.
+
+`intraday/engine.py::live_requalify_universe()` now merges all three
+populations, fetches quotes for the combined list, and applies `live_
+requalify()` once — but keeps the admission decision SEPARATE per
+population: Population A still gates on `intraday_live_requalify_enabled`
+alone (the switch the operator already armed for that specific,
+narrower, already-reviewed population); Population B/C gates on a NEW,
+independent switch, `intraday_live_requalify_unreferenced_enabled`
+(migration 098, ships FALSE) — folding a wider, less-vetted population
+into a switch armed for a narrower one would be exactly the "silently
+widen a gate" failure this project's rules forbid.
+
+### 3 — VERIFIED, PRECISELY WHAT WAS AND WAS NOT DEMONSTRATED LIVE
+
+7 new offline checks added to `tests/test_scanner_live_requalify.py`
+(now 27 total, all green): both populations found correctly, dedup
+across sources, `exclude` respected, graceful degradation when Kite's
+instrument master call raises, and the `min_price` gate demonstrated
+BOTH ways — rejects a penny-priced candidate that clears move%/turnover-
+cr, and is a true no-op (existing behaviour unchanged) when the argument
+is omitted.
+
+**Live-verified, for real:** `SELECT count(*)` against production
+confirmed the 253-name `nifty_total_market`/`stock_data_daily` gap still
+holds today (23-Aug), independent of the Python path. Running `unrefer
+enced_candidates()` itself against production returned exactly 253
+results, all correctly attributed to Population B; Population C
+degraded to empty with a logged warning under the SAME real expired-
+token condition `tools.health` independently confirms right now — not
+an exception, not a silent zero, a warned one. A hand-built penny-stock
+quote (₹8.50 ltp, 13% move, ~32cr turnover on volume alone) was shown
+clearing `live_requalify()`'s move/turnover floors and then being
+rejected once `min_price=50.0` was passed — the exact failure mode this
+stage exists to close, demonstrated on both sides of the fix.
+
+**Not demonstrated live:** an actual Population C admission with a valid
+Kite token and the market open — same limitation F-54 already named for
+Population A, unchanged here; this ran after hours with an expired
+token, so Population C could only be proven to degrade safely, not to
+find a real new listing.
+
+### 4 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+**`nifty_total_market` itself stays static, unrefreshed, this pass.** The
+operator asked for a process to refresh it from niftyindices.com's own
+CSV; a direct `WebFetch` against that URL timed out (60s, consistent
+with anti-automation protection on that host). Deliberately scoped OUT
+of tonight's build: Population C (Kite's own instrument master) already
+closes the actual IPO-visibility gap a stale `nifty_total_market` would
+otherwise leave open, so this is a freshness improvement to Population B
+only, not a blocking one — and writing to a table `compute_indicators.
+py::fetch_index_membership()` depends on for `nifty_200`/`nifty_500`
+tagging is a genuine swing-boundary risk that deserves its own build-and-
+test pass, not a rushed addition to this one. Named as the clear next
+piece, not silently dropped.
+
+**Ships OFF.** Both `intraday_live_requalify_enabled` (Population A,
+armed by the operator directly in Supabase — confirmed by direct query
+to still read `false` as of this entry, `updated_at` unchanged since
+migration 097's insert, so despite the operator's belief the arming did
+not take effect; needs re-doing) and `intraday_live_requalify_
+unreferenced_enabled` (Population B/C, new, migration 098) gate live
+admission independently; the check computes and logs on its own timer
+the moment the daemon is redeployed regardless of either switch. This is
+on the `feat/intraday-live-universe` branch, not merged to `main` — Gate
+D2 remains the operator's own sign-off.

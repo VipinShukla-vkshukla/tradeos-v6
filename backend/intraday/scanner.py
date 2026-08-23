@@ -412,10 +412,28 @@ def live_rerank(bench: list[UniverseEntry], quotes: dict[str, dict],
 # large the bench cap is — the constraint was never the number, it was WHEN
 # the eligibility list gets decided.
 #
-# stock_data_daily is NOT Nifty 500 — traced to ingest_bhavcopy.py, which
-# ingests NSE's full daily bhavcopy filtered only to SERIES == 'EQ'
-# (~1,800-2,000 symbols). The reference data was never the constraint
-# either; only the ONE-A-DAY timing of the eligibility check was.
+# CORRECTED, 23-Aug-2026 (the operator's own catch): stock_data_daily is
+# NOT the full NSE EQ bhavcopy — it is swing's own sheet-baseline table,
+# enriched (not populated) by ingest_bhavcopy.py with value_cr/delivery_pct
+# for whichever symbols already have a row there. Confirmed live: 499 rows
+# for a date where raw_prices (the actual bhavcopy ingest, used only to
+# feed delivery% back into stock_data_daily's EXISTING rows, not to create
+# new ones) carries 2,633. Two candidate populations follow from this:
+#
+#   movement_rejected_candidates() below — names ALREADY in stock_data_
+#   daily that failed only yesterday's ATR band. Real historical ATR
+#   exists for these; the check is relative (today's move vs. that ATR
+#   floor), same as before this correction.
+#
+#   unreferenced_candidates() further down — names NOT in stock_data_daily
+#   at all. No historical ATR exists to be relative to, so these need an
+#   ABSOLUTE threshold instead. Sourced from nifty_total_market (751 rows,
+#   751-499=253 of them not in stock_data_daily — a real, confirmed gap,
+#   not a guess) and, for names not even THERE, Kite's own instrument
+#   master — the one source that knows about a listing from its first
+#   tradeable day, since nifty_total_market is index-membership and lags
+#   an actual listing by however long NSE takes to reconstitute an index
+#   (weeks to months), not days.
 
 def movement_rejected_candidates(sb=None, exclude: set[str] | None = None
                                  ) -> list[UniverseEntry]:
@@ -477,11 +495,12 @@ def movement_rejected_candidates(sb=None, exclude: set[str] | None = None
 
 
 def live_requalify(candidates: list[UniverseEntry], quotes: dict[str, dict],
-                   *, move_pct: float, turnover_cr: float) -> list[UniverseEntry]:
+                   *, move_pct: float, turnover_cr: float,
+                   min_price: float | None = None) -> list[UniverseEntry]:
     """
-    PURE. Which of `candidates` (from movement_rejected_candidates()) has,
-    by TODAY's own live numbers, moved and traded enough to be admitted
-    mid-session.
+    PURE. Which of `candidates` (from movement_rejected_candidates() OR
+    unreferenced_candidates()) has, by TODAY's own live numbers, moved and
+    traded enough to be admitted mid-session.
 
     `quotes` is symbol -> kite_client.fetch_quotes()'s per-symbol dict
     (ltp, open, high, low, close [PREVIOUS close, per fetch_quotes()'s own
@@ -494,6 +513,17 @@ def live_requalify(candidates: list[UniverseEntry], quotes: dict[str, dict],
     change from previous close — a stock down 9% is exactly as
     tradeable-for-movement as one up 9%, matching how build_universe()'s
     own ATR floor is a magnitude test, not a directional one.
+
+    `min_price`, checked against today's live `ltp`: a movement_rejected_
+    candidates() row already cleared _qualifies()'s own price gate on
+    yesterday's close, so this is redundant (and harmless) for it — but
+    an unreferenced_candidates() row was NEVER run through _qualifies() at
+    all (no stock_data_daily row exists to read a price from), so without
+    this check a low-priced name could clear the move/turnover floors on
+    tick noise alone. This is the ONE _qualifies()-equivalent gate that
+    can be applied here; delivery% and ASM/F&O-ban flag have no live-quote
+    equivalent and stay unchecked for that population — named, not
+    silently assumed covered.
     """
     out = []
     for c in candidates:
@@ -506,6 +536,8 @@ def live_requalify(candidates: list[UniverseEntry], quotes: dict[str, dict],
         avg_price = float(q.get("avg_price") or 0)
         if prev_close <= 0 or ltp <= 0:
             continue
+        if min_price is not None and ltp < min_price:
+            continue
         today_move_pct = abs(ltp - prev_close) / prev_close * 100.0
         today_turnover_cr = (volume * avg_price) / 1e7
         if today_move_pct < move_pct or today_turnover_cr < turnover_cr:
@@ -516,9 +548,95 @@ def live_requalify(candidates: list[UniverseEntry], quotes: dict[str, dict],
             # Scored by live_rerank() once merged into the bench — a fresh
             # entrant has no static score of its own to blend from.
             score=0.0,
+            # Reuses the candidate's OWN reason as context rather than
+            # assuming "yesterday ATR" — that framing is only true for
+            # movement_rejected_candidates()' population. A candidate from
+            # unreferenced_candidates() has no historical ATR to name, and
+            # hardcoding that language for it would misdescribe why it was
+            # a candidate at all.
             reason=(f"LIVE REQUALIFIED: {today_move_pct:.2f}% move, "
-                   f"₹{today_turnover_cr:.0f}cr today (yesterday ATR "
-                   f"{c.atr_pct:.2f}% had missed the floor)"),
+                   f"₹{today_turnover_cr:.0f}cr today ({c.reason})"),
             avg_vol_20d=c.avg_vol_20d,
         ))
+    return out
+
+
+def unreferenced_candidates(sb=None, exclude: set[str] | None = None
+                            ) -> list[UniverseEntry]:
+    """
+    Tradeable NSE EQ names that are NOT in stock_data_daily at all — so no
+    historical ATR exists to be relative to, and live_requalify()'s normal
+    admission floor must be applied as an ABSOLUTE threshold instead.
+    Stage D2b, 23-Aug-2026 (docs/TRADEOS_ROADMAP.md, Track D).
+
+    TWO SOURCES, IN ORDER OF FRESHNESS:
+
+      nifty_total_market — 751 index-constituent rows, 253 of them
+      confirmed NOT in stock_data_daily (live query, 23-Aug). Known,
+      legitimate NSE names simply outside swing's own sheet-baseline
+      universe — not new listings, just untracked by that pipeline.
+
+      Kite's own instrument master (kite_client.fetch_nse_eq_symbols())
+      — the one source that knows about a listing from its FIRST
+      tradeable day. nifty_total_market is index-membership and lags an
+      actual IPO by however long NSE takes to reconstitute an index
+      (weeks to months); this is the only path that can see a name
+      before that.
+
+    `atr_pct=0.0` on every returned entry, HONESTLY — there is nothing
+    real to put there, and 0.0 combined with the `reason` string naming
+    exactly which source found it is preferable to fabricating a number
+    or borrowing an unrelated one.
+    """
+    sb = sb or get_supabase()
+    exclude = exclude or set()
+
+    d = _latest_date(sb)
+    known: set[str] = set()
+    if d:
+        sdd_rows = (sb.table("stock_data_daily").select("symbol")
+                     .eq("date", d).execute().data or [])
+        known = {r["symbol"] for r in sdd_rows if r.get("symbol")}
+
+    out: list[UniverseEntry] = []
+    seen: set[str] = set()
+
+    try:
+        market_rows = sb.table("nifty_total_market").select(
+            "symbol,company_name,industry").execute().data or []
+    except Exception as e:
+        logger.debug(f"  scanner: nifty_total_market read skipped — {e}")
+        market_rows = []
+
+    for r in market_rows:
+        sym = r.get("symbol")
+        if not sym or sym in exclude or sym in known or sym in seen:
+            continue
+        seen.add(sym)
+        out.append(UniverseEntry(
+            symbol=sym, close=0.0, value_cr=0.0, atr_pct=0.0, delivery_pct=None,
+            sector=r.get("industry") or "", score=0.0,
+            reason="not tracked in stock_data_daily — nifty_total_market member",
+            avg_vol_20d=0.0,
+        ))
+
+    try:
+        from kite.kite_client import fetch_nse_eq_symbols
+        instrument_symbols = fetch_nse_eq_symbols()
+    except Exception as e:
+        logger.debug(f"  scanner: Kite instrument master read skipped — {e}")
+        instrument_symbols = set()
+
+    for sym in sorted(instrument_symbols):
+        if sym in exclude or sym in known or sym in seen:
+            continue
+        seen.add(sym)
+        out.append(UniverseEntry(
+            symbol=sym, close=0.0, value_cr=0.0, atr_pct=0.0, delivery_pct=None,
+            sector="", score=0.0,
+            reason=("not in stock_data_daily or nifty_total_market — "
+                   "Kite instrument master only (likely a recent listing)"),
+            avg_vol_20d=0.0,
+        ))
+
     return out

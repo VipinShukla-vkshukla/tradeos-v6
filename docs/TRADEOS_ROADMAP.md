@@ -493,42 +493,76 @@ subscription budget the live-VWAP handoff above depends on.
 
 **Branch:** `feat/intraday-live-universe`.
 
-Corrected 23-Aug-2026: `stock_data_daily` is NOT limited to Nifty 500 —
-traced to `ingest_bhavcopy.py`, which ingests NSE's full daily bhavcopy
-filtered only to `SERIES == 'EQ'` (~1,800–2,000 symbols, sanity-floored at
-500 rows minimum). The reference data was never the constraint. The real
-gap is narrower: `build_universe()`'s ~120-name bench is built ONCE per
-day from YESTERDAY's turnover/ATR/delivery%, and `live_rerank()` can only
-reorder names already in that pool — it cannot add one that didn't
-qualify yesterday but is moving hard today.
+Corrected twice, 23-Aug-2026 — first wrongly, then right, both caught by
+the operator, not found internally. First pass claimed `stock_data_daily`
+held the full bhavcopy (~1,800–2,000 EQ symbols); that was wrong —
+`ingest_bhavcopy.py` only ENRICHES rows already in `stock_data_daily`
+(`value_cr`/`delivery_pct`/`delivery_qty`) for whichever symbols are
+already there. `stock_data_daily` itself is swing's own sheet-baseline
+table (`compute_indicators.py`'s own docstring: "sheet baseline"),
+confirmed 499 rows on 21-Aug — genuinely ~Nifty 500, the operator's
+original claim. The real bhavcopy ingest, `raw_prices`, carries 2,633
+rows the same date and is used only to feed those three columns back,
+never to create new `stock_data_daily` rows.
 
-**The fix:** a second, light eligibility check re-running the same
-threshold logic (`intraday_min_atr_pct`, `intraday_min_turnover_cr`, etc.)
-against TODAY's own realized turnover and move, for EQ-series names in
-`stock_data_daily` that exist but did not make yesterday's bench. Runs on
-the existing `universe()` refresh slot, at a shorter interval than the
-300s full rebuild (30–60s is enough — this is a light comparison, not the
-heavy 499-row historical scan). A name admitted this way starts fully
-cold — no borrowed prior, no engine track record — same discipline a new
-engine gets.
+`build_universe()`'s ~120-name daily bench is built ONCE per day from
+YESTERDAY's turnover/ATR/delivery%, and `live_rerank()` can only reorder
+names already in that pool — it cannot add one that didn't qualify
+yesterday but is moving hard today. Three candidate populations follow:
 
-**Newly-listed IPOs are a genuinely separate case, not covered by the
-above.** A stock that listed in the last ~20 sessions has no
-`avg_volume_20d`/ATR history to compare itself against — the relative
-threshold is undefined, not just unmet. Handling it needs Kite's
-instrument master (a separate feed of every currently tradeable
-instrument + token, independent of the bhavcopy analytics pipeline) to
-even know the symbol exists, and an ABSOLUTE (not history-relative)
-qualification rule — e.g. today's turnover past a flat crore floor and
-today's move past a flat percentage, the same shape `min_turnover_cr`
-already is, just without the ATR-relative-to-own-history leg a new
-listing cannot have yet.
+- **Population A** — `stock_data_daily` names that failed ONLY
+  yesterday's ATR band. Real historical ATR exists; admission is TODAY's
+  own move%/turnover-cr clearing the same relative floor
+  (`intraday_min_atr_pct`/`intraday_min_turnover_cr`'s live-quote
+  equivalents). `scanner.movement_rejected_candidates()` +
+  `live_requalify()`. Switch: `intraday_live_requalify_enabled`
+  (migration 097).
+- **Population B** — `nifty_total_market` members (751 rows) NOT in
+  `stock_data_daily` (253 of them, confirmed live, 23-Aug) — real,
+  known NSE names outside swing's own sheet-baseline universe, not new
+  listings. No historical ATR, so admission is ABSOLUTE: today's
+  move%/turnover-cr against the same floors, PLUS a live-quote
+  `min_price` check (`intraday_min_price`) that Population A gets for
+  free from `_qualifies()` but this population never ran through at
+  all — the one gate a live quote can stand in for. Delivery% and
+  ASM/F&O-ban have no live-quote equivalent and stay unchecked for this
+  population, named not assumed covered.
+- **Population C** — the genuine new-listing/IPO case: names in
+  NEITHER `nifty_total_market` nor `stock_data_daily`. `nifty_total_
+  market` lags an actual listing by NSE's index-reconstitution cycle
+  (weeks to months, not days), so this is only visible through Kite's
+  own instrument master (`kite_client.fetch_nse_eq_symbols()`,
+  `kite.instruments("NSE")`, cached once per day), which is generated
+  fresh by the exchange feed and carries a name from its first
+  tradeable day. Same absolute admission rule as Population B.
+
+`scanner.unreferenced_candidates()` returns B and C together (`atr_pct
+=0.0`, honestly — nothing real to put there); `live_requalify()` handles
+all three populations with one shared admission path. Population B/C
+ships behind its OWN switch, `intraday_live_requalify_unreferenced_
+enabled` (migration 098) — deliberately NOT the same switch as Population
+A, because B/C is a materially wider, less-vetted population and folding
+it into a switch the operator armed for the narrower one would be exactly
+the "silently widen a gate" failure this project's rules forbid.
+
+**Not yet built:** a refresh pipeline for `nifty_total_market` itself
+(currently static — confirmed no freshness column, updated only when
+someone re-imports NSE's index-constituent CSV by hand). The operator
+named `https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_
+list.csv` as the source; a `WebFetch` against that URL timed out (60s),
+consistent with anti-automation protection on that host — a scheduled
+refresh will need to handle that (proper headers, retries) and must not
+corrupt the `nifty_200`/`nifty_500` boolean columns `compute_indicators.
+py::fetch_index_membership()` already depends on. Scoped as a separate,
+later piece: Population C (Kite's instrument master) already closes the
+IPO gap `nifty_total_market`'s staleness would otherwise leave open, so
+this is a freshness improvement to Population B, not a blocking gap.
 
 **Gate D2:** a live demonstration — a name outside yesterday's bench that
-moved hard today gets admitted mid-session, logged with which rule
-admitted it (re-qualified vs. IPO-absolute), and resolved the same way
-every other detection is. No capacity, priority, or bar behaviour changes
-for anything already in the bench.
+moved hard today gets admitted mid-session, logged with which population
+admitted it (A/B/C), and resolved the same way every other detection is.
+No capacity, priority, or bar behaviour changes for anything already in
+the bench.
 
 ## Stage D3 — Event-driven core, in shadow
 

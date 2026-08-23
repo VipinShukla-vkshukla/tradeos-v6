@@ -1681,6 +1681,22 @@ class IntradayEngine:
         and its evidence accumulate in the log regardless of the switch,
         so there is something real to look at before deciding whether to
         arm `intraday_live_requalify_enabled`.
+
+        TWO CANDIDATE POPULATIONS, TWO SEPARATE ARM SWITCHES. Stage D2b,
+        23-Aug-2026 — added after the operator armed
+        `intraday_live_requalify_enabled` for Population A alone and
+        separately asked for the nifty_total_market / IPO gap to be
+        closed. Population B/C (unreferenced_candidates() — names outside
+        stock_data_daily entirely) never ran through _qualifies(), so they
+        carry weaker vetting than Population A (movement_rejected_
+        candidates() — see live_requalify()'s own docstring on exactly
+        which gate, min_price, is and is not covered for them). Bundling
+        both under the switch the operator already armed for the
+        narrower, already-reviewed population would be exactly the
+        "silently widen a gate" failure this project's rules forbid — so
+        Population B/C stays behind its OWN switch,
+        `intraday_live_requalify_unreferenced_enabled`, defaulting OFF
+        independently of Population A's.
         """
         if not self._bench:
             return 0
@@ -1688,20 +1704,38 @@ class IntradayEngine:
             from intraday import scanner
             from kite.kite_client import fetch_quotes
             existing = {e.symbol for e in self._bench}
-            candidates = scanner.movement_rejected_candidates(self.sb, exclude=existing)
-            if not candidates:
-                return 0
-            quotes = fetch_quotes([c.symbol for c in candidates])
             move_pct = cfg_float("intraday_live_requalify_move_pct", 1.20)
             turnover_cr = cfg_float("intraday_live_requalify_turnover_cr", 25.0)
+            min_price = cfg_float("intraday_min_price", 50.0)
+
+            pop_a = scanner.movement_rejected_candidates(self.sb, exclude=existing)
+            pop_bc = scanner.unreferenced_candidates(
+                self.sb, exclude=existing | {c.symbol for c in pop_a})
+            candidates = pop_a + pop_bc
+            if not candidates:
+                return 0
+
+            quotes = fetch_quotes([c.symbol for c in candidates])
             admitted = scanner.live_requalify(
-                candidates, quotes, move_pct=move_pct, turnover_cr=turnover_cr)
+                candidates, quotes, move_pct=move_pct, turnover_cr=turnover_cr,
+                min_price=min_price)
             if not admitted:
                 return 0
             for e in admitted:
                 logger.info(f"  live requalify: {e.symbol} — {e.reason}")
-            if cfg_bool("intraday_live_requalify_enabled", False):
-                self._bench = self._bench + admitted
+
+            bc_symbols = {c.symbol for c in pop_bc}
+            to_add = []
+            a_enabled = cfg_bool("intraday_live_requalify_enabled", False)
+            bc_enabled = cfg_bool("intraday_live_requalify_unreferenced_enabled", False)
+            for e in admitted:
+                if e.symbol in bc_symbols:
+                    if bc_enabled:
+                        to_add.append(e)
+                elif a_enabled:
+                    to_add.append(e)
+            if to_add:
+                self._bench = self._bench + to_add
             return len(admitted)
         except Exception as e:
             logger.debug(f"  live universe requalify skipped: {e}")

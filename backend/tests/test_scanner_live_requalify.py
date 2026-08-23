@@ -285,6 +285,127 @@ def test_live_requalify_carries_yesterdays_real_atr_through_honestly():
     assert out[0].atr_pct == 0.42
 
 
+# ── unreferenced_candidates() ────────────────────────────────────────────
+
+class _TableRouter:
+    """Routes .table(name) to whichever fixture rows that name should return
+    — stock_data_daily and nifty_total_market need independent contents in
+    the same fake client."""
+    def __init__(self, by_table: dict[str, list[dict]]):
+        self._by_table = by_table
+
+    def table(self, name):
+        rows = self._by_table.get(name, [])
+
+        class _Query:
+            def __init__(self, rows): self._rows = rows
+            def select(self, *a, **k): return self
+            def eq(self, *a, **k): return self
+            def execute(self): return self
+            @property
+            def data(self): return self._rows
+
+        return _Query(rows)
+
+
+def test_unreferenced_candidates_finds_nifty_total_market_gap():
+    """Population B: a name in nifty_total_market but absent from
+    stock_data_daily must come back with atr_pct=0.0 and a reason naming
+    the source honestly — there is no history to be relative to."""
+    from intraday.scanner import unreferenced_candidates
+    sb = _TableRouter({
+        "stock_data_daily": [{"symbol": "TRACKED"}],
+        "nifty_total_market": [
+            {"symbol": "TRACKED", "company_name": "x", "industry": "bank"},
+            {"symbol": "UNTRACKED", "company_name": "y", "industry": "auto"},
+        ],
+    })
+    with patch("intraday.scanner._latest_date", return_value="2026-08-23"), \
+         patch("kite.kite_client.fetch_nse_eq_symbols", return_value=set()):
+        out = unreferenced_candidates(sb)
+    assert [e.symbol for e in out] == ["UNTRACKED"]
+    assert out[0].atr_pct == 0.0
+    assert "nifty_total_market" in out[0].reason
+
+
+def test_unreferenced_candidates_finds_kite_only_names_beyond_both_tables():
+    """Population C: a name in neither table — the genuine new-listing
+    case — surfaces only through Kite's own instrument master."""
+    from intraday.scanner import unreferenced_candidates
+    sb = _TableRouter({
+        "stock_data_daily": [{"symbol": "TRACKED"}],
+        "nifty_total_market": [{"symbol": "TRACKED", "company_name": "x", "industry": "bank"}],
+    })
+    with patch("intraday.scanner._latest_date", return_value="2026-08-23"), \
+         patch("kite.kite_client.fetch_nse_eq_symbols",
+              return_value={"TRACKED", "FRESHLISTED"}):
+        out = unreferenced_candidates(sb)
+    assert [e.symbol for e in out] == ["FRESHLISTED"]
+    assert "Kite instrument master" in out[0].reason
+
+
+def test_unreferenced_candidates_never_duplicates_a_name_seen_in_both_sources():
+    from intraday.scanner import unreferenced_candidates
+    sb = _TableRouter({
+        "stock_data_daily": [],
+        "nifty_total_market": [{"symbol": "BOTH", "company_name": "x", "industry": "it"}],
+    })
+    with patch("intraday.scanner._latest_date", return_value="2026-08-23"), \
+         patch("kite.kite_client.fetch_nse_eq_symbols", return_value={"BOTH"}):
+        out = unreferenced_candidates(sb)
+    assert [e.symbol for e in out] == ["BOTH"], "must appear once, from whichever source is checked first"
+
+
+def test_unreferenced_candidates_respects_exclude():
+    from intraday.scanner import unreferenced_candidates
+    sb = _TableRouter({
+        "stock_data_daily": [],
+        "nifty_total_market": [{"symbol": "ALREADY_BENCHED", "company_name": "x", "industry": "it"}],
+    })
+    with patch("intraday.scanner._latest_date", return_value="2026-08-23"), \
+         patch("kite.kite_client.fetch_nse_eq_symbols", return_value=set()):
+        out = unreferenced_candidates(sb, exclude={"ALREADY_BENCHED"})
+    assert out == []
+
+
+def test_unreferenced_candidates_survives_kite_master_unavailable():
+    """Same 'advisory only' contract as everything else touching Kite —
+    an empty/failed instrument fetch must degrade to Population B only,
+    never raise."""
+    from intraday.scanner import unreferenced_candidates
+    sb = _TableRouter({
+        "stock_data_daily": [],
+        "nifty_total_market": [{"symbol": "STILLFOUND", "company_name": "x", "industry": "it"}],
+    })
+    with patch("intraday.scanner._latest_date", return_value="2026-08-23"), \
+         patch("kite.kite_client.fetch_nse_eq_symbols", side_effect=Exception("no token")):
+        out = unreferenced_candidates(sb)
+    assert [e.symbol for e in out] == ["STILLFOUND"]
+
+
+def test_live_requalify_min_price_rejects_a_cheap_name_even_if_move_and_turnover_clear():
+    """The gate unreferenced_candidates() specifically needs: a penny-priced
+    name can clear move% and turnover-cr on volume alone (both are scale-
+    free of price), so without this it would sail through with none of
+    _qualifies()'s own price floor ever having been asked."""
+    from intraday.scanner import live_requalify
+    penny = _candidate(symbol="PENNY")
+    q = _quote(ltp=8.5, close=7.5, volume=40_000_000, avg_price=8.0)  # ~13% move, ~32cr
+    out = live_requalify([penny], {"PENNY": q}, move_pct=1.20, turnover_cr=25.0, min_price=50.0)
+    assert out == []
+
+
+def test_live_requalify_min_price_none_means_no_price_gate_at_all():
+    """movement_rejected_candidates() callers that don't pass min_price
+    keep today's exact prior behaviour -- this is an additive gate, not a
+    silent tightening of Population A's existing path."""
+    from intraday.scanner import live_requalify
+    penny = _candidate(symbol="PENNY")
+    q = _quote(ltp=8.5, close=7.5, volume=40_000_000, avg_price=8.0)
+    out = live_requalify([penny], {"PENNY": q}, move_pct=1.20, turnover_cr=25.0)
+    assert len(out) == 1
+
+
 TESTS = [
     ("qualifies passes a clean row", test_qualifies_passes_a_clean_row),
     ("qualifies rejects below min price", test_qualifies_rejects_below_min_price),
@@ -306,4 +427,11 @@ TESTS = [
     ("live_requalify skips a candidate with no quote", test_live_requalify_skips_a_candidate_with_no_quote),
     ("live_requalify skips zero prev close defensively", test_live_requalify_skips_zero_prev_close_defensively),
     ("live_requalify carries yesterday's real atr through honestly", test_live_requalify_carries_yesterdays_real_atr_through_honestly),
+    ("unreferenced_candidates finds nifty_total_market gap", test_unreferenced_candidates_finds_nifty_total_market_gap),
+    ("unreferenced_candidates finds kite-only names beyond both tables", test_unreferenced_candidates_finds_kite_only_names_beyond_both_tables),
+    ("unreferenced_candidates never duplicates a name seen in both sources", test_unreferenced_candidates_never_duplicates_a_name_seen_in_both_sources),
+    ("unreferenced_candidates respects exclude", test_unreferenced_candidates_respects_exclude),
+    ("unreferenced_candidates survives kite master unavailable", test_unreferenced_candidates_survives_kite_master_unavailable),
+    ("live_requalify min_price rejects a cheap name even if move/turnover clear", test_live_requalify_min_price_rejects_a_cheap_name_even_if_move_and_turnover_clear),
+    ("live_requalify min_price=None means no price gate at all", test_live_requalify_min_price_none_means_no_price_gate_at_all),
 ]

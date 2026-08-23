@@ -291,3 +291,51 @@ def fetch_margins() -> dict:
 def is_available() -> bool:
     """True when a usable broker session exists. Cheap — no network call."""
     return get_kite() is not None
+
+
+# Module-level, single-process cache — Kite's own docs say this dump is
+# "generated once every day", so re-fetching it more than once per date is
+# pure waste (several hundred KB, tens of thousands of rows, one call).
+_instr_cache: dict = {"date": None, "symbols": None}
+
+
+def fetch_nse_eq_symbols() -> set[str]:
+    """
+    Every symbol currently tradeable on NSE's EQ segment, straight from
+    Kite's own instrument master — Stage D2b, 23-Aug-2026
+    (docs/TRADEOS_ROADMAP.md, Track D).
+
+    THIS IS THE ONE SOURCE THAT KNOWS ABOUT A LISTING TODAY. Both
+    `stock_data_daily` (a swing-pipeline-derived table, sheet-baseline plus
+    bhavcopy enrichment) and `nifty_total_market` (an index-constituent
+    list, refreshed on whatever cadence NSE reconstitutes its indices —
+    weeks to months, not days) lag a fresh IPO by design; Kite's own
+    instrument dump is generated fresh once a day by the exchange feed
+    itself and includes a newly-listed symbol from its first tradeable
+    day.
+
+    Returns bare tradingsymbols (no exchange prefix), filtered to
+    `exchange == "NSE"` and `segment == "NSE"` (excludes NSE's F&O/
+    currency/etc. segments, which share the same instrument dump). Empty
+    set on any failure — same "advisory only, never take the system down"
+    contract every other function in this module already holds; a caller
+    must treat an empty result as "could not check", not as "nothing is
+    new today".
+    """
+    from config import today_ist
+    today = today_ist().isoformat()
+    if _instr_cache["date"] == today and _instr_cache["symbols"] is not None:
+        return _instr_cache["symbols"]
+
+    kite = get_kite()
+    if not kite:
+        return set()
+    try:
+        rows = kite.instruments("NSE") or []
+        symbols = {r["tradingsymbol"] for r in rows
+                  if r.get("segment") == "NSE" and r.get("tradingsymbol")}
+        _instr_cache["date"], _instr_cache["symbols"] = today, symbols
+        return symbols
+    except Exception as e:
+        logger.warning(f"  Kite instrument master fetch failed: {e}")
+        return set()
