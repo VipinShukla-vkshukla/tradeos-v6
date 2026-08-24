@@ -1260,6 +1260,31 @@ F-73.
   sees it. Pull it into `score_plan()` or `entry_refusals()` if E2's
   numbers support it as a real signal, not decoration.
 
+**Piece 1 — BUILT, 24-Aug-2026 (F-74, `feat/swing-evolution`).** Quantify
+first (this project's own "quantify before build" pattern) found the
+zone-drift penalty as originally scoped — raw % distance above
+`entry_zone_high` — does not cleanly separate outcomes on the available
+sample. HAL's own real numbers pointed at the actual mechanism: R:R
+RETENTION, not price distance — stop/target stay fixed while the zone
+catches up to a running price, so `rr_at_zone_low` (7.63–14.09 across
+HAL's three prior snapshots) collapsed to `rr_live` 1.17 at the real
+fill. Re-bucketed the same sample by retention: worst-half avg −0.003R
+(3 of 4 losses), best-half avg +0.227R (1 loss) — small (n=8/bucket) but
+directionally real. Building this surfaced that the mechanism to act on
+it already half-existed and was silently dead: `score_plan()`'s own
+comment claims its R:R term is "the live figure," but `implied_rr` is
+pipeline-only and never refreshed, while `decide()`'s `rr_live` — the
+actual live figure — sat unused at both ranking call sites
+(`intraday/engine.py::_maybe_enter_swing`, `tools/simulate.py::
+simulate_swing_entries`). Fixed by reviving the dead path (new shared
+`entry_ranking.live_ranking_input()`) rather than building a second,
+parallel penalty next to a mechanism that already existed but didn't
+work — smaller change, same effect, no new config switch needed. Full
+detail: `docs/FINDINGS.md` F-74.
+
+**Pieces 2–3 (AI lessons as predicates, weekly-structure confirmation)
+— not started.**
+
 ## Stage E6 — The learning core
 
 The most valuable stage in this track and the one that gets the most

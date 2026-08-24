@@ -13057,3 +13057,99 @@ own failing-first requirement before being trusted. Corrected to assert
 session 8 must NOT stall when exempted (mult stays 1.0, clock stays at
 its flat 10-day default); re-run against reverted source failed
 correctly, restored and passed. `tools.verify`: 1014/1015.
+
+## 2026-08-24 — F-74 (change, Track E Stage E5, piece 1 of 3) — the
+entry-ranking call sites now rank on `decide()`'s truly live R:R, not the
+evening pipeline's stale snapshot. Branch `feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 1019/1020 (5 new checks; same pre-existing
+unrelated Stage D4 issue). `tools.simulate` against the real book —
+byte-identical output to before, confirming no regression.
+
+### 1 — WHAT THE QUANTIFY PASS FOUND
+
+Stage E5's own roadmap text names a "zone-drift penalty" scoped as
+percentage distance above `entry_zone_high`. Quantified first, per this
+project's own "quantify before build" pattern (Gate E2): joined
+`closed_positions` to `signal_output_daily`/`signal_log` for the 19 most
+recent SWING exits with usable zone data (69 of 88 closed rows have no
+`signal_id` at all — a real, separate attribution gap, noted but out of
+scope here) and bucketed by raw `%` drift above zone. **The naive metric
+does not cleanly separate outcomes on this sample** — it was the wrong
+proxy.
+
+Checked HAL's own real numbers instead (`docs/TRADEOS_ROADMAP.md`'s own
+motivating example): filled at 5010.20 against a zone whose low drifted
+4779 → 4808 across three prior daily signal snapshots — only ~1-2% raw
+price drift. But `planned_stop` (4740.22) and `planned_target` (5325.17)
+stayed FIXED across all three snapshots while the zone caught up to
+price, so the reward:risk the plan was originally sized on collapsed:
+`rr_at_zone_low` ranged 7.63–14.09 across those three snapshots; `rr` at
+the actual fill was 1.17. **R:R retention, not raw price distance, is
+what "chase" actually costs.** Re-bucketed the same 16-position sample
+by R:R-retained fraction: bottom half (worst retention) averaged
+**−0.003R** with 3 of 4 total losses in this set; top half (best
+retention) averaged **+0.227R** with 1 loss. Small sample (n=8/bucket),
+not monotonic (PPLPHARMA was the single best winner despite moderate
+retention), but directionally real and mechanistically exactly what
+HAL's own numbers show live.
+
+### 2 — THE REAL BUG THIS SURFACED: NOT A MISSING FEATURE, A DEAD ONE
+
+`entry_ranking.py::score_plan()`'s own comment already claims the R:R
+term reads "the live figure... a plan that has already run is a worse
+trade than it was when written, and only implied_rr knows that." It
+does not: `implied_rr` is written ONLY by the evening pipeline
+(`final_snapshot.py`/`generate_signals.py`) and nothing refreshes it
+before either place that ranks candidates for entry. `analysis.
+trade_decision.decide()` already computes the real thing — `rr_live`,
+reward:risk at the live price — and both call sites had it sitting in
+scope (`d.rr_live`) and never used it: `intraday/engine.py::
+_maybe_enter_swing` (the live daemon) and `tools/simulate.py::
+simulate_swing_entries` (the read-only preview tool — which additionally
+called `rank(plans)` BEFORE its own per-plan `decide()` loop even ran,
+so it could not have used a live figure even if one had been threaded
+through). This is not the roadmap's originally-scoped "new penalty" —
+it is an EXISTING mechanism that was never actually doing what its own
+comment already claimed, closer in shape to the tools.simulate gap
+F-71 §3 already found once this session than to a new feature.
+
+### 3 — FIX
+
+New pure function `analysis/entry_ranking.py::live_ranking_input(p,
+rr_live)` — overrides `implied_rr` with the live figure when present,
+no-ops when `rr_live` is `None` (a plan can legitimately have no live
+figure, e.g. a `CHASE_LIMIT` priced off the limit; the stale fallback
+beats a fabricated zero). Factored into ONE shared function BEFORE two
+independent inline copies could drift, not after — both `_maybe_enter_
+swing` and `simulate_swing_entries` call it identically. `tools/
+simulate.py` additionally reordered: `decide()` now runs per-plan before
+`rank()`, not after, so its own `rr_live` values are available in time
+to feed the ranking rather than only the post-rank BUY/WAIT filter.
+
+### 4 — VERIFIED
+
+5 new checks in `tests/test_stage_e5_live_rr_ranking.py`, demonstrated
+failing first: `git stash` on all three touched source files (`analysis/
+entry_ranking.py`, `intraday/engine.py`, `tools/simulate.py`), all 5
+failed (3 on the missing import, 2 structural call-site checks) against
+fully reverted source, restored and all 5 passed. Two are direct unit
+tests of the new pure function and its effect through `score_plan()`
+(HAL's own numbers: live rr=1.17 ranks materially below stale zone-low
+rr=14.09); the other two are source-inspection checks confirming both
+call sites actually use the shared function — the same class of
+call-site gap `check_shorts()` already greps for, because `_maybe_enter_
+swing` cannot be called directly in a unit test (needs a live Kite
+session, same reason no other method in that class has one) and a
+return-value test cannot see which function a call site used.
+`tools.verify`: 1019/1020. `tools.simulate` live: byte-identical output
+to pre-fix — this day's own stale `current_price` happened to already
+be close to its `implied_rr`'s own reference point, so no visible swing
+today; the mechanism itself is proven by the HAL anchor and the unit
+tests, not overclaimed from a day that doesn't happen to show it.
+
+### 5 — NOT DONE
+
+Stage E5's remaining two pieces — the AI's own lessons as checkable
+predicates, and weekly-structure confirmation pulled into the entry
+gate — were not built this session.

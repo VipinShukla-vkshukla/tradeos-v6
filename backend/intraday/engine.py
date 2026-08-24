@@ -2740,10 +2740,17 @@ class IntradayEngine:
         # `here` is still computed either way — act_on_candidates' own
         # rationale string below reads it, and a plan's rank stays worth
         # recording even when it is not the gate.
+        #
+        # LIVE R:R, NOT THE PIPELINE'S — Track E, Stage E5, 24-Aug-2026.
+        # score_plan() ranks partly on implied_rr, which is written ONLY
+        # by the evening pipeline and never refreshed — `d.rr_live` (this
+        # method's own decide() result, computed at `ltp` moments ago) is
+        # the true live figure. See entry_ranking.live_ranking_input()'s
+        # own docstring for the HAL numbers this closes the gap on.
         here = None
         try:
-            from analysis.entry_ranking import score_plan, rank
-            here = score_plan(c)
+            from analysis.entry_ranking import score_plan, rank, live_ranking_input
+            here = score_plan(live_ranking_input(c, getattr(d, "rr_live", None)))
 
             # ABSOLUTE RANK FLOOR — F-43, 20-Aug-2026. The top-N gate right
             # below is a RELATIVE check against today's field, and it is

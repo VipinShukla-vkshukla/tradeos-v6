@@ -150,7 +150,7 @@ def simulate_swing_entries(sb) -> dict:
     """
     _hdr("SWING AUTO-ENTRY (dry run)")
     from analysis.trade_decision import decide
-    from analysis.entry_ranking import rank
+    from analysis.entry_ranking import rank, live_ranking_input
     from execution.gates import trading_mode
     from execution import paper_broker
     from config import TOTAL_CAPITAL, cfg_bool, cfg_int
@@ -177,7 +177,27 @@ def simulate_swing_entries(sb) -> dict:
     held = {r["symbol"] for r in open_rows}
     regime = plans[0].get("regime") if plans else "NEUTRAL"
 
-    ranked = {r.symbol: r for r in rank(plans)}
+    # LIVE R:R BEFORE RANKING, NOT AFTER — Track E, Stage E5, 24-Aug-2026.
+    # Same gap found and fixed in intraday/engine.py::_maybe_enter_swing
+    # the same day, and the same copy-drift shape F-71 §3 already found
+    # once in this exact file (an incomplete policy dict): rank(plans)
+    # used to run on the raw plans list before decide() was even called,
+    # so it never saw a live figure either. decide() now runs first, one
+    # plan-symbol keyed decisions dict, its rr_live feeding entry_ranking.
+    # live_ranking_input() — the SAME function the daemon calls — and the
+    # loop below reuses these decisions rather than calling decide() twice.
+    decisions = {}
+    for p in plans:
+        sym = p.get("symbol")
+        if not sym or sym in held:
+            continue
+        decisions[sym] = decide(p, None, total_capital=TOTAL_CAPITAL,
+                                open_positions=open_rows, regime=regime,
+                                max_chase_pct=p.get("ai_max_chase_pct") or None)
+
+    ranked = {r.symbol: r for r in rank(
+        [live_ranking_input(p, getattr(decisions.get(p.get("symbol")), "rr_live", None))
+         for p in plans])}
     plans.sort(key=lambda p: -(ranked[p["symbol"]].total if p.get("symbol") in ranked else 0))
 
     logger.info("")
@@ -190,10 +210,8 @@ def simulate_swing_entries(sb) -> dict:
         rk = ranked.get(sym)
         if sym in held:
             continue
-        d = decide(p, None, total_capital=TOTAL_CAPITAL,
-                   open_positions=open_rows, regime=regime,
-                   max_chase_pct=p.get("ai_max_chase_pct") or None)
-        if d.action not in ("BUY_NOW", "CHASE_LIMIT"):
+        d = decisions.get(sym)
+        if d is None or d.action not in ("BUY_NOW", "CHASE_LIMIT"):
             continue
         considered += 1
         qty = int(d.qty or 0)

@@ -85,6 +85,41 @@ def _f(v, d=0.0) -> float:
         return d
 
 
+def live_ranking_input(p: dict, rr_live: float | None) -> dict:
+    """
+    Override a plan's `implied_rr` with the truly live figure before
+    ranking it, when one is available.
+
+    Track E, Stage E5, 24-Aug-2026. `score_plan()`'s own R:R term claims
+    "implied_rr is the live figure... a plan that has already run is a
+    worse trade than it was when written, and only implied_rr knows
+    that" — but `implied_rr` is written ONLY by the evening pipeline
+    (final_snapshot.py / generate_signals.py) and nothing refreshes it
+    between then and a live entry decision. `analysis.trade_decision.
+    decide()` computes the real thing — `rr_live`, reward:risk AT the
+    live price — and it was going unused at BOTH places that rank
+    candidates for a scarce entry slot: `intraday/engine.py::
+    _maybe_enter_swing` and `tools/simulate.py::simulate_swing_entries`.
+    Factored here once both had independently grown the identical
+    override, rather than after a THIRD copy drifts from the other two —
+    the exact shape `tools/simulate.py`'s incomplete exit-policy dict
+    (F-71 §3) already cost a session once.
+
+    HAL, 21-Aug-2026: zone_low drifted 4779 -> 4808 across three prior
+    signal snapshots while stop/target stayed fixed. rr_at_zone_low
+    ranged 7.63-14.09 depending which snapshot you read; rr_live at the
+    actual fill (5010.20) was 1.17. Ranking on whichever stale
+    `implied_rr` a candidate dict still carried, instead of 1.17, is
+    exactly the gap this closes.
+
+    `rr_live=None` leaves `p` untouched — a plan can legitimately have no
+    live figure (e.g. a CHASE_LIMIT proposal priced off the limit rather
+    than ltp, or `decide()` never having run), and the stale pipeline
+    value is a better fallback than a fabricated zero.
+    """
+    return {**p, "implied_rr": rr_live} if rr_live is not None else p
+
+
 def score_plan(p: dict) -> Ranked:
     """
     Rank one plan. Higher is better. Nothing here is a gate.
