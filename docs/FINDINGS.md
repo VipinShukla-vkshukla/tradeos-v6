@@ -13153,3 +13153,127 @@ tests, not overclaimed from a day that doesn't happen to show it.
 Stage E5's remaining two pieces — the AI's own lessons as checkable
 predicates, and weekly-structure confirmation pulled into the entry
 gate — were not built this session.
+
+## 2026-08-24 — F-75 (change, Track E Stage E5) — investigated pieces 2
+and 3; found and fixed a serious, 100%-reproducible pre-existing bug in
+piece 3's own underlying mechanism along the way. Branch
+`feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 1024/1025 (5 new checks; same pre-existing
+unrelated Stage D4 issue). `tools.simulate` against the real 3-position
+book.
+
+### 1 — PIECE 2 INVESTIGATED, NOT BUILT: THE EVIDENCE DOES NOT SUPPORT IT YET
+
+The roadmap's own motivating anecdote — "HAL's 20-Aug note literally read
+'avoiding chasing after a sharp rally' ... one day before the same AI
+approved a trade that did exactly that" — does not survive a literal
+check. That lesson's stated trigger was `RSI-W > 85`; HAL's real
+`rsi_weekly` on its 21-Aug entry day was 66.2. No self-contradiction on
+the lesson's own stated terms.
+
+What IS real: `ai_max_chase_pct` (the AI's own per-candidate chase
+ceiling, already wired into `decide()`) was 2.0 on 20-Aug and **NULL on
+21-Aug, the actual entry day** — `ai_tier` also dropped `TIER_1` ->
+`WATCH_CLOSELY` the same day. `decide()` silently treats a null cap as
+no cap at all. But HAL's actual raw chase was only 0.94% — under even
+the prior day's 2.0% cap — so carrying that value forward would not have
+stopped this specific trade either; the damage was in R:R retention
+(F-74), not raw chase distance, again.
+
+The `lessons` table itself has a real track record (1369 rows, 526 with
+`times_applied > 0` — larger than an earlier, recency-biased 15-row
+sample suggested) but is applied ENTIRELY through LLM self-judgment
+(fed as prompt context, self-reported back as `lessons_applied`) with no
+deterministic enforcement — HAL's own entry day is a live example of
+that self-application silently regressing with nothing else to catch it.
+Hard-coding a refusal on R:R retention was considered and rejected: on
+the 16-position quantify sample (F-74), the winners and losers sit close
+enough together in retention-fraction space (AIIL 0.134 WIN vs.
+TRAVELFOOD 0.057 LOSS) that any threshold tight enough to exclude
+TRAVELFOOD also risks excluding real winners — the "check that cannot
+PASS" failure mode this project explicitly guards against, on a sample
+far too thin to set a hard line with confidence. Not built. A genuine
+validated track-record study of `lessons.times_worked/times_applied`
+belongs to Stage E6 ("the learning core"), not E5's entry-gate scope.
+
+### 2 — PIECE 3: THE UNDERLYING MECHANISM WAS DEAD, FIXED FIRST
+
+Piece 3 asked to pull `weekly_structure` into the entry gate, conditioned
+on it being "a real signal, not decoration." Checking that turned up
+something more serious: `control/exit_rules.py::assess_trend()` — the
+EXISTING exit-side consumer of `weekly_structure`, read by
+`deterioration_check()`, the 3R runner decision, and this session's own
+Stage E4 early-invalidation rung — string-matched the field against
+`HIGHER/UPTREND/BULLISH/HH` and `LOWER/DOWNTREND/BEARISH/LL`. Confirmed
+live via SQL: `compute_msl.py` has never emitted any of those four
+strings. Its real, and only, four values are `STRONG`/`CONSOLIDATING`/
+`CAUTION`/`WEAK` — 1886/395/263/228 rows respectively. Verified in
+Python directly against all four real values: zero matches, either
+branch, always. Same shape as the documented "RISK ON" vs "RISK_ON"
+collision (migration 048) and the unreachable STRONG regime bucket.
+
+Worse than inert: `checks += 1` fired regardless of whether the value
+matched, for every one of the ~2.7k rows carrying a non-empty
+`weekly_structure` — the majority of all trend assessments. `score =
+len(for_) / checks`, so this silently DEFLATED the score for most
+positions: a check that could structurally never contribute to the
+numerator was still inflating the denominator. A position with real
+bullish evidence elsewhere (e.g. RSI in trend) plus a genuinely STRONG
+weekly structure scored 0.5 instead of the clean 1.0 both signals
+actually earned.
+
+`compute_msl.py`'s own classification (lines 1153-1156) gave the correct
+mapping directly, not guessed: `STRONG` = weekly higher-high AND
+higher-low (score 90) -> for_. `WEAK` = neither (15) -> against.
+`CAUTION` = higher-high WITHOUT the higher-low sequence (42) — a new
+high with the underlying structure already broken, a real distribution
+warning, not a reason for patience -> against. `CONSOLIDATING` =
+higher-low only, not yet confirming (65) — genuinely ambiguous, kept
+NEUTRAL and no longer incremented into `checks` at all, matching this
+function's own stated philosophy ("missing inputs count as neither for
+nor against") extended to an ambiguous value rather than reinterpreting
+it as bullish. Quantify pass against real closed-position outcomes was
+attempted first but the sample was too thin to validate directionally
+(n=15 STRONG / 2 CONSOLIDATING / 1 WEAK, zero CAUTION rows) — the fix
+instead rests on `compute_msl.py`'s own already-computed numeric
+ordering, not a fresh backtest.
+
+Applied as a direct correctness fix, not gated behind a new switch —
+matching this session's own F-67/F-69 precedent for restoring already-
+live logic to its intended behaviour, distinct from the Stage E3/E4
+features that were genuinely NEW capability and shipped OFF by design.
+
+**Live proof, real book:** HINDCOPPER's verdict actually flipped —
+`INTACT (67%)` before this fix, `STRONG (78%)` after — it was being
+under-credited. AARTIIND and HAL both rose in confidence (`78%` ->
+`89%`) with unchanged verdicts. No position's score fell. Confirmed no
+consumer distinguishes `STRONG` from `INTACT` individually (`should_run`
+groups both), so nothing on today's book actually changes DECISION —
+this session's fix improves accuracy for the borderline cases (FADING
+vs. INTACT, `has_evidence` threshold crossings) it will matter for going
+forward, not today's specific book.
+
+Pulling the now-correctly-working signal INTO the entry gate — piece
+3's original literal scope — was not done this session: the same thin-
+sample problem that blocked piece 2 applies here too, and fixing the
+prerequisite bug first, rather than building a new consumer on top of a
+mechanism that was silently broken, was judged the higher-value use of
+this session's remaining time.
+
+### 3 — VERIFIED
+
+5 new checks in `tests/test_stage_e5_weekly_structure_vocabulary.py`,
+demonstrated failing first: `git stash` on `control/exit_rules.py`, all
+5 failed against the reverted (buggy) source with the exact predicted
+failure shapes (STRONG scoring 0.0 instead of 1.0, the dilution case
+scoring 0.5 instead of 1.0), restored and all 5 passed. `tools.verify`:
+1024/1025.
+
+### 4 — STAGE E5 STATUS
+
+Piece 1 (F-74) built and verified. Piece 2 investigated, not built —
+evidence does not support it yet. Piece 3's prerequisite bug found and
+fixed; the entry-gate extension itself not built, same reason as piece
+2. All three conclusions are evidence-based "not yet," not oversights —
+consistent with this project's own quantify-before-build discipline.

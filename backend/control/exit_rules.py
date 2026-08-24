@@ -112,12 +112,35 @@ def assess_trend(sig: dict, pos: dict | None = None) -> TrendQuality:
         else:
             against.append(f"below 50DMA ({dist50:.1f}%)")
 
+    # VOCABULARY FIXED — Track E, Stage E5, 24-Aug-2026. This matched
+    # against HIGHER/UPTREND/BULLISH/HH and LOWER/DOWNTREND/BEARISH/LL —
+    # none of which the schema has ever emitted. compute_msl.py's actual
+    # four values are STRONG/CONSOLIDATING/CAUTION/WEAK (1886/395/263/228
+    # rows respectively), so this check could not match EITHER branch for
+    # ANY position, ever, on any of the ~2.7k rows carrying it — yet
+    # `checks += 1` fired regardless, silently deflating `score` (len(
+    # for_)/checks) for the MAJORITY of trend assessments this whole
+    # session's Stage E4 work (deterioration_check, early invalidation,
+    # the 3R runner decision) reads `tq.verdict` from. Same shape as the
+    # documented "RISK ON" vs "RISK_ON" collision (migration 048) and the
+    # unreachable STRONG regime bucket — a vocabulary that was never the
+    # schema's own.
+    #
+    # compute_msl.py's own classification (wk_hh=weekly higher-high,
+    # wk_hl=weekly higher-low): STRONG=both (score 90), CONSOLIDATING=
+    # higher-low only (65, holding support, not yet confirming), CAUTION=
+    # higher-high only (42 — new highs WITHOUT the higher-low sequence, a
+    # real distribution warning, not a good sign despite the fresh high),
+    # WEAK=neither (15). CONSOLIDATING stays neutral — genuinely ambiguous
+    # (still building a base, not yet proven either way), matching this
+    # function's own "missing inputs count as neither" philosophy rather
+    # than reinterpreting an ambiguous state as bullish evidence.
     ws = (sig.get("weekly_structure") or "").upper()
-    if ws:
+    if ws in ("STRONG", "CAUTION", "WEAK"):
         checks += 1
-        if any(k in ws for k in ("HIGHER", "UPTREND", "BULLISH", "HH")):
-            for_.append(f"weekly structure {ws.lower()}")
-        elif any(k in ws for k in ("LOWER", "DOWNTREND", "BEARISH", "LL")):
+        if ws == "STRONG":
+            for_.append("weekly structure strong")
+        else:
             against.append(f"weekly structure {ws.lower()}")
 
     # ── Momentum: still in trend territory, not exhausted ───────────────────

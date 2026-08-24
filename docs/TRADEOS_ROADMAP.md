@@ -1282,8 +1282,29 @@ parallel penalty next to a mechanism that already existed but didn't
 work — smaller change, same effect, no new config switch needed. Full
 detail: `docs/FINDINGS.md` F-74.
 
-**Pieces 2–3 (AI lessons as predicates, weekly-structure confirmation)
-— not started.**
+**Pieces 2–3 — INVESTIGATED, both evidence-based "not yet," 24-Aug-2026
+(F-75).** Piece 2: the roadmap's own HAL/20-Aug anecdote doesn't survive
+a literal check (the lesson's stated trigger, RSI-W>85, wasn't met —
+HAL's real rsi_weekly was 66.2). `ai_max_chase_pct` was null on the
+actual entry day (2.0 the day before) but even carrying it forward
+wouldn't have stopped this trade (real chase was 0.94%, under any
+sensible cap) — R:R retention (piece 1) is the real mechanism, and the
+sample (n=16) is too thin to set a hard refusal on it without risking a
+threshold no real winner can clear. Piece 3: found first that its own
+prerequisite — `assess_trend()`'s EXISTING exit-side use of
+`weekly_structure` — was silently dead (wrong vocabulary, same shape as
+migration 048's "RISK ON"/"RISK_ON" collision) and, worse, was
+deflating the trend score for the majority of positions by inflating
+`checks` without ever contributing evidence. Fixed as a direct
+correctness fix (not gated — restoring already-live logic, same
+precedent as F-67/F-69). Live proof: HINDCOPPER's verdict flipped
+INTACT(67%) -> STRONG(78%); AARTIIND/HAL rose in confidence with
+unchanged verdicts; nothing on today's book actually changes decision
+(no consumer treats STRONG differently from INTACT), so this improves
+accuracy for future borderline cases rather than today's book. Pulling
+the now-working signal into the entry gate — piece 3's original literal
+scope — was not done; same thin-sample reasoning as piece 2. Full
+detail: `docs/FINDINGS.md` F-75.
 
 ## Stage E6 — The learning core
 
