@@ -380,6 +380,19 @@ def main(once: bool = False, dry: bool = False) -> None:
                 # see requeue_runway_refused_shorts(). Self-gated to run once,
                 # only in the OPENING phase; off by default.
                 engine.requeue_runway_refused_shorts()
+                # Stage D6, 24-Aug-2026 — ships OFF (intraday_candidate_
+                # shadow_enabled defaults false). Templated shadow detectors
+                # for operator-approved discover_engines.py candidates; see
+                # intraday/candidate_shadow.py's own module docstring for
+                # why the slow timer is the right cadence (nothing here
+                # changes faster than once per session).
+                try:
+                    from intraday import candidate_shadow
+                    n = candidate_shadow.check(engine)
+                    if n:
+                        logger.debug(f"  candidate_shadow: {n} shadow detection(s)")
+                except Exception as e:
+                    logger.debug(f"  candidate_shadow check failed: {e}")
                 # UNFILLED EXITS GET WALKED FORWARD. On the slow timer for
                 # the same reason gtt_manager.sync() is: a modify is a broker
                 # write. Placed before refresh_advisory so an exit that is

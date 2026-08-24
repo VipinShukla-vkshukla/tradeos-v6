@@ -105,12 +105,28 @@ def _hdr(t: str) -> None:
     logger.info("─" * 72)
 
 
-def _propose(sb, subject: str, evidence: str, confidence: float) -> None:
+def _propose(sb, subject: str, evidence: str | dict, confidence: float) -> None:
     """
     Raise a SHADOW candidate. Same table as every other proposal, so a discovery
     is reviewed exactly like a retirement rather than through a side channel.
+
+    `evidence` ACCEPTS A DICT AS WELL AS A PLAIN STRING — Stage D6, 24-Aug-
+    2026. `brain_proposals.evidence` is already JSONB (was, before this
+    change, only ever written a bare string). Pass A (`refused_but_right`)
+    keeps passing a string, unchanged. Pass B (`moved_but_unseen`) now
+    passes a dict carrying the SAME numbers already computed for the log
+    line and the `why` sentence — `feature_name`, `rate`, `lift`, `n_tot`,
+    `n_miss`, `closed_strong_rate`, `avg_move_pct`, `move_threshold_pct` —
+    plus a `summary` key holding that same human sentence, so
+    `intraday/candidate_template.py::from_proposal()` never has to parse
+    free text to build a shadow strategy from an approved candidate. A
+    validated numeric split parsed back out of a sentence was explicitly
+    refused once already in this codebase (`allocation/allocator.py::
+    refresh_priority_criteria()`'s own docstring); this is the structured
+    alternative for exactly the class of proposal that needs it.
     """
     from tools.weekly_review import _RUN_ID
+    rationale = evidence.get("summary") if isinstance(evidence, dict) else evidence
     try:
         existing = (sb.table("brain_proposals").select("id")
                       .eq("proposal_type", "ENGINE_CANDIDATE")
@@ -119,7 +135,7 @@ def _propose(sb, subject: str, evidence: str, confidence: float) -> None:
         row = {"analysis_run_id": _RUN_ID, "proposal_type": "ENGINE_CANDIDATE",
                "target_key": subject, "current_value": "does not exist",
                "proposed_value": "build as SHADOW", "evidence": evidence,
-               "rationale": evidence, "confidence": confidence,
+               "rationale": rationale, "confidence": confidence,
                "status": "PENDING", "source": "discover_engines", "priority": 3}
         if existing:
             sb.table("brain_proposals").update(row).eq("id", existing[0]["id"]).execute()
@@ -222,6 +238,39 @@ def refused_but_right(sb, days: int) -> int:
 
 
 # ── Pass B ──────────────────────────────────────────────────────────────────
+
+def _f(v, d=0.0):
+    try:
+        return float(v) if v is not None else d
+    except (TypeError, ValueError):
+        return d
+
+
+# MODULE LEVEL, NOT LOCAL TO moved_but_unseen() — Stage D6, 24-Aug-2026.
+# intraday/candidate_template.py::FEATURE_TRANSLATORS translates each of
+# these SAME 11 keys onto live SymbolContext fields, and its own test
+# (tests/test_candidate_template.py::test_translators_cover_every_
+# discover_engines_feature) imports this dict directly to pin the two in
+# sync — a future feature added here with no live translation added there
+# would otherwise be silently invisible to Stage D6 rather than a failing
+# test. Semantics unchanged: features are all from the PRIOR row —
+# knowable at the open, before the move. A feature read from the same day
+# describes the outcome and would make every bucket look predictive.
+feats = {
+    "gap down > 1%":        lambda p, m: m["gap"] <= -1.0,
+    "flat open +/-0.3%":    lambda p, m: abs(m["gap"]) <= 0.3,
+    "gap up > 1%":          lambda p, m: m["gap"] >= 1.0,
+    "prior volume > 1.5x":  lambda p, m: _f(p.get("vol_ratio")) > 1.5,
+    "prior volume < 0.8x":  lambda p, m: 0 < _f(p.get("vol_ratio")) < 0.8,
+    "ADX > 25 (trending)":  lambda p, m: _f(p.get("adx")) > 25,
+    "ADX < 18 (choppy)":    lambda p, m: 0 < _f(p.get("adx")) < 18,
+    "ATR > 3% (volatile)":  lambda p, m: _f(p.get("atr_pct")) > 3.0,
+    "delivery > 60%":       lambda p, m: _f(p.get("delivery_pct")) > 60,
+    "RS vs NIFTY > 5":      lambda p, m: _f(p.get("rs_vs_nifty")) > 5,
+    "extended > 8% o/50MA": lambda p, m: _f(p.get("dist_sma50")) > 8,
+}
+
+
 def moved_but_unseen(sb, days: int) -> int:
     """
     Real intraday moves that produced no detection from any engine.
@@ -308,29 +357,6 @@ def moved_but_unseen(sb, days: int) -> int:
     # candidate if the move rate is materially higher than the background AND
     # the engines missed it.
     #
-    # Features are all from the PRIOR row — knowable at the open, before the
-    # move. A feature read from the same day describes the outcome and would
-    # make every bucket look predictive.
-    def _f(v, d=0.0):
-        try:
-            return float(v) if v is not None else d
-        except (TypeError, ValueError):
-            return d
-
-    feats = {
-        "gap down > 1%":        lambda p, m: m["gap"] <= -1.0,
-        "flat open +/-0.3%":    lambda p, m: abs(m["gap"]) <= 0.3,
-        "gap up > 1%":          lambda p, m: m["gap"] >= 1.0,
-        "prior volume > 1.5x":  lambda p, m: _f(p.get("vol_ratio")) > 1.5,
-        "prior volume < 0.8x":  lambda p, m: 0 < _f(p.get("vol_ratio")) < 0.8,
-        "ADX > 25 (trending)":  lambda p, m: _f(p.get("adx")) > 25,
-        "ADX < 18 (choppy)":    lambda p, m: 0 < _f(p.get("adx")) < 18,
-        "ATR > 3% (volatile)":  lambda p, m: _f(p.get("atr_pct")) > 3.0,
-        "delivery > 60%":       lambda p, m: _f(p.get("delivery_pct")) > 60,
-        "RS vs NIFTY > 5":      lambda p, m: _f(p.get("rs_vs_nifty")) > 5,
-        "extended > 8% o/50MA": lambda p, m: _f(p.get("dist_sma50")) > 8,
-    }
-
     # Calibrate what counts as a big move against THIS universe, before using
     # it as a denominator. See _move_threshold.
     all_moves = []
@@ -409,8 +435,19 @@ def moved_but_unseen(sb, days: int) -> int:
                        f"({rate:.0%} of {n_tot})  {n_miss} missed, avg {avg:.2f}%")
         logger.info("      e.g. " + ", ".join(
             f"{m['symbol']} {m['date']} +{m['move']:.1f}%" for m in hits[:3]))
-        _propose(sb, f"UNSEEN/{name}", why,
-                 0.6 if n_miss >= MIN_OCCURRENCES * 2 else 0.4)
+        # Structured, not just the sentence above — Stage D6, 24-Aug-2026.
+        # `feature_name` is the LITERAL key into this function's own `feats`
+        # dict, the one piece of information intraday/candidate_template.py
+        # needs to find the SAME predicate this discovery already tested,
+        # rather than re-deriving one from `why`'s prose.
+        _propose(sb, f"UNSEEN/{name}", {
+            "summary": why, "feature_name": name,
+            "rate": round(rate, 4), "lift": round(lift, 2),
+            "n_tot": n_tot, "n_miss": n_miss,
+            "closed_strong_rate": round(strong, 4),
+            "avg_move_pct": round(avg, 3),
+            "move_threshold_pct": round(move_pct, 3),
+        }, 0.6 if n_miss >= MIN_OCCURRENCES * 2 else 0.4)
 
     if not found:
         logger.info("  no prior-day condition predicts these moves better than "

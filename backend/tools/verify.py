@@ -150,6 +150,9 @@ MODULES = [
     ("engine depth overlay onto contexts (Stage D4)", "tests.test_apply_live_depth"),
     ("same-day self-monitor (Stage D5, shipped inert)", "tests.test_same_day_fit"),
     ("same-day calibration walk-forward (Stage D5)", "tests.test_same_day_calibration"),
+    ("templated candidate engine (Stage D6)", "tests.test_candidate_template"),
+    ("templated candidate shadow runner (Stage D6)", "tests.test_candidate_shadow"),
+    ("candidate approval decision (Stage D6)", "tests.test_approve_candidate"),
 ]
 
 

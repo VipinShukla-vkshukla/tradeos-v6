@@ -966,3 +966,44 @@ shadow code without a human writing it, a stated minimum of shadow
 detections logged, and the operator's own decision — informed by the
 shadow log, exactly like every other proposal here — on whether it
 graduates toward Stage C-style promotion.
+
+**Built, 24-Aug-2026, on `feat/intraday-evolution` directly (not a fifth
+separate branch — built on top of the just-consolidated D2–D5 branch).**
+Scope agreed with the operator first: all 11 of `discover_engines.py`'s
+Pass B features (not just the 3 gap-based ones with an existing intraday
+translation — the operator chose the larger scope), LONG only (the raw
+feature name never specifies direction; see gap_down_bounce.py's own
+docstring). Every templated candidate reuses ONE fixed, generic shape
+rather than inventing mechanism per candidate: the discovered daily-bar
+condition as a filter, a single-bar VWAP reclaim (GDB's own reused
+mechanism) as the live trigger, a structural stop via
+`risk_from_structure()`, a fixed R-multiple target. `"gap down > 1%"` is
+explicitly excluded — GDB already covers it.
+
+Two real gaps found and closed before either shipped armed. First:
+`brain_proposals.evidence` was JSONB but only ever written a bare string
+— fixed by having Pass B write structured evidence (`feature_name`,
+`lift`, `avg_move_pct`, `closed_strong_rate`, …) alongside the same
+summary sentence, so the template never has to parse prose. Second, more
+serious: no approval mechanism existed for `ENGINE_CANDIDATE` proposals at
+all (`tools/proposal_backtest.py`'s own docstring: "nothing exists to
+replay"), and the FIRST fix — a new `SHADOW_APPROVED` status — was wrong.
+Real `brain_proposals` rows showed `status=APPROVED` is already the
+precedented human-approval mechanism for this exact type (proposals
+#188/#190 became GDB this way), safe specifically because
+`ENGINE_CANDIDATE` sits in `REVIEW_ONLY`. Corrected before shipping:
+`tools/approve_candidate.py` now calls the EXISTING `approve_proposal()`
+rather than inventing a parallel status that would have fragmented one
+human decision into two fields nothing kept in sync.
+
+Live-verified, not just offline: `tools.discover_engines --days 30`
+raised a genuine fresh candidate (`gap up > 1%`, 1.6x lift, 88% closed
+strong); `tools.approve_candidate --id 186 --dry` read that real row and
+built a valid candidate end to end. Left `PENDING`, not approved — that
+decision is the operator's, even though its only consequence today is a
+shadow-only log. F-66 (docs/FINDINGS.md) has the full detail.
+
+**Ships OFF** (`intraday_candidate_shadow_enabled=false`, no candidate
+currently `APPROVED`). Gate D6 needs a real armed session with at least
+one approved candidate — deferred to the same single holistic pass as
+every other Track D gate.

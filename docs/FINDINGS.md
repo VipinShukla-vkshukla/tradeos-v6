@@ -12239,3 +12239,131 @@ branches (`feat/intraday-live-universe`, `feat/intraday-event-core`,
 place, not deleted — kept as a safety net until this branch is verified
 in a live session, per the operator's own preference. On
 `feat/intraday-evolution`, not merged into `main`.
+
+## 2026-08-24 — F-66 (new mechanism built + a real status-literal
+collision caught before shipping) — Stage D6: automatic discovery-to-
+shadow-strategy pipeline. Branch `feat/intraday-evolution` (built directly
+on the just-consolidated Track D branch, not a fifth separate branch).
+
+**Ran:** `tools.verify` — 963 checks, 93 modules, green (F-65's own 930
+plus 33 new). `tools.health` clean, 24/24. Live: `tools.discover_engines
+--days 30` run for real, producing a fresh structured Pass B candidate
+(proposal #186, `gap up > 1%`); `tools.approve_candidate --id 186 --dry`
+confirmed the full read→parse→approve chain against that real row without
+error. Three more real refusal paths confirmed live against existing
+production rows — see §5.
+
+### 1 — SCOPE, AGREED WITH THE OPERATOR BEFORE BUILDING
+
+The roadmap's own D6 text under-specifies two real forks: which of the 11
+raw discovered features to template (only 3 map onto SymbolContext fields
+that already exist; the other 8 need new plumbing), and whether a
+templated candidate may ever go SHORT (the raw feature name never
+specifies direction — see gap_down_bounce.py's own docstring warning
+about exactly this). Asked directly rather than assumed. Answers: all 11
+features (the operator chose the larger scope over my own gap-only
+recommendation), LONG only.
+
+### 2 — WHAT "TEMPLATED" ACTUALLY MEANS, AND WHY
+
+`tools/discover_engines.py`'s Pass B (`moved_but_unseen`) measures, from
+`stock_data_daily` (one row per symbol-day), whether a prior-day condition
+preceded a big move no engine caught — a POPULATION worth testing, not an
+intraday entry rule on its own. GDB's own docstring is explicit that
+turning such a finding into a real engine needed genuine judgment (which
+mechanism to reuse, where to place the stop) a template cannot invent. So
+every templated candidate reuses ONE fixed, generic shape instead of
+inventing new mechanism per candidate: the discovered daily-bar condition
+as a FILTER (`intraday/candidate_template.py::FEATURE_TRANSLATORS`, the
+same 11 keys as `discover_engines.py`'s own `feats` dict, hoisted to
+module level there specifically so a test can pin the two in sync), a
+single-bar VWAP reclaim — GDB's own reused mechanism, reused a second time
+— as the TRIGGER (most of the 11 conditions describe YESTERDAY and do not
+change intraday; without a live trigger they would fire on every
+evaluation of every qualifying name all session), a structural stop via
+`risk_from_structure()` under the swing low made below VWAP (GDB's own
+stop mechanic, reused verbatim), and a fixed R-multiple target
+(deliberately simpler than any hand-tuned engine's target logic — the
+point of shadow here is testing whether auto-generated code runs and
+detects sensibly, a lower bar than testing whether it trades well).
+`"gap down > 1%"` is explicitly excluded — GDB already covers exactly
+that population; templating a duplicate tests nothing new.
+
+### 3 — A REAL GAP CLOSED FIRST: STRUCTURED EVIDENCE
+
+`brain_proposals.evidence` is JSONB but had only ever been written a bare
+string. A template reading a free-text sentence to recover which feature
+fired and how strong the evidence was would be exactly the "reading a
+validated split back out of prose" this codebase has already refused once
+(`allocation/allocator.py::refresh_priority_criteria()`'s own docstring).
+Fixed at the source: `discover_engines.py::_propose()` now accepts a dict
+as well as a string, and Pass B passes one — `feature_name` (the literal
+`feats` key), `rate`, `lift`, `n_tot`, `n_miss`, `closed_strong_rate`,
+`avg_move_pct`, `move_threshold_pct`, plus `summary` (the same sentence,
+for the review display). `weekly_review.py`'s own display line updated to
+show `.summary` rather than a raw dict repr. Pass A keeps writing a plain
+string, unchanged — this is additive, not a format migration.
+
+### 4 — A SECOND REAL GAP: NO APPROVAL MECHANISM EXISTED FOR THIS
+PROPOSAL TYPE, AND THE FIRST FIX FOR IT WAS WRONG
+
+`tools/proposal_backtest.py`'s own docstring already establishes
+`ENGINE_CANDIDATE` proposals can never reach `status=VALIDATED` through
+the existing automated out-of-sample re-check ("proposes a pattern with
+NO engine built yet — nothing exists to replay"). The FIRST version of
+`tools/approve_candidate.py` therefore invented a new status,
+`SHADOW_APPROVED`, reasoning that nothing existing applied. WRONG, caught
+before it shipped: querying real `brain_proposals` rows directly showed
+`status='APPROVED'` is ALREADY the real, precedented human-approval
+mechanism for this exact proposal type — proposals #188 and #190 became
+GDB this way — and `swing/brain/backtester_and_change_manager.py`'s own
+`REVIEW_ONLY` set (which `ENGINE_CANDIDATE` already belongs to) is
+specifically what makes `APPROVED` safe here: `apply_proposal()`
+acknowledges and returns for any `REVIEW_ONLY` type, never reaching the
+`system_config`/`strategy_config` write path. Inventing a second,
+parallel "approved" status would have fragmented one real human decision
+into two fields nothing kept in sync — the identical near-homophone risk
+`docs/TERMINOLOGY.md` exists to prevent, just for a `status` column
+instead of a regime string. Fixed by deleting the invented status
+entirely: `tools/approve_candidate.py` now calls the EXISTING
+`approve_proposal()` directly (never reimplement a decision, import it),
+adding exactly one thing that function does not have on its own — it
+refuses to approve a row `candidate_template.py` cannot actually use, so
+"approved" and "will produce shadow activity" never diverge silently.
+
+### 5 — VERIFIED, PRECISELY, INCLUDING FOUR LIVE REFUSAL PATHS
+
+963/963 offline checks (27 new pin the two gap-closures above: one
+asserting `FEATURE_TRANSLATORS`' 11 keys stay a byte-identical mirror of
+`discover_engines.feats`, others asserting `from_proposal()` refuses
+every malformed shape — Pass A subjects, the GDB-covered feature,
+unrecognised feature names, missing ids, and (the one this session's own
+first-draft mistake would have needed) old-shape string evidence — never
+guessing at any of them). Live, against real production `brain_proposals`
+rows, not synthetic fixtures: `#186` (`UNSEEN/gap up > 1%`, still
+old-shape evidence at the time) correctly refused as un-templatable;
+`#191` (`UNSEEN/gap down > 1%`) correctly refused as GDB-covered; `#190`
+correctly refused as already `APPROVED`. Then `tools.discover_engines
+--days 30` run for real, producing a genuine fresh Pass B finding
+(`gap up > 1%`, 1.6x lift, 16 missed, 88% closed strong, avg +5.39%) that
+upserted structured evidence onto proposal `#186` — confirmed by direct
+query. `tools.approve_candidate --id 186 --dry` then read that SAME real
+row and correctly built a valid candidate end to end
+(`feature=gap up > 1%, avg_move_pct=5.39, lift=1.6x`). Proposal `#186`
+was deliberately left `PENDING`, not actually approved — per this
+project's own "the human decides at every gate" rule, approving a
+specific candidate for shadow testing is the operator's call to make, not
+mine, even though its only consequence is a shadow-only detection log.
+
+### 6 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+`intraday_candidate_shadow_enabled` ships `false`. No candidate is
+currently `APPROVED` (proposal #186 is ready and PENDING — the operator
+can run `python -m tools.approve_candidate --id 186` to approve it, which
+alone still produces nothing until the switch above is also armed).
+`candidate_shadow.check()` writes ONLY to `intraday_candidate_shadow`
+(migration 109) — never `intraday_setups`, `paper_broker`, or the
+allocator. Gate D6 ("a stated minimum of shadow detections logged")
+needs a real armed session with at least one approved candidate, the
+same evidence-accumulation deferral every prior Track D gate has carried.
+On `feat/intraday-evolution`, not merged into `main`.

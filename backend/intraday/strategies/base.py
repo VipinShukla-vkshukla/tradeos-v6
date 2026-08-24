@@ -225,6 +225,38 @@ class SymbolContext:
     # engine so "strong today" means one thing across the system.
     rs_vs_index_pct: float | None = None
 
+    # ── Prior-day precomputed indicators from stock_data_daily — Stage D6,
+    # 24-Aug-2026 (docs/TRADEOS_ROADMAP.md, Track D). Same "_daily" naming
+    # as atr_pct_daily/avg_volume_20d above: these are YESTERDAY's already-
+    # computed swing-pipeline indicators, read once per slow-timer refresh,
+    # NOT live intraday recomputations. tools/discover_engines.py's
+    # moved_but_unseen() reads these exact columns from the exact same
+    # table to characterise a discovered pattern BEFORE the move it
+    # predicts — these fields let a templated candidate engine
+    # (intraday/candidate_template.py) ask the identical question live,
+    # against the identical population, rather than a re-derived
+    # approximation that could silently drift from what discovery measured.
+    #
+    # rs_vs_nifty_daily IS DELIBERATELY A DIFFERENT FIELD FROM rs_vs_index_
+    # pct ABOVE, NOT A DUPLICATE. rs_vs_index_pct is TODAY's live relative
+    # strength (today's %-change vs the index's today's %-change, recomputed
+    # every refresh); rs_vs_nifty_daily is YESTERDAY's swing-pipeline RS
+    # figure, a different window and a different formula. Reading either one
+    # under the other's name would silently price a candidate on the wrong
+    # quantity — exactly the near-homophone collision docs/TERMINOLOGY.md
+    # exists to prevent.
+    adx_daily: float | None = None
+    delivery_pct_daily: float | None = None
+    rs_vs_nifty_daily: float | None = None
+    dist_sma50_daily: float | None = None
+    # Also deliberately distinct from avg_volume_20d above, which — despite
+    # its name — is populated from stock_data_daily's raw prior-day `volume`
+    # column, not a 20-day average (see that field's own definition). This
+    # one is vol_ratio: stock_data_daily's own precomputed prior-day ratio
+    # of that day's volume to its trailing average, the exact column
+    # discover_engines.py's "prior volume > 1.5x"/"< 0.8x" features read.
+    vol_ratio_daily: float | None = None
+
     # ── Provenance, so no decision runs on data of unknown age ──────────────
     #
     # WHY AGE IS A FIELD AND NOT A COMMENT.

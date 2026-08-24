@@ -551,7 +551,8 @@ class IntradayEngine:
         try:
             hist = (self.sb.table("stock_data_daily")
                       .select("symbol,date,high,low,close,atr_pct,volume,"
-                              "value_cr,sector")
+                              "value_cr,sector,adx,delivery_pct,rs_vs_nifty,"
+                              "dist_sma50,vol_ratio")
                       .in_("symbol", ref_symbols)
                       .order("date", desc=True).limit(len(ref_symbols) * 3)
                       .execute().data or [])
@@ -605,6 +606,25 @@ class IntradayEngine:
                 value_cr=(float(p.get("value_cr") or 0) or
                          (bench_entry.value_cr if bench_entry and bench_entry.value_cr else None)),
                 universe_population=bench_entry.source if bench_entry else "bench",
+                # Stage D6, 24-Aug-2026 — same prior-day stock_data_daily
+                # row as atr_pct_daily/avg_volume_20d above, read for
+                # intraday/candidate_template.py. See SymbolContext's own
+                # field comments for why each is named "_daily" and kept
+                # distinct from a similarly-named live field.
+                adx_daily=float(p.get("adx") or 0) or None,
+                delivery_pct_daily=float(p.get("delivery_pct") or 0) or None,
+                # Strict None-check here, not the "or 0 or None" shorthand
+                # above: rs_vs_nifty/dist_sma50 are SIGNED, and a genuine
+                # 0.0 (in line with NIFTY; sitting exactly at the 50MA) is
+                # a real, plausible reading the shorthand would silently
+                # collapse to "no data" — unlike adx/delivery_pct/vol_ratio,
+                # where a true 0.0 is rare enough that this codebase's
+                # existing fields already accept the same imprecision.
+                rs_vs_nifty_daily=(float(p["rs_vs_nifty"])
+                                   if p.get("rs_vs_nifty") is not None else None),
+                dist_sma50_daily=(float(p["dist_sma50"])
+                                  if p.get("dist_sma50") is not None else None),
+                vol_ratio_daily=float(p.get("vol_ratio") or 0) or None,
                 # Stamped so every consumer can ask how old this is. Contexts
                 # are rebuilt on the 300 s timer and read on the 15 s one.
                 as_of=datetime.now(IST),

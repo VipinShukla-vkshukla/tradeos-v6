@@ -858,7 +858,13 @@ def show_open(sb) -> int:
             logger.warning(f"  [{r.get('confidence')}] {r['proposal_type']} · "
                            f"{r['target_key']}: {r.get('current_value')} -> "
                            f"{r['proposed_value']}")
-            logger.info(f"      {str(r.get('evidence') or '')[:200]}")
+            # Stage D6, 24-Aug-2026: evidence can now be a structured dict
+            # (Pass B ENGINE_CANDIDATE rows) as well as the plain string
+            # every other proposal type still writes — show its own
+            # `summary` sentence rather than a raw dict repr.
+            ev = r.get("evidence")
+            ev_text = ev.get("summary") if isinstance(ev, dict) else ev
+            logger.info(f"      {str(ev_text or '')[:200]}")
     logger.info("")
     logger.info(f"  {len(rows)} total, {len(by_source)} source(s). "
                "These are PROPOSALS. Nothing changes until you act on one.")
