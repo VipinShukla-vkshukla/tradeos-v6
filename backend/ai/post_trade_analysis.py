@@ -430,6 +430,59 @@ def grade_trade_entry(signal_ctx: dict, trade: dict) -> str:
     return "C"   # default
 
 
+def backfill_entry_grades(sb, since: str | None = None,
+                          dry_run: bool = False) -> dict:
+    """
+    One-time backfill for closed SWING trades that predate migration 093 —
+    F-68 follow-up, 24-Aug-2026.
+
+    `main()`'s own loop only computes a grade the FIRST time a trade is
+    analysed; a trade already carrying a `lessons` row (the common case for
+    anything closed before today) is skipped by that loop's own dedup check
+    and would never pass through `grade = lesson.pop("_trade_grade", ...)`
+    again. Without this, `entry_grade` would only ever populate for trades
+    closing from today forward — leaving Stage E2's own "does the grade
+    predict outcome" question unanswerable for months.
+
+    Deliberately NARROWER than `analyze_trade()`: no AI call, no `lessons`
+    table write, no dedup bookkeeping — `grade_trade_entry()` is a pure
+    function of `signal_ctx` and `trade`, and that is all this needs to
+    compute the same grade a full analysis run would have produced.
+    SWING only, same scoping choice as the forward-fix in `main()`.
+    """
+    trades = fetch_all(lambda: sb.table("closed_positions").select("*")
+                       .is_("entry_grade", "null")
+                       .eq("framework", "SWING"))
+    if since:
+        trades = [t for t in trades if str(t.get("exit_date") or "") >= since]
+
+    dist: dict[str, int] = {"A": 0, "B": 0, "C": 0, "D": 0, "F": 0}
+    written = 0
+    for trade in trades:
+        sym         = trade.get("symbol", "")
+        signal_date = str(trade.get("signal_date") or trade.get("entry_date", ""))
+        entry_date  = str(trade.get("entry_date", ""))
+        signal_ctx  = load_signal_context(sb, sym, signal_date)
+        if not signal_ctx and signal_date != entry_date:
+            signal_ctx = load_signal_context(sb, sym, entry_date)
+        grade = grade_trade_entry(signal_ctx, trade)
+        dist[grade] = dist.get(grade, 0) + 1
+        if dry_run:
+            logger.info(f"  [DRY RUN] {sym} ({entry_date} -> "
+                       f"{trade.get('exit_date')}): grade {grade}")
+            continue
+        try:
+            sb.table("closed_positions").update(
+                {"entry_grade": grade}).eq("id", trade["id"]).execute()
+            written += 1
+        except Exception as e:
+            logger.warning(f"  {sym}: entry_grade backfill write failed — {e}")
+
+    logger.info(f"  backfill_entry_grades: {len(trades)} trade(s), "
+               f"{written} written, distribution {dist}")
+    return {"n": len(trades), "written": written, "distribution": dist}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # RULE-BASED LESSON ENGINE v2
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1445,6 +1498,22 @@ def main():
         traj       = lesson.pop("_traj", {})
         grade_dist[grade] = grade_dist.get(grade, 0) + 1
 
+        # PERSIST THE GRADE — F-68 follow-up, 24-Aug-2026. grade_trade_entry()
+        # has computed this since this file existed; it was used only to
+        # word the lesson's prose and tallied into this run's own grade_dist
+        # log line, then discarded — Stage E2's own quantify pass went
+        # looking for whether the grade predicts forward outcome and found
+        # the question unanswerable for exactly that reason. Migration 093.
+        # SWING only, a deliberate narrowing of this loop's own scope (it
+        # does not itself discriminate by framework) — see that migration's
+        # own note for why.
+        if (trade.get("framework") or "SWING").upper() == "SWING" and trade.get("id"):
+            try:
+                sb.table("closed_positions").update(
+                    {"entry_grade": grade}).eq("id", trade["id"]).execute()
+            except Exception as e:
+                logger.debug(f"  {sym}: entry_grade write failed — {e}")
+
         # Dedup check
         existing_lsn = load_existing_lessons(
             sb,
@@ -1509,4 +1578,17 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--backfill-grades", action="store_true",
+                    help="Populate entry_grade for existing closed SWING "
+                         "trades that predate migration 093, then exit.")
+    ap.add_argument("--since", default=None,
+                    help="With --backfill-grades, only trades exiting on "
+                         "or after this date (YYYY-MM-DD).")
+    ap.add_argument("--dry-run", action="store_true")
+    a = ap.parse_args()
+    if a.backfill_grades:
+        backfill_entry_grades(get_supabase(), since=a.since, dry_run=a.dry_run)
+    else:
+        main()

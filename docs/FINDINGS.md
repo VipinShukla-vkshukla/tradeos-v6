@@ -12532,3 +12532,115 @@ Closed. Real numbers for all three questions, one of them ("is there
 regime diversity to validate against") a genuine "not yet" rather than a
 guess, and one (the lesson-engine grade) surfacing a concrete prerequisite
 for Stage E6 that was not visible before this session. Stage E3 can begin.
+
+## 2026-08-24 — F-69 (change + correction, Track E, F-68 follow-up) —
+persisted the lesson engine's A–F grade for real (migration 093 + a
+backfill of every existing closed SWING trade), which is what made
+Q2 answerable at all — and it came back unconfirmed, not confirmed:
+grade C (the dominant grade, n=76) sits near breakeven while grade D
+(the *worse* grade, n=10) outperforms it. Separately, and directly
+because the operator asked for it: re-ran both of F-68's two strongest
+findings (CONTINUATION's metals & mining sector split, MOM's
+sector_rank_at_entry cliff) against the last two weeks alone before
+agreeing to wire either into a live decision — neither replicated.
+Branch `feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 990/991, the one failure being F-67's
+already-named, pre-existing, unrelated Stage D4 issue, confirmed
+unrelated a third time (same module, same isolated-pass behaviour,
+still failing with nothing of this session's touching it). Migration
+093 applied live. `ai.post_trade_analysis --backfill-grades` run dry
+then for real: 88/88 SWING closed trades written.
+
+### 1 — GRADE PERSISTENCE (the operator's "#2")
+
+`grade_trade_entry()` — real, existing code, confirmed by reading it —
+computes an A–F grade for every analysed closed trade and always has.
+Traced exactly where that value went: popped into a run-level
+`grade_dist` tally for one log line, used to word the generated
+lesson's prose, then discarded. The `lessons` table's 19 columns hold
+no grade of any kind. F-68's own Q2 ("does the grade predict outcome")
+was unanswerable for exactly this reason.
+
+Fixed on two paths, both SWING-only — a deliberate narrowing of scope
+that `main()`'s own pre-existing loop does not itself apply (it already
+processes both frameworks' closed trades without discriminating; an
+intraday row simply has no `signal_log` match and grades a
+context-free default "C" — pre-existing behaviour, unchanged here):
+
+- **Forward.** `main()`'s loop now writes `entry_grade` back to
+  `closed_positions` immediately after computing it, gated on
+  `framework == 'SWING'` and the row carrying an `id`.
+- **Backfill.** New `backfill_entry_grades()` — deliberately narrower
+  than a full re-analysis: no AI call, no `lessons` insert, no dedup
+  bookkeeping, just `grade_trade_entry()` (already pure) over
+  `load_signal_context()`'s result, for every closed SWING trade
+  missing the column. Run live: 88 trades, distribution
+  `{A:1, B:1, C:76, D:10, F:0}`. GABRIEL — bought despite the
+  pipeline's own `AVOID_ENTRY` three sessions running, this project's
+  own landmine — graded **D**, exactly the shape the grade exists to
+  catch.
+
+**The correlation, now that it can be run:** grade C (n=76, the
+population's dominant grade) shows avg R **−0.01**, effectively
+breakeven; grade D (n=10) shows avg R **+0.30** — better, not worse.
+A and B are single trades each, too thin to read at all. This is the
+opposite of what the grade claims to measure, and — same discipline as
+§2 below — n=10 is nowhere near enough to trust either direction. **Not
+wired into anything.** The honest state: the question moved from
+"cannot be asked" to "asked, and the answer is not yet, on either
+side" — real progress, not a null result to be embarrassed about. Stage
+E6 revisits this once more graded closes accumulate.
+
+### 2 — THE RECENCY CHECK (the operator's "#1", and why it did not ship)
+
+Operator's own instruction, verbatim: before wiring either of F-68's
+two strongest findings into a live decision, confirm they hold using
+the last 1–2 weeks of data alone, not just the full historical sample
+— named concern: not retiring or derating anything on data that might
+not represent the system as it actually behaves today.
+
+Checked first whether that concern applied literally: `signal_output_
+daily`'s resolved population spans 24-Jul to 20-Aug-2026 only, entirely
+within TradeOS's own operating history (first commit 04-Mar-2026) — no
+true pre-TradeOS legacy data is mixed into this specific study, unlike
+the closed-trade "55 trades, most from a legacy manually-sized book"
+population `position_lifecycle.py`'s own stall-rule comments already
+name. So the concrete worry did not apply here — but the underlying
+instinct did, and the check itself proved it right:
+
+Re-ran `tools.swing_feature_edge_study --since 2026-08-10
+--min-engine-sample 10` (96 of 483 total rows, the last ~2 weeks):
+
+- **Metals & mining does not reappear.** The 44pp-gap finding from the
+  full sample (n=16 metals & mining rows total) does not have enough
+  recent rows to even form its own category at the last-2-weeks
+  min-segment floor. **Healthcare** shows up instead as the recent
+  underperformer (31% vs 83%, n=16) — a *different* sector than the
+  one F-68 flagged.
+- **MOM's `sector_rank_at_entry` cliff produces zero findings** on the
+  41-row recent MOM sample — the split that looked cleanest on the
+  full 118-row sample (rank ≤4: 100%, n=39) does not survive being
+  narrowed to fresh data, at least not yet at this sample size.
+
+**Verdict: neither finding is wired into `entry_ranking.score_plan()`
+or anywhere else live.** Both stay `PENDING` in `brain_proposals`
+exactly as F-68 left them — not `REJECTED` (that would claim the
+opposite direction was shown, which is not what a too-thin recent
+sample demonstrates) — annotated here as the record of why they were
+not promoted, for whoever revisits them once more recent data has
+accumulated or Stage E6's own out-of-sample validator is built.
+
+### 3 — WHAT THIS ADDS TO STAGE E6'S OWN PLAN
+
+Both halves of this session land in the same place: a finding's
+significance on the full historical sample is not sufficient on its
+own before it touches a live decision. Stage E6's validator was already
+scoped to re-check PENDING findings against data created strictly after
+they were found (the F-50 pattern, adopted for swing); this session adds
+a second, narrower check worth building into the same harness — does
+the pattern also hold in a short, RECENT window, not just "some data
+after the original finding." A finding can validate on the F-50 sense
+(later data agrees) while still resting mostly on stale evidence if the
+recent slice alone is too thin to say anything — exactly what happened
+to both findings here.

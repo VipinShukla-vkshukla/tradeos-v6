@@ -157,6 +157,8 @@ MODULES = [
      "tests.test_pending_fill_race"),
     ("Track E Stage E2 swing feature-edge study",
      "tests.test_swing_feature_edge_study"),
+    ("F-68 follow-up: entry_grade persistence",
+     "tests.test_post_trade_grade"),
 ]
 
 
