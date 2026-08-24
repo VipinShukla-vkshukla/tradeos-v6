@@ -10781,3 +10781,173 @@ against data closed after today, same out-of-sample discipline as
 always. No change to `discover_engines.py` or `weekly_review.py`'s own
 proposal tables — this pass was scoped to `FEATURE_FILTER` rows only, the
 ones the operator's question was actually about.
+
+## 2026-08-24 — F-54 (new mechanism built + two real bugs caught before
+shipping) — Stage D5, Stage 1 only: the same-day self-monitor,
+CALIBRATION-ONLY. Branch `feat/intraday-regression-shadow`, off `main` —
+NOTE: `feat/intraday-event-core` (D3) and `feat/intraday-depth-gate` (D4)
+each independently continue this same ledger from their own F-54 onward,
+unmerged; same convention as the note on D3's own F-54 entry.
+
+**Ran:** `tools.verify` — 788 checks, 78 modules, green (main's own 763
+plus 25 new). `tools.health` clean, 24/24 (surfaced one unrelated real
+finding — see §6). `tools.same_day_calibration` run live against
+production twice (once exposing each of the two bugs below, once clean
+after both fixes).
+
+### 1 — SCOPE DECISION, MADE WITH THE OPERATOR BEFORE BUILDING
+
+D5's own roadmap text bundles two different mechanisms under one branch
+without specifying either's shape — a general regression model AND a
+same-day self-monitor. Asked the operator directly rather than guessing;
+answer was "both, self-monitor first" — build the well-specified same-day
+monitor this session, treat the general regression as a separate later
+session once there is real calibration evidence to answer its own open
+design questions (target variable, feature set, sample-size floor) with,
+rather than guessing at them tonight.
+
+### 2 — RE-READING STAGE 1 CORRECTLY: NOTHING TOUCHES LIVE SIZING YET
+
+D5's own three sub-stages are calibration → proposal → armed, and Stage
+1's own words are "the model computes predictions against ALREADY-
+RESOLVED HISTORY and logs its own predicted-vs-actual accuracy... nothing
+here is visible outside this pipeline yet." That means Stage 1 does not
+wire anything into `engine.py`'s entry path at all — it backtests the
+statistic against history to see whether the flag has any real predictive
+validity BEFORE it is even allowed to become a `brain_proposals` row for
+human review (Stage 2), let alone armed (Stage 3, the operator's own
+decision). This session built exactly that and nothing more.
+
+### 3 — WHAT GOT BUILT
+
+`allocation/scoring.py`: `Prior.hit_rate` (fraction of a group's own
+observations with R > 0), computed in `_dist()` from the exact same
+`values` list `mean_r`/`median_r` already come from, appended as the
+dataclass's LAST field so no existing positional `Prior(...)` construction
+anywhere in this codebase needs to change.
+
+`same_day_fit_multiplier(engine_family, historical, today_wins, today_n)`:
+a bounded, ONE-DIRECTIONAL dampener — an exact one-sided binomial test
+(`scipy.stats.binomtest`, already a project dependency, previously unused)
+asking whether today's win rate for one engine is a genuine statistical
+outlier BELOW its own historical rate, never a boost for a good day (this
+project has already been burned once by treating "looks good on a small
+same-session sample" as signal — hurdle.py's STRONG-bucket history).
+Ships at weight 0.0, an exact no-op, same "shipped inert pending
+validation" precedent `regime_fit_multiplier` and `rank_weight_tier`
+already set. Pure — no I/O — for the identical reason `score()` itself is
+protected as pure arithmetic (CLAUDE.md).
+
+`tools/same_day_calibration.py`: walks every trading day `intraday_setups`
+has resolved history for and asks, per engine, walk-forward (historical
+prior built from STRICTLY earlier days only — the identical non-
+negotiable `PHASE_E_HISTORICAL_REPLAY.md` states for Stage 3, applied
+here for the same reason): would the same-day monitor have flagged this
+day, and does the flag actually correlate with a day that was unusual?
+Writes to `intraday_same_day_calibration` (migration 108). Explicitly
+scoped in its own docstring as a SAME-DAY-level calibration, not a
+within-day one — the true design question ("once the flag fires mid-
+session, does the REST of the day do worse") needs a real chronological
+ordering of same-day resolutions, and `intraday_setups.detected_at`
+(migration 106) exists only on the unmerged `feat/intraday-event-core`
+branch, stamped going forward from 24-Aug-2026 only. Recorded as a
+limitation rather than answered by guessing.
+
+### 4 — TWO REAL BUGS, BOTH CAUGHT BY ACTUALLY RUNNING THE TOOL AGAINST
+PRODUCTION, NOT BY INSPECTION
+
+**a) One setup's re-records counted as hundreds of independent trades.**
+The first version computed today's win/loss count by calling
+`_row_gross_r()` directly on every raw TAKEN row for an engine on a day,
+without the (symbol, engine, trade_date) collapse `_intraday_priors_
+from_rows` already performs for the historical side. `intraday_setups`
+carries one row per (setup, evaluation cycle) — a setup lingering near
+its level is re-recorded roughly every 15s while it stays live, the exact
+"ONE SETUP IS ONE OBSERVATION, NOT ONE PER 15s CYCLE" landmine this
+file's own CLAUDE.md entry already documents (RNG's n=11 once being one
+setup counted eleven times). The first live run reported GAP at
+`today_n=670` on 20-Aug-2026 — no engine takes 670 trades in one session;
+average `today_hit_rate` across all 53 un-deduped pairs was a suspicious
+0.354 with `today_n` running as high as 670. Fixed by feeding the day's
+TAKEN rows through `_intraday_priors_from_rows(taken, floor=1)` — the
+SAME trusted dedup/R-conversion machinery the historical side already
+uses — rather than a second, separately-written copy of that arithmetic.
+Pre-filtering to TAKEN-only first makes that function's own taken-only/
+fallback branch a true no-op (every input row already qualifies), so this
+gets the correct dedup without inheriting any risk of silently borrowing
+from refused detections. Re-running against the (now correctly cleared)
+production table dropped the pair count from 53 to 22 and every `today_n`
+into a plausible 5–19 range. A pin test
+(`test_repeated_same_day_rerecords_of_one_setup_collapse_to_one_trade`)
+asserts 20 re-records of one setup collapse to n=1, not 20.
+
+**b) A calibration that could never flag anything.** The second live run
+(post-fix-(a)) reported `0 of 22 pair(s) would have been flagged`, and
+every single row's `reason` read "weight 0 or no engine" — the shipped
+live `intraday_same_day_fit_weight` is 0.0 (Stage 1's whole point is that
+nothing is armed yet), and `same_day_fit_multiplier()`'s first guard
+clause reads that config value directly, so every call in the calibration
+walk hit the no-op branch before the binomial test ever ran. A
+calibration that structurally cannot flag anything is not a calibration,
+it is a tautology — the identical "a check that cannot fail is not a
+check" principle applied to a check that could not even RUN. Considered
+and rejected: wrapping the calibration in `tests.cfg_ctx`, which fully
+REPLACES the in-process config cache rather than overriding one key — a
+production tool run against real data doing that would silently
+substitute defaults for every OTHER live-configured switch during its
+scope (`priors_intraday_taken_only`, `alloc_intraday_confidence_bands`),
+a test-isolation tool leaking into runtime code. Fixed with an explicit
+`probe_weight` parameter on `same_day_fit_multiplier()` — the same
+"supply the population instead of fetching it" shape `intraday_priors(sb,
+rows=...)` already uses in this same file — defaulting to `None` (read
+config exactly as before, so every live call site is unaffected) but
+letting the calibration tool pass `1.0` explicitly ("what would this have
+flagged at the most a real arm could ever do"), visible in the call
+itself rather than hidden in a context manager.
+
+### 5 — VERIFIED, PRECISELY WHAT WAS AND WAS NOT DEMONSTRATED
+
+25 new offline tests across two modules (`test_same_day_fit.py`,
+`test_same_day_calibration.py`), including a pin for each bug in §4.
+`tools.same_day_calibration` run live against production (15,845 resolved
+detections loaded): **22 (engine, day) pairs ever reached the 5-trade
+same-day floor, across 4 engines and 10 distinct days; 19 of those had a
+usable (30+ sample) historical prior; 0 of 22 were flagged even at full
+probe weight (1.0).** The worst same-day pair in the whole book's history
+— ORB 0-for-5 against a 29% historical hit-rate — reached p=0.18, well
+short of the 0.05 significance bar. This is a real, honest Stage 1
+result, not an absence of one: at the same-day sample sizes this book has
+actually generated so far (max 19 trades for one engine in one day) and
+against historical hit-rates that are themselves already low (22%–40%
+across these four engines), no day has been a statistical outlier by this
+test's own definition. The mechanism runs correctly; the book has not yet
+produced a day extreme enough for it to have anything to say.
+
+**Not demonstrated, and cannot be from a single session:** Gate D5's own
+"calibration log covers a stated minimum window with a stated accuracy
+bar met" needs real elapsed sessions accumulating more (engine, day)
+pairs than 22 — the same "real elapsed market time no amount of building
+tonight can substitute for" every prior Track D gate has been deferred
+for. Whether a same-day flag, once it DOES fire, actually predicts the
+rest of that session — the true design question — needs migration 106's
+`detected_at` merged from `feat/intraday-event-core` first; recorded as a
+scope limitation in §3, not answered by approximation.
+
+### 6 — AN UNRELATED FINDING SURFACED IN PASSING
+
+`tools.health`'s `capital` check: configured `TOTAL_CAPITAL` is Rs 30,000
+but the live account holds Rs 24,983 (Rs 4,994 cash + Rs 19,989 invested)
+— short by Rs 5,017 (17%). New entries are being sized against headroom
+that does not exist; the check's own words are "expect orders to be
+rejected at the broker." Flagged here per this file's own standing rule
+("Flag anything found along the way that costs money, even when
+unasked") — not investigated or corrected this session, out of D5's own
+scope.
+
+### 7 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+`intraday_same_day_fit_weight` ships `0.0`. `same_day_fit_multiplier()`
+is called from exactly one place in this stage —
+`tools/same_day_calibration.py` — never from `engine.py`'s entry path,
+never from `score()`. No live sizing decision is affected by anything in
+this entry. On `feat/intraday-regression-shadow`, not merged.

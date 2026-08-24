@@ -136,6 +136,8 @@ MODULES = [
      "tests.test_f43_swing_review"),
     ("F-46 pace calibration (family stall clock, trend telemetry)",
      "tests.test_f46_pace_calibration"),
+    ("same-day self-monitor (Stage D5, shipped inert)", "tests.test_same_day_fit"),
+    ("same-day calibration walk-forward (Stage D5)", "tests.test_same_day_calibration"),
 ]
 
 

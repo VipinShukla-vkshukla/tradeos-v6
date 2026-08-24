@@ -616,6 +616,54 @@ a stated accuracy bar met; first proposal reaches `brain_proposals` and is
 indistinguishable in the review UI from a hand-built `feature_edge_study`
 finding.
 
+**Stage 1 built, 24-Aug-2026 — same-day self-monitor only.** D5 bundles
+two mechanisms (a same-day monitor and a general regression model)
+without specifying either's shape; asked the operator directly rather
+than guessing, and built the well-specified one first — the general
+regression stays a separate, later session, once real calibration
+evidence can answer its own open design questions (target variable,
+feature set) honestly.
+
+`allocation.scoring.same_day_fit_multiplier()`: a one-sided exact binomial
+test (`scipy.stats.binomtest`) asking whether one engine's win rate TODAY
+is a statistical outlier BELOW its own historical rate — a dampener only,
+never a boost for a good day (this project has already been burned once
+by treating "looks good on a small same-session sample" as signal —
+hurdle.py's STRONG-bucket history). Ships at weight 0.0, an exact no-op,
+same precedent `regime_fit_multiplier` already set. `tools/same_day_
+calibration.py` walks every resolved trading day walk-forward (historical
+prior from strictly earlier days only — Stage 3's own non-negotiable,
+applied here) and logs whether the monitor would have flagged each day,
+to `intraday_same_day_calibration` (migration 108) — nothing here touches
+any live decision; Stage 1 is calibration-only by the roadmap's own words.
+
+Two real bugs caught by actually running the tool against production, not
+by inspection: today's win/loss count was first computed from raw rows
+without deduplicating a lingering setup's ~15s re-records (this project's
+own documented "one setup counted eleven times" landmine, here inflating
+one engine to 670 "trades" in a day); and the calibration's first correct
+run then reported 0 of 22 days flagged for the OPPOSITE reason — the
+live weight is 0.0 by design, so every call hit the no-op guard before
+the binomial test ever ran, making the calibration a tautology. Fixed
+with an explicit `probe_weight` override parameter, the same "supply the
+population instead of fetching it" shape `intraday_priors(sb, rows=...)`
+already uses. F-54 (docs/FINDINGS.md, this branch's own sequence) has the
+full detail.
+
+**Result, run live against production:** 22 (engine, day) pairs ever
+reached the 5-trade same-day floor across 4 engines and 10 days; 0 of 22
+were flagged even at full probe weight. The worst pair (ORB 0-for-5
+against a 29% historical rate) reached p=0.18 against a 0.05 bar. Not an
+absence of a finding — the mechanism runs correctly; the book has not yet
+generated a same-day sample extreme enough for it to have anything to
+say. Gate D5 itself needs real elapsed sessions accumulating more pairs
+than this, the same evidence-accumulation deferral every prior Track D
+gate has carried.
+
+**Ships OFF** (`intraday_same_day_fit_weight=0.0`). Called from exactly
+one place — the calibration tool — never from `engine.py`'s entry path or
+`score()`.
+
 ## Stage D6 — Automatic discovery-to-shadow-strategy pipeline
 
 **Branch:** `feat/intraday-auto-strategy`.
