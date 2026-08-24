@@ -163,6 +163,8 @@ MODULES = [
      "tests.test_stage_e3_ai_tighten_and_regime"),
     ("Track E Stage E4: early invalidation + sector decay",
      "tests.test_stage_e4_early_invalidation_and_sector_decay"),
+    ("Track E Stage E4: participation/delivery decay",
+     "tests.test_stage_e4_participation_decay"),
 ]
 
 

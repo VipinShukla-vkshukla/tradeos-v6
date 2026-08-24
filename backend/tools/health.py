@@ -729,6 +729,70 @@ def check_pending_fill_duplicates() -> tuple[bool, str]:
     return True, f"no duplicate SWING buys in the last 7 days ({len(rows)} orders placed)"
 
 
+def check_sector_concentration_risk() -> tuple[bool, str]:
+    """
+    Does a meaningful fraction of the live SWING book sit in sectors that
+    are ROTATING AWAY from it right now?
+
+    Track E, Stage E4, the book-wide half of the participation/sector-decay
+    work — `evaluate_exit()`'s own sector-decay multiplier (F-71) reads
+    `sector_strength` PER POSITION, against that position's own sector. It
+    has no view of the BOOK: three positions each individually tolerable at
+    x0.75 tightening can still mean the whole book is leaning into one
+    fading trade at once, which no per-position check can see by
+    construction. This is a standing, read-only diagnostic — it changes
+    nothing, gates nothing, only tells the operator what four or five lines
+    of manual SQL would otherwise have to.
+
+    Confirmed live, 24-Aug-2026: 2 of 3 open SWING positions (HINDCOPPER —
+    metals & mining, AARTIIND — chemicals) sit in sectors reading WEAKENING
+    today; both already carry the per-position sector-decay shadow line.
+    """
+    from config import get_supabase
+
+    sb = get_supabase()
+    pos_rows = (sb.table("open_positions")
+                  .select("symbol,sector")
+                  .eq("framework", "SWING").eq("status", "ACTIVE")
+                  .execute().data or [])
+    if not pos_rows:
+        return True, "no open SWING positions to check"
+
+    dr = (sb.table("sector_strength").select("date")
+            .order("date", desc=True).limit(1).execute().data or [])
+    latest_date = dr[0]["date"] if dr else None
+    srows = ((sb.table("sector_strength")
+                .select("sector,sector_state,rank_delta_5d")
+                .eq("date", latest_date).execute().data or [])
+             if latest_date else [])
+    state_by_sector = {r["sector"]: r for r in srows if r.get("sector")}
+
+    weakening = []
+    for p in pos_rows:
+        sym, sector = p.get("symbol"), str(p.get("sector") or "").strip()
+        st = state_by_sector.get(sector)
+        if st and st.get("sector_state") == "WEAKENING":
+            weakening.append((sym, sector, st.get("rank_delta_5d")))
+
+    frac = len(weakening) / len(pos_rows)
+    THRESHOLD = 0.5   # a bare majority of the book, not a single position —
+                      # per-position tightening already handles one name.
+    if frac >= THRESHOLD:
+        names = ", ".join(f"{s} ({sec}, rank_delta_5d={d})"
+                          for s, sec, d in weakening)
+        return False, (
+            f"{len(weakening)}/{len(pos_rows)} open SWING positions "
+            f"({frac:.0%}) sit in sectors reading WEAKENING today: {names}. "
+            f"Each is already tightened individually by swing_sector_decay_"
+            f"enabled if armed — this flags the BOOK-wide concentration a "
+            f"per-position check cannot see. Not an order to act, a "
+            f"diagnostic: consider whether new SWING entries should lean "
+            f"away from these sectors until they turn.")
+    return True, (f"{len(weakening)}/{len(pos_rows)} open SWING positions "
+                  f"in WEAKENING sectors, below the {THRESHOLD:.0%} "
+                  f"concentration threshold")
+
+
 def check_simulate() -> tuple[bool, str]:
     """The slow one: run both frameworks end to end and confirm stages produce output."""
     from config import get_supabase
@@ -2048,6 +2112,7 @@ CHECKS = [
     ("daemon",   "nothing is watching your positions right now",                 check_daemon,   False),
     ("pending",  "an entry order that never filled is being tracked as a real position", check_pending_fills, False),
     ("pending_dup", "a SWING symbol was bought twice within minutes — the F-67 shape", check_pending_fill_duplicates, False),
+    ("sector_risk", "a majority of the open SWING book sits in sectors rotating away from it", check_sector_concentration_risk, False),
     ("exits_open", "a SELL the system decided on is still unfilled and the position is unprotected", check_open_exits, False),
     ("learning", "engines are being judged on evidence that was never collected", check_learning_loop, False),
     ("simulate", "a stage completes while producing nothing",                    check_simulate, True),

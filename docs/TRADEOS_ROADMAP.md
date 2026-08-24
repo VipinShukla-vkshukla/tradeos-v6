@@ -1196,21 +1196,35 @@ built.
   position's own check would catch, is visible earlier across the whole
   held book than in any one name's chart.
 
-**Stage E4 — PARTIALLY BUILT, 24-Aug-2026 (F-71, `feat/swing-evolution`).**
-Two of four pieces shipped: structural break checked from day one
+**Stage E4 — FULLY BUILT, 24-Aug-2026 (F-71 + F-72, `feat/swing-evolution`).**
+All four pieces shipped. F-71: structural break checked from day one
 (`EXIT_INVALIDATED`, distinct from `EXIT_DETERIORATION`) and live
 sector-decay tightening from `sector_strength`'s already-computed state.
-Both ship OFF, shadow-logged. Live proof: two of the book's three open
-positions (HINDCOPPER/metals & mining, AARTIIND/chemicals) are currently
-sitting in sectors reading WEAKENING, both correctly caught. Verifying
-this live surfaced and fixed a real gap in `tools/simulate.py` — it had
-been building an incomplete policy dict since F-46, missing the exact
-context `evaluate_exit()` needs; factored into one shared function
-(`load_live_exit_context`) both the daemon and the simulator now call, so
-they cannot drift apart again. Day-by-day participation/delivery decay
-and sector rotation as a book-wide (not per-position) signal — the
-remaining two pieces — were not built this session. Full detail: `docs/
-FINDINGS.md` F-71.
+F-72: day-by-day participation/delivery decay (`vol_ratio` at entry vs.
+latest, tighten-only, 2-session floor) and a book-wide sector-
+concentration health check (`tools/health.py::check_sector_concentration_
+risk`, flags when >=50% of the open SWING book sits in WEAKENING sectors
+— a per-position check cannot see this by construction). All four ship
+OFF, shadow-logged. Live proof: two of the book's three open positions
+(HINDCOPPER/metals & mining, AARTIIND/chemicals) sit in sectors reading
+WEAKENING — both the per-position shadow line AND the new book-wide
+health check correctly caught it (67% of the book). Participation decay
+found no live signal on today's book and said so honestly (HINDCOPPER
+re-entered today with no entry-day baseline yet, AARTIIND's volume rose
+rather than decayed, HAL's latest session is still its entry day) —
+proven instead by five synthetic tests. Verifying F-71 live surfaced and
+fixed a real gap in `tools/simulate.py` — it had been building an
+incomplete policy dict since F-46, missing the exact context `evaluate_
+exit()` needs; factored into one shared function (`load_live_exit_
+context`) both the daemon and the simulator now call, so they cannot
+drift apart again — F-72's participation-decay fetch was added to that
+same shared function rather than a fourth separate copy. Investigating a
+`tools.health` run for F-72 also turned up `pending_dup` flagging
+HINDCOPPER again; traced by timestamp before reporting — the incident
+predates the F-67 fix commit earlier the same day, not a recurrence, and
+is noted as an untested-live fix (fix landed 27 minutes before close) in
+F-72 rather than assumed clean. Full detail: `docs/FINDINGS.md` F-71,
+F-72.
 
 ## Stage E5 — Entry-side intelligence
 

@@ -270,9 +270,10 @@ def load_exit_policy() -> dict:
 
 def load_live_exit_context(sb, base_policy: dict) -> dict:
     """
-    The three I/O-backed calibration fields `evaluate_exit()` reads beyond
+    The four I/O-backed calibration fields `evaluate_exit()` reads beyond
     `load_exit_policy()`'s own pure config read: `stall_days_by_family`
-    (F-46), `_current_regime` and `_sector_state` (Track E, Stage E3/E4).
+    (F-46), `_current_regime`, `_sector_state` (Track E, Stage E3/E4) and
+    `_participation_decay` (Track E, Stage E4).
 
     FACTORED OUT 24-Aug-2026, caught by its own absence: `tools/
     simulate.py` — the tool `CLAUDE.md` names as what to run "before
@@ -327,6 +328,44 @@ def load_live_exit_context(sb, base_policy: dict) -> dict:
     except Exception as e:
         logger.warning(f"  current sector state unavailable — {e}")
         ctx["_sector_state"] = {}
+
+    # PARTICIPATION/DELIVERY DECAY — Track E, Stage E4.
+    # vol_ratio at entry vs. the latest available session, per held SWING
+    # symbol. A ratio well below 1.0 means the volume that carried this
+    # stock into the position has dried up — the swing-cadence version of
+    # the intraday F-45 volume-decay idea, checked once per policy load
+    # (not once per position) because every open SWING position shares
+    # this one lookup pass.
+    try:
+        prows = (sb.table("open_positions")
+                   .select("symbol,entry_date")
+                   .eq("framework", "SWING").eq("status", "ACTIVE")
+                   .execute().data or [])
+        decay: dict[str, float] = {}
+        for p in prows:
+            sym, entry_date = p.get("symbol"), p.get("entry_date")
+            if not sym or not entry_date:
+                continue
+            entry_date = str(entry_date)[:10]
+            try:
+                erows = (sb.table("stock_data_daily")
+                           .select("vol_ratio").eq("symbol", sym)
+                           .eq("date", entry_date).limit(1)
+                           .execute().data or [])
+                entry_vr = erows[0]["vol_ratio"] if erows else None
+                lrows = (sb.table("stock_data_daily")
+                           .select("vol_ratio,date").eq("symbol", sym)
+                           .order("date", desc=True).limit(1)
+                           .execute().data or [])
+                latest_vr = lrows[0]["vol_ratio"] if lrows else None
+                if entry_vr and latest_vr and entry_vr > 0:
+                    decay[sym] = latest_vr / entry_vr
+            except Exception:
+                continue
+        ctx["_participation_decay"] = decay
+    except Exception as e:
+        logger.warning(f"  participation decay unavailable — {e}")
+        ctx["_participation_decay"] = {}
 
     return ctx
 
@@ -481,7 +520,40 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
                 f"the giveback/stall thresholds — swing_sector_decay_enabled "
                 f"is off")
     applied_sector_mult = sector_mult if sector_aware_live else 1.0
-    applied_mult = applied_regime_mult * applied_sector_mult
+
+    # ── PARTICIPATION-DECAY MULTIPLIER — Track E, Stage E4 ────────────────────
+    # The swing-cadence version of the intraday F-45 volume-decay idea: the
+    # volume that carried a name into the position can dry up well before
+    # the fixed stall clock would notice — stall_days counts SESSIONS, not
+    # conviction, and a stock that stalls on thinning volume is a different
+    # animal from one stalling on thick, contested volume. vol_ratio today
+    # vs. vol_ratio on entry day, from stock_data_daily via
+    # load_live_exit_context's `_participation_decay`. Tighten-only, same
+    # reasoning as sector-decay above: participation that has NOT decayed is
+    # already priced into why the trade was taken; it earns no extra
+    # patience on top of the regime multiplier.
+    decay_ratio = (policy.get("_participation_decay") or {}).get(
+        pos.get("symbol"))
+    participation_aware_live = cfg_bool("swing_participation_decay_enabled",
+                                        False)
+    participation_mult = 1.0
+    decay_floor = cfg_float("swing_participation_decay_threshold", 0.5)
+    min_sessions = 2  # never flag on entry day itself or day one
+    if (decay_ratio is not None and decay_ratio < decay_floor
+            and sessions_held >= min_sessions):
+        participation_mult = cfg_float("swing_participation_decay_mult", 0.75)
+        if not participation_aware_live:
+            logger.info(
+                f"  {pos.get('symbol')}: participation-decay shadow — "
+                f"vol_ratio at {decay_ratio:.2f}x entry-day (< {decay_floor:.2f}"
+                f"), would apply x{participation_mult:.2f} to the "
+                f"giveback/stall thresholds — "
+                f"swing_participation_decay_enabled is off")
+    applied_participation_mult = (participation_mult
+                                  if participation_aware_live else 1.0)
+
+    applied_mult = (applied_regime_mult * applied_sector_mult
+                    * applied_participation_mult)
 
     # ── THE TARGET THIS POSITION IS ACTUALLY MANAGED TO ──────────────────────
     #
@@ -922,8 +994,8 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
     # genuinely strong tape as well as tighten it in a weak one; the
     # sector half (Stage E4) is tighten-only, per its own comment above. A
     # no-op today: applied_mult is 1.0 unless swing_regime_aware_exits_
-    # enabled or swing_sector_decay_enabled is on, neither of which is by
-    # default.
+    # enabled, swing_sector_decay_enabled or swing_participation_decay_
+    # enabled is on, none of which is by default.
     if applied_mult != 1.0:
         stall_days = max(2, round(stall_days * applied_mult))
     if (stall_days > 0

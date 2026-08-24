@@ -12857,3 +12857,116 @@ book-wide (not per-position) signal — the remaining two items in Stage
 E4's own plan — were not built this session; scoped clearly enough to
 pick up next without re-deriving anything. Same daemon-deploy gap as
 every finding this session.
+
+## 2026-08-24 — F-72 (change, Track E Stage E4 — closes it) — the two
+remaining pieces from F-71 §5: participation/delivery decay per position,
+and a book-wide sector-concentration health check. Branch
+`feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 1012/1012 offline logic checks (5 new), the same
+pre-existing unrelated Stage D4 issue confirmed still isolated. `tools.
+simulate` and `tools.health --quick` against the real book.
+
+### 1 — PARTICIPATION/DELIVERY DECAY
+
+The swing-cadence version of the intraday F-45 volume-decay idea:
+`vol_ratio` on the entry-day session vs. the latest available session,
+per held SWING symbol, from `stock_data_daily`. A stall clock counts
+SESSIONS, not conviction — a name stalling on thinning volume is a
+different animal from one stalling on thick, contested volume, and the
+fixed clock cannot tell them apart.
+
+Fourth fetch added to `control/position_lifecycle.py::
+load_live_exit_context()` (now shared by the daemon and `tools/
+simulate.py`, per F-71 §3's fix): for every ACTIVE SWING position, entry-
+day `vol_ratio` vs. the latest, as a `{symbol: ratio}` dict, fails safe to
+`{}` on any error — same resilience the other three fetches already have.
+New multiplier in `evaluate_exit()`, composing into the existing chain
+(`applied_mult = applied_regime_mult * applied_sector_mult *
+applied_participation_mult`) rather than replacing it. Tighten-only, same
+reasoning as sector-decay: participation that has NOT decayed is already
+priced into why the trade was taken. Gated by a 2-session floor — never
+flags on entry day or day one, when a fresh position's own volume has had
+no chance to establish a baseline yet. Ships OFF (`swing_participation_
+decay_enabled`, migration 110), shadow-logged via `logger.info()` from
+the start — the F-71 §3 log-level lesson applied up front this time
+rather than found and fixed after the fact.
+
+Live check against the real book (24-Aug-2026): no shadow line fired for
+any of the three open positions, and the reason is itself informative
+rather than a gap — HINDCOPPER re-entered *today*, so `stock_data_daily`
+has no row yet for its own entry day (the fetch correctly skips a symbol
+with no usable entry-day baseline rather than guessing); AARTIIND's
+volume has actually *increased* since entry (ratio 1.25, not decayed);
+HAL's latest available session is still its entry day itself (ratio
+1.0, nothing to compare against yet). Confirmed via direct SQL against
+`stock_data_daily`, not inferred — the honest result is "no signal today
+on this book," not a manufactured one. The mechanism itself is proven by
+five synthetic tests below, not by today's book.
+
+### 2 — BOOK-WIDE SECTOR-CONCENTRATION HEALTH CHECK
+
+`evaluate_exit()`'s own sector-decay multiplier (F-71 §2) reads
+`sector_strength` per position, against that position's own sector only —
+it has no view of the BOOK. Three positions each individually tolerable
+at x0.75 tightening can still mean the whole book is leaning into one
+fading rotation at once, which no per-position check can see by
+construction.
+
+New `tools/health.py::check_sector_concentration_risk()`, registered as
+`sector_risk`, mirroring `check_pending_fill_duplicates`'s shape: group
+currently-ACTIVE SWING `open_positions` by sector, cross-reference each
+sector's live `sector_state`/`rank_delta_5d`, flag when >=50% of the book
+sits in sectors reading WEAKENING today. Read-only diagnostic — changes
+nothing, gates nothing.
+
+Confirmed live: **2 of 3 open SWING positions (67%) — HINDCOPPER (metals
+& mining) and AARTIIND (chemicals) — read WEAKENING today**, correctly
+flagged. Not something a per-position check could have surfaced as a
+BOOK-level fact; each position's own shadow line exists (F-71 §2), but
+neither says "this is now most of what you hold."
+
+### 3 — INVESTIGATED IN THE SAME PASS: `pending_dup` ALSO FIRED — NOT A NEW INCIDENT
+
+Running `tools.health` to prove §2 also surfaced `pending_dup` (F-70)
+flagging HINDCOPPER again, timestamped 04:05–04:10 UTC (09:35–09:40 IST)
+today — the same 15-blocked-retries-then-a-real-second-BUY shape as the
+original F-67 incident. Traced before reporting rather than assumed:
+the F-67 fix itself was committed at 15:03:34 IST *today* (`4ecfd0c`),
+**after** this HINDCOPPER incident (09:35 IST) — this is the same
+already-diagnosed, already-fixed incident from earlier in today's session,
+still inside the check's 7-day lookback window, not a recurrence.
+Confirmed no SWING BUY was placed for any symbol after the fix commit
+today (`intraday_broker_log`, empty result) — though that is a weak
+negative, since only ~27 minutes of market time remained after 15:03 IST
+before the 15:30 close. The fix has not yet had a real live re-test
+window; tomorrow's session is the first one that will actually exercise
+it. Flagging this explicitly rather than letting a clean `tools.verify`
+run imply more than it proved.
+
+### 4 — VERIFIED
+
+`tests/test_stage_e4_participation_decay.py`, 5 checks, demonstrated
+failing first: `git stash` on the three touched source files
+(`control/position_lifecycle.py`, `intraday/engine.py`, `tools/
+health.py`), the one test that depends on the new tighten-only behaviour
+("tightens when armed") failed as expected against the reverted source;
+the other four passed even pre-change because they assert the off/no-op
+paths, which the old code already satisfied — that asymmetry is expected,
+not a weak test. Restored, all 5 passed. `check_sector_concentration_
+risk()` has no offline unit test — it is DB-backed by construction, same
+as its sibling `check_pending_fill_duplicates`, and is verified live via
+`tools.health` instead, per this project's own rule that a test needing
+the live book belongs there.
+
+Migration 110 (not the sequential 096): the concurrent intraday-track
+session had already claimed 096–109 on disk by the time this was
+written. Numbered after the highest in use to avoid a second collision
+in the same shared ledger the `093`/`094`/`095` numbers already collided
+on once this session.
+
+**Track E, Stage E4 is now fully built.** All four planned pieces —
+early/structural invalidation, live sector-decay tightening,
+participation/delivery decay, and the book-wide sector-concentration
+check — ship OFF, shadow-logged, verified. Next: Stage E5 (entry-side
+intelligence), on explicit go-ahead only.

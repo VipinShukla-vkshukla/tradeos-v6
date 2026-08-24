@@ -481,6 +481,12 @@ class IntradayEngine:
             if weak:
                 logger.info(f"  engine: sectors reading WEAKENING today — "
                            f"{', '.join(weak)}")
+            decayed = {s: r for s, r in
+                      (self._policy.get("_participation_decay") or {}).items()
+                      if r < 0.5}
+            if decayed:
+                logger.info(f"  engine: participation decayed vs. entry day "
+                           f"— {decayed}")
 
     def refresh_contexts(self) -> int:
         """
