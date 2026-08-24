@@ -153,6 +153,8 @@ MODULES = [
     ("templated candidate engine (Stage D6)", "tests.test_candidate_template"),
     ("templated candidate shadow runner (Stage D6)", "tests.test_candidate_shadow"),
     ("candidate approval decision (Stage D6)", "tests.test_approve_candidate"),
+    ("F-67 pending-fill race (HINDCOPPER double-buy)",
+     "tests.test_pending_fill_race"),
 ]
 
 

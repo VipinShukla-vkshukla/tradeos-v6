@@ -2947,8 +2947,24 @@ class IntradayEngine:
                 "synced_at": datetime.now(IST).isoformat(),
             })
             self._entries_taken += 1
-            self._pending_fills[sym] = str(res.order_id)
+            # ORDER MATTERS — F-67, 24-Aug-2026 (HINDCOPPER double-buy).
+            # load_state() REBUILDS self._pending_fills from scratch from a
+            # fresh DB read (see its own docstring). Setting the guard BEFORE
+            # calling it meant a read that had not yet caught up with the
+            # PENDING_FILL row this exact call just wrote silently erased the
+            # guard one line after it was set — leaving _maybe_enter_swing
+            # free to call place() again next cycle for the same symbol,
+            # every cycle, with only order_manager's own 5-minute duplicate
+            # window standing in the way. HINDCOPPER, 24-Aug: 15 blocked
+            # retries over 5 minutes, then a second real BUY landed the
+            # moment that window lapsed. Reconcile caught the true broker
+            # quantity afterward, but the bookkeeping (partial_booked_qty,
+            # original_qty) was left corrupted by the collision. Setting the
+            # guard AFTER load_state() makes it immune to the rebuild by
+            # construction — no read can erase an assignment it happens
+            # before.
             self.load_state()
+            self._pending_fills[sym] = str(res.order_id)
             logger.success(f"  🟡 ENTRY SUBMITTED {sym} {qty} @ ~{limit} "
                            f"(order {res.order_id}) — {rationale or 'no rank'} "
                            f"— awaiting fill confirmation")

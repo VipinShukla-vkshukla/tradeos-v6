@@ -12367,3 +12367,82 @@ allocator. Gate D6 ("a stated minimum of shadow detections logged")
 needs a real armed session with at least one approved candidate, the
 same evidence-accumulation deferral every prior Track D gate has carried.
 On `feat/intraday-evolution`, not merged into `main`.
+
+## 2026-08-24 — F-67 (change, swing-only) — HINDCOPPER was bought twice
+within 5 minutes on its 24-Aug re-entry. Root cause: `_maybe_enter_swing`
+set `self._pending_fills[sym]` then immediately called `self.load_state()`,
+which rebuilds that whole dict from a fresh DB read — a read that had not
+yet caught up with the PENDING_FILL row this exact call just wrote silently
+erased the guard one line after it was set. Only `order_manager`'s own
+5-minute duplicate-order cooldown was then standing between the daemon and
+a second real order; 15 retries were blocked by it over 5 minutes, then the
+window lapsed and a second BUY landed for real.
+
+**Ran:** `tools.verify`: 964/964 excluding one pre-existing, unrelated
+failure — see §3.
+
+### 1 — WHAT SURFACED IT
+
+Operator's own observation: "System sold hindcopper then again bought some
+quantity — was it the right behavior?" The ORIGINAL position (14→24 Aug)
+had in fact closed correctly — `BOOK_PARTIAL` at 1.07R (+7.4%), then
+`EXIT_GIVEBACK` at the F-43 tiered 30% threshold (+8.3%) — validating that
+work live. The re-entry that followed the same day was itself a legitimate,
+independent decision on a fresh signal. The order log underneath it was not
+legitimate: two real BUY orders 5 minutes apart for the same name.
+
+### 2 — ROOT CAUSE
+
+`intraday/engine.py::_maybe_enter_swing`, immediately after placing a live
+entry order:
+
+```python
+self._pending_fills[sym] = str(res.order_id)
+self.load_state()
+```
+
+`load_state()`'s own docstring is explicit that it rebuilds
+`self._pending_fills` from scratch from `open_positions` — necessary in
+general, so a daemon restart between placing an order and confirming its
+fill does not forget the attempt. But called in THIS order, immediately
+after a manual set, any read that has not yet caught up with the row just
+written wipes the guard the line above just set. With the guard gone,
+`_maybe_enter_swing`'s own `if sym in self._pending_fills: return` check
+(the one thing meant to stop a repeat decision at the DECISION layer) never
+engaged — the daemon kept deciding "buy HINDCOPPER" every 15s cycle, and
+only `order_manager.place()`'s separate 5-minute duplicate-order cooldown
+(an order-PLACEMENT-layer safety net, never meant to be the only one) stood
+between that and a second fill. `reconcile_with_broker` later corrected the
+position to the true holding (4 shares, MATCHED) — no double-size position
+resulted — but `partial_booked_qty`/`original_qty` were left corrupted by
+the collision, and the near-miss is the same shape as the PPLPHARMA
+double-sell landmine this project has already paid for once.
+
+### 3 — FIX AND VERIFIED
+
+Reordered: `self.load_state()` now runs first, and `self._pending_fills[sym]
+= str(res.order_id)` is set AFTER — immune to the rebuild by construction,
+since no read can erase an assignment that happens after it.
+
+New `tests/test_pending_fill_race.py`, 3 checks. `_maybe_enter_swing` is not
+independently callable in a unit test (it needs a live Kite session, order
+placement, the allocator — the same reason this class of engine method has
+no direct test elsewhere in this project), so the guard's ORDERING PRINCIPLE
+is exercised directly: a stub DB returning no rows stands in for a read that
+has not caught up, and the test proves the fixed order (`load_state()` then
+set) survives it while the pre-fix order (set then `load_state()`) loses the
+guard — the second test is a sanity check on the fixture, demonstrating the
+failure mode is real rather than assumed. A third test confirms the rebuild
+still correctly forgets a GENUINELY resolved pending fill once it reaches
+ACTIVE — this fix changes only the ordering relative to a fresh placement,
+not the rebuild's own general correctness.
+
+`tools.verify`: 964/964. One PRE-EXISTING, unrelated failure was found
+during this session's run — "price feed depth (FULL-mode) plumbing (Stage
+D4)" fails inside the full suite but passes standalone (`--module
+apply_live_depth`, 4/4), and still fails with this session's new test file
+removed entirely — confirmed neither caused by nor related to this fix. It
+is intraday-side Stage D4 work from a concurrent session, explicitly out of
+scope for this session per the operator's instruction not to touch intraday
+code; named here rather than silently worked around, for whoever picks up
+Track D next.
