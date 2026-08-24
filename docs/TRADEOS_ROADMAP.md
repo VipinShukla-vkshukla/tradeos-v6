@@ -1067,6 +1067,21 @@ than sharpening a decision already being made — it should be built once
 E6's validated-finding mechanism exists to help decide which winners
 actually merit it, not before. E1 is this document.
 
+**STATUS, 24-Aug-2026: E2 through E7 all addressed in one session
+(F-67 through F-79).** E2 closed with real numbers. E3-E5 built and
+verified; every live-behavior switch they shipped is now ARMED (F-79,
+operator's own explicit instruction, given full awareness of which
+switches were seasoned vs. built minutes before arming — see F-79 §1
+for the exact evidence split). E6: 2 of 5 pieces built (recency
+validator, living engine lifecycle); the other three (lesson-grade
+reconnection, the anticipatory model, feature tuning/discovery)
+checked against this session's own evidence and found genuinely
+blocked, not merely uncautioned about — see F-77 §0. E7: detection and
+sizing built and shadow-logged; execution deliberately not built,
+pending an unresolved R-multiple/entry-price accounting question named
+in its own last bullet below — see F-78 §4. Full history: `docs/
+FINDINGS.md` F-67 through F-79.
+
 ## Stage E2 — Quantify (read-only, no branch)
 
 Three questions, answered from real data before anything downstream is

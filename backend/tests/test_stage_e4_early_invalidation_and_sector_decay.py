@@ -54,7 +54,11 @@ def test_early_invalidation_shadow_only_by_default():
     pos = _pos(entry, stop, ltp)
     policy = _policy()
     policy["_trend_ctx"] = {"X": _broken_sig()}
-    d = evaluate_exit(pos, ltp, 3, policy)
+    # cfg_ctx({}) — the CODE's own default, not live system_config. See
+    # test_stage_e3_ai_tighten_and_regime.py's identical note; broke the
+    # same way the moment F-79's arming pass turned this switch on live.
+    with cfg_ctx({}):
+        d = evaluate_exit(pos, ltp, 3, policy)
     assert d["action"] != "EXIT_INVALIDATED", (
         "swing_early_invalidation_enabled is off by default — must not "
         f"fire, got {d['action']}")
@@ -112,7 +116,14 @@ def test_sector_decay_shadow_only_by_default():
     policy = _policy()
     policy["_sector_state"] = {"metals & mining": "WEAKENING"}
     policy["stall_days_by_family"] = {}
-    d7 = evaluate_exit(pos, hwm, 7, policy)
+    # cfg_ctx({}) — same isolation note as the early-invalidation test
+    # above. This one did not actually FAIL when the switch went live
+    # (10*0.75 rounds to 8, one session past the session-7 check here —
+    # a lucky timing coincidence, not real isolation) but was reading
+    # the live value regardless; fixed for the same reason, not because
+    # it was caught failing.
+    with cfg_ctx({}):
+        d7 = evaluate_exit(pos, hwm, 7, policy)
     assert d7["action"] != "EXIT_STALL", (
         "swing_sector_decay_enabled is off — WEAKENING must not shorten "
         "the stall clock while off")

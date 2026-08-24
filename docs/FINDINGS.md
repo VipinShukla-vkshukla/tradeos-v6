@@ -13594,3 +13594,104 @@ quantity/`invested_value`, marking `scaled_in`) and the R-multiple/
 entry-price accounting question §4 names — both explicitly out of scope
 this session, pending that design question being answered on its own,
 not rushed to unblock a stage.
+
+## 2026-08-24 — F-79 (change, Track E — arming pass) — every Stage
+E3-E5 shadow switch armed live, on the operator's own explicit
+instruction ("arm all the shadow Es to live mode"), given full
+awareness of the evidence split — plus a real, previously-latent test-
+isolation bug the arming itself surfaced. Branch `feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 1052/1053 immediately after arming (4 NEW
+failures beyond the known Stage D4 one — see §2), 1052/1053 again after
+the isolation fix (only the known D4 failure). `tools.simulate` and
+`tools.health --quick` against the real 3-position book, both live.
+
+### 1 — WHAT WAS ARMED, AND THE EVIDENCE BEHIND EACH
+
+Flagged to the operator before executing, given SWING is LIVE and
+several of these switches were built literal minutes earlier with zero
+real-world observation — not a refusal, a surfaced fact, per this
+project's own "flag anything found along the way that costs money"
+rule. Confirmed to proceed with all seven regardless. Migration 113:
+
+**Seasoned** (fired repeatedly against real open positions this
+session): `swing_ai_tighten_enabled`, `swing_regime_aware_exits_
+enabled`, `swing_sector_decay_enabled`.
+
+**Zero or near-zero real firings** (built this session; thresholds
+explicitly documented in their own migration comments as "starting
+point, not calibrated"): `swing_early_invalidation_enabled`,
+`swing_participation_decay_enabled` (never fired live all session),
+`entry_refuse_broken_trend` (never fired live), `entry_refuse_low_rr_
+retention` (fired once, on GLAND).
+
+### 2 — THE REAL BUG THE ARMING ITSELF SURFACED
+
+`tools.verify` immediately went from 1052/1053 to 1048/1053 the moment
+the migration landed — 4 NEW failures, all in exactly the Stage E3/E4
+test modules whose switches had just flipped. Traced before assuming
+the arming broke something: `tests.cfg_ctx({})` correctly sandboxes
+`config._sys_config` (sets it to an empty dict, `get_system_config()`
+sees it is not `None` and never refetches) — but four specific tests
+across three files called `evaluate_exit()` with NO `cfg_ctx` wrapper
+at all, meaning `cfg_bool("swing_..._enabled", False)` fell through to
+whatever `config._sys_config` already held in the live process — the
+REAL database value, not the code's own default. These tests were
+silently coupled to the live system_config staying off the whole time
+they existed, invisible until the live value actually changed:
+
+- `test_stage_e3_ai_tighten_and_regime.py::test_ai_tighten_shadow_only_
+  by_default_does_not_change_the_action`
+- `test_stage_e3_ai_tighten_and_regime.py::test_regime_multiplier_is_a_
+  noop_by_default`
+- `test_stage_e4_early_invalidation_and_sector_decay.py::test_early_
+  invalidation_shadow_only_by_default`
+- `test_stage_e4_participation_decay.py::test_participation_decay_
+  shadow_only_by_default`
+
+A FIFTH, `test_stage_e4_early_invalidation_and_sector_decay.py::test_
+sector_decay_shadow_only_by_default`, had the identical gap but did NOT
+fail — session 7 checked against a 10-day default × 0.75 armed
+multiplier rounds to 8 (Python's round-half-to-even), one session past
+where the check happens to look. It was passing for the wrong reason —
+reading the live value and getting lucky on the exact session number
+chosen, not genuine isolation. Fixed anyway, on the same principle: a
+check that passes by coincidence is the same defect wearing a different
+hat as one that fails for the wrong reason.
+
+All five fixed by wrapping the `evaluate_exit()` call in `with cfg_ctx
+({}):`, matching the pattern every OTHER test in these files (and
+everywhere else in this session's work) already used. This restores
+the tests' original protective intent — proving the mechanism's CODE-
+LEVEL default is a safe HOLD, independent of whatever the live account
+happens to be running — rather than the accidental, fragile assertion
+they had actually been making ("the live database currently says
+off"). `tools.verify`: back to 1052/1053, only the known D4 issue.
+
+### 3 — LIVE PROOF, POST-ARM
+
+`tools.simulate` against the real 3-position book: **HINDCOPPER's
+action changed from `HOLD` to an executed `TRAIL_SL`**, tightening its
+stop on the AI's own live geopolitical-risk flag — the exact mechanism
+F-70 built and shadow-logged, now genuinely acting rather than logging.
+AARTIIND correctly stays `HOLD`, its own sector-decay tighten
+EXEMPTED (F-73's own refinement) since its volume is up 2.43x since
+entry — group-level sector weakness still does not override
+demonstrated stock-level strength, now for real, not just in shadow.
+HAL unaffected (below the 1.0R runner line, no scale-in eligible
+either). `tools.health --quick`: every check clean except `pending_dup`
+— confirmed the SAME already-traced F-67 historical incident (predates
+today's fix commit, inside its 7-day lookback), not a new issue from
+arming.
+
+### 4 — WHAT THIS MEANS FOR THE THIN-EVIDENCE SWITCHES
+
+Four of the seven now armed had little or no real-world confirmation
+before this migration. That is the operator's own explicit, informed
+call, not a default this project assumes going forward — the same
+one-time-exception framing `docs/TRADEOS_ROADMAP.md`'s own non-
+negotiables section already uses for F-43/F-46. Watching these four in
+particular over the coming sessions — do they fire sensibly, does
+`entry_rr_retention_floor`'s 0.20 starting point need recalibrating
+once real refusals accumulate — is the natural next check, not
+something this session can itself provide more evidence for today.

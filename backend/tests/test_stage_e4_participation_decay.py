@@ -62,7 +62,9 @@ def _giveback_fixture(sessions_held: int):
 def test_participation_decay_shadow_only_by_default():
     from control.position_lifecycle import evaluate_exit
     pos, ltp, held, policy = _giveback_fixture(sessions_held=2)
-    d = evaluate_exit(pos, ltp, held, policy)
+    # cfg_ctx({}) — same isolation note as the E3/E4 sibling tests.
+    with cfg_ctx({}):
+        d = evaluate_exit(pos, ltp, held, policy)
     assert d["action"] != "EXIT_GIVEBACK", (
         "swing_participation_decay_enabled is off by default — a decayed "
         f"vol_ratio must not tighten the giveback guard, got {d['action']}")

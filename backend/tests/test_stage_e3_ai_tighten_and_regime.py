@@ -44,7 +44,14 @@ def test_ai_tighten_shadow_only_by_default_does_not_change_the_action():
     pos = _pos(entry, stop, ltp, ai_recommended_action="TIGHTEN_SL",
               ai_action_reason="test risk")
     policy = _policy()
-    d = evaluate_exit(pos, ltp, 3, policy)
+    # cfg_ctx({}) — NOT the live system_config. This asserts the CODE's
+    # own default (cfg_bool(..., False)), not whatever the operator has
+    # actually armed live. A version of this test without it silently
+    # depended on system_config staying off, and broke the moment F-79's
+    # arming pass turned it on for real — a live-state dependency
+    # invisible until the live state actually changed.
+    with cfg_ctx({}):
+        d = evaluate_exit(pos, ltp, 3, policy)
     assert d["action"] == "HOLD", (
         f"swing_ai_tighten_enabled is off by default — must not change "
         f"the ladder's own verdict, got {d['action']}")
@@ -106,7 +113,9 @@ def test_regime_multiplier_is_a_noop_by_default():
     policy = _policy()
     policy["_current_regime"] = "RISK OFF"
     policy["stall_days_by_family"] = {}   # flat default (10) applies
-    d7 = evaluate_exit(pos, hwm, 7, policy)
+    # cfg_ctx({}) — see the identical note on the AI-tighten test above.
+    with cfg_ctx({}):
+        d7 = evaluate_exit(pos, hwm, 7, policy)
     assert d7["action"] != "EXIT_STALL", (
         "swing_regime_aware_exits_enabled is off — RISK OFF must not "
         "shorten the stall clock while the switch is off")
