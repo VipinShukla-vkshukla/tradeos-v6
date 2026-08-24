@@ -155,6 +155,8 @@ MODULES = [
     ("candidate approval decision (Stage D6)", "tests.test_approve_candidate"),
     ("F-67 pending-fill race (HINDCOPPER double-buy)",
      "tests.test_pending_fill_race"),
+    ("Track E Stage E2 swing feature-edge study",
+     "tests.test_swing_feature_edge_study"),
 ]
 
 

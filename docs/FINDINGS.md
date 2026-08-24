@@ -12446,3 +12446,89 @@ is intraday-side Stage D4 work from a concurrent session, explicitly out of
 scope for this session per the operator's instruction not to touch intraday
 code; named here rather than silently worked around, for whoever picks up
 Track D next.
+
+## 2026-08-24 — F-68 (change, Track E Stage E2) — Quantify, closing Gate
+E2 (`docs/TRADEOS_ROADMAP.md`). Real numbers for all three E2 questions.
+Branch `feat/swing-evolution`, off `main`.
+
+**Ran:** `tools.verify`: 978/979 (the one failure is F-67's already-named,
+pre-existing, unrelated Stage D4 test-ordering issue — confirmed still
+absent-of-relation, same module, same isolated-pass behaviour). New
+`tools/swing_feature_edge_study.py` run live, full history, both dry-run
+and for real: 31 findings written to `brain_proposals` as `PENDING`.
+
+### 1 — Q1: do features separate winners from losers per engine?
+
+Yes, clearly, on real sample sizes. New `tools/swing_feature_edge_study.py`
+— independent of `tools/feature_edge_study.py` and everything under
+`intraday/` (see the module's own docstring for why it does not import
+either, even though the statistical method is the same proven shape) —
+mined every resolved (TARGET/STOP) `signal_output_daily` row, grouped by
+`swing_family()` (read-only import from `allocation/scoring.py`, the same
+dependency F-46 already established as safe), for tercile/bucket-vs-rest
+splits across 12 numeric and 8 categorical fields already sitting on that
+table. Live run: **CONTINUATION n=427, 20 findings; MOM n=118, 11
+findings; RVS n=12, below the 40-sample floor, correctly skipped.**
+
+Two findings land directly on this session's own trades. CONTINUATION's
+`sector` split: **metals & mining wins 31% (5T/11S) against 75% for every
+other sector (44pp gap, mean −3.14% vs +2.61%)** — HINDCOPPER's own
+family and sector. MOM's `sector_rank_at_entry` split: **rank ≤4 wins
+100% (39/39, mean +6.43%) against rank ≥10's 82% (32/39)** — HAL entered
+at sector rank **2**, inside the strong band on this specific split, so
+this particular finding does not explain HAL's loss; the CTL/HAL story is
+the zone-chase (Stage E5), a different mechanism this stage was not built
+to find. Both are `HYPOTHESES`, not new rules — see §3.
+
+### 2 — Q2: does the lesson engine's own grade predict anything?
+
+**Unanswerable from existing data, and the reason is itself the
+finding.** `ai/post_trade_analysis.py::grade_trade_entry()` computes an
+A–F grade per closed trade — confirmed by reading the code, not assumed
+— but the grade is used ONLY to word the generated lesson's prose
+(`generate_rule_based_lesson()`) and is never written to any column
+anywhere. Checked directly: the `lessons` table (19 columns) has no grade
+field of any kind. There is nothing to correlate against outcome because
+the grade was never captured past the moment it was computed. This
+changes Stage E6's own plan: reconnecting the lesson engine needs the
+grade PERSISTED first (a new column, written whenever `post_trade_
+analysis` runs — additive, measurement-only, the same shape as F-43's
+`exit_signal` and F-46's `runner_evidence` fixes) before any correlation
+study is possible at all.
+
+### 3 — Q3: is there enough resolved history to fit anything safely?
+
+Per-engine: yes for CONTINUATION and MOM (427 and 118), no yet for RVS
+(12) or any other isolated family — confirmed by the same 40-sample floor
+`tools/swing_feature_edge_study.py` already enforces before attempting a
+split. **Per-regime: no — every single resolved row in `signal_output_
+daily` carries `regime = 'NEUTRAL'`.** The book has not yet traded through
+a resolved RISK_ON/RISK_OFF/TRENDING/RECOVERING session, so Stage E3's
+regime-aware exit ladder can be built and reasoned about, but cannot yet
+be validated against this account's own resolved outcomes in a different
+regime — it will need to accumulate evidence over time, same as any other
+finding in this track.
+
+### 4 — WHAT WAS WRITTEN, AND WHAT WAS NOT
+
+`brain_proposals`, `proposal_type='FEATURE_FILTER'`, `source=
+'swing_feature_edge_study'`, `target_key` prefixed `SWING/` so it can
+never collide with an intraday engine's own key in the shared table —
+31 rows, all `PENDING`. Nothing was changed in any live decision path;
+`entry_ranking.score_plan()` does not read any of this yet, per Stage E2's
+own scope. One known, bounded interaction with the shared queue, named in
+the tool's own docstring rather than hidden: `tools/feature_edge_study.py
+::validate_pending()` reads every `PENDING FEATURE_FILTER` row regardless
+of prefix and will attempt to re-validate these against `intraday_setups`
+— confirmed by reading that function's filter, not assumed — where they
+will simply find no matching engine and stay `PENDING`, harmless. Not
+fixed, because fixing it means editing an intraday file, which this track
+does not do; Stage E6 builds this tool's own independent validator instead
+of relying on the intraday one ever reaching a `SWING/` row correctly.
+
+### 5 — GATE E2
+
+Closed. Real numbers for all three questions, one of them ("is there
+regime diversity to validate against") a genuine "not yet" rather than a
+guess, and one (the lesson-engine grade) surfacing a concrete prerequisite
+for Stage E6 that was not visible before this session. Stage E3 can begin.

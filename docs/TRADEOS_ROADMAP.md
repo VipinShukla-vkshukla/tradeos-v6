@@ -1100,6 +1100,26 @@ correlation, a sample-size table by (engine, regime). If any answer is
 refinement rather than a fitted model) but does not block E3–E5, which
 depend on none of this.
 
+**Gate E2 — CLOSED, 24-Aug-2026 (F-68, `feat/swing-evolution`).** New
+`tools/swing_feature_edge_study.py` — independent of `tools/
+feature_edge_study.py` and everything under `intraday/`, the same
+proven tercile/bucket-vs-rest method reimplemented rather than imported,
+per this track's own non-negotiables. Distribution: CONTINUATION n=427
+(20 findings), MOM n=118 (11 findings), RVS n=12 (below the 40-sample
+floor). Two land directly on this session's own trades: CONTINUATION's
+`sector` split puts metals & mining at 31% win rate against 75% for
+every other sector (HINDCOPPER's own sector); MOM's `sector_rank_at_
+entry` split shows rank ≤4 at 100% (39/39) against rank ≥10's 82%.
+Correlation: **unanswerable** — `post_trade_analysis`'s A–F grade is
+computed and used only to word a lesson's prose, never persisted to any
+column; Stage E6 needs to capture it before this question has an
+answer. Sample-size table: every resolved row currently reads `regime =
+'NEUTRAL'` — no regime diversity exists yet to validate E3's own premise
+against, which does not block building E3 but means it ships unvalidated
+against a regime shift until one actually occurs. 31 `PENDING` findings
+written to `brain_proposals`, `target_key` prefixed `SWING/`, nothing
+live changed. Full detail: `docs/FINDINGS.md` F-68.
+
 ## Stage E3 — Close the "knows but doesn't act" gaps
 
 The smallest, lowest-risk stage, and the one a professional desk would
