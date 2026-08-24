@@ -489,6 +489,38 @@ whatever intraday's expanded footprint would add. This is not optional
 and not assumed — a wider intraday universe competes for the same
 subscription budget the live-VWAP handoff above depends on.
 
+**Consolidated, 24-Aug-2026.** D2 through D5 were each built and verified
+independently, all four branched off the same `main` commit and unaware
+of one another by construction — the operator's own explicit plan
+("complete all the Ds then do a holistic check before merging"). Merged,
+in stage order, into `feat/intraday-evolution` (off `main`): 8 real
+source-file conflicts across `overlays.py`, `price_feed.py`, `verify.py`
+and `FINDINGS.md` (every branch's own F-number sequence independently
+claimed F-54 from wherever `main` sat when it branched, exactly as every
+affected entry's own text anticipated — renumbered into one true F-54–64
+sequence at merge time, header and collision-note paragraphs only, no
+entry content altered). `engine.py`, `run.py`, `base.py`, `scoring.py`
+auto-merged clean; verified by inspection, not assumed, that both sides'
+additions actually coexist (`SymbolContext.depth` alongside
+`universe_population`, the sizing pipeline's `liquidity_capped_budget()`
+→ `BLOCKED_LIQUIDITY` → `BLOCKED_DEPTH` gates in the right order,
+`Prior.hit_rate` alongside the established/admitted prior split). `tools.
+verify`: 930/930 across 90 modules — exactly the sum of `main`'s own 763
+plus each stage's own delta (D2 +89, D3 +26, D4 +27, D5 +25). `tools.
+health`: 24/24. `tools.simulate`: clean end-to-end run through the full
+combined pipeline with real live positions, "nothing was written." F-65
+(docs/FINDINGS.md) has the full detail.
+
+**Every stage still ships exactly as it did on its own branch** — every
+switch this track has introduced (`intraday_event_core_enabled`,
+`intraday_depth_mode_enabled`, `overlay_depth_enabled`,
+`intraday_same_day_fit_weight`, both live-requalify switches) remains at
+its shipped-off default. The merge is source consolidation, not arming;
+Gate D2 through Gate D5 remain individually unproven and are still
+deferred to real elapsed market time, per the operator's own plan — this
+pass is what makes that final holistic evaluation possible from ONE
+branch instead of four, not a substitute for it.
+
 ## Stage D2 — Universe live-qualification
 
 **Branch:** `feat/intraday-live-universe`.

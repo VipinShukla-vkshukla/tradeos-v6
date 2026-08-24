@@ -12137,3 +12137,105 @@ is called from exactly one place in this stage —
 never from `score()`. No live sizing decision is affected by anything in
 this entry. Written on `feat/intraday-regression-shadow`, since merged
 into `feat/intraday-evolution`.
+
+## 2026-08-24 — F-65 (consolidation, no new mechanism) — Track D, Stages
+D2 through D5 merged into one branch, `feat/intraday-evolution`, off
+`main`. Per the operator's own explicit instruction: complete every D
+stage independently first, then consolidate and holistically check before
+arming anything — this is that consolidation.
+
+### 1 — WHY, AND WHY NOW RATHER THAN AFTER D6
+
+D2 (`feat/intraday-live-universe`), D3 (`feat/intraday-event-core`), D4
+(`feat/intraday-depth-gate`) and D5 (`feat/intraday-regression-shadow`)
+were each branched fresh off the SAME `main` commit and built with zero
+awareness of one another, by construction — `git merge-base` confirmed
+identical for all four before this session started. That was the right
+call while each stage was still being built (isolates risk, keeps each
+branch's own `tools.verify` meaningful), but a fifth branch for D6 would
+have compounded the eventual reconciliation rather than deferred it —
+raised with the operator directly rather than assumed; the answer was to
+consolidate now and build D6 on top of the result.
+
+### 2 — WHAT ACTUALLY CONFLICTED, MEASURED BEFORE MERGING ANYTHING
+
+`git diff --name-only main <branch>` for all four, compared, before the
+first merge: `intraday/engine.py` and `intraday/run.py` touched by
+D2+D3+D4; `intraday/price_feed.py` by D3+D4; `analysis/overlays.py` and
+`intraday/strategies/base.py` by D2+D4; `allocation/scoring.py` by D2+D5;
+`tools/verify.py`, `docs/FINDINGS.md`, `docs/TRADEOS_ROADMAP.md` by all
+four. Merged in stage order (D2 → D3 → D4 → D5), one `git merge` per
+stage, `tools.verify` run after each before proceeding to the next.
+
+**Real conflicts, resolved by hand:** `overlays.py` (D2's
+`liquidity_capped_budget()` and D4's new section-4 `depth_ok()` — both
+kept, D2's left where it was as a companion to `liquidity_ok()`, D4's
+kept as its own numbered section); `price_feed.py`'s `__init__` (D3's
+`_dirty`/`_dirty_baseline` fields and D4's `_depth`/`_depth_symbols`
+fields — both kept, concatenated); `verify.py`'s `MODULES` list, every
+merge (mechanical — list concatenation).
+
+**Auto-merged clean by git, verified correct by inspection, not
+assumed:** `engine.py`, `run.py`, `strategies/base.py`, `allocation/
+scoring.py`. Checked directly rather than trusted: `SymbolContext` carries
+both `universe_population` (D2) and `depth` (D4); the entry-sizing
+pipeline reads `budget = liquidity_capped_budget(...)` (D2) → qty →
+`BLOCKED_LIQUIDITY` (existing) → `BLOCKED_DEPTH` (D4) in the correct,
+non-contradictory order; `cycle()` calls `apply_live_quotes()` →
+`merge_live_bars()` → `apply_live_depth()` (D4) in sequence, with D3's
+`event_core.check()` wired separately into `run.py`'s own slow timer;
+`Prior.hit_rate` (D5) sits alongside the established/admitted prior-split
+machinery (D2) without either touching the other's fields.
+
+### 3 — THE F-NUMBER COLLISION, RESOLVED
+
+Every one of D2's F-54–61, D3's F-54, D4's F-54 and D5's F-54 correctly
+anticipated this in their own text ("renumbering happens once branches
+actually merge"). Resolved in merge order: D2's F-54–61 left untouched
+(already internally sequential); D3's F-54 → F-62; D4's F-54 → F-63; D5's
+F-54 → F-64. Only each entry's header line and its own collision-
+explaining preamble paragraph were edited to record the renumbering and
+point back to F-62's own explanation; no other content in any entry was
+touched, per this ledger's own append-only rule — this is documented
+renumbering of a known, pre-announced collision, not a rewrite of a past
+finding.
+
+### 4 — VERIFIED, PRECISELY
+
+`tools.verify`: **930/930 across 90 modules** — exactly `main`'s own
+763/76 plus D2's own +89/+6, D3's +26/+3, D4's +27/+3, D5's +25/+2,
+confirming every stage's own offline test suite survived the merge
+byte-for-byte, not just that the file compiled. `tools.health`: 24/24,
+including `kite` (live session), `feed` (I/O-free tick handler
+confirmed), `broker`/`stops`/`qty_fields` (swing book unaffected, per
+this track's own "Rule for this whole track" requiring exactly these
+swing-specific checks on any change touching the shared position loop).
+`tools.simulate`: ran clean end-to-end through the FULL combined
+pipeline — Population A/B/C universe (D2), the event-core module present
+though gated off (D3), the depth gate wired into the live sizing path
+though gated off (D4) — against a LIVE session with three real intraday
+positions open (NMDC, HINDALCO, NATIONALUM) and four real swing
+positions, "nothing was written."
+
+**One unrelated finding, surfaced again by `health.capital`:** the same
+17% capital shortfall first flagged in F-54 (this branch's own) persists
+— configured `TOTAL_CAPITAL` Rs 30,000 vs. an account actually holding
+Rs 24,942 today. Still out of this session's scope; still real; still
+unfixed.
+
+### 5 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+Every Track D switch remains at its shipped-off default —
+`intraday_live_requalify_enabled`, `intraday_live_requalify_
+unreferenced_enabled`, `intraday_event_core_enabled`, `intraday_depth_
+mode_enabled`, `overlay_depth_enabled`, `intraday_same_day_fit_weight`.
+This is source consolidation, not arming. Gate D2 through Gate D5 each
+remain individually unproven — none of them can be cleared by a merge;
+every one of them needs real elapsed market sessions with its own switch
+armed, which is still the operator's own decision, still deferred to a
+single pass across all of them together rather than stage-by-stage. Old
+branches (`feat/intraday-live-universe`, `feat/intraday-event-core`,
+`feat/intraday-depth-gate`, `feat/intraday-regression-shadow`) left in
+place, not deleted — kept as a safety net until this branch is verified
+in a live session, per the operator's own preference. On
+`feat/intraday-evolution`, not merged into `main`.
