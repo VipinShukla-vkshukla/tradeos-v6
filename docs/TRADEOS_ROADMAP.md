@@ -1223,8 +1223,18 @@ same shared function rather than a fourth separate copy. Investigating a
 HINDCOPPER again; traced by timestamp before reporting — the incident
 predates the F-67 fix commit earlier the same day, not a recurrence, and
 is noted as an untested-live fix (fix landed 27 minutes before close) in
-F-72 rather than assumed clean. Full detail: `docs/FINDINGS.md` F-71,
-F-72.
+F-72 rather than assumed clean.
+
+**F-73 refinement, same day:** the sector-decay multiplier now exempts a
+WEAKENING-sector position whose OWN `vol_ratio` is holding or rising
+(`swing_sector_decay_strength_exempt_floor`, migration 111) — a group-
+level sector read must not override demonstrated stock-level strength.
+Live proof: AARTIIND (chemicals, WEAKENING) now reads EXEMPTED, its own
+volume up 25% since entry. F-73 also fully traces the HINDCOPPER order
+collision to F-67's already-documented outcome — reconcile corrected it
+to the true 4-share holding, no double position ever resulted, unlike
+HAL's retained real one. Full detail: `docs/FINDINGS.md` F-71, F-72,
+F-73.
 
 ## Stage E5 — Entry-side intelligence
 

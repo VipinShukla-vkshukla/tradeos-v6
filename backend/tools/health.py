@@ -784,10 +784,14 @@ def check_sector_concentration_risk() -> tuple[bool, str]:
             f"{len(weakening)}/{len(pos_rows)} open SWING positions "
             f"({frac:.0%}) sit in sectors reading WEAKENING today: {names}. "
             f"Each is already tightened individually by swing_sector_decay_"
-            f"enabled if armed — this flags the BOOK-wide concentration a "
-            f"per-position check cannot see. Not an order to act, a "
-            f"diagnostic: consider whether new SWING entries should lean "
-            f"away from these sectors until they turn.")
+            f"enabled if armed (and exempted there when the position's own "
+            f"volume is holding up — sector-level weakness alone does not "
+            f"veto a demonstrated individual leader) — this flags the "
+            f"BOOK-wide concentration a per-position check cannot see. Not "
+            f"an order to act, and not a case for avoiding the sector "
+            f"outright: a genuinely strong individual name (rising volume, "
+            f"holding relative strength) can still lead through a weak "
+            f"group. A diagnostic for the operator's own judgement.")
     return True, (f"{len(weakening)}/{len(pos_rows)} open SWING positions "
                   f"in WEAKENING sectors, below the {THRESHOLD:.0%} "
                   f"concentration threshold")

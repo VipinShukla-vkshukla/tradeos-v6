@@ -507,11 +507,33 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
     # stacking two independent "be more patient" signals is how a ladder
     # drifts toward never cutting anything. A WEAKENING sector, by
     # contrast, is new information the entry never priced in.
+    #
+    # STRENGTH EXEMPTION — 24-Aug-2026. sector_state is a GROUP-level read;
+    # a genuine leader can outrun a lagging group ("buy the strongest
+    # stock in a weak sector" — O'Neil/Minervini both make this point, and
+    # CLAUDE.md's own Research Council charter asks this codebase to weigh
+    # it). Punishing a position for its sector's average when the
+    # position's OWN volume is holding or rising is exactly the "blocking
+    # a real candidate with strong data points" failure mode this session
+    # was built to avoid — sector-level weakness should defer to
+    # stock-level strength, not override it. Reuses the same vol_ratio
+    # decay ratio the participation-decay multiplier below computes: if
+    # THIS position's own participation has NOT decayed (ratio at or above
+    # the exempt floor), the sector read alone does not tighten it.
+    # Deliberately asymmetric — the regime multiplier above stays
+    # unexempted, because a real risk-off regime is systemic and is not
+    # something one strong stock's own volume can diversify away from;
+    # only the GROUP-level (sector) signal defers to the STOCK-level one.
     current_sector = str(pos.get("sector") or "").strip()
     sector_state = (policy.get("_sector_state") or {}).get(current_sector)
     sector_aware_live = cfg_bool("swing_sector_decay_enabled", False)
+    own_participation_ratio = (policy.get("_participation_decay") or {}).get(
+        pos.get("symbol"))
+    strength_floor = cfg_float("swing_sector_decay_strength_exempt_floor", 1.0)
+    strength_exempt = (own_participation_ratio is not None
+                       and own_participation_ratio >= strength_floor)
     sector_mult = 1.0
-    if sector_state == "WEAKENING":
+    if sector_state == "WEAKENING" and not strength_exempt:
         sector_mult = cfg_float("swing_sector_decay_mult", 0.75)
         if not sector_aware_live:
             logger.info(
@@ -519,6 +541,13 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
                 f"reads WEAKENING today, would apply x{sector_mult:.2f} to "
                 f"the giveback/stall thresholds — swing_sector_decay_enabled "
                 f"is off")
+    elif sector_state == "WEAKENING" and strength_exempt:
+        logger.info(
+            f"  {pos.get('symbol')}: sector-decay EXEMPTED — {current_sector} "
+            f"reads WEAKENING but this position's own vol_ratio "
+            f"({own_participation_ratio:.2f}x entry-day) is at or above the "
+            f"{strength_floor:.2f}x strength floor — group-level weakness "
+            f"does not override demonstrated stock-level strength")
     applied_sector_mult = sector_mult if sector_aware_live else 1.0
 
     # ── PARTICIPATION-DECAY MULTIPLIER — Track E, Stage E4 ────────────────────

@@ -174,6 +174,80 @@ def test_sector_and_regime_multipliers_compose():
         f"~6, got {d6['action']} at session 6")
 
 
+# ── Sector-decay strength exemption — 24-Aug-2026, operator's own point ────
+#
+# "We should not be blocking the real candidates having the potential to
+# move upwards e.g. with strong volumes." sector_state is a GROUP-level
+# read; a genuine leader can outrun a lagging sector. These three prove
+# the exemption fires ONLY on demonstrated individual strength, not on
+# absence of data, and does not touch the confluence case (sector AND the
+# stock's own volume both weak) where the tighten is still warranted.
+
+def test_sector_decay_exempt_when_own_participation_strong():
+    """Sector WEAKENING but this position's own vol_ratio is AT or ABOVE
+    entry-day (>= the 1.0 floor) — the group-level read must not
+    override demonstrated stock-level strength. Session 8 is BELOW the
+    unmultiplied 10-day default: if the exemption works, mult stays x1.0
+    and this must still HOLD; the un-exempted case (see the confluence
+    and no-data tests below) shortens 10 -> 8 and DOES stall here, which
+    is exactly the contrast this test has to prove."""
+    from control.position_lifecycle import evaluate_exit
+    entry, stop = 100.0, 94.0
+    hwm = entry + 0.3 * (entry - stop)
+    pos = _pos(entry, stop, hwm)
+    policy = _policy()
+    policy["_sector_state"] = {"metals & mining": "WEAKENING"}
+    policy["_participation_decay"] = {"X": 1.2}   # volume UP since entry
+    policy["stall_days_by_family"] = {}
+    with cfg_ctx({"swing_sector_decay_enabled": "true",
+                 "swing_sector_decay_mult": "0.75"}):
+        d8 = evaluate_exit(pos, hwm, 8, policy)
+    assert d8["action"] != "EXIT_STALL", (
+        f"exempted (own vol_ratio 1.2x >= 1.0 floor) must apply x1.0 — "
+        f"the 10-day default must NOT have shortened, so session 8 must "
+        f"still HOLD, got {d8['action']}")
+
+
+def test_sector_decay_not_exempt_without_participation_data():
+    """No participation data for this symbol (None, not a weak ratio) —
+    absence of evidence is not evidence of strength; the exemption must
+    require POSITIVE proof, not fire on a missing lookup. Existing
+    behaviour (sector-decay applies) must be unchanged."""
+    from control.position_lifecycle import evaluate_exit
+    entry, stop = 100.0, 94.0
+    hwm = entry + 0.3 * (entry - stop)
+    pos = _pos(entry, stop, hwm)
+    policy = _policy()
+    policy["_sector_state"] = {"metals & mining": "WEAKENING"}
+    policy["stall_days_by_family"] = {}   # no _participation_decay key at all
+    with cfg_ctx({"swing_sector_decay_enabled": "true",
+                 "swing_sector_decay_mult": "0.75"}):
+        d8 = evaluate_exit(pos, hwm, 8, policy)
+    assert d8["action"] == "EXIT_STALL", (
+        f"10 * 0.75 = 7.5 -> rounds to 8 -> must still stall at session 8 "
+        f"when no participation data exists to justify an exemption, got "
+        f"{d8['action']}")
+
+
+def test_sector_decay_still_applies_on_confluence():
+    """Sector WEAKENING AND this position's own participation has ALSO
+    decayed — a real confluence, not a case for exemption."""
+    from control.position_lifecycle import evaluate_exit
+    entry, stop = 100.0, 94.0
+    hwm = entry + 0.3 * (entry - stop)
+    pos = _pos(entry, stop, hwm)
+    policy = _policy()
+    policy["_sector_state"] = {"metals & mining": "WEAKENING"}
+    policy["_participation_decay"] = {"X": 0.3}   # also decayed
+    policy["stall_days_by_family"] = {}
+    with cfg_ctx({"swing_sector_decay_enabled": "true",
+                 "swing_sector_decay_mult": "0.75"}):
+        d8 = evaluate_exit(pos, hwm, 8, policy)
+    assert d8["action"] == "EXIT_STALL", (
+        f"confluence (sector weak AND own volume also weak) must still "
+        f"tighten, got {d8['action']}")
+
+
 TESTS = [
     ("early invalidation shadow-only by default",
      test_early_invalidation_shadow_only_by_default),
@@ -189,4 +263,10 @@ TESTS = [
      test_sector_decay_does_not_loosen_a_leading_sector),
     ("sector and regime multipliers compose",
      test_sector_and_regime_multipliers_compose),
+    ("sector decay exempt when own participation strong",
+     test_sector_decay_exempt_when_own_participation_strong),
+    ("sector decay not exempt without participation data",
+     test_sector_decay_not_exempt_without_participation_data),
+    ("sector decay still applies on confluence",
+     test_sector_decay_still_applies_on_confluence),
 ]

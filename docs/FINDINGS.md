@@ -12970,3 +12970,90 @@ early/structural invalidation, live sector-decay tightening,
 participation/delivery decay, and the book-wide sector-concentration
 check — ship OFF, shadow-logged, verified. Next: Stage E5 (entry-side
 intelligence), on explicit go-ahead only.
+
+## 2026-08-24 — F-73 (change, Track E Stage E4 refinement) — sector-decay
+strength exemption, plus a full investigation of the HINDCOPPER
+double-order into a definitive answer. Branch `feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 1014/1015 (5 new checks; same pre-existing
+unrelated Stage D4 issue). `tools.simulate` against the real book.
+
+### 1 — OPERATOR'S POINT: DON'T PUNISH A REAL CANDIDATE FOR ITS GROUP
+
+"We should not be blocking the real candidates having the potential to
+move upwards e.g. with strong volumes and other data points." The F-71
+sector-decay multiplier fired purely off `sector_state == WEAKENING` —
+a GROUP-level read — with zero regard for whether the position's OWN
+data contradicted it. A genuine leader outrunning a lagging sector
+("buy the strongest stock in a weak group" — O'Neil/Minervini) would
+get tightened anyway, for a reason that had nothing to do with the
+stock itself.
+
+`control/position_lifecycle.py::evaluate_exit()`: the sector-decay block
+now checks the SAME `_participation_decay` ratio F-72 already computes.
+When a WEAKENING-sector position's own `vol_ratio` is at or above
+`swing_sector_decay_strength_exempt_floor` (1.0 — participation holding
+or rising vs. entry day), the sector tighten is skipped entirely for
+that position; the giveback/stall thresholds fall back to whatever the
+regime and participation multipliers alone would produce. Deliberately
+**asymmetric**: only the sector (group) signal defers to the
+participation (stock) signal — the regime multiplier is untouched,
+because a real risk-off regime is systemic and not something one
+stock's own volume diversifies away from.
+
+Deliberately requires POSITIVE evidence, not absence of it — a symbol
+with no participation data at all (no entry-day `stock_data_daily` row
+yet, same gap F-72 §1 already documented for a same-day re-entry) is
+NOT exempted; "no data" and "measured strong" must not collapse to the
+same answer, the same principle CLAUDE.md's own landmines already state
+for a cold-start hurdle. No new switch — governed by the existing
+`swing_sector_decay_enabled`; one new tunable,
+`swing_sector_decay_strength_exempt_floor` (migration 111).
+
+**Live proof, same book:** AARTIIND (chemicals, reading WEAKENING) now
+shows `sector-decay EXEMPTED — ... own vol_ratio (1.25x entry-day) is at
+or above the 1.00x strength floor` — its own volume has genuinely risen
+since entry, and the refinement correctly stops treating it like a name
+whose participation is fading. HINDCOPPER, re-entered today with no
+entry-day baseline yet, correctly gets NO exemption and falls back to
+the plain F-71 shadow — absence of data does not manufacture strength.
+
+### 2 — HINDCOPPER: FULLY TRACED, NOT A HAL REPEAT
+
+Operator's second point: confirm HINDCOPPER's double order was not
+"wrong... like HAL." Traced with real broker-log and order-history data
+rather than assumed:
+
+- The two BUY orders (04:05:24 and 04:10:31 UTC, 24-Aug) are the SAME
+  incident F-67 already root-caused and fixed this session — not a new
+  one. F-67 §2 already states the outcome plainly: **`reconcile_with_
+  broker` corrected the position to the true holding (4 shares, MATCHED)
+  — no double-size position resulted.** The order-log collision was
+  real and is exactly what the fix (commit `4ecfd0c`) closes; the
+  POSITION SIZE was never wrong.
+- This is the material difference from HAL: HAL's double position is
+  REAL and stands at the operator's own explicit instruction ("let's
+  retain HAL's double position"). HINDCOPPER's never existed as a real
+  doubled holding — it self-corrected via reconcile before this session
+  ever started investigating it.
+- The fix commit (15:03:34 IST, 24-Aug) landed AFTER this incident
+  (09:35 IST) chronologically, so it has not yet had a live re-test —
+  only ~27 minutes of market time remained after the commit before the
+  15:30 close. No SWING BUY was placed for any symbol after the fix
+  landed today (checked directly against `intraday_broker_log`). Stated
+  plainly as an untested-live fix, not a proven one, in F-72 §3 and
+  again here — tomorrow's session is the first real test.
+
+### 3 — VERIFIED
+
+3 new checks in `tests/test_stage_e4_early_invalidation_and_sector_decay.
+py` (now 11), demonstrated failing-first. The first attempt at the
+"exempt when strong" test asserted `EXIT_STALL` — vacuously true against
+BOTH the reverted and the new source, because a stall at session 8 with
+mult=0.75 (old code, always applies) and mult=1.0 (new code, exempted,
+clock never shortens) land on different session numbers, not the same
+action at the same session — a "check that cannot fail" caught by its
+own failing-first requirement before being trusted. Corrected to assert
+session 8 must NOT stall when exempted (mult stays 1.0, clock stays at
+its flat 10-day default); re-run against reverted source failed
+correctly, restored and passed. `tools.verify`: 1014/1015.
