@@ -143,6 +143,15 @@ class Prior:
     trigger_rate: float | None = None    # swing only: how often the zone filled
     below_floor:  bool = False
     note:         str = ""
+    # Fraction of the group's own observations with R > 0 — Stage D5,
+    # 24-Aug-2026. Appended at the END of the field list, not inserted
+    # among the distribution moments above, so every existing positional
+    # `Prior(...)` construction (this module's own below-floor branch,
+    # every test fixture) keeps compiling unchanged; it defaults to None
+    # wherever nobody supplies it, read the same way an absent prior is
+    # read everywhere else in this file — "no opinion", never 0.0.
+    # allocation.scoring.same_day_fit_multiplier() is the one reader.
+    hit_rate:     float | None = None
 
     @property
     def usable(self) -> bool:
@@ -173,6 +182,7 @@ def _dist(key: str, values: list[float], floor: int,
         p90      = s[int(0.90 * (len(s) - 1))],
         trigger_rate = trigger_rate,
         note     = note,
+        hit_rate = sum(1 for v in s if v > 0) / len(s),
     )
 
 
@@ -1088,6 +1098,98 @@ def regime_fit_multiplier(engine_family: str | None,
     mult = 1.0 + nudge * weight
     return mult, (f"{engine_family}={archetype} in {market_state}: "
                   f"{nudge:+.0%} nudge x weight {weight:.2f}")
+
+
+def same_day_fit_multiplier(engine_family: str | None, historical: Prior | None,
+                            today_wins: int, today_n: int,
+                            probe_weight: float | None = None) -> tuple[float, str]:
+    """
+    A bounded, ONE-DIRECTIONAL dampener: does this engine's hit-rate TODAY
+    look like a genuine statistical outlier against its own multi-day
+    history, badly enough to size down for the rest of the session?
+    Stage D5 (docs/TRADEOS_ROADMAP.md, Track D), 24-Aug-2026.
+
+    PURE, LIKE regime_fit_multiplier() ABOVE, FOR THE SAME REASON. This
+    module's own header calls that out: `score()` is one of the functions
+    CLAUDE.md protects as pure arithmetic over in-memory data, tested
+    offline with no database. Whoever calls this must already have BOTH
+    `historical` (the multi-day Prior — exactly what `_prior_for()`
+    already fetches on the slow timer, unchanged) and `today_wins`/
+    `today_n` (a same-day TAKEN-and-resolved win/loss count) in hand; this
+    function does no I/O to get them itself.
+
+    WHY A DAMPENER ONLY, NEVER A BOOST. The roadmap's own words for this
+    mechanism are "a same-day-only, resets-every-morning DAMPENER on
+    sizing" — not a second edge estimate. A day that is unusually GOOD so
+    far says nothing safe about the rest of it (few real trades, high
+    variance, and this project has already been burned once by treating
+    "looks good on a small same-session sample" as signal — see hurdle.py's
+    STRONG-bucket history). So this only ever returns <= 1.0: a one-sided
+    test asking whether today is significantly WORSE than history, never
+    the two-sided one that would also react to significantly better.
+
+    WHY A STATISTICAL TEST, NOT A THRESHOLD ON THE RAW RATE. "PDL is 1-for-4
+    today, its history is 60%" is not obviously unusual — 4 trials is a
+    coin's worth of noise at almost any true rate. A plain binomial test
+    (exact, not a normal approximation — same reason a percentile is used
+    for hurdle() instead of a parametric bound) asks the only question that
+    matters: how often would a TRUE hit-rate of `historical.hit_rate`
+    produce a run this bad by chance alone. `min_n` additionally floors how
+    small a same-day sample this will even look at, because a p-value from
+    n=1 or n=2 is real arithmetic answering a question nobody should trust.
+
+    Returns (multiplier, reason). 1.0 — an exact no-op — when the weight is
+    0, the engine has no usable historical prior, today's sample has not
+    reached `min_n` yet, or the test does not find today unusual at
+    `alpha`. "No opinion" must be indistinguishable from "no adjustment",
+    the same rule the cold-start floor and regime_fit_multiplier() both
+    already apply for the identical reason.
+
+    `probe_weight` LETS A CALLER SUPPLY THE WEIGHT INSTEAD OF READING
+    system_config — the same "supply the population instead of fetching
+    it" shape `intraday_priors(sb, rows=...)` already uses above, for the
+    identical reason. This ships at weight 0.0 (Stage 1, calibration
+    only), so every LIVE call site reading the real config gets an exact
+    no-op — but `tools/same_day_calibration.py`'s whole purpose is asking
+    "what WOULD this have flagged if it had been armed", and doing that by
+    monkeypatching global config (`tests.cfg_ctx`, built for test isolation
+    and a full REPLACE of every other key besides the one being probed)
+    would risk silently substituting defaults for every OTHER config key
+    a live production run actually has set. An explicit parameter has no
+    such blast radius and makes the calibration tool's intent visible in
+    its own call, not hidden in a context manager.
+    """
+    weight = probe_weight if probe_weight is not None else cfg_float(
+        "intraday_same_day_fit_weight", 0.0)
+    if weight <= 0 or not engine_family:
+        return 1.0, "same-day fit off (weight 0 or no engine)"
+
+    if historical is None or not historical.usable or historical.hit_rate is None:
+        return 1.0, f"{engine_family}: no usable historical hit-rate — no opinion"
+
+    min_n = cfg_int("intraday_same_day_fit_min_n", 5)
+    if today_n < min_n:
+        return 1.0, (f"{engine_family}: only {today_n} resolved today — "
+                     f"below the {min_n} floor to test anything")
+
+    p_hist = historical.hit_rate
+    if p_hist <= 0.0 or p_hist >= 1.0:
+        return 1.0, f"{engine_family}: historical hit-rate {p_hist:.0%} is degenerate — no opinion"
+
+    from scipy.stats import binomtest
+    result = binomtest(today_wins, today_n, p_hist, alternative="less")
+    alpha = cfg_float("intraday_same_day_fit_alpha", 0.05)
+    observed = today_wins / today_n
+    if result.pvalue > alpha:
+        return 1.0, (f"{engine_family}: today {today_wins}/{today_n} ({observed:.0%}) "
+                     f"not a statistical underperformance vs {p_hist:.0%} history "
+                     f"(p={result.pvalue:.2f})")
+
+    max_dampen = cfg_float("intraday_same_day_fit_max_dampen", 0.30)
+    mult = 1.0 - max_dampen * weight
+    return mult, (f"{engine_family}: today {today_wins}/{today_n} ({observed:.0%}) is a "
+                  f"statistical outlier below {p_hist:.0%} history (p={result.pvalue:.3f}) "
+                  f"— size dampened x{mult:.2f}")
 
 
 def score(entry: float, stop: float, target: float, qty: int, product: str,

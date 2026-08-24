@@ -148,6 +148,8 @@ MODULES = [
     ("execution-quality depth gate (Stage D4)", "tests.test_overlays_depth"),
     ("price feed depth (FULL-mode) plumbing (Stage D4)", "tests.test_price_feed_depth"),
     ("engine depth overlay onto contexts (Stage D4)", "tests.test_apply_live_depth"),
+    ("same-day self-monitor (Stage D5, shipped inert)", "tests.test_same_day_fit"),
+    ("same-day calibration walk-forward (Stage D5)", "tests.test_same_day_calibration"),
 ]
 
 
