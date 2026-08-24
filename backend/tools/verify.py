@@ -159,6 +159,8 @@ MODULES = [
      "tests.test_swing_feature_edge_study"),
     ("F-68 follow-up: entry_grade persistence",
      "tests.test_post_trade_grade"),
+    ("Track E Stage E3: AI tighten + regime-aware exits",
+     "tests.test_stage_e3_ai_tighten_and_regime"),
 ]
 
 

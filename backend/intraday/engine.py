@@ -481,6 +481,26 @@ class IntradayEngine:
                                f"unavailable, staying on the flat default — {e}")
                 self._policy["stall_days_by_family"] = {}
 
+            # CURRENT REGIME — Track E, Stage E3, 24-Aug-2026. evaluate_exit()
+            # has only ever read regime_at_entry, frozen the day a position
+            # opened; this is what lets it see today's actual market state
+            # instead. `market_regime` writes once per session, so once per
+            # daemon start is the right cadence — same lifetime everything
+            # else in this block already has. Fails safe to "NEUTRAL" (a
+            # no-op multiplier), the same direction every other fallback in
+            # this policy dict already fails toward.
+            try:
+                rows = (self.sb.table("market_regime").select("regime")
+                          .order("date", desc=True).limit(1).execute().data or [])
+                self._policy["_current_regime"] = (rows[0]["regime"] if rows
+                                                   else "NEUTRAL")
+                logger.info(f"  engine: current swing regime — "
+                           f"{self._policy['_current_regime']}")
+            except Exception as e:
+                logger.warning(f"  engine: current regime unavailable, "
+                               f"staying on the neutral default — {e}")
+                self._policy["_current_regime"] = "NEUTRAL"
+
     def refresh_contexts(self) -> int:
         """
         Assemble today's bars and reference levels for every watched symbol,

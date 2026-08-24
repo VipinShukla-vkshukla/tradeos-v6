@@ -649,6 +649,86 @@ def check_pending_fills() -> tuple[bool, str]:
                   f"session, none overdue: {', '.join(today_pending)}")
 
 
+def check_pending_fill_duplicates() -> tuple[bool, str]:
+    """
+    Did a SWING symbol get bought twice within minutes — the F-67
+    HINDCOPPER shape?
+
+    24-Aug-2026: `_maybe_enter_swing` set `self._pending_fills[sym]` then
+    immediately called `load_state()`, which rebuilds that dict from a
+    fresh DB read that had not yet caught up with the row this exact call
+    just wrote — silently erasing the guard. 15 retries were blocked by
+    `order_manager`'s own 5-minute duplicate-order cooldown before that
+    window lapsed and a second real BUY landed for the same name. Fixed
+    (`intraday/engine.py`, the two lines reordered), but that is one fix
+    for one incident, not a guarantee the shape never recurs — this is the
+    standing check for it, distinct from `check_pending_fills` above,
+    which asks a different question (is a row stuck unresolved) than this
+    one (did an order actually double up).
+
+    Two real ORDER PLACED events for the same (symbol, BUY) with no SELL
+    between them, inside a short window, can only mean the decision-layer
+    guard — not just the order-layer cooldown, which exists precisely to
+    catch what the guard misses — failed to recognise the symbol as
+    already being acted on. A SELL between two BUYs resets the window
+    deliberately: closing a position and re-entering it later the same
+    day on a fresh signal (HINDCOPPER's own 24-Aug re-entry, itself
+    legitimate) must not be flagged as a duplicate of the trade that
+    already closed.
+    """
+    from datetime import datetime, timedelta
+    from collections import defaultdict
+    from config import get_supabase, today_ist
+
+    sb = get_supabase()
+    since = (today_ist() - timedelta(days=7)).isoformat()
+    rows = (sb.table("intraday_broker_log")
+              .select("symbol,side,ts")
+              .eq("channel", "ORDER").eq("action", "PLACED")
+              .eq("framework", "SWING")
+              .gte("ts", since).order("ts").execute().data or [])
+
+    WINDOW_MIN = 10   # order_manager's own duplicate cooldown is 5 minutes;
+                      # double that catches a near-miss too, not just an
+                      # exact repeat of the F-67 timing.
+    by_symbol: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        by_symbol[r["symbol"]].append(r)
+
+    def _parse(ts):
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+
+    doubles = []
+    for sym, events in by_symbol.items():
+        events.sort(key=lambda r: r["ts"])
+        last_buy = None
+        for r in events:
+            side = (r.get("side") or "").upper()
+            if side == "SELL":
+                last_buy = None   # resets the window — a fresh BUY after
+                                  # this is a new decision, not a repeat
+                continue
+            if side != "BUY":
+                continue
+            if last_buy is not None:
+                gap = (_parse(r["ts"]) - _parse(last_buy["ts"])).total_seconds()
+                if gap <= WINDOW_MIN * 60:
+                    doubles.append((sym, last_buy["ts"], r["ts"], gap))
+            last_buy = r
+
+    if doubles:
+        names = ", ".join(f"{s} ({a} -> {b}, {g:.0f}s apart)"
+                          for s, a, b, g in doubles[:5])
+        return False, (f"{len(doubles)} SWING symbol(s) bought twice within "
+                       f"{WINDOW_MIN} minutes, no SELL in between, in the last "
+                       f"7 days: {names}. Same shape as F-67 (HINDCOPPER, "
+                       f"24-Aug) — check the pending-fill guard "
+                       f"(intraday/engine.py::_maybe_enter_swing) and "
+                       f"reconcile the resulting position quantity against "
+                       f"the broker.")
+    return True, f"no duplicate SWING buys in the last 7 days ({len(rows)} orders placed)"
+
+
 def check_simulate() -> tuple[bool, str]:
     """The slow one: run both frameworks end to end and confirm stages produce output."""
     from config import get_supabase
@@ -1967,6 +2047,7 @@ CHECKS = [
     ("qty_fields", "current_qty/actual_qty/kite_qty silently disagree, hiding drift from the dashboard", check_quantity_fields, False),
     ("daemon",   "nothing is watching your positions right now",                 check_daemon,   False),
     ("pending",  "an entry order that never filled is being tracked as a real position", check_pending_fills, False),
+    ("pending_dup", "a SWING symbol was bought twice within minutes — the F-67 shape", check_pending_fill_duplicates, False),
     ("exits_open", "a SELL the system decided on is still unfilled and the position is unprotected", check_open_exits, False),
     ("learning", "engines are being judged on evidence that was never collected", check_learning_loop, False),
     ("simulate", "a stage completes while producing nothing",                    check_simulate, True),

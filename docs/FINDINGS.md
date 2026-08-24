@@ -12644,3 +12644,117 @@ after the original finding." A finding can validate on the F-50 sense
 (later data agrees) while still resting mostly on stale evidence if the
 recent slice alone is too thin to say anything — exactly what happened
 to both findings here.
+
+## 2026-08-24 — F-70 (change, Track E Stage E3) — closed the "knows but
+doesn't act" gaps: a standing health check for the F-67 shape, real
+execution of `ai_recommended_action=TIGHTEN_SL` (shadow-first), and a
+regime-aware exit-ladder multiplier (shadow-first, per E2's own finding
+that no regime diversity exists yet to validate it against). Building
+the health check surfaced a SECOND, previously unknown double-buy —
+**HAL, 21-Aug, three days before HINDCOPPER, same shape, both orders
+filled this time.** Branch `feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 998/999, F-67's already-named pre-existing Stage
+D4 issue, confirmed unrelated a fourth time. New health check run live
+against real data — caught both real incidents on the first try, no
+synthetic fixture needed. `tools.simulate`: HINDCOPPER's real shadow log
+fired correctly — `sl 503.85 -> 539.00`, the actual `ai_action_reason`
+text from its own 20-Aug review, decision unchanged (`HOLD`) with the
+switch off, exactly as designed.
+
+### 1 — A SECOND F-67 INCIDENT, FOUND BY THE CHECK BUILT TO CATCH IT
+
+New `tools.health::check_pending_fill_duplicates()` — distinct from the
+existing `check_pending_fills` (which asks whether a row is stuck
+unresolved; this asks whether an order actually doubled up) — flags two
+`PLACED` BUY events for the same symbol with no `SELL` between them
+inside 10 minutes. Run against real data: it caught HINDCOPPER
+(24-Aug, the incident F-67 fixed) — and **HAL, 21-Aug, three days
+earlier**, previously unknown.
+
+HAL's order log: `BUY 1 @ 5021.80` (08:13:57 UTC), 10 blocked retries
+over the next 5 minutes (`order_manager`'s own duplicate cooldown, same
+mechanism that limited HINDCOPPER's damage), then `BUY 1 @ 5020.70`
+(08:19:08) — the moment the cooldown lapsed. Unlike HINDCOPPER, where
+reconcile corrected the excess down to the true broker holding, **HAL's
+own small 1-share order size meant both fills went through cleanly** —
+confirmed live: `current_qty=actual_qty=kite_qty=2, reconcile_status=
+MATCHED`. This was never a 2-share sizing decision. `risk_pct_per_trade`
+(1.5%) against HAL's own risk-per-share sizes to 1 share; the account is
+carrying 2, roughly double the intended per-trade risk, and `invested_
+value` (₹10,022) is ~44% of the whole portfolio in one name — a real
+concentration nothing decided on purpose. **Left exactly as found — this
+is the operator's own position and call to make (trim back to 1 share,
+or hold), not something this session closes unilaterally.**
+
+### 2 — `ai_recommended_action=TIGHTEN_SL` NOW EXECUTES (shadow-first)
+
+New rung 2c in `evaluate_exit()`. `ai_recommended_action` — confirmed by
+grep before this session touched it — was written by `ai/ai_decision_
+engine.py` and read by exactly one place, `alerts/send_alerts.py`, to
+display it. HINDCOPPER's own 20-Aug review recommended `TIGHTEN_SL` over
+a live geopolitical risk in metals & mining; nothing executed it.
+
+One-directional only, the same asymmetry every rung in this ladder
+already respects: moves the stop a configurable fraction (`swing_ai_
+tighten_fraction`, default 0.5 — halfway) from its current level toward
+the live price, never loosens it, checked regardless of profit level
+(unlike the 1R-gated deterioration check). Deliberately scoped to
+`TIGHTEN_SL` only — `HOLD`/`TRIM`/`EXIT`/`NO_ACTION` stay informational.
+Automating `TRIM`/`EXIT` would mean acting on AI judgement the same way
+`ai_tier`/`ai_conviction` already were, and that channel was correctly
+demoted to zero ranking weight on 04-Aug once evidence showed it was not
+predictive — `TIGHTEN_SL` is safe to automate on a different basis
+entirely (it can only ever protect capital, never spend it), not because
+the AI's judgement earned more trust.
+
+Ships OFF (`swing_ai_tighten_enabled`, migration 094). While off, the
+condition is still evaluated every cycle and shadow-logged — confirmed
+live via `tools.simulate` against HINDCOPPER's real position.
+
+### 3 — REGIME-AWARE EXIT LADDER (shadow-first, no calibration behind it)
+
+`evaluate_exit()` has only ever read `regime_at_entry`, frozen the day a
+position opened. New: fetch the market's CURRENT regime once per daemon
+start (`market_regime`, same cadence F-46's stall calibration already
+uses) and apply a single multiplier to both the giveback allowance and
+the (possibly family-calibrated) stall clock — one number, because the
+same direction is "tighter" for both a percent allowance and a day
+count. RISK OFF tightens (`swing_regime_mult_risk_off`, default 0.7);
+RISK ON/TRENDING loosens slightly (`swing_regime_mult_risk_on`, default
+1.2) — more patience in a genuinely strong tape is a legitimate
+professional response, not permissiveness for its own sake. NEUTRAL/
+RECOVERING apply no adjustment.
+
+Ships OFF (`swing_regime_aware_exits_enabled`, migration 094) —
+deliberately with NO calibration behind the 0.7/1.2 defaults at all,
+unlike F-43/F-46's ladder work. E2's own quantify pass (F-68) found
+every resolved swing outcome on record reads `regime='NEUTRAL'`; there
+is no historical diversity to validate this against yet, and arming it
+before that exists would be exactly the "not enough data" mistake this
+session already avoided once this session (§2, the metals & mining /
+MOM sector-rank findings). The mechanism is real and tested; the
+specific multiplier values are a placeholder until real regime diversity
+accumulates.
+
+### 4 — VERIFIED
+
+`tests/test_stage_e3_ai_tighten_and_regime.py`, 8 checks, demonstrated
+failing first: `git stash` on the two touched source files, 3 of 8
+failed (the two armed-behavior tests, plus the loosen-in-RISK-ON case),
+restored and all 8 passed. `check_pending_fill_duplicates` was proven
+against real incidents rather than a synthetic fixture — a stronger
+demonstration than the usual git-stash pattern, since the failure mode
+it catches already happened twice and both are still inside its 7-day
+window.
+
+### 5 — NOT DONE
+
+**HAL's doubled position is not trimmed.** Named in §1, left for the
+operator. **The regime multiplier's specific values (0.7/1.2) are
+unvalidated** — Stage E6 or a future E3 revisit should re-derive them
+once real regime diversity exists in resolved outcomes, the same way
+F-46's stall-clock numbers were derived from real data rather than
+guessed. Same daemon-deploy gap as every finding this session: `tools.
+simulate` proves the code correct; `intraday/run.py`'s running process
+does not pick any of this up until restarted.

@@ -345,6 +345,45 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
     gain_r   = (ltp - entry) / risk
     gain_pct = (ltp - entry) / entry * 100.0
 
+    # ── REGIME-AWARE MULTIPLIER — Track E, Stage E3 ──────────────────────────
+    # evaluate_exit() has never read the market's CURRENT state, only
+    # regime_at_entry (frozen the day a position opened) — a position held
+    # 1-3 weeks can easily outlive the regime it was entered in. This
+    # computes what a regime-aware adjustment to the giveback/stall
+    # thresholds WOULD be, and only actually applies it behind
+    # swing_regime_aware_exits_enabled (ships OFF). E2's own quantify pass
+    # (F-68) found every resolved swing outcome on record reads
+    # regime='NEUTRAL' — no historical diversity exists yet to validate
+    # this against, which is exactly why this ships shadow-logged rather
+    # than armed, unlike F-43/F-46's calibration work, which had real
+    # resolved-outcome evidence behind it before it went live.
+    #
+    # ONE multiplier, read by both consumers below (giveback_pct, a percent
+    # allowance, and stall_days, a day count) — the same direction works
+    # for both without inverted logic: a mult < 1.0 makes a smaller
+    # giveback allowance (tighter) AND a shorter stall clock (also
+    # tighter); a mult > 1.0 loosens both. RISK OFF tightens; a strong
+    # RISK ON / TRENDING tape loosens slightly, on the reasoning that more
+    # patience is a legitimate professional response to a market that is
+    # actually running, not just permissiveness for its own sake — capped
+    # both directions in config so one regime read can never swing the
+    # ladder to an extreme.
+    current_regime = str(policy.get("_current_regime") or "NEUTRAL").upper()
+    if current_regime in ("RISK OFF", "RISK_OFF"):
+        regime_mult = cfg_float("swing_regime_mult_risk_off", 0.7)
+    elif current_regime in ("RISK ON", "RISK_ON", "TRENDING"):
+        regime_mult = cfg_float("swing_regime_mult_risk_on", 1.2)
+    else:
+        regime_mult = 1.0
+    regime_aware_live = cfg_bool("swing_regime_aware_exits_enabled", False)
+    if regime_mult != 1.0 and not regime_aware_live:
+        logger.debug(
+            f"  {pos.get('symbol')}: regime-aware shadow — current regime "
+            f"{current_regime}, would apply x{regime_mult:.2f} to the "
+            f"giveback/stall thresholds — swing_regime_aware_exits_enabled "
+            f"is off")
+    applied_regime_mult = regime_mult if regime_aware_live else 1.0
+
     # ── THE TARGET THIS POSITION IS ACTUALLY MANAGED TO ──────────────────────
     #
     # exit_target_r is 3.0. On this book 1R (entry minus planned_stop) is 5-9%
@@ -448,6 +487,47 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
             except Exception as e:
                 logger.debug(f"  deterioration check skipped: {e}")
 
+    # ── 2c. AI-flagged risk — tighten toward price, never invents an exit ────
+    # Track E, Stage E3 (docs/TRADEOS_ROADMAP.md). `ai_recommended_action`
+    # is written by `ai/ai_decision_engine.py` and, before this, read by
+    # exactly one place — `alerts/send_alerts.py`, to DISPLAY it.
+    # HINDCOPPER's own TIGHTEN_SL recommendation over a live geopolitical
+    # risk ("protect gains... tighter stop") sat as a notification; nothing
+    # executed it. This does — behind a switch that ships OFF
+    # (`swing_ai_tighten_enabled`), Stage E3's own default posture for
+    # anything that changes live exit behaviour.
+    #
+    # ONE-DIRECTIONAL ONLY, the same asymmetry every rule in this ladder
+    # already respects: moves the stop a FRACTION of the way from where it
+    # sits toward the live price — never loosens it (`candidate_sl > sl`
+    # guards that), never sells anything by itself. Checked regardless of
+    # profit level, unlike 2b above — an escalating risk does not wait for
+    # a position to be profitable before it matters.
+    #
+    # HOLD/TRIM/EXIT/NO_ACTION are deliberately NOT executed here. TIGHTEN_
+    # SL is the one recommendation that is safe to automate under the same
+    # test every other rung in this ladder already passes — it can only
+    # ever protect capital, never spend it. TRIM/EXIT would mean acting
+    # directly on ai_tier-adjacent judgement, which entry_ranking.py's own
+    # 04-Aug history already found unpredictive enough to demote to zero
+    # ranking weight; automating a sale on the same basis would undo that.
+    if str(pos.get("ai_recommended_action") or "").upper() == "TIGHTEN_SL":
+        frac = cfg_float("swing_ai_tighten_fraction", 0.5)
+        candidate_sl = round(sl + frac * (ltp - sl), 2)
+        if candidate_sl > sl:
+            reason_text = str(pos.get("ai_action_reason") or "AI flagged a risk")
+            if cfg_bool("swing_ai_tighten_enabled", False):
+                return {
+                    "action": "TRAIL_SL", "reason": "AI_TIGHTEN_SL",
+                    "detail": (f"AI recommended TIGHTEN_SL — {reason_text} — "
+                               f"sl {sl:.2f} -> {candidate_sl:.2f}"),
+                    "new_sl": candidate_sl, "book_qty": 0,
+                }
+            logger.info(
+                f"  {pos.get('symbol')}: AI TIGHTEN_SL shadow — would move "
+                f"sl {sl:.2f} -> {candidate_sl:.2f} ({reason_text}) — "
+                f"swing_ai_tighten_enabled is off")
+
     # ── 3. Partial booking at the first meaningful multiple ──────────────────
     already_booked = int(pos.get("partial_booked_qty") or 0) > 0
     current_qty    = int(pos.get("current_qty") or pos.get("actual_qty") or 0)
@@ -504,7 +584,7 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
         if peak_r >= policy["giveback_min_r"]:
             gb_pct = (policy["giveback_pct_runner"]
                       if peak_r >= policy["giveback_runner_min_r"]
-                      else policy["giveback_pct"])
+                      else policy["giveback_pct"]) * applied_regime_mult
             kept = gain_r / peak_r if peak_r > 0 else 1.0
             if kept < (1.0 - gb_pct / 100.0):
                 return {
@@ -688,13 +768,23 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
     # exact behaviour this rule has always had.
     from allocation.scoring import swing_family
     family = swing_family(pos.get("strategy"))
+    calibrated = family in (policy.get("stall_days_by_family") or {})
     stall_days = (policy.get("stall_days_by_family") or {}).get(
         family, policy["stall_days"])
+    # REGIME ADJUSTMENT — separate axis from the per-family calibration
+    # directly above, and NOT the same promise F-46 makes for that
+    # calibration (which is capped at the book-wide default and can only
+    # tighten). This adjusts the family-calibrated (or default) number by
+    # current market condition, and — only once armed — can loosen it in a
+    # genuinely strong tape as well as tighten it in a weak one. A no-op
+    # today: applied_regime_mult is 1.0 unless swing_regime_aware_exits_
+    # enabled is on, which it is not by default.
+    if applied_regime_mult != 1.0:
+        stall_days = max(2, round(stall_days * applied_regime_mult))
     if (stall_days > 0
             and sessions_held >= stall_days
             and peak_r < policy["stall_peak_r"]
             and gain_r < policy["stall_peak_r"]):
-        calibrated = family in (policy.get("stall_days_by_family") or {})
         return {
             "action": "EXIT_STALL",
             "reason": "NEVER_WORKED",

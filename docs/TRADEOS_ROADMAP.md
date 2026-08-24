@@ -1150,6 +1150,19 @@ changes live exit behavior on a book that is currently working, which is
 a different risk profile from a stall-clock number that can only ever
 tighten.
 
+**Stage E3 — BUILT, 24-Aug-2026 (F-70, `feat/swing-evolution`).** All
+three pieces shipped: the standing health check (armed immediately, it
+is read-only diagnostic) caught a SECOND, previously unknown incident of
+F-67's own shape on HAL (21-Aug, three days before HINDCOPPER) —
+`ai_recommended_action` execution and the regime-aware multiplier both
+ship OFF, shadow-logged, exactly as planned. `tools.simulate` confirmed
+the AI-tighten shadow log firing correctly against HINDCOPPER's real
+position (`sl 503.85 -> 539.00`). HAL's own doubled position (2 shares
+instead of the intended 1, ~44% of the portfolio) was left untrimmed —
+the operator's call, not this session's to make. Full detail: `docs/
+FINDINGS.md` F-70. Arming either switch is a separate decision, not
+part of this stage's own completion.
+
 ## Stage E4 — In-trade intelligence
 
 Depends on E2's per-engine numbers for calibration, not on E6 being
