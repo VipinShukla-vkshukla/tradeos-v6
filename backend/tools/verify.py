@@ -171,6 +171,10 @@ MODULES = [
      "tests.test_stage_e5_weekly_structure_vocabulary"),
     ("Track E Stage E5 pieces 2-3: entry shadow checks",
      "tests.test_stage_e5_entry_shadow_checks"),
+    ("Track E Stage E6: swing recency validator",
+     "tests.test_swing_recency_validator"),
+    ("Track E Stage E6: swing engine lifecycle review",
+     "tests.test_swing_engine_lifecycle_review"),
 ]
 
 

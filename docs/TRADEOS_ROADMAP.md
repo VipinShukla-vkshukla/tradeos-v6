@@ -1372,6 +1372,30 @@ influence a live decision, and even then only as a priority tie-break or
 a bounded derate — never a new hard gate invented from a small sample —
 mirroring F-48/F-50's exact contract.**
 
+**Two of five pieces BUILT, 24-Aug-2026 (F-77, `feat/swing-evolution`).**
+The other three (lesson-grade reconnection, the anticipatory model,
+per-engine feature tuning / discovery engine) checked against this
+session's own F-68/F-69 findings and found genuinely blocked, not merely
+uncautioned about: the lesson grade currently predicts BACKWARDS (grade
+D averages +0.30R, grade C −0.01R); the anticipatory model has zero
+regime diversity to fit against (every resolved row reads `regime=
+NEUTRAL`); the feature-edge findings that would feed tuning/discovery
+didn't survive F-69's own recency re-check.
+
+Built: (1) `tools/swing_feature_edge_study.py::validate_pending_swing()`
+— the recency validator F-68 §4 and F-69 §3 both explicitly asked for,
+requiring BOTH a since-creation AND a short recent-window check to
+independently confirm before VALIDATED. Live proof: automatically
+reproduces F-69's own by-hand conclusion exactly on the two findings
+that failed, and independently finds three MORE that pass the recent-
+window check alone. (2) `tools/weekly_review.py::
+review_swing_engine_lifecycle()` — all 9 swing strategies re-measured
+against current evidence instead of a static 25-Jul/07-Aug decision.
+Live: CTL/MOM/SEC (only three above the 40-sample floor) all read
+healthy and keep ACTIVE; RVS (avg −0.97%) and TPO (avg +0.36%) are the
+two names with real cause for concern, both correctly held as too thin
+to act on. Full detail: `docs/FINDINGS.md` F-77.
+
 ## Stage E7 — Position scaling
 
 Sequenced last, deliberately: the only stage in this whole track that

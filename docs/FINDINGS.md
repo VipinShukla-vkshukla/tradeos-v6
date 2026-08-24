@@ -13373,3 +13373,125 @@ armed by the ranking fix itself (no switch — see F-74), pieces 2-3
 (F-76) shadow-logging real candidates, off by default, pending the
 quantify pass their own accumulated data will eventually support.
 Stage E5 is complete for this pass. Next: Stage E6, the learning core.
+
+## 2026-08-24 — F-77 (change, Track E Stage E6, scoped subset) — the
+recency validator (F-68/F-69's own explicit request) and a living
+engine lifecycle review — the two of Stage E6's five pieces not blocked
+by this session's own prior findings. Branch `feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 1044/1045 (12 new checks; same pre-existing
+unrelated Stage D4 issue). Both mechanisms run live against the real
+book — the validator against F-68's 31 real PENDING findings, the
+lifecycle review against all 9 real swing strategies.
+
+### 0 — WHY THIS SUBSET, NOT ALL FIVE OF E6's PIECES
+
+Operator asked "why can't we build all pieces of E6?" Checked each
+against evidence this session already produced, not against a general
+sense of caution:
+
+- **Lesson grade -> score_plan()** — currently BACKWARDS, not merely
+  unready. F-69's own correlation check: grade C (n=76, the dominant
+  grade) averages −0.01R; grade D (n=10, the WORSE grade) averages
+  +0.30R. Wiring this in now means coding a scoring term that rewards
+  the grade the data says is worse.
+- **Anticipatory model (probability-of-target)** — mathematically
+  undefined, not merely risky. Every single resolved row in `signal_
+  output_daily` carries `regime='NEUTRAL'` (F-68 Q3). A model fit on
+  this and asked to score a candidate the next time the market is
+  actually RISK_OFF has zero examples to extrapolate from for that
+  regime — it would still emit a confident-looking probability, and
+  that confidence would be fiction.
+- **Per-engine feature tuning / swing discovery engine** — the raw
+  material (F-68's 31 findings) does not hold up yet; F-69 re-checked
+  the two strongest against the last two weeks and neither reproduced.
+
+**Living engine lifecycle** was the one piece with no explicit blocker —
+grouped with the others too conservatively in the first pass, corrected
+after the operator's own question. Built both it and the recency
+validator this session; the other three stay flagged with the reasons
+above, not silently dropped.
+
+### 1 — THE RECENCY VALIDATOR
+
+`tools/swing_feature_edge_study.py::validate_pending_swing()` — promised
+in this module's own docstring since F-68 rather than relying on `tools/
+feature_edge_study.py::validate_pending()` ever correctly reaching a
+`SWING/`-prefixed row (it cannot, by construction — confirmed in that
+module's own filter). Independent reimplementation of the intraday
+tool's F-50 METHOD (three outcomes — VALIDATED / REJECTED / stays
+PENDING, "no opinion" never collapsed into "measured bad" — new pure
+`_validation_outcome()`, mirroring the intraday one's own semantics
+without importing it), plus a genuinely new second check F-69 explicitly
+asked to be built into the same harness: does the pattern ALSO hold in a
+short, RECENT window alone, not just "some data created after the
+finding" (which can still be dominated by stale rows if the elapsed gap
+is small). A finding is VALIDATED only when BOTH windows independently
+confirm the same direction; a real disagreement on EITHER window
+REJECTS it; insufficient data on either (with no actual disagreement)
+leaves the row exactly where it was. Handles both numeric AND
+categorical findings — F-69's own manual check covered one of each
+(`sector_rank_at_entry`, `sector`), and the intraday reference only
+handles categorical.
+
+**Live proof:** ran against F-68's real 31 PENDING findings —
+`--validate --dry-run` returns 0/0/31 (all skipped), which is the
+CORRECT day-one answer, not a gap: every finding was created TODAY, so
+the "strictly after creation" window has no data yet by construction (no
+tomorrow exists). Checked the recent-window half independently, direct
+inspection: the SAME two findings F-69 manually found do not survive a
+recent check (`SWING/MOM/sector_rank_at_entry`, `SWING/CONTINUATION/
+sector/metals & mining`) show **zero fresh match** on the automated
+recent-window re-run too — the automated validator independently
+reproduces F-69's own by-hand conclusion exactly. Three other findings
+(`rsi_daily`, `delivery_pct`, `atr_pct`) DO reproduce on the recent
+window alone, in the same direction originally claimed — real,
+independent corroborating evidence the manual check never looked at.
+
+### 2 — LIVING ENGINE LIFECYCLE
+
+`tools/weekly_review.py::review_swing_engine_lifecycle()` — all 9 swing
+strategies have sat at `lifecycle=ACTIVE` in `strategy_config` since
+25-Jul (MOM/RVS re-touched 07-Aug only) with nothing re-asking whether
+current evidence still supports it. Mirrors `review_engines()`'s
+intraday shape (measure on resolved outcomes, PROMOTE/SHADOW/RETIRE/
+keep/hold, `_propose`/`_supersede` into `brain_proposals`, never apply)
+but keyed on the RAW `strategy` column — `strategy_config` holds one
+lifecycle row per raw strategy (CTL/SEC/TPO/SBS/RSB/IAD/VBD/MOM/RVS),
+not `swing_family()`'s pooled grouping, which only exists for the
+feature-edge study's own sample-size needs. Sample floor reused from
+`swing_feature_edge_study.MIN_ENGINE_SAMPLE` (40) rather than a second,
+arbitrary number for the same underlying question. No rolling time
+window — same reasoning the feature-edge study's own header already
+gives for having no floor date: swing's absolute trade volume is small
+enough that a 30-day window (`review_engines()`'s own intraday default)
+would shrink RVS/TPO's already-thin samples further, making them
+permanently unmeasurable rather than just currently thin.
+
+Caught by this function's OWN test before it shipped: a healthy-CTL-
+shaped fixture (78% hit, +1.91% avg, already ACTIVE) generated a
+nonsensical `ACTIVE -> PROMOTE` proposal — PROMOTE is a real state
+transition (SHADOW -> ACTIVE) and an already-ACTIVE strategy reading
+healthy has nowhere higher to go. Fixed: PROMOTE now requires `cur !=
+"ACTIVE"`; an already-ACTIVE healthy strategy correctly reads `keep`.
+
+**Live proof, real book, 24-Aug-2026:** only CTL (n=292), MOM (n=78) and
+SEC (n=53) clear the 40-sample floor — all three read healthy (77-82%
+hit, +2.6% to +3.5% avg) and correctly `keep` ACTIVE. RVS (n=10, avg
+**−0.97%**) and TPO (n=35, avg only +0.36%) are the two names with real
+cause for concern and both correctly `hold` — too thin to act on with
+confidence, the same "no opinion must not read as measured bad"
+discipline the intraday reviewer already applies. Three strategy_config
+rows with zero resolved history (ACC/EAP/PEAD) surfaced and correctly
+held without crashing — handles an unexpected/new strategy gracefully.
+Zero proposals written today; the mechanism is now standing, wired into
+`tools.weekly_review`'s own `main()`, and will start proposing real
+changes once RVS/TPO accumulate enough resolved trades to judge.
+
+### 3 — VERIFIED
+
+12 new checks across two files, demonstrated failing first: `git stash`
+on `tools/swing_feature_edge_study.py` and `tools/weekly_review.py`
+together, both test modules failed completely against reverted source
+(7/7 and 5/5 — every test ImportErrors on a function that does not yet
+exist), restored and all 12 passed. `tools.verify`: 1044/1045.

@@ -333,6 +333,160 @@ def _propose(sb, run_id: str, engine: str, found: dict,
         return False
 
 
+# ── out-of-sample validation — Stage E6, 24-Aug-2026 ─────────────────────────
+#
+# Promised in this module's own docstring (F-68) rather than relying on
+# `tools/feature_edge_study.py::validate_pending()` ever reaching a
+# `SWING/`-prefixed row correctly — it cannot, by construction (see the
+# header). Independent reimplementation of the intraday tool's F-50
+# METHOD (three outcomes: VALIDATED/REJECTED/stays PENDING, "no opinion"
+# never collapsed into "measured bad") — the CODE stays swing-owned, no
+# import from `tools/feature_edge_study.py`, same rule this whole module
+# already follows.
+#
+# PLUS a second, narrower check F-69 explicitly asked to be built into
+# this same harness: does the pattern ALSO hold in a short, RECENT window
+# alone, not just "some data created after the original finding" (which
+# can still be dominated by older rows if the gap is small). F-68's own
+# two strongest findings both looked significant on the full history and
+# both DISAPPEARED when F-69 manually re-ran them against just the last
+# two weeks — the exact gap this closes so that check never again has to
+# be done by hand. A finding is VALIDATED only when BOTH windows
+# independently confirm the SAME direction as the original.
+
+def _validation_outcome(current_value: str | None,
+                        fresh_favourable: bool | None) -> bool | None:
+    """
+    Pure. Does a fresh check CONFIRM the original finding's direction?
+    True/False, or None when the question cannot be answered at all —
+    which must never be silently read as False. `current_value` must be
+    a real "favourable"/"unfavourable" tag (this module's own `_propose`
+    always writes one); anything else means "no opinion", not a claim to
+    contradict.
+    """
+    if current_value not in ("favourable", "unfavourable"):
+        return None
+    if fresh_favourable is None:
+        return None
+    return fresh_favourable == (current_value == "favourable")
+
+
+def _refind(rows: list[dict], feature: str, category: str | None,
+           min_segment: int = MIN_SEGMENT) -> dict | None:
+    """Re-run the SAME split (one feature, one category if this is a
+    categorical finding) against a fresh row set. `categorical_splits()`
+    can return several categories per feature in one pass — only the ONE
+    this proposal is actually about is relevant here."""
+    if category:
+        found_list = categorical_splits(rows, feature, min_segment=min_segment)
+        return next((f for f in found_list if f.get("category") == category), None)
+    return numeric_split(rows, feature, min_segment=min_segment)
+
+
+def validate_pending_swing(sb, recent_days: int = 14,
+                          min_segment: int = MIN_SEGMENT,
+                          dry_run: bool = False) -> tuple[int, int, int]:
+    """
+    Every PENDING `SWING/`-prefixed FEATURE_FILTER proposal gets checked
+    against TWO independent fresh windows: (a) rows created strictly
+    AFTER the proposal — the F-50 out-of-sample pattern — and (b) the
+    last `recent_days` days alone, regardless of when the proposal was
+    written — F-69's own follow-up request. Handles BOTH numeric
+    (2-part `SWING/engine/feature` target_key) and categorical (3-part,
+    `.../category`) findings — a real superset of the intraday
+    validator, which only handles categorical ones; F-69's own manual
+    recency check covered one of each kind, so this needed both from the
+    start.
+
+    A REAL disagreement (opposite direction) on EITHER window rejects
+    the finding — that is new evidence, not an absence of it. Only when
+    BOTH windows independently confirm the SAME direction is a finding
+    promoted to VALIDATED. Insufficient data on either window (and no
+    actual disagreement found) leaves the row exactly where it was,
+    PENDING — the three-outcome discipline the intraday tool's own F-50
+    fix already established, reused here by design, not by import.
+
+    Returns (validated, rejected, skipped_insufficient_data).
+    """
+    from datetime import date, datetime, timedelta
+
+    rows = fetch_all(lambda: sb.table("brain_proposals").select("*")
+                     .eq("status", "PENDING").eq("proposal_type", "FEATURE_FILTER")
+                     .like("target_key", "SWING/%").order("id"))
+    validated = rejected = skipped = 0
+    recent_since = (today_ist() - timedelta(days=recent_days)).isoformat()
+
+    for r in rows:
+        parts = str(r.get("target_key") or "").split("/")
+        if len(parts) not in (3, 4) or parts[0] != "SWING":
+            skipped += 1
+            continue
+        engine, feature = parts[1], parts[2]
+        category = parts[3] if len(parts) == 4 else None
+        created = r.get("created_at")
+        if not created:
+            skipped += 1
+            continue
+        try:
+            # Strictly AFTER the day the proposal was created — same-day
+            # overlap would let the "fresh" check re-graze data the
+            # original finding already used.
+            since_creation = (date.fromisoformat(str(created)[:10])
+                              + timedelta(days=1)).isoformat()
+        except ValueError:
+            skipped += 1
+            continue
+
+        since_rows   = [x for x in _rows(sb, since_creation) if engine_key(x) == engine]
+        recent_rows  = [x for x in _rows(sb, recent_since) if engine_key(x) == engine]
+        since_match  = _refind(since_rows, feature, category, min_segment=min_segment)
+        recent_match = _refind(recent_rows, feature, category, min_segment=min_segment)
+
+        since_outcome  = (_validation_outcome(r.get("current_value"), is_favourable(since_match))
+                          if since_match else None)
+        recent_outcome = (_validation_outcome(r.get("current_value"), is_favourable(recent_match))
+                          if recent_match else None)
+        outcomes = (since_outcome, recent_outcome)
+
+        if False in outcomes:
+            holds = False       # a real disagreement on at least one window
+        elif None in outcomes:
+            skipped += 1        # at least one window cannot yet say
+            continue
+        else:
+            holds = True        # both windows independently confirm
+
+        new_status = "VALIDATED" if holds else "REJECTED"
+        evidence_bits = []
+        if since_match:
+            evidence_bits.append(f"since-creation: {_evidence(engine, since_match)}")
+        if recent_match:
+            evidence_bits.append(f"last {recent_days}d: {_evidence(engine, recent_match)}")
+        backtest_result = " | ".join(evidence_bits) or "no fresh match on either window"
+        logger.info(f"  {'✓ VALIDATED' if holds else '✗ REJECTED'} "
+                   f"{r['target_key']}: {backtest_result}")
+        if dry_run:
+            if holds:
+                validated += 1
+            else:
+                rejected += 1
+            continue
+        try:
+            sb.table("brain_proposals").update({
+                "status": new_status, "reviewed_at": datetime.now().isoformat(),
+                "backtest_result": backtest_result,
+            }).eq("id", r["id"]).execute()
+            if holds:
+                validated += 1
+            else:
+                rejected += 1
+        except Exception as e:
+            logger.warning(f"  could not update validation status for "
+                          f"{r['target_key']}: {e}")
+            skipped += 1
+    return validated, rejected, skipped
+
+
 def study(sb, since: str | None, run_id: str,
          min_engine_sample: int = MIN_ENGINE_SAMPLE,
          dry_run: bool = False) -> dict[str, list[dict]]:
@@ -378,5 +532,18 @@ if __name__ == "__main__":
     ap.add_argument("--since", default=None)
     ap.add_argument("--min-engine-sample", type=int, default=MIN_ENGINE_SAMPLE)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--validate", action="store_true",
+                    help="re-check PENDING SWING/ findings against fresh "
+                         "data instead of running a new study")
+    ap.add_argument("--recent-days", type=int, default=14,
+                    help="width of the narrow recent-window check "
+                         "--validate also requires (F-69)")
     a = ap.parse_args()
-    main(since=a.since, min_engine_sample=a.min_engine_sample, dry_run=a.dry_run)
+    if a.validate:
+        sb = get_supabase()
+        v, rj, sk = validate_pending_swing(sb, recent_days=a.recent_days,
+                                           dry_run=a.dry_run)
+        logger.info(f"  swing validate: {v} validated, {rj} rejected, "
+                   f"{sk} skipped (insufficient fresh data)")
+    else:
+        main(since=a.since, min_engine_sample=a.min_engine_sample, dry_run=a.dry_run)
