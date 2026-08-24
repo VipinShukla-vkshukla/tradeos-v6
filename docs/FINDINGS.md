@@ -12446,3 +12446,1252 @@ is intraday-side Stage D4 work from a concurrent session, explicitly out of
 scope for this session per the operator's instruction not to touch intraday
 code; named here rather than silently worked around, for whoever picks up
 Track D next.
+
+## 2026-08-24 — F-68 (change, Track E Stage E2) — Quantify, closing Gate
+E2 (`docs/TRADEOS_ROADMAP.md`). Real numbers for all three E2 questions.
+Branch `feat/swing-evolution`, off `main`.
+
+**Ran:** `tools.verify`: 978/979 (the one failure is F-67's already-named,
+pre-existing, unrelated Stage D4 test-ordering issue — confirmed still
+absent-of-relation, same module, same isolated-pass behaviour). New
+`tools/swing_feature_edge_study.py` run live, full history, both dry-run
+and for real: 31 findings written to `brain_proposals` as `PENDING`.
+
+### 1 — Q1: do features separate winners from losers per engine?
+
+Yes, clearly, on real sample sizes. New `tools/swing_feature_edge_study.py`
+— independent of `tools/feature_edge_study.py` and everything under
+`intraday/` (see the module's own docstring for why it does not import
+either, even though the statistical method is the same proven shape) —
+mined every resolved (TARGET/STOP) `signal_output_daily` row, grouped by
+`swing_family()` (read-only import from `allocation/scoring.py`, the same
+dependency F-46 already established as safe), for tercile/bucket-vs-rest
+splits across 12 numeric and 8 categorical fields already sitting on that
+table. Live run: **CONTINUATION n=427, 20 findings; MOM n=118, 11
+findings; RVS n=12, below the 40-sample floor, correctly skipped.**
+
+Two findings land directly on this session's own trades. CONTINUATION's
+`sector` split: **metals & mining wins 31% (5T/11S) against 75% for every
+other sector (44pp gap, mean −3.14% vs +2.61%)** — HINDCOPPER's own
+family and sector. MOM's `sector_rank_at_entry` split: **rank ≤4 wins
+100% (39/39, mean +6.43%) against rank ≥10's 82% (32/39)** — HAL entered
+at sector rank **2**, inside the strong band on this specific split, so
+this particular finding does not explain HAL's loss; the CTL/HAL story is
+the zone-chase (Stage E5), a different mechanism this stage was not built
+to find. Both are `HYPOTHESES`, not new rules — see §3.
+
+### 2 — Q2: does the lesson engine's own grade predict anything?
+
+**Unanswerable from existing data, and the reason is itself the
+finding.** `ai/post_trade_analysis.py::grade_trade_entry()` computes an
+A–F grade per closed trade — confirmed by reading the code, not assumed
+— but the grade is used ONLY to word the generated lesson's prose
+(`generate_rule_based_lesson()`) and is never written to any column
+anywhere. Checked directly: the `lessons` table (19 columns) has no grade
+field of any kind. There is nothing to correlate against outcome because
+the grade was never captured past the moment it was computed. This
+changes Stage E6's own plan: reconnecting the lesson engine needs the
+grade PERSISTED first (a new column, written whenever `post_trade_
+analysis` runs — additive, measurement-only, the same shape as F-43's
+`exit_signal` and F-46's `runner_evidence` fixes) before any correlation
+study is possible at all.
+
+### 3 — Q3: is there enough resolved history to fit anything safely?
+
+Per-engine: yes for CONTINUATION and MOM (427 and 118), no yet for RVS
+(12) or any other isolated family — confirmed by the same 40-sample floor
+`tools/swing_feature_edge_study.py` already enforces before attempting a
+split. **Per-regime: no — every single resolved row in `signal_output_
+daily` carries `regime = 'NEUTRAL'`.** The book has not yet traded through
+a resolved RISK_ON/RISK_OFF/TRENDING/RECOVERING session, so Stage E3's
+regime-aware exit ladder can be built and reasoned about, but cannot yet
+be validated against this account's own resolved outcomes in a different
+regime — it will need to accumulate evidence over time, same as any other
+finding in this track.
+
+### 4 — WHAT WAS WRITTEN, AND WHAT WAS NOT
+
+`brain_proposals`, `proposal_type='FEATURE_FILTER'`, `source=
+'swing_feature_edge_study'`, `target_key` prefixed `SWING/` so it can
+never collide with an intraday engine's own key in the shared table —
+31 rows, all `PENDING`. Nothing was changed in any live decision path;
+`entry_ranking.score_plan()` does not read any of this yet, per Stage E2's
+own scope. One known, bounded interaction with the shared queue, named in
+the tool's own docstring rather than hidden: `tools/feature_edge_study.py
+::validate_pending()` reads every `PENDING FEATURE_FILTER` row regardless
+of prefix and will attempt to re-validate these against `intraday_setups`
+— confirmed by reading that function's filter, not assumed — where they
+will simply find no matching engine and stay `PENDING`, harmless. Not
+fixed, because fixing it means editing an intraday file, which this track
+does not do; Stage E6 builds this tool's own independent validator instead
+of relying on the intraday one ever reaching a `SWING/` row correctly.
+
+### 5 — GATE E2
+
+Closed. Real numbers for all three questions, one of them ("is there
+regime diversity to validate against") a genuine "not yet" rather than a
+guess, and one (the lesson-engine grade) surfacing a concrete prerequisite
+for Stage E6 that was not visible before this session. Stage E3 can begin.
+
+## 2026-08-24 — F-69 (change + correction, Track E, F-68 follow-up) —
+persisted the lesson engine's A–F grade for real (migration 093 + a
+backfill of every existing closed SWING trade), which is what made
+Q2 answerable at all — and it came back unconfirmed, not confirmed:
+grade C (the dominant grade, n=76) sits near breakeven while grade D
+(the *worse* grade, n=10) outperforms it. Separately, and directly
+because the operator asked for it: re-ran both of F-68's two strongest
+findings (CONTINUATION's metals & mining sector split, MOM's
+sector_rank_at_entry cliff) against the last two weeks alone before
+agreeing to wire either into a live decision — neither replicated.
+Branch `feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 990/991, the one failure being F-67's
+already-named, pre-existing, unrelated Stage D4 issue, confirmed
+unrelated a third time (same module, same isolated-pass behaviour,
+still failing with nothing of this session's touching it). Migration
+093 applied live. `ai.post_trade_analysis --backfill-grades` run dry
+then for real: 88/88 SWING closed trades written.
+
+### 1 — GRADE PERSISTENCE (the operator's "#2")
+
+`grade_trade_entry()` — real, existing code, confirmed by reading it —
+computes an A–F grade for every analysed closed trade and always has.
+Traced exactly where that value went: popped into a run-level
+`grade_dist` tally for one log line, used to word the generated
+lesson's prose, then discarded. The `lessons` table's 19 columns hold
+no grade of any kind. F-68's own Q2 ("does the grade predict outcome")
+was unanswerable for exactly this reason.
+
+Fixed on two paths, both SWING-only — a deliberate narrowing of scope
+that `main()`'s own pre-existing loop does not itself apply (it already
+processes both frameworks' closed trades without discriminating; an
+intraday row simply has no `signal_log` match and grades a
+context-free default "C" — pre-existing behaviour, unchanged here):
+
+- **Forward.** `main()`'s loop now writes `entry_grade` back to
+  `closed_positions` immediately after computing it, gated on
+  `framework == 'SWING'` and the row carrying an `id`.
+- **Backfill.** New `backfill_entry_grades()` — deliberately narrower
+  than a full re-analysis: no AI call, no `lessons` insert, no dedup
+  bookkeeping, just `grade_trade_entry()` (already pure) over
+  `load_signal_context()`'s result, for every closed SWING trade
+  missing the column. Run live: 88 trades, distribution
+  `{A:1, B:1, C:76, D:10, F:0}`. GABRIEL — bought despite the
+  pipeline's own `AVOID_ENTRY` three sessions running, this project's
+  own landmine — graded **D**, exactly the shape the grade exists to
+  catch.
+
+**The correlation, now that it can be run:** grade C (n=76, the
+population's dominant grade) shows avg R **−0.01**, effectively
+breakeven; grade D (n=10) shows avg R **+0.30** — better, not worse.
+A and B are single trades each, too thin to read at all. This is the
+opposite of what the grade claims to measure, and — same discipline as
+§2 below — n=10 is nowhere near enough to trust either direction. **Not
+wired into anything.** The honest state: the question moved from
+"cannot be asked" to "asked, and the answer is not yet, on either
+side" — real progress, not a null result to be embarrassed about. Stage
+E6 revisits this once more graded closes accumulate.
+
+### 2 — THE RECENCY CHECK (the operator's "#1", and why it did not ship)
+
+Operator's own instruction, verbatim: before wiring either of F-68's
+two strongest findings into a live decision, confirm they hold using
+the last 1–2 weeks of data alone, not just the full historical sample
+— named concern: not retiring or derating anything on data that might
+not represent the system as it actually behaves today.
+
+Checked first whether that concern applied literally: `signal_output_
+daily`'s resolved population spans 24-Jul to 20-Aug-2026 only, entirely
+within TradeOS's own operating history (first commit 04-Mar-2026) — no
+true pre-TradeOS legacy data is mixed into this specific study, unlike
+the closed-trade "55 trades, most from a legacy manually-sized book"
+population `position_lifecycle.py`'s own stall-rule comments already
+name. So the concrete worry did not apply here — but the underlying
+instinct did, and the check itself proved it right:
+
+Re-ran `tools.swing_feature_edge_study --since 2026-08-10
+--min-engine-sample 10` (96 of 483 total rows, the last ~2 weeks):
+
+- **Metals & mining does not reappear.** The 44pp-gap finding from the
+  full sample (n=16 metals & mining rows total) does not have enough
+  recent rows to even form its own category at the last-2-weeks
+  min-segment floor. **Healthcare** shows up instead as the recent
+  underperformer (31% vs 83%, n=16) — a *different* sector than the
+  one F-68 flagged.
+- **MOM's `sector_rank_at_entry` cliff produces zero findings** on the
+  41-row recent MOM sample — the split that looked cleanest on the
+  full 118-row sample (rank ≤4: 100%, n=39) does not survive being
+  narrowed to fresh data, at least not yet at this sample size.
+
+**Verdict: neither finding is wired into `entry_ranking.score_plan()`
+or anywhere else live.** Both stay `PENDING` in `brain_proposals`
+exactly as F-68 left them — not `REJECTED` (that would claim the
+opposite direction was shown, which is not what a too-thin recent
+sample demonstrates) — annotated here as the record of why they were
+not promoted, for whoever revisits them once more recent data has
+accumulated or Stage E6's own out-of-sample validator is built.
+
+### 3 — WHAT THIS ADDS TO STAGE E6'S OWN PLAN
+
+Both halves of this session land in the same place: a finding's
+significance on the full historical sample is not sufficient on its
+own before it touches a live decision. Stage E6's validator was already
+scoped to re-check PENDING findings against data created strictly after
+they were found (the F-50 pattern, adopted for swing); this session adds
+a second, narrower check worth building into the same harness — does
+the pattern also hold in a short, RECENT window, not just "some data
+after the original finding." A finding can validate on the F-50 sense
+(later data agrees) while still resting mostly on stale evidence if the
+recent slice alone is too thin to say anything — exactly what happened
+to both findings here.
+
+## 2026-08-24 — F-70 (change, Track E Stage E3) — closed the "knows but
+doesn't act" gaps: a standing health check for the F-67 shape, real
+execution of `ai_recommended_action=TIGHTEN_SL` (shadow-first), and a
+regime-aware exit-ladder multiplier (shadow-first, per E2's own finding
+that no regime diversity exists yet to validate it against). Building
+the health check surfaced a SECOND, previously unknown double-buy —
+**HAL, 21-Aug, three days before HINDCOPPER, same shape, both orders
+filled this time.** Branch `feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 998/999, F-67's already-named pre-existing Stage
+D4 issue, confirmed unrelated a fourth time. New health check run live
+against real data — caught both real incidents on the first try, no
+synthetic fixture needed. `tools.simulate`: HINDCOPPER's real shadow log
+fired correctly — `sl 503.85 -> 539.00`, the actual `ai_action_reason`
+text from its own 20-Aug review, decision unchanged (`HOLD`) with the
+switch off, exactly as designed.
+
+### 1 — A SECOND F-67 INCIDENT, FOUND BY THE CHECK BUILT TO CATCH IT
+
+New `tools.health::check_pending_fill_duplicates()` — distinct from the
+existing `check_pending_fills` (which asks whether a row is stuck
+unresolved; this asks whether an order actually doubled up) — flags two
+`PLACED` BUY events for the same symbol with no `SELL` between them
+inside 10 minutes. Run against real data: it caught HINDCOPPER
+(24-Aug, the incident F-67 fixed) — and **HAL, 21-Aug, three days
+earlier**, previously unknown.
+
+HAL's order log: `BUY 1 @ 5021.80` (08:13:57 UTC), 10 blocked retries
+over the next 5 minutes (`order_manager`'s own duplicate cooldown, same
+mechanism that limited HINDCOPPER's damage), then `BUY 1 @ 5020.70`
+(08:19:08) — the moment the cooldown lapsed. Unlike HINDCOPPER, where
+reconcile corrected the excess down to the true broker holding, **HAL's
+own small 1-share order size meant both fills went through cleanly** —
+confirmed live: `current_qty=actual_qty=kite_qty=2, reconcile_status=
+MATCHED`. This was never a 2-share sizing decision. `risk_pct_per_trade`
+(1.5%) against HAL's own risk-per-share sizes to 1 share; the account is
+carrying 2, roughly double the intended per-trade risk, and `invested_
+value` (₹10,022) is ~44% of the whole portfolio in one name — a real
+concentration nothing decided on purpose. **Left exactly as found — this
+is the operator's own position and call to make (trim back to 1 share,
+or hold), not something this session closes unilaterally.**
+
+### 2 — `ai_recommended_action=TIGHTEN_SL` NOW EXECUTES (shadow-first)
+
+New rung 2c in `evaluate_exit()`. `ai_recommended_action` — confirmed by
+grep before this session touched it — was written by `ai/ai_decision_
+engine.py` and read by exactly one place, `alerts/send_alerts.py`, to
+display it. HINDCOPPER's own 20-Aug review recommended `TIGHTEN_SL` over
+a live geopolitical risk in metals & mining; nothing executed it.
+
+One-directional only, the same asymmetry every rung in this ladder
+already respects: moves the stop a configurable fraction (`swing_ai_
+tighten_fraction`, default 0.5 — halfway) from its current level toward
+the live price, never loosens it, checked regardless of profit level
+(unlike the 1R-gated deterioration check). Deliberately scoped to
+`TIGHTEN_SL` only — `HOLD`/`TRIM`/`EXIT`/`NO_ACTION` stay informational.
+Automating `TRIM`/`EXIT` would mean acting on AI judgement the same way
+`ai_tier`/`ai_conviction` already were, and that channel was correctly
+demoted to zero ranking weight on 04-Aug once evidence showed it was not
+predictive — `TIGHTEN_SL` is safe to automate on a different basis
+entirely (it can only ever protect capital, never spend it), not because
+the AI's judgement earned more trust.
+
+Ships OFF (`swing_ai_tighten_enabled`, migration 094). While off, the
+condition is still evaluated every cycle and shadow-logged — confirmed
+live via `tools.simulate` against HINDCOPPER's real position.
+
+### 3 — REGIME-AWARE EXIT LADDER (shadow-first, no calibration behind it)
+
+`evaluate_exit()` has only ever read `regime_at_entry`, frozen the day a
+position opened. New: fetch the market's CURRENT regime once per daemon
+start (`market_regime`, same cadence F-46's stall calibration already
+uses) and apply a single multiplier to both the giveback allowance and
+the (possibly family-calibrated) stall clock — one number, because the
+same direction is "tighter" for both a percent allowance and a day
+count. RISK OFF tightens (`swing_regime_mult_risk_off`, default 0.7);
+RISK ON/TRENDING loosens slightly (`swing_regime_mult_risk_on`, default
+1.2) — more patience in a genuinely strong tape is a legitimate
+professional response, not permissiveness for its own sake. NEUTRAL/
+RECOVERING apply no adjustment.
+
+Ships OFF (`swing_regime_aware_exits_enabled`, migration 094) —
+deliberately with NO calibration behind the 0.7/1.2 defaults at all,
+unlike F-43/F-46's ladder work. E2's own quantify pass (F-68) found
+every resolved swing outcome on record reads `regime='NEUTRAL'`; there
+is no historical diversity to validate this against yet, and arming it
+before that exists would be exactly the "not enough data" mistake this
+session already avoided once this session (§2, the metals & mining /
+MOM sector-rank findings). The mechanism is real and tested; the
+specific multiplier values are a placeholder until real regime diversity
+accumulates.
+
+### 4 — VERIFIED
+
+`tests/test_stage_e3_ai_tighten_and_regime.py`, 8 checks, demonstrated
+failing first: `git stash` on the two touched source files, 3 of 8
+failed (the two armed-behavior tests, plus the loosen-in-RISK-ON case),
+restored and all 8 passed. `check_pending_fill_duplicates` was proven
+against real incidents rather than a synthetic fixture — a stronger
+demonstration than the usual git-stash pattern, since the failure mode
+it catches already happened twice and both are still inside its 7-day
+window.
+
+### 5 — NOT DONE
+
+**HAL's doubled position is not trimmed.** Named in §1, left for the
+operator. **The regime multiplier's specific values (0.7/1.2) are
+unvalidated** — Stage E6 or a future E3 revisit should re-derive them
+once real regime diversity exists in resolved outcomes, the same way
+F-46's stall-clock numbers were derived from real data rather than
+guessed. Same daemon-deploy gap as every finding this session: `tools.
+simulate` proves the code correct; `intraday/run.py`'s running process
+does not pick any of this up until restarted.
+
+## 2026-08-24 — F-71 (change, Track E Stage E4) — structural break checked
+from day one (not gated at 1R), and live sector-decay tightening using
+`sector_strength`'s already-computed state rather than a frozen entry-day
+snapshot. Building the live-data verification caught a real gap of its
+own: `tools/simulate.py` had been building an incomplete policy dict
+since F-46 — none of `stall_days_by_family`, `_current_regime`, or
+`_sector_state` ever reached it, only `load_exit_policy()`'s pure config
+read. Factored into one shared function so the two can no longer drift.
+Branch `feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 1006/1007, F-67's already-named pre-existing
+Stage D4 issue, confirmed unrelated a seventh time. `tools.simulate`
+against the real book, post-fix: **two of three open positions —
+HINDCOPPER (metals & mining) and AARTIIND (chemicals) — are currently
+sitting in sectors reading WEAKENING today**, both correctly shadow-
+logged.
+
+### 1 — STRUCTURAL BREAK FROM DAY ONE
+
+`deterioration_check()` (`control/exit_rules.py`) only ever ran at
+`gain_r >= exit_deterioration_min_r` (1.0) — a trade going wrong from day
+one got zero structural evidence read until fastfail (day 4) or the
+calibrated stall clock (day 6–10), pure price-and-time until then.
+
+Parametrized rather than duplicated: `deterioration_check()` now accepts
+optional `floor`/`action`/`reason`, defaulting to the exact existing
+behaviour (`1.0`/`EXIT_DETERIORATION`/`THESIS_BROKEN`) for every caller
+that passes none of them. New rung 2b2 in `evaluate_exit()` calls it a
+second time with `floor=-inf`, labelled `EXIT_INVALIDATED`/
+`THESIS_BROKEN_EARLY` — so a trade that gave back a real gain and one
+whose thesis broke before it ever worked are told apart in the record,
+not folded into one bucket. Cannot manufacture an exit from an ordinary
+losing position by itself: `tq.verdict` must independently read `BROKEN`
+on the same structural evidence (structure, momentum, RS, sector) the
+profitable case already trusts, and stop-breach is checked first in the
+ladder, so this can only ever act on a position still above its own
+stop. Ships OFF (`swing_early_invalidation_enabled`, migration 095),
+shadow-logged.
+
+### 2 — LIVE SECTOR-DECAY TIGHTENING
+
+`sector_rank_at_entry` is read in exactly one place in the whole ladder
+— the 3R runner decision — using the frozen entry-day snapshot.
+`sector_strength` already computes a live `sector_state` every session
+(`LEADING`/`IMPROVING`/`WEAKENING`/`NORMAL`/`TOO_SMALL`) and nothing
+during ordinary holding ever read it.
+
+New multiplier, composing with Stage E3's regime multiplier
+(`applied_mult = applied_regime_mult * applied_sector_mult`) rather than
+overriding it — both apply if both are armed. Deliberately **tighten-only**,
+unlike the regime multiplier: a sector still `LEADING` is already why the
+trade was taken and does not additionally earn extra patience — stacking
+two independent "be more patient" signals is how a ladder drifts toward
+never cutting anything. Ships OFF (`swing_sector_decay_enabled`,
+migration 095), shadow-logged.
+
+### 3 — A REAL GAP FOUND WHILE VERIFYING: `tools/simulate.py` WAS INCOMPLETE
+
+Building the live-data check for §2 surfaced this directly: the AI-tighten
+shadow line appeared correctly against HINDCOPPER's real position (reads
+a plain column, no supplementary context needed), but the sector-decay
+line did not — `tools/simulate.py::simulate_swing()` built its policy
+dict from `load_exit_policy()` alone and never called the daemon's own
+inline fetch of `stall_days_by_family`/`_current_regime`/`_sector_state`.
+This means **F-46's own stall-clock calibration, verified against
+`tools.simulate` in that session's writeup, was never actually exercised
+by that verification** — the tool was silently falling back to the flat
+default the whole time, and the "live proof" cited then was real for the
+daemon but not for what `tools.simulate` itself was showing.
+
+Fixed by factoring the three fetches into one new function,
+`control/position_lifecycle.py::load_live_exit_context()`, called by
+BOTH the daemon (`intraday/engine.py`, replacing its own inline copy) and
+`tools/simulate.py` — the "decision reuse is load-bearing" rule applied
+one level up: not a second decision, but a second, incomplete COPY of
+the context one decision function needs. Confirmed post-fix: `tools.
+simulate` now shows the sector-decay shadow line for both real positions.
+A secondary shadow-log severity issue was caught in the same pass — the
+regime/sector shadow lines were logged at `.debug()` (silent by default)
+while the AI-tighten line used `.info()`; raised both to `.info()`, since
+a shadow log nobody's default log level shows defeats its own purpose.
+
+### 4 — VERIFIED
+
+`tests/test_stage_e4_early_invalidation_and_sector_decay.py`, 8 checks,
+demonstrated failing first: `git stash` on the three touched source
+files, 3 of 8 failed (the two armed-behaviour tests plus the
+multiplier-composition test), restored and all 8 passed. `deterioration_
+check()`'s own parametrization is covered by a dedicated test proving
+every existing call shape (no new args) is byte-identical to before.
+
+### 5 — NOT DONE
+
+Day-by-day participation/delivery decay and sector rotation as a
+book-wide (not per-position) signal — the remaining two items in Stage
+E4's own plan — were not built this session; scoped clearly enough to
+pick up next without re-deriving anything. Same daemon-deploy gap as
+every finding this session.
+
+## 2026-08-24 — F-72 (change, Track E Stage E4 — closes it) — the two
+remaining pieces from F-71 §5: participation/delivery decay per position,
+and a book-wide sector-concentration health check. Branch
+`feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 1012/1012 offline logic checks (5 new), the same
+pre-existing unrelated Stage D4 issue confirmed still isolated. `tools.
+simulate` and `tools.health --quick` against the real book.
+
+### 1 — PARTICIPATION/DELIVERY DECAY
+
+The swing-cadence version of the intraday F-45 volume-decay idea:
+`vol_ratio` on the entry-day session vs. the latest available session,
+per held SWING symbol, from `stock_data_daily`. A stall clock counts
+SESSIONS, not conviction — a name stalling on thinning volume is a
+different animal from one stalling on thick, contested volume, and the
+fixed clock cannot tell them apart.
+
+Fourth fetch added to `control/position_lifecycle.py::
+load_live_exit_context()` (now shared by the daemon and `tools/
+simulate.py`, per F-71 §3's fix): for every ACTIVE SWING position, entry-
+day `vol_ratio` vs. the latest, as a `{symbol: ratio}` dict, fails safe to
+`{}` on any error — same resilience the other three fetches already have.
+New multiplier in `evaluate_exit()`, composing into the existing chain
+(`applied_mult = applied_regime_mult * applied_sector_mult *
+applied_participation_mult`) rather than replacing it. Tighten-only, same
+reasoning as sector-decay: participation that has NOT decayed is already
+priced into why the trade was taken. Gated by a 2-session floor — never
+flags on entry day or day one, when a fresh position's own volume has had
+no chance to establish a baseline yet. Ships OFF (`swing_participation_
+decay_enabled`, migration 110), shadow-logged via `logger.info()` from
+the start — the F-71 §3 log-level lesson applied up front this time
+rather than found and fixed after the fact.
+
+Live check against the real book (24-Aug-2026): no shadow line fired for
+any of the three open positions, and the reason is itself informative
+rather than a gap — HINDCOPPER re-entered *today*, so `stock_data_daily`
+has no row yet for its own entry day (the fetch correctly skips a symbol
+with no usable entry-day baseline rather than guessing); AARTIIND's
+volume has actually *increased* since entry (ratio 1.25, not decayed);
+HAL's latest available session is still its entry day itself (ratio
+1.0, nothing to compare against yet). Confirmed via direct SQL against
+`stock_data_daily`, not inferred — the honest result is "no signal today
+on this book," not a manufactured one. The mechanism itself is proven by
+five synthetic tests below, not by today's book.
+
+### 2 — BOOK-WIDE SECTOR-CONCENTRATION HEALTH CHECK
+
+`evaluate_exit()`'s own sector-decay multiplier (F-71 §2) reads
+`sector_strength` per position, against that position's own sector only —
+it has no view of the BOOK. Three positions each individually tolerable
+at x0.75 tightening can still mean the whole book is leaning into one
+fading rotation at once, which no per-position check can see by
+construction.
+
+New `tools/health.py::check_sector_concentration_risk()`, registered as
+`sector_risk`, mirroring `check_pending_fill_duplicates`'s shape: group
+currently-ACTIVE SWING `open_positions` by sector, cross-reference each
+sector's live `sector_state`/`rank_delta_5d`, flag when >=50% of the book
+sits in sectors reading WEAKENING today. Read-only diagnostic — changes
+nothing, gates nothing.
+
+Confirmed live: **2 of 3 open SWING positions (67%) — HINDCOPPER (metals
+& mining) and AARTIIND (chemicals) — read WEAKENING today**, correctly
+flagged. Not something a per-position check could have surfaced as a
+BOOK-level fact; each position's own shadow line exists (F-71 §2), but
+neither says "this is now most of what you hold."
+
+### 3 — INVESTIGATED IN THE SAME PASS: `pending_dup` ALSO FIRED — NOT A NEW INCIDENT
+
+Running `tools.health` to prove §2 also surfaced `pending_dup` (F-70)
+flagging HINDCOPPER again, timestamped 04:05–04:10 UTC (09:35–09:40 IST)
+today — the same 15-blocked-retries-then-a-real-second-BUY shape as the
+original F-67 incident. Traced before reporting rather than assumed:
+the F-67 fix itself was committed at 15:03:34 IST *today* (`4ecfd0c`),
+**after** this HINDCOPPER incident (09:35 IST) — this is the same
+already-diagnosed, already-fixed incident from earlier in today's session,
+still inside the check's 7-day lookback window, not a recurrence.
+Confirmed no SWING BUY was placed for any symbol after the fix commit
+today (`intraday_broker_log`, empty result) — though that is a weak
+negative, since only ~27 minutes of market time remained after 15:03 IST
+before the 15:30 close. The fix has not yet had a real live re-test
+window; tomorrow's session is the first one that will actually exercise
+it. Flagging this explicitly rather than letting a clean `tools.verify`
+run imply more than it proved.
+
+### 4 — VERIFIED
+
+`tests/test_stage_e4_participation_decay.py`, 5 checks, demonstrated
+failing first: `git stash` on the three touched source files
+(`control/position_lifecycle.py`, `intraday/engine.py`, `tools/
+health.py`), the one test that depends on the new tighten-only behaviour
+("tightens when armed") failed as expected against the reverted source;
+the other four passed even pre-change because they assert the off/no-op
+paths, which the old code already satisfied — that asymmetry is expected,
+not a weak test. Restored, all 5 passed. `check_sector_concentration_
+risk()` has no offline unit test — it is DB-backed by construction, same
+as its sibling `check_pending_fill_duplicates`, and is verified live via
+`tools.health` instead, per this project's own rule that a test needing
+the live book belongs there.
+
+Migration 110 (not the sequential 096): the concurrent intraday-track
+session had already claimed 096–109 on disk by the time this was
+written. Numbered after the highest in use to avoid a second collision
+in the same shared ledger the `093`/`094`/`095` numbers already collided
+on once this session.
+
+**Track E, Stage E4 is now fully built.** All four planned pieces —
+early/structural invalidation, live sector-decay tightening,
+participation/delivery decay, and the book-wide sector-concentration
+check — ship OFF, shadow-logged, verified. Next: Stage E5 (entry-side
+intelligence), on explicit go-ahead only.
+
+## 2026-08-24 — F-73 (change, Track E Stage E4 refinement) — sector-decay
+strength exemption, plus a full investigation of the HINDCOPPER
+double-order into a definitive answer. Branch `feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 1014/1015 (5 new checks; same pre-existing
+unrelated Stage D4 issue). `tools.simulate` against the real book.
+
+### 1 — OPERATOR'S POINT: DON'T PUNISH A REAL CANDIDATE FOR ITS GROUP
+
+"We should not be blocking the real candidates having the potential to
+move upwards e.g. with strong volumes and other data points." The F-71
+sector-decay multiplier fired purely off `sector_state == WEAKENING` —
+a GROUP-level read — with zero regard for whether the position's OWN
+data contradicted it. A genuine leader outrunning a lagging sector
+("buy the strongest stock in a weak group" — O'Neil/Minervini) would
+get tightened anyway, for a reason that had nothing to do with the
+stock itself.
+
+`control/position_lifecycle.py::evaluate_exit()`: the sector-decay block
+now checks the SAME `_participation_decay` ratio F-72 already computes.
+When a WEAKENING-sector position's own `vol_ratio` is at or above
+`swing_sector_decay_strength_exempt_floor` (1.0 — participation holding
+or rising vs. entry day), the sector tighten is skipped entirely for
+that position; the giveback/stall thresholds fall back to whatever the
+regime and participation multipliers alone would produce. Deliberately
+**asymmetric**: only the sector (group) signal defers to the
+participation (stock) signal — the regime multiplier is untouched,
+because a real risk-off regime is systemic and not something one
+stock's own volume diversifies away from.
+
+Deliberately requires POSITIVE evidence, not absence of it — a symbol
+with no participation data at all (no entry-day `stock_data_daily` row
+yet, same gap F-72 §1 already documented for a same-day re-entry) is
+NOT exempted; "no data" and "measured strong" must not collapse to the
+same answer, the same principle CLAUDE.md's own landmines already state
+for a cold-start hurdle. No new switch — governed by the existing
+`swing_sector_decay_enabled`; one new tunable,
+`swing_sector_decay_strength_exempt_floor` (migration 111).
+
+**Live proof, same book:** AARTIIND (chemicals, reading WEAKENING) now
+shows `sector-decay EXEMPTED — ... own vol_ratio (1.25x entry-day) is at
+or above the 1.00x strength floor` — its own volume has genuinely risen
+since entry, and the refinement correctly stops treating it like a name
+whose participation is fading. HINDCOPPER, re-entered today with no
+entry-day baseline yet, correctly gets NO exemption and falls back to
+the plain F-71 shadow — absence of data does not manufacture strength.
+
+### 2 — HINDCOPPER: FULLY TRACED, NOT A HAL REPEAT
+
+Operator's second point: confirm HINDCOPPER's double order was not
+"wrong... like HAL." Traced with real broker-log and order-history data
+rather than assumed:
+
+- The two BUY orders (04:05:24 and 04:10:31 UTC, 24-Aug) are the SAME
+  incident F-67 already root-caused and fixed this session — not a new
+  one. F-67 §2 already states the outcome plainly: **`reconcile_with_
+  broker` corrected the position to the true holding (4 shares, MATCHED)
+  — no double-size position resulted.** The order-log collision was
+  real and is exactly what the fix (commit `4ecfd0c`) closes; the
+  POSITION SIZE was never wrong.
+- This is the material difference from HAL: HAL's double position is
+  REAL and stands at the operator's own explicit instruction ("let's
+  retain HAL's double position"). HINDCOPPER's never existed as a real
+  doubled holding — it self-corrected via reconcile before this session
+  ever started investigating it.
+- The fix commit (15:03:34 IST, 24-Aug) landed AFTER this incident
+  (09:35 IST) chronologically, so it has not yet had a live re-test —
+  only ~27 minutes of market time remained after the commit before the
+  15:30 close. No SWING BUY was placed for any symbol after the fix
+  landed today (checked directly against `intraday_broker_log`). Stated
+  plainly as an untested-live fix, not a proven one, in F-72 §3 and
+  again here — tomorrow's session is the first real test.
+
+### 3 — VERIFIED
+
+3 new checks in `tests/test_stage_e4_early_invalidation_and_sector_decay.
+py` (now 11), demonstrated failing-first. The first attempt at the
+"exempt when strong" test asserted `EXIT_STALL` — vacuously true against
+BOTH the reverted and the new source, because a stall at session 8 with
+mult=0.75 (old code, always applies) and mult=1.0 (new code, exempted,
+clock never shortens) land on different session numbers, not the same
+action at the same session — a "check that cannot fail" caught by its
+own failing-first requirement before being trusted. Corrected to assert
+session 8 must NOT stall when exempted (mult stays 1.0, clock stays at
+its flat 10-day default); re-run against reverted source failed
+correctly, restored and passed. `tools.verify`: 1014/1015.
+
+## 2026-08-24 — F-74 (change, Track E Stage E5, piece 1 of 3) — the
+entry-ranking call sites now rank on `decide()`'s truly live R:R, not the
+evening pipeline's stale snapshot. Branch `feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 1019/1020 (5 new checks; same pre-existing
+unrelated Stage D4 issue). `tools.simulate` against the real book —
+byte-identical output to before, confirming no regression.
+
+### 1 — WHAT THE QUANTIFY PASS FOUND
+
+Stage E5's own roadmap text names a "zone-drift penalty" scoped as
+percentage distance above `entry_zone_high`. Quantified first, per this
+project's own "quantify before build" pattern (Gate E2): joined
+`closed_positions` to `signal_output_daily`/`signal_log` for the 19 most
+recent SWING exits with usable zone data (69 of 88 closed rows have no
+`signal_id` at all — a real, separate attribution gap, noted but out of
+scope here) and bucketed by raw `%` drift above zone. **The naive metric
+does not cleanly separate outcomes on this sample** — it was the wrong
+proxy.
+
+Checked HAL's own real numbers instead (`docs/TRADEOS_ROADMAP.md`'s own
+motivating example): filled at 5010.20 against a zone whose low drifted
+4779 → 4808 across three prior daily signal snapshots — only ~1-2% raw
+price drift. But `planned_stop` (4740.22) and `planned_target` (5325.17)
+stayed FIXED across all three snapshots while the zone caught up to
+price, so the reward:risk the plan was originally sized on collapsed:
+`rr_at_zone_low` ranged 7.63–14.09 across those three snapshots; `rr` at
+the actual fill was 1.17. **R:R retention, not raw price distance, is
+what "chase" actually costs.** Re-bucketed the same 16-position sample
+by R:R-retained fraction: bottom half (worst retention) averaged
+**−0.003R** with 3 of 4 total losses in this set; top half (best
+retention) averaged **+0.227R** with 1 loss. Small sample (n=8/bucket),
+not monotonic (PPLPHARMA was the single best winner despite moderate
+retention), but directionally real and mechanistically exactly what
+HAL's own numbers show live.
+
+### 2 — THE REAL BUG THIS SURFACED: NOT A MISSING FEATURE, A DEAD ONE
+
+`entry_ranking.py::score_plan()`'s own comment already claims the R:R
+term reads "the live figure... a plan that has already run is a worse
+trade than it was when written, and only implied_rr knows that." It
+does not: `implied_rr` is written ONLY by the evening pipeline
+(`final_snapshot.py`/`generate_signals.py`) and nothing refreshes it
+before either place that ranks candidates for entry. `analysis.
+trade_decision.decide()` already computes the real thing — `rr_live`,
+reward:risk at the live price — and both call sites had it sitting in
+scope (`d.rr_live`) and never used it: `intraday/engine.py::
+_maybe_enter_swing` (the live daemon) and `tools/simulate.py::
+simulate_swing_entries` (the read-only preview tool — which additionally
+called `rank(plans)` BEFORE its own per-plan `decide()` loop even ran,
+so it could not have used a live figure even if one had been threaded
+through). This is not the roadmap's originally-scoped "new penalty" —
+it is an EXISTING mechanism that was never actually doing what its own
+comment already claimed, closer in shape to the tools.simulate gap
+F-71 §3 already found once this session than to a new feature.
+
+### 3 — FIX
+
+New pure function `analysis/entry_ranking.py::live_ranking_input(p,
+rr_live)` — overrides `implied_rr` with the live figure when present,
+no-ops when `rr_live` is `None` (a plan can legitimately have no live
+figure, e.g. a `CHASE_LIMIT` priced off the limit; the stale fallback
+beats a fabricated zero). Factored into ONE shared function BEFORE two
+independent inline copies could drift, not after — both `_maybe_enter_
+swing` and `simulate_swing_entries` call it identically. `tools/
+simulate.py` additionally reordered: `decide()` now runs per-plan before
+`rank()`, not after, so its own `rr_live` values are available in time
+to feed the ranking rather than only the post-rank BUY/WAIT filter.
+
+### 4 — VERIFIED
+
+5 new checks in `tests/test_stage_e5_live_rr_ranking.py`, demonstrated
+failing first: `git stash` on all three touched source files (`analysis/
+entry_ranking.py`, `intraday/engine.py`, `tools/simulate.py`), all 5
+failed (3 on the missing import, 2 structural call-site checks) against
+fully reverted source, restored and all 5 passed. Two are direct unit
+tests of the new pure function and its effect through `score_plan()`
+(HAL's own numbers: live rr=1.17 ranks materially below stale zone-low
+rr=14.09); the other two are source-inspection checks confirming both
+call sites actually use the shared function — the same class of
+call-site gap `check_shorts()` already greps for, because `_maybe_enter_
+swing` cannot be called directly in a unit test (needs a live Kite
+session, same reason no other method in that class has one) and a
+return-value test cannot see which function a call site used.
+`tools.verify`: 1019/1020. `tools.simulate` live: byte-identical output
+to pre-fix — this day's own stale `current_price` happened to already
+be close to its `implied_rr`'s own reference point, so no visible swing
+today; the mechanism itself is proven by the HAL anchor and the unit
+tests, not overclaimed from a day that doesn't happen to show it.
+
+### 5 — NOT DONE
+
+Stage E5's remaining two pieces — the AI's own lessons as checkable
+predicates, and weekly-structure confirmation pulled into the entry
+gate — were not built this session.
+
+## 2026-08-24 — F-75 (change, Track E Stage E5) — investigated pieces 2
+and 3; found and fixed a serious, 100%-reproducible pre-existing bug in
+piece 3's own underlying mechanism along the way. Branch
+`feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 1024/1025 (5 new checks; same pre-existing
+unrelated Stage D4 issue). `tools.simulate` against the real 3-position
+book.
+
+### 1 — PIECE 2 INVESTIGATED, NOT BUILT: THE EVIDENCE DOES NOT SUPPORT IT YET
+
+The roadmap's own motivating anecdote — "HAL's 20-Aug note literally read
+'avoiding chasing after a sharp rally' ... one day before the same AI
+approved a trade that did exactly that" — does not survive a literal
+check. That lesson's stated trigger was `RSI-W > 85`; HAL's real
+`rsi_weekly` on its 21-Aug entry day was 66.2. No self-contradiction on
+the lesson's own stated terms.
+
+What IS real: `ai_max_chase_pct` (the AI's own per-candidate chase
+ceiling, already wired into `decide()`) was 2.0 on 20-Aug and **NULL on
+21-Aug, the actual entry day** — `ai_tier` also dropped `TIER_1` ->
+`WATCH_CLOSELY` the same day. `decide()` silently treats a null cap as
+no cap at all. But HAL's actual raw chase was only 0.94% — under even
+the prior day's 2.0% cap — so carrying that value forward would not have
+stopped this specific trade either; the damage was in R:R retention
+(F-74), not raw chase distance, again.
+
+The `lessons` table itself has a real track record (1369 rows, 526 with
+`times_applied > 0` — larger than an earlier, recency-biased 15-row
+sample suggested) but is applied ENTIRELY through LLM self-judgment
+(fed as prompt context, self-reported back as `lessons_applied`) with no
+deterministic enforcement — HAL's own entry day is a live example of
+that self-application silently regressing with nothing else to catch it.
+Hard-coding a refusal on R:R retention was considered and rejected: on
+the 16-position quantify sample (F-74), the winners and losers sit close
+enough together in retention-fraction space (AIIL 0.134 WIN vs.
+TRAVELFOOD 0.057 LOSS) that any threshold tight enough to exclude
+TRAVELFOOD also risks excluding real winners — the "check that cannot
+PASS" failure mode this project explicitly guards against, on a sample
+far too thin to set a hard line with confidence. Not built. A genuine
+validated track-record study of `lessons.times_worked/times_applied`
+belongs to Stage E6 ("the learning core"), not E5's entry-gate scope.
+
+### 2 — PIECE 3: THE UNDERLYING MECHANISM WAS DEAD, FIXED FIRST
+
+Piece 3 asked to pull `weekly_structure` into the entry gate, conditioned
+on it being "a real signal, not decoration." Checking that turned up
+something more serious: `control/exit_rules.py::assess_trend()` — the
+EXISTING exit-side consumer of `weekly_structure`, read by
+`deterioration_check()`, the 3R runner decision, and this session's own
+Stage E4 early-invalidation rung — string-matched the field against
+`HIGHER/UPTREND/BULLISH/HH` and `LOWER/DOWNTREND/BEARISH/LL`. Confirmed
+live via SQL: `compute_msl.py` has never emitted any of those four
+strings. Its real, and only, four values are `STRONG`/`CONSOLIDATING`/
+`CAUTION`/`WEAK` — 1886/395/263/228 rows respectively. Verified in
+Python directly against all four real values: zero matches, either
+branch, always. Same shape as the documented "RISK ON" vs "RISK_ON"
+collision (migration 048) and the unreachable STRONG regime bucket.
+
+Worse than inert: `checks += 1` fired regardless of whether the value
+matched, for every one of the ~2.7k rows carrying a non-empty
+`weekly_structure` — the majority of all trend assessments. `score =
+len(for_) / checks`, so this silently DEFLATED the score for most
+positions: a check that could structurally never contribute to the
+numerator was still inflating the denominator. A position with real
+bullish evidence elsewhere (e.g. RSI in trend) plus a genuinely STRONG
+weekly structure scored 0.5 instead of the clean 1.0 both signals
+actually earned.
+
+`compute_msl.py`'s own classification (lines 1153-1156) gave the correct
+mapping directly, not guessed: `STRONG` = weekly higher-high AND
+higher-low (score 90) -> for_. `WEAK` = neither (15) -> against.
+`CAUTION` = higher-high WITHOUT the higher-low sequence (42) — a new
+high with the underlying structure already broken, a real distribution
+warning, not a reason for patience -> against. `CONSOLIDATING` =
+higher-low only, not yet confirming (65) — genuinely ambiguous, kept
+NEUTRAL and no longer incremented into `checks` at all, matching this
+function's own stated philosophy ("missing inputs count as neither for
+nor against") extended to an ambiguous value rather than reinterpreting
+it as bullish. Quantify pass against real closed-position outcomes was
+attempted first but the sample was too thin to validate directionally
+(n=15 STRONG / 2 CONSOLIDATING / 1 WEAK, zero CAUTION rows) — the fix
+instead rests on `compute_msl.py`'s own already-computed numeric
+ordering, not a fresh backtest.
+
+Applied as a direct correctness fix, not gated behind a new switch —
+matching this session's own F-67/F-69 precedent for restoring already-
+live logic to its intended behaviour, distinct from the Stage E3/E4
+features that were genuinely NEW capability and shipped OFF by design.
+
+**Live proof, real book:** HINDCOPPER's verdict actually flipped —
+`INTACT (67%)` before this fix, `STRONG (78%)` after — it was being
+under-credited. AARTIIND and HAL both rose in confidence (`78%` ->
+`89%`) with unchanged verdicts. No position's score fell. Confirmed no
+consumer distinguishes `STRONG` from `INTACT` individually (`should_run`
+groups both), so nothing on today's book actually changes DECISION —
+this session's fix improves accuracy for the borderline cases (FADING
+vs. INTACT, `has_evidence` threshold crossings) it will matter for going
+forward, not today's specific book.
+
+Pulling the now-correctly-working signal INTO the entry gate — piece
+3's original literal scope — was not done this session: the same thin-
+sample problem that blocked piece 2 applies here too, and fixing the
+prerequisite bug first, rather than building a new consumer on top of a
+mechanism that was silently broken, was judged the higher-value use of
+this session's remaining time.
+
+### 3 — VERIFIED
+
+5 new checks in `tests/test_stage_e5_weekly_structure_vocabulary.py`,
+demonstrated failing first: `git stash` on `control/exit_rules.py`, all
+5 failed against the reverted (buggy) source with the exact predicted
+failure shapes (STRONG scoring 0.0 instead of 1.0, the dilution case
+scoring 0.5 instead of 1.0), restored and all 5 passed. `tools.verify`:
+1024/1025.
+
+### 4 — STAGE E5 STATUS
+
+Piece 1 (F-74) built and verified. Piece 2 investigated, not built —
+evidence does not support it yet. Piece 3's prerequisite bug found and
+fixed; the entry-gate extension itself not built, same reason as piece
+2. All three conclusions are evidence-based "not yet," not oversights —
+consistent with this project's own quantify-before-build discipline.
+
+## 2026-08-24 — F-76 (change, Track E Stage E5, pieces 2-3 — shadow
+build) — operator's own instruction: "go ahead and build it" (shadow
+versions of pieces 2 and 3, off by default) — plus a real, pre-existing
+`tools.simulate` gap found wiring the shadow logs in so they could
+actually be observed. Branch `feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 1032/1033 (8 new checks; same pre-existing
+unrelated Stage D4 issue). `tools.simulate` against the real book.
+
+### 1 — WHY SHADOW, NOT A HARD LINE — AND WHY BUILD IT ANYWAY
+
+F-75 concluded pieces 2/3 should stay not-built because n=16 is too thin
+to set a confident refusal threshold. Operator pushed back correctly:
+that reasoning justifies staying OFF, not staying UNBUILT — this
+session's own Stage E3/E4 precedent (participation-decay shipped OFF
+with shadow logging despite showing zero live signal on its first day)
+already established that a sound mechanism with thin evidence should
+accumulate real data via a shadow log, not wait indefinitely for a
+sample that will not grow on its own. Built on that basis.
+
+### 2 — PIECE 2: R:R RETENTION AS A SHADOW REFUSAL
+
+`analysis/entry_ranking.py::entry_refusals()` gained two new optional
+params, `rr_live`/`rr_at_zone_low` (decide()'s own already-computed
+numbers, passed in — the function stays pure, no I/O added). When both
+are available and `rr_live / rr_at_zone_low` falls below `entry_rr_
+retention_floor`, shadow-logs (armed: `entry_refuse_low_rr_retention`,
+off) a refusal.
+
+Floor chosen deliberately at 0.20, not the more natural-looking 0.15:
+HAL's own real numbers at its actual entry-day zone snapshot (rr_live
+1.17, rr_at_zone_low 7.63) retain exactly 0.1533 — a hair ABOVE 0.15,
+which would have silently failed to flag this session's own repeatedly-
+cited anchor case. Caught before committing the migration, not after.
+
+### 3 — PIECE 3: BROKEN TREND AT ENTRY, REUSING THE NOW-FIXED FUNCTION
+
+Rather than a second, narrower weekly-structure-only check,
+`entry_refusals()` now calls `control.exit_rules.assess_trend()` — the
+SAME function F-75 fixed — directly on the CANDIDATE. That function had
+only ever been asked about an ALREADY-HELD position (deterioration_
+check, the 3R runner decision, the Stage E4 early-invalidation rung);
+nothing had ever asked it about a plan before taking it. A plan whose
+own trend evidence already reads BROKEN with real evidence is now
+shadow-logged (armed: `entry_refuse_broken_trend`, off) — "decision
+reuse is load-bearing" applied to a brand-new consumer of an existing
+function, not a parallel implementation.
+
+### 4 — THE REAL GAP FOUND WIRING IT IN: `tools.simulate` NEVER CALLED `entry_refusals()`
+
+To make either shadow log observable outside the live daemon, `tools/
+simulate.py::simulate_swing_entries()` needed to call `entry_refusals()`
+— and it never had, for ANY of its existing checks either, not just the
+two new ones. Confirmed live: `entry_respect_filter_reason` is `true` in
+`system_config` right now — the daemon has genuinely been refusing
+plans on this basis in production — while `tools.simulate` (the tool
+CLAUDE.md names as what to run "before changing anything") was silently
+reporting a DIFFERENT result. Concretely, on 2026-08-21's real plan set:
+SIEMENS ranked #1 (11.2) and showed as the top TAKE before this fix;
+after wiring `entry_refusals()` in, SIEMENS correctly shows **REFUSED —
+the evening pipeline refused this plan: insufficient_rr_for_reentry_
+setup**, and the simulated take list changes from {SIEMENS, CHALET} to
+{CHALET, HONASA}. Same shape as F-71 §3 (the incomplete exit-policy
+dict) — a second, independent case of this exact tool silently drifting
+from what the daemon actually does. Fixed by adding the call, mirroring
+`intraday/engine.py::_maybe_enter_swing`'s own placement (after the
+`d.action` check, before counting the candidate as "considered").
+
+**Live proof, same run:** GLAND's own real numbers lit up the R:R-
+retention shadow independently of the HAL anchor — `R:R has retained
+only 10% of its zone-low value (2.02 vs 19.48)`. No broken-trend shadow
+fired for any real candidate today — an honest "no signal on this day's
+pool," not a gap; the mechanism is proven by the synthetic BROKEN-
+evidence tests below.
+
+### 5 — VERIFIED
+
+8 new checks in `tests/test_stage_e5_entry_shadow_checks.py`,
+demonstrated failing first: `git stash` on all three touched source
+files (`analysis/entry_ranking.py`, `intraday/engine.py`, `tools/
+simulate.py`), 5 of 8 failed against the reverted source (4 on the
+missing `rr_live` kwarg, 1 on the missing broken-trend refusal) — the
+other 3 correctly passed either way because they test the off/absence
+paths, the same asymmetry established as expected practice earlier this
+session. Restored, all 8 passed. Migration 112: both switches off,
+`entry_rr_retention_floor` shipped at 0.20 with the HAL near-miss
+documented directly in the migration's own comment.
+
+### 6 — STAGE E5 STATUS
+
+All three pieces now have real code behind them: piece 1 (F-74) live-
+armed by the ranking fix itself (no switch — see F-74), pieces 2-3
+(F-76) shadow-logging real candidates, off by default, pending the
+quantify pass their own accumulated data will eventually support.
+Stage E5 is complete for this pass. Next: Stage E6, the learning core.
+
+## 2026-08-24 — F-77 (change, Track E Stage E6, scoped subset) — the
+recency validator (F-68/F-69's own explicit request) and a living
+engine lifecycle review — the two of Stage E6's five pieces not blocked
+by this session's own prior findings. Branch `feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 1044/1045 (12 new checks; same pre-existing
+unrelated Stage D4 issue). Both mechanisms run live against the real
+book — the validator against F-68's 31 real PENDING findings, the
+lifecycle review against all 9 real swing strategies.
+
+### 0 — WHY THIS SUBSET, NOT ALL FIVE OF E6's PIECES
+
+Operator asked "why can't we build all pieces of E6?" Checked each
+against evidence this session already produced, not against a general
+sense of caution:
+
+- **Lesson grade -> score_plan()** — currently BACKWARDS, not merely
+  unready. F-69's own correlation check: grade C (n=76, the dominant
+  grade) averages −0.01R; grade D (n=10, the WORSE grade) averages
+  +0.30R. Wiring this in now means coding a scoring term that rewards
+  the grade the data says is worse.
+- **Anticipatory model (probability-of-target)** — mathematically
+  undefined, not merely risky. Every single resolved row in `signal_
+  output_daily` carries `regime='NEUTRAL'` (F-68 Q3). A model fit on
+  this and asked to score a candidate the next time the market is
+  actually RISK_OFF has zero examples to extrapolate from for that
+  regime — it would still emit a confident-looking probability, and
+  that confidence would be fiction.
+- **Per-engine feature tuning / swing discovery engine** — the raw
+  material (F-68's 31 findings) does not hold up yet; F-69 re-checked
+  the two strongest against the last two weeks and neither reproduced.
+
+**Living engine lifecycle** was the one piece with no explicit blocker —
+grouped with the others too conservatively in the first pass, corrected
+after the operator's own question. Built both it and the recency
+validator this session; the other three stay flagged with the reasons
+above, not silently dropped.
+
+### 1 — THE RECENCY VALIDATOR
+
+`tools/swing_feature_edge_study.py::validate_pending_swing()` — promised
+in this module's own docstring since F-68 rather than relying on `tools/
+feature_edge_study.py::validate_pending()` ever correctly reaching a
+`SWING/`-prefixed row (it cannot, by construction — confirmed in that
+module's own filter). Independent reimplementation of the intraday
+tool's F-50 METHOD (three outcomes — VALIDATED / REJECTED / stays
+PENDING, "no opinion" never collapsed into "measured bad" — new pure
+`_validation_outcome()`, mirroring the intraday one's own semantics
+without importing it), plus a genuinely new second check F-69 explicitly
+asked to be built into the same harness: does the pattern ALSO hold in a
+short, RECENT window alone, not just "some data created after the
+finding" (which can still be dominated by stale rows if the elapsed gap
+is small). A finding is VALIDATED only when BOTH windows independently
+confirm the same direction; a real disagreement on EITHER window
+REJECTS it; insufficient data on either (with no actual disagreement)
+leaves the row exactly where it was. Handles both numeric AND
+categorical findings — F-69's own manual check covered one of each
+(`sector_rank_at_entry`, `sector`), and the intraday reference only
+handles categorical.
+
+**Live proof:** ran against F-68's real 31 PENDING findings —
+`--validate --dry-run` returns 0/0/31 (all skipped), which is the
+CORRECT day-one answer, not a gap: every finding was created TODAY, so
+the "strictly after creation" window has no data yet by construction (no
+tomorrow exists). Checked the recent-window half independently, direct
+inspection: the SAME two findings F-69 manually found do not survive a
+recent check (`SWING/MOM/sector_rank_at_entry`, `SWING/CONTINUATION/
+sector/metals & mining`) show **zero fresh match** on the automated
+recent-window re-run too — the automated validator independently
+reproduces F-69's own by-hand conclusion exactly. Three other findings
+(`rsi_daily`, `delivery_pct`, `atr_pct`) DO reproduce on the recent
+window alone, in the same direction originally claimed — real,
+independent corroborating evidence the manual check never looked at.
+
+### 2 — LIVING ENGINE LIFECYCLE
+
+`tools/weekly_review.py::review_swing_engine_lifecycle()` — all 9 swing
+strategies have sat at `lifecycle=ACTIVE` in `strategy_config` since
+25-Jul (MOM/RVS re-touched 07-Aug only) with nothing re-asking whether
+current evidence still supports it. Mirrors `review_engines()`'s
+intraday shape (measure on resolved outcomes, PROMOTE/SHADOW/RETIRE/
+keep/hold, `_propose`/`_supersede` into `brain_proposals`, never apply)
+but keyed on the RAW `strategy` column — `strategy_config` holds one
+lifecycle row per raw strategy (CTL/SEC/TPO/SBS/RSB/IAD/VBD/MOM/RVS),
+not `swing_family()`'s pooled grouping, which only exists for the
+feature-edge study's own sample-size needs. Sample floor reused from
+`swing_feature_edge_study.MIN_ENGINE_SAMPLE` (40) rather than a second,
+arbitrary number for the same underlying question. No rolling time
+window — same reasoning the feature-edge study's own header already
+gives for having no floor date: swing's absolute trade volume is small
+enough that a 30-day window (`review_engines()`'s own intraday default)
+would shrink RVS/TPO's already-thin samples further, making them
+permanently unmeasurable rather than just currently thin.
+
+Caught by this function's OWN test before it shipped: a healthy-CTL-
+shaped fixture (78% hit, +1.91% avg, already ACTIVE) generated a
+nonsensical `ACTIVE -> PROMOTE` proposal — PROMOTE is a real state
+transition (SHADOW -> ACTIVE) and an already-ACTIVE strategy reading
+healthy has nowhere higher to go. Fixed: PROMOTE now requires `cur !=
+"ACTIVE"`; an already-ACTIVE healthy strategy correctly reads `keep`.
+
+**Live proof, real book, 24-Aug-2026:** only CTL (n=292), MOM (n=78) and
+SEC (n=53) clear the 40-sample floor — all three read healthy (77-82%
+hit, +2.6% to +3.5% avg) and correctly `keep` ACTIVE. RVS (n=10, avg
+**−0.97%**) and TPO (n=35, avg only +0.36%) are the two names with real
+cause for concern and both correctly `hold` — too thin to act on with
+confidence, the same "no opinion must not read as measured bad"
+discipline the intraday reviewer already applies. Three strategy_config
+rows with zero resolved history (ACC/EAP/PEAD) surfaced and correctly
+held without crashing — handles an unexpected/new strategy gracefully.
+Zero proposals written today; the mechanism is now standing, wired into
+`tools.weekly_review`'s own `main()`, and will start proposing real
+changes once RVS/TPO accumulate enough resolved trades to judge.
+
+### 3 — VERIFIED
+
+12 new checks across two files, demonstrated failing first: `git stash`
+on `tools/swing_feature_edge_study.py` and `tools/weekly_review.py`
+together, both test modules failed completely against reverted source
+(7/7 and 5/5 — every test ImportErrors on a function that does not yet
+exist), restored and all 12 passed. `tools.verify`: 1044/1045.
+
+## 2026-08-24 — F-78 (change, Track E Stage E7, detection only) —
+position scaling: quantified, then built the full detection/sizing
+decision, deliberately stopping short of execution. Branch
+`feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 1052/1053 (8 new checks; same pre-existing
+unrelated Stage D4 issue). `tools.simulate` against the real 3-position
+book — runs cleanly, correctly shows no signal (none of the three are
+past the runner line yet).
+
+### 1 — WHY THIS STAGE GOT A SEPARATE CONFIRMATION
+
+E7 is explicitly the only stage in the whole track that ADDS capital
+risk rather than sharpening a decision already being made, and its own
+roadmap text says it benefits from E6's validated-finding mechanism
+existing first — which is only 2/5 built (F-77). Confirmed with the
+operator before starting, given SWING is LIVE, rather than reading
+"then move forward" as extending that far by default.
+
+### 2 — QUANTIFY FIRST
+
+Of 17 recent closed SWING trades with usable `max_favorable_excursion`
+data, only 2 (both PPLPHARMA, different entries) ever crossed the 1.0R
+runner line at their peak (1.87R and 1.34R). Every other trade topped
+out below 1.0R. **Scale-in opportunities are rare on this book** —
+consistent with how rarely trades reach the 3R hard target the existing
+RUN decision already governs (F-43's own "5% of trades that reach 3R").
+This is not a reason not to build the mechanism; it is the reason to
+build it now, shadow-first, so real evidence accumulates before the
+rare day it actually matters, rather than designing execution logic
+from scratch under time pressure the first time it fires live.
+
+### 3 — WHAT WAS BUILT: THE FOUR RAILS
+
+New `control/position_lifecycle.py::evaluate_scale_in()`, mirroring
+`evaluate_exit()`'s shape but answering a different question — deliberately
+NOT folded into the exit ladder, because "is this position still okay to
+hold" and "should NEW risk be added to it" are different questions and
+conflating them is how a ladder drifts. Four rails, each the roadmap's
+own explicit condition:
+
+1. `gain_r >= giveback_runner_min_r` (1.0R) — the same line F-43's
+   tiered giveback guard already uses to mean the original risk should
+   already be secured (partial banked, stop at/above breakeven).
+2. `assess_trend()` verdict `STRONG` with real evidence — STRICTER than
+   `target_decision()`'s own `should_run` (STRONG-or-INTACT): new risk
+   deserves more conviction than continuing to hold an existing runner.
+3. Capped at one add (`pos.get("scaled_in")`) — the roadmap's own
+   explicit limit.
+4. Sized through `analysis.portfolio_constraints.check_new_entry()` —
+   the SAME function and `risk_pct_per_trade` budget any fresh entry
+   uses, priced off the position's CURRENT stop (`active_sl`), never its
+   unrealized profit — the guard against pyramiding on paper gains. An
+   add competes for the same slot/sector/risk-budget caps any new
+   candidate would; `open_positions` is passed with the position itself
+   still in it, unfiltered.
+
+### 4 — WHY EXECUTION STOPS HERE, DELIBERATELY
+
+`evaluate_scale_in()` returns a decision; it never places an order,
+never writes to `open_positions`, has no config switch to arm. The
+roadmap's own text requires "the combined position's risk is measured
+from the add forward, not blended with the original entry's now-stale
+number" — a genuinely unresolved accounting question (does `entry_price`
+become a weighted average, or does the add's own economics govern the
+R-multiple going forward while the original tranche's already-secured
+gain stays untouched?) that this session did not answer. Shipping
+execution before it is answered risks corrupting the exact R-multiple/
+giveback math this whole track has spent five stages getting right.
+Shadow-logged unconditionally instead — no switch, because a switch that
+arms nothing (execution does not exist yet) is its own kind of footgun,
+an operator arming it and getting silence.
+
+Wired into both consumers, matching every other Stage E mechanism this
+session: `intraday/engine.py::_shadow_scale_in()` (swing-only branch,
+called once per SWING position per cycle, right after `evaluate_exit()`/
+`_track_trend_quality()`) and `tools/simulate.py::simulate_swing()`
+(reusing the SAME `tq` that loop already computes, no duplicate call).
+
+### 5 — VERIFIED
+
+8 new checks in `tests/test_stage_e7_scale_in.py`, demonstrated failing
+first: `git stash` on all three touched source files, all 8 ImportError
+against reverted source, restored and all 8 passed. Sizing tested
+against the REAL `check_new_entry()` (not mocked) — a hand-calculated
+qualifying case, and a real refusal case (book at its position-count
+cap) correctly propagates. `tools.verify`: 1052/1053. `tools.simulate`
+live: all three real positions process without error; none currently
+past the 1.0R line, so no shadow line fires today — the correct, honest
+result given §2's own base rate, not a gap.
+
+### 6 — NOT DONE
+
+Order execution (placing the actual add, updating `open_positions`
+quantity/`invested_value`, marking `scaled_in`) and the R-multiple/
+entry-price accounting question §4 names — both explicitly out of scope
+this session, pending that design question being answered on its own,
+not rushed to unblock a stage.
+
+## 2026-08-24 — F-79 (change, Track E — arming pass) — every Stage
+E3-E5 shadow switch armed live, on the operator's own explicit
+instruction ("arm all the shadow Es to live mode"), given full
+awareness of the evidence split — plus a real, previously-latent test-
+isolation bug the arming itself surfaced. Branch `feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 1052/1053 immediately after arming (4 NEW
+failures beyond the known Stage D4 one — see §2), 1052/1053 again after
+the isolation fix (only the known D4 failure). `tools.simulate` and
+`tools.health --quick` against the real 3-position book, both live.
+
+### 1 — WHAT WAS ARMED, AND THE EVIDENCE BEHIND EACH
+
+Flagged to the operator before executing, given SWING is LIVE and
+several of these switches were built literal minutes earlier with zero
+real-world observation — not a refusal, a surfaced fact, per this
+project's own "flag anything found along the way that costs money"
+rule. Confirmed to proceed with all seven regardless. Migration 113:
+
+**Seasoned** (fired repeatedly against real open positions this
+session): `swing_ai_tighten_enabled`, `swing_regime_aware_exits_
+enabled`, `swing_sector_decay_enabled`.
+
+**Zero or near-zero real firings** (built this session; thresholds
+explicitly documented in their own migration comments as "starting
+point, not calibrated"): `swing_early_invalidation_enabled`,
+`swing_participation_decay_enabled` (never fired live all session),
+`entry_refuse_broken_trend` (never fired live), `entry_refuse_low_rr_
+retention` (fired once, on GLAND).
+
+### 2 — THE REAL BUG THE ARMING ITSELF SURFACED
+
+`tools.verify` immediately went from 1052/1053 to 1048/1053 the moment
+the migration landed — 4 NEW failures, all in exactly the Stage E3/E4
+test modules whose switches had just flipped. Traced before assuming
+the arming broke something: `tests.cfg_ctx({})` correctly sandboxes
+`config._sys_config` (sets it to an empty dict, `get_system_config()`
+sees it is not `None` and never refetches) — but four specific tests
+across three files called `evaluate_exit()` with NO `cfg_ctx` wrapper
+at all, meaning `cfg_bool("swing_..._enabled", False)` fell through to
+whatever `config._sys_config` already held in the live process — the
+REAL database value, not the code's own default. These tests were
+silently coupled to the live system_config staying off the whole time
+they existed, invisible until the live value actually changed:
+
+- `test_stage_e3_ai_tighten_and_regime.py::test_ai_tighten_shadow_only_
+  by_default_does_not_change_the_action`
+- `test_stage_e3_ai_tighten_and_regime.py::test_regime_multiplier_is_a_
+  noop_by_default`
+- `test_stage_e4_early_invalidation_and_sector_decay.py::test_early_
+  invalidation_shadow_only_by_default`
+- `test_stage_e4_participation_decay.py::test_participation_decay_
+  shadow_only_by_default`
+
+A FIFTH, `test_stage_e4_early_invalidation_and_sector_decay.py::test_
+sector_decay_shadow_only_by_default`, had the identical gap but did NOT
+fail — session 7 checked against a 10-day default × 0.75 armed
+multiplier rounds to 8 (Python's round-half-to-even), one session past
+where the check happens to look. It was passing for the wrong reason —
+reading the live value and getting lucky on the exact session number
+chosen, not genuine isolation. Fixed anyway, on the same principle: a
+check that passes by coincidence is the same defect wearing a different
+hat as one that fails for the wrong reason.
+
+All five fixed by wrapping the `evaluate_exit()` call in `with cfg_ctx
+({}):`, matching the pattern every OTHER test in these files (and
+everywhere else in this session's work) already used. This restores
+the tests' original protective intent — proving the mechanism's CODE-
+LEVEL default is a safe HOLD, independent of whatever the live account
+happens to be running — rather than the accidental, fragile assertion
+they had actually been making ("the live database currently says
+off"). `tools.verify`: back to 1052/1053, only the known D4 issue.
+
+### 3 — LIVE PROOF, POST-ARM
+
+`tools.simulate` against the real 3-position book: **HINDCOPPER's
+action changed from `HOLD` to an executed `TRAIL_SL`**, tightening its
+stop on the AI's own live geopolitical-risk flag — the exact mechanism
+F-70 built and shadow-logged, now genuinely acting rather than logging.
+AARTIIND correctly stays `HOLD`, its own sector-decay tighten
+EXEMPTED (F-73's own refinement) since its volume is up 2.43x since
+entry — group-level sector weakness still does not override
+demonstrated stock-level strength, now for real, not just in shadow.
+HAL unaffected (below the 1.0R runner line, no scale-in eligible
+either). `tools.health --quick`: every check clean except `pending_dup`
+— confirmed the SAME already-traced F-67 historical incident (predates
+today's fix commit, inside its 7-day lookback), not a new issue from
+arming.
+
+### 4 — WHAT THIS MEANS FOR THE THIN-EVIDENCE SWITCHES
+
+Four of the seven now armed had little or no real-world confirmation
+before this migration. That is the operator's own explicit, informed
+call, not a default this project assumes going forward — the same
+one-time-exception framing `docs/TRADEOS_ROADMAP.md`'s own non-
+negotiables section already uses for F-43/F-46. Watching these four in
+particular over the coming sessions — do they fire sensibly, does
+`entry_rr_retention_floor`'s 0.20 starting point need recalibrating
+once real refusals accumulate — is the natural next check, not
+something this session can itself provide more evidence for today.

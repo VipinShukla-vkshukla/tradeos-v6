@@ -816,6 +816,123 @@ def review_swing_reservation_engagement(sb, days: int = 14) -> None:
                        f"plan rather than spent on the first one to clear the bar")
 
 
+def review_swing_engine_lifecycle(sb) -> list:
+    """
+    Is each SWING engine's ACTIVE/SHADOW status still supported by CURRENT
+    evidence — Track E, Stage E6, 24-Aug-2026.
+
+    All 9 swing strategies (CTL/SEC/TPO/SBS/RSB/IAD/VBD/MOM/RVS) have sat at
+    `lifecycle=ACTIVE` in `strategy_config` since 25-Jul, MOM/RVS re-touched
+    07-Aug — a decision made once that has quietly kept governing capital
+    for weeks with nothing re-asking whether it still holds, exactly the
+    gap this stage's own plan names. Mirrors `review_engines()`'s intraday
+    shape (measure on resolved outcomes, PROMOTE/SHADOW/RETIRE/hold,
+    propose via `brain_proposals`, never apply) — but keyed on the RAW
+    `strategy` column, matching `strategy_config`'s own per-strategy
+    granularity, not `swing_family()`'s pooled grouping (CONTINUATION's
+    seven sub-strategies each carry their own lifecycle row; only the
+    STUDY that looks for feature splits needs them pooled for sample size).
+
+    SAMPLE FLOOR REUSED, NOT REINVENTED: `swing_feature_edge_study.
+    MIN_ENGINE_SAMPLE` (40) — the same bar this track already established
+    and justified for swing's own resolved-outcome pace, rather than a
+    second, arbitrarily different number for what is really the same
+    question ("is there enough evidence to say anything").
+
+    Measured live, 24-Aug-2026, the day this was built: only CTL (n=292),
+    MOM (n=78) and SEC (n=53) clear the floor at all — all three read
+    healthy (77-82% hit, +2.6% to +3.5% avg). RVS (n=10, avg -0.97%) and
+    TPO (n=35, avg only +0.36%) are the two names with real cause for
+    concern, and both are too thin to act on with confidence yet — hold,
+    not RETIRE, the same "no opinion must not read as measured bad"
+    discipline `review_engines()` already applies on the intraday side.
+    """
+    _hdr("SWING ENGINE LIFECYCLE — does current evidence still support it?")
+    from tools.swing_feature_edge_study import MIN_ENGINE_SAMPLE
+
+    # NO ROLLING WINDOW, DELIBERATELY — same reasoning swing_feature_edge_
+    # study.py's own header already gives for having no floor date: swing's
+    # absolute trade volume is a small fraction of intraday's, and a
+    # rolling 30-day window (review_engines()'s own default) would cut
+    # RVS/TPO's already-thin samples down further, making them
+    # permanently unmeasurable rather than just currently thin. Full
+    # history, same as the feature-edge study this reuses the floor from.
+    rows = fetch_all(lambda: sb.table("signal_output_daily")
+                     .select("strategy,outcome_category,outcome_return_pct,"
+                             "symbol,date")
+                     .eq("outcome_entered", True)
+                     .in_("outcome_category", ["TARGET", "STOP"]),
+                     order_by="symbol,date")
+    if not rows:
+        logger.info("  no resolved SWING outcomes — nothing to measure")
+        return []
+
+    by_strategy: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        strat = str(r.get("strategy") or "").strip()
+        # Combined tags ("MOM+SEC") are a real, distinct label the pipeline
+        # writes when more than one engine's own trigger fired on the same
+        # plan — not a typo to merge into either single strategy. They get
+        # measured (any row is still a real resolved outcome) but never
+        # matched against a strategy_config lifecycle row, since none
+        # exists for a combined tag; skip those for the lifecycle verdict.
+        if not strat or "+" in strat:
+            continue
+        by_strategy[strat].append(r)
+
+    cfg = {c["strategy"]: c for c in
+           (sb.table("strategy_config").select("strategy,lifecycle,enabled")
+              .execute().data or [])}
+
+    out = []
+    logger.info(f"  {'strategy':<8}{'n':>6}{'hit':>7}{'avg%':>8}   lifecycle -> proposal")
+    for strat in sorted(cfg.keys()):
+        rs = by_strategy.get(strat, [])
+        n = len(rs)
+        cur = (cfg.get(strat) or {}).get("lifecycle") or "ACTIVE"
+        wins = sum(1 for r in rs if r.get("outcome_category") == "TARGET")
+        hit = wins / n if n else 0.0
+        pcts = [float(r["outcome_return_pct"]) for r in rs
+               if r.get("outcome_return_pct") is not None]
+        avg = sum(pcts) / len(pcts) if pcts else 0.0
+
+        if n < MIN_ENGINE_SAMPLE:
+            verdict = "hold"
+            why = (f"only {n} resolved outcomes — below the "
+                   f"{MIN_ENGINE_SAMPLE}-sample floor this track already "
+                   f"established, not enough to judge")
+        elif hit < 0.30 or avg <= 0:
+            verdict = "RETIRE" if hit < 0.20 else "SHADOW"
+            why = (f"{hit:.0%} hit over {n} resolved outcomes, avg "
+                   f"{avg:+.2f}% — {'negative expectancy' if avg <= 0 else 'below the swing hit-rate floor'}")
+        elif cur != "ACTIVE" and hit >= 0.65 and avg > 1.5:
+            # PROMOTE is a real state transition (SHADOW -> ACTIVE) — an
+            # already-ACTIVE strategy reading healthy has nowhere higher
+            # to go, so it "keeps", it does not re-propose the state it
+            # is already in. Caught by this function's own test: a
+            # healthy CTL-shaped fixture (78% hit, +1.91% avg, already
+            # ACTIVE) generated a nonsensical "ACTIVE -> PROMOTE" before
+            # this guard existed.
+            verdict = "PROMOTE"
+            why = f"{hit:.0%} hit over {n} resolved outcomes, avg {avg:+.2f}%"
+        else:
+            verdict = "keep"
+            why = f"{hit:.0%} hit over {n} resolved outcomes, avg {avg:+.2f}%"
+
+        logger.info(f"  {strat:<8}{n:>6}{hit:>6.0%}{avg:>8.2f}   {cur} -> {verdict}")
+
+        if verdict in ("RETIRE", "SHADOW", "PROMOTE") and verdict.lower() != cur.lower():
+            _supersede(sb, "SWING_ENGINE_LIFECYCLE", strat, keep=verdict,
+                      why=f"this pass proposes {verdict} instead")
+            _propose(sb, "SWING_ENGINE_LIFECYCLE", strat, cur, verdict, why,
+                     "high" if n >= MIN_ENGINE_SAMPLE * 2 else "medium")
+            out.append((strat, verdict, why))
+        else:
+            _supersede(sb, "SWING_ENGINE_LIFECYCLE", strat, keep=None,
+                      why=f"re-measured: {why}")
+    return out
+
+
 def show_open(sb) -> int:
     """
     Every PENDING proposal, from every source — 22-Aug-2026.
@@ -885,6 +1002,7 @@ def main(show: bool = False) -> int:
     review_ai_tier_weight(sb)
     review_swing_family_maturity(sb)
     review_swing_reservation_engagement(sb)
+    review_swing_engine_lifecycle(sb)
 
     # Refresh the aggregates the dashboard reads. performance_metrics had not
     # been written since 2026-05-12, which is why the Engine Leaderboard said

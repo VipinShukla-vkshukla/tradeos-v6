@@ -459,27 +459,34 @@ class IntradayEngine:
             self.candidates = []
 
         if self._policy is None:
-            from control.position_lifecycle import load_exit_policy
+            from control.position_lifecycle import (load_exit_policy,
+                                                     load_live_exit_context)
             self._policy = load_exit_policy()
-            # FAMILY-CALIBRATED STALL CLOCK — F-46, 21-Aug-2026. Built once
-            # per daemon start (same lifetime load_exit_policy() already
-            # has) from every plan swing/signals/outcomes.py has resolved as
-            # TARGET so far. Fails safe: an empty dict here means every
-            # position falls back to the flat policy["stall_days"] — the
-            # exact behaviour this book has always had. See swing/signals/
-            # pace_calibration.py for why this can only tighten the clock.
-            try:
-                from swing.signals.pace_calibration import build_family_stall_days
-                self._policy["stall_days_by_family"] = build_family_stall_days(
-                    self.sb, global_default=self._policy["stall_days"])
-                if self._policy["stall_days_by_family"]:
-                    logger.info(f"  engine: swing stall clock calibrated per "
-                               f"family — {self._policy['stall_days_by_family']}"
-                               f" (book default {self._policy['stall_days']})")
-            except Exception as e:
-                logger.warning(f"  engine: family-calibrated stall days "
-                               f"unavailable, staying on the flat default — {e}")
-                self._policy["stall_days_by_family"] = {}
+            # F-46 (stall calibration) + Track E Stage E3/E4 (current
+            # regime, current sector state) — built once per daemon start,
+            # same lifetime load_exit_policy() already has. Factored into
+            # ONE shared function 24-Aug-2026 so tools.simulate reads the
+            # identical context rather than a separate, incomplete inline
+            # copy — see load_live_exit_context()'s own docstring for why
+            # that gap existed and how it was found.
+            self._policy.update(load_live_exit_context(self.sb, self._policy))
+            if self._policy.get("stall_days_by_family"):
+                logger.info(f"  engine: swing stall clock calibrated per "
+                           f"family — {self._policy['stall_days_by_family']}"
+                           f" (book default {self._policy['stall_days']})")
+            logger.info(f"  engine: current swing regime — "
+                       f"{self._policy.get('_current_regime')}")
+            weak = [s for s, st in (self._policy.get("_sector_state") or {}).items()
+                   if st == "WEAKENING"]
+            if weak:
+                logger.info(f"  engine: sectors reading WEAKENING today — "
+                           f"{', '.join(weak)}")
+            decayed = {s: r for s, r in
+                      (self._policy.get("_participation_decay") or {}).items()
+                      if r < 0.5}
+            if decayed:
+                logger.info(f"  engine: participation decayed vs. entry day "
+                           f"— {decayed}")
 
     def refresh_contexts(self) -> int:
         """
@@ -1872,6 +1879,7 @@ class IntradayEngine:
             else:
                 d = evaluate_exit(p, float(ltp), held, self._policy)
                 self._track_trend_quality(p)
+                self._shadow_scale_in(p, float(ltp))
 
             # LIVE METRICS ON EVERY CYCLE, INCLUDING WHEN NOTHING IS TO BE DONE.
             #
@@ -1945,6 +1953,39 @@ class IntradayEngine:
             p.update(upd)
         except Exception as e:
             logger.debug(f"  {p.get('symbol')}: trend telemetry skipped — {e}")
+
+    def _shadow_scale_in(self, p: dict, ltp: float) -> None:
+        """
+        Track E, Stage E7, 24-Aug-2026 — DETECTION ONLY, unconditional
+        shadow log, no config switch. Unlike every other Stage E/F
+        shadow this session built, there is deliberately nothing to arm
+        yet: `evaluate_scale_in()`'s own docstring explains why —
+        execution needs a real answer to how a combined position's risk
+        is measured post-add, an accounting question this session left
+        unresolved on purpose rather than guess at with real capital.
+        This just proves the DETECTION side works and starts
+        accumulating real evidence of how often it would even fire.
+        """
+        if (p.get("framework") or "SWING").upper() != "SWING":
+            return
+        try:
+            from control.position_lifecycle import evaluate_scale_in
+            from config import capital_for
+            ctx = (self._policy or {}).get("_trend_ctx") or {}
+            sig = ctx.get(p.get("symbol"))
+            tq = None
+            if sig:
+                from control.exit_rules import assess_trend
+                tq = assess_trend(sig, p)
+            regime = (self._policy or {}).get("_current_regime") or "NEUTRAL"
+            d = evaluate_scale_in(p, ltp, tq, self._swing_positions(),
+                                  regime=regime, total_capital=capital_for("SWING"))
+            if d["action"] == "SCALE_IN":
+                logger.info(f"  {p.get('symbol')}: scale-in shadow — "
+                           f"{d['detail']} — detection only, no execution "
+                           f"path built yet (Stage E7)")
+        except Exception as e:
+            logger.debug(f"  {p.get('symbol')}: scale-in shadow check skipped — {e}")
 
     def _track_excursion(self, p: dict, ltp: float) -> None:
         """Keep high_water_mark, MFE and MAE current. Cheap, and only on change."""
@@ -2733,10 +2774,17 @@ class IntradayEngine:
         # `here` is still computed either way — act_on_candidates' own
         # rationale string below reads it, and a plan's rank stays worth
         # recording even when it is not the gate.
+        #
+        # LIVE R:R, NOT THE PIPELINE'S — Track E, Stage E5, 24-Aug-2026.
+        # score_plan() ranks partly on implied_rr, which is written ONLY
+        # by the evening pipeline and never refreshed — `d.rr_live` (this
+        # method's own decide() result, computed at `ltp` moments ago) is
+        # the true live figure. See entry_ranking.live_ranking_input()'s
+        # own docstring for the HAL numbers this closes the gap on.
         here = None
         try:
-            from analysis.entry_ranking import score_plan, rank
-            here = score_plan(c)
+            from analysis.entry_ranking import score_plan, rank, live_ranking_input
+            here = score_plan(live_ranking_input(c, getattr(d, "rr_live", None)))
 
             # ABSOLUTE RANK FLOOR — F-43, 20-Aug-2026. The top-N gate right
             # below is a RELATIVE check against today's field, and it is
@@ -2826,7 +2874,8 @@ class IntradayEngine:
         # plan, and so a refusal is logged in the same shape as every other
         # stand-down here.
         from analysis.entry_ranking import entry_refusals
-        refusals = entry_refusals(c)
+        refusals = entry_refusals(c, rr_live=getattr(d, "rr_live", None),
+                                  rr_at_zone_low=getattr(d, "rr_at_zone_low", None))
         if refusals:
             for why in refusals:
                 logger.info(f"  {sym}: swing entry refused — {why}")

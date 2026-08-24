@@ -37,7 +37,9 @@ def _hdr(t: str) -> None:
 
 def simulate_swing(sb) -> dict:
     _hdr("SWING")
-    from control.position_lifecycle import evaluate_exit, load_exit_policy
+    from control.position_lifecycle import (evaluate_exit, load_exit_policy,
+                                            load_live_exit_context,
+                                            evaluate_scale_in)
     from control.exit_rules import load_signal_context, assess_trend
     from execution.gates import trading_mode, auto_exit_enabled
     from analysis.trade_decision import decide
@@ -49,6 +51,14 @@ def simulate_swing(sb) -> dict:
                         .eq("status", "ACTIVE").execute().data or [])
             if (r.get("framework") or "SWING").upper() == "SWING"]
     pol = load_exit_policy()
+    # F-46 + Track E Stage E3/E4 calibration — same shared fetch the daemon
+    # itself uses (load_live_exit_context, control/position_lifecycle.py).
+    # This tool built its own policy from load_exit_policy() alone until
+    # 24-Aug-2026, so none of stall_days_by_family/_current_regime/
+    # _sector_state ever reached it — a real position's WEAKENING sector
+    # produced no shadow line here even though the daemon would have shown
+    # one, which is what surfaced the gap.
+    pol.update(load_live_exit_context(sb, pol))
     pol["_trend_ctx"] = load_signal_context(sb, [r["symbol"] for r in rows])
 
     logger.info(f"\n  POSITIONS ({len(rows)}) — what the exit engine says at the live price:")
@@ -66,6 +76,15 @@ def simulate_swing(sb) -> dict:
         logger.info(f"   {mark} {p['symbol']:<11} {r_now:+.2f}R  {d['action']:<15} "
                     f"trend={tq.verdict} ({tq.score:.0%})")
         logger.info(f"       {d['detail'][:96]}")
+
+        # Stage E7 (F-77+) — detection only, no execution path built yet;
+        # see evaluate_scale_in()'s own docstring for why. Reuses the SAME
+        # tq this loop already computed above.
+        from config import TOTAL_CAPITAL
+        sc = evaluate_scale_in(p, ltp, tq, rows, total_capital=TOTAL_CAPITAL)
+        if sc["action"] == "SCALE_IN":
+            logger.info(f"       scale-in shadow — {sc['detail']} — "
+                        f"detection only, no execution path built yet")
 
     # Today's plans, evaluated as the morning would.
     latest = (sb.table("signal_output_daily").select("date")
@@ -141,7 +160,7 @@ def simulate_swing_entries(sb) -> dict:
     """
     _hdr("SWING AUTO-ENTRY (dry run)")
     from analysis.trade_decision import decide
-    from analysis.entry_ranking import rank
+    from analysis.entry_ranking import rank, live_ranking_input, entry_refusals
     from execution.gates import trading_mode
     from execution import paper_broker
     from config import TOTAL_CAPITAL, cfg_bool, cfg_int
@@ -168,7 +187,27 @@ def simulate_swing_entries(sb) -> dict:
     held = {r["symbol"] for r in open_rows}
     regime = plans[0].get("regime") if plans else "NEUTRAL"
 
-    ranked = {r.symbol: r for r in rank(plans)}
+    # LIVE R:R BEFORE RANKING, NOT AFTER — Track E, Stage E5, 24-Aug-2026.
+    # Same gap found and fixed in intraday/engine.py::_maybe_enter_swing
+    # the same day, and the same copy-drift shape F-71 §3 already found
+    # once in this exact file (an incomplete policy dict): rank(plans)
+    # used to run on the raw plans list before decide() was even called,
+    # so it never saw a live figure either. decide() now runs first, one
+    # plan-symbol keyed decisions dict, its rr_live feeding entry_ranking.
+    # live_ranking_input() — the SAME function the daemon calls — and the
+    # loop below reuses these decisions rather than calling decide() twice.
+    decisions = {}
+    for p in plans:
+        sym = p.get("symbol")
+        if not sym or sym in held:
+            continue
+        decisions[sym] = decide(p, None, total_capital=TOTAL_CAPITAL,
+                                open_positions=open_rows, regime=regime,
+                                max_chase_pct=p.get("ai_max_chase_pct") or None)
+
+    ranked = {r.symbol: r for r in rank(
+        [live_ranking_input(p, getattr(decisions.get(p.get("symbol")), "rr_live", None))
+         for p in plans])}
     plans.sort(key=lambda p: -(ranked[p["symbol"]].total if p.get("symbol") in ranked else 0))
 
     logger.info("")
@@ -181,10 +220,21 @@ def simulate_swing_entries(sb) -> dict:
         rk = ranked.get(sym)
         if sym in held:
             continue
-        d = decide(p, None, total_capital=TOTAL_CAPITAL,
-                   open_positions=open_rows, regime=regime,
-                   max_chase_pct=p.get("ai_max_chase_pct") or None)
-        if d.action not in ("BUY_NOW", "CHASE_LIMIT"):
+        d = decisions.get(sym)
+        if d is None or d.action not in ("BUY_NOW", "CHASE_LIMIT"):
+            continue
+        # entry_refusals() — Stage E5 pieces 2/3 (shadow), 24-Aug-2026. Not
+        # called from this tool before this session; the daemon's own
+        # refusal checks (AVOID_ENTRY, filter_reason, and now the R:R-
+        # retention/broken-trend shadows) were invisible here, so a plan
+        # the live path would refuse still showed as TAKE in the dry run —
+        # exactly the "gate removes a name silently" gap this tool's own
+        # docstring says it exists to prevent.
+        refusals = entry_refusals(p, rr_live=getattr(d, "rr_live", None),
+                                  rr_at_zone_low=getattr(d, "rr_at_zone_low", None))
+        if refusals:
+            logger.info(f"      {sym:<12} rank {rk.total:>6.1f}  REFUSED — "
+                        f"{refusals[0]}")
             continue
         considered += 1
         qty = int(d.qty or 0)

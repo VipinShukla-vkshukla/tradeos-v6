@@ -268,6 +268,108 @@ def load_exit_policy() -> dict:
     }
 
 
+def load_live_exit_context(sb, base_policy: dict) -> dict:
+    """
+    The four I/O-backed calibration fields `evaluate_exit()` reads beyond
+    `load_exit_policy()`'s own pure config read: `stall_days_by_family`
+    (F-46), `_current_regime`, `_sector_state` (Track E, Stage E3/E4) and
+    `_participation_decay` (Track E, Stage E4).
+
+    FACTORED OUT 24-Aug-2026, caught by its own absence: `tools/
+    simulate.py` — the tool `CLAUDE.md` names as what to run "before
+    changing anything" and "what BOTH books would do" — built its policy
+    dict from `load_exit_policy()` alone, so none of these three ever
+    reached it. `tools.simulate` against HINDCOPPER's real WEAKENING
+    sector produced no shadow line at all, which is what surfaced this:
+    the daemon (`intraday/engine.py`) had its own, separate, inline copy
+    of all three fetches, and `tools.simulate` was silently running a
+    materially incomplete policy the whole time this session's Stage E3/
+    E4 work has existed — the exact "decision reuse is load-bearing,
+    never reimplement it" mistake this project's own landmines warn
+    about, one level up: not a second DECISION, but a second, incomplete
+    COPY of the context the one decision function needs.
+
+    Every fetch fails safe independently — one failing must not cost the
+    other two, matching the resilience the daemon's own inline version
+    already had.
+    """
+    ctx: dict = {}
+
+    # FAMILY-CALIBRATED STALL CLOCK — F-46, 21-Aug-2026.
+    try:
+        from swing.signals.pace_calibration import build_family_stall_days
+        ctx["stall_days_by_family"] = build_family_stall_days(
+            sb, global_default=base_policy["stall_days"])
+    except Exception as e:
+        logger.warning(f"  family-calibrated stall days unavailable, "
+                       f"staying on the flat default — {e}")
+        ctx["stall_days_by_family"] = {}
+
+    # CURRENT REGIME — Track E, Stage E3.
+    try:
+        rows = (sb.table("market_regime").select("regime")
+                  .order("date", desc=True).limit(1).execute().data or [])
+        ctx["_current_regime"] = rows[0]["regime"] if rows else "NEUTRAL"
+    except Exception as e:
+        logger.warning(f"  current regime unavailable, staying on the "
+                       f"neutral default — {e}")
+        ctx["_current_regime"] = "NEUTRAL"
+
+    # CURRENT SECTOR STATE — Track E, Stage E4.
+    try:
+        dr = (sb.table("sector_strength").select("date")
+                .order("date", desc=True).limit(1).execute().data or [])
+        latest_date = dr[0]["date"] if dr else None
+        srows = ((sb.table("sector_strength").select("sector,sector_state")
+                    .eq("date", latest_date).execute().data or [])
+                 if latest_date else [])
+        ctx["_sector_state"] = {r["sector"]: r["sector_state"]
+                                for r in srows if r.get("sector")}
+    except Exception as e:
+        logger.warning(f"  current sector state unavailable — {e}")
+        ctx["_sector_state"] = {}
+
+    # PARTICIPATION/DELIVERY DECAY — Track E, Stage E4.
+    # vol_ratio at entry vs. the latest available session, per held SWING
+    # symbol. A ratio well below 1.0 means the volume that carried this
+    # stock into the position has dried up — the swing-cadence version of
+    # the intraday F-45 volume-decay idea, checked once per policy load
+    # (not once per position) because every open SWING position shares
+    # this one lookup pass.
+    try:
+        prows = (sb.table("open_positions")
+                   .select("symbol,entry_date")
+                   .eq("framework", "SWING").eq("status", "ACTIVE")
+                   .execute().data or [])
+        decay: dict[str, float] = {}
+        for p in prows:
+            sym, entry_date = p.get("symbol"), p.get("entry_date")
+            if not sym or not entry_date:
+                continue
+            entry_date = str(entry_date)[:10]
+            try:
+                erows = (sb.table("stock_data_daily")
+                           .select("vol_ratio").eq("symbol", sym)
+                           .eq("date", entry_date).limit(1)
+                           .execute().data or [])
+                entry_vr = erows[0]["vol_ratio"] if erows else None
+                lrows = (sb.table("stock_data_daily")
+                           .select("vol_ratio,date").eq("symbol", sym)
+                           .order("date", desc=True).limit(1)
+                           .execute().data or [])
+                latest_vr = lrows[0]["vol_ratio"] if lrows else None
+                if entry_vr and latest_vr and entry_vr > 0:
+                    decay[sym] = latest_vr / entry_vr
+            except Exception:
+                continue
+        ctx["_participation_decay"] = decay
+    except Exception as e:
+        logger.warning(f"  participation decay unavailable — {e}")
+        ctx["_participation_decay"] = {}
+
+    return ctx
+
+
 def _sell_price_today(symbol: str) -> float | None:
     """
     Average price of today's SELL trades for a symbol, from the broker.
@@ -344,6 +446,143 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
 
     gain_r   = (ltp - entry) / risk
     gain_pct = (ltp - entry) / entry * 100.0
+
+    # ── REGIME-AWARE MULTIPLIER — Track E, Stage E3 ──────────────────────────
+    # evaluate_exit() has never read the market's CURRENT state, only
+    # regime_at_entry (frozen the day a position opened) — a position held
+    # 1-3 weeks can easily outlive the regime it was entered in. This
+    # computes what a regime-aware adjustment to the giveback/stall
+    # thresholds WOULD be, and only actually applies it behind
+    # swing_regime_aware_exits_enabled (ships OFF). E2's own quantify pass
+    # (F-68) found every resolved swing outcome on record reads
+    # regime='NEUTRAL' — no historical diversity exists yet to validate
+    # this against, which is exactly why this ships shadow-logged rather
+    # than armed, unlike F-43/F-46's calibration work, which had real
+    # resolved-outcome evidence behind it before it went live.
+    #
+    # ONE multiplier, read by both consumers below (giveback_pct, a percent
+    # allowance, and stall_days, a day count) — the same direction works
+    # for both without inverted logic: a mult < 1.0 makes a smaller
+    # giveback allowance (tighter) AND a shorter stall clock (also
+    # tighter); a mult > 1.0 loosens both. RISK OFF tightens; a strong
+    # RISK ON / TRENDING tape loosens slightly, on the reasoning that more
+    # patience is a legitimate professional response to a market that is
+    # actually running, not just permissiveness for its own sake — capped
+    # both directions in config so one regime read can never swing the
+    # ladder to an extreme.
+    current_regime = str(policy.get("_current_regime") or "NEUTRAL").upper()
+    if current_regime in ("RISK OFF", "RISK_OFF"):
+        regime_mult = cfg_float("swing_regime_mult_risk_off", 0.7)
+    elif current_regime in ("RISK ON", "RISK_ON", "TRENDING"):
+        regime_mult = cfg_float("swing_regime_mult_risk_on", 1.2)
+    else:
+        regime_mult = 1.0
+    regime_aware_live = cfg_bool("swing_regime_aware_exits_enabled", False)
+    if regime_mult != 1.0 and not regime_aware_live:
+        # INFO, not debug — a shadow log nobody's default log level shows is
+        # not a shadow log, it is a decision silently made and then hidden
+        # from the operator who is supposed to be watching it before arming
+        # anything. Confirmed live: this and the sector-decay line below
+        # both shipped at .debug() while AI-tighten (same stage) shipped at
+        # .info() — caught because tools.simulate against HINDCOPPER's own
+        # real WEAKENING sector produced no visible line at all.
+        logger.info(
+            f"  {pos.get('symbol')}: regime-aware shadow — current regime "
+            f"{current_regime}, would apply x{regime_mult:.2f} to the "
+            f"giveback/stall thresholds — swing_regime_aware_exits_enabled "
+            f"is off")
+    applied_regime_mult = regime_mult if regime_aware_live else 1.0
+
+    # ── SECTOR-DECAY MULTIPLIER — Track E, Stage E4 ──────────────────────────
+    # sector_rank_at_entry is checked in exactly one place in this whole
+    # ladder — the 3R runner decision — using the ENTRY-DAY snapshot.
+    # Nothing during ordinary holding ever reads today's actual sector
+    # state. sector_strength already computes a live LEADING/IMPROVING/
+    # WEAKENING/NORMAL read every session; this reads it for the
+    # position's own sector and, when it currently says WEAKENING, applies
+    # a SEPARATE, TIGHTEN-ONLY multiplier — deliberately one-directional,
+    # unlike the regime multiplier above. A sector still LEADING is
+    # already why the trade was taken; it does not additionally earn extra
+    # patience on top of whatever the regime multiplier already grants —
+    # stacking two independent "be more patient" signals is how a ladder
+    # drifts toward never cutting anything. A WEAKENING sector, by
+    # contrast, is new information the entry never priced in.
+    #
+    # STRENGTH EXEMPTION — 24-Aug-2026. sector_state is a GROUP-level read;
+    # a genuine leader can outrun a lagging group ("buy the strongest
+    # stock in a weak sector" — O'Neil/Minervini both make this point, and
+    # CLAUDE.md's own Research Council charter asks this codebase to weigh
+    # it). Punishing a position for its sector's average when the
+    # position's OWN volume is holding or rising is exactly the "blocking
+    # a real candidate with strong data points" failure mode this session
+    # was built to avoid — sector-level weakness should defer to
+    # stock-level strength, not override it. Reuses the same vol_ratio
+    # decay ratio the participation-decay multiplier below computes: if
+    # THIS position's own participation has NOT decayed (ratio at or above
+    # the exempt floor), the sector read alone does not tighten it.
+    # Deliberately asymmetric — the regime multiplier above stays
+    # unexempted, because a real risk-off regime is systemic and is not
+    # something one strong stock's own volume can diversify away from;
+    # only the GROUP-level (sector) signal defers to the STOCK-level one.
+    current_sector = str(pos.get("sector") or "").strip()
+    sector_state = (policy.get("_sector_state") or {}).get(current_sector)
+    sector_aware_live = cfg_bool("swing_sector_decay_enabled", False)
+    own_participation_ratio = (policy.get("_participation_decay") or {}).get(
+        pos.get("symbol"))
+    strength_floor = cfg_float("swing_sector_decay_strength_exempt_floor", 1.0)
+    strength_exempt = (own_participation_ratio is not None
+                       and own_participation_ratio >= strength_floor)
+    sector_mult = 1.0
+    if sector_state == "WEAKENING" and not strength_exempt:
+        sector_mult = cfg_float("swing_sector_decay_mult", 0.75)
+        if not sector_aware_live:
+            logger.info(
+                f"  {pos.get('symbol')}: sector-decay shadow — {current_sector} "
+                f"reads WEAKENING today, would apply x{sector_mult:.2f} to "
+                f"the giveback/stall thresholds — swing_sector_decay_enabled "
+                f"is off")
+    elif sector_state == "WEAKENING" and strength_exempt:
+        logger.info(
+            f"  {pos.get('symbol')}: sector-decay EXEMPTED — {current_sector} "
+            f"reads WEAKENING but this position's own vol_ratio "
+            f"({own_participation_ratio:.2f}x entry-day) is at or above the "
+            f"{strength_floor:.2f}x strength floor — group-level weakness "
+            f"does not override demonstrated stock-level strength")
+    applied_sector_mult = sector_mult if sector_aware_live else 1.0
+
+    # ── PARTICIPATION-DECAY MULTIPLIER — Track E, Stage E4 ────────────────────
+    # The swing-cadence version of the intraday F-45 volume-decay idea: the
+    # volume that carried a name into the position can dry up well before
+    # the fixed stall clock would notice — stall_days counts SESSIONS, not
+    # conviction, and a stock that stalls on thinning volume is a different
+    # animal from one stalling on thick, contested volume. vol_ratio today
+    # vs. vol_ratio on entry day, from stock_data_daily via
+    # load_live_exit_context's `_participation_decay`. Tighten-only, same
+    # reasoning as sector-decay above: participation that has NOT decayed is
+    # already priced into why the trade was taken; it earns no extra
+    # patience on top of the regime multiplier.
+    decay_ratio = (policy.get("_participation_decay") or {}).get(
+        pos.get("symbol"))
+    participation_aware_live = cfg_bool("swing_participation_decay_enabled",
+                                        False)
+    participation_mult = 1.0
+    decay_floor = cfg_float("swing_participation_decay_threshold", 0.5)
+    min_sessions = 2  # never flag on entry day itself or day one
+    if (decay_ratio is not None and decay_ratio < decay_floor
+            and sessions_held >= min_sessions):
+        participation_mult = cfg_float("swing_participation_decay_mult", 0.75)
+        if not participation_aware_live:
+            logger.info(
+                f"  {pos.get('symbol')}: participation-decay shadow — "
+                f"vol_ratio at {decay_ratio:.2f}x entry-day (< {decay_floor:.2f}"
+                f"), would apply x{participation_mult:.2f} to the "
+                f"giveback/stall thresholds — "
+                f"swing_participation_decay_enabled is off")
+    applied_participation_mult = (participation_mult
+                                  if participation_aware_live else 1.0)
+
+    applied_mult = (applied_regime_mult * applied_sector_mult
+                    * applied_participation_mult)
 
     # ── THE TARGET THIS POSITION IS ACTUALLY MANAGED TO ──────────────────────
     #
@@ -448,6 +687,90 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
             except Exception as e:
                 logger.debug(f"  deterioration check skipped: {e}")
 
+    # ── 2b2. Structural break BEFORE ever proving itself ─────────────────────
+    # Track E, Stage E4. The check directly above only ever runs at
+    # gain_r >= exit_deterioration_min_r (1.0) — a trade going wrong from
+    # day one gets ZERO structural evidence read until fastfail (day 4) or
+    # the calibrated stall clock (day 6-10); pure price-and-time until
+    # then. This asks the SAME question, on the SAME evidence
+    # (assess_trend — structure, momentum, RS, sector), below that floor —
+    # labelled EXIT_INVALIDATED rather than EXIT_DETERIORATION so a trade
+    # that gave back a real gain and one that never had one are told
+    # apart in the record.
+    #
+    # SAFE TO ASK THIS EARLY for the same reason the runner logic is safe
+    # to be discretionary late: deterioration_check() does not manufacture
+    # an exit from a losing position by itself — tq.verdict must
+    # INDEPENDENTLY read BROKEN, the same structural bar the profitable
+    # case already trusts, and stop-breach is checked FIRST in this
+    # ladder, so this can only ever fire on a position still above its
+    # own stop.
+    #
+    # Ships OFF (swing_early_invalidation_enabled) and shadow-logged,
+    # Stage E4's own default posture — a materially bigger behavioural
+    # change than E3's AI-tighten/regime rungs, since this can close a
+    # position the ordinary stop would have left open.
+    elif gain_r < 1.0:
+        sig = (policy.get("_trend_ctx") or {}).get(pos.get("symbol")) or {}
+        if sig:
+            try:
+                from control.exit_rules import assess_trend, deterioration_check
+                tq = assess_trend(sig, pos)
+                d = deterioration_check(
+                    pos, gain_r, tq, floor=float("-inf"),
+                    action="EXIT_INVALIDATED", reason="THESIS_BROKEN_EARLY")
+                if d:
+                    if cfg_bool("swing_early_invalidation_enabled", False):
+                        return d
+                    logger.info(
+                        f"  {pos.get('symbol')}: early-invalidation shadow "
+                        f"— structure reads BROKEN at {gain_r:+.2f}R "
+                        f"({', '.join(tq.against[:3])}) — "
+                        f"swing_early_invalidation_enabled is off")
+            except Exception as e:
+                logger.debug(f"  early deterioration check skipped: {e}")
+
+    # ── 2c. AI-flagged risk — tighten toward price, never invents an exit ────
+    # Track E, Stage E3 (docs/TRADEOS_ROADMAP.md). `ai_recommended_action`
+    # is written by `ai/ai_decision_engine.py` and, before this, read by
+    # exactly one place — `alerts/send_alerts.py`, to DISPLAY it.
+    # HINDCOPPER's own TIGHTEN_SL recommendation over a live geopolitical
+    # risk ("protect gains... tighter stop") sat as a notification; nothing
+    # executed it. This does — behind a switch that ships OFF
+    # (`swing_ai_tighten_enabled`), Stage E3's own default posture for
+    # anything that changes live exit behaviour.
+    #
+    # ONE-DIRECTIONAL ONLY, the same asymmetry every rule in this ladder
+    # already respects: moves the stop a FRACTION of the way from where it
+    # sits toward the live price — never loosens it (`candidate_sl > sl`
+    # guards that), never sells anything by itself. Checked regardless of
+    # profit level, unlike 2b above — an escalating risk does not wait for
+    # a position to be profitable before it matters.
+    #
+    # HOLD/TRIM/EXIT/NO_ACTION are deliberately NOT executed here. TIGHTEN_
+    # SL is the one recommendation that is safe to automate under the same
+    # test every other rung in this ladder already passes — it can only
+    # ever protect capital, never spend it. TRIM/EXIT would mean acting
+    # directly on ai_tier-adjacent judgement, which entry_ranking.py's own
+    # 04-Aug history already found unpredictive enough to demote to zero
+    # ranking weight; automating a sale on the same basis would undo that.
+    if str(pos.get("ai_recommended_action") or "").upper() == "TIGHTEN_SL":
+        frac = cfg_float("swing_ai_tighten_fraction", 0.5)
+        candidate_sl = round(sl + frac * (ltp - sl), 2)
+        if candidate_sl > sl:
+            reason_text = str(pos.get("ai_action_reason") or "AI flagged a risk")
+            if cfg_bool("swing_ai_tighten_enabled", False):
+                return {
+                    "action": "TRAIL_SL", "reason": "AI_TIGHTEN_SL",
+                    "detail": (f"AI recommended TIGHTEN_SL — {reason_text} — "
+                               f"sl {sl:.2f} -> {candidate_sl:.2f}"),
+                    "new_sl": candidate_sl, "book_qty": 0,
+                }
+            logger.info(
+                f"  {pos.get('symbol')}: AI TIGHTEN_SL shadow — would move "
+                f"sl {sl:.2f} -> {candidate_sl:.2f} ({reason_text}) — "
+                f"swing_ai_tighten_enabled is off")
+
     # ── 3. Partial booking at the first meaningful multiple ──────────────────
     already_booked = int(pos.get("partial_booked_qty") or 0) > 0
     current_qty    = int(pos.get("current_qty") or pos.get("actual_qty") or 0)
@@ -504,7 +827,7 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
         if peak_r >= policy["giveback_min_r"]:
             gb_pct = (policy["giveback_pct_runner"]
                       if peak_r >= policy["giveback_runner_min_r"]
-                      else policy["giveback_pct"])
+                      else policy["giveback_pct"]) * applied_mult
             kept = gain_r / peak_r if peak_r > 0 else 1.0
             if kept < (1.0 - gb_pct / 100.0):
                 return {
@@ -688,13 +1011,26 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
     # exact behaviour this rule has always had.
     from allocation.scoring import swing_family
     family = swing_family(pos.get("strategy"))
+    calibrated = family in (policy.get("stall_days_by_family") or {})
     stall_days = (policy.get("stall_days_by_family") or {}).get(
         family, policy["stall_days"])
+    # REGIME + SECTOR ADJUSTMENT — separate axis from the per-family
+    # calibration directly above, and NOT the same promise F-46 makes for
+    # that calibration (which is capped at the book-wide default and can
+    # only tighten). This adjusts the family-calibrated (or default)
+    # number by current market condition and the position's own sector
+    # state — the regime half can, only once armed, loosen it in a
+    # genuinely strong tape as well as tighten it in a weak one; the
+    # sector half (Stage E4) is tighten-only, per its own comment above. A
+    # no-op today: applied_mult is 1.0 unless swing_regime_aware_exits_
+    # enabled, swing_sector_decay_enabled or swing_participation_decay_
+    # enabled is on, none of which is by default.
+    if applied_mult != 1.0:
+        stall_days = max(2, round(stall_days * applied_mult))
     if (stall_days > 0
             and sessions_held >= stall_days
             and peak_r < policy["stall_peak_r"]
             and gain_r < policy["stall_peak_r"]):
-        calibrated = family in (policy.get("stall_days_by_family") or {})
         return {
             "action": "EXIT_STALL",
             "reason": "NEVER_WORKED",
@@ -726,6 +1062,136 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
         "detail": (f"{gain_r:+.2f}R ({gain_pct:+.2f}%)"
                    + (" [no planned_stop — 5% fallback risk]" if fallback else "")),
         "new_sl": None, "book_qty": 0,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POSITION SCALING — Track E, Stage E7, 24-Aug-2026 (detection/sizing only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def evaluate_scale_in(pos: dict, ltp: float, tq, open_positions: list[dict],
+                      regime: str = "NEUTRAL", total_capital: float | None = None,
+                      available_cash: float | None = None) -> dict:
+    """
+    Should this already-held, already-profitable SWING position receive
+    ONE add-on today?
+
+    Deliberately separate from `evaluate_exit()`/`target_decision()`:
+    those answer "is this position still okay to hold or should it be
+    cut/banked", a RISK-REDUCING or risk-neutral question. This answers
+    "should NEW risk be added to it" — a different question the exit
+    ladder must never quietly also be answering, per the roadmap's own
+    framing of Stage E7 as "the only stage in this whole track that adds
+    capital risk rather than sharpening a decision already being made".
+
+    THE FOUR RAILS, IN ORDER — each one is the roadmap's own explicit
+    condition, not a new judgement call:
+
+    1. `gain_r >= giveback_runner_min_r` (1.0R default) — the SAME line
+       F-43's tiered giveback guard already uses to mean "a partial
+       should already be banked and the stop moved to at-or-above
+       breakeven". Adding to a position whose own original risk is not
+       yet secured is adding to weakness, not strength.
+    2. `tq.verdict == "STRONG"` with real evidence — a STRICTER bar than
+       `target_decision()`'s own `should_run` (STRONG-or-INTACT):
+       committing NEW risk deserves more conviction than merely letting
+       an existing runner continue.
+    3. Not already scaled in — `pos.get("scaled_in")` — capped at one
+       add, per the roadmap's own explicit limit. `open_positions` is
+       still passed to `check_new_entry()` below with this position
+       INCLUDED, unfiltered — an add competes for the SAME slot/sector/
+       risk budget any fresh entry would, exactly as the roadmap
+       specifies ("a new risk allocation competing for capital like any
+       other candidate"), not a special-cased exemption from the caps
+       that exist to stop one name dominating the book.
+    4. Sized through `analysis.portfolio_constraints.check_new_entry()`
+       — the SAME function and the SAME `risk_pct_per_trade` budget any
+       fresh entry goes through — using the position's CURRENT stop
+       (`active_sl`) as the add's own risk-per-share, never the
+       position's unrealized profit. This is the guard against classic
+       pyramiding-on-paper-gains: an add must earn its own risk budget
+       against real capital, not spend a gain that has not been banked.
+
+    DELIBERATELY DETECTION-ONLY THIS SESSION. Returns a decision dict —
+    never places an order, never writes to `open_positions`, no config
+    switch to arm, because arming implies live execution exists and it
+    does not yet: how a combined position's risk should be measured
+    "from the add forward, not blended with the original entry's now-
+    stale number" (the roadmap's own words) is a real, unresolved
+    accounting question — does entry_price become a weighted average,
+    or does the add's own economics govern the R-multiple going forward
+    while the original tranche's already-secured gain stays untouched —
+    and shipping execution before that question is answered risks
+    corrupting the exact R-multiple/giveback math this whole track has
+    spent five stages getting right. Shadow-logged unconditionally by
+    the caller so real evidence accumulates before that design work
+    starts, rather than starting the design blind.
+    """
+    entry  = float(pos.get("entry_price") or 0)
+    stop0  = float(pos.get("planned_stop") or 0)
+    active = float(pos.get("active_sl") or stop0)
+    if entry <= 0 or stop0 <= 0 or stop0 >= entry:
+        return {"action": "NO_ADD", "reason": "no_baseline",
+               "detail": "missing or invalid entry_price/planned_stop — cannot "
+                         "compute gain_r", "add_qty": 0}
+
+    risk   = entry - stop0
+    gain_r = (ltp - entry) / risk if risk else 0.0
+    runner_min_r = cfg_float("exit_giveback_runner_min_r", 1.0)
+
+    if gain_r < runner_min_r:
+        return {"action": "NO_ADD", "reason": "below_runner_line",
+               "detail": f"{gain_r:+.2f}R — below the {runner_min_r:.2f}R line "
+                         f"a partial should already be banked at; adding here "
+                         f"would add to a position whose own original risk is "
+                         f"not yet secured", "add_qty": 0}
+
+    if pos.get("scaled_in"):
+        return {"action": "NO_ADD", "reason": "already_scaled",
+               "detail": "already received its one add — capped at one, "
+                         "per the roadmap's own explicit limit", "add_qty": 0}
+
+    if not (tq and getattr(tq, "has_evidence", False)
+            and getattr(tq, "verdict", None) == "STRONG"):
+        verdict = getattr(tq, "verdict", None) if tq else None
+        return {"action": "NO_ADD", "reason": "not_strong_enough",
+               "detail": (f"{gain_r:+.2f}R past the runner line, but trend "
+                         f"reads {verdict or 'unavailable'}, not STRONG with "
+                         f"real evidence — new risk needs more conviction "
+                         f"than continuing to hold an existing runner does"),
+               "add_qty": 0}
+
+    add_risk_per_share = ltp - active
+    if add_risk_per_share <= 0:
+        return {"action": "NO_ADD", "reason": "no_room_below_stop",
+               "detail": f"current stop {active:.2f} is at or above the live "
+                         f"price {ltp:.2f} — no risk room to size an add "
+                         f"against", "add_qty": 0}
+
+    try:
+        from analysis.portfolio_constraints import check_new_entry
+        v = check_new_entry(
+            pos.get("symbol") or "", pos.get("sector") or "", pos.get("industry") or "",
+            ltp, add_risk_per_share, open_positions or [],
+            regime=regime, total_capital=total_capital,
+            available_cash=available_cash, product="CNC")
+    except Exception as e:
+        return {"action": "NO_ADD", "reason": "sizing_unavailable",
+               "detail": f"check_new_entry failed: {e}", "add_qty": 0}
+
+    if not v.allowed:
+        return {"action": "NO_ADD", "reason": v.reason,
+               "detail": f"{gain_r:+.2f}R, STRONG trend, but sizing refused "
+                         f"the add: {v.detail}", "add_qty": 0}
+
+    return {
+        "action": "SCALE_IN", "reason": "runner_confirmed_strong",
+        "detail": (f"{gain_r:+.2f}R past the {runner_min_r:.2f}R runner line, "
+                  f"trend STRONG ({tq.checks} checks) — {v.max_qty} share(s) "
+                  f"at ~{ltp:.2f}, risk {add_risk_per_share:.2f}/share against "
+                  f"the current stop {active:.2f}"),
+        "add_qty": v.max_qty, "add_value": v.max_value,
+        "add_risk_per_share": round(add_risk_per_share, 2),
     }
 
 

@@ -1067,6 +1067,21 @@ than sharpening a decision already being made — it should be built once
 E6's validated-finding mechanism exists to help decide which winners
 actually merit it, not before. E1 is this document.
 
+**STATUS, 24-Aug-2026: E2 through E7 all addressed in one session
+(F-67 through F-79).** E2 closed with real numbers. E3-E5 built and
+verified; every live-behavior switch they shipped is now ARMED (F-79,
+operator's own explicit instruction, given full awareness of which
+switches were seasoned vs. built minutes before arming — see F-79 §1
+for the exact evidence split). E6: 2 of 5 pieces built (recency
+validator, living engine lifecycle); the other three (lesson-grade
+reconnection, the anticipatory model, feature tuning/discovery)
+checked against this session's own evidence and found genuinely
+blocked, not merely uncautioned about — see F-77 §0. E7: detection and
+sizing built and shadow-logged; execution deliberately not built,
+pending an unresolved R-multiple/entry-price accounting question named
+in its own last bullet below — see F-78 §4. Full history: `docs/
+FINDINGS.md` F-67 through F-79.
+
 ## Stage E2 — Quantify (read-only, no branch)
 
 Three questions, answered from real data before anything downstream is
@@ -1100,6 +1115,26 @@ correlation, a sample-size table by (engine, regime). If any answer is
 refinement rather than a fitted model) but does not block E3–E5, which
 depend on none of this.
 
+**Gate E2 — CLOSED, 24-Aug-2026 (F-68, `feat/swing-evolution`).** New
+`tools/swing_feature_edge_study.py` — independent of `tools/
+feature_edge_study.py` and everything under `intraday/`, the same
+proven tercile/bucket-vs-rest method reimplemented rather than imported,
+per this track's own non-negotiables. Distribution: CONTINUATION n=427
+(20 findings), MOM n=118 (11 findings), RVS n=12 (below the 40-sample
+floor). Two land directly on this session's own trades: CONTINUATION's
+`sector` split puts metals & mining at 31% win rate against 75% for
+every other sector (HINDCOPPER's own sector); MOM's `sector_rank_at_
+entry` split shows rank ≤4 at 100% (39/39) against rank ≥10's 82%.
+Correlation: **unanswerable** — `post_trade_analysis`'s A–F grade is
+computed and used only to word a lesson's prose, never persisted to any
+column; Stage E6 needs to capture it before this question has an
+answer. Sample-size table: every resolved row currently reads `regime =
+'NEUTRAL'` — no regime diversity exists yet to validate E3's own premise
+against, which does not block building E3 but means it ships unvalidated
+against a regime shift until one actually occurs. 31 `PENDING` findings
+written to `brain_proposals`, `target_key` prefixed `SWING/`, nothing
+live changed. Full detail: `docs/FINDINGS.md` F-68.
+
 ## Stage E3 — Close the "knows but doesn't act" gaps
 
 The smallest, lowest-risk stage, and the one a professional desk would
@@ -1129,6 +1164,19 @@ consider table stakes rather than an enhancement:
 changes live exit behavior on a book that is currently working, which is
 a different risk profile from a stall-clock number that can only ever
 tighten.
+
+**Stage E3 — BUILT, 24-Aug-2026 (F-70, `feat/swing-evolution`).** All
+three pieces shipped: the standing health check (armed immediately, it
+is read-only diagnostic) caught a SECOND, previously unknown incident of
+F-67's own shape on HAL (21-Aug, three days before HINDCOPPER) —
+`ai_recommended_action` execution and the regime-aware multiplier both
+ship OFF, shadow-logged, exactly as planned. `tools.simulate` confirmed
+the AI-tighten shadow log firing correctly against HINDCOPPER's real
+position (`sl 503.85 -> 539.00`). HAL's own doubled position (2 shares
+instead of the intended 1, ~44% of the portfolio) was left untrimmed —
+the operator's call, not this session's to make. Full detail: `docs/
+FINDINGS.md` F-70. Arming either switch is a separate decision, not
+part of this stage's own completion.
 
 ## Stage E4 — In-trade intelligence
 
@@ -1163,6 +1211,46 @@ built.
   position's own check would catch, is visible earlier across the whole
   held book than in any one name's chart.
 
+**Stage E4 — FULLY BUILT, 24-Aug-2026 (F-71 + F-72, `feat/swing-evolution`).**
+All four pieces shipped. F-71: structural break checked from day one
+(`EXIT_INVALIDATED`, distinct from `EXIT_DETERIORATION`) and live
+sector-decay tightening from `sector_strength`'s already-computed state.
+F-72: day-by-day participation/delivery decay (`vol_ratio` at entry vs.
+latest, tighten-only, 2-session floor) and a book-wide sector-
+concentration health check (`tools/health.py::check_sector_concentration_
+risk`, flags when >=50% of the open SWING book sits in WEAKENING sectors
+— a per-position check cannot see this by construction). All four ship
+OFF, shadow-logged. Live proof: two of the book's three open positions
+(HINDCOPPER/metals & mining, AARTIIND/chemicals) sit in sectors reading
+WEAKENING — both the per-position shadow line AND the new book-wide
+health check correctly caught it (67% of the book). Participation decay
+found no live signal on today's book and said so honestly (HINDCOPPER
+re-entered today with no entry-day baseline yet, AARTIIND's volume rose
+rather than decayed, HAL's latest session is still its entry day) —
+proven instead by five synthetic tests. Verifying F-71 live surfaced and
+fixed a real gap in `tools/simulate.py` — it had been building an
+incomplete policy dict since F-46, missing the exact context `evaluate_
+exit()` needs; factored into one shared function (`load_live_exit_
+context`) both the daemon and the simulator now call, so they cannot
+drift apart again — F-72's participation-decay fetch was added to that
+same shared function rather than a fourth separate copy. Investigating a
+`tools.health` run for F-72 also turned up `pending_dup` flagging
+HINDCOPPER again; traced by timestamp before reporting — the incident
+predates the F-67 fix commit earlier the same day, not a recurrence, and
+is noted as an untested-live fix (fix landed 27 minutes before close) in
+F-72 rather than assumed clean.
+
+**F-73 refinement, same day:** the sector-decay multiplier now exempts a
+WEAKENING-sector position whose OWN `vol_ratio` is holding or rising
+(`swing_sector_decay_strength_exempt_floor`, migration 111) — a group-
+level sector read must not override demonstrated stock-level strength.
+Live proof: AARTIIND (chemicals, WEAKENING) now reads EXEMPTED, its own
+volume up 25% since entry. F-73 also fully traces the HINDCOPPER order
+collision to F-67's already-documented outcome — reconcile corrected it
+to the true 4-share holding, no double position ever resulted, unlike
+HAL's retained real one. Full detail: `docs/FINDINGS.md` F-71, F-72,
+F-73.
+
 ## Stage E5 — Entry-side intelligence
 
 - **A zone-drift penalty in `score_plan()`.** HAL filled at 5010.20
@@ -1186,6 +1274,71 @@ built.
   entry gate (`analysis/trade_decision.py`, `entry_ranking.py`) never
   sees it. Pull it into `score_plan()` or `entry_refusals()` if E2's
   numbers support it as a real signal, not decoration.
+
+**Piece 1 — BUILT, 24-Aug-2026 (F-74, `feat/swing-evolution`).** Quantify
+first (this project's own "quantify before build" pattern) found the
+zone-drift penalty as originally scoped — raw % distance above
+`entry_zone_high` — does not cleanly separate outcomes on the available
+sample. HAL's own real numbers pointed at the actual mechanism: R:R
+RETENTION, not price distance — stop/target stay fixed while the zone
+catches up to a running price, so `rr_at_zone_low` (7.63–14.09 across
+HAL's three prior snapshots) collapsed to `rr_live` 1.17 at the real
+fill. Re-bucketed the same sample by retention: worst-half avg −0.003R
+(3 of 4 losses), best-half avg +0.227R (1 loss) — small (n=8/bucket) but
+directionally real. Building this surfaced that the mechanism to act on
+it already half-existed and was silently dead: `score_plan()`'s own
+comment claims its R:R term is "the live figure," but `implied_rr` is
+pipeline-only and never refreshed, while `decide()`'s `rr_live` — the
+actual live figure — sat unused at both ranking call sites
+(`intraday/engine.py::_maybe_enter_swing`, `tools/simulate.py::
+simulate_swing_entries`). Fixed by reviving the dead path (new shared
+`entry_ranking.live_ranking_input()`) rather than building a second,
+parallel penalty next to a mechanism that already existed but didn't
+work — smaller change, same effect, no new config switch needed. Full
+detail: `docs/FINDINGS.md` F-74.
+
+**Pieces 2–3 — INVESTIGATED, both evidence-based "not yet," 24-Aug-2026
+(F-75).** Piece 2: the roadmap's own HAL/20-Aug anecdote doesn't survive
+a literal check (the lesson's stated trigger, RSI-W>85, wasn't met —
+HAL's real rsi_weekly was 66.2). `ai_max_chase_pct` was null on the
+actual entry day (2.0 the day before) but even carrying it forward
+wouldn't have stopped this trade (real chase was 0.94%, under any
+sensible cap) — R:R retention (piece 1) is the real mechanism, and the
+sample (n=16) is too thin to set a hard refusal on it without risking a
+threshold no real winner can clear. Piece 3: found first that its own
+prerequisite — `assess_trend()`'s EXISTING exit-side use of
+`weekly_structure` — was silently dead (wrong vocabulary, same shape as
+migration 048's "RISK ON"/"RISK_ON" collision) and, worse, was
+deflating the trend score for the majority of positions by inflating
+`checks` without ever contributing evidence. Fixed as a direct
+correctness fix (not gated — restoring already-live logic, same
+precedent as F-67/F-69). Live proof: HINDCOPPER's verdict flipped
+INTACT(67%) -> STRONG(78%); AARTIIND/HAL rose in confidence with
+unchanged verdicts; nothing on today's book actually changes decision
+(no consumer treats STRONG differently from INTACT), so this improves
+accuracy for future borderline cases rather than today's book. Pulling
+the now-working signal into the entry gate — piece 3's original literal
+scope — was not done; same thin-sample reasoning as piece 2. Full
+detail: `docs/FINDINGS.md` F-75.
+
+**Pieces 2-3 — SHADOW-BUILT, 24-Aug-2026 (F-76, `feat/swing-evolution`).**
+Operator's own correction to F-75: thin evidence justifies staying OFF,
+not staying unbuilt — the same participation-decay precedent (Stage E4)
+already established. `entry_refusals()` now shadow-logs both: R:R
+retention below `entry_rr_retention_floor` (0.20 — chosen so HAL's own
+real 0.1533 retention actually lights up the shadow, not 0.15) and a
+candidate whose own `assess_trend()` verdict already reads BROKEN
+(reusing F-75's fix directly, not a parallel check). Both switches off.
+Wiring the shadow logs into `tools.simulate` for visibility surfaced a
+real, independent gap: that tool had never called `entry_refusals()` at
+all — `entry_respect_filter_reason` is armed live, so the daemon was
+already refusing plans on this basis while `tools.simulate` silently
+showed a different result (SIEMENS misreported as the top TAKE on
+2026-08-21's real plan set). Same shape as F-71 §3's incomplete policy
+dict, a second instance in the same tool. Full detail: `docs/FINDINGS.
+md` F-76.
+
+**Stage E5 complete.**
 
 ## Stage E6 — The learning core
 
@@ -1234,6 +1387,30 @@ influence a live decision, and even then only as a priority tie-break or
 a bounded derate — never a new hard gate invented from a small sample —
 mirroring F-48/F-50's exact contract.**
 
+**Two of five pieces BUILT, 24-Aug-2026 (F-77, `feat/swing-evolution`).**
+The other three (lesson-grade reconnection, the anticipatory model,
+per-engine feature tuning / discovery engine) checked against this
+session's own F-68/F-69 findings and found genuinely blocked, not merely
+uncautioned about: the lesson grade currently predicts BACKWARDS (grade
+D averages +0.30R, grade C −0.01R); the anticipatory model has zero
+regime diversity to fit against (every resolved row reads `regime=
+NEUTRAL`); the feature-edge findings that would feed tuning/discovery
+didn't survive F-69's own recency re-check.
+
+Built: (1) `tools/swing_feature_edge_study.py::validate_pending_swing()`
+— the recency validator F-68 §4 and F-69 §3 both explicitly asked for,
+requiring BOTH a since-creation AND a short recent-window check to
+independently confirm before VALIDATED. Live proof: automatically
+reproduces F-69's own by-hand conclusion exactly on the two findings
+that failed, and independently finds three MORE that pass the recent-
+window check alone. (2) `tools/weekly_review.py::
+review_swing_engine_lifecycle()` — all 9 swing strategies re-measured
+against current evidence instead of a static 25-Jul/07-Aug decision.
+Live: CTL/MOM/SEC (only three above the 40-sample floor) all read
+healthy and keep ACTIVE; RVS (avg −0.97%) and TPO (avg +0.36%) are the
+two names with real cause for concern, both correctly held as too thin
+to act on. Full detail: `docs/FINDINGS.md` F-77.
+
 ## Stage E7 — Position scaling
 
 Sequenced last, deliberately: the only stage in this whole track that
@@ -1254,6 +1431,23 @@ existing first to help judge which winners actually merit it.
   unrealized profit.
 - Caps at one add; the combined position's risk is measured from the add
   forward, not blended with the original entry's now-stale number.
+
+**Detection/sizing BUILT, execution deliberately NOT, 24-Aug-2026 (F-78,
+`feat/swing-evolution`).** Operator confirmed before starting, given this
+is the only capital-risk-ADDING stage and SWING is LIVE. Quantified
+first: only 2 of 17 recent closed trades ever crossed the 1.0R runner
+line at their peak — scale-in is rare on this book, the reason to build
+it shadow-first rather than the reason to skip it. New `control/
+position_lifecycle.py::evaluate_scale_in()` implements all four rails
+above exactly, sized through the REAL `check_new_entry()`. No execution,
+no config switch — how a combined position's risk is measured post-add
+(this stage's own last bullet) is a genuinely unresolved accounting
+question this session did not answer, and shipping execution before it
+is answered risks corrupting the R-multiple/giveback math the rest of
+this track spent five stages getting right. Shadow-logged
+unconditionally in both the daemon and `tools.simulate`. Live proof: the
+real 3-position book processes cleanly, correctly shows no signal (none
+past the line yet). Full detail: `docs/FINDINGS.md` F-78.
 
 ## Non-negotiables across the whole track
 
