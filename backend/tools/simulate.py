@@ -37,7 +37,8 @@ def _hdr(t: str) -> None:
 
 def simulate_swing(sb) -> dict:
     _hdr("SWING")
-    from control.position_lifecycle import evaluate_exit, load_exit_policy
+    from control.position_lifecycle import (evaluate_exit, load_exit_policy,
+                                            load_live_exit_context)
     from control.exit_rules import load_signal_context, assess_trend
     from execution.gates import trading_mode, auto_exit_enabled
     from analysis.trade_decision import decide
@@ -49,6 +50,14 @@ def simulate_swing(sb) -> dict:
                         .eq("status", "ACTIVE").execute().data or [])
             if (r.get("framework") or "SWING").upper() == "SWING"]
     pol = load_exit_policy()
+    # F-46 + Track E Stage E3/E4 calibration — same shared fetch the daemon
+    # itself uses (load_live_exit_context, control/position_lifecycle.py).
+    # This tool built its own policy from load_exit_policy() alone until
+    # 24-Aug-2026, so none of stall_days_by_family/_current_regime/
+    # _sector_state ever reached it — a real position's WEAKENING sector
+    # produced no shadow line here even though the daemon would have shown
+    # one, which is what surfaced the gap.
+    pol.update(load_live_exit_context(sb, pol))
     pol["_trend_ctx"] = load_signal_context(sb, [r["symbol"] for r in rows])
 
     logger.info(f"\n  POSITIONS ({len(rows)}) — what the exit engine says at the live price:")

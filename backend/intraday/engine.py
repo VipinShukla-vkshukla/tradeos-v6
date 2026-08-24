@@ -459,47 +459,28 @@ class IntradayEngine:
             self.candidates = []
 
         if self._policy is None:
-            from control.position_lifecycle import load_exit_policy
+            from control.position_lifecycle import (load_exit_policy,
+                                                     load_live_exit_context)
             self._policy = load_exit_policy()
-            # FAMILY-CALIBRATED STALL CLOCK — F-46, 21-Aug-2026. Built once
-            # per daemon start (same lifetime load_exit_policy() already
-            # has) from every plan swing/signals/outcomes.py has resolved as
-            # TARGET so far. Fails safe: an empty dict here means every
-            # position falls back to the flat policy["stall_days"] — the
-            # exact behaviour this book has always had. See swing/signals/
-            # pace_calibration.py for why this can only tighten the clock.
-            try:
-                from swing.signals.pace_calibration import build_family_stall_days
-                self._policy["stall_days_by_family"] = build_family_stall_days(
-                    self.sb, global_default=self._policy["stall_days"])
-                if self._policy["stall_days_by_family"]:
-                    logger.info(f"  engine: swing stall clock calibrated per "
-                               f"family — {self._policy['stall_days_by_family']}"
-                               f" (book default {self._policy['stall_days']})")
-            except Exception as e:
-                logger.warning(f"  engine: family-calibrated stall days "
-                               f"unavailable, staying on the flat default — {e}")
-                self._policy["stall_days_by_family"] = {}
-
-            # CURRENT REGIME — Track E, Stage E3, 24-Aug-2026. evaluate_exit()
-            # has only ever read regime_at_entry, frozen the day a position
-            # opened; this is what lets it see today's actual market state
-            # instead. `market_regime` writes once per session, so once per
-            # daemon start is the right cadence — same lifetime everything
-            # else in this block already has. Fails safe to "NEUTRAL" (a
-            # no-op multiplier), the same direction every other fallback in
-            # this policy dict already fails toward.
-            try:
-                rows = (self.sb.table("market_regime").select("regime")
-                          .order("date", desc=True).limit(1).execute().data or [])
-                self._policy["_current_regime"] = (rows[0]["regime"] if rows
-                                                   else "NEUTRAL")
-                logger.info(f"  engine: current swing regime — "
-                           f"{self._policy['_current_regime']}")
-            except Exception as e:
-                logger.warning(f"  engine: current regime unavailable, "
-                               f"staying on the neutral default — {e}")
-                self._policy["_current_regime"] = "NEUTRAL"
+            # F-46 (stall calibration) + Track E Stage E3/E4 (current
+            # regime, current sector state) — built once per daemon start,
+            # same lifetime load_exit_policy() already has. Factored into
+            # ONE shared function 24-Aug-2026 so tools.simulate reads the
+            # identical context rather than a separate, incomplete inline
+            # copy — see load_live_exit_context()'s own docstring for why
+            # that gap existed and how it was found.
+            self._policy.update(load_live_exit_context(self.sb, self._policy))
+            if self._policy.get("stall_days_by_family"):
+                logger.info(f"  engine: swing stall clock calibrated per "
+                           f"family — {self._policy['stall_days_by_family']}"
+                           f" (book default {self._policy['stall_days']})")
+            logger.info(f"  engine: current swing regime — "
+                       f"{self._policy.get('_current_regime')}")
+            weak = [s for s, st in (self._policy.get("_sector_state") or {}).items()
+                   if st == "WEAKENING"]
+            if weak:
+                logger.info(f"  engine: sectors reading WEAKENING today — "
+                           f"{', '.join(weak)}")
 
     def refresh_contexts(self) -> int:
         """

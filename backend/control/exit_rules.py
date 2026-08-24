@@ -334,19 +334,35 @@ def target_decision(pos: dict, gain_r: float, tq: TrendQuality,
     }
 
 
-def deterioration_check(pos: dict, gain_r: float, tq: TrendQuality) -> dict | None:
+def deterioration_check(pos: dict, gain_r: float, tq: TrendQuality,
+                        floor: float | None = None,
+                        action: str = "EXIT_DETERIORATION",
+                        reason: str = "THESIS_BROKEN") -> dict | None:
     """
-    Exit a PROFITABLE position whose thesis has broken, before the trail catches it.
+    Exit a position whose thesis has broken, before the trail catches it.
 
     The trail is a price mechanism and only reacts after the damage. This reacts
     to the reason — momentum gone, structure broken, sector rotating out — while
     there is still profit to protect. Applies only above a floor of profit,
     because below it the ordinary stop is the right tool and second-guessing a
     working trade on indicator noise is how good positions get cut early.
+
+    `floor`/`action`/`reason` — Track E, Stage E4, 24-Aug-2026 — let a caller
+    ask the IDENTICAL question at a DIFFERENT profit floor under a DIFFERENT
+    label, without a second copy of this function. Every existing caller
+    that passes none of these three sees exactly the behaviour above,
+    unchanged: `floor` still defaults to `exit_deterioration_min_r` (1.0),
+    `action`/`reason` still read `EXIT_DETERIORATION`/`THESIS_BROKEN`. The
+    new caller (`position_lifecycle.py`'s early-invalidation rung) passes a
+    floor below the ordinary 1.0R gate and a distinct label —
+    `EXIT_INVALIDATED`/`THESIS_BROKEN_EARLY` — so a trade that gave back a
+    real gain and one whose thesis broke before it ever worked are told
+    apart in the record, not folded into one bucket.
     """
     if not cfg_bool("exit_deterioration_enabled", True):
         return None
-    floor = cfg_float("exit_deterioration_min_r", 1.0)
+    if floor is None:
+        floor = cfg_float("exit_deterioration_min_r", 1.0)
     if gain_r < floor:
         return None
     # Same asymmetry as the runner decision, in the other direction: an absent
@@ -356,10 +372,13 @@ def deterioration_check(pos: dict, gain_r: float, tq: TrendQuality) -> dict | No
     if tq.verdict != "BROKEN":
         return None
     return {
-        "action": "EXIT_DETERIORATION", "reason": "THESIS_BROKEN",
-        "detail": (f"{gain_r:.2f}R but the setup has broken down "
-                   f"({', '.join(tq.against[:3])}) — taking the profit while it "
-                   f"is there rather than waiting for the trail"),
+        "action": action, "reason": reason,
+        "detail": (f"{gain_r:+.2f}R but the setup has broken down "
+                   f"({', '.join(tq.against[:3])}) — "
+                   + ("taking the profit while it is there rather than "
+                      "waiting for the trail" if action == "EXIT_DETERIORATION"
+                      else "cutting it now rather than waiting for the "
+                      "fixed clock to notice the same thing")),
         "new_sl": None, "book_qty": 0,
         "trend": {"score": tq.score, "verdict": tq.verdict, "against": tq.against},
     }

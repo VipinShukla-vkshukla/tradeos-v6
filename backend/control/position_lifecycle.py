@@ -268,6 +268,69 @@ def load_exit_policy() -> dict:
     }
 
 
+def load_live_exit_context(sb, base_policy: dict) -> dict:
+    """
+    The three I/O-backed calibration fields `evaluate_exit()` reads beyond
+    `load_exit_policy()`'s own pure config read: `stall_days_by_family`
+    (F-46), `_current_regime` and `_sector_state` (Track E, Stage E3/E4).
+
+    FACTORED OUT 24-Aug-2026, caught by its own absence: `tools/
+    simulate.py` — the tool `CLAUDE.md` names as what to run "before
+    changing anything" and "what BOTH books would do" — built its policy
+    dict from `load_exit_policy()` alone, so none of these three ever
+    reached it. `tools.simulate` against HINDCOPPER's real WEAKENING
+    sector produced no shadow line at all, which is what surfaced this:
+    the daemon (`intraday/engine.py`) had its own, separate, inline copy
+    of all three fetches, and `tools.simulate` was silently running a
+    materially incomplete policy the whole time this session's Stage E3/
+    E4 work has existed — the exact "decision reuse is load-bearing,
+    never reimplement it" mistake this project's own landmines warn
+    about, one level up: not a second DECISION, but a second, incomplete
+    COPY of the context the one decision function needs.
+
+    Every fetch fails safe independently — one failing must not cost the
+    other two, matching the resilience the daemon's own inline version
+    already had.
+    """
+    ctx: dict = {}
+
+    # FAMILY-CALIBRATED STALL CLOCK — F-46, 21-Aug-2026.
+    try:
+        from swing.signals.pace_calibration import build_family_stall_days
+        ctx["stall_days_by_family"] = build_family_stall_days(
+            sb, global_default=base_policy["stall_days"])
+    except Exception as e:
+        logger.warning(f"  family-calibrated stall days unavailable, "
+                       f"staying on the flat default — {e}")
+        ctx["stall_days_by_family"] = {}
+
+    # CURRENT REGIME — Track E, Stage E3.
+    try:
+        rows = (sb.table("market_regime").select("regime")
+                  .order("date", desc=True).limit(1).execute().data or [])
+        ctx["_current_regime"] = rows[0]["regime"] if rows else "NEUTRAL"
+    except Exception as e:
+        logger.warning(f"  current regime unavailable, staying on the "
+                       f"neutral default — {e}")
+        ctx["_current_regime"] = "NEUTRAL"
+
+    # CURRENT SECTOR STATE — Track E, Stage E4.
+    try:
+        dr = (sb.table("sector_strength").select("date")
+                .order("date", desc=True).limit(1).execute().data or [])
+        latest_date = dr[0]["date"] if dr else None
+        srows = ((sb.table("sector_strength").select("sector,sector_state")
+                    .eq("date", latest_date).execute().data or [])
+                 if latest_date else [])
+        ctx["_sector_state"] = {r["sector"]: r["sector_state"]
+                                for r in srows if r.get("sector")}
+    except Exception as e:
+        logger.warning(f"  current sector state unavailable — {e}")
+        ctx["_sector_state"] = {}
+
+    return ctx
+
+
 def _sell_price_today(symbol: str) -> float | None:
     """
     Average price of today's SELL trades for a symbol, from the broker.
@@ -377,12 +440,48 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
         regime_mult = 1.0
     regime_aware_live = cfg_bool("swing_regime_aware_exits_enabled", False)
     if regime_mult != 1.0 and not regime_aware_live:
-        logger.debug(
+        # INFO, not debug — a shadow log nobody's default log level shows is
+        # not a shadow log, it is a decision silently made and then hidden
+        # from the operator who is supposed to be watching it before arming
+        # anything. Confirmed live: this and the sector-decay line below
+        # both shipped at .debug() while AI-tighten (same stage) shipped at
+        # .info() — caught because tools.simulate against HINDCOPPER's own
+        # real WEAKENING sector produced no visible line at all.
+        logger.info(
             f"  {pos.get('symbol')}: regime-aware shadow — current regime "
             f"{current_regime}, would apply x{regime_mult:.2f} to the "
             f"giveback/stall thresholds — swing_regime_aware_exits_enabled "
             f"is off")
     applied_regime_mult = regime_mult if regime_aware_live else 1.0
+
+    # ── SECTOR-DECAY MULTIPLIER — Track E, Stage E4 ──────────────────────────
+    # sector_rank_at_entry is checked in exactly one place in this whole
+    # ladder — the 3R runner decision — using the ENTRY-DAY snapshot.
+    # Nothing during ordinary holding ever reads today's actual sector
+    # state. sector_strength already computes a live LEADING/IMPROVING/
+    # WEAKENING/NORMAL read every session; this reads it for the
+    # position's own sector and, when it currently says WEAKENING, applies
+    # a SEPARATE, TIGHTEN-ONLY multiplier — deliberately one-directional,
+    # unlike the regime multiplier above. A sector still LEADING is
+    # already why the trade was taken; it does not additionally earn extra
+    # patience on top of whatever the regime multiplier already grants —
+    # stacking two independent "be more patient" signals is how a ladder
+    # drifts toward never cutting anything. A WEAKENING sector, by
+    # contrast, is new information the entry never priced in.
+    current_sector = str(pos.get("sector") or "").strip()
+    sector_state = (policy.get("_sector_state") or {}).get(current_sector)
+    sector_aware_live = cfg_bool("swing_sector_decay_enabled", False)
+    sector_mult = 1.0
+    if sector_state == "WEAKENING":
+        sector_mult = cfg_float("swing_sector_decay_mult", 0.75)
+        if not sector_aware_live:
+            logger.info(
+                f"  {pos.get('symbol')}: sector-decay shadow — {current_sector} "
+                f"reads WEAKENING today, would apply x{sector_mult:.2f} to "
+                f"the giveback/stall thresholds — swing_sector_decay_enabled "
+                f"is off")
+    applied_sector_mult = sector_mult if sector_aware_live else 1.0
+    applied_mult = applied_regime_mult * applied_sector_mult
 
     # ── THE TARGET THIS POSITION IS ACTUALLY MANAGED TO ──────────────────────
     #
@@ -487,6 +586,49 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
             except Exception as e:
                 logger.debug(f"  deterioration check skipped: {e}")
 
+    # ── 2b2. Structural break BEFORE ever proving itself ─────────────────────
+    # Track E, Stage E4. The check directly above only ever runs at
+    # gain_r >= exit_deterioration_min_r (1.0) — a trade going wrong from
+    # day one gets ZERO structural evidence read until fastfail (day 4) or
+    # the calibrated stall clock (day 6-10); pure price-and-time until
+    # then. This asks the SAME question, on the SAME evidence
+    # (assess_trend — structure, momentum, RS, sector), below that floor —
+    # labelled EXIT_INVALIDATED rather than EXIT_DETERIORATION so a trade
+    # that gave back a real gain and one that never had one are told
+    # apart in the record.
+    #
+    # SAFE TO ASK THIS EARLY for the same reason the runner logic is safe
+    # to be discretionary late: deterioration_check() does not manufacture
+    # an exit from a losing position by itself — tq.verdict must
+    # INDEPENDENTLY read BROKEN, the same structural bar the profitable
+    # case already trusts, and stop-breach is checked FIRST in this
+    # ladder, so this can only ever fire on a position still above its
+    # own stop.
+    #
+    # Ships OFF (swing_early_invalidation_enabled) and shadow-logged,
+    # Stage E4's own default posture — a materially bigger behavioural
+    # change than E3's AI-tighten/regime rungs, since this can close a
+    # position the ordinary stop would have left open.
+    elif gain_r < 1.0:
+        sig = (policy.get("_trend_ctx") or {}).get(pos.get("symbol")) or {}
+        if sig:
+            try:
+                from control.exit_rules import assess_trend, deterioration_check
+                tq = assess_trend(sig, pos)
+                d = deterioration_check(
+                    pos, gain_r, tq, floor=float("-inf"),
+                    action="EXIT_INVALIDATED", reason="THESIS_BROKEN_EARLY")
+                if d:
+                    if cfg_bool("swing_early_invalidation_enabled", False):
+                        return d
+                    logger.info(
+                        f"  {pos.get('symbol')}: early-invalidation shadow "
+                        f"— structure reads BROKEN at {gain_r:+.2f}R "
+                        f"({', '.join(tq.against[:3])}) — "
+                        f"swing_early_invalidation_enabled is off")
+            except Exception as e:
+                logger.debug(f"  early deterioration check skipped: {e}")
+
     # ── 2c. AI-flagged risk — tighten toward price, never invents an exit ────
     # Track E, Stage E3 (docs/TRADEOS_ROADMAP.md). `ai_recommended_action`
     # is written by `ai/ai_decision_engine.py` and, before this, read by
@@ -584,7 +726,7 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
         if peak_r >= policy["giveback_min_r"]:
             gb_pct = (policy["giveback_pct_runner"]
                       if peak_r >= policy["giveback_runner_min_r"]
-                      else policy["giveback_pct"]) * applied_regime_mult
+                      else policy["giveback_pct"]) * applied_mult
             kept = gain_r / peak_r if peak_r > 0 else 1.0
             if kept < (1.0 - gb_pct / 100.0):
                 return {
@@ -771,16 +913,19 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
     calibrated = family in (policy.get("stall_days_by_family") or {})
     stall_days = (policy.get("stall_days_by_family") or {}).get(
         family, policy["stall_days"])
-    # REGIME ADJUSTMENT — separate axis from the per-family calibration
-    # directly above, and NOT the same promise F-46 makes for that
-    # calibration (which is capped at the book-wide default and can only
-    # tighten). This adjusts the family-calibrated (or default) number by
-    # current market condition, and — only once armed — can loosen it in a
-    # genuinely strong tape as well as tighten it in a weak one. A no-op
-    # today: applied_regime_mult is 1.0 unless swing_regime_aware_exits_
-    # enabled is on, which it is not by default.
-    if applied_regime_mult != 1.0:
-        stall_days = max(2, round(stall_days * applied_regime_mult))
+    # REGIME + SECTOR ADJUSTMENT — separate axis from the per-family
+    # calibration directly above, and NOT the same promise F-46 makes for
+    # that calibration (which is capped at the book-wide default and can
+    # only tighten). This adjusts the family-calibrated (or default)
+    # number by current market condition and the position's own sector
+    # state — the regime half can, only once armed, loosen it in a
+    # genuinely strong tape as well as tighten it in a weak one; the
+    # sector half (Stage E4) is tighten-only, per its own comment above. A
+    # no-op today: applied_mult is 1.0 unless swing_regime_aware_exits_
+    # enabled or swing_sector_decay_enabled is on, neither of which is by
+    # default.
+    if applied_mult != 1.0:
+        stall_days = max(2, round(stall_days * applied_mult))
     if (stall_days > 0
             and sessions_held >= stall_days
             and peak_r < policy["stall_peak_r"]

@@ -12758,3 +12758,102 @@ F-46's stall-clock numbers were derived from real data rather than
 guessed. Same daemon-deploy gap as every finding this session: `tools.
 simulate` proves the code correct; `intraday/run.py`'s running process
 does not pick any of this up until restarted.
+
+## 2026-08-24 — F-71 (change, Track E Stage E4) — structural break checked
+from day one (not gated at 1R), and live sector-decay tightening using
+`sector_strength`'s already-computed state rather than a frozen entry-day
+snapshot. Building the live-data verification caught a real gap of its
+own: `tools/simulate.py` had been building an incomplete policy dict
+since F-46 — none of `stall_days_by_family`, `_current_regime`, or
+`_sector_state` ever reached it, only `load_exit_policy()`'s pure config
+read. Factored into one shared function so the two can no longer drift.
+Branch `feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 1006/1007, F-67's already-named pre-existing
+Stage D4 issue, confirmed unrelated a seventh time. `tools.simulate`
+against the real book, post-fix: **two of three open positions —
+HINDCOPPER (metals & mining) and AARTIIND (chemicals) — are currently
+sitting in sectors reading WEAKENING today**, both correctly shadow-
+logged.
+
+### 1 — STRUCTURAL BREAK FROM DAY ONE
+
+`deterioration_check()` (`control/exit_rules.py`) only ever ran at
+`gain_r >= exit_deterioration_min_r` (1.0) — a trade going wrong from day
+one got zero structural evidence read until fastfail (day 4) or the
+calibrated stall clock (day 6–10), pure price-and-time until then.
+
+Parametrized rather than duplicated: `deterioration_check()` now accepts
+optional `floor`/`action`/`reason`, defaulting to the exact existing
+behaviour (`1.0`/`EXIT_DETERIORATION`/`THESIS_BROKEN`) for every caller
+that passes none of them. New rung 2b2 in `evaluate_exit()` calls it a
+second time with `floor=-inf`, labelled `EXIT_INVALIDATED`/
+`THESIS_BROKEN_EARLY` — so a trade that gave back a real gain and one
+whose thesis broke before it ever worked are told apart in the record,
+not folded into one bucket. Cannot manufacture an exit from an ordinary
+losing position by itself: `tq.verdict` must independently read `BROKEN`
+on the same structural evidence (structure, momentum, RS, sector) the
+profitable case already trusts, and stop-breach is checked first in the
+ladder, so this can only ever act on a position still above its own
+stop. Ships OFF (`swing_early_invalidation_enabled`, migration 095),
+shadow-logged.
+
+### 2 — LIVE SECTOR-DECAY TIGHTENING
+
+`sector_rank_at_entry` is read in exactly one place in the whole ladder
+— the 3R runner decision — using the frozen entry-day snapshot.
+`sector_strength` already computes a live `sector_state` every session
+(`LEADING`/`IMPROVING`/`WEAKENING`/`NORMAL`/`TOO_SMALL`) and nothing
+during ordinary holding ever read it.
+
+New multiplier, composing with Stage E3's regime multiplier
+(`applied_mult = applied_regime_mult * applied_sector_mult`) rather than
+overriding it — both apply if both are armed. Deliberately **tighten-only**,
+unlike the regime multiplier: a sector still `LEADING` is already why the
+trade was taken and does not additionally earn extra patience — stacking
+two independent "be more patient" signals is how a ladder drifts toward
+never cutting anything. Ships OFF (`swing_sector_decay_enabled`,
+migration 095), shadow-logged.
+
+### 3 — A REAL GAP FOUND WHILE VERIFYING: `tools/simulate.py` WAS INCOMPLETE
+
+Building the live-data check for §2 surfaced this directly: the AI-tighten
+shadow line appeared correctly against HINDCOPPER's real position (reads
+a plain column, no supplementary context needed), but the sector-decay
+line did not — `tools/simulate.py::simulate_swing()` built its policy
+dict from `load_exit_policy()` alone and never called the daemon's own
+inline fetch of `stall_days_by_family`/`_current_regime`/`_sector_state`.
+This means **F-46's own stall-clock calibration, verified against
+`tools.simulate` in that session's writeup, was never actually exercised
+by that verification** — the tool was silently falling back to the flat
+default the whole time, and the "live proof" cited then was real for the
+daemon but not for what `tools.simulate` itself was showing.
+
+Fixed by factoring the three fetches into one new function,
+`control/position_lifecycle.py::load_live_exit_context()`, called by
+BOTH the daemon (`intraday/engine.py`, replacing its own inline copy) and
+`tools/simulate.py` — the "decision reuse is load-bearing" rule applied
+one level up: not a second decision, but a second, incomplete COPY of
+the context one decision function needs. Confirmed post-fix: `tools.
+simulate` now shows the sector-decay shadow line for both real positions.
+A secondary shadow-log severity issue was caught in the same pass — the
+regime/sector shadow lines were logged at `.debug()` (silent by default)
+while the AI-tighten line used `.info()`; raised both to `.info()`, since
+a shadow log nobody's default log level shows defeats its own purpose.
+
+### 4 — VERIFIED
+
+`tests/test_stage_e4_early_invalidation_and_sector_decay.py`, 8 checks,
+demonstrated failing first: `git stash` on the three touched source
+files, 3 of 8 failed (the two armed-behaviour tests plus the
+multiplier-composition test), restored and all 8 passed. `deterioration_
+check()`'s own parametrization is covered by a dedicated test proving
+every existing call shape (no new args) is byte-identical to before.
+
+### 5 — NOT DONE
+
+Day-by-day participation/delivery decay and sector rotation as a
+book-wide (not per-position) signal — the remaining two items in Stage
+E4's own plan — were not built this session; scoped clearly enough to
+pick up next without re-deriving anything. Same daemon-deploy gap as
+every finding this session.

@@ -1196,6 +1196,22 @@ built.
   position's own check would catch, is visible earlier across the whole
   held book than in any one name's chart.
 
+**Stage E4 — PARTIALLY BUILT, 24-Aug-2026 (F-71, `feat/swing-evolution`).**
+Two of four pieces shipped: structural break checked from day one
+(`EXIT_INVALIDATED`, distinct from `EXIT_DETERIORATION`) and live
+sector-decay tightening from `sector_strength`'s already-computed state.
+Both ship OFF, shadow-logged. Live proof: two of the book's three open
+positions (HINDCOPPER/metals & mining, AARTIIND/chemicals) are currently
+sitting in sectors reading WEAKENING, both correctly caught. Verifying
+this live surfaced and fixed a real gap in `tools/simulate.py` — it had
+been building an incomplete policy dict since F-46, missing the exact
+context `evaluate_exit()` needs; factored into one shared function
+(`load_live_exit_context`) both the daemon and the simulator now call, so
+they cannot drift apart again. Day-by-day participation/delivery decay
+and sector rotation as a book-wide (not per-position) signal — the
+remaining two pieces — were not built this session. Full detail: `docs/
+FINDINGS.md` F-71.
+
 ## Stage E5 — Entry-side intelligence
 
 - **A zone-drift penalty in `score_plan()`.** HAL filled at 5010.20
