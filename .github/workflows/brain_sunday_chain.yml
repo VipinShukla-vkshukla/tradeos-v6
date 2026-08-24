@@ -88,6 +88,23 @@ jobs:
         run: |
           cd backend && python -m tools.weekly_review
 
+      # Track E, Stage E6 (F-77/F-79) — re-check every PENDING SWING/
+      # feature-edge finding against fresh data before it can ever be
+      # trusted. Built as a standing tool with no automatic trigger of
+      # its own; wired in here, next to the review it was designed to
+      # feed, rather than left as something only ever run by hand.
+      # continue-on-error, same as every other step in this chain — a
+      # skipped validation pass must not fail the whole weekly run.
+      - name: "Swing feature-edge recency validation (Stage E6)"
+        continue-on-error: true
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TOTAL_CAPITAL:        ${{ secrets.TOTAL_CAPITAL }}
+          TZ: Asia/Kolkata
+        run: |
+          cd backend && python -m tools.swing_feature_edge_study --validate
+
       # Discovery, after the review. The review judges the engines that
       # exist; this looks for the ones that do not — the moves no engine saw at
       # all, which appear in no P&L because there is no losing trade to notice.
