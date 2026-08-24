@@ -1007,3 +1007,269 @@ shadow-only log. F-66 (docs/FINDINGS.md) has the full detail.
 currently `APPROVED`). Gate D6 needs a real armed session with at least
 one approved candidate — deferred to the same single holistic pass as
 every other Track D gate.
+
+---
+
+# TRACK E — SWING EVOLUTION
+
+Agreed 24-Aug-2026, after a live-trader-lens walk of the swing book (F-43,
+F-46, F-67) surfaced two real trades worth naming — HAL (chased 1.2%+
+above its own evening-computed zone, entered despite the AI's own logged
+lesson about exactly that pattern) and HINDCOPPER (a genuine pending-fill
+race that bought the same name twice) — plus, independent of either
+trade, six structural gaps found by tracing what the exit ladder and
+entry gate actually read versus what a professional desk would check:
+`evaluate_exit()` sees only `regime_at_entry`, frozen on the day a
+position opened, never the market it is actually sitting in today;
+`sector_rank_at_entry` is read in exactly one place (the 3R runner
+decision) and nowhere during ordinary holding; `ai_recommended_action`
+(`TIGHTEN_SL` etc.) is written and displayed but never executed; swing has
+no thesis-invalidation level distinct from its price stop, unlike
+intraday; `weekly_structure` is read only post-1R, never at entry; and
+`ai/post_trade_analysis.py` — genuinely sophisticated trajectory and
+lesson-grading machinery — has exactly one downstream consumer, an AI
+prompt whose own ranking weight was correctly cut to zero on 04-Aug once
+`ai_tier`/`ai_conviction` were shown not to be predictive. The lesson
+engine produces real findings and they currently have nowhere to land.
+
+**Scope, agreed explicitly: swing only, and stricter than Track D's own
+boundary.** Track D's boundary section (above) names four points where
+intraday and swing genuinely share code — the ticker connection, the
+`IntradayEngine` position-evaluation timer, `position_lifecycle.py`'s
+write functions, and the allocator. Track E's own prior work (F-43, F-46,
+F-67) already lives inside two of those four: `control/position_lifecycle
+.py` (swing's exit ladder, but a file both frameworks' close paths write
+through) and the swing-only branches of `intraday/engine.py` (the shared
+daemon file, never its intraday branches or any file under
+`intraday/strategies/`, `intraday/exit_policy.py`, `intraday/
+shortability.py`, `intraday/direction.py`, `intraday/market_context.py`).
+Track D's own rule for crossing (b)/(c)/(d) applies here with no
+exception: **any Track E change touching the shared daemon file or
+`position_lifecycle.py` runs the full `tools.verify` suite plus the
+swing-specific health checks (`books`, `broker`, `stops`, `qty_fields`)
+before being considered safe** — the same discipline F-43/F-46/F-67 used,
+made explicit as a standing rule rather than something re-derived every
+session. `allocation/*.py` (scoring, hurdle, allocator, outcomes) is
+**never edited** by this track, only ever imported from read-only
+(`swing_family()`, already the pattern F-46 set) — it is shared
+infrastructure Track D also depends on, and the boundary discipline
+above ("a value handed across, never a function called across") applies
+symmetrically. Nothing under `intraday/` outside the shared daemon file's
+own swing branches is touched, read, or depended on by any stage below.
+
+**Order is fixed, and phased differently from Track D's flat D2→D6
+sequence** because Track E's stages have a real dependency chain: the
+learning core (E6) needs to know, from E2's own numbers, whether there is
+enough resolved history per engine to fit anything safely before its
+shape is finalized, and position scaling (E7) is deliberately last
+because it is the only stage in this track that adds capital risk rather
+than sharpening a decision already being made — it should be built once
+E6's validated-finding mechanism exists to help decide which winners
+actually merit it, not before. E1 is this document.
+
+## Stage E2 — Quantify (read-only, no branch)
+
+Three questions, answered from real data before anything downstream is
+designed, matching the discipline that already produced F-43's ladder
+reprice and F-46's stall-clock numbers:
+
+1. **Do features separate winners from losers per engine, not just
+   book-wide?** Every tercile study run so far (`final_score`,
+   `implied_rr`) tested one column at a time and found both flat — real
+   evidence about those specific features in isolation, and silent about
+   combinations. Mine `signal_log`'s 80+ fields against
+   `signal_output_daily`'s resolved outcomes, per engine family
+   (CTL/SEC/TPO/SBS/RSB/IAD/VBD pooled as CONTINUATION, MOM and RVS kept
+   separate, matching `swing_family()`), for combinations — not single
+   columns — that separate TARGET from STOP at a real sample size.
+2. **Does the lesson engine's own output correlate with anything?**
+   `post_trade_analysis`'s A–F grade and its 20+ rule-based lessons have
+   never been checked against realized forward outcome, book-wide. If
+   grade doesn't predict result, E6 needs a different foundation than
+   "trust the existing grades."
+3. **Is there enough resolved history per (engine, regime) cell to fit
+   anything safely yet?** A model or even a threshold refinement built on
+   40 trades overfits and reports false confidence; the same
+   `priors_min_sample_swing`-style floor discipline this project already
+   applies to `swing_priors()` needs a real answer here, not an assumed
+   one.
+
+**Gate E2:** three real numbers in the ledger — a distribution, a
+correlation, a sample-size table by (engine, regime). If any answer is
+"not yet, not enough data," that changes E6's shape (a simpler rule-based
+refinement rather than a fitted model) but does not block E3–E5, which
+depend on none of this.
+
+## Stage E3 — Close the "knows but doesn't act" gaps
+
+The smallest, lowest-risk stage, and the one a professional desk would
+consider table stakes rather than an enhancement:
+
+- **Regime-aware exit ladder.** `evaluate_exit()` reads
+  `regime_at_entry` — frozen on entry day — and never the market's
+  current state. Read live regime; in RISK_OFF tighten the giveback
+  threshold and shorten the effective stall clock further below E2/F-46's
+  own per-family number; in a strong RISK_ON/TRENDING tape, more
+  patience. Touches `control/position_lifecycle.py` only.
+- **`ai_recommended_action` becomes real.** `TIGHTEN_SL` is written by
+  `ai_decision_engine.py`, displayed by `alerts/send_alerts.py`, and
+  consumed by nothing else — confirmed by grep, not assumed. HINDCOPPER's
+  own tighten-stop recommendation over a live geopolitical risk sat as a
+  notification. Execute it as an actual stop adjustment, one-directional
+  only (never looser than the current active stop), same asymmetry every
+  other rule in this ladder already respects.
+- **A standing health check for the pending-fill/reconcile visibility
+  class.** F-67 fixed one instance (`_pending_fills` erased by a
+  `load_state()` rebuild that hadn't caught up); the class of risk — an
+  order placed and not yet reflected as held — deserves a `tools.health`
+  check that catches the next instance of this shape before it becomes a
+  second real order, not a human reading a position two days later.
+
+**Ships behind switches, shadow-logged before arming** — this stage
+changes live exit behavior on a book that is currently working, which is
+a different risk profile from a stall-clock number that can only ever
+tighten.
+
+## Stage E4 — In-trade intelligence
+
+Depends on E2's per-engine numbers for calibration, not on E6 being
+built.
+
+- **Live sector-rank decay as an ordinary holding check**, not just the
+  3R runner gate — and using today's actual rank, not the entry-day
+  snapshot `exit_runner_max_sector_rank` currently reads. A sector rotating
+  out beneath a held position is invisible to this book below 3R today.
+- **A swing-native invalidation level**, computed at entry from
+  `assess_trend()`'s own evidence (leading sector, structural setup,
+  momentum state) and checked independently of price — so a position that
+  hit its stop and one whose thesis broke first are told apart in the
+  record, closing the same gap intraday already closed for itself.
+- **Day-by-day participation decay.** `delivery_pct`/`volume_trend` are
+  already computed every evening; nothing checks whether a held
+  position's own participation is fading relative to what it opened on,
+  ahead of the fixed stall clock — the swing-cadence version of F-45's
+  intraday volume-decay idea.
+- **Structural read from day one, not gated at 1R.** `deterioration_check
+  ()` — the only thing that reads whether a position's thesis is still
+  intact — only ever runs at `gain_r >= exit_deterioration_min_r` (1.0).
+  A trade going wrong from day one gets zero structural evidence until
+  fastfail (day 4) or the calibrated stall clock (day 6–10) — pure
+  price-and-time until then. F-46's telemetry already runs at any gain_r;
+  this stage makes a BROKEN read near breakeven actionable early, not
+  just recorded.
+- **Sector rotation as a book-wide early signal.** `sector_strength` is a
+  daily time series the pipeline already builds; a sector trending down
+  for 2–3 sessions, before it falls out of the top ranks a single
+  position's own check would catch, is visible earlier across the whole
+  held book than in any one name's chart.
+
+## Stage E5 — Entry-side intelligence
+
+- **A zone-drift penalty in `score_plan()`.** HAL filled at 5010.20
+  against an evening-computed zone of 4794–4949 — a real chase, not a
+  clean entry — and nothing in `entry_ranking` penalizes a fill that has
+  drifted materially above its own zone. Derate, do not refuse outright;
+  the live-price R:R recomputation `decide()` already does is correct in
+  principle, this closes the gap where a technically-passing R:R still
+  represents a materially worse trade than the same setup at the zone
+  price.
+- **The AI's own "lessons" as checkable predicates, not prose.** HAL's
+  20-Aug note literally read *"avoiding chasing after a sharp rally"* as
+  a stated lesson one day before the same AI approved a trade that did
+  exactly that. A small, named set of these lessons (overextension from a
+  moving average, chase distance, RSI band) become structured checks in
+  `entry_refusals()`, the same mechanism `filter_reason` already uses — a
+  self-contradiction between a stated lesson and the candidate it is
+  attached to becomes a real refusal, not a footnote.
+- **Weekly-structure confirmation at entry.** `weekly_structure` is read
+  once, inside `assess_trend()`, which only ever runs post-1R — the
+  entry gate (`analysis/trade_decision.py`, `entry_ranking.py`) never
+  sees it. Pull it into `score_plan()` or `entry_refusals()` if E2's
+  numbers support it as a real signal, not decoration.
+
+## Stage E6 — The learning core
+
+The most valuable stage in this track and the one that gets the most
+caution, sequenced after E2–E5 so it can build on real per-engine numbers
+rather than a guess:
+
+- **Reconnect the lesson engine on a measured path, not through the AI
+  prompt.** `post_trade_analysis`'s grading has real machinery behind it
+  and, per its own docstring, is built to catch exactly the kind of gap
+  this whole track has been finding — but its only consumer today is
+  `ai_decision_engine.py`'s prompt context, downstream of a component
+  (`ai_tier`/`ai_conviction`) already shown not to carry ranking signal
+  on its own. If E2's correlation check confirms the grades predict
+  forward outcome, route validated findings into `score_plan()` directly
+  — never back through the AI prompt that was already shown not to be
+  the channel.
+- **Per-engine feature tuning**, the swing shape of F-44's `feature_edge_
+  study.py`: each engine's own trigger sharpened from its own resolved
+  winners and losers, not a blanket ranking bonus applied book-wide.
+- **A living engine lifecycle.** MOM and RVS were promoted to `ACTIVE` on
+  measured-flat-to-negative historical evidence (`docs/6_
+  IMPLEMENTATION_STATUS.md`'s own win-rate table) and the promotion has
+  sat static since 07-Aug. `ACTIVE`/`SHADOW` becomes a rolling,
+  out-of-sample-validated read, continuously re-evaluated as new trades
+  resolve — the same discipline as everything else in this stage — not a
+  decision made once that quietly keeps governing capital months later.
+- **A real anticipatory model, out-of-sample validated** (only once E2
+  confirms sample size supports it per engine/regime cell): fit
+  probability-of-target and expected-R from the full resolved feature
+  set, walk-forward validated, re-fit as more trades close — genuine
+  calibrated anticipation from the hundreds of data points already being
+  computed, not a threshold nudge and not a claim of certainty. This is
+  the direct answer to "make the engines smarter," done the way a real
+  desk does it rather than by hand-tuning one more weight.
+- **A swing discovery engine**, the swing shape of F-66's discovery-to-
+  shadow-strategy pipeline: mine every resolved plan — not only the ones
+  the 9 existing engines fired on — for feature combinations with a real
+  edge above the book average, template a validated one into a candidate
+  engine, gate it behind the same human-approval mechanism (`brain_
+  proposals`, `status=APPROVED`) F-66 already proved out, shadow-run
+  before it ever touches capital.
+
+**Every finding in this stage validates out-of-sample before it can
+influence a live decision, and even then only as a priority tie-break or
+a bounded derate — never a new hard gate invented from a small sample —
+mirroring F-48/F-50's exact contract.**
+
+## Stage E7 — Position scaling
+
+Sequenced last, deliberately: the only stage in this whole track that
+adds capital risk rather than sharpening a decision already being made,
+and the one that most benefits from E6's validated-finding mechanism
+existing first to help judge which winners actually merit it.
+
+- Never before the runner line (`gain_r >= giveback_runner_min_r`, the
+  same 1.0R the F-43 tiered giveback guard already uses) — adding to a
+  position whose original risk is not yet secured is adding to weakness.
+- Only on independent trend evidence at the bar the RUN decision already
+  requires (`assess_trend()` STRONG with real evidence), ideally once E4/
+  E6's telemetry has enough closed trades to have validated that bar
+  rather than trusting it on faith.
+- The add is a new risk allocation competing for capital like any other
+  candidate — its own structural stop, its own `risk_pct_per_trade`
+  budget through `check_new_entry()` — never sized off the position's own
+  unrealized profit.
+- Caps at one add; the combined position's risk is measured from the add
+  forward, not blended with the original entry's now-stale number.
+
+## Non-negotiables across the whole track
+
+- No file under `intraday/` outside the shared daemon file's own swing
+  branches, and no file under `allocation/`, is ever edited — read-only
+  imports only, the exact discipline F-46 already established.
+- Every stage that changes live exit or entry behavior ships behind a
+  switch, shadow-logged, before arming — the one exception granted this
+  session (F-43/F-46's giveback tiering and stall-clock calibration
+  shipping straight to live) was the operator's own explicit, stated
+  call, not a default this track assumes going forward.
+- Any change touching the shared daemon file or `position_lifecycle.py`
+  runs the full `tools.verify` suite AND the swing-specific `tools.
+  health` checks (`books`, `broker`, `stops`, `qty_fields`) before being
+  considered safe — Track D's own rule, adopted here explicitly rather
+  than re-derived.
+- Every number in every gate comes from a real query against this
+  account's own data, the same standard every finding in F-43/F-46/F-67
+  was held to — a claim about "probably works" does not clear a gate here.
