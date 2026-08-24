@@ -11689,3 +11689,105 @@ population found the name) but worth naming as a broader effect than
 "only Population B/C changed". Both live-requalify switches remain
 `false`, unchanged this session. On `feat/intraday-live-universe`, not
 merged — Gate D2 remains the operator's own sign-off.
+
+## 2026-08-24 — F-62 (new, shadow mechanism built) — Stage D3: the
+event-driven core, in shadow only. RENUMBERED FROM F-54 AT MERGE TIME
+(24-Aug-2026, integration branch `feat/intraday-evolution`) — this entry
+was originally written on `feat/intraday-event-core`, branched off `main`
+in parallel with `feat/intraday-live-universe` (Track D Stage D2, F-54
+through F-61 immediately above), and both entries independently claimed
+F-54 exactly as each one's own text anticipated ("renumbering happens
+once branches actually merge"). This is that renumbering: D2's sequence
+was left untouched since it was already internally consistent (F-54–61),
+and this entry — along with Stage D4's and D5's own F-54 entries further
+below — was shifted to continue the SAME single sequence in merge order.
+No content below this line was altered, only the header number and this
+paragraph.
+
+**Ran:** `tools.verify` (789 checks, 79 modules, green), `tools.health`
+clean, `tools.event_core_compare` run live against production (honest
+zero — nothing has run in shadow yet).
+
+### 1 — WHAT THIS ADDRESSES
+
+`docs/TRADEOS_ROADMAP.md`, Track D, Stage D3. The existing loop evaluates
+every watched symbol on a fixed 15s timer (`intraday_eval_interval_s`)
+regardless of when it actually moved — `intraday/price_feed.py`'s own
+docstring says so outright: "TICKS UPDATE STATE; A TIMER DECIDES... It
+deliberately does not call back into decision logic on every tick." This
+stage measures what a tick-triggered alternative would have looked like,
+side by side, before ever proposing to replace it — per the operator's
+own instruction, "no scope for error," it does not replace anything yet.
+
+### 2 — THE ARCHITECTURAL DECISION: SAME THREAD, NOT A WORKER THREAD
+
+Considered and rejected: a dedicated background thread reacting to ticks
+in real time. `intraday/engine.py`'s mutable state (`self._contexts`,
+`self._bench`, open positions) was never built for concurrent access —
+introducing a second thread that reads it would be a genuinely new class
+of bug this project has never had to guard against, for a feature whose
+entire purpose is measuring a latency improvement, not chasing the
+smallest possible one. Instead: `intraday/price_feed.py` gained thread-
+safe "dirty symbol" tracking (`drain_dirty()`, fed by the SAME websocket
+thread that already writes `_px`/`_at`, itself unchanged), and
+`intraday/event_core.py::check()` runs from `intraday/run.py`'s own main
+loop on its own tight timer (`intraday_event_core_interval_s`, 2s
+default) — still far tighter than the 15s polling cycle, with zero new
+concurrency surface beyond the queue itself.
+
+### 3 — WHAT GOT BUILT
+
+`price_feed.py`: a symbol is marked dirty when its price has moved
+`intraday_event_core_dirty_pct` (0.05% default) since the LAST DRAIN —
+not the last tick, which would fire on ordinary noise. O(1), no I/O, no
+logging — the same rule `on_ticks()` itself is already built on.
+
+`event_core.py::check()`: drains dirty symbols, reuses (not
+reimplements) `apply_live_quotes()`/`merge_live_bars()` — the SAME two
+calls the polling cycle already makes every 15s — then calls the SAME
+`registry.evaluate_all()` the polling loop trusts. Writes ONLY to the
+new `intraday_event_shadow` table (migration 105) — never
+`intraday_setups`, never `execution.paper_broker`, never
+`allocation.allocator`. A bug here can pollute only its own shadow log.
+
+A real gap found while building the comparison tool, not before: Gate
+D3's own stated criterion is "measured latency improvement in seconds",
+and `intraday_setups` carried NO detection timestamp at all — only
+`scored_at` (end of day). Fixed with migration 106
+(`intraday_setups.detected_at`, nullable, stamped going forward only,
+no backfill of history that genuinely does not have it).
+
+`tools/event_core_compare.py`: matches a shadow detection to a trusted-
+loop detection by (symbol, sub_engine) within a 60s window, reports
+matched/shadow-only counts, mean latency gap, and any matched pair whose
+direction disagreed. A real bug caught by this project's OWN static-
+analysis check before it ever ran: the first version read
+`intraday_setups` with a plain day-filtered `.select()` — this project's
+own `test_static_analysis.py` explicitly excludes that table from "a day
+filter alone is enough" (it re-records a lingering setup on every cycle
+it is still near its level; 234 rows for 23 distinct ORB setups,
+measured live elsewhere this project), so even one day's rows can exceed
+PostgREST's 1000-row cap. Fixed with `config.fetch_all()`.
+
+### 4 — VERIFIED, PRECISELY WHAT WAS AND WAS NOT DEMONSTRATED
+
+35 new offline tests. `tools.event_core_compare` run live against
+production: correctly reports zero matches, zero shadow-only, because
+`intraday_event_core_enabled` ships `false` and nothing has run in
+shadow yet — an honest zero, not a fabricated one.
+
+**Not demonstrated, and cannot be from a single session:** Gate D3
+itself needs 10 trading sessions or 200 directly-comparable decisions,
+real elapsed market time no amount of building tonight can substitute
+for. This entry documents the mechanism being READY to start
+accumulating that evidence, not the evidence itself.
+
+### 5 — NOT DONE / WHAT THIS DOES NOT CHANGE
+
+`intraday_event_core_enabled` ships `false`. Nothing in the trusted
+polling loop changed — `cycle()`, `_record_setup()`,
+`evaluate_intraday_setups()` are byte-identical except the one additive
+`detected_at` field. Written on `feat/intraday-event-core`, since merged
+into `feat/intraday-evolution` — per the operator's own stated plan, Gate
+D3 (like Gate D2 before it) is deferred to a single holistic pass across
+every Track D stage, not cleared stage-by-stage.
