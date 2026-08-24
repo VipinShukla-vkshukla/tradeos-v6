@@ -1306,6 +1306,25 @@ the now-working signal into the entry gate — piece 3's original literal
 scope — was not done; same thin-sample reasoning as piece 2. Full
 detail: `docs/FINDINGS.md` F-75.
 
+**Pieces 2-3 — SHADOW-BUILT, 24-Aug-2026 (F-76, `feat/swing-evolution`).**
+Operator's own correction to F-75: thin evidence justifies staying OFF,
+not staying unbuilt — the same participation-decay precedent (Stage E4)
+already established. `entry_refusals()` now shadow-logs both: R:R
+retention below `entry_rr_retention_floor` (0.20 — chosen so HAL's own
+real 0.1533 retention actually lights up the shadow, not 0.15) and a
+candidate whose own `assess_trend()` verdict already reads BROKEN
+(reusing F-75's fix directly, not a parallel check). Both switches off.
+Wiring the shadow logs into `tools.simulate` for visibility surfaced a
+real, independent gap: that tool had never called `entry_refusals()` at
+all — `entry_respect_filter_reason` is armed live, so the daemon was
+already refusing plans on this basis while `tools.simulate` silently
+showed a different result (SIEMENS misreported as the top TAKE on
+2026-08-21's real plan set). Same shape as F-71 §3's incomplete policy
+dict, a second instance in the same tool. Full detail: `docs/FINDINGS.
+md` F-76.
+
+**Stage E5 complete.**
+
 ## Stage E6 — The learning core
 
 The most valuable stage in this track and the one that gets the most

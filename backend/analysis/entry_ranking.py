@@ -37,6 +37,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from loguru import logger
+
 from config import cfg_bool, cfg_float
 
 # AI tier is a bucket, not a number. These are the weights it contributes.
@@ -327,7 +329,8 @@ def score_plan(p: dict) -> Ranked:
                   components=comp, reasons=reasons)
 
 
-def entry_refusals(p: dict) -> list[str]:
+def entry_refusals(p: dict, rr_live: float | None = None,
+                   rr_at_zone_low: float | None = None) -> list[str]:
     """
     Reasons this plan must NOT be entered, regardless of how it ranks.
 
@@ -337,8 +340,10 @@ def entry_refusals(p: dict) -> list[str]:
     term that happens to be large that day, which is exactly how GABRIEL's
     screener score of 82 drowned out everything else about it.
 
-    Pure and no I/O, so `tools.simulate` and `tools.verify` reach the same
-    verdict as the live daemon rather than approximating it.
+    Pure and no I/O (`rr_live`/`rr_at_zone_low` are decide()'s own already-
+    computed numbers, passed in rather than recomputed here), so `tools.
+    simulate` and `tools.verify` reach the same verdict as the live daemon
+    rather than approximating it.
 
     Returns an empty list when the plan may proceed.
     """
@@ -366,6 +371,65 @@ def entry_refusals(p: dict) -> list[str]:
         fr = str(p.get("filter_reason") or "").strip().lower()
         if fr.startswith(("insufficient_rr", "blocked", "rejected", "veto")):
             out.append(f"the evening pipeline refused this plan: {fr}")
+
+    # ── R:R RETENTION — Track E, Stage E5 piece 2 (shadow), 24-Aug-2026 ──────
+    # F-74's own finding: HAL's reward:risk collapsed from 7.63-14.09 (at the
+    # zone low, stop/target fixed) to 1.17 at the actual fill — not because
+    # the raw price drifted far (0.94%), but because the stop/target never
+    # moved while price ran most of the way to target before the trade was
+    # ever taken. F-75 investigated turning this into a hard refusal and
+    # found the evidence too thin (n=16 closed positions) to set a
+    # confident floor without risking a threshold no real winner clears
+    # (AIIL won at 0.134 retention; TRAVELFOOD lost at 0.057 — a floor
+    # anywhere between them is a guess). Shipped as a SHADOW ONLY —
+    # entry_refuse_low_rr_retention stays off; this logs what a refusal
+    # would have caught so the next quantify pass has real data to set
+    # entry_rr_retention_floor from, rather than staying blocked on n=16
+    # forever.
+    if rr_live is not None and rr_at_zone_low and rr_at_zone_low > 0:
+        retention = rr_live / rr_at_zone_low
+        floor = cfg_float("entry_rr_retention_floor", 0.20)
+        if retention < floor:
+            msg = (f"R:R has retained only {retention:.0%} of its zone-low "
+                   f"value ({rr_live:.2f} vs {rr_at_zone_low:.2f}) — below "
+                   f"the {floor:.0%} floor")
+            if cfg_bool("entry_refuse_low_rr_retention", False):
+                out.append(msg)
+            else:
+                logger.info(f"  {p.get('symbol')}: R:R-retention shadow — "
+                           f"{msg} — entry_refuse_low_rr_retention is off")
+
+    # ── BROKEN TREND AT ENTRY — Track E, Stage E5 piece 3 (shadow),
+    # 24-Aug-2026. `control.exit_rules.assess_trend()` already reads the
+    # SAME pipeline evidence (structure, momentum, RS, sector) this plan
+    # dict carries, and this session's own F-75 fixed its weekly_structure
+    # vocabulary bug — but it had only ever been called on an ALREADY-HELD
+    # position (deterioration_check, the 3R runner decision, the Stage E4
+    # early-invalidation rung). Nothing ever asked it about a CANDIDATE. A
+    # plan whose own trend evidence already reads BROKEN — the same bar
+    # the exit-side rules already trust to cut a LOSING position — is at
+    # minimum worth flagging before spending a scarce entry slot on it.
+    # Reuses the existing function rather than a second, narrower
+    # weekly-structure-only check — "decision reuse is load-bearing".
+    # Shadow only: same thin-evidence reasoning as the R:R check above,
+    # entry_refusals() has never been exercised against ENTRY candidates
+    # before, so there is no track record yet to set a confident bar from.
+    try:
+        from control.exit_rules import assess_trend
+        tq = assess_trend(p)
+        if tq.verdict == "BROKEN" and tq.has_evidence:
+            msg = (f"trend evidence already reads BROKEN at entry "
+                   f"({tq.score:.0%}, {tq.checks} checks) — "
+                   f"{'; '.join(tq.against[:3])}")
+            if cfg_bool("entry_refuse_broken_trend", False):
+                out.append(msg)
+            else:
+                logger.info(f"  {p.get('symbol')}: broken-trend-at-entry "
+                           f"shadow — {msg} — entry_refuse_broken_trend "
+                           f"is off")
+    except Exception as e:
+        logger.debug(f"  {p.get('symbol')}: trend assessment at entry "
+                    f"unavailable — {e}")
 
     return out
 

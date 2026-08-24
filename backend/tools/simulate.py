@@ -150,7 +150,7 @@ def simulate_swing_entries(sb) -> dict:
     """
     _hdr("SWING AUTO-ENTRY (dry run)")
     from analysis.trade_decision import decide
-    from analysis.entry_ranking import rank, live_ranking_input
+    from analysis.entry_ranking import rank, live_ranking_input, entry_refusals
     from execution.gates import trading_mode
     from execution import paper_broker
     from config import TOTAL_CAPITAL, cfg_bool, cfg_int
@@ -212,6 +212,19 @@ def simulate_swing_entries(sb) -> dict:
             continue
         d = decisions.get(sym)
         if d is None or d.action not in ("BUY_NOW", "CHASE_LIMIT"):
+            continue
+        # entry_refusals() — Stage E5 pieces 2/3 (shadow), 24-Aug-2026. Not
+        # called from this tool before this session; the daemon's own
+        # refusal checks (AVOID_ENTRY, filter_reason, and now the R:R-
+        # retention/broken-trend shadows) were invisible here, so a plan
+        # the live path would refuse still showed as TAKE in the dry run —
+        # exactly the "gate removes a name silently" gap this tool's own
+        # docstring says it exists to prevent.
+        refusals = entry_refusals(p, rr_live=getattr(d, "rr_live", None),
+                                  rr_at_zone_low=getattr(d, "rr_at_zone_low", None))
+        if refusals:
+            logger.info(f"      {sym:<12} rank {rk.total:>6.1f}  REFUSED — "
+                        f"{refusals[0]}")
             continue
         considered += 1
         qty = int(d.qty or 0)

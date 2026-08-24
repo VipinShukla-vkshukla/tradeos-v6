@@ -13277,3 +13277,99 @@ evidence does not support it yet. Piece 3's prerequisite bug found and
 fixed; the entry-gate extension itself not built, same reason as piece
 2. All three conclusions are evidence-based "not yet," not oversights —
 consistent with this project's own quantify-before-build discipline.
+
+## 2026-08-24 — F-76 (change, Track E Stage E5, pieces 2-3 — shadow
+build) — operator's own instruction: "go ahead and build it" (shadow
+versions of pieces 2 and 3, off by default) — plus a real, pre-existing
+`tools.simulate` gap found wiring the shadow logs in so they could
+actually be observed. Branch `feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 1032/1033 (8 new checks; same pre-existing
+unrelated Stage D4 issue). `tools.simulate` against the real book.
+
+### 1 — WHY SHADOW, NOT A HARD LINE — AND WHY BUILD IT ANYWAY
+
+F-75 concluded pieces 2/3 should stay not-built because n=16 is too thin
+to set a confident refusal threshold. Operator pushed back correctly:
+that reasoning justifies staying OFF, not staying UNBUILT — this
+session's own Stage E3/E4 precedent (participation-decay shipped OFF
+with shadow logging despite showing zero live signal on its first day)
+already established that a sound mechanism with thin evidence should
+accumulate real data via a shadow log, not wait indefinitely for a
+sample that will not grow on its own. Built on that basis.
+
+### 2 — PIECE 2: R:R RETENTION AS A SHADOW REFUSAL
+
+`analysis/entry_ranking.py::entry_refusals()` gained two new optional
+params, `rr_live`/`rr_at_zone_low` (decide()'s own already-computed
+numbers, passed in — the function stays pure, no I/O added). When both
+are available and `rr_live / rr_at_zone_low` falls below `entry_rr_
+retention_floor`, shadow-logs (armed: `entry_refuse_low_rr_retention`,
+off) a refusal.
+
+Floor chosen deliberately at 0.20, not the more natural-looking 0.15:
+HAL's own real numbers at its actual entry-day zone snapshot (rr_live
+1.17, rr_at_zone_low 7.63) retain exactly 0.1533 — a hair ABOVE 0.15,
+which would have silently failed to flag this session's own repeatedly-
+cited anchor case. Caught before committing the migration, not after.
+
+### 3 — PIECE 3: BROKEN TREND AT ENTRY, REUSING THE NOW-FIXED FUNCTION
+
+Rather than a second, narrower weekly-structure-only check,
+`entry_refusals()` now calls `control.exit_rules.assess_trend()` — the
+SAME function F-75 fixed — directly on the CANDIDATE. That function had
+only ever been asked about an ALREADY-HELD position (deterioration_
+check, the 3R runner decision, the Stage E4 early-invalidation rung);
+nothing had ever asked it about a plan before taking it. A plan whose
+own trend evidence already reads BROKEN with real evidence is now
+shadow-logged (armed: `entry_refuse_broken_trend`, off) — "decision
+reuse is load-bearing" applied to a brand-new consumer of an existing
+function, not a parallel implementation.
+
+### 4 — THE REAL GAP FOUND WIRING IT IN: `tools.simulate` NEVER CALLED `entry_refusals()`
+
+To make either shadow log observable outside the live daemon, `tools/
+simulate.py::simulate_swing_entries()` needed to call `entry_refusals()`
+— and it never had, for ANY of its existing checks either, not just the
+two new ones. Confirmed live: `entry_respect_filter_reason` is `true` in
+`system_config` right now — the daemon has genuinely been refusing
+plans on this basis in production — while `tools.simulate` (the tool
+CLAUDE.md names as what to run "before changing anything") was silently
+reporting a DIFFERENT result. Concretely, on 2026-08-21's real plan set:
+SIEMENS ranked #1 (11.2) and showed as the top TAKE before this fix;
+after wiring `entry_refusals()` in, SIEMENS correctly shows **REFUSED —
+the evening pipeline refused this plan: insufficient_rr_for_reentry_
+setup**, and the simulated take list changes from {SIEMENS, CHALET} to
+{CHALET, HONASA}. Same shape as F-71 §3 (the incomplete exit-policy
+dict) — a second, independent case of this exact tool silently drifting
+from what the daemon actually does. Fixed by adding the call, mirroring
+`intraday/engine.py::_maybe_enter_swing`'s own placement (after the
+`d.action` check, before counting the candidate as "considered").
+
+**Live proof, same run:** GLAND's own real numbers lit up the R:R-
+retention shadow independently of the HAL anchor — `R:R has retained
+only 10% of its zone-low value (2.02 vs 19.48)`. No broken-trend shadow
+fired for any real candidate today — an honest "no signal on this day's
+pool," not a gap; the mechanism is proven by the synthetic BROKEN-
+evidence tests below.
+
+### 5 — VERIFIED
+
+8 new checks in `tests/test_stage_e5_entry_shadow_checks.py`,
+demonstrated failing first: `git stash` on all three touched source
+files (`analysis/entry_ranking.py`, `intraday/engine.py`, `tools/
+simulate.py`), 5 of 8 failed against the reverted source (4 on the
+missing `rr_live` kwarg, 1 on the missing broken-trend refusal) — the
+other 3 correctly passed either way because they test the off/absence
+paths, the same asymmetry established as expected practice earlier this
+session. Restored, all 8 passed. Migration 112: both switches off,
+`entry_rr_retention_floor` shipped at 0.20 with the HAL near-miss
+documented directly in the migration's own comment.
+
+### 6 — STAGE E5 STATUS
+
+All three pieces now have real code behind them: piece 1 (F-74) live-
+armed by the ranking fix itself (no switch — see F-74), pieces 2-3
+(F-76) shadow-logging real candidates, off by default, pending the
+quantify pass their own accumulated data will eventually support.
+Stage E5 is complete for this pass. Next: Stage E6, the learning core.

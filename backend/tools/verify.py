@@ -169,6 +169,8 @@ MODULES = [
      "tests.test_stage_e5_live_rr_ranking"),
     ("Track E Stage E5: weekly_structure vocabulary fix",
      "tests.test_stage_e5_weekly_structure_vocabulary"),
+    ("Track E Stage E5 pieces 2-3: entry shadow checks",
+     "tests.test_stage_e5_entry_shadow_checks"),
 ]
 
 

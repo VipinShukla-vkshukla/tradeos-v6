@@ -2840,7 +2840,8 @@ class IntradayEngine:
         # plan, and so a refusal is logged in the same shape as every other
         # stand-down here.
         from analysis.entry_ranking import entry_refusals
-        refusals = entry_refusals(c)
+        refusals = entry_refusals(c, rr_live=getattr(d, "rr_live", None),
+                                  rr_at_zone_low=getattr(d, "rr_at_zone_low", None))
         if refusals:
             for why in refusals:
                 logger.info(f"  {sym}: swing entry refused — {why}")
