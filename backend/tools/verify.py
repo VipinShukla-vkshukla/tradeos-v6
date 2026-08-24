@@ -175,6 +175,8 @@ MODULES = [
      "tests.test_swing_recency_validator"),
     ("Track E Stage E6: swing engine lifecycle review",
      "tests.test_swing_engine_lifecycle_review"),
+    ("Track E Stage E7: position scale-in (detection only)",
+     "tests.test_stage_e7_scale_in"),
 ]
 
 

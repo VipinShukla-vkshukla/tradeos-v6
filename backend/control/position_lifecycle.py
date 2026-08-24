@@ -1066,6 +1066,136 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# POSITION SCALING — Track E, Stage E7, 24-Aug-2026 (detection/sizing only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def evaluate_scale_in(pos: dict, ltp: float, tq, open_positions: list[dict],
+                      regime: str = "NEUTRAL", total_capital: float | None = None,
+                      available_cash: float | None = None) -> dict:
+    """
+    Should this already-held, already-profitable SWING position receive
+    ONE add-on today?
+
+    Deliberately separate from `evaluate_exit()`/`target_decision()`:
+    those answer "is this position still okay to hold or should it be
+    cut/banked", a RISK-REDUCING or risk-neutral question. This answers
+    "should NEW risk be added to it" — a different question the exit
+    ladder must never quietly also be answering, per the roadmap's own
+    framing of Stage E7 as "the only stage in this whole track that adds
+    capital risk rather than sharpening a decision already being made".
+
+    THE FOUR RAILS, IN ORDER — each one is the roadmap's own explicit
+    condition, not a new judgement call:
+
+    1. `gain_r >= giveback_runner_min_r` (1.0R default) — the SAME line
+       F-43's tiered giveback guard already uses to mean "a partial
+       should already be banked and the stop moved to at-or-above
+       breakeven". Adding to a position whose own original risk is not
+       yet secured is adding to weakness, not strength.
+    2. `tq.verdict == "STRONG"` with real evidence — a STRICTER bar than
+       `target_decision()`'s own `should_run` (STRONG-or-INTACT):
+       committing NEW risk deserves more conviction than merely letting
+       an existing runner continue.
+    3. Not already scaled in — `pos.get("scaled_in")` — capped at one
+       add, per the roadmap's own explicit limit. `open_positions` is
+       still passed to `check_new_entry()` below with this position
+       INCLUDED, unfiltered — an add competes for the SAME slot/sector/
+       risk budget any fresh entry would, exactly as the roadmap
+       specifies ("a new risk allocation competing for capital like any
+       other candidate"), not a special-cased exemption from the caps
+       that exist to stop one name dominating the book.
+    4. Sized through `analysis.portfolio_constraints.check_new_entry()`
+       — the SAME function and the SAME `risk_pct_per_trade` budget any
+       fresh entry goes through — using the position's CURRENT stop
+       (`active_sl`) as the add's own risk-per-share, never the
+       position's unrealized profit. This is the guard against classic
+       pyramiding-on-paper-gains: an add must earn its own risk budget
+       against real capital, not spend a gain that has not been banked.
+
+    DELIBERATELY DETECTION-ONLY THIS SESSION. Returns a decision dict —
+    never places an order, never writes to `open_positions`, no config
+    switch to arm, because arming implies live execution exists and it
+    does not yet: how a combined position's risk should be measured
+    "from the add forward, not blended with the original entry's now-
+    stale number" (the roadmap's own words) is a real, unresolved
+    accounting question — does entry_price become a weighted average,
+    or does the add's own economics govern the R-multiple going forward
+    while the original tranche's already-secured gain stays untouched —
+    and shipping execution before that question is answered risks
+    corrupting the exact R-multiple/giveback math this whole track has
+    spent five stages getting right. Shadow-logged unconditionally by
+    the caller so real evidence accumulates before that design work
+    starts, rather than starting the design blind.
+    """
+    entry  = float(pos.get("entry_price") or 0)
+    stop0  = float(pos.get("planned_stop") or 0)
+    active = float(pos.get("active_sl") or stop0)
+    if entry <= 0 or stop0 <= 0 or stop0 >= entry:
+        return {"action": "NO_ADD", "reason": "no_baseline",
+               "detail": "missing or invalid entry_price/planned_stop — cannot "
+                         "compute gain_r", "add_qty": 0}
+
+    risk   = entry - stop0
+    gain_r = (ltp - entry) / risk if risk else 0.0
+    runner_min_r = cfg_float("exit_giveback_runner_min_r", 1.0)
+
+    if gain_r < runner_min_r:
+        return {"action": "NO_ADD", "reason": "below_runner_line",
+               "detail": f"{gain_r:+.2f}R — below the {runner_min_r:.2f}R line "
+                         f"a partial should already be banked at; adding here "
+                         f"would add to a position whose own original risk is "
+                         f"not yet secured", "add_qty": 0}
+
+    if pos.get("scaled_in"):
+        return {"action": "NO_ADD", "reason": "already_scaled",
+               "detail": "already received its one add — capped at one, "
+                         "per the roadmap's own explicit limit", "add_qty": 0}
+
+    if not (tq and getattr(tq, "has_evidence", False)
+            and getattr(tq, "verdict", None) == "STRONG"):
+        verdict = getattr(tq, "verdict", None) if tq else None
+        return {"action": "NO_ADD", "reason": "not_strong_enough",
+               "detail": (f"{gain_r:+.2f}R past the runner line, but trend "
+                         f"reads {verdict or 'unavailable'}, not STRONG with "
+                         f"real evidence — new risk needs more conviction "
+                         f"than continuing to hold an existing runner does"),
+               "add_qty": 0}
+
+    add_risk_per_share = ltp - active
+    if add_risk_per_share <= 0:
+        return {"action": "NO_ADD", "reason": "no_room_below_stop",
+               "detail": f"current stop {active:.2f} is at or above the live "
+                         f"price {ltp:.2f} — no risk room to size an add "
+                         f"against", "add_qty": 0}
+
+    try:
+        from analysis.portfolio_constraints import check_new_entry
+        v = check_new_entry(
+            pos.get("symbol") or "", pos.get("sector") or "", pos.get("industry") or "",
+            ltp, add_risk_per_share, open_positions or [],
+            regime=regime, total_capital=total_capital,
+            available_cash=available_cash, product="CNC")
+    except Exception as e:
+        return {"action": "NO_ADD", "reason": "sizing_unavailable",
+               "detail": f"check_new_entry failed: {e}", "add_qty": 0}
+
+    if not v.allowed:
+        return {"action": "NO_ADD", "reason": v.reason,
+               "detail": f"{gain_r:+.2f}R, STRONG trend, but sizing refused "
+                         f"the add: {v.detail}", "add_qty": 0}
+
+    return {
+        "action": "SCALE_IN", "reason": "runner_confirmed_strong",
+        "detail": (f"{gain_r:+.2f}R past the {runner_min_r:.2f}R runner line, "
+                  f"trend STRONG ({tq.checks} checks) — {v.max_qty} share(s) "
+                  f"at ~{ltp:.2f}, risk {add_risk_per_share:.2f}/share against "
+                  f"the current stop {active:.2f}"),
+        "add_qty": v.max_qty, "add_value": v.max_value,
+        "add_risk_per_share": round(add_risk_per_share, 2),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # SIGNAL ATTRIBUTION
 # ─────────────────────────────────────────────────────────────────────────────
 

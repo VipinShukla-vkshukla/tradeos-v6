@@ -38,7 +38,8 @@ def _hdr(t: str) -> None:
 def simulate_swing(sb) -> dict:
     _hdr("SWING")
     from control.position_lifecycle import (evaluate_exit, load_exit_policy,
-                                            load_live_exit_context)
+                                            load_live_exit_context,
+                                            evaluate_scale_in)
     from control.exit_rules import load_signal_context, assess_trend
     from execution.gates import trading_mode, auto_exit_enabled
     from analysis.trade_decision import decide
@@ -75,6 +76,15 @@ def simulate_swing(sb) -> dict:
         logger.info(f"   {mark} {p['symbol']:<11} {r_now:+.2f}R  {d['action']:<15} "
                     f"trend={tq.verdict} ({tq.score:.0%})")
         logger.info(f"       {d['detail'][:96]}")
+
+        # Stage E7 (F-77+) — detection only, no execution path built yet;
+        # see evaluate_scale_in()'s own docstring for why. Reuses the SAME
+        # tq this loop already computed above.
+        from config import TOTAL_CAPITAL
+        sc = evaluate_scale_in(p, ltp, tq, rows, total_capital=TOTAL_CAPITAL)
+        if sc["action"] == "SCALE_IN":
+            logger.info(f"       scale-in shadow — {sc['detail']} — "
+                        f"detection only, no execution path built yet")
 
     # Today's plans, evaluated as the morning would.
     latest = (sb.table("signal_output_daily").select("date")

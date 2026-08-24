@@ -1417,6 +1417,23 @@ existing first to help judge which winners actually merit it.
 - Caps at one add; the combined position's risk is measured from the add
   forward, not blended with the original entry's now-stale number.
 
+**Detection/sizing BUILT, execution deliberately NOT, 24-Aug-2026 (F-78,
+`feat/swing-evolution`).** Operator confirmed before starting, given this
+is the only capital-risk-ADDING stage and SWING is LIVE. Quantified
+first: only 2 of 17 recent closed trades ever crossed the 1.0R runner
+line at their peak — scale-in is rare on this book, the reason to build
+it shadow-first rather than the reason to skip it. New `control/
+position_lifecycle.py::evaluate_scale_in()` implements all four rails
+above exactly, sized through the REAL `check_new_entry()`. No execution,
+no config switch — how a combined position's risk is measured post-add
+(this stage's own last bullet) is a genuinely unresolved accounting
+question this session did not answer, and shipping execution before it
+is answered risks corrupting the R-multiple/giveback math the rest of
+this track spent five stages getting right. Shadow-logged
+unconditionally in both the daemon and `tools.simulate`. Live proof: the
+real 3-position book processes cleanly, correctly shows no signal (none
+past the line yet). Full detail: `docs/FINDINGS.md` F-78.
+
 ## Non-negotiables across the whole track
 
 - No file under `intraday/` outside the shared daemon file's own swing

@@ -13495,3 +13495,102 @@ on `tools/swing_feature_edge_study.py` and `tools/weekly_review.py`
 together, both test modules failed completely against reverted source
 (7/7 and 5/5 — every test ImportErrors on a function that does not yet
 exist), restored and all 12 passed. `tools.verify`: 1044/1045.
+
+## 2026-08-24 — F-78 (change, Track E Stage E7, detection only) —
+position scaling: quantified, then built the full detection/sizing
+decision, deliberately stopping short of execution. Branch
+`feat/swing-evolution`.
+
+**Ran:** `tools.verify`: 1052/1053 (8 new checks; same pre-existing
+unrelated Stage D4 issue). `tools.simulate` against the real 3-position
+book — runs cleanly, correctly shows no signal (none of the three are
+past the runner line yet).
+
+### 1 — WHY THIS STAGE GOT A SEPARATE CONFIRMATION
+
+E7 is explicitly the only stage in the whole track that ADDS capital
+risk rather than sharpening a decision already being made, and its own
+roadmap text says it benefits from E6's validated-finding mechanism
+existing first — which is only 2/5 built (F-77). Confirmed with the
+operator before starting, given SWING is LIVE, rather than reading
+"then move forward" as extending that far by default.
+
+### 2 — QUANTIFY FIRST
+
+Of 17 recent closed SWING trades with usable `max_favorable_excursion`
+data, only 2 (both PPLPHARMA, different entries) ever crossed the 1.0R
+runner line at their peak (1.87R and 1.34R). Every other trade topped
+out below 1.0R. **Scale-in opportunities are rare on this book** —
+consistent with how rarely trades reach the 3R hard target the existing
+RUN decision already governs (F-43's own "5% of trades that reach 3R").
+This is not a reason not to build the mechanism; it is the reason to
+build it now, shadow-first, so real evidence accumulates before the
+rare day it actually matters, rather than designing execution logic
+from scratch under time pressure the first time it fires live.
+
+### 3 — WHAT WAS BUILT: THE FOUR RAILS
+
+New `control/position_lifecycle.py::evaluate_scale_in()`, mirroring
+`evaluate_exit()`'s shape but answering a different question — deliberately
+NOT folded into the exit ladder, because "is this position still okay to
+hold" and "should NEW risk be added to it" are different questions and
+conflating them is how a ladder drifts. Four rails, each the roadmap's
+own explicit condition:
+
+1. `gain_r >= giveback_runner_min_r` (1.0R) — the same line F-43's
+   tiered giveback guard already uses to mean the original risk should
+   already be secured (partial banked, stop at/above breakeven).
+2. `assess_trend()` verdict `STRONG` with real evidence — STRICTER than
+   `target_decision()`'s own `should_run` (STRONG-or-INTACT): new risk
+   deserves more conviction than continuing to hold an existing runner.
+3. Capped at one add (`pos.get("scaled_in")`) — the roadmap's own
+   explicit limit.
+4. Sized through `analysis.portfolio_constraints.check_new_entry()` —
+   the SAME function and `risk_pct_per_trade` budget any fresh entry
+   uses, priced off the position's CURRENT stop (`active_sl`), never its
+   unrealized profit — the guard against pyramiding on paper gains. An
+   add competes for the same slot/sector/risk-budget caps any new
+   candidate would; `open_positions` is passed with the position itself
+   still in it, unfiltered.
+
+### 4 — WHY EXECUTION STOPS HERE, DELIBERATELY
+
+`evaluate_scale_in()` returns a decision; it never places an order,
+never writes to `open_positions`, has no config switch to arm. The
+roadmap's own text requires "the combined position's risk is measured
+from the add forward, not blended with the original entry's now-stale
+number" — a genuinely unresolved accounting question (does `entry_price`
+become a weighted average, or does the add's own economics govern the
+R-multiple going forward while the original tranche's already-secured
+gain stays untouched?) that this session did not answer. Shipping
+execution before it is answered risks corrupting the exact R-multiple/
+giveback math this whole track has spent five stages getting right.
+Shadow-logged unconditionally instead — no switch, because a switch that
+arms nothing (execution does not exist yet) is its own kind of footgun,
+an operator arming it and getting silence.
+
+Wired into both consumers, matching every other Stage E mechanism this
+session: `intraday/engine.py::_shadow_scale_in()` (swing-only branch,
+called once per SWING position per cycle, right after `evaluate_exit()`/
+`_track_trend_quality()`) and `tools/simulate.py::simulate_swing()`
+(reusing the SAME `tq` that loop already computes, no duplicate call).
+
+### 5 — VERIFIED
+
+8 new checks in `tests/test_stage_e7_scale_in.py`, demonstrated failing
+first: `git stash` on all three touched source files, all 8 ImportError
+against reverted source, restored and all 8 passed. Sizing tested
+against the REAL `check_new_entry()` (not mocked) — a hand-calculated
+qualifying case, and a real refusal case (book at its position-count
+cap) correctly propagates. `tools.verify`: 1052/1053. `tools.simulate`
+live: all three real positions process without error; none currently
+past the 1.0R line, so no shadow line fires today — the correct, honest
+result given §2's own base rate, not a gap.
+
+### 6 — NOT DONE
+
+Order execution (placing the actual add, updating `open_positions`
+quantity/`invested_value`, marking `scaled_in`) and the R-multiple/
+entry-price accounting question §4 names — both explicitly out of scope
+this session, pending that design question being answered on its own,
+not rushed to unblock a stage.

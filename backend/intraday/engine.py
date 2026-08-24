@@ -1879,6 +1879,7 @@ class IntradayEngine:
             else:
                 d = evaluate_exit(p, float(ltp), held, self._policy)
                 self._track_trend_quality(p)
+                self._shadow_scale_in(p, float(ltp))
 
             # LIVE METRICS ON EVERY CYCLE, INCLUDING WHEN NOTHING IS TO BE DONE.
             #
@@ -1952,6 +1953,39 @@ class IntradayEngine:
             p.update(upd)
         except Exception as e:
             logger.debug(f"  {p.get('symbol')}: trend telemetry skipped — {e}")
+
+    def _shadow_scale_in(self, p: dict, ltp: float) -> None:
+        """
+        Track E, Stage E7, 24-Aug-2026 — DETECTION ONLY, unconditional
+        shadow log, no config switch. Unlike every other Stage E/F
+        shadow this session built, there is deliberately nothing to arm
+        yet: `evaluate_scale_in()`'s own docstring explains why —
+        execution needs a real answer to how a combined position's risk
+        is measured post-add, an accounting question this session left
+        unresolved on purpose rather than guess at with real capital.
+        This just proves the DETECTION side works and starts
+        accumulating real evidence of how often it would even fire.
+        """
+        if (p.get("framework") or "SWING").upper() != "SWING":
+            return
+        try:
+            from control.position_lifecycle import evaluate_scale_in
+            from config import capital_for
+            ctx = (self._policy or {}).get("_trend_ctx") or {}
+            sig = ctx.get(p.get("symbol"))
+            tq = None
+            if sig:
+                from control.exit_rules import assess_trend
+                tq = assess_trend(sig, p)
+            regime = (self._policy or {}).get("_current_regime") or "NEUTRAL"
+            d = evaluate_scale_in(p, ltp, tq, self._swing_positions(),
+                                  regime=regime, total_capital=capital_for("SWING"))
+            if d["action"] == "SCALE_IN":
+                logger.info(f"  {p.get('symbol')}: scale-in shadow — "
+                           f"{d['detail']} — detection only, no execution "
+                           f"path built yet (Stage E7)")
+        except Exception as e:
+            logger.debug(f"  {p.get('symbol')}: scale-in shadow check skipped — {e}")
 
     def _track_excursion(self, p: dict, ltp: float) -> None:
         """Keep high_water_mark, MFE and MAE current. Cheap, and only on change."""
