@@ -320,3 +320,70 @@ def liquidity_capped_budget(value_cr: float | None, budget: float) -> float:
         return budget
     max_share = cfg_float("overlay_max_share_of_daily_value", 0.005)
     return min(budget, value_cr * 1e7 * max_share)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. EXECUTION-QUALITY DEPTH GATE — Stage D4, 24-Aug-2026
+# ─────────────────────────────────────────────────────────────────────────────
+
+def depth_ok(depth: dict | None, side: str, planned_qty: int) -> tuple[bool, str]:
+    """
+    Refuse or flag an already-decided entry when the ORDER BOOK, not the
+    candle, says the fill will not be near plan.
+
+    liquidity_ok() above asks whether this name's ORDINARY turnover can
+    absorb the position over the life of a stop. This asks a narrower,
+    same-second question: does the book resting RIGHT NOW have room for
+    this order without moving the price against itself? A name can pass
+    liquidity_ok() on yesterday's volume and still have a thin, gapped book
+    at the moment of entry — an opening print, a name mid-news, or simply a
+    quiet minute between real orders.
+
+    Protection, not prediction — same shape as liquidity_ok() and
+    BLOCKED_STRUCTURE: a candidate that already cleared every scoring gate
+    can still be refused here, and that refusal costs nothing but the trade
+    not being forced into a bad fill.
+
+    depth is SymbolContext.depth: {"buy": [...], "sell": [...]}, each a list
+    of Kite FULL-mode levels ({"price","quantity","orders"}, best price
+    first). None or empty means "no depth data for this symbol yet" — FULL
+    mode was never requested for it, or nothing has ticked since — and that
+    is waved through rather than refused, because an entry must never be
+    blocked by capture-side plumbing rather than a measured, bad book.
+    """
+    if not cfg_bool("overlay_depth_enabled", False):
+        return True, "depth gate disabled"
+
+    if not depth:
+        return True, "no depth data yet"
+
+    bids = depth.get("buy") or []
+    asks = depth.get("sell") or []
+    if not bids or not asks:
+        return True, "incomplete depth data"
+
+    best_bid = float(bids[0].get("price") or 0)
+    best_ask = float(asks[0].get("price") or 0)
+    if best_bid <= 0 or best_ask <= 0:
+        return True, "invalid depth prices"
+
+    mid = (best_bid + best_ask) / 2.0
+    spread_pct = (best_ask - best_bid) / mid * 100.0 if mid else 0.0
+    max_spread = cfg_float("intraday_max_spread_pct", 0.25)
+    if spread_pct > max_spread:
+        return False, (f"spread {spread_pct:.2f}% (bid {best_bid:.2f} / "
+                       f"ask {best_ask:.2f}) against a {max_spread:.2f}% "
+                       f"limit — the book is too thin to fill near plan")
+
+    # A BUY consumes the ASK side of the book (what's offered to sell to
+    # us); a SELL consumes the BID side. Depth on the wrong side is not the
+    # test — it is a snapshot of demand/supply, not what this order eats.
+    levels = asks if side.upper() == "BUY" else bids
+    max_levels = cfg_int("intraday_depth_levels_checked", 3)
+    available = sum(int(lvl.get("quantity") or 0) for lvl in levels[:max_levels])
+    if available < planned_qty:
+        return False, (f"only {available} shares resting in the top "
+                       f"{max_levels} levels against {planned_qty} planned — "
+                       f"the order would walk the book past its own plan")
+
+    return True, f"spread {spread_pct:.2f}%, {available} shares resting"

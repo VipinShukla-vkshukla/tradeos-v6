@@ -780,6 +780,43 @@ one more row in the same table.
 universe; a demonstrated refusal on a real thin-book case; no change to
 any candidate that already had a healthy spread.
 
+**Built, 24-Aug-2026.** FULL mode scoped to `IntradayEngine.
+context_symbols()` (positions ∪ the live universe, ~40-120 names) rather
+than the whole ~270-name bench — verified live that Kite's 3,000-
+instrument subscription ceiling is uniform across LTP/QUOTE/FULL, so the
+reason to stay scoped is bandwidth, not the cap, and only this set can
+ever generate an entry decision. `price_feed.py::set_depth_symbols()`
+diffs the depth-worthy set and moves symbols into/out of `MODE_FULL`
+independently of `resubscribe()`'s own slower cadence; captured depth
+reaches the engines via `SymbolContext.depth` (`engine.py::
+apply_live_depth()`), the same "carry it on the context" pattern
+`apply_live_quotes()` already uses. `analysis/overlays.py::depth_ok()`
+— same shape as `liquidity_ok()` — refuses an already-decided entry on
+an abnormal spread (`intraday_max_spread_pct`) or insufficient resting
+depth on the consuming side of the book
+(`intraday_depth_levels_checked`), recording a new `BLOCKED_DEPTH`
+verdict through the existing `_record_setup()` path.
+
+Two real bugs caught before either shipped armed: the depth-capture
+block in `on_ticks()` sat behind an unrelated quote-capture switch and
+would never have stored a FULL-mode tick's depth field; `set_depth_
+symbols()` itself had no config check at all, so arming nothing would
+still have put live Kite subscriptions into FULL mode the moment the
+code ran. Both fixed — the second one specifically by making a disabled
+switch revert any symbol already in FULL mode, not merely refuse new
+ones. F-54 (docs/FINDINGS.md, this branch's own sequence) has the full
+detail, including a mid-session branching correction: this work was
+first written on `feat/intraday-event-core` (D3's branch) and was moved
+to a fresh `feat/intraday-depth-gate` off `main` before anything was
+committed, once the mismatch with this roadmap's own stated branch name
+was noticed.
+
+**Ships OFF** (`intraday_depth_mode_enabled=false`,
+`overlay_depth_enabled=false`). Per the operator's own stated plan, Gate
+D4 — like Gate D2 and Gate D3 before it — is deferred to a single
+holistic pass across every Track D stage once all of them are built, not
+cleared stage-by-stage.
+
 ## Stage D5 — Shadow regression / same-day self-monitor
 
 **Branch:** `feat/intraday-regression-shadow`.

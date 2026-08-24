@@ -214,6 +214,12 @@ class SymbolContext:
     atr_pct_daily: float | None = None  # daily ATR%, for sanity-checking targets
     avg_volume_20d: float | None = None
     value_cr: float | None = None       # prev day's traded value, Rs crore — analysis.overlays.liquidity_ok()
+    # 5-level market depth from Kite's FULL mode — Stage D4, 24-Aug-2026.
+    # {"buy": [{"price","quantity","orders"}, ...], "sell": [...]}, best
+    # price first each side. None means "no depth yet" (FULL mode not yet
+    # applied to this symbol, or nothing has ticked since it was) — NOT
+    # "book is empty". analysis.overlays.depth_ok() reads this.
+    depth: dict | None = None
     sector: str = ""
     # Relative strength against the index, computed the same way for every
     # engine so "strong today" means one thing across the system.

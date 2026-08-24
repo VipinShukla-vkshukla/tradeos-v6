@@ -145,6 +145,9 @@ MODULES = [
     ("price feed dirty-symbol tracking", "tests.test_price_feed_dirty"),
     ("event core shadow detection", "tests.test_event_core"),
     ("event core vs trusted-loop comparison (Gate D3)", "tests.test_event_core_compare"),
+    ("execution-quality depth gate (Stage D4)", "tests.test_overlays_depth"),
+    ("price feed depth (FULL-mode) plumbing (Stage D4)", "tests.test_price_feed_depth"),
+    ("engine depth overlay onto contexts (Stage D4)", "tests.test_apply_live_depth"),
 ]
 
 
