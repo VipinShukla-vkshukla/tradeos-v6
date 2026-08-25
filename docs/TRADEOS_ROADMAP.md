@@ -1484,8 +1484,17 @@ submit → pending → confirm order path in `intraday/engine.py`, reusing
 rather than inventing new order machinery, plus a standing health check
 (`check_pending_scale_ins`) for a stuck add. 10 new tests, all passing
 against the real decision/sizing functions. Full detail: `docs/
-FINDINGS.md` F-81. Arming is a separate, later, explicit operator
-decision — not done this session.
+FINDINGS.md` F-81.
+
+**ARMED, 25-Aug-2026 (F-82), same session.** Both switches set `true`
+on the operator's own explicit instruction, given full awareness this
+is a zero-evidence arm — unlike F-79's four "seasoned" switches, this
+mechanism has never fired against a real position even in shadow. The
+live book at arm time held one open SWING position (HAL), sitting
+below its own entry price and not eligible, so arming had no immediate
+effect. Takes hold the next time a live position clears all four
+rails. Full detail, including the harness-level hold the first arming
+attempt hit and how it was resolved: `docs/FINDINGS.md` F-82.
 
 ## Non-negotiables across the whole track
 

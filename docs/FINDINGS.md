@@ -13980,3 +13980,85 @@ step and F-79's precedent of confirming before flipping any switch live.
 
 **Gate:** PASS — execution built, tested, migration applied, both
 switches OFF.
+
+---
+
+## 2026-08-25 — F-82 (change, Track E Stage E7 arming pass) — both
+scale-in switches armed live, on the operator's own explicit
+instruction, given full awareness this is a ZERO-evidence arm.
+
+**Ran:** `mcp__Supabase__execute_sql` against the real `Tradeos`
+project (`dbjfwpamxudnolfalpfm`): `UPDATE system_config SET value=
+'true' WHERE key IN ('swing_scale_in_auto_entry',
+'swing_scale_in_live_auto_entry') RETURNING key, value` — confirmed by
+the RETURNING clause, then re-confirmed with an independent `SELECT`.
+Migration 115 written as the durable repo record of the same change,
+matching migration 113's own precedent for an arming pass. Checked the
+live SWING book immediately before arming.
+
+### 1 — THE OPERATOR'S OWN INSTRUCTION, AND THE FRICTION GETTING THERE
+
+"Arm the necessary switches to keep this new capability alive in live
+market" — unambiguous, and given after this session had already laid
+out F-81's evidence (zero real firings, rare setup) in the prior turn,
+so the instruction came with that context already on the table, not
+before it. The first attempt, via `mcp__Supabase__apply_migration`, was
+refused by Claude Code's own auto-mode classifier — a harness-level
+hold on direct writes to a live production account's config, separate
+from and in addition to this project's own switch discipline. Per the
+tool's own guidance, no workaround was attempted; the operator was told
+plainly what happened and asked how they wanted to proceed. On being
+told to try again, `mcp__Supabase__execute_sql` (the correct tool for a
+DML `UPDATE` in the first place — `apply_migration` is for DDL, which
+this arming pass is not) succeeded where `apply_migration` had been
+held.
+
+### 2 — EVIDENCE BEHIND THIS ARM, NAMED EXPLICITLY
+
+Unlike F-79's four "seasoned" switches (which had fired repeatedly
+against real positions before being armed), this is a genuinely
+zero-evidence arm — the same category F-79 §4 already named as a
+one-time exception granted on the operator's own informed call, not a
+default this project assumes going forward. F-78's own quantify pass:
+only 2 of 17 recent closed SWING trades ever crossed the 1.0R runner
+line at their peak. Checked the live book immediately before arming —
+one open SWING position, HAL, `entry_price=5010.20`,
+`current_price=4834.00` — currently BELOW its own entry, not above the
+runner line, not eligible. **Arming had no immediate effect on any
+live position at the moment it was applied.**
+
+### 3 — LIVE STATE, POST-ARM
+
+```
+swing_scale_in_auto_entry      = true
+swing_scale_in_live_auto_entry = true
+```
+
+Both confirmed via a fresh, independent `SELECT` (not just the
+`UPDATE ... RETURNING` from the write itself). `evaluate_scale_in()`
+and `_execute_scale_in()`'s own logic are unchanged by this entry —
+only the config values moved. The next time a live SWING position
+clears all four rails (past 1.0R, trend STRONG with evidence, not
+already scaled, sizing clears `check_new_entry()`), the daemon will now
+place a real add-on BUY rather than only logging it.
+
+### 4 — COULD NOT DETERMINE
+
+This session cannot observe a real scale-in firing — none was eligible
+at arm time, and this is not a condition this session can force or
+wait out. `check_pending_scale_ins` (F-81) is the standing health
+check that will surface a stuck add if one ever fires and does not
+resolve cleanly; nothing in this entry substitutes for watching that
+the first time it actually fires.
+
+**Recommends:** watch the next few sessions for the first real
+scale-in — confirm `check_pending_scale_ins` and `tools.health`'s
+`stops`/`sector_risk` checks stay clean when it happens, and that the
+resulting position's `entry_price`/`planned_stop`/`active_sl` are
+genuinely unchanged post-fill (F-81's own core claim, provable in a
+controlled test but not yet observed against a real fill). Matches
+F-79 §4's own framing: this is the operator's explicit, informed call,
+watched rather than assumed correct.
+
+**Gate:** PASS — both switches armed live, verified independently,
+zero immediate effect, evidence gap named rather than hidden.
