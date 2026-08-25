@@ -14373,3 +14373,136 @@ touched — not done this session, flagged rather than assumed clean.
 **Gate:** PASS — root cause fixed and tested; the one row the operator
 asked about is corrected and independently verified; the scope of any
 other affected rows is named as unresolved rather than assumed zero.
+
+---
+
+## 2026-08-25 — F-85 (correction to F-84, same session) — F-84's own fix
+was itself wrong on `entry_price`: it used a hand-derived blend of the
+two visible buy fills instead of the broker's own reported average,
+which this session already had sitting unused in `position_reconcile_
+log`. Operator caught it by supplying Zerodha's Holdings page and asking
+for the reconciliation to be redone — right to push back.
+
+**Ran:** Operator supplied a screenshot of Zerodha's Holdings page
+(`Last updated: 2026-08-24`) showing HINDCOPPER as two rows — an
+already-closed 8-share lot (buy avg 546.02, realised +150.80) and the
+still-open 13-share lot (buy avg 555.12, unrealised +247.45) — plus the
+same tradebook rows already used in F-84. Cross-checked both rows
+against the tradebook arithmetically (Python, exact figures below).
+`UPDATE closed_positions ... WHERE id=13152` via the Supabase MCP
+against the real `Tradeos` project, verified with an independent
+`SELECT` afterward.
+
+### 1 — WHAT F-84 GOT WRONG
+
+F-84 computed `entry_price` as the simple quantity-weighted average of
+the two 2026-08-24 buy fills alone: (7×568.40 + 6×569.45)/13 = 568.88.
+That number was never checked against what the broker itself reports
+for this exact holding — and this session already HAD that number:
+`position_reconcile_log`'s own QTY_INCREASED row from 2026-08-25
+03:45:08 UTC carries `broker_price: 555.1153846153846`, read directly
+from Kite via `reconcile_with_broker()`, not derived by hand. F-84's
+own write-up quoted this exact row in its trace (§2) and used it to
+diagnose the phantom-partial bug — and then did not use the SAME row's
+`broker_price` for the correction it made two paragraphs later. That is
+the whole gap: the right number was already in evidence gathered this
+session, unused.
+
+### 2 — WHY 555.12, NOT 568.88 — VERIFIED TWO INDEPENDENT WAYS
+
+The operator's screenshot let this be checked rather than merely
+asserted:
+
+1. **Total buy value is conserved across BOTH Holdings rows.** ₹4,368.20
+   (the closed 8-share lot) + ₹7,216.50 (the still-open 13-share lot) =
+   ₹11,584.70 — exactly the tradebook's total spend across all three buy
+   fills (8×523.65 + 7×568.40 + 6×569.45 = 11,584.70). Zerodha is
+   accounting for the identical total spend this session already had;
+   it is only partitioned differently across the two lots than F-84
+   assumed.
+2. **The closed lot's own realised P&L confirms the shift.** Priced at
+   the RAW 08-14 fill (523.65), the 8 sold shares' realised P&L would be
+   (4×561.90 + 4×567.85) − 8×523.65 = ₹329.80. Zerodha's Holdings page
+   shows only ₹150.80 for that same lot — a ₹179.00 shortfall — and
+   ₹179.00 is also exactly what shifts the still-open lot's buy value
+   from a naive 7,395.50 (the raw two 08-24 fills) down to the reported
+   7,216.50. The same ₹179 moves, both checks agree.
+
+The mechanism (not fully resolved, and does not need to be to trust the
+number): Zerodha's own cost-basis accounting for this ISIN is a moving
+average that evidently draws on account history before this
+tradebook's 2026-07-25 window — an earlier HINDCOPPER lot this session
+has no visibility into. The broker's own system has access to that
+history; this session does not. Given a straight choice between a
+number this session derived from a partial trade history and the
+broker's own reported figure — confirmed self-consistent by two
+independent checks against the SAME partial history — the broker's
+number is the one to trust.
+
+### 3 — THE ROW, CORRECTED AGAIN
+
+`closed_positions` id=13152, updated a second time and independently
+re-verified:
+
+| field | F-84 (wrong) | now (F-85) |
+|---|---|---|
+| entry_price | 568.88 | 555.12 |
+| invested_value | 7395.44 | 7216.50 |
+| realized_pnl | −270.14 | −91.20 |
+| pnl_pct | −3.653 | −1.264 |
+| r_multiple | −0.320 | −0.137 |
+
+`actual_qty` (13) and `charges` (31.21) are unchanged from F-84 — the
+quantity fix and the missing-entry-charges fix were both correct;
+only the entry PRICE was wrong. Charges stay keyed to the real
+executed fill values (568.40/569.45), not the broker's average-cost
+figure — STT and brokerage are levied on the actual transaction, not a
+notional average.
+
+Dashboard consequence: net P&L moves from F-84's −₹301.35 (−3.65%) to
+−₹122.41 (−1.26%) — a SMALLER loss than F-84 showed, the opposite
+direction from F-84's own correction relative to the original wrong
+number. Anyone who saw the F-84 figure between these two commits saw a
+real number that was still wrong, now corrected a second time in the
+open rather than quietly.
+
+### 4 — WHAT THIS SAYS ABOUT THE CODE FIX FROM F-84
+
+`_merge_day_position()`'s fix itself is not affected by this — it
+corrects the QUANTITY drift (13 vs the phantom 22), which is a pure
+same-day-fill-visibility problem this session's own data fully
+explains. `entry_price`, by contrast, is a COST-BASIS question that
+depends on broker-side accounting this codebase does not have full
+visibility into either, for the same reason this session did not:
+`open_positions.entry_price` is set once at entry from the fill price
+this system itself paid, and correctly never touches broker-reported
+average cost. This specific row's entry_price was wrong for an
+unrelated reason — the F-67 double-buy's second erroneous fill
+overwriting the first via `_upsert_position`'s upsert-over-first
+behaviour — and the fix for THAT (use the broker's own reported
+average when reality has moved beyond what this system's own writes
+captured) is a manual, one-row correction, not a code change: there is
+no general rule "when in doubt, trust Kite's average price" that would
+be safe to encode, since `entry_price` deliberately means "what THIS
+system paid," not "what Zerodha's moving average now says," for every
+OTHER row where the system's own record is the more relevant number
+(e.g. R-multiple against a specific planned stop is measured from what
+was actually paid, not a broker-side blend that can move for reasons
+unrelated to this trade).
+
+### 5 — COULD NOT DETERMINE
+
+Whether HINDCOPPER has trading history in this account before
+2026-07-25 that would fully explain Zerodha's 555.12 arithmetically —
+not verified beyond the two conservation checks in §2, which prove the
+number is internally consistent with everything visible, not why it is
+exactly 555.12 to the last paisa. Not needed to trust the correction,
+named for completeness.
+
+**Recommends:** none beyond F-84's own — the sweep for other rows this
+same bug class may have touched should also cross-check `entry_price`
+against Zerodha's Holdings page for any row it flags, not just qty,
+given this exact miss.
+
+**Gate:** PASS — corrected a second time, independently verified,
+error in the first correction owned plainly rather than left standing.
