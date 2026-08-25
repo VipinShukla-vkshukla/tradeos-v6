@@ -31,6 +31,16 @@ env:
 defaults:
   run:
     working-directory: backend
+    # Every `run:` step below already executes from backend/ because of
+    # this default — a step must NOT also `cd backend &&`, or it tries to
+    # enter backend/backend, fails immediately, and (masked by continue-
+    # on-error: true on every step past "Send weekly Telegram digest")
+    # reports green while doing nothing. Found F-80, 25-Aug-2026: EVERY
+    # step from "Weekly learning review" through "Refresh ipo_listings"
+    # (8 of them, added across five separate commits since 16-Aug) had
+    # this exact bug and had been silently no-op-ing on every run since —
+    # including the one that had just wired the Stage E6 recency
+    # validator into this same file hours earlier. docs/FINDINGS.md F-80.
 
 jobs:
   weekly_perf_digest:
@@ -86,7 +96,7 @@ jobs:
           TOTAL_CAPITAL:        ${{ secrets.TOTAL_CAPITAL }}
           TZ: Asia/Kolkata
         run: |
-          cd backend && python -m tools.weekly_review
+          python -m tools.weekly_review
 
       # Track E, Stage E6 (F-77/F-79) — re-check every PENDING SWING/
       # feature-edge finding against fresh data before it can ever be
@@ -103,7 +113,7 @@ jobs:
           TOTAL_CAPITAL:        ${{ secrets.TOTAL_CAPITAL }}
           TZ: Asia/Kolkata
         run: |
-          cd backend && python -m tools.swing_feature_edge_study --validate
+          python -m tools.swing_feature_edge_study --validate
 
       # Discovery, after the review. The review judges the engines that
       # exist; this looks for the ones that do not — the moves no engine saw at
@@ -116,7 +126,7 @@ jobs:
           TOTAL_CAPITAL:        ${{ secrets.TOTAL_CAPITAL }}
           TZ: Asia/Kolkata
         run: |
-          cd backend && python -m tools.discover_engines --days 21
+          python -m tools.discover_engines --days 21
 
       # Which SPECIFIC setups within an engine work, not just whether the
       # engine does — volume_ratio, ATR, sector, regime, hour-of-day, mined
@@ -131,7 +141,7 @@ jobs:
           TOTAL_CAPITAL:        ${{ secrets.TOTAL_CAPITAL }}
           TZ: Asia/Kolkata
         run: |
-          cd backend && python -m tools.feature_edge_study
+          python -m tools.feature_edge_study
 
       # Resolve anything the daemon left unscored BEFORE the two analyses above
       # would have read it. Kept as its own step rather than folded into them,
@@ -145,7 +155,7 @@ jobs:
           TOTAL_CAPITAL:        ${{ secrets.TOTAL_CAPITAL }}
           TZ: Asia/Kolkata
         run: |
-          cd backend && python -m intraday.outcomes --backfill
+          python -m intraday.outcomes --backfill
 
       # The two steps above say which ENGINES and GATES are working. This says
       # which SWITCHES to move as a result — the question the operator actually
@@ -160,7 +170,7 @@ jobs:
           TOTAL_CAPITAL:        ${{ secrets.TOTAL_CAPITAL }}
           TZ: Asia/Kolkata
         run: |
-          cd backend && python -m tools.control_room --propose
+          python -m tools.control_room --propose
 
       # Weekly, matching NSE's own index-reconstitution cadence — nothing
       # about this changes daily. Feeds intraday/scanner.py::unreferenced_
@@ -175,7 +185,7 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           TZ: Asia/Kolkata
         run: |
-          cd backend && python -m swing.ingestion.ingest_nifty_total_market
+          python -m swing.ingestion.ingest_nifty_total_market
 
       # Weekly — NSE closes a mainboard IPO a handful of times a week,
       # not daily. Feeds intraday/scanner.py::recent_ipo_candidates()
@@ -190,7 +200,7 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           TZ: Asia/Kolkata
         run: |
-          cd backend && python -m swing.ingestion.ingest_ipo_listings
+          python -m swing.ingestion.ingest_ipo_listings
 
       - name: Upload logs on failure
         if: failure()

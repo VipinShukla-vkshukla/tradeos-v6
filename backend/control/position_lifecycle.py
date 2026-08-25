@@ -1112,20 +1112,31 @@ def evaluate_scale_in(pos: dict, ltp: float, tq, open_positions: list[dict],
        pyramiding-on-paper-gains: an add must earn its own risk budget
        against real capital, not spend a gain that has not been banked.
 
-    DELIBERATELY DETECTION-ONLY THIS SESSION. Returns a decision dict —
-    never places an order, never writes to `open_positions`, no config
-    switch to arm, because arming implies live execution exists and it
-    does not yet: how a combined position's risk should be measured
-    "from the add forward, not blended with the original entry's now-
-    stale number" (the roadmap's own words) is a real, unresolved
-    accounting question — does entry_price become a weighted average,
-    or does the add's own economics govern the R-multiple going forward
-    while the original tranche's already-secured gain stays untouched —
-    and shipping execution before that question is answered risks
-    corrupting the exact R-multiple/giveback math this whole track has
-    spent five stages getting right. Shadow-logged unconditionally by
-    the caller so real evidence accumulates before that design work
-    starts, rather than starting the design blind.
+    STILL DECISION-ONLY — this function never places an order or writes
+    to `open_positions` itself, exactly as when it shipped (F-78). What
+    changed (F-81, migration 114): execution now EXISTS, built in
+    `intraday/engine.py` (`_execute_scale_in`/`_merge_scale_in_fill`)
+    behind two switches mirroring `swing_auto_entry`/`swing_live_auto_
+    entry` — `swing_scale_in_auto_entry`/`swing_scale_in_live_auto_
+    entry`, both shipped OFF. Arming is a separate, later decision.
+
+    THE ACCOUNTING QUESTION F-78 LEFT OPEN, RESOLVED (F-81): "does
+    entry_price become a weighted average, or does the add's own
+    economics govern the R-multiple going forward while the original
+    tranche's already-secured gain stays untouched" — the second one,
+    using a precedent already live in this codebase rather than a fresh
+    invention: `reconcile_with_broker()`'s own QTY_INCREASED branch has
+    for months grown `current_qty`/`invested_value` on any quantity
+    increase WITHOUT ever touching `entry_price`. Scale-in execution
+    follows the identical rule — `entry_price`/`planned_stop`/
+    `active_sl` (the three inputs `evaluate_exit()`'s gain_r/giveback/
+    trailing math reads) are NEVER written by an add. The add's own
+    fill price and its own risk-per-share (`add_risk_per_share` above,
+    computed here and previously discarded by the caller) are now
+    persisted as `scaled_in_price`/`scaled_in_stop` — an audit/learning
+    trail, not a second live stop; there is still only one `active_sl`
+    per row governing the whole combined quantity. See migration 114's
+    own header for the full reasoning and `docs/FINDINGS.md` F-81.
     """
     entry  = float(pos.get("entry_price") or 0)
     stop0  = float(pos.get("planned_stop") or 0)

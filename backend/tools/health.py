@@ -729,6 +729,46 @@ def check_pending_fill_duplicates() -> tuple[bool, str]:
     return True, f"no duplicate SWING buys in the last 7 days ({len(rows)} orders placed)"
 
 
+def check_pending_scale_ins() -> tuple[bool, str]:
+    """
+    Is a Stage E7 scale-in add stuck awaiting fill confirmation past when
+    it should have resolved?
+
+    Same question `check_pending_fills` asks about a fresh entry, asked
+    about the ADD instead — the same TMCV-shaped risk applies: a LIMIT
+    day order that never actually filled must not be silently forgotten.
+    `scale_in_status` is a column distinct from the row's own `status`
+    (migration 114) specifically so the original tranche keeps being
+    read/managed everywhere while only the add is unresolved — which
+    means nothing else in this check registry would ever notice a stuck
+    add on its own; it needs its own standing check exactly as the entry
+    side got one after TMCV.
+    """
+    from config import get_supabase, today_ist
+
+    sb = get_supabase()
+    rows = (sb.table("open_positions")
+              .select("symbol,synced_at,scale_in_order_id,scaled_in_at")
+              .eq("scale_in_status", "PENDING_FILL").execute().data or [])
+    if not rows:
+        return True, "no scale-in adds awaiting fill confirmation"
+
+    today = today_ist().isoformat()
+    stuck = [r for r in rows
+             if str(r.get("synced_at") or "")[:10] < today or not r.get("scale_in_order_id")]
+    if stuck:
+        names = ", ".join(f"{r['symbol']} (since {r.get('synced_at')})" for r in stuck[:5])
+        return False, (f"{len(stuck)} scale-in add(s) stuck PENDING_FILL past their "
+                       f"own session, or missing an order_id to resolve against: "
+                       f"{names}. _resolve_pending_scale_ins could not confirm "
+                       f"these — check manually against Kite; the ORIGINAL "
+                       f"position is unaffected and still fully managed either way.")
+
+    return True, (f"{len(rows)} scale-in add(s) awaiting fill confirmation from "
+                  f"today's session, none overdue: "
+                  f"{', '.join(r['symbol'] for r in rows)}")
+
+
 def check_sector_concentration_risk() -> tuple[bool, str]:
     """
     Does a meaningful fraction of the live SWING book sit in sectors that
@@ -2116,6 +2156,7 @@ CHECKS = [
     ("daemon",   "nothing is watching your positions right now",                 check_daemon,   False),
     ("pending",  "an entry order that never filled is being tracked as a real position", check_pending_fills, False),
     ("pending_dup", "a SWING symbol was bought twice within minutes — the F-67 shape", check_pending_fill_duplicates, False),
+    ("pending_scale_in", "a Stage E7 add-on order never filled and nobody would otherwise notice", check_pending_scale_ins, False),
     ("sector_risk", "a majority of the open SWING book sits in sectors rotating away from it", check_sector_concentration_risk, False),
     ("exits_open", "a SELL the system decided on is still unfilled and the position is unprotected", check_open_exits, False),
     ("learning", "engines are being judged on evidence that was never collected", check_learning_loop, False),

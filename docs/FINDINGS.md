@@ -13695,3 +13695,288 @@ particular over the coming sessions — do they fire sensibly, does
 `entry_rr_retention_floor`'s 0.20 starting point need recalibrating
 once real refusals accumulate — is the natural next check, not
 something this session can itself provide more evidence for today.
+
+---
+
+## 2026-08-25 — F-80 (bug fix, real gap closed) — the recency validator's
+"automatic trigger" from the F-79 follow-up commit was itself dead on
+arrival: EVERY step in the Sunday brain chain past the Telegram digest
+had been silently no-op-ing for 9 days on a `cd backend` double-path
+bug, `continue-on-error: true` reporting green the whole time.
+
+**Ran:** `mcp__github__actions_list`/`get_job_logs` against the real
+repo's most recent `TradeOS Brain Sunday Chain` run (id 32807877090,
+25-Aug-2026 04:09 UTC, head_sha `a6e734a` — the exact commit that had
+just wired the validator in). `python3 -c "import yaml; yaml.safe_load(...)"`
+on the fixed file. Local reproduction: `cd backend && python -m
+tools.swing_feature_edge_study --validate` from the repo root (the
+broken shape) vs from `backend/` directly (the fixed shape). SQL via
+the Supabase MCP against the real `Tradeos` project
+(`dbjfwpamxudnolfalpfm`): `brain_proposals` PENDING/VALIDATED/REJECTED
+counts for `target_key LIKE 'SWING/%' AND proposal_type='FEATURE_FILTER'`.
+
+### 1 — WHAT WAS CLAIMED, AND WHY IT WAS WRONG
+
+The operator's own screenshot (attached to this session's request) drew
+on a PRIOR session's claim that the swing engine lifecycle review "already
+runs... I added the lifecycle review directly inside that same function —
+so it will run automatically this coming Sunday without anyone doing
+anything." That claim was checked against the code (`tools/weekly_review.py`
+does call `review_swing_engine_lifecycle()` from its own `main()` — true)
+but never checked against whether the SCHEDULING MECHANISM carrying
+`weekly_review` to production actually executes it. It does not, and has
+not since 16-Aug.
+
+### 2 — THE BUG, AND HOW IT WAS FOUND
+
+The F-79 follow-up commit (`a6e734a`, wiring `swing_feature_edge_study
+--validate` into `.github/workflows/brain_sunday_chain.yml`) was reviewed
+for correctness before this session touched anything else — same env
+vars, `continue-on-error: true`, positioned right after `weekly_review`,
+exactly matching the file's own established pattern. It looked right.
+Checking whether it had actually EXECUTED (this project's own "verify,
+never assert" rule — a green step is not evidence, per the very finding
+this file exists to record) surfaced the real defect: the workflow's own
+`defaults: run: working-directory: backend` (added in commit `ee52dd4`,
+16-Aug-2026) already runs every step from `backend/`. Eight steps across
+five separate commits since then — `weekly_review`, the new recency
+validator, `discover_engines`, `feature_edge_study`,
+`intraday.outcomes --backfill`, `control_room --propose`,
+`ingest_nifty_total_market`, `ingest_ipo_listings` — ALL additionally
+prefixed their own `run:` command with `cd backend &&`, trying to enter
+`backend/backend`, which does not exist.
+
+Real log from the run at `a6e734a`, the step this session's own prior
+commit had just added:
+
+```
+2026-08-25T04:10:14.8450Z /home/runner/work/_temp/....sh: line 1: cd: backend: No such file or directory
+2026-08-25T04:10:14.8511Z ##[error]Process completed with exit code 1.
+```
+
+Every one of the 8 affected steps shows the identical shape — started
+and "completed" within the same second, `conclusion: success` at the
+step level ONLY because `continue-on-error: true` converts an actual
+shell failure into a reported pass. The ONE step that does NOT have this
+bug — "Send weekly Telegram digest" (`python -c "from swing.brain...`,
+no `cd backend`) — is also the only one of the eight-plus that ever
+visibly worked, which is exactly why a green Telegram message every
+Sunday made the whole chain look healthy.
+
+### 3 — SCOPE: THIS IS NOT JUST THE RECENCY VALIDATOR
+
+`tools.weekly_review` — carrying F-77's `review_swing_engine_lifecycle()`
+— has been silently not running automatically since 16-Aug-2026 (9 days,
+commit `ee52dd4`). `discover_engines`, `feature_edge_study`,
+`intraday.outcomes --backfill` and `control_room --propose` share the
+same fate from the same commit. `ingest_nifty_total_market` (since
+`33846ef`) and `ingest_ipo_listings` (since `2a49a13`) too. All of it
+`continue-on-error: true`, all of it invisible unless someone opened a
+run and read the raw step output rather than the green checkmark — the
+exact "check that cannot fail is not a check" shape this file has
+recorded five times before, now a sixth, in a place none of those five
+looked (CI scheduling, not application logic).
+
+### 4 — THE FIX
+
+Stripped the redundant `cd backend && ` prefix from all 8 `run:` blocks
+in `.github/workflows/brain_sunday_chain.yml`, matching the one step that
+was already written correctly. Added a comment on the `defaults:` block
+itself naming the failure mode, so the next added step does not repeat
+it. Confirmed no other workflow file in `.github/workflows/` combines
+`working-directory: backend` with a `cd backend &&` inside a `run:` block
+(checked all of them). Local reproduction: `SUPABASE_URL=... python -m
+tools.swing_feature_edge_study --validate` run from the repo root
+reproduces `cd: backend: No such file or directory` when a `cd backend
+&&` prefix is present; run from `backend/` directly (the fixed shape)
+gets past that point and fails only on the dummy credentials this
+sandbox has no real ones for — the correct next failure, proving the
+fix removes the ONE thing that was wrong.
+
+### 5 — RECENCY VALIDATOR ITSELF: STILL CORRECT, STILL UNPROVEN AUTOMATICALLY
+
+`brain_proposals` for `SWING/%` FEATURE_FILTER rows: still 31 PENDING, 0
+VALIDATED, 0 REJECTED — unchanged from F-77's 24-Aug baseline, which is
+consistent with the fix (this session cannot make the NEXT scheduled or
+dispatched run happen early) rather than a sign anything is still wrong.
+`validate_pending_swing()`'s own logic is untouched by this fix — F-77's
+tests (`tests/test_swing_recency_validator.py`) still pass, `tools.verify`
+confirms it below.
+
+### 6 — COULD NOT DETERMINE
+
+Could not observe a genuinely successful automatic run of the fixed
+workflow this session — the next scheduled firing depends on "TradeOS
+Brain Scheduler" completing (event-driven, not on a clock this session
+controls), and manually dispatching it (`workflow_dispatch` is enabled)
+would also fire the real "Send weekly Telegram digest" step, sending an
+unplanned message to the operator's phone and writing real
+`brain_proposals` rows outside the normal schedule — not done without
+asking first. This session has no Python-level Supabase credentials
+(`.env` absent from this container) and could not run `tools.health`/
+`tools.simulate` against the live account directly; all live evidence in
+this entry came through the GitHub Actions API and the Supabase MCP
+tools instead, and is called out as such rather than implied to have
+come from a local run.
+
+**Recommends:** next Sunday's automatic run (or an explicit operator-
+approved manual dispatch) is the real confirmation — check that all 8
+previously-broken steps show non-trivial duration and real log output,
+not another instant green pass.
+
+**Gate:** PASS — the wiring bug is fixed and verified as far as this
+session's tools reach; full end-to-end confirmation is deferred to the
+next real firing, named above rather than assumed.
+
+---
+
+## 2026-08-25 — F-81 (change, Track E Stage E7 continuation) — position
+scale-in EXECUTION built: the accounting question F-78 left unresolved
+is answered, migration 114 ships two switches (both OFF), and the full
+submit → pending → confirm order-placement path now exists in
+`intraday/engine.py`, mirroring `_maybe_enter_swing`/
+`_resolve_pending_fills` exactly.
+
+**Ran:** `tools.verify`: 1060/1063 (10 new checks in
+`tests/test_stage_e7_scale_in_execution.py`, all pass; the 3 pre-existing
+failures are in `stale token alerting`, confirmed unrelated and present
+BEFORE any change this session made — `git stash` on this session's
+edits reproduces the identical 3/11 failure with zero diff applied).
+Demonstrated failing first: the same `git stash` also reproduces 6 of 10
+new checks failing with `AttributeError`/`KeyError` against the
+pre-session code (the other 4 pass on both sides — they assert nothing
+happens, which was already true before execution existed). Migration 114
+applied directly to the real `Tradeos` Supabase project
+(`dbjfwpamxudnolfalpfm`) via the Supabase MCP tools (this session's
+Python environment has no DB credentials — see F-80 §6) and verified
+column-by-column and switch-by-switch afterward.
+
+### 1 — WHAT WAS ALREADY BUILT, READ FIRST
+
+Confirmed via `docs/TRADEOS_ROADMAP.md` Stage E7 and `docs/FINDINGS.md`
+F-78 before writing anything: `control/position_lifecycle.py::
+evaluate_scale_in()` already implements all four rails (runner line,
+STRONG trend, capped at one add, sized through the REAL
+`check_new_entry()`) and was already wired into both `tools.simulate`
+and `intraday/engine.py::_shadow_scale_in()` as an unconditional shadow
+log. F-78 stopped there on purpose, naming one specific unresolved
+question: "does a combined position's risk get measured from the add
+forward, or does entry_price become a weighted average" — and declined
+to guess at it with SWING live. This session's job was to resolve that
+question and build ONLY the execution layer on top of the untouched
+detection function, not to redesign what was already working.
+
+### 2 — THE ACCOUNTING QUESTION, RESOLVED FROM AN EXISTING PRECEDENT
+
+Read `control/position_lifecycle.py::reconcile_with_broker()`'s own
+QTY_INCREASED branch before proposing anything new: it has, since before
+this track began, grown `current_qty`/`kite_qty`/`actual_qty`/
+`invested_value` on any quantity increase WITHOUT ever writing
+`entry_price`. That is the exact "add's own economics kept separate from
+the original tranche" shape F-78 asked for — already live, already
+proven, just never named or extended to a system-initiated add. Migration
+114 follows it exactly: `entry_price`/`planned_stop`/`active_sl`/
+`planned_target`/`target_price` — the five fields `evaluate_exit()`'s
+gain_r/giveback-tier/trailing math reads — are in NO patch this session's
+code writes, ever. There is still one `active_sl` per row (one broker-
+side GTT per symbol); the add's own risk-per-share at decision time
+(`ltp - active_sl`, already computed and previously discarded by
+`evaluate_scale_in()`) is now persisted as `scaled_in_stop`, an audit/
+learning column, never a second live stop.
+
+### 3 — WHAT WAS BUILT
+
+**Migration 114** — 7 new `open_positions` columns
+(`scaled_in`/`scaled_in_qty`/`scaled_in_price`/`scaled_in_stop`/
+`scaled_in_at`/`scale_in_order_id`/`scale_in_status`) and two switches,
+`swing_scale_in_auto_entry`/`swing_scale_in_live_auto_entry`, both
+`'false'` — mirroring `swing_auto_entry`/`swing_live_auto_entry`'s
+name and shape exactly. Applied to the real project; verified live:
+
+```
+scale_in_order_id  text | scale_in_status  text | scaled_in boolean
+scaled_in_at  timestamptz | scaled_in_price numeric | scaled_in_qty integer
+scaled_in_stop numeric
+swing_scale_in_auto_entry = false | swing_scale_in_live_auto_entry = false
+```
+
+**`intraday/engine.py`** — `_shadow_scale_in()` extended (still
+byte-for-byte the same shadow log when either switch is off) to call new
+`_execute_scale_in()` once armed, which places a BUY through the SAME
+`execution.order_manager.place()`/`paper_broker.simulate_fill()` every
+other entry uses — no new order-placement machinery invented. PAPER
+fills merge immediately via new `_merge_scale_in_fill()`; LIVE submits,
+writes `scale_in_status='PENDING_FILL'` (deliberately NOT the row's own
+`status` — that would hide the original tranche from every exit reader
+while only the add is unresolved) and `scale_in_order_id`, guard set
+AFTER the write exactly matching the F-67 fix's own ordering rationale.
+New `_resolve_pending_scale_ins()` (slow timer, wired into
+`intraday/run.py` next to `_resolve_pending_fills()`) confirms COMPLETE
+fills via `_merge_scale_in_fill()` and clears REJECTED/CANCELLED ones —
+the row SURVIVES a discard (unlike a fresh entry's pending row): this is
+an add to a real position, not a speculative new one. `load_state()`
+rebuilds `self._pending_scale_ins` from `scale_in_status='PENDING_FILL'`
+rows, the restart-survival half `_pending_fills` already has.
+
+**`tools/health.py`** — new `check_pending_scale_ins`, mirroring
+`check_pending_fills` (a stuck add must not be invisible just because
+`scale_in_status` is a column nothing else in the registry reads),
+registered in `CHECKS`.
+
+**`tools/simulate.py`** — message text only; still calls
+`evaluate_scale_in()` for preview and never `_execute_scale_in`, so it
+stays read-only regardless of the switches' state.
+
+### 4 — VERIFIED
+
+10 new tests in `tests/test_stage_e7_scale_in_execution.py`, all against
+the REAL `evaluate_scale_in()` and `paper_broker.simulate_fill()` (not
+mocked — matching F-78's own "sized through the REAL check_new_entry(),
+not mocked" standard), with only the Supabase client and Kite session
+faked (the "live book" `tests/__init__.py` says does not belong here — a
+fake in-memory table is not that). Covers: switches-off is zero
+regression (never reaches `place()`); the in-flight guard (both the DB
+column and the in-memory dict) skips a qualifying position; an armed
+PAPER fill grows qty/invested_value and sets `scaled_in_*` while
+`entry_price`/`planned_stop`/`active_sl`/`planned_target`/`target_price`
+stay byte-for-byte unchanged; the one-add cap holds under execution, not
+just detection; a LIVE submission leaves the row's own `status='ACTIVE'`
+throughout and only `scale_in_status` pending; the second switch alone is
+not enough once SWING is LIVE; confirm and reject both resolve correctly
+without touching the baseline; `load_state()` rebuilds the pending guard.
+Demonstrated failing first (§ above). `tools.verify`: 1060/1063, only the
+pre-existing unrelated `stale token alerting` failures remain.
+
+### 5 — WHAT THIS SESSION DID NOT DO
+
+Did not arm either switch — both ship `false`, exactly the same
+build-then-arm cadence this whole track has used since Stage C2, and the
+same one this session's OTHER finding (F-80) shows is worth trusting only
+once verified working, not assumed from a green checkmark. Arming is a
+separate, later, explicit operator decision — this session only closed
+the gap named in the operator's own screenshot ("no 'enable' available
+because the code to actually place an add-on order doesn't exist yet").
+It now exists, off, tested, and reusing every piece of proven order-
+placement machinery this project already has rather than inventing new.
+
+### 6 — COULD NOT DETERMINE
+
+No real scale-in has ever fired (by construction — both switches are
+off, and F-78's own quantify pass found only 2 of 17 recent trades ever
+crossed the runner line). This session's tests prove the MECHANISM is
+correct against real functions in a controlled harness; they cannot and
+do not claim a real add-on order has been placed or confirmed against
+the live broker. That evidence can only come from arming the switches
+and watching a real qualifying trade, which is future work, not this
+session's.
+
+**Recommends:** watch `check_pending_scale_ins` and the existing
+`sector_risk`/`stops` checks for a session or two after arming, the same
+way F-79 named its four thin-evidence switches for post-arm observation
+rather than treating "builds cleanly" as "behaves correctly under real
+capital." Arming itself needs the operator's own explicit go-ahead,
+matching F-78's own precedent of confirming before this stage's first
+step and F-79's precedent of confirming before flipping any switch live.
+
+**Gate:** PASS — execution built, tested, migration applied, both
+switches OFF.

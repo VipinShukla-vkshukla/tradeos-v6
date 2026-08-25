@@ -312,6 +312,11 @@ class IntradayEngine:
         # the durable copy this rebuilds from on a restart — see
         # _maybe_enter_swing() and _resolve_pending_fills().
         self._pending_fills: dict[str, str] = {}
+        # The same guard, for a Stage E7 scale-in ADD awaiting fill
+        # confirmation. Kept separate from _pending_fills because a
+        # scale-in never changes the row's own status (see
+        # _execute_scale_in's own docstring) — symbol -> Kite order_id.
+        self._pending_scale_ins: dict[str, str] = {}
 
     # ── state ───────────────────────────────────────────────────────────────
     def _rehydrate_recorded(self) -> None:
@@ -417,6 +422,17 @@ class IntradayEngine:
             r["symbol"]: r["entry_order_id"]
             for r in all_rows
             if (r.get("status") or "").upper() == "PENDING_FILL" and r.get("entry_order_id")
+        }
+
+        # Same rebuild, for a Stage E7 scale-in add awaiting confirmation.
+        # scale_in_status is deliberately a SEPARATE column from the row's
+        # own status (see _execute_scale_in), so this is not covered by
+        # the dict above and needs its own pass over the same all_rows.
+        self._pending_scale_ins = {
+            r["symbol"]: r["scale_in_order_id"]
+            for r in all_rows
+            if (r.get("scale_in_status") or "").upper() == "PENDING_FILL"
+            and r.get("scale_in_order_id")
         }
 
         try:
@@ -1956,23 +1972,30 @@ class IntradayEngine:
 
     def _shadow_scale_in(self, p: dict, ltp: float) -> None:
         """
-        Track E, Stage E7, 24-Aug-2026 — DETECTION ONLY, unconditional
-        shadow log, no config switch. Unlike every other Stage E/F
-        shadow this session built, there is deliberately nothing to arm
-        yet: `evaluate_scale_in()`'s own docstring explains why —
-        execution needs a real answer to how a combined position's risk
-        is measured post-add, an accounting question this session left
-        unresolved on purpose rather than guess at with real capital.
-        This just proves the DETECTION side works and starts
-        accumulating real evidence of how often it would even fire.
+        Track E, Stage E7. Detection always runs; EXECUTION only when
+        armed — `swing_scale_in_auto_entry` (both modes) and, if SWING is
+        LIVE, `swing_scale_in_live_auto_entry` too (migration 114). Both
+        ship OFF, so this is BYTE-FOR-BYTE the same unconditional shadow
+        log F-78 built until an operator explicitly arms one or both,
+        mirroring every other Stage E mechanism's build-then-arm cadence
+        (F-71..F-78 built OFF, F-79 armed seven of them on one explicit
+        instruction).
+
+        Skips a symbol with an add already in flight — `scale_in_status`
+        on the row, or `self._pending_scale_ins` for the same restart-
+        survives-in-DB / guard-survives-in-memory split `_pending_fills`
+        already uses for a fresh entry.
         """
         if (p.get("framework") or "SWING").upper() != "SWING":
+            return
+        sym = p.get("symbol")
+        if p.get("scale_in_status") == "PENDING_FILL" or sym in self._pending_scale_ins:
             return
         try:
             from control.position_lifecycle import evaluate_scale_in
             from config import capital_for
             ctx = (self._policy or {}).get("_trend_ctx") or {}
-            sig = ctx.get(p.get("symbol"))
+            sig = ctx.get(sym)
             tq = None
             if sig:
                 from control.exit_rules import assess_trend
@@ -1980,12 +2003,225 @@ class IntradayEngine:
             regime = (self._policy or {}).get("_current_regime") or "NEUTRAL"
             d = evaluate_scale_in(p, ltp, tq, self._swing_positions(),
                                   regime=regime, total_capital=capital_for("SWING"))
-            if d["action"] == "SCALE_IN":
-                logger.info(f"  {p.get('symbol')}: scale-in shadow — "
-                           f"{d['detail']} — detection only, no execution "
-                           f"path built yet (Stage E7)")
+            if d["action"] != "SCALE_IN":
+                return
+            if not cfg_bool("swing_scale_in_auto_entry", False):
+                logger.info(f"  {sym}: scale-in shadow — {d['detail']} — "
+                           f"swing_scale_in_auto_entry is off")
+                return
+            self._execute_scale_in(p, ltp, d)
         except Exception as e:
-            logger.debug(f"  {p.get('symbol')}: scale-in shadow check skipped — {e}")
+            logger.debug(f"  {sym}: scale-in shadow check skipped — {e}")
+
+    def _execute_scale_in(self, p: dict, ltp: float, decision: dict) -> None:
+        """
+        Place the ONE add-on order `evaluate_scale_in()` sized, mirroring
+        `_maybe_enter_swing()`'s own submit-then-confirm shape — same
+        "write back immediately" discipline the F-67 double-buy fix
+        established, because this is the same class of bug: an order
+        placed and not recorded is re-derived and placed again next cycle.
+
+        DELIBERATELY DOES NOT SET status='PENDING_FILL' ON THE ROW — that
+        status hides a row from every exit reader (`self.positions`, GTT
+        sync, `evaluate_exit()`). The original tranche must stay under
+        full management while only the ADD's fill is unresolved, so a
+        separate `scale_in_status` column tracks just the add — see
+        migration 114's own comment for why.
+
+        ACCOUNTING: entry_price/planned_stop/active_sl/planned_target/
+        target_price are never in any patch this method or its
+        confirmation path writes. Only current_qty/actual_qty/
+        original_qty/invested_value grow, and the add's own price/risk
+        are recorded separately (scaled_in_price/scaled_in_stop) for
+        audit only — see `evaluate_scale_in()`'s own docstring for the
+        full reasoning.
+        """
+        from execution.gates import is_paper
+        sym = p.get("symbol")
+        qty = int(decision.get("add_qty") or 0)
+        if qty <= 0:
+            return
+        add_risk = float(decision.get("add_risk_per_share") or 0)
+        live = not is_paper("SWING")
+        if live and not cfg_bool("swing_scale_in_live_auto_entry", False):
+            logger.info(f"  {sym}: scale-in ready ({decision['detail']}) but "
+                       f"SWING is LIVE and swing_scale_in_live_auto_entry "
+                       f"is off — shadow only")
+            return
+
+        slip = cfg_int("swing_entry_slip_bps", 20) / 10000.0
+        limit = round(ltp * (1 + slip), 1)
+
+        if not live:
+            from execution import paper_broker
+            f = paper_broker.simulate_fill(sym, "BUY", qty, "LIMIT", limit, ltp,
+                                           product=paper_broker.product_for("SWING"))
+            if not f.ok:
+                logger.info(f"  {sym}: scale-in paper fill did not clear — {f.message}")
+                return
+            self._merge_scale_in_fill(p, qty, f.fill_price, add_risk)
+            logger.success(f"  📄 SCALE-IN FILLED (paper) {sym} {qty} @ "
+                           f"{f.fill_price:.2f} — {decision['detail']}")
+            return
+
+        # ── LIVE ────────────────────────────────────────────────────────
+        from execution.order_manager import OrderRequest, place
+        res = place(OrderRequest(sym, "BUY", qty, "LIMIT", limit,
+                                 reason=f"SCALE_IN: {decision['detail'][:100]}"),
+                    self.sb, self.notifier, framework="SWING")
+        if not (res and res.ok):
+            return
+
+        try:
+            self._update_position(p, {
+                "scale_in_status": "PENDING_FILL",
+                "scale_in_order_id": str(res.order_id),
+                "scaled_in_stop": round(add_risk, 2),
+                "synced_at": datetime.now(IST).isoformat(),
+            })
+            p["scale_in_status"] = "PENDING_FILL"
+            p["scale_in_order_id"] = str(res.order_id)
+            # Guard set AFTER the write, matching the F-67 fix's own
+            # ordering rationale exactly: a load_state() rebuild that has
+            # not yet caught up with this write must not be able to erase
+            # the guard one line after it was set.
+            self._pending_scale_ins[sym] = str(res.order_id)
+            logger.success(f"  🟡 SCALE-IN SUBMITTED {sym} {qty} @ ~{limit} "
+                           f"(order {res.order_id}) — {decision['detail']} — "
+                           f"awaiting fill confirmation")
+        except Exception as e:
+            logger.error(f"  {sym}: scale-in BOUGHT {qty} but could not be "
+                         f"recorded as pending — {e}. It may be bought again "
+                         f"next cycle. Reconcile against the broker NOW.")
+
+    def _merge_scale_in_fill(self, p: dict, filled_qty: int, avg_price: float,
+                             add_risk_per_share: float | None = None) -> None:
+        """
+        Fold a CONFIRMED add-on fill into the existing position row.
+
+        entry_price/planned_stop/active_sl/planned_target/target_price are
+        NEVER in this patch — see `_execute_scale_in`'s own docstring and
+        migration 114's header for the precedent this follows
+        (`reconcile_with_broker()`'s QTY_INCREASED branch already grows
+        qty/invested_value without ever touching entry_price). original_qty
+        grows in lockstep with current_qty so the current_qty <
+        original_qty "a partial happened" read (alerts/send_alerts.py)
+        stays meaningful for the combined size.
+        """
+        cur_qty = int(p.get("current_qty") or p.get("actual_qty") or 0)
+        cur_orig = int(p.get("original_qty") or cur_qty)
+        cur_invested = float(p.get("invested_value") or 0)
+        new_qty = cur_qty + filled_qty
+        patch = {
+            "current_qty": new_qty, "actual_qty": new_qty,
+            "original_qty": cur_orig + filled_qty,
+            "invested_value": round(cur_invested + filled_qty * avg_price, 2),
+            "scaled_in": True, "scaled_in_qty": filled_qty,
+            "scaled_in_price": avg_price,
+            "scaled_in_at": datetime.now(IST).isoformat(),
+            "scale_in_status": None, "scale_in_order_id": None,
+        }
+        if add_risk_per_share is not None:
+            patch["scaled_in_stop"] = round(add_risk_per_share, 2)
+        self._update_position(p, patch)
+        p.update(patch)
+
+    def _resolve_pending_scale_ins(self) -> None:
+        """
+        The scale-in add's own confirm step — mirrors
+        `_resolve_pending_fills()` exactly, keyed on `scale_in_status`
+        rather than the row's own `status`, since the original tranche
+        must stay ACTIVE (and fully managed) while only its add-on order
+        is unresolved. SLOW TIMER ONLY, same rationale as the entry side.
+        """
+        try:
+            rows = (self.sb.table("open_positions").select("*")
+                      .eq("scale_in_status", "PENDING_FILL").execute().data or [])
+        except Exception as e:
+            logger.warning(f"  pending scale-ins: could not read — {e}")
+            return
+        if not rows:
+            return
+
+        from kite import kite_client
+        kite = kite_client.get_kite()
+        if not kite:
+            return
+
+        for pos in rows:
+            sym = pos.get("symbol")
+            order_id = pos.get("scale_in_order_id")
+            if not order_id:
+                continue
+            try:
+                hist = kite.order_history(order_id)
+            except Exception as e:
+                logger.debug(f"  {sym}: scale-in order_history failed for {order_id} — {e}")
+                continue
+            if not hist:
+                continue
+
+            final  = hist[-1]
+            status = (final.get("status") or "").upper()
+
+            if status == "COMPLETE":
+                filled_qty = int(final.get("filled_quantity") or 0)
+                avg_price  = float(final.get("average_price") or 0)
+                if filled_qty <= 0 or avg_price <= 0:
+                    logger.warning(
+                        f"  {sym}: scale-in order {order_id} reports COMPLETE "
+                        f"with no usable fill data ({filled_qty} @ {avg_price}) "
+                        f"— leaving PENDING rather than guessing")
+                    continue
+                self._promote_pending_scale_in(pos, filled_qty, avg_price)
+
+            elif status in ("REJECTED", "CANCELLED"):
+                self._discard_pending_scale_in(pos, status)
+
+            # Anything else is still live at the exchange — check again
+            # next slow tick.
+
+    def _promote_pending_scale_in(self, pos: dict, filled_qty: int, avg_price: float) -> None:
+        sym = pos.get("symbol")
+        order_id = pos.get("scale_in_order_id")
+        try:
+            self._merge_scale_in_fill(pos, filled_qty, avg_price)
+        except Exception as e:
+            logger.error(f"  {sym}: scale-in fill confirmed but the position "
+                         f"row could not be updated — {e}. Still PENDING; "
+                         f"will retry next cycle.")
+            return
+        self._pending_scale_ins.pop(sym, None)
+        logger.success(f"  🟢 SCALE-IN CONFIRMED {sym} {filled_qty} @ {avg_price:.2f}")
+        self.notifier.send(Action(
+            sym, "SCALE_IN_CONFIRMED",
+            f"Add-on fill confirmed: {filled_qty} @ ₹{avg_price:.2f}",
+            f"Order {order_id} completed at the broker. Original entry "
+            f"price and stop are unchanged — R-multiple keeps reading the "
+            f"original tranche.",
+            ltp=avg_price, urgency="NORMAL", framework="SWING"), force=True)
+
+    def _discard_pending_scale_in(self, pos: dict, status: str) -> None:
+        """
+        The add-on order never became shares — REJECTED, or CANCELLED (a
+        LIMIT day order that expired unfilled). The row itself SURVIVES —
+        unlike a discarded fresh entry, this is an add to a real, already-
+        held position, not a speculative new row.
+        """
+        sym = pos.get("symbol")
+        try:
+            self._update_position(pos, {
+                "scale_in_status": None, "scale_in_order_id": None,
+                "scaled_in_stop": None,
+            })
+        except Exception as e:
+            logger.error(f"  {sym}: scale-in {status} at the broker but the "
+                         f"pending flag could not be cleared — {e}. Clear "
+                         f"manually; the original position is unaffected.")
+            return
+        self._pending_scale_ins.pop(sym, None)
+        logger.info(f"  {sym}: scale-in add {status.lower()} at the broker — "
+                   f"original position untouched, one add still available")
 
     def _track_excursion(self, p: dict, ltp: float) -> None:
         """Keep high_water_mark, MFE and MAE current. Cheap, and only on change."""

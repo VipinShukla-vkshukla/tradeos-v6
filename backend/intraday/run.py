@@ -421,6 +421,13 @@ def main(once: bool = False, dry: bool = False) -> None:
                     engine._resolve_pending_fills()
                 except Exception as e:
                     logger.warning(f"  pending-fill resolution failed: {e}")
+                # Stage E7's own add-on confirm step — same slow-timer
+                # placement and reasoning, kept separate because it
+                # resolves scale_in_status, not the row's own status.
+                try:
+                    engine._resolve_pending_scale_ins()
+                except Exception as e:
+                    logger.warning(f"  pending scale-in resolution failed: {e}")
                 # The exit side of the same problem. intraday/engine.py writes
                 # status='CLOSING' the moment a live SELL is placed — optimistic,
                 # before the fill is confirmed — and nothing ever read that status

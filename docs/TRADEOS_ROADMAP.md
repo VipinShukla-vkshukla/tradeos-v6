@@ -1411,6 +1411,22 @@ healthy and keep ACTIVE; RVS (avg −0.97%) and TPO (avg +0.36%) are the
 two names with real cause for concern, both correctly held as too thin
 to act on. Full detail: `docs/FINDINGS.md` F-77.
 
+**Automatic trigger wired 24-Aug, found DEAD ON ARRIVAL and fixed
+25-Aug (F-80).** The recency validator (and, it turned out, `tools.
+weekly_review` itself, `discover_engines`, `feature_edge_study` and
+three more steps) was wired into `.github/workflows/brain_sunday_
+chain.yml` but every one of those `run:` blocks additionally `cd
+backend &&`'d into a working directory the file's own `defaults:`
+block had already set — `cd backend/backend`, which does not exist.
+`continue-on-error: true` reported every one of these steps green while
+they failed in under a second doing nothing, for 9 days (since commit
+`ee52dd4`, 16-Aug). Fixed by removing the redundant `cd backend &&`
+from all 8 affected steps. Full trace, including the real log line that
+caught it and the exact commits that introduced each broken step:
+`docs/FINDINGS.md` F-80. Next real confirmation is the next scheduled
+(or operator-approved manual) firing of that workflow — not yet
+observed this session.
+
 ## Stage E7 — Position scaling
 
 Sequenced last, deliberately: the only stage in this whole track that
@@ -1448,6 +1464,28 @@ this track spent five stages getting right. Shadow-logged
 unconditionally in both the daemon and `tools.simulate`. Live proof: the
 real 3-position book processes cleanly, correctly shows no signal (none
 past the line yet). Full detail: `docs/FINDINGS.md` F-78.
+
+**EXECUTION BUILT, both switches OFF, 25-Aug-2026 (F-81).** The
+accounting question above, resolved from a precedent already live in
+this codebase rather than invented fresh: `reconcile_with_broker()`'s
+own QTY_INCREASED branch already grows qty/invested_value on any
+addition without ever touching `entry_price` — migration 114 follows
+the identical rule. `entry_price`/`planned_stop`/`active_sl`/
+`planned_target`/`target_price` are never written by an add; only
+qty/invested_value grow, and the add's own price/risk are recorded
+separately (`scaled_in_price`/`scaled_in_stop`) as an audit trail, not
+a second live stop. Two switches, `swing_scale_in_auto_entry`/
+`swing_scale_in_live_auto_entry`, mirror `swing_auto_entry`/
+`swing_live_auto_entry` exactly and ship `false` — building the
+execution path is a different decision from arming it, the same
+distinction this whole track has held since Stage C2. Full
+submit → pending → confirm order path in `intraday/engine.py`, reusing
+`execution.order_manager.place()`/`paper_broker.simulate_fill()`
+rather than inventing new order machinery, plus a standing health check
+(`check_pending_scale_ins`) for a stuck add. 10 new tests, all passing
+against the real decision/sizing functions. Full detail: `docs/
+FINDINGS.md` F-81. Arming is a separate, later, explicit operator
+decision — not done this session.
 
 ## Non-negotiables across the whole track
 

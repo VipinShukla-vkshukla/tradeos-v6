@@ -77,14 +77,18 @@ def simulate_swing(sb) -> dict:
                     f"trend={tq.verdict} ({tq.score:.0%})")
         logger.info(f"       {d['detail'][:96]}")
 
-        # Stage E7 (F-77+) — detection only, no execution path built yet;
-        # see evaluate_scale_in()'s own docstring for why. Reuses the SAME
-        # tq this loop already computed above.
+        # Stage E7 (F-78/F-81) — this tool stays read-only regardless: it
+        # only ever calls evaluate_scale_in() for a preview, never
+        # engine.py's own _execute_scale_in, so nothing here places an
+        # order even though execution now exists (behind two switches,
+        # both off — see evaluate_scale_in()'s own docstring). Reuses the
+        # SAME tq this loop already computed above.
         from config import TOTAL_CAPITAL
         sc = evaluate_scale_in(p, ltp, tq, rows, total_capital=TOTAL_CAPITAL)
         if sc["action"] == "SCALE_IN":
-            logger.info(f"       scale-in shadow — {sc['detail']} — "
-                        f"detection only, no execution path built yet")
+            logger.info(f"       scale-in preview — {sc['detail']} — "
+                        f"swing_scale_in_auto_entry decides whether this "
+                        f"would actually execute")
 
     # Today's plans, evaluated as the morning would.
     latest = (sb.table("signal_output_daily").select("date")
