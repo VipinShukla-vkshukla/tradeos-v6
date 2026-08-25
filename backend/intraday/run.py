@@ -23,6 +23,7 @@ running once per day; it is not something more frequency improves.
 from __future__ import annotations
 
 import argparse
+import signal
 import sys
 import time
 from datetime import datetime
@@ -55,6 +56,25 @@ def _banner() -> None:
     logger.info("=" * 70)
 
 
+def _handle_sigterm(signum, frame) -> None:
+    """
+    Convert SIGTERM into the same clean shutdown Ctrl+C already gets — F-83,
+    25-Aug-2026.
+
+    Python installs a default handler for SIGINT (raises KeyboardInterrupt)
+    but NONE for SIGTERM, so `systemctl stop`/`restart` — which sends
+    SIGTERM — was killing this process without ever reaching the `finally:`
+    block in main()'s own try/except/finally, meaning `lease.release(sb)`
+    never ran and today's setups were never resolved on a server-side
+    restart. The lease then only clears once its TTL naturally lapses
+    (`intraday_lease_ttl_seconds`, 120s default), not immediately, on every
+    single `systemctl restart` — including the routine ones a code deploy
+    triggers. Raising the SAME exception here reuses the existing, already-
+    correct cleanup path instead of duplicating it.
+    """
+    raise KeyboardInterrupt()
+
+
 def status() -> dict:
     sb = get_supabase()
     eng = IntradayEngine(sb)
@@ -82,6 +102,12 @@ def status() -> dict:
 
 
 def main(once: bool = False, dry: bool = False) -> None:
+    # Registered before anything else — see _handle_sigterm's own docstring.
+    # A signal delivered before this line runs falls back to Python's (or
+    # systemd's) default handling, same as before this fix; the window is
+    # milliseconds, not a regression this needed to close.
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+
     if dry:
         import os
         os.environ["DRY_RUN"] = "True"
@@ -108,7 +134,18 @@ def main(once: bool = False, dry: bool = False) -> None:
     # be considered. An expired lease is still claimable — see
     # lease._lock_verdict — so a legitimate restart after a crash is never
     # blocked; only a LIVE holder refuses.
-    lock = lease.claim_startup_lock(sb)
+    #
+    # RETRIED, NOT A SINGLE SHOT — F-83, 25-Aug-2026. A lone attempt answers
+    # "may I claim RIGHT NOW" and nothing was left running to ask again if
+    # the answer changed a minute later: the systemd timer fires once a day,
+    # and a manual restart (`tradeos vcn fix`) exits the moment it is
+    # refused. Confirmed live: stopping the other holder did not bring
+    # Oracle back, because Oracle had already given up and nothing was
+    # watching for the lease to free up. claim_startup_lock_with_retry()
+    # calls the SAME unmodified compare-and-swap on a bounded poll instead
+    # of once — see its own docstring for why retrying the check is safe
+    # while still never honouring _is_primary() against a live holder.
+    lock = lease.claim_startup_lock_with_retry(sb)
     if not lock.granted:
         logger.error("═" * 74)
         logger.error("  REFUSING TO START — another intraday daemon holds this account")

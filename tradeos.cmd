@@ -273,6 +273,11 @@ echo   This pulls the latest code on %SRV% and RESTARTS the daemon.
 echo   Any position it is mid-way through acting on will be re-evaluated
 echo   from scratch on restart. Broker-side GTT stops are unaffected.
 echo.
+echo   If your laptop's monitor is currently the active one, Oracle will
+echo   retry claiming the lease for up to ~2.5 minutes (F-83) rather than
+echo   giving up immediately — no need to re-run this by hand once you
+echo   stop the laptop side. Check "N Status" after a minute if unsure.
+echo.
 set "OK="
 set /p "OK=Type y to proceed: "
 if /i not "%OK%"=="y" goto VCNCANCEL

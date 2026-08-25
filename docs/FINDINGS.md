@@ -14062,3 +14062,137 @@ watched rather than assumed correct.
 
 **Gate:** PASS — both switches armed live, verified independently,
 zero immediate effect, evidence gap named rather than hidden.
+
+---
+
+## 2026-08-25 — F-83 (bug fix, real operational gap) — the intraday
+daemon's startup lock was a single-shot check with nothing left running
+to notice if the answer changed. A live incident, not a hypothetical:
+stopping the process holding the lease did not bring Oracle back.
+
+**Ran:** Read `intraday/lease.py` and `intraday/run.py` in full before
+proposing anything. SQL via the Supabase MCP against the real `Tradeos`
+project confirming the live lease state before and after diagnosis.
+`tools.verify`: 1066/1069 (6 new checks in `tests/test_startup_claim_
+retry.py`, all pass; the 3 pre-existing `stale token alerting` failures
+confirmed present before this change via `git stash`, unrelated).
+Demonstrated failing first: the same `git stash` reproduces 6/6 new
+checks failing (`AttributeError`/`ImportError` — the retry function and
+the SIGTERM handler do not exist on the pre-session code).
+
+### 1 — THE REAL INCIDENT
+
+Operator ran `tradeos vcn fix` (option 9: git pull + `systemctl restart`
+on Oracle) during this session to deploy the F-80/F-81/F-82 work. Oracle
+refused to start — a live lease was held by hostname `Vipin` (the
+operator's own laptop, confirmed by decoding `_INSTANCE_ID = f"{socket.
+gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:6]}"` — "Vipin" is not
+"tradeos-vcn"). The operator then Ctrl+C'd the laptop-side monitor.
+Oracle still did not reclaim it. SQL against the live `intraday_daemon_
+lease` row confirmed why: a NEW laptop-side process (different PID,
+`Vipin-11192-0ab5f8` vs the original `Vipin-19920-302a97`) had re-
+claimed the lease in the interim — but more fundamentally, Oracle's
+`tradeos-intraday.service` had already exited after its earlier refusal
+and was not going to try again until the next day's 09:00 timer.
+`tradeos-intraday.service` is deliberately `disabled` (only the timer or
+a manual restart starts it), so nothing was left running to notice the
+lease free up.
+
+### 2 — WHY THIS WAS A GENUINE GAP, NOT A MISUNDERSTANDING
+
+`intraday_lease_primary_host` was already correctly set to `tradeos-vcn`
+in `system_config` — Oracle was already configured as primary, and
+`acquire()`/`renew()` (the RUNTIME checks, used once a daemon is already
+running) already honour that: a primary reclaims from any non-primary
+holder within one renew cycle (~30s), unconditionally. The gap was
+narrower and specific to STARTUP: `claim_startup_lock()` (migration
+077, the check that runs before a process may begin acting at all)
+deliberately does NOT consult `_is_primary()` — its own docstring
+explains why: honouring a primary preference against a demonstrably
+LIVE holder is the exact path that put two daemons on one account for
+62 seconds on 2026-08-10 (six real orders). That refusal-to-honour-
+primary-at-startup is correct and was NOT weakened by this fix. The
+actual gap: every caller of `claim_startup_lock()` — the daily timer,
+and `tradeos vcn fix` — asked the question exactly ONCE and treated a
+refusal as permanent, rather than as "not yet."
+
+### 3 — A SECOND, RELATED GAP FOUND WHILE READING THE SAME CODE
+
+`intraday/run.py` handles `KeyboardInterrupt` (Ctrl+C / SIGINT) for
+clean shutdown — the `finally:` block that calls `lease.release(sb)` and
+resolves the day's outcomes — but registers no handler for SIGTERM,
+which is what `systemctl stop`/`restart` sends by default. Python
+installs no default SIGTERM handling (unlike SIGINT, which it maps to
+`KeyboardInterrupt` automatically), so a plain `systemctl restart` on
+Oracle itself was likely killing the process without running that
+cleanup — meaning even an ORDINARY code-deploy restart, with nothing
+else involved, may not have been releasing its own prior lease
+immediately, only after the TTL naturally lapsed.
+
+### 4 — THE FIX
+
+**`intraday/lease.py::claim_startup_lock_with_retry()`** — a new
+function wrapping the UNMODIFIED `claim_startup_lock()` in a bounded
+poll loop (default: retry every 10s, give up after 150s = TTL + 30s
+margin, both configurable — `intraday_startup_claim_poll_seconds`/
+`intraday_startup_claim_retry_seconds`, migration 116). It changes WHEN
+the question is asked, never what it is allowed to answer — the same
+compare-and-swap, the same refusal to honour `_is_primary()` against a
+live holder. `intraday/run.py::main()` now calls this instead of the
+single-shot version. An explicit `timeout_s`/`poll_s` argument always
+overrides config, so tests (and any future caller that needs a specific
+window) are never at the mercy of whatever `system_config` happens to
+hold.
+
+**`intraday/run.py::_handle_sigterm()`** — registered via `signal.
+signal(signal.SIGTERM, _handle_sigterm)` at the top of `main()`, before
+anything else runs. Raises `KeyboardInterrupt`, reusing the EXISTING,
+already-correct cleanup path rather than duplicating it. Makes Oracle's
+own `systemctl restart` release its prior lease immediately instead of
+waiting out the TTL.
+
+**`tradeos.cmd`** — option 9's confirmation text now says the daemon
+will retry claiming for ~2.5 minutes rather than requiring a manual
+re-run, and points at "N Status" to check the outcome.
+
+### 5 — VERIFIED
+
+6 new checks: grants immediately without sleeping when free (a retry
+wrapper that pauses on an immediate grant would slow down every
+ordinary daily start for nothing); retries across a scripted HELD →
+HELD → FREE transition, claiming on the attempt where the answer
+actually changes; gives up after the timeout elapses, returning the
+LAST real refusal rather than inventing one, with a fake clock proving
+the final wait is clamped to what remains rather than overshooting;
+`timeout_s=0` behaves as exactly one attempt (the pre-fix shape,
+preserved as a reachable configuration); an explicit argument overrides
+config even when config has a value; the SIGTERM handler raises
+`KeyboardInterrupt`. All against the real `claim_startup_lock` return
+type, only the function itself scripted — `claim_startup_lock()`'s own
+correctness (a live holder refuses, primary is never consulted against
+one) stays proven separately in `tests/test_daemon_lock.py`, unchanged
+and untouched by this fix.
+
+### 6 — COULD NOT DETERMINE
+
+This session has no SSH access to the Oracle server and cannot deploy
+or observe this fix running there — it is committed to `main` but
+**not yet live on Oracle until the operator runs `tradeos vcn fix` (or
+the next day's timer) to pull it.** The retry window (150s) and poll
+interval (10s) are reasoned defaults, not measured against a real
+handover — worth watching the first few restarts after this deploys to
+confirm ~150s is neither too short (a laptop daemon that takes a bit
+longer than expected to actually stop rendering it moot) nor
+needlessly long (Oracle sitting idle for the full window on ordinary
+restarts where nothing else was ever holding the lease — though the
+"grants immediately" test above confirms THAT case costs zero delay
+regardless).
+
+**Recommends:** after this deploys, confirm one real restart while the
+laptop is intentionally left running — watch the journalctl output for
+the new "retrying in Ns" lines and confirm Oracle reclaims once the
+laptop side is stopped, without a second manual `tradeos vcn fix`.
+
+**Gate:** PASS — fix built, tested, migration applied to the real
+account; live confirmation on Oracle itself is the operator's next
+deploy, not something this session could reach.

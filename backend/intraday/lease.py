@@ -396,6 +396,75 @@ def _lock_verdict(row: dict | None, me: str, now: datetime) -> tuple[bool, str, 
         f"{holder}'s lease lapsed {lapsed}s ago — claiming it")
 
 
+def claim_startup_lock_with_retry(sb=None, timeout_s: int | None = None,
+                                  poll_s: int | None = None) -> LockResult:
+    """
+    `claim_startup_lock()`, retried until it succeeds or a bounded window
+    elapses — F-83, 25-Aug-2026.
+
+    THE GAP THIS CLOSES: a single `claim_startup_lock()` call answers "may I
+    claim RIGHT NOW", and every caller before this treated a refusal as
+    final — the systemd timer's one attempt at 09:00, and `tradeos vcn fix`'s
+    one attempt on deploy, both simply gave up and exited the moment they
+    found a live holder, with nothing left running to notice if that holder
+    went away a minute later. Confirmed live: after the operator stopped the
+    laptop-side monitor that held the lease, the Oracle box — already exited
+    from its earlier refusal, and not due to try again until the next day's
+    timer — never reclaimed it. Nothing was watching for the opening.
+
+    WHY RETRYING THE SAME CHECK IS SAFE, NOT A WEAKENING OF IT: this calls
+    the unmodified `claim_startup_lock()` — the same compare-and-swap, the
+    same refusal to consult `_is_primary()` migration 077 deliberately left
+    out (see `_lock_verdict()`'s own docstring for why: honouring a primary
+    preference against a LIVE holder is exactly the path that put two
+    daemons on one account for 62 seconds on 2026-08-10). This function
+    changes WHEN the check is asked, never what it is allowed to answer. It
+    can only succeed once the current holder's lease has gone FREE or STALE
+    on its own — a clean release, or the TTL lapsing because nothing is
+    renewing it — the identical conditions a lone call already required.
+
+    BOUNDED, NOT INDEFINITE: a holder that is genuinely alive and renewing
+    (the laptop, mid-session) will never go stale, and a retry loop with no
+    end would just sit there consuming a slow-timer-sized slice of nothing
+    forever. `timeout_s` defaults to the lease TTL plus a margin — long
+    enough to catch "already stopped, just hasn't aged out yet", short
+    enough that a genuinely still-active other daemon is reported as a
+    refusal rather than a silent hang. Configurable
+    (`intraday_startup_claim_retry_seconds`) rather than hardcoded, matching
+    every other threshold in this codebase.
+    """
+    # An explicit argument always wins — tests need to force a fast, tiny
+    # window regardless of what system_config holds. Only an OMITTED
+    # argument (the real caller's shape) falls through to config.
+    if timeout_s is None:
+        timeout_s = cfg_int("intraday_startup_claim_retry_seconds", _ttl() + 30)
+    if poll_s is None:
+        poll_s = cfg_int("intraday_startup_claim_poll_seconds", 10)
+
+    import time
+    start = time.monotonic()
+    attempt = 0
+    while True:
+        lock = claim_startup_lock(sb)
+        if lock.granted:
+            if attempt:
+                plural = "y" if attempt == 1 else "ies"
+                logger.success(f"  startup lock: claimed after {attempt} "
+                               f"retr{plural} — {lock.detail}")
+            return lock
+
+        elapsed = time.monotonic() - start
+        remaining = timeout_s - elapsed
+        if remaining <= 0:
+            return lock
+
+        attempt += 1
+        wait = min(poll_s, remaining)
+        logger.info(f"  startup lock: {lock.detail} — retrying in {wait:.0f}s "
+                   f"(giving up in {remaining:.0f}s)")
+        time.sleep(wait)
+
+
 def claim_startup_lock(sb=None) -> LockResult:
     """
     Take the lease exclusively, or report that another daemon is running.
