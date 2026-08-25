@@ -1330,38 +1330,73 @@ def _parse_ai_json(full_text: str) -> dict | None:
         candidate = full_text[first_brace:]
 
     first_error = None
+    result = None
 
     # Attempt 1: direct parse, tolerant of raw control chars in strings
     try:
-        return json.loads(candidate, strict=False)
+        result = json.loads(candidate, strict=False)
     except Exception as e:
         first_error = e
 
     # Attempt 2: escape any raw control characters found inside string
     # literals (outside strings they're just whitespace and left alone).
-    try:
-        repaired = _escape_control_chars_in_strings(candidate)
-        return json.loads(repaired, strict=False)
-    except Exception:
-        pass
+    if result is None:
+        try:
+            repaired = _escape_control_chars_in_strings(candidate)
+            result = json.loads(repaired, strict=False)
+        except Exception:
+            pass
 
     # Attempt 3: hand off to json_repair if it's installed. It's a
     # purpose-built library for exactly this problem (unescaped quotes,
     # trailing commas, missing brackets, etc.) and covers cases our
     # hand-rolled repair above doesn't. Soft dependency — skipped cleanly
     # if not installed.
-    try:
-        from json_repair import repair_json
-        parsed = repair_json(candidate, return_objects=True)
-        if isinstance(parsed, dict) and parsed:
-            return parsed
-    except ImportError:
-        pass
-    except Exception:
-        pass
+    if result is None:
+        try:
+            from json_repair import repair_json
+            parsed = repair_json(candidate, return_objects=True)
+            if isinstance(parsed, dict) and parsed:
+                result = parsed
+        except ImportError:
+            pass
+        except Exception:
+            pass
 
-    _log_parse_failure(full_text, candidate, first_error)
-    return None
+    if result is None:
+        _log_parse_failure(full_text, candidate, first_error)
+        return None
+
+    return _sanitize_ranked_candidates(result)
+
+
+def _sanitize_ranked_candidates(result: dict) -> dict:
+    """
+    Drop any ranked_candidates entry that isn't an object.
+
+    On 2026-08-25, batch 3/6 came back with a well-formed JSON object whose
+    ranked_candidates list held bare strings instead of {symbol, tier, ...}
+    objects. json.loads succeeded — this is a SHAPE problem, not a syntax
+    one — so nothing upstream caught it, and the first row.get("symbol") in
+    call_ai_batched's merge loop crashed with 'str' object has no attribute
+    'get' and took out the whole step, exactly the failure mode that
+    function's own docstring says a single bad batch must not cause.
+    Malformed entries are logged and dropped, same treatment as a batch
+    that returns nothing.
+    """
+    ranked = result.get("ranked_candidates")
+    if isinstance(ranked, list):
+        clean = [r for r in ranked if isinstance(r, dict)]
+        dropped = len(ranked) - len(clean)
+        if dropped:
+            logger.warning(
+                f"AI returned {dropped} non-object ranked_candidates "
+                f"entr{'y' if dropped == 1 else 'ies'} (expected "
+                f"{{symbol, tier, ...}}) — dropped: "
+                f"{[r for r in ranked if not isinstance(r, dict)]}"
+            )
+            result["ranked_candidates"] = clean
+    return result
 
 
 def _log_parse_failure(full_text: str, candidate: str, error: Exception) -> None:

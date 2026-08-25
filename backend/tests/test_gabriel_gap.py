@@ -254,17 +254,39 @@ def test_a_normal_plan_is_not_refused():
                                    "filter_reason": "holding"})
 
 
-def test_insufficient_rr_refuses_but_a_state_does_not():
+def test_stale_insufficient_rr_no_longer_refuses_a_live_recovered_plan():
     """
-    GABRIEL carried filter_reason `insufficient_rr_0.78x` on 3, 4 and 5 August
-    and was bought on the 6th. `holding` and `lifecycle_reduce` are states, not
-    refusals, and must not block anything.
+    25-Aug-2026, superseding the original version of this test. GABRIEL's
+    `insufficient_rr_0.78x` refusal (3-5 Aug) is no longer honoured via this
+    path — decide()'s own `rr < min_rr` check already answers the identical
+    question LIVE, every cycle, off the current price, and a plan only
+    reaches entry_refusals() with a buyable decision after clearing that
+    live bar. A frozen filter_reason string can then only ever be wrong
+    (blocking a plan whose R:R has since recovered), never protective.
+    Live case that forced this: ELGIEQUIP carried `insufficient_rr_0.75x`
+    from the prior evening while today's live rr_live (1.34) had already
+    cleared min_rr (1.0) — refused anyway, every 15s cycle, all day.
+    `holding` and `lifecycle_reduce` remain states, not refusals, and must
+    still not block anything.
     """
     from analysis.entry_ranking import entry_refusals
     with cfg_ctx({"entry_respect_filter_reason": "true"}):
-        assert entry_refusals({"symbol": "GABRIEL",
-                               "filter_reason": "insufficient_rr_0.78x"})
+        assert not entry_refusals({"symbol": "ELGIEQUIP",
+                                   "filter_reason": "insufficient_rr_0.75x"})
         assert not entry_refusals({"symbol": "X", "filter_reason": "lifecycle_reduce"})
+
+
+def test_filter_reason_hard_refusals_still_block():
+    """
+    The non-R:R-shaped refusal categories are untouched by the 25-Aug change
+    above — only `insufficient_rr_*` was dropped, because only that category
+    is a stale copy of something decide() already re-verifies live.
+    """
+    from analysis.entry_ranking import entry_refusals
+    with cfg_ctx({"entry_respect_filter_reason": "true"}):
+        assert entry_refusals({"symbol": "X", "filter_reason": "blocked_event_risk"})
+        assert entry_refusals({"symbol": "X", "filter_reason": "rejected_liquidity"})
+        assert entry_refusals({"symbol": "X", "filter_reason": "veto_sector_cap"})
 
 
 def test_the_ai_can_veto_but_never_promote():
@@ -351,7 +373,8 @@ TESTS = [
     ("the share test alone would have passed GABRIEL", test_the_old_share_test_alone_would_have_passed_gabriel),
     ("AVOID_ENTRY refuses", test_avoid_entry_refuses),
     ("a normal plan is not refused", test_a_normal_plan_is_not_refused),
-    ("insufficient_rr refuses, a state does not", test_insufficient_rr_refuses_but_a_state_does_not),
+    ("stale insufficient_rr no longer refuses a live-recovered plan", test_stale_insufficient_rr_no_longer_refuses_a_live_recovered_plan),
+    ("filter_reason hard refusals still block", test_filter_reason_hard_refusals_still_block),
     ("the AI can veto but never promote", test_the_ai_can_veto_but_never_promote),
     ("exit limit scales with volatility", test_exit_limit_scales_with_volatility),
     ("exit limit floor binds on a quiet name", test_exit_limit_floor_binds_on_a_quiet_name),

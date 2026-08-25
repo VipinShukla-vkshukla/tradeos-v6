@@ -883,6 +883,21 @@ def call_ai(prompt: str, n_candidates: int = 0) -> dict | None:
     if not full_text:
         return None
 
+    return _parse_ai_json(full_text, n_candidates)
+
+
+def _parse_ai_json(full_text: str, n_candidates: int = 0) -> dict | None:
+    """
+    Parse step 18's JSON response defensively, escalating repair strategies.
+
+    "Expecting ',' delimiter" at a mid-document position (not the end) is
+    usually a literal newline/tab inside a string value, not truncation —
+    _close_truncated_json only closes brackets for a response cut off at the
+    END, so it can't fix this shape and used to give up here, discarding the
+    whole market view (2026-08-25). ai_decision_engine.py hit the identical
+    failure class and fixed it with strict=False + control-char escaping;
+    reuse that proven repair before falling back to truncation handling.
+    """
     try:
         m = re.search(r"\{[\s\S]+\}", full_text)
         if not m:
@@ -892,12 +907,24 @@ def call_ai(prompt: str, n_candidates: int = 0) -> dict | None:
         try:
             result = json.loads(raw)
         except json.JSONDecodeError as e:
-            logger.warning(f"JSON parse failed: {e}")
-            fixed = _close_truncated_json(raw)
-            if not fixed:
-                return None
-            result = json.loads(fixed)
-            recovered = True
+            try:
+                result = json.loads(raw, strict=False)
+                recovered = True
+            except json.JSONDecodeError:
+                try:
+                    from ai.ai_decision_engine import _escape_control_chars_in_strings
+                except ImportError:
+                    from ai_decision_engine import _escape_control_chars_in_strings
+                try:
+                    result = json.loads(_escape_control_chars_in_strings(raw), strict=False)
+                    recovered = True
+                except json.JSONDecodeError:
+                    logger.warning(f"JSON parse failed: {e}")
+                    fixed = _close_truncated_json(raw)
+                    if not fixed:
+                        return None
+                    result = json.loads(fixed)
+                    recovered = True
 
         issues = _validate_ai_result(result, n_candidates)
         got = len(result.get("candidate_sentiment") or [])
@@ -919,10 +946,21 @@ def call_ai(prompt: str, n_candidates: int = 0) -> dict | None:
         return None
 
 def _close_truncated_json(s: str) -> str | None:
-    """Close unclosed brackets/braces in a truncated JSON response."""
+    """
+    Close unclosed brackets/braces in a truncated JSON response.
+
+    closing must be built from the stack as it stood AT last_val_end, not
+    from wherever the stack ends up after scanning the rest of `s` — the
+    dropped tail after the trim point routinely opens brackets of its own
+    (that's what "truncated" means), which used to inflate `closing` with
+    extra unmatched closers `trimmed` never needed, breaking the repair on
+    the ordinary case, not just an unusual one. Confirmed empirically: this
+    failed even on the textbook `{"a": [1,2,3], "b": [4,5,` truncation.
+    """
     in_string = esc = False
     stack: list[str] = []
     last_val_end = 0
+    stack_at_checkpoint: list[str] = []
     for i, ch in enumerate(s):
         if esc:          esc = False;            continue
         if ch == "\\" and in_string: esc = True; continue
@@ -932,8 +970,9 @@ def _close_truncated_json(s: str) -> str | None:
         elif ch in "]}":
             if stack:    stack.pop()
             last_val_end = i + 1
+            stack_at_checkpoint = list(stack)
     trimmed = s[:last_val_end].rstrip().rstrip(",")
-    closing  = "".join("}" if c == "{" else "]" for c in reversed(stack))
+    closing  = "".join("}" if c == "{" else "]" for c in reversed(stack_at_checkpoint))
     try:
         json.loads(trimmed + closing)
         return trimmed + closing

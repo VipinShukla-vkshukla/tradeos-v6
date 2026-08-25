@@ -54,6 +54,7 @@ MODULES = [
     ("orb retest + measured-move target", "tests.test_orb_retest_and_target"),
     ("engine fairness + confidence bands", "tests.test_engine_fairness_and_bands"),
     ("gabriel gap",        "tests.test_gabriel_gap"),
+    ("ai json parsing",     "tests.test_ai_json_parsing"),
     ("static analysis",     "tests.test_static_analysis"),
     ("replay harness",      "tests.test_replay_harness"),
     ("long path unchanged", "tests.test_long_path_unchanged"),

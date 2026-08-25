@@ -367,9 +367,23 @@ def entry_refusals(p: dict, rr_live: float | None = None,
     # was bought on the 6th; the daemon never looked at the column. Only
     # refusals are honoured — `holding`, `lifecycle_reduce` and the like are
     # states, not vetoes.
+    #
+    # `insufficient_rr` DROPPED FROM THIS SET — 25-Aug-2026. filter_reason is
+    # written once by the evening pipeline and never refreshes; decide()'s own
+    # `rr < min_rr` check (trade_decision.py) answers the EXACT SAME question
+    # — live, every 15s cycle, off the current price — and a plan only reaches
+    # this function with a BUY_NOW decision after clearing that live bar. So
+    # honouring a stale `insufficient_rr_*` string here can never add
+    # protection (a genuinely still-bad R:R never gets past decide() to
+    # arrive here) and can only ever wrongly refuse a plan whose R:R has
+    # since recovered on today's price. Live: ELGIEQUIP carried
+    # `insufficient_rr_0.75x` from the prior evening while decide() computed
+    # rr_live=1.34 against min_rr=1.0 — live-verified as fine, refused anyway
+    # on a 24-hour-old string, every cycle, all day. GABRIEL's original
+    # protection is untouched: it lived in decide(), not here.
     if cfg_bool("entry_respect_filter_reason", False):
         fr = str(p.get("filter_reason") or "").strip().lower()
-        if fr.startswith(("insufficient_rr", "blocked", "rejected", "veto")):
+        if fr.startswith(("blocked", "rejected", "veto")):
             out.append(f"the evening pipeline refused this plan: {fr}")
 
     # ── R:R RETENTION — Track E, Stage E5 piece 2 (shadow), 24-Aug-2026 ──────
