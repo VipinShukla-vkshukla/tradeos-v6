@@ -14506,3 +14506,88 @@ given this exact miss.
 
 **Gate:** PASS — corrected a second time, independently verified,
 error in the first correction owned plainly rather than left standing.
+
+---
+
+## 2026-08-25 — F-86 (new mechanism, detection only) — a standing
+`tools.health` check for the exact HINDCOPPER shape (F-84/F-85), so the
+next one surfaces on the next health run instead of needing an
+operator to notice a wrong number on the dashboard and cross-reference
+a broker export by hand.
+
+**Ran:** `tools.verify`: 1083/1086 (11 new checks in `tests/test_
+reconcile_drift_check.py`, all pass; the 3 pre-existing `stale token
+alerting` failures confirmed unrelated). Demonstrated failing first:
+`git stash` on `tools/health.py` reproduces 11/11 new checks failing
+(`ImportError` — neither function exists on pre-session code). Live
+proof against the REAL database: fetched the real `closed_positions`
+(14-day window, CNC) and `position_reconcile_log` (QTY_REDUCED/
+QTY_INCREASED, 14-day window) rows via the Supabase MCP and ran the
+pure detection function directly against them.
+
+### 1 — WHY DETECTION, NOT CORRECTION
+
+The operator's own follow-up ask was for "better control... to
+accurately reconcile" — but F-85 already found the general case cannot
+be auto-corrected safely: the "right" entry_price for a same-day-drift
+position can be a legitimate broker-side moving-average update (F-85's
+own finding, HINDCOPPER's true cost basis draws on account history
+outside any tradebook this project can see) as easily as it can be
+another instance of this bug. Auto-writing Kite's reported average
+into `entry_price` on every match would be actively wrong for the
+positions where the drift is ordinary broker accounting, not an error
+— and would corrupt R-multiple math that is deliberately anchored to
+"what this system paid," not a moving average that can shift for
+reasons unrelated to the trade (see F-85 §4). This mechanism therefore
+only NAMES which rows are worth a manual check against Kite's own
+Holdings page — the same "propose, never apply" discipline this
+project's learning tools already follow, applied to a data-integrity
+question rather than a strategy one.
+
+### 2 — WHAT WAS BUILT
+
+`tools/health.py::_same_day_drift_symbols()` — pure function, matching
+this file's own `_mirror_qty_drift()`/`control/position_lifecycle.py`'s
+`_merge_day_position()` precedent: takes already-fetched
+`position_reconcile_log` and `closed_positions` rows, converts each
+reconcile event's UTC `run_at` to an IST calendar date, and flags any
+closed CNC position whose `entry_date` matches a QTY_REDUCED/
+QTY_INCREASED event for the SAME symbol on that SAME day — the precise
+signature a same-day settlement-lag drift leaves on the row that
+later closes. `check_same_day_reconcile_drift()` — the impure wrapper,
+14-day window, registered in `CHECKS` as `recon_drift`.
+
+### 3 — LIVE PROOF
+
+Fetched the real `closed_positions` rows (13 CNC exits in the last 14
+days) and `position_reconcile_log` rows (5 QTY_REDUCED/QTY_INCREASED
+events in the same window: GABRIEL, HAL, HINDCOPPER×3) from the real
+`Tradeos` Supabase project and ran `_same_day_drift_symbols()` against
+them directly. Result: **exactly one flag, HINDCOPPER (id=13152)** —
+GABRIEL's QTY_INCREASED (08-17) does not match its own entry_date
+(08-06); HAL's QTY_INCREASED (08-21) has no closed-position row at all
+in the window. The check finds precisely the incident it was built
+for, and nothing else, against real data — not a synthetic test
+fixture.
+
+### 4 — COULD NOT DETERMINE
+
+Whether this check would have caught the incident IN TIME to matter —
+it is a 14-day rolling window checked whenever `tools.health` runs,
+which depends on how often that happens in practice (this project's
+own `tools.health --quick` runs at daemon launch, per `intraday/run.py`
+— catching this the NEXT trading day the daemon starts, not
+immediately at close). Not deployed or observed running against the
+live account from this session — this session has no Kite or Python-
+level Supabase credentials (see F-80 §6); the live-proof above went
+through the Supabase MCP directly, reading real data but not exercising
+the actual `python -m tools.health` entrypoint.
+
+**Recommends:** watch the next few `tools.health` runs after this
+deploys to confirm `recon_drift` reports cleanly (or correctly flags a
+real future incident) rather than silently erroring on some row shape
+this session's fixtures did not anticipate.
+
+**Gate:** PASS — detection mechanism built, tested, proven against real
+data; deliberately does not correct anything, matching this project's
+own "propose, never auto-apply" rule.

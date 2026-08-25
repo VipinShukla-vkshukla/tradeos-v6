@@ -837,6 +837,121 @@ def check_sector_concentration_risk() -> tuple[bool, str]:
                   f"concentration threshold")
 
 
+def _same_day_drift_symbols(reconcile_rows: list[dict],
+                            closed_rows: list[dict]) -> list[dict]:
+    """
+    PURE. Which closed positions entered on the SAME calendar day (IST) as
+    a QTY_REDUCED/QTY_INCREASED reconcile event for that symbol — the
+    exact signature the F-84/F-85 HINDCOPPER incident had (25-Aug-2026).
+
+    WHY THIS SIGNATURE, SPECIFICALLY: a same-day quantity correction on the
+    ENTRY date means the fills that established this position's qty/
+    entry_price landed the same session reconcile also had to patch drift
+    for it — the precise condition under which `_merge_day_position()`'s
+    own fix (F-84) matters, AND, separately, the condition under which an
+    entry-side upsert-over-first bug (F-67's shape) can have overwritten
+    `entry_price` with only the LAST fill rather than a true blend. F-84's
+    own code fix closes the qty half of this permanently; it cannot close
+    the entry_price half, because a real broker-side moving-average cost
+    basis (F-85) is not a bug this codebase can safely auto-correct
+    against — some of these flags will be legitimate broker accounting,
+    not another error. This is a DETECTION aid, matching this project's
+    "propose, never auto-apply" rule: it names which rows are worth a
+    manual check against Kite's own Holdings page, never corrects one.
+
+    Pure over already-fetched rows so it is testable without Supabase I/O
+    — the caller does the fetching and the IST day-boundary conversion is
+    the only "real" logic here, done with a fixed tzinfo, not the clock.
+    """
+    from datetime import datetime
+    from config import IST
+
+    def _ist_date(ts) -> str | None:
+        try:
+            return (datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                     .astimezone(IST).date().isoformat())
+        except Exception:
+            return None
+
+    drift_days: dict[tuple[str, str], list[str]] = {}
+    for r in reconcile_rows:
+        if r.get("action") not in ("QTY_REDUCED", "QTY_INCREASED"):
+            continue
+        d = _ist_date(r.get("run_at"))
+        sym = r.get("symbol")
+        if not (d and sym):
+            continue
+        drift_days.setdefault((sym, d), []).append(r.get("action"))
+
+    flagged = []
+    for pos in closed_rows:
+        sym = pos.get("symbol")
+        entry_date = str(pos.get("entry_date") or "")[:10]
+        key = (sym, entry_date)
+        if key in drift_days:
+            flagged.append({
+                "id": pos.get("id"), "symbol": sym, "entry_date": entry_date,
+                "exit_date": pos.get("exit_date"),
+                "reconcile_actions": drift_days[key],
+            })
+    return flagged
+
+
+def check_same_day_reconcile_drift() -> tuple[bool, str]:
+    """
+    Did a recently closed position's ENTRY DATE coincide with a same-day
+    quantity reconcile drift for that symbol — the exact HINDCOPPER
+    shape (F-84/F-85, 25-Aug-2026)?
+
+    That incident was found only because the operator happened to compare
+    the dashboard against a broker export by hand, weeks after — nothing
+    in this project's own standing checks would have surfaced it. This
+    closes that gap going forward: not a claim that a flagged row IS
+    wrong (`_merge_day_position()`'s own fix, F-84, already prevents the
+    QUANTITY half of this bug from recurring; a flag here may be nothing
+    more than an ordinary broker-side cost-basis update, F-85's own
+    finding), but a claim that it is WORTH CHECKING against Kite's own
+    Holdings page before trusting the row's entry_price/P&L — the same
+    verification this project's own tooling cannot do itself, since
+    Kite's live trade history is current-day only and this project keeps
+    no earlier record of a symbol's cost basis than its own entry write.
+
+    14-day window: long enough to catch a row before it is forgotten,
+    short enough that this stays cheap on every run.
+    """
+    from datetime import timedelta
+    from config import get_supabase, today_ist
+
+    sb = get_supabase()
+    since = (today_ist() - timedelta(days=14)).isoformat()
+
+    closed_rows = (sb.table("closed_positions")
+                     .select("id,symbol,entry_date,exit_date,product")
+                     .eq("product", "CNC")
+                     .gte("exit_date", since).execute().data or [])
+    if not closed_rows:
+        return True, "no CNC positions closed in the last 14 days"
+
+    reconcile_rows = (sb.table("position_reconcile_log")
+                         .select("symbol,action,run_at")
+                         .in_("action", ["QTY_REDUCED", "QTY_INCREASED"])
+                         .gte("run_at", since).execute().data or [])
+
+    flagged = _same_day_drift_symbols(reconcile_rows, closed_rows)
+    if flagged:
+        names = ", ".join(f"{f['symbol']} (id={f['id']}, entered {f['entry_date']}, "
+                          f"{'/'.join(f['reconcile_actions'])})" for f in flagged[:5])
+        return False, (
+            f"{len(flagged)} closed CNC position(s) in the last 14 days entered "
+            f"on the same day as a QTY_REDUCED/QTY_INCREASED reconcile event for "
+            f"that symbol: {names}. Not necessarily wrong — verify entry_price "
+            f"and actual_qty against Kite's own Holdings page before trusting "
+            f"the row; this is the exact shape F-84/F-85 found HINDCOPPER "
+            f"corrupted by. See docs/FINDINGS.md F-84/F-85/F-86.")
+    return True, (f"{len(closed_rows)} CNC position(s) closed in the last 14 days, "
+                  f"none share an entry-day reconcile drift event")
+
+
 def check_simulate() -> tuple[bool, str]:
     """The slow one: run both frameworks end to end and confirm stages produce output."""
     from config import get_supabase
@@ -2158,6 +2273,7 @@ CHECKS = [
     ("pending_dup", "a SWING symbol was bought twice within minutes — the F-67 shape", check_pending_fill_duplicates, False),
     ("pending_scale_in", "a Stage E7 add-on order never filled and nobody would otherwise notice", check_pending_scale_ins, False),
     ("sector_risk", "a majority of the open SWING book sits in sectors rotating away from it", check_sector_concentration_risk, False),
+    ("recon_drift", "a closed position's entry_price/qty may not reflect reality — same-day settlement-lag shape, HINDCOPPER F-84/F-85", check_same_day_reconcile_drift, False),
     ("exits_open", "a SELL the system decided on is still unfilled and the position is unprotected", check_open_exits, False),
     ("learning", "engines are being judged on evidence that was never collected", check_learning_loop, False),
     ("simulate", "a stage completes while producing nothing",                    check_simulate, True),

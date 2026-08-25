@@ -118,6 +118,7 @@ MODULES = [
     ("data quality resolved alert", "tests.test_data_quality_resolved_alert"),
     ("partial book quantity sync", "tests.test_partial_book_quantity_sync"),
     ("day position merge (T+1 settlement lag)", "tests.test_day_position_merge"),
+    ("same-day reconcile drift check", "tests.test_reconcile_drift_check"),
     ("stale token alerting", "tests.test_token_alerting"),
     ("regime-aware engine fit (shipped inert)", "tests.test_regime_fit"),
     ("brain_proposals walk-forward backtest", "tests.test_proposal_backtest"),
