@@ -14196,3 +14196,180 @@ laptop side is stopped, without a second manual `tradeos vcn fix`.
 **Gate:** PASS — fix built, tested, migration applied to the real
 account; live confirmation on Oracle itself is the operator's next
 deploy, not something this session could reach.
+
+---
+
+## 2026-08-25 — F-84 (bug fix + historical data correction, real money
+misreported) — HINDCOPPER's closed-trade row overstated its quantity by
+9 phantom shares that were never bought or sold, corrupting P&L,
+percentage and R-multiple on the live dashboard. Root cause: reconcile
+trusted stale T+1 settled holdings over same-day fills it already had
+the data to see, on a symbol that already had SOME prior holding.
+
+**Ran:** Operator supplied the real Zerodha tradebook (`tradebookDSY688EQ_1.xlsx`)
+and flagged the dashboard's HINDCOPPER numbers as wrong. Read the
+tradebook with pandas (`read_excel`, header row 14 — standard Zerodha
+export layout). SQL via the Supabase MCP against the real `Tradeos`
+project: `closed_positions`, `position_reconcile_log` for HINDCOPPER and
+(as a control) AARTIIND, which appeared in the same dashboard view.
+`tools.verify`: 1072/1075 (6 new checks in `tests/test_day_position_
+merge.py`, all pass; the 3 pre-existing `stale token alerting` failures
+confirmed unrelated). Demonstrated failing first: `git stash` on the
+fix reproduces 6/6 new checks failing (`ImportError` — the extracted
+function does not exist on pre-session code).
+
+### 1 — WHAT THE TRADEBOOK SAID, AGAINST WHAT THE DASHBOARD SHOWED
+
+Real HINDCOPPER fills (Zerodha tradebook, `Order Execution Time` column):
+
+```
+2026-08-14  BUY   8 @ 523.65
+2026-08-21  SELL  4 @ 561.90
+2026-08-24  SELL  4 @ 567.85   09:35:13 IST — closes the 08-14 tranche (8 in, 8 out)
+2026-08-24  BUY   7 @ 568.40   09:35:24 IST
+2026-08-24  BUY   6 @ 569.45   09:40:31 IST
+```
+
+Net position after 08-24: 13 shares (the 08-14 tranche fully round-
+tripped; a fresh 13-share position opened the same morning). The two
+08-24 buys 11 seconds and 5 minutes apart are the EXACT F-67 HINDCOPPER
+double-buy incident CLAUDE.md's own landmines section already
+documents — same times, same symbol, this session simply had the
+tradebook to confirm the fill prices precisely (568.40/569.45 here vs
+568.80/570.30 in that summary — the landmine text was a rounded
+recollection, the tradebook is the primary source).
+
+Dashboard showed: Qty 22, Entry 569.45, Exit 548.10, P&L −₹359.83
+(−2.69%), Charges ₹22.43, R −0.23R. Qty 22 does not match ANY
+combination the tradebook supports for this position.
+
+### 2 — TRACING THE 22 THROUGH `position_reconcile_log`
+
+```
+08-24 04:05:55 UTC  QTY_REDUCED   db=7   broker=4   (broker_price 523.65)
+08-24 04:11:03 UTC  QTY_REDUCED   db=6   broker=4   (broker_price 523.65)
+08-25 03:45:08 UTC  QTY_INCREASED db=4   broker=13  (broker_price 555.12)
+08-25 03:49:46 UTC  CLOSED        db=13  broker=0   "Kite SELL fill at 2026-08-25T09:16:15"
+```
+
+`broker_price 523.65` on both 08-24 events is the 08-14 buy price —
+proof `hold_map` was reading `holdings()` (T-1 SETTLED state: 8 bought
+08-14, 4 sold 08-21, settled by 08-24 = 4), not the SAME-DAY activity
+that had already happened by 04:05/04:11 UTC (the 09:35 sell and the
+two buys). `reconcile_with_broker()` DOES fetch same-day `positions()`
+specifically to cover exactly this ("day_qty", built for CLAUDE.md's own
+landmine: "A CNC buy filled today is not in holdings() yet") — but only
+merges it into `hold_map` `if key not in hold_map`. HINDCOPPER already
+had an entry (the stale T-1 settled 4), so the branch never ran, and
+the fresher, correct day-position quantity was silently discarded both
+times. The qty-drift comparison then read "DB says 7 (later 6), broker
+says 4" as a genuine partial SELL — `reconcile_with_broker()`'s
+QTY_REDUCED branch, which folds every reduction into cumulative
+`partial_booked_qty`/`partial_booked_price`, has no way to tell a real
+partial from a settlement-lag artifact. First event: 3 phantom shares
+"sold." Second: 2 more (cumulative 5). By 08-25, holdings() finally
+caught up (T+1) and correctly reconciled `current_qty` to 13 — but
+`partial_booked_qty` was never touched by that branch and stayed
+corrupted, ready to be folded into `close_position()`'s `total_qty =
+qty + booked_qty` the moment the position actually closed the next
+morning. Reverse-solving the closed row's own numbers confirms the
+phantom tranche exactly: `booked_qty=9` (not the 5 my own reconcile-log
+replay estimated — some detail of the exact `sold` sequence is not
+fully recoverable from the log alone, but the arithmetic below leaves
+no doubt about the shape) at `booked_price≈562.80` reproduces BOTH the
+recorded `exit_value=12190.5` and `realized_pnl=-337.40` to the cent.
+
+A second, independent, smaller error compounded it: `entry_price` on
+the closed row was 569.45 — the SECOND 08-24 buy's fill price alone,
+not a blend of both. This is the "re-entry UPSERTs over the first"
+shape CLAUDE.md's own F-67 entry already names: the second erroneous
+buy's `_upsert_position` call replaced entry_price rather than
+weighting it in.
+
+### 3 — WHY AARTIIND (SAME DASHBOARD VIEW) WAS CHECKED AND FOUND CLEAN
+
+Before concluding this was systemic, the other trade in the same
+screenshot was checked the same way: one tradebook fill (BUY 7 @528.35,
+08-17), one closed_positions row, numbers matching exactly (qty 7,
+entry 528.35, exit 538.55, realized_pnl 71.40, net after ₹18.95 charges
+= 52.45 — precisely what the dashboard showed). AARTIIND never had a
+same-day-drift reconcile event, so the bug this entry describes had
+nothing to act on. Confirms the corruption is specific to positions that
+hit this exact settlement-lag shape, not a blanket reason to distrust
+every closed row.
+
+### 4 — THE FIX
+
+`control/position_lifecycle.py::_merge_day_position()` — new pure
+function, extracted from the day_qty merge loop (mirroring
+`_mirror_qty_drift()`'s own precedent for testability without
+`reconcile_with_broker()`'s kite_client/holdings/multi-table I/O). Same
+trust the existing code already had for a symbol with NO prior
+holdings() entry — day_qty's quantity is the COMPLETE current holding,
+not a delta — extended to a symbol that also has stale prior state to
+override. A no-op (returns the same object) when nothing actually
+differs, so the caller can always call it rather than gating on whether
+an override is needed.
+
+### 5 — THE HISTORICAL ROW, CORRECTED
+
+`closed_positions` id=13152 (HINDCOPPER, entry 2026-08-24) updated
+directly against the real database via the Supabase MCP, verified with
+an independent `SELECT` afterward:
+
+| field | was | now |
+|---|---|---|
+| actual_qty | 22 | 13 |
+| entry_price | 569.45 | 568.88 (blended: (7×568.40+6×569.45)/13) |
+| invested_value | 12527.90 | 7395.44 |
+| exit_value | 12190.50 | 7125.30 |
+| realized_pnl | −337.40 | −270.14 |
+| pnl_pct | −2.693 | −3.653 |
+| charges | 22.43 | 31.21 (added the entry-leg charges — `entry_leg()` on each real fill, 4.72+4.06 — that were never recorded because the double-buy incident's entry never got a proper charges write; `exit_leg()` on qty=13 already matched the recorded 22.43 exactly, unaffected by this bug) |
+| r_multiple | −0.234 | −0.320 |
+
+Dashboard consequence: the row will now show Qty 13, Entry 568.88, net
+P&L −₹301.35 (−3.65%), Charges ₹31.21, R −0.32R — worse than what was
+shown before, not better; the phantom shares were also phantom LOSSES
+being averaged down, so correcting them makes the true trade look worse
+in rupees but the correct size and percentage. `exit_reason_detail`
+appended (not replaced) with the correction note and this entry's own
+reference, so the row's own history stays legible rather than silently
+overwritten.
+
+`exit_reason` (TRAIL_SL_HIT) and `hold_days` (1) were already correct —
+untouched by this bug, left as-is.
+
+### 6 — A SEPARATE, MINOR OBSERVATION (NOT CHANGED)
+
+`frontend/components/tabs/performance/TradeLog.tsx` computes the
+displayed rupee P&L as `realized_pnl - charges` (net, per its own
+documented "NET IS THE HEADLINE, GROSS IS SHOWN" design) but displays
+`pnl_pct` as stored — which `close_position()`'s own comment says is
+GROSS, deliberately. The two numbers next to each other therefore never
+exactly agree (a viewer dividing the shown rupee figure by invested
+value gets a different percentage than the one printed beside it). This
+is a pre-existing, deliberate design tradeoff, not something this entry
+changed — noted for the operator to decide whether the percentage
+should also be shown net-of-charges, which would touch how every trade
+displays, not just this one.
+
+### 7 — COULD NOT DETERMINE
+
+Whether any OTHER closed position hit this exact settlement-lag shape —
+this entry checked HINDCOPPER (reported) and AARTIIND (same view, as a
+control) specifically, not a full sweep of `closed_positions`. A
+symbol only triggers this bug when it has BOTH a prior settled holding
+AND same-day trading activity in the same reconcile window — a
+narrower condition than "any CNC position," but not one this session
+quantified across the whole ledger.
+
+**Recommends:** a one-time sweep of `closed_positions` rows whose
+entry_date matches a `position_reconcile_log` QTY_REDUCED/QTY_INCREASED
+pair on the same calendar day, cross-checked against each symbol's own
+tradebook rows, to find any other historical row this same bug may have
+touched — not done this session, flagged rather than assumed clean.
+
+**Gate:** PASS — root cause fixed and tested; the one row the operator
+asked about is corrected and independently verified; the scope of any
+other affected rows is named as unresolved rather than assumed zero.

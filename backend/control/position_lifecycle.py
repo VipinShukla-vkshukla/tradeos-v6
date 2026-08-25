@@ -1693,6 +1693,53 @@ def _mirror_qty_drift(pos: dict, br_qty: int) -> dict:
     return drift
 
 
+def _merge_day_position(existing: dict | None, key: tuple, q: int, avg: float) -> dict:
+    """
+    PURE. Fold one symbol's same-day position quantity into its holdings()
+    entry — extracted out of reconcile_with_broker()'s day_qty merge loop
+    for the same reason _mirror_qty_drift() was: testable without that
+    function's kite_client/holdings/multi-table I/O (F-84, 25-Aug-2026).
+
+    THE GAP THIS CLOSES: the caller already knows holdings() cannot see a
+    same-day CNC fill on a symbol it has NEVER held — that is the whole
+    reason day_qty exists — and synthesises a whole entry for that case.
+    What it did NOT do: override a symbol's EXISTING (necessarily stale —
+    settled T-1 only) holdings() entry once day_qty shows the position has
+    moved since. HINDCOPPER had 4 shares settled from T-1 when, same
+    session, it sold the rest of that lot and bought a fresh 13 — every
+    one of those fills was invisible to holdings() until the next day, so
+    the merge silently kept the stale settled 4 all session. The qty-
+    drift comparison downstream read that stale 4 as ground truth against
+    a DB row that had (correctly, if messily) recorded the real fills,
+    and treated the difference as a genuine partial SELL — writing
+    phantom shares into partial_booked_qty that were never actually sold.
+    That number survived into the closed_positions row the next day when
+    the position finally exited for real. Full trace: docs/FINDINGS.md
+    F-84.
+
+    day_qty's own quantity is already trusted as the COMPLETE current
+    holding, not a same-day delta, the moment the caller treats it as
+    total_quantity for a symbol with no prior holdings() entry at all —
+    this applies the identical trust to a symbol that also has stale
+    prior state to override rather than none. Returns the entry
+    unchanged when nothing actually differs, so a caller can rely on this
+    always being safe to call rather than gating on whether an override
+    is needed.
+    """
+    if existing is None:
+        # Same shape fetch_holdings() returns, total_quantity included —
+        # callers downstream read that key and a partial dict would raise
+        # here rather than at the boundary where it was built.
+        return {"symbol": key[0], "quantity": q, "t1_quantity": 0,
+               "total_quantity": q, "average_price": avg,
+               "last_price": avg, "product": key[1],
+               "pnl": 0.0, "close_price": 0.0, "day_change_pct": 0.0}
+    if int(existing.get("quantity") or existing.get("total_quantity") or 0) == q:
+        return existing
+    return {**existing, "quantity": q, "total_quantity": q,
+           "average_price": avg, "last_price": avg}
+
+
 def reconcile_with_broker(sb, trade_date: str) -> dict:
     """
     Kite holdings are the truth. Bring open_positions into agreement.
@@ -1791,14 +1838,7 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
         return {"status": "no_day_positions", "opened": 0, "closed": 0, "adjusted": 0}
 
     for key, (q, avg) in day_qty.items():
-        if key not in hold_map:
-            # Same shape fetch_holdings() returns, total_quantity included —
-            # callers below read that key and a partial dict would raise here
-            # rather than at the boundary where it was built.
-            hold_map[key] = {"symbol": key[0], "quantity": q, "t1_quantity": 0,
-                             "total_quantity": q, "average_price": avg,
-                             "last_price": avg, "product": key[1],
-                             "pnl": 0.0, "close_price": 0.0, "day_change_pct": 0.0}
+        hold_map[key] = _merge_day_position(hold_map.get(key), key, q, avg)
     db_map  = {(r["symbol"], (r.get("product") or "CNC").upper()): r
                for r in db_rows}
 
