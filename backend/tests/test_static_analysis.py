@@ -258,6 +258,13 @@ _FETCH_ALL_SORT_KEY = {
     # Measured 2026-08-16: 51 rows, `id` present and unique. Note it has
     # start_date/end_date and NO `event_date`.
     "event_calendar":       "id",
+    # swing_same_day_candidates — 26-Aug-2026, migration 122. Not live-probed
+    # (the table did not exist in production at the time this was written,
+    # pending migration apply during a Supabase outage) — `id bigserial
+    # PRIMARY KEY` is the schema this session authored, so existence and
+    # uniqueness are guaranteed by construction, the same confidence every
+    # other freshly-created id-keyed table in this map is built on.
+    "swing_same_day_candidates": "id",
     # Probed 2026-08-17 on the live table: 191,775 rows; `.order("id")` page
     # one returned 1000 rows, 1000 distinct, ids 1..1000. This table is why
     # both readers were paging in the first place — the unpaged health check

@@ -162,6 +162,110 @@ def _load_outcomes_for_date_range(sb, signal_date_min: date,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SAME-DAY DISCOVERY OUTCOMES — Phase 4, 26-Aug-2026
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# A parallel pass, NOT a change to the function above. swing_same_day_
+# candidates (swing/signals/same_day_discovery.py) is a genuinely separate
+# table from signal_log — writing same-day discoveries into signal_log
+# itself was deliberately avoided: signal_log is the evening pipeline's own
+# table keyed on (symbol, date), and a same-day row sharing that key with
+# an evening row would collide/overwrite, poisoning the evening pipeline's
+# own learning loop exactly as the documented "writing an intraday result
+# into signal_log" landmine already describes for a different mismatch.
+# This mirrors _load_outcomes_for_date_range's own forward-return join
+# logic against stock_data_daily, at a single fixed horizon rather than
+# three, since this feed exists to answer one question first — does a
+# same-day VBD/SBS/RSB trigger predict a real forward move at all — before
+# multi-horizon nuance is worth the complexity.
+
+def score_same_day_candidates(sb, lookback_days: int = 30,
+                               eval_horizon: int = 5) -> pd.DataFrame:
+    """
+    Forward-return scoring for swing_same_day_candidates, upserted into
+    same_day_outcomes on (date, symbol) — this is what Track E Stage E6's
+    planned discovery engine (blocked on exactly this kind of evidence,
+    F-77) will eventually mine. Read-only against swing_same_day_candidates
+    and stock_data_daily; never touches signal_log or signal_outcomes.
+    """
+    win_thresh  = cfg_float("perf_win_threshold_pct",  3.0)
+    stop_thresh = cfg_float("perf_stop_threshold_pct", 5.0)
+    since = (date.today() - timedelta(days=lookback_days)).isoformat()
+
+    # order_by="id" — swing_same_day_candidates' verified unique key
+    # (migration 122: `id bigserial PRIMARY KEY`), not (symbol, date) —
+    # see tests/test_static_analysis.py::_FETCH_ALL_SORT_KEY.
+    rows = fetch_all(lambda: sb.table("swing_same_day_candidates")
+                     .select("date,symbol,strategy,entry_zone_low,entry_zone_high,"
+                             "planned_stop,planned_target,expected_r")
+                     .gte("date", since), order_by="id")
+    if not rows:
+        return pd.DataFrame()
+
+    cands = pd.DataFrame(rows)
+    cands["date"] = pd.to_datetime(cands["date"]).dt.date
+
+    symbols  = cands["symbol"].dropna().unique().tolist()
+    look_end = date.today() + timedelta(days=int(eval_horizon * 1.5))
+
+    price_rows = []
+    for i in range(0, len(symbols), 250):
+        chunk = symbols[i:i + 250]
+        pr = fetch_all(lambda c=chunk: sb.table("stock_data_daily")
+                       .select("date,symbol,close")
+                       .in_("symbol", c)
+                       .gte("date", since)
+                       .lte("date", str(look_end)), order_by="symbol,date")
+        price_rows.extend(pr)
+    if not price_rows:
+        return cands
+
+    price_df = pd.DataFrame(price_rows)
+    price_df["date"]  = pd.to_datetime(price_df["date"]).dt.date
+    price_df["close"] = pd.to_numeric(price_df["close"], errors="coerce")
+    price_by_sym = {sym: grp.sort_values("date").set_index("date")["close"]
+                    for sym, grp in price_df.groupby("symbol")}
+
+    out_rows = []
+    for _, row in cands.iterrows():
+        sym, disc_date = row.get("symbol"), row.get("date")
+        prices = price_by_sym.get(sym)
+        if prices is None:
+            continue
+        avail = [d for d in prices.index if d >= disc_date]
+        if not avail:
+            continue
+        ep = prices.loc[avail[0]]
+        if pd.isna(ep) or ep <= 0:
+            continue
+        target = avail[0] + timedelta(days=int(eval_horizon * 1.4))
+        exits = [d for d in prices.index if d >= target]
+        if not exits:
+            continue
+        xp = prices.loc[exits[0]]
+        if pd.isna(xp) or xp <= 0:
+            continue
+        ret = round(((xp - ep) / ep) * 100, 2)
+        out_rows.append({
+            "date": disc_date.isoformat(), "symbol": sym,
+            "strategy": row.get("strategy"),
+            f"ret_fwd_{eval_horizon}d": ret,
+            "outcome_win": bool(ret >= win_thresh),
+            "outcome_loss": bool(ret <= -stop_thresh),
+            "expected_r": row.get("expected_r"),
+        })
+
+    if out_rows:
+        try:
+            for i in range(0, len(out_rows), 250):
+                sb.table("same_day_outcomes").upsert(
+                    out_rows[i:i + 250], on_conflict="date,symbol").execute()
+        except Exception as e:
+            logger.warning(f"  same_day_outcomes write failed: {e}")
+    return pd.DataFrame(out_rows)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ENGINE STATS
 # ─────────────────────────────────────────────────────────────────────────────
 

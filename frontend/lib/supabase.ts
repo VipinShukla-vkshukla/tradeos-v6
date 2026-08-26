@@ -332,6 +332,45 @@ export const queries = {
       offset,
     }),
 
+  // ── Daily Summary Dashboard, 26-Aug-2026 ────────────────────────────────
+  // No existing query filters open_positions/closed_positions by framework
+  // (confirmed before adding these — every other position read here fetches
+  // everything and filters client-side; kept the same pattern rather than
+  // inventing a server-side aggregate this codebase doesn't otherwise use).
+
+  /** Open (ACTIVE) positions for one book — SWING or INTRADAY. */
+  getOpenPositionsByFramework: (framework: 'SWING' | 'INTRADAY') =>
+    queryTable<OpenPosition>('open_positions', {
+      filter: { framework, status: 'ACTIVE' },
+      order: { column: 'entry_date', ascending: false },
+    }),
+
+  /**
+   * ALL closed positions for one book — not the 50-row page
+   * getClosedPositions() above returns. This is a client-side SUM(realized_pnl)
+   * input, not a table to render, so it needs the whole history rather than
+   * a display page. 2000 is a generous ceiling for how young this system's
+   * trade history is; revisit if it's ever actually hit.
+   */
+  getAllClosedPositionsByFramework: (framework: 'SWING' | 'INTRADAY') =>
+    queryTable<ClosedPosition>('closed_positions', {
+      filter: { framework },
+      order: { column: 'exit_date', ascending: false },
+      limit: 2000,
+    }),
+
+  /** Recent daily book-value snapshots for one book (tools/snapshot_book_value.py), newest first. */
+  getBookValueSnapshots: (framework: 'SWING' | 'INTRADAY', limit = 30) =>
+    queryTable<{
+      date: string; framework: string; sleeve: number;
+      realized_pnl_cum: number; unrealized_pnl: number; book_value: number;
+      created_at: string;
+    }>('book_value_snapshots', {
+      filter: { framework },
+      order: { column: 'date', ascending: false },
+      limit,
+    }),
+
   // signal_log  ← NOT 'signals'
   getSignals: (filter?: Record<string, unknown>, limit = 100) =>
     queryTable<Signal>('signal_log', {

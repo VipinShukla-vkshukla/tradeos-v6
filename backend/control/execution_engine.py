@@ -10,7 +10,7 @@ Gates before any order:
   4. Human approval received via Telegram
 """
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -22,7 +22,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # which did not exist in the repo at all. So execution_engine could never be
 # loaded, and telegram_bot's `from control.execution_engine import place_order`
 # (control/telegram_bot.py:166) raised on every approval attempt.
-from config import get_supabase, cfg_int, today_ist, is_kill_switch_active, logger
+from config import (get_supabase, cfg_int, cfg_bool, today_ist, IST,
+                    is_kill_switch_active, logger)
 from control.risk_manager import check_portfolio_risk, calculate_position_size
 from kite.kite_client import get_kite
 
@@ -42,10 +43,38 @@ def get_config_int(key: str, default: int = 0) -> int:
 
 def place_order(signal: dict, approved_by: str = "TELEGRAM") -> dict:
     """
-    Place a real order via Kite. All gates must pass.
-    Returns: {success, order_id, error}
+    Place a real swing order on human Telegram approval — through the SAME
+    order_manager.place()/preflight() and _upsert_position() path every
+    other swing entry uses. Returns: {success, order_id, error}
+
+    REBUILT 26-Aug-2026 — Phase 2a of the swing framework evolution
+    blueprint (docs/PHASE4_RED_TEAM.md's "C2 — 'One allocator' is false"
+    finding, third of the three independent swing paths it names; the other
+    two — the daemon's own _maybe_enter_swing and control/
+    candidate_monitor.py — are closed by Phases 1 and 2b of the same
+    blueprint). The prior version called `kite.place_order()` directly:
+    no `preflight()` (no per-order cap, no daily count/notional cap, no
+    combined-account guard, no broker-cash check, no duplicate-order
+    window), no `swing_auto_entry`/`swing_live_auto_entry` check (the
+    two-switch live-money gate every other swing entry respects), and wrote
+    an `open_positions` row missing `product`/`framework`/`mode` — a real
+    corruption risk given the table is keyed on (symbol, product) since
+    migration 028. Sizing (`check_portfolio_risk`/`calculate_position_size`)
+    is unchanged; only order placement and position-recording now reuse the
+    daemon's own proven functions instead of a second implementation of
+    both.
     """
     check_kill_switch()
+
+    # THE TWO-SWITCH GATE — every other swing entry in this system respects
+    # both of these before spending real money; a human-approved order is
+    # not exempt from that rule just because a person clicked the button.
+    if not cfg_bool("swing_auto_entry", False):
+        return {"success": False, "error": "swing_auto_entry is off"}
+    if not cfg_bool("swing_live_auto_entry", False):
+        return {"success": False,
+                "error": "swing_live_auto_entry is off — the second of the "
+                         "two required live-money switches"}
 
     # Gate 1: autonomy phase
     phase = get_config_int("autonomy_phase", 0)
@@ -68,57 +97,62 @@ def place_order(signal: dict, approved_by: str = "TELEGRAM") -> dict:
     if sizing.quantity <= 0:
         return {"success": False, "error": "Position size calculated as 0"}
 
-    # Place order via Kite
-    try:
-        kite = get_kite()
-        from kiteconnect import KiteConnect
-        order_id = kite.place_order(
-            variety         = kite.VARIETY_REGULAR,
-            exchange        = kite.EXCHANGE_NSE,
-            tradingsymbol   = sym,
-            transaction_type = kite.TRANSACTION_TYPE_BUY,
-            quantity        = sizing.quantity,
-            product         = kite.PRODUCT_CNC,          # delivery
-            order_type      = kite.ORDER_TYPE_MARKET,
-            tag             = f"tradeos_{signal.get('strategy','')[:10]}",
-        )
+    sb = get_supabase()
 
-        # Log to signal_log
-        sb = get_supabase()
-        sb.table("signal_log").update({
-            "outcome": "EXECUTED",
-            "outcome_date": today_ist().isoformat(),
-        }).eq("date", today_ist().isoformat()).eq("symbol", sym).execute()
+    # PLACE THROUGH THE SAME PATH EVERY OTHER SWING ENTRY USES. This is
+    # what makes the daily order-count/notional caps, the combined-account
+    # guard, the broker-cash check and the duplicate-order window apply
+    # here too — none of them can be bypassed by approving from Telegram.
+    from execution.order_manager import OrderRequest, place
+    res = place(OrderRequest(sym, "BUY", sizing.quantity, "MARKET",
+                             reason=f"TELEGRAM_APPROVED: {str(signal.get('strategy',''))[:80]}"),
+               sb, notifier=None, framework="SWING")
+    if not (res and res.ok):
+        return {"success": False,
+                "error": res.message if res else "order_manager.place() returned no result"}
 
-        # Log the execution
-        sb.table("open_positions").upsert({
-            "symbol":        sym,
-            "company_name":  signal.get("company_name", ""),
-            "sector":        sector,
-            "strategy":      signal.get("strategy", ""),
-            "entry_date":    today_ist().isoformat(),
-            "entry_price":   entry_price,
-            "actual_qty":    sizing.quantity,
-            "invested_value": sizing.invested_value,
-            "current_price": entry_price,
-            "current_value": sizing.invested_value,
-            "active_sl":     sizing.stop_loss,
-            "initial_sl_atr": sizing.stop_loss,
-            "status":        "ACTIVE",
-        })
+    # Log to signal_log — unchanged.
+    sb.table("signal_log").update({
+        "outcome": "EXECUTED",
+        "outcome_date": today_ist().isoformat(),
+    }).eq("date", today_ist().isoformat()).eq("symbol", sym).execute()
 
-        logger.success(f"ORDER PLACED: {sym} | Qty:{sizing.quantity} | ₹{sizing.invested_value:.0f} | OrderID:{order_id}")
-        return {
-            "success":  True,
-            "order_id": order_id,
-            "symbol":   sym,
-            "qty":      sizing.quantity,
-            "invested": sizing.invested_value,
-            "stop":     sizing.stop_loss,
-        }
-    except Exception as e:
-        logger.error(f"Order placement FAILED for {sym}: {e}")
-        return {"success": False, "error": str(e)}
+    # WRITE THE SAME SHAPE _maybe_enter_swing WRITES (intraday/engine.py) —
+    # status PENDING_FILL, not ACTIVE. res.ok only means Kite ACCEPTED the
+    # order, not that it filled; the daemon's own _resolve_pending_fills()
+    # already polls every PENDING_FILL row each cycle regardless of which
+    # path submitted it, so this confirms/promotes on the next daemon cycle
+    # with no new machinery needed here.
+    from control.position_lifecycle import _upsert_position
+    _upsert_position(sb, {
+        "symbol": sym, "mode": "LIVE", "framework": "SWING",
+        "product": "CNC", "status": "PENDING_FILL",
+        "entry_order_id": str(res.order_id),
+        "entry_date": today_ist().isoformat(), "entry_price": entry_price,
+        "actual_qty": sizing.quantity, "current_qty": sizing.quantity,
+        "original_qty": sizing.quantity,
+        "invested_value": round(entry_price * sizing.quantity, 2),
+        "current_price": entry_price, "high_water_mark": entry_price,
+        "planned_stop": sizing.stop_loss, "active_sl": sizing.stop_loss,
+        "planned_target": signal.get("planned_target"),
+        "target_price": signal.get("planned_target"),
+        "sl_type": "TELEGRAM_APPROVED", "strategy": signal.get("strategy"),
+        "signal_id": signal.get("id"), "signal_date": signal.get("date"),
+        "sector": sector, "source": "telegram_approved",
+        "entry_rationale": f"Telegram-approved by {approved_by}",
+        "synced_at": datetime.now(IST).isoformat(),
+    })
+
+    logger.success(f"ORDER PLACED (Telegram): {sym} | Qty:{sizing.quantity} | "
+                   f"₹{sizing.invested_value:.0f} | OrderID:{res.order_id}")
+    return {
+        "success":  True,
+        "order_id": res.order_id,
+        "symbol":   sym,
+        "qty":      sizing.quantity,
+        "invested": sizing.invested_value,
+        "stop":     sizing.stop_loss,
+    }
 
 
 def place_exit_order(symbol: str, quantity: int, reason: str = "SIGNAL") -> dict:

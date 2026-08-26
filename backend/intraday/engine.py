@@ -115,6 +115,61 @@ def _rank_floor_blocks(here_total: float, floor: float) -> bool:
     return here_total < floor
 
 
+def _zone_aware_slip_bps(ltp: float, zone_low, zone_high,
+                         tight_bps: float, wide_bps: float) -> float:
+    """
+    Pure. Phase 3a of the swing framework evolution blueprint, 26-Aug-2026.
+
+    A flat `swing_entry_slip_bps` pays the same premium whether `ltp` sits
+    at the favourable edge of the plan's own entry zone (plenty of runway
+    left, no reason to pay up) or right at the unfavourable edge next to
+    `max_entry` (no room left to be patient — this IS the last defensible
+    price). RKFORGE-shaped complaint: the chase re-quoted a fresh price
+    every cycle regardless of where in the zone it stood.
+
+    `zone_position` is 0.0 at `zone_low` (most favourable) and 1.0 at
+    `zone_high` (least favourable, closest to `max_entry`), clamped so a
+    price that has drifted outside the zone still returns a sane bound
+    rather than an extrapolated one. A missing or degenerate zone
+    (`zone_high <= zone_low`, or either absent) falls back to `wide_bps`
+    unconditionally — today's flat behaviour is the safe default when the
+    zone itself cannot be trusted, not a guess.
+    """
+    if not zone_low or not zone_high or zone_high <= zone_low:
+        return wide_bps
+    zone_position = (ltp - zone_low) / (zone_high - zone_low)
+    zone_position = max(0.0, min(1.0, zone_position))
+    return tight_bps + (wide_bps - tight_bps) * zone_position
+
+
+def _swing_alert_kind(verdict: dict | None, room: bool) -> tuple[str, bool]:
+    """
+    What Action.kind a swing entry alert should carry, given this cycle's
+    allocator verdict — 26-Aug-2026.
+
+    RKFORGE, 26-Aug: DECLINE'd by the allocator every cycle all day (edge
+    -0.016 vs hurdle 0.029) while act_on_candidates() kept sending "BUY — in
+    zone" regardless, because the alert was built purely from decide()/
+    entry_ranking and never consulted self._verdicts — the same dict
+    _maybe_enter_swing's own allocator_permits() veto already reads a few
+    dozen lines later in the same call chain. A DECLINE always wins over the
+    room/swap question: there is nothing to swap toward on a trade the
+    allocator has already refused this cycle, and no daily-capacity
+    computation changes that. A distinct kind ("ENTRY_DECLINED") is
+    returned rather than suppressing the alert outright — Action.state_key()
+    is f"{symbol}:{kind}" (notifier.py), so this is a NEW dedup bucket: it
+    fires once on the transition into DECLINE, does not fight the existing
+    "ENTRY" bucket, and reverts immediately — as a fresh state — the moment
+    the allocator flips back to TAKE.
+
+    Returns (kind, declined).
+    """
+    declined = bool(verdict) and verdict.get("verdict") == "DECLINE"
+    if declined:
+        return "ENTRY_DECLINED", True
+    return ("ENTRY" if room else "SWAP_CANDIDATE"), False
+
+
 def _runway_refusal_summary(runway_refused: list[str], out: list[dict]) -> str | None:
     """
     Pure. What to tell the operator when one or more shorts were refused on
@@ -317,6 +372,19 @@ class IntradayEngine:
         # scale-in never changes the row's own status (see
         # _execute_scale_in's own docstring) — symbol -> Kite order_id.
         self._pending_scale_ins: dict[str, str] = {}
+        # Phase 3b, 26-Aug-2026 — the same guard, for a swing entry RESTING
+        # at a favourable price (status=PENDING_ENTRY) rather than a
+        # marketable chase already submitted. See _maybe_enter_swing()'s
+        # resting branch and _resolve_pending_entries().
+        self._pending_entries: dict[str, str] = {}
+        # Phase 4, 26-Aug-2026 — today's not-yet-evening-listed candidates
+        # from swing/signals/same_day_discovery.py, refreshed on the 300s
+        # slow timer (see _refresh_same_day_candidates()). Merged into
+        # evaluate_candidates()'s working set ONLY when
+        # swing_same_day_discovery_enabled is on (Stage 2) — Stage 1
+        # (shadow, default) writes to swing_same_day_candidates and never
+        # reaches this dict's consumer at all.
+        self._same_day_candidates: dict[str, dict] = {}
 
     # ── state ───────────────────────────────────────────────────────────────
     def _rehydrate_recorded(self) -> None:
@@ -433,6 +501,16 @@ class IntradayEngine:
             for r in all_rows
             if (r.get("scale_in_status") or "").upper() == "PENDING_FILL"
             and r.get("scale_in_order_id")
+        }
+
+        # Phase 3b, 26-Aug-2026 — same rebuild again, for a resting swing
+        # entry (status='PENDING_ENTRY', distinct from PENDING_FILL above:
+        # that one is the seconds-scale submit-then-confirm gap, this is a
+        # deliberate minutes-scale rest — see _resolve_pending_entries()).
+        self._pending_entries = {
+            r["symbol"]: r["entry_order_id"]
+            for r in all_rows
+            if (r.get("status") or "").upper() == "PENDING_ENTRY" and r.get("entry_order_id")
         }
 
         try:
@@ -2323,10 +2401,40 @@ class IntradayEngine:
             q = q.eq("product", p["product"])
         q.eq("status", "ACTIVE").execute()
 
+    def _refresh_same_day_candidates(self) -> None:
+        """
+        Phase 4, 26-Aug-2026 — slow-timer refresh of
+        self._same_day_candidates from swing_same_day_candidates, the table
+        swing/signals/same_day_discovery.py::scan() writes. Called right
+        after that scan on the same 300s tick (intraday/run.py), so this is
+        a cheap re-read of what was likely just written, not a second
+        discovery pass.
+        """
+        try:
+            rows = (self.sb.table("swing_same_day_candidates").select("*")
+                      .eq("date", today_ist().isoformat()).execute().data or [])
+        except Exception as e:
+            logger.debug(f"  same-day candidates refresh failed: {e}")
+            return
+        self._same_day_candidates = {r["symbol"]: r for r in rows if r.get("symbol")}
+
     def evaluate_candidates(self, prices: dict[str, float]) -> list[dict]:
         """Run the shared entry decision against live prices."""
         from analysis.trade_decision import decide
         from config import capital_for
+
+        # Phase 4, 26-Aug-2026 — Stage 2. self.candidates (the evening
+        # pipeline's own immutable list) is never mutated; a same-day
+        # discovery is appended to a LOCAL working list only, and only
+        # once its own switch is on. It then flows through the exact same
+        # decide()/ranking/allocator chain below as any evening candidate
+        # — no second gate, no second R:R model.
+        working_candidates = self.candidates
+        if cfg_bool("swing_same_day_discovery_enabled", False) and self._same_day_candidates:
+            already = {c.get("symbol") for c in self.candidates}
+            extra = [c for sym, c in self._same_day_candidates.items() if sym not in already]
+            if extra:
+                working_candidates = self.candidates + extra
 
         regime = "NEUTRAL"
         if self.candidates:
@@ -2347,7 +2455,7 @@ class IntradayEngine:
         # reservation field, which needs the whole watch list (decide() already
         # prices and sizes every candidate; WAIT ones just weren't kept before).
         self._all_swing_decisions = []
-        for c in self.candidates:
+        for c in working_candidates:
             sym = c.get("symbol")
             ltp = prices.get(sym)
             if not sym or not ltp:
@@ -2807,10 +2915,22 @@ class IntradayEngine:
                 (f"note: {str(c.get('ai_note'))[:90]}" if c.get("ai_note") else ""),
             ) if x)
 
+            # THE ALERT MUST MATCH THE LIVE GATE — 26-Aug-2026, see
+            # _swing_alert_kind()'s own docstring for the RKFORGE incident
+            # this closes. _allocate_shadow() already ran earlier this cycle
+            # (called before act_on_candidates in the main loop), so
+            # self._verdicts is already populated — this read costs nothing
+            # new.
+            verdict = (self._verdicts.get((sym, "CNC"))
+                       if cfg_bool("swing_alert_reflect_allocator", True) else None)
+            kind, declined = _swing_alert_kind(verdict, room)
+
             self.notifier.send(Action(
                 symbol=c["symbol"],
-                kind="ENTRY" if room else "SWAP_CANDIDATE",
-                headline=(d.headline if room
+                kind=kind,
+                headline=(f"Allocator declined — {verdict.get('reason') or 'edge below the bar'}"
+                          if declined
+                          else d.headline if room
                           else f"Better than what you hold — {d.headline}"),
                 detail=(f"{d.reason}\n"
                         f"Stop ₹{d.stop} · target ₹{d.target}"
@@ -2818,10 +2938,15 @@ class IntradayEngine:
                            if getattr(d, 'qty', None) else "")
                         + f"\n#{pos} of today's plans — {rk.why()}"
                         + (f"\n{swap_why}" if swap else "")
-                        + (f"\n{ai_bits}" if ai_bits else "")),
-                ltp=ltp, urgency="NORMAL",
+                        + (f"\n{ai_bits}" if ai_bits else "")
+                        + (f"\nedge {verdict['edge']:.4f} vs hurdle {verdict['hurdle']:.4f}"
+                           if declined and verdict.get("edge") is not None
+                           and verdict.get("hurdle") is not None else "")),
+                ltp=ltp, urgency="INFO" if declined else "NORMAL",
                 meta={"tier": c.get("ai_tier"), "action": d.action,
-                      "rank": rk.total, "rank_pos": pos, "swap": swap},
+                      "rank": rk.total, "rank_pos": pos, "swap": swap,
+                      "allocator_verdict": verdict.get("verdict") if verdict else None,
+                      "allocator_edge": verdict.get("edge") if verdict else None},
                 framework="SWING",       # from signal_output_daily, a swing plan
             ))
             self._maybe_enter_swing(c, d, ltp)
@@ -2888,6 +3013,12 @@ class IntradayEngine:
         # next 15s cycle would look exactly like "not held" and get bought
         # again.
         if sym in self._pending_fills:
+            return
+
+        # Same guard, for a resting Phase 3b entry (PENDING_ENTRY) — a
+        # symbol already resting for a fill must not also get a second,
+        # marketable attempt submitted alongside it.
+        if sym in self._pending_entries:
             return
 
         # Other framework: the intraday book is already in this name. The
@@ -3137,12 +3268,96 @@ class IntradayEngine:
                 self.load_state()
             return
 
-        # ── LIVE ────────────────────────────────────────────────────────────
+        # ── LIVE, RESTING LADDER — Phase 3b, 26-Aug-2026, shadow-first ──────
+        #
+        # swing_pending_entry_enabled off by default: today's marketable
+        # chase below is unconditionally what runs. When armed, rest a
+        # passive (non-marketable) limit AT the current price instead of
+        # paying up through the offer — realistically fillable on the
+        # book's own next tick, still strictly better than the chase's
+        # ltp*(1+slip) premium, and the RKFORGE-shaped fix: no more
+        # re-quoting a fresh chase price every cycle while the position
+        # never actually lands. `_resolve_pending_entries()` (slow timer)
+        # walks it toward `max_entry` in steps if it goes unfilled, and
+        # falls back to today's ordinary chase once the ladder is
+        # exhausted — a resting attempt can never cause a trade the system
+        # would otherwise have taken to be missed entirely.
+        if cfg_bool("swing_pending_entry_enabled", False):
+            max_entry_ceiling = getattr(d, "max_entry", None)
+            resting_price = round(ltp, 1)
+            if max_entry_ceiling and resting_price > float(max_entry_ceiling):
+                logger.info(f"  {sym}: even a passive rest at {resting_price} would "
+                            f"exceed max entry {max_entry_ceiling} — not resting past "
+                            f"the plan's own R:R")
+                return
+            from execution.order_manager import OrderRequest, place
+            res = place(OrderRequest(sym, "BUY", qty, "LIMIT", resting_price,
+                                     reason=f"AUTO_ENTRY_RESTING: {getattr(d, 'reason', '')[:100]}"),
+                       self.sb, self.notifier, framework="SWING")
+            if not (res and res.ok):
+                return
+            from control.position_lifecycle import find_originating_signal
+            try:
+                _s = find_originating_signal(self.sb, sym, today_ist().isoformat()) or {}
+                _sig = {"signal_id": _s.get("id"), "signal_date": _s.get("date") or c.get("date")}
+            except Exception:
+                _sig = {"signal_id": None, "signal_date": c.get("date")}
+            step_minutes = cfg_int("swing_pending_entry_step_minutes", 5)
+            try:
+                from control.position_lifecycle import _upsert_position
+                _upsert_position(self.sb, {
+                    "symbol": sym, "mode": "LIVE", "framework": "SWING",
+                    "product": "CNC", "status": "PENDING_ENTRY",
+                    "entry_order_id": str(res.order_id),
+                    "entry_date": today_ist().isoformat(), "entry_price": resting_price,
+                    "actual_qty": qty, "current_qty": qty, "original_qty": qty,
+                    "invested_value": round(resting_price * qty, 2),
+                    "current_price": resting_price, "high_water_mark": resting_price,
+                    "planned_stop": d.stop, "active_sl": d.stop,
+                    "planned_target": d.target, "target_price": d.target,
+                    "entry_ladder_step": 0,
+                    "entry_ladder_deadline": (datetime.now(IST) + timedelta(minutes=step_minutes)).isoformat(),
+                    "entry_ladder_max_price": max_entry_ceiling,
+                    "sl_type": "AUTO_ENTRY_RESTING", "strategy": c.get("strategy"),
+                    "entry_signal_type": c.get("signal_type"),
+                    **_sig,
+                    "sector": c.get("sector"), "source": "auto_entry_resting",
+                    "entry_rationale": rationale,
+                    "entry_timing_type": c.get("entry_timing_type"),
+                    "sector_rank_at_entry": c.get("sector_rank_at_entry"),
+                    "synced_at": datetime.now(IST).isoformat(),
+                })
+                self._entries_taken += 1
+                self.load_state()
+                self._pending_entries[sym] = str(res.order_id)
+                logger.success(f"  🟡 ENTRY RESTING {sym} {qty} @ {resting_price} "
+                               f"(order {res.order_id}) — {rationale or 'no rank'} "
+                               f"— resting for a better fill, ladder step 0/"
+                               f"{cfg_int('swing_pending_entry_ladder_steps', 3)}")
+            except Exception as e:
+                logger.error(f"  {sym}: RESTED {qty} but the position row could not "
+                             f"be written — {e}. It may be rested again next cycle. "
+                             f"Reconcile against the broker NOW.")
+            return
+
+        # ── LIVE, MARKETABLE CHASE ───────────────────────────────────────────
         # Marketable limit priced THROUGH the offer, so it fills like a market
         # order without accepting an unbounded price in a thin book — the mirror
         # of what the exit side does, and for the same reason.
         from execution.order_manager import OrderRequest, place
-        slip = cfg_int("swing_entry_slip_bps", 20) / 10000.0
+        wide_bps = cfg_int("swing_entry_slip_bps", 20)
+        # Computed unconditionally — switch or no switch — so real evidence
+        # accumulates in the log before arming, the same shadow-first
+        # cadence this project's other new mechanisms use.
+        zone_aware_bps = _zone_aware_slip_bps(
+            ltp, c.get("entry_zone_low"), c.get("entry_zone_high"),
+            cfg_int("swing_entry_slip_tight_bps", 5), wide_bps)
+        zone_aware_on = cfg_bool("swing_entry_slip_zone_aware", False)
+        if round(zone_aware_bps) != wide_bps:
+            logger.debug(f"  {sym}: zone-aware slip would be {zone_aware_bps:.1f}bps "
+                        f"vs flat {wide_bps}bps (swing_entry_slip_zone_aware="
+                        f"{zone_aware_on})")
+        slip = (zone_aware_bps if zone_aware_on else wide_bps) / 10000.0
         limit = round(ltp * (1 + slip), 1)
 
         max_entry = getattr(d, "max_entry", None)
@@ -3332,7 +3547,9 @@ class IntradayEngine:
             # is still live at the exchange. Nothing to do; check again next
             # slow tick.
 
-    def _promote_pending_fill(self, pos: dict, filled_qty: int, avg_price: float) -> None:
+    def _promote_pending_fill(self, pos: dict, filled_qty: int, avg_price: float,
+                              from_status: str = "PENDING_FILL",
+                              pending_dict: dict | None = None) -> None:
         """
         Confirmed COMPLETE at the broker — this is now a real position.
 
@@ -3342,8 +3559,15 @@ class IntradayEngine:
         placed — so actual_qty/current_qty/invested_value are corrected here
         to match it. The plan itself (stop, target) is untouched: it was
         computed against the setup, not the fill size.
+
+        `from_status`/`pending_dict` — 26-Aug-2026, Phase 3b. Generalized
+        (defaults preserve the original PENDING_FILL/self._pending_fills
+        behaviour byte-for-byte) so `_resolve_pending_entries()` can reuse
+        this exact promotion logic for `PENDING_ENTRY` rows rather than a
+        second copy of it.
         """
         sym = pos.get("symbol")
+        pending_dict = self._pending_fills if pending_dict is None else pending_dict
         try:
             (self.sb.table("open_positions").update({
                 "status": "ACTIVE",
@@ -3354,13 +3578,13 @@ class IntradayEngine:
                 "current_price": avg_price, "high_water_mark": avg_price,
                 "synced_at": datetime.now(IST).isoformat(),
             }).eq("symbol", sym).eq("product", pos.get("product") or "CNC")
-              .eq("status", "PENDING_FILL").execute())
+              .eq("status", from_status).execute())
         except Exception as e:
             logger.error(f"  {sym}: fill confirmed but the position row could "
-                         f"not be promoted to ACTIVE — {e}. Still PENDING_FILL; "
+                         f"not be promoted to ACTIVE — {e}. Still {from_status}; "
                          f"will retry next cycle.")
             return
-        self._pending_fills.pop(sym, None)
+        pending_dict.pop(sym, None)
         logger.success(f"  🟢 ENTRY CONFIRMED {sym} {filled_qty} @ {avg_price:.2f} — now live")
         self.notifier.send(Action(
             sym, "ENTRY_CONFIRMED",
@@ -3370,7 +3594,9 @@ class IntradayEngine:
             ltp=avg_price, urgency="NORMAL",
             framework=pos.get("framework") or "SWING"), force=True)
 
-    def _discard_pending_fill(self, pos: dict, status: str, message: str) -> None:
+    def _discard_pending_fill(self, pos: dict, status: str, message: str,
+                              from_status: str = "PENDING_FILL",
+                              pending_dict: dict | None = None) -> None:
         """
         The order never became a position — REJECTED outright, or CANCELLED
         (which includes a LIMIT day order that simply expired unfilled at
@@ -3378,18 +3604,26 @@ class IntradayEngine:
 
         Deleted, not closed at 0%. A closed-at-breakeven row still reads as a
         real round trip that happened not to move — this one never existed.
+
+        `from_status`/`pending_dict` — 26-Aug-2026, Phase 3b, same
+        generalization as `_promote_pending_fill` above and for the same
+        reason: `_resolve_pending_entries()` reuses this for a
+        `PENDING_ENTRY` row whose resting order was rejected/cancelled at
+        the broker directly (as opposed to a ladder timeout, which this
+        engine initiates itself — see `_resolve_pending_entries`).
         """
         sym = pos.get("symbol")
+        pending_dict = self._pending_fills if pending_dict is None else pending_dict
         try:
             (self.sb.table("open_positions").delete()
                .eq("symbol", sym).eq("product", pos.get("product") or "CNC")
-               .eq("status", "PENDING_FILL").execute())
+               .eq("status", from_status).execute())
         except Exception as e:
             logger.error(f"  {sym}: entry {status} at the broker but the pending "
                          f"row could not be removed — {e}. Remove manually; "
                          f"nothing was actually bought.")
             return
-        self._pending_fills.pop(sym, None)
+        pending_dict.pop(sym, None)
         logger.warning(f"  🔴 ENTRY DID NOT FILL — {sym} {status.lower()} at the "
                        f"broker" + (f": {message[:100]}" if message else "")
                        + ". Nothing was bought.")
@@ -3400,6 +3634,205 @@ class IntradayEngine:
             + (f": {message[:150]}" if message else ".")
             + " No position was opened; this symbol is free again next cycle.",
             urgency="NORMAL", framework=pos.get("framework") or "SWING"), force=True)
+
+    def _resolve_pending_entries(self) -> None:
+        """
+        The Phase 3b watcher for a resting swing entry — mirrors
+        `_resolve_pending_fills()` exactly in shape, on the same slow timer,
+        but owns a state `_resolve_pending_fills` does not: a `PENDING_ENTRY`
+        row is a DELIBERATE minutes-scale rest at a favourable price, not the
+        seconds-scale submit-then-confirm gap `PENDING_FILL` covers, and it
+        can still be resting (neither filled nor rejected) when this runs —
+        that is its normal state, not a fault, for as long as
+        `entry_ladder_deadline` has not yet passed.
+
+        SAME "fails toward pending, never toward a guess" discipline as
+        `_resolve_pending_fills`: no broker session, no history, or an
+        ambiguous COMPLETE all leave the row untouched, retried next cycle.
+        """
+        if not cfg_bool("swing_pending_entry_enabled", False):
+            return
+        try:
+            rows = (self.sb.table("open_positions").select("*")
+                      .eq("status", "PENDING_ENTRY").execute().data or [])
+        except Exception as e:
+            logger.warning(f"  pending entries: could not read PENDING_ENTRY rows — {e}")
+            return
+        if not rows:
+            return
+
+        from kite import kite_client
+        kite = kite_client.get_kite()
+        if not kite:
+            return
+
+        now = datetime.now(IST)
+        max_steps = cfg_int("swing_pending_entry_ladder_steps", 3)
+        step_minutes = cfg_int("swing_pending_entry_step_minutes", 5)
+        fallback = cfg_bool("swing_pending_entry_fallback_to_chase", True)
+
+        for pos in rows:
+            sym = pos.get("symbol")
+            order_id = pos.get("entry_order_id")
+            if not order_id:
+                continue
+            try:
+                hist = kite.order_history(order_id)
+            except Exception as e:
+                logger.debug(f"  {sym}: order_history failed for {order_id} — {e}")
+                continue
+            if not hist:
+                continue
+
+            final  = hist[-1]
+            status = (final.get("status") or "").upper()
+
+            if status == "COMPLETE":
+                filled_qty = int(final.get("filled_quantity") or 0)
+                avg_price  = float(final.get("average_price") or 0)
+                if filled_qty <= 0 or avg_price <= 0:
+                    logger.warning(
+                        f"  {sym}: resting order {order_id} reports COMPLETE with "
+                        f"no usable fill data ({filled_qty} @ {avg_price}) — "
+                        f"leaving PENDING_ENTRY rather than guessing")
+                    continue
+                self._promote_pending_fill(pos, filled_qty, avg_price,
+                                           from_status="PENDING_ENTRY",
+                                           pending_dict=self._pending_entries)
+                continue
+
+            if status in ("REJECTED", "CANCELLED"):
+                self._discard_pending_fill(pos, status, final.get("status_message") or "",
+                                           from_status="PENDING_ENTRY",
+                                           pending_dict=self._pending_entries)
+                continue
+
+            # Still resting at the exchange (OPEN / TRIGGER PENDING). Has its
+            # own ladder deadline passed?
+            deadline_raw = pos.get("entry_ladder_deadline")
+            if not deadline_raw:
+                continue
+            try:
+                deadline = datetime.fromisoformat(str(deadline_raw).replace("Z", "+00:00")).astimezone(IST)
+            except Exception:
+                continue
+            if now < deadline:
+                continue   # normal — still within this ladder step's window
+
+            step = int(pos.get("entry_ladder_step") or 0)
+            max_price = pos.get("entry_ladder_max_price")
+            qty = int(pos.get("actual_qty") or pos.get("current_qty") or 0)
+
+            if step >= max_steps:
+                # LADDER EXHAUSTED. Cancel the resting order at the broker —
+                # same precedent execution/exit_orders.py::_escalate_to_market
+                # already uses for a stuck exit — then either fall back to
+                # today's ordinary marketable chase ONCE, or stand down.
+                # Either way the PENDING_ENTRY row is discarded first, so a
+                # fallback fill writes a fresh row rather than colliding with
+                # this one.
+                try:
+                    kite.cancel_order(variety=kite.VARIETY_REGULAR, order_id=order_id)
+                except Exception as e:
+                    logger.warning(f"  {sym}: ladder-exhausted cancel failed for "
+                                   f"{order_id} — {e}. Leaving PENDING_ENTRY; "
+                                   f"check manually.")
+                    continue
+                self._discard_pending_fill(pos, "LADDER_EXHAUSTED",
+                                           f"{max_steps} reprice step(s), no fill",
+                                           from_status="PENDING_ENTRY",
+                                           pending_dict=self._pending_entries)
+                if fallback and qty > 0:
+                    self._chase_fill_fallback(sym, pos, qty)
+                continue
+
+            # REPRICE one step toward (never past) max_entry — modify-in-place
+            # rather than cancel/resubmit, matching execution/exit_orders.py's
+            # own simpler reprice-without-cancel precedent for a plain price
+            # change.
+            try:
+                ltp = self._contexts.get(sym).ltp if self._contexts.get(sym) else None
+            except Exception:
+                ltp = None
+            old_price = float(pos.get("entry_price") or 0)
+            if not ltp or not old_price:
+                continue
+            wide_bps = cfg_int("swing_entry_slip_bps", 20)
+            chase_price = round(ltp * (1 + wide_bps / 10000.0), 1)
+            new_price = min(chase_price, float(max_price)) if max_price else chase_price
+            new_price = max(new_price, old_price)   # a ladder only ever moves toward the chase, never back
+            if new_price == old_price:
+                continue
+            try:
+                kite.modify_order(variety=kite.VARIETY_REGULAR, order_id=order_id,
+                                  order_type=kite.ORDER_TYPE_LIMIT, quantity=qty,
+                                  price=new_price)
+            except Exception as e:
+                logger.warning(f"  {sym}: ladder reprice failed for {order_id} — {e}. "
+                               f"Leaving at {old_price}, retrying next cycle.")
+                continue
+            new_deadline = (now + timedelta(minutes=step_minutes)).isoformat()
+            try:
+                (self.sb.table("open_positions").update({
+                    "entry_price": new_price, "entry_ladder_step": step + 1,
+                    "entry_ladder_deadline": new_deadline,
+                }).eq("symbol", sym).eq("status", "PENDING_ENTRY").execute())
+            except Exception as e:
+                logger.warning(f"  {sym}: repriced at the broker to {new_price} but "
+                               f"could not update the position row — {e}")
+                continue
+            logger.info(f"  {sym}: ladder step {step+1}/{max_steps} — "
+                       f"resting price {old_price} -> {new_price}")
+
+    def _chase_fill_fallback(self, sym: str, pos: dict, qty: int) -> None:
+        """
+        A resting ladder exhausted without filling. If
+        `swing_pending_entry_fallback_to_chase` is on, attempt today's
+        ORDINARY marketable chase once, so a resting attempt can never turn
+        into a trade that was decided on but never actually taken — the
+        same "must not cause a missed trade" guarantee the blueprint names.
+        Deliberately minimal: one marketable order, not a re-run of
+        `_maybe_enter_swing`'s full gate chain — the decision to buy this
+        symbol already happened; this only finishes getting it filled.
+        """
+        try:
+            ltp = self._contexts.get(sym).ltp if self._contexts.get(sym) else None
+        except Exception:
+            ltp = None
+        if not ltp:
+            logger.warning(f"  {sym}: ladder exhausted, no live price for the chase "
+                           f"fallback — standing down")
+            return
+        wide_bps = cfg_int("swing_entry_slip_bps", 20)
+        limit = round(ltp * (1 + wide_bps / 10000.0), 1)
+        from execution.order_manager import OrderRequest, place
+        res = place(OrderRequest(sym, "BUY", qty, "LIMIT", limit,
+                                 reason="PENDING_ENTRY_LADDER_FALLBACK"),
+                   self.sb, self.notifier, framework="SWING")
+        if not (res and res.ok):
+            logger.warning(f"  {sym}: chase fallback after ladder exhaustion "
+                           f"failed — {res.message if res else 'no result'}")
+            return
+        from control.position_lifecycle import _upsert_position
+        _upsert_position(self.sb, {
+            "symbol": sym, "mode": "LIVE", "framework": "SWING",
+            "product": pos.get("product") or "CNC", "status": "PENDING_FILL",
+            "entry_order_id": str(res.order_id),
+            "entry_date": today_ist().isoformat(), "entry_price": limit,
+            "actual_qty": qty, "current_qty": qty, "original_qty": qty,
+            "invested_value": round(limit * qty, 2), "current_price": limit,
+            "high_water_mark": limit,
+            "planned_stop": pos.get("planned_stop"), "active_sl": pos.get("planned_stop"),
+            "planned_target": pos.get("planned_target"), "target_price": pos.get("planned_target"),
+            "sl_type": "PENDING_ENTRY_FALLBACK", "strategy": pos.get("strategy"),
+            "signal_id": pos.get("signal_id"), "signal_date": pos.get("signal_date"),
+            "sector": pos.get("sector"), "source": "pending_entry_fallback",
+            "entry_rationale": (pos.get("entry_rationale") or "") + " (ladder fallback chase)",
+            "synced_at": datetime.now(IST).isoformat(),
+        })
+        self._pending_fills[sym] = str(res.order_id)
+        logger.success(f"  🟡 {sym}: ladder exhausted, chase fallback submitted "
+                       f"{qty} @ ~{limit} (order {res.order_id})")
 
     # ── intraday strategy engines ───────────────────────────────────────────
     def evaluate_intraday_setups(self, prices: dict[str, float]) -> list:

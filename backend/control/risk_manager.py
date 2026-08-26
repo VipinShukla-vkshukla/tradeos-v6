@@ -8,7 +8,18 @@ from pathlib import Path
 from dataclasses import dataclass
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import get_supabase, get_config_float, get_config_int, TOTAL_CAPITAL, logger
+# IMPORT FIX 26-Aug-2026 — this module has never successfully imported.
+# get_config_float/get_config_int have never existed in config.py (the real
+# names are cfg_float/cfg_int); the identical class of bug execution_engine.
+# py's own July fix comment already documents for that file, but this one
+# was never touched. Every call into check_portfolio_risk/
+# calculate_position_size therefore raised ImportError, silently swallowed
+# by telegram_bot.py::_handle_approval's own try/except — every Telegram
+# order-approval attempt has been failing with "Approval processing error"
+# rather than placing an order, live or otherwise. Found while wiring
+# execution_engine.py::place_order() through order_manager.place() (Phase 2a
+# of the swing framework evolution blueprint).
+from config import get_supabase, cfg_float, cfg_int, TOTAL_CAPITAL, logger
 
 
 @dataclass
@@ -82,8 +93,8 @@ def check_portfolio_risk(new_symbol: str, new_sector: str) -> dict:
     # Get config
     suffix_map = {"RISK ON": "risk_on", "NEUTRAL": "neutral", "RISK OFF": "risk_off"}
     suffix     = suffix_map.get(regime_str, "neutral")
-    max_pos    = get_config_int(f"max_positions_{suffix}", 7)
-    max_sector_pct = get_config_float("max_sector_concentration", 25.0)
+    max_pos    = cfg_int(f"max_positions_{suffix}", 7)
+    max_sector_pct = cfg_float("max_sector_concentration", 25.0)
     block_risk_off = sb.table("system_config").select("value").eq("key", "block_buys_risk_off").execute().data
     block_risk_off = (block_risk_off[0]["value"].lower() == "true") if block_risk_off else False
 

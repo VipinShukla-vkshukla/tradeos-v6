@@ -245,9 +245,24 @@ AUTO_APPLICABLE = {"THRESHOLD_CHANGE","ENGINE_WEIGHT","REGIME_WEIGHT","SCORE_WEI
 # approved here. Gating the acknowledgment behind evidence only the
 # acknowledgment can produce is the same shape as the RETIRE-floor bug this
 # project already fixed once.
+#
+# SWING_ENGINE_LIFECYCLE ADDED — 26-Aug-2026, Phase 5 of the swing framework
+# evolution blueprint, found while building tools/apply_swing_lifecycle.py.
+# review_swing_engine_lifecycle() (tools/weekly_review.py) writes THIS exact
+# proposal_type, a different string from intraday's own "ENGINE_LIFECYCLE"
+# above — a genuine near-homophone collision the same shape as the
+# regime-vocabulary landmine already documented for this codebase. Unlisted
+# here, it would have fallen through to the identical dangerous generic
+# system_config upsert the comment above describes, writing a strategy name
+# ("RVS", "TPO", ...) into system_config as a bogus config key the moment
+# the operator approved the FIRST swing engine lifecycle proposal — which,
+# as of this fix, has never yet happened (Sunday's job had not produced one
+# before the CI wiring bug, F-80, was fixed this same week). Caught before
+# it could fire, not after.
 REVIEW_ONLY     = {"CODE_SUGGESTION","INSIGHT","SCRIPT_PATCH",
                     "ENGINE_PERFORMANCE","CONSISTENCY_CONFLICT",
-                    "ENGINE_CANDIDATE","ENGINE_PARAMETERS","ENGINE_LIFECYCLE"}
+                    "ENGINE_CANDIDATE","ENGINE_PARAMETERS","ENGINE_LIFECYCLE",
+                    "SWING_ENGINE_LIFECYCLE"}
 
 
 def save_proposals(proposals: list, run_id: str) -> list:

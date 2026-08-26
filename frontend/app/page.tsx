@@ -28,6 +28,7 @@ import { StrategyModeSwitch } from '@/components/core/StrategyModeSwitch';
 import { BrainEngineTab } from '@/components/tabs/BrainEngineTab';
 import { AllocatorTab } from '@/components/tabs/AllocatorTab';
 import { DataManagementTab } from '@/components/tabs/DataManagementTab';
+import { DailyBookSummary } from '@/components/core/DailyBookSummary';
 
 const CORE_TAB_IDS = new Set(['performance', 'positions', 'ai-intelligence', 'brain-engine', 'data-management', 'allocator']);
 
@@ -191,6 +192,14 @@ export default function Dashboard() {
 
         <main className="flex-1 overflow-auto p-4 pb-20 md:pb-4">
           {supabaseWarning && <DevelopmentBanner message={supabaseWarning} />}
+
+          {/* Daily Summary — 26-Aug-2026. Always visible, both books,
+              regardless of which strategyMode/tab is active: the whole
+              point is one combined SWING-vs-INTRADAY view neither the
+              swing tabs nor the intraday-only view otherwise shows. */}
+          <div className="mb-4">
+            <DailyBookSummary />
+          </div>
 
           {/* ── Intraday mode: one view, no tabs ─────────────────────────── */}
           {strategyMode === 'intraday' && <IntradayTab />}

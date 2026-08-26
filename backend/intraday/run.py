@@ -458,6 +458,28 @@ def main(once: bool = False, dry: bool = False) -> None:
                     engine._resolve_pending_fills()
                 except Exception as e:
                     logger.warning(f"  pending-fill resolution failed: {e}")
+                # Phase 3b of the swing framework evolution blueprint,
+                # 26-Aug-2026 — same slow-timer placement, resolves a
+                # RESTING entry (status='PENDING_ENTRY') rather than the
+                # submit-then-confirm gap the call above covers. No-ops
+                # unless swing_pending_entry_enabled is on.
+                try:
+                    engine._resolve_pending_entries()
+                except Exception as e:
+                    logger.warning(f"  pending-entry resolution failed: {e}")
+                # Phase 4 of the swing framework evolution blueprint,
+                # 26-Aug-2026 — same-day setup discovery, scoped to VBD/
+                # SBS/RSB only (see swing/signals/same_day_discovery.py's
+                # own docstring). Same slow-timer cadence as everything
+                # else here; the module itself no-ops unless watched
+                # symbols and their contexts are available.
+                try:
+                    from swing.signals import same_day_discovery
+                    same_day_discovery.scan(list(engine._contexts.keys()),
+                                            engine._contexts, sb, today_ist().isoformat())
+                    engine._refresh_same_day_candidates()
+                except Exception as e:
+                    logger.warning(f"  same-day discovery failed: {e}")
                 # Stage E7's own add-on confirm step — same slow-timer
                 # placement and reasoning, kept separate because it
                 # resolves scale_in_status, not the row's own status.

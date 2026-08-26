@@ -185,17 +185,84 @@ def run(sb=None, trade_date: str | None = None, require_live: bool = True) -> di
         except Exception as e:
             logger.warning(f"  candidate_watch write failed: {e}")
 
-    if alerts:
-        _send(alerts, source)
+    sent = _maybe_send_candidate_alerts(sb, alerts, source)
 
-    logger.info(f"  Candidate monitor: {evaluated} evaluated | {len(alerts)} alert(s)")
-    return {"status": "ok", "watched": evaluated, "alerts": len(alerts), "source": source}
+    logger.info(f"  Candidate monitor: {evaluated} evaluated | "
+               f"{len(alerts)} actionable | {len(alerts) if sent else 0} sent")
+    return {"status": "ok", "watched": evaluated, "alerts": len(alerts),
+            "sent": len(alerts) if sent else 0, "source": source}
 
 
-def _send(decisions: list, source: str):
+def _daemon_lease_healthy(view) -> bool:
+    """
+    Pure. True if the real daemon (intraday/engine.py) currently holds its
+    lease — from this script's own perspective (it never calls acquire(),
+    so any lease held is held by someone else).
+
+    `view.held_by_other` already means "a DIFFERENT process holds it and it
+    has NOT expired" (intraday/lease.py's own LeaseView docstring), which is
+    exactly the daemon-alive question this script needs answered. An
+    unreadable lease (`view.held_by_other is False` on the error path too)
+    reads as unhealthy here, on purpose — the same "over-watching is
+    recoverable, silently watching nothing is not" rule this project
+    already applies elsewhere: a DB blip must not read as permission for
+    this monitor to go quiet.
+    """
+    return bool(getattr(view, "held_by_other", False))
+
+
+def _maybe_send_candidate_alerts(sb, alerts: list, source: str) -> bool:
+    """
+    Send `alerts` unless the daemon's lease says it already covers this —
+    26-Aug-2026, Phase 2b of the swing framework evolution blueprint
+    (docs/PHASE4_RED_TEAM.md's "C2 — 'One allocator' is false" finding,
+    second of its two named entry paths; Phase 2a closed the third,
+    control/execution_engine.py). This monitor runs on a GitHub Actions
+    cron, entirely outside the daemon and its lease — a real "second actor"
+    evaluating the identical question (is this candidate buyable now) with
+    a FLAT min_rr_to_enter bar that never scales for regime, unlike the
+    daemon's regime_min_rr(). BLUEJET, 26-Aug: never once reached the
+    daemon's own allocator scoring (zero rows in allocation_decisions,
+    ever) because it never cleared the daemon's regime-scaled bar — yet
+    this monitor alerted it repeatedly as BUY_NOW on its looser flat one,
+    all morning, for a trade this monitor has no way to place anyway (it
+    is alert-only; the daemon is the only path that can actually buy). The
+    daemon is a strict superset of this monitor's job: real-time
+    KiteTicker prices vs. this script's fetch_live_prices() fallback,
+    regime-scaled vs. flat, allocator-aware, a 15s loop vs. a jittery
+    30-min cron. So: while the daemon's lease is healthy, this monitor
+    stays silent — candidate_watch is still written by the caller either
+    way, for audit — because the daemon already covers it, better. Only
+    when the lease looks stale or absent (a real daemon outage) does this
+    fire, and it says so plainly, so the operator is never silently blind
+    during an outage.
+
+    Returns True if `alerts` was actually sent.
+    """
+    if not alerts:
+        return False
+    from intraday.lease import observe as _observe_daemon_lease
+    view = _observe_daemon_lease(sb)
+    if _daemon_lease_healthy(view):
+        logger.info(f"  {len(alerts)} alert(s) suppressed — daemon lease "
+                   f"held by {view.holder}@{view.hostname}, already covers "
+                   f"this on real-time prices and a regime-scaled bar")
+        return False
+    logger.warning(f"  daemon lease not held ({view.detail}) — firing "
+                  f"{len(alerts)} alert(s) as a degraded fallback, flat "
+                  f"min_rr bar, not regime-scaled")
+    _send(alerts, source, degraded=True)
+    return True
+
+
+def _send(decisions: list, source: str, degraded: bool = False):
     """One consolidated message. Thirteen cycles a day means brevity matters."""
     icon = {"BUY_NOW": "🟢", "CHASE_LIMIT": "🟡"}
-    lines = ["<b>⚡ Entry Signal — live</b>", ""]
+    lines = (["<b>⚠️ Entry Signal — daemon appears down, degraded monitor</b>",
+              "<i>Flat R:R bar, not regime-scaled — the daemon's own check is "
+              "stricter. This channel cannot place orders.</i>", ""]
+             if degraded else
+             ["<b>⚡ Entry Signal — live</b>", ""])
     for d in decisions:
         lines.append(f"{icon.get(d.action, '•')} <b>{d.symbol}</b> @ ₹{d.live_price:,.2f}")
         lines.append(f"    {d.reason}")

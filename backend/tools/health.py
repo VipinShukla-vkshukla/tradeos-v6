@@ -294,6 +294,58 @@ def check_data_freshness() -> tuple[bool, str]:
     return True, "signal and price data are current"
 
 
+def check_data_quality() -> tuple[bool, str]:
+    """
+    Did the evening pipeline's OWN quality gate — step 21,
+    swing.compute.data_quality_monitor, 19 checks (pipeline completeness,
+    RSI/delivery%/score bounds, entry-zone validity, AI-hallucination
+    protection, tier distribution, and more) — find anything wrong with
+    today's run? 26-Aug-2026: this mechanism has always existed and is more
+    thorough than anything in this file, but it only ever alerted to
+    Telegram — nothing here read its result, so `tools.health` was blind to
+    the one check that would actually catch a bad evening run.
+
+    HONEST ABOUT WHAT ZERO ROWS MEANS. data_quality_monitor.py's own write
+    is delete-then-insert-if-anomalous: it only ever inserts a row for a
+    WARN/ERROR finding, so a genuinely clean run leaves `data_anomalies`
+    untouched for today — identical in shape to the monitor never having
+    run at all. There is no separate always-written run marker to tell
+    those two apart (confirmed: `_already_logged_today()` in that file is
+    dead code, never called). So this check does NOT claim "verified
+    clean" on zero rows by itself — it cross-references `check_data_freshness`
+    (the 'data' check above), which independently confirms the pipeline's
+    inputs actually landed today, and only calls the combination clean.
+    """
+    from config import get_supabase, today_ist
+
+    sb = get_supabase()
+    today = today_ist().isoformat()
+    try:
+        rows = (sb.table("data_anomalies").select("check_name,severity,message")
+                  .eq("date", today).eq("severity", "ERROR").execute().data or [])
+    except Exception as e:
+        return False, f"data_anomalies unreadable: {e}"
+
+    fresh_ok, fresh_detail = check_data_freshness()
+
+    if rows:
+        names = ", ".join(sorted({r["check_name"] for r in rows})[:5])
+        return False, (f"{len(rows)} ERROR-severity data quality finding(s) for {today} "
+                       f"from step 21 (data_quality_monitor): {names}. Read the full "
+                       f"rows in data_anomalies before trusting today's plans.")
+
+    if not fresh_ok:
+        return False, (f"no ERROR recorded in data_anomalies for {today}, but "
+                       f"check_data_freshness itself is unhappy ({fresh_detail}) — zero "
+                       f"anomaly rows here is consistent with EITHER a clean run or the "
+                       f"monitor never running at all; do not read this alone as clean")
+
+    return True, (f"no ERROR recorded in data_anomalies for {today}, and the pipeline's "
+                  f"own inputs read as fresh — the closest this check can get to "
+                  f"'verified clean' without a positive run marker data_quality_monitor "
+                  f"does not currently write")
+
+
 def check_kite() -> tuple[bool, str]:
     """Probe the session rather than trusting a validity flag."""
     from config import get_supabase
@@ -647,6 +699,86 @@ def check_pending_fills() -> tuple[bool, str]:
     today_pending = [r["symbol"] for r in rows]
     return True, (f"{len(rows)} entry/entries awaiting fill confirmation from today's "
                   f"session, none overdue: {', '.join(today_pending)}")
+
+
+def check_pending_entries() -> tuple[bool, str]:
+    """
+    Is a resting swing entry (Phase 3b, PENDING_ENTRY) stuck past when its
+    own ladder should have resolved it — filled, repriced, or cancelled?
+
+    Mirrors check_pending_fills() exactly, for the same reason: a row still
+    PENDING_ENTRY from a PAST session cannot legitimately still be resting
+    at the broker — a day order resolves one way or another by the close of
+    the session it was placed in. Surviving past that boundary means
+    _resolve_pending_entries() could not resolve it, which needs a human.
+
+    NOT a fault for a row still pending from TODAY's session with a ladder
+    deadline still ahead of it — that is the normal state of a resting
+    order that has not yet been repriced or exhausted.
+    """
+    from config import get_supabase, today_ist
+
+    sb = get_supabase()
+    rows = (sb.table("open_positions")
+              .select("symbol,entry_date,entry_order_id,entry_ladder_step,"
+                      "entry_ladder_deadline,synced_at")
+              .eq("status", "PENDING_ENTRY").execute().data or [])
+    if not rows:
+        return True, "no entries resting for a better price"
+
+    today = today_ist().isoformat()
+    stuck = [r for r in rows
+             if str(r.get("entry_date") or "")[:10] < today or not r.get("entry_order_id")]
+    if stuck:
+        names = ", ".join(f"{r['symbol']} (since {r.get('entry_date')})" for r in stuck[:5])
+        return False, (f"{len(stuck)} resting entry/entries stuck PENDING_ENTRY past "
+                       f"their own session, or missing an order_id to resolve against: "
+                       f"{names}. _resolve_pending_entries could not confirm these — "
+                       f"check manually against Kite and clear the row once you know "
+                       f"what actually happened.")
+
+    today_pending = [f"{r['symbol']} (step {r.get('entry_ladder_step') or 0})" for r in rows]
+    return True, (f"{len(rows)} entry/entries resting for a better fill from today's "
+                  f"session, none overdue: {', '.join(today_pending)}")
+
+
+def check_same_day_discovery_writing() -> tuple[bool, str]:
+    """
+    Is swing/signals/same_day_discovery.py (Phase 4) actually landing rows
+    on days its trigger conditions should have fired, or is it silently
+    producing nothing — a "check that cannot fail is not a check" concern
+    for a module that fails open (an empty result is indistinguishable
+    from "nothing triggered today" unless something asks how often that
+    happens).
+
+    Only meaningful once the shadow switch has had time to run — a single
+    day with zero rows is not itself a fault (VBD/SBS/RSB not firing on a
+    quiet session is a real, honest outcome), so this reports the recent
+    rate rather than failing on any one empty day.
+    """
+    from config import get_supabase, cfg_bool, today_ist
+    from datetime import timedelta
+
+    if not cfg_bool("swing_same_day_discovery_shadow", True):
+        return True, "swing_same_day_discovery_shadow is off — nothing to check"
+
+    sb = get_supabase()
+    since = (today_ist() - timedelta(days=10)).isoformat()
+    try:
+        rows = (sb.table("swing_same_day_candidates").select("date")
+                  .gte("date", since).execute().data or [])
+    except Exception as e:
+        return False, f"swing_same_day_candidates unreadable: {e}"
+
+    days_with_rows = len({r["date"] for r in rows})
+    if days_with_rows == 0:
+        return False, (f"zero swing_same_day_candidates rows in the last 10 sessions "
+                       f"— the shadow switch is on but nothing has ever landed. "
+                       f"Confirm intraday/run.py's 300s block is actually calling "
+                       f"same_day_discovery.scan() and that engine._contexts is "
+                       f"non-empty when it runs.")
+    return True, (f"{len(rows)} candidate(s) across {days_with_rows} of the last 10 "
+                  f"session(s) — the module is landing rows")
 
 
 def check_pending_fill_duplicates() -> tuple[bool, str]:
@@ -2264,12 +2396,15 @@ CHECKS = [
     ("sort_keys", "a paged read sorts on a column the table does not have, so it returns nothing", check_sort_keys, False),
     ("kite",     "no broker session, or the IP is not allowlisted",              check_kite,     False),
     ("data",     "decisions would run on stale inputs",                          check_data_freshness, False),
+    ("data_quality", "the evening pipeline's own 19-check quality gate found an ERROR and nothing surfaced it here", check_data_quality, False),
     ("broker",   "resting orders do not match the positions they protect",       check_broker_consistency, False),
     ("capital",  "TOTAL_CAPITAL drifts from what the broker account actually holds", check_capital, False),
     ("stops",    "an open position is trading past the stop that should have closed it", check_stops_holding, False),
     ("qty_fields", "current_qty/actual_qty/kite_qty silently disagree, hiding drift from the dashboard", check_quantity_fields, False),
     ("daemon",   "nothing is watching your positions right now",                 check_daemon,   False),
     ("pending",  "an entry order that never filled is being tracked as a real position", check_pending_fills, False),
+    ("pending_entries", "a resting swing entry (Phase 3b) is stuck past its own ladder", check_pending_entries, False),
+    ("same_day_discovery", "same-day setup discovery (Phase 4) is silently producing nothing", check_same_day_discovery_writing, False),
     ("pending_dup", "a SWING symbol was bought twice within minutes — the F-67 shape", check_pending_fill_duplicates, False),
     ("pending_scale_in", "a Stage E7 add-on order never filled and nobody would otherwise notice", check_pending_scale_ins, False),
     ("sector_risk", "a majority of the open SWING book sits in sectors rotating away from it", check_sector_concentration_risk, False),
