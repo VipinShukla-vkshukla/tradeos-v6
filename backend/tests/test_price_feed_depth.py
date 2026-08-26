@@ -96,10 +96,21 @@ def test_switch_off_by_default_takes_no_live_action_even_when_wired():
 
 def test_switch_off_is_the_default_with_no_config_at_all():
     """Same as above with nothing set in system_config -- cfg_bool's own
-    False default must be what actually governs, not an assumption."""
-    f = _feed()
-    ticker = _wired(f, {"A": 1, "B": 2})
-    f.set_depth_symbols(["A", "B"])
+    False default must be what actually governs, not an assumption.
+
+    MUST use cfg_ctx({}), not the ambient process-wide config cache: without
+    it, this reads whatever config._sys_config already holds -- None on a
+    clean process, which triggers a real, uncontrolled Supabase fetch the
+    moment cfg_bool() is called. That happened to return an empty dict (and
+    pass) for as long as Supabase was unreachable this session; the instant
+    it came back, the live intraday_depth_mode_enabled='true' loaded into
+    the cache instead and this test failed -- a verify-suite check whose
+    result depended on live infrastructure state, exactly what tools.verify
+    is supposed to never do."""
+    with cfg_ctx({}):
+        f = _feed()
+        ticker = _wired(f, {"A": 1, "B": 2})
+        f.set_depth_symbols(["A", "B"])
     assert ticker.calls == []
 
 

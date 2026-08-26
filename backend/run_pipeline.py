@@ -380,6 +380,21 @@ def main():
             except Exception as e:
                 logger.warning(f"  quote-parity roll-off skipped: {e}")
 
+        # ── allocation_decisions archive ─────────────────────────────────────
+        # Unlike staging/quote-parity above, these rows are NOT re-derivable
+        # -- archive-then-delete, verified round-trip, see migration 124 and
+        # tools/archive_allocation_decisions.py.
+        alloc = {}
+        if cfg_bool("storage_alloc_decisions_rolloff_enabled", False):
+            try:
+                from tools.archive_allocation_decisions import archive_and_prune
+                alloc = archive_and_prune()
+                if alloc["archived"]:
+                    logger.info(f"  allocation_decisions: archived {alloc['archived']} row(s) "
+                                f"before {alloc['cutoff']} -> {alloc['path']}")
+            except Exception as e:
+                logger.warning(f"  allocation_decisions archive skipped: {e}")
+
         # ── intraday_setups re-evaluation duplicates ────────────────────────
         # Compacts, not deletes wholesale -- keeps the earliest row per
         # (symbol, strategy, trade_date), matching dedupe_setups() exactly.

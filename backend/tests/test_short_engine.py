@@ -379,6 +379,12 @@ def test_allocator_record_hurdle_inputs_is_a_dict_not_a_string():
     NULL from plain SQL regardless of whether the rank was ever set. Pinned
     at the boundary that actually matters: the row _record() hands to the
     client, not the DB round trip (proven separately, live, by this fix).
+
+    Uses verdict=TAKE, not DECLINE — since 27-Aug-2026 (docs/FINDINGS.md,
+    same date) a DECLINE/DEFER row has hurdle_inputs nulled deliberately for
+    storage (see test_alloc_decisions_jsonb_slim.py); TAKE is the verdict
+    that still carries it, and the one this double-encoding fix actually
+    needs to keep working.
     """
     from allocation.allocator import Allocator
     from allocation.proposal import Proposal
@@ -386,7 +392,7 @@ def test_allocator_record_hurdle_inputs_is_a_dict_not_a_string():
     p = Proposal(symbol="X", framework="INTRADAY", product="MIS",
                 entry=100.0, stop=99.0, target=103.0, quantity=10,
                 source="ORB", native_rank=80.0, direction="LONG")
-    row = a._record({"proposal": p, "verdict": "DECLINE", "edge": -0.5,
+    row = a._record({"proposal": p, "verdict": "TAKE", "edge": -0.5,
                      "hurdle_inputs": {"floor_only_rank": 2, "base": -0.3}})
     assert isinstance(row["hurdle_inputs"], dict), (
         f"hurdle_inputs is a {type(row['hurdle_inputs']).__name__}, not a dict — "

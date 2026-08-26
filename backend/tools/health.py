@@ -1503,7 +1503,11 @@ def check_quote_parity() -> tuple[bool, str]:
                        f"session this was last verified against")
 
     sb = get_supabase()
-    cutoff = (today_ist() - timedelta(days=5)).isoformat()
+    # 27-Aug-2026: 5 -> 2 days, alongside storage_quote_parity_keep_days
+    # tightening from 10 to 3 (docs/FINDINGS.md, same date) -- the two must
+    # move together, keeping a 1-day buffer, or this reads a window the
+    # table no longer physically holds.
+    cutoff = (today_ist() - timedelta(days=2)).isoformat()
     # THIS READ WAS UNPAGED, AND IT INVERTED THE VERDICT.
     #
     # `intraday_quote_parity` is 178,545 rows; this 5-day window is 167,025 of
@@ -1547,7 +1551,7 @@ def check_quote_parity() -> tuple[bool, str]:
 
     if not rows:
         return False, (f"intraday_quote_mode_{on_names} is ON and logging is armed, but no "
-                       f"comparisons in the last 5 days — armed does not mean collecting; "
+                       f"comparisons in the last 2 days — armed does not mean collecting; "
                        f"confirm the daemon actually picked up the config change")
 
     from tools.quote_parity import range_verdict, vwap_verdict
@@ -1573,7 +1577,46 @@ def check_quote_parity() -> tuple[bool, str]:
         _, detail = vwap_verdict(rows)
         notes.append(f"vwap: {detail}")
 
-    return True, "checked against last 5 days: " + "; ".join(notes)
+    return True, "checked against last 2 days: " + "; ".join(notes)
+
+
+def check_alloc_decisions_retention() -> tuple[bool, str]:
+    """
+    If the archive job is armed, is it actually running?
+
+    27-Aug-2026. archive_stock_data() sat built and never called for five
+    months before anyone noticed (migration 030) — the exact failure mode
+    this guards against for allocation_decisions' own archive job. Off is
+    not a failure (matches check_quote_parity's own "mode is off" early
+    return); armed-but-stale is, because that means storage is growing
+    again unwatched, on the single biggest table in the database.
+    """
+    from config import cfg_bool, cfg_int, get_supabase, today_ist
+    from datetime import timedelta
+
+    if not cfg_bool("storage_alloc_decisions_rolloff_enabled", False):
+        return True, "allocation_decisions archive is off — nothing to verify"
+
+    keep_days = cfg_int("storage_alloc_decisions_keep_days", 60)
+    grace_days = 3  # evening-pipeline cadence plus a missed-run buffer
+    sb = get_supabase()
+    try:
+        oldest = (sb.table("allocation_decisions").select("trade_date")
+                    .order("trade_date").limit(1).execute().data or [])
+    except Exception as e:
+        return False, f"could not read allocation_decisions: {e}"
+
+    if not oldest:
+        return True, "allocation_decisions is empty — nothing to prune yet"
+
+    oldest_date = oldest[0]["trade_date"]
+    limit = (today_ist() - timedelta(days=keep_days + grace_days)).isoformat()
+    if oldest_date < limit:
+        return False, (f"storage_alloc_decisions_rolloff_enabled is ON but the oldest row "
+                       f"is {oldest_date}, older than the {keep_days}-day retention window "
+                       f"plus a {grace_days}-day grace period — the archive job is armed "
+                       f"but not actually pruning")
+    return True, f"oldest row is {oldest_date}, within the {keep_days}-day retention window"
 
 
 def check_governance() -> tuple[bool, str]:
@@ -2390,6 +2433,7 @@ CHECKS = [
     ("storage",  "the database stops accepting writes and the pipeline goes silent", check_storage, False),
     ("feed",     "decisions run on data of unknown age, or ticks arrive late",  check_feed_integrity, False),
     ("quote_parity", "a live quote-mode field drifted from the historical endpoint and nobody is watching", check_quote_parity, False),
+    ("alloc_decisions_retention", "the archive job is armed but not actually pruning allocation_decisions", check_alloc_decisions_retention, False),
     ("exits",    "an exit rule can sell without alerting, or fires from only one caller", check_exit_actions, False),
     ("costs",    "charges are priced off a stale or wrong-product rate",         check_cost_rates, False),
     ("selects",  "a query reads a column the schema no longer has",              check_selects,  False),

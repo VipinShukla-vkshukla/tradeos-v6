@@ -503,6 +503,22 @@ class Allocator:
     # ── recording ──────────────────────────────────────────────────────────
     def _record(self, v: dict) -> dict:
         p: Proposal = v["proposal"]
+        # STORAGE — 27-Aug-2026. hurdle_inputs/meta are debugging payload for
+        # ONE specific row, never read back by any code path: hurdle.py's own
+        # population query selects symbol/edge/framework/regime_bucket/
+        # trade_date only, outcomes.py's select/update never name either
+        # column, and allocator_report.py's select("*") never references them
+        # despite fetching everything. Confirmed by grepping every read of
+        # this table before this change, not assumed. Measured 27-Aug-2026:
+        # the two columns average ~761 of a ~1000-1100 byte row (70-75%), and
+        # DECLINE/DEFER are ~95%+ of rows written (candidates that hover near
+        # their zone for hours get re-logged every cycle without converting).
+        # A TAKE keeps both columns in full — it is a real (paper or live)
+        # trade's permanent record, not disposable. Neither the row itself,
+        # nor `edge`, nor `regime_bucket`, nor anything hurdle() or outcomes.py
+        # reads changes here — see docs/FINDINGS.md, 27-Aug-2026, for the full
+        # investigation this followed.
+        slim = v["verdict"] != TAKE
         return {
             "decided_at": datetime.now(IST).isoformat(),
             "symbol": p.symbol, "framework": p.framework, "product": p.product,
@@ -536,7 +552,8 @@ class Allocator:
             # not because the rank was absent. round-tripped through loads
             # (default=str still sanitises non-JSON-native values) to land
             # on a plain dict instead of a second layer of string.
-            "hurdle_inputs": json.loads(json.dumps(v.get("hurdle_inputs") or {}, default=str)),
+            "hurdle_inputs": (None if slim else
+                              json.loads(json.dumps(v.get("hurdle_inputs") or {}, default=str))),
             # The bucket the bar was drawn for, as a COLUMN rather than only
             # inside hurdle_inputs. _empirical_base segments the arrival
             # distribution on it, and a segmentation that has to parse JSON to
@@ -544,7 +561,7 @@ class Allocator:
             "regime_bucket": v.get("regime_bucket"),
             "native_rank": p.native_rank,
             "shadow": not cfg_bool(f"alloc_live_{p.framework.lower()}", False),
-            "meta": json.dumps(p.meta, default=str),
+            "meta": None if slim else json.dumps(p.meta, default=str),
         }
 
     def flush(self) -> int:

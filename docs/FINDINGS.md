@@ -14591,3 +14591,84 @@ this session's fixtures did not anticipate.
 **Gate:** PASS — detection mechanism built, tested, proven against real
 data; deliberately does not correct anything, matching this project's
 own "propose, never auto-apply" rule.
+
+
+---
+
+## 2026-08-27 — Storage/allocation_decisions — alloc_hurdle_dedup_swing measured and reverted, same failure shape as intraday's 07-Aug rejection
+
+**Ran:**
+
+```sql
+-- via Supabase MCP execute_sql, project dbjfwpamxudnolfalpfm
+select framework, count(*) as rows_last_7d,
+       count(distinct symbol || trade_date::text) as distinct_symbol_days
+from public.allocation_decisions
+where trade_date >= current_date - 7
+group by framework;
+
+select symbol, count(*) as rows, round(avg(edge)::numeric,4) as mean_edge,
+       string_agg(distinct verdict, '/') as verdicts,
+       round(max(outcome_r)::numeric,3) as outcome_r
+from public.allocation_decisions
+where trade_date = '2026-08-25' and framework='SWING'
+group by symbol order by rows desc limit 15;
+```
+
+```bash
+cd backend && python -m tools.hurdle_population_audit --framework SWING
+```
+
+**Raw output:**
+
+```
+INTRADAY rows_last_7d=2266, distinct_symbol_days=181
+SWING    rows_last_7d=49325, distinct_symbol_days=91
+
+HURDLE POPULATION AUDIT — SWING, since 2026-05-29
+  alloc_hurdle_dedup_swing is currently ON — live bar already uses the deduplicated column
+  raw rows (today's population):         70327
+  distinct symbol-days (proposed):          244
+  inflation ratio:                       288.23x
+  baseline (pct0)      p75%   raw +0.0300   dedup +0.0439   delta +0.0139 (HIGHER under dedup)
+  cap (max pressure)   p95%   raw +0.0496   dedup +0.0529   delta +0.0033 (HIGHER under dedup)
+
+Top-15 repeated (symbol, 2026-08-25): ARE&M, TIINDIA, MEDANTA, JINDALSAW,
+HINDALCO, DLF, VIJAYA, ELGIEQUIP, RKFORGE, NAM-INDIA, PPLPHARMA, GRAPHITE,
+MOTHERSON, KPIL, HONASA — row counts 945-1236 each. 10 of the 15 have
+verdicts = "DECLINE/DEFER" only, never once a TAKE all session. Only
+ELGIEQUIP, NAM-INDIA, KPIL show a TAKE among their verdicts, and those
+three have the highest mean_edge of the group (0.0234-0.0236 vs
+0.0018-0.0162 for the never-taken symbols). RKFORGE's mean edge is
+negative (-0.0033) and never took.
+```
+
+**Found:** `alloc_hurdle_dedup_swing` was already set to `true` live, with no
+prior measurement on record — the operator confirmed turning it on without
+one. SWING's write volume is 95% of allocation_decisions' recent growth
+(49,325 of 51,591 rows across both frameworks in the last 7 days), driven
+by the same mechanism already investigated and rejected for INTRADAY on
+07-Aug (migration 054): candidates that hover near their zone for hours
+without triggering get re-logged every 15s cycle, inflating the weak
+(never-converts) tail of the raw population. Deduping removes that mass and
+the bar rises — the same direction as intraday's rejected case, smaller
+magnitude (+0.014 vs intraday's +0.43 at p75), but the underlying mechanism
+(10 of the top 15 repeated symbols never once converted to a trade all
+session) looks identical in kind, not just degree.
+
+**Could not determine:** Whether a HIGHER bar is actually the *correct*
+outcome here (i.e. whether the deduped bar would have produced better
+realized forward returns than the raw one) — this audit measures a shift
+in the bar's *level*, not its *forward accuracy*. That would require
+accumulating enough resolved outcomes under each setting to compare, which
+this session did not have time to do.
+
+**Recommends:** Reverted `alloc_hurdle_dedup_swing` to `false` (matching
+intraday's already-settled precedent) rather than trust an unmeasured
+change on a gate the operator explicitly does not want compromised, even
+in paper mode. **DO NOT RE-ENABLE without a new measurement of realized
+outcomes, not just a bar-level snapshot.** The config row's own
+`description` now carries this same warning inline.
+
+**Gate:** NEEDS DECISION if anyone proposes re-enabling — do not treat this
+as a closed question, only as a "not enough evidence yet" one.
