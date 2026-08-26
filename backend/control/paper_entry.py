@@ -158,13 +158,20 @@ def run(sb=None, notifier=None) -> dict:
             continue
 
         rk = _ranked.get(sym)
+        # signal_output_daily (p) has no id column — the signal's own id only
+        # lives in signal_log — so it has to be resolved separately or every
+        # paper entry opens with signal_id NULL and no outcome from it can
+        # ever be traced back to the plan that caused it.
+        from control.position_lifecycle import find_originating_signal
+        sig = find_originating_signal(sb, sym, day)
         if paper_broker.open_position(
                 sym, qty, f.fill_price,
                 {"stop": d.stop, "target": d.target, "strategy": p.get("strategy"),
                  # WHY this name and not the other seven. Recorded on the
                  # position so the dashboard can show the reasoning beside the
                  # trade rather than leaving it in a log nobody opens.
-                 "entry_rationale": (f"rank {rk.total:.0f} — {rk.why()}" if rk else None)},
+                 "entry_rationale": (f"rank {rk.total:.0f} — {rk.why()}" if rk else None),
+                 "signal_id": sig.get("id"), "signal_date": sig.get("date")},
                 "SWING", sb, charges=f.charges):
             result["taken"] += 1
             held.add(sym)

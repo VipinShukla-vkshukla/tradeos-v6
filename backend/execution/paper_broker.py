@@ -366,6 +366,14 @@ def open_position(symbol: str, qty: int, fill_price: float, setup: dict,
             # a field only on the open row cannot be queried against outcomes.
             "pick_label": setup.get("pick_label"),
             "entry_signal_type": setup.get("strategy"),
+            # Attribution back to signal_log. INTRADAY has no signal_log rows
+            # (its outcomes live in intraday_setups), so this is None there by
+            # construction — only a SWING caller that resolved one has reason
+            # to pass it. Never populated before this, which is why every
+            # swing paper entry produced an outcome the Brain could not trace
+            # back to the plan that caused it.
+            "signal_id": setup.get("signal_id"),
+            "signal_date": setup.get("signal_date"),
             "source": "paper",
             # Entry-leg cost. Carried so the close can add the exit leg and
             # record a true round trip — a P&L that ignores charges overstates
