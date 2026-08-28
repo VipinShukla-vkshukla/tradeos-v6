@@ -897,6 +897,20 @@ def _parse_ai_json(full_text: str, n_candidates: int = 0) -> dict | None:
     whole market view (2026-08-25). ai_decision_engine.py hit the identical
     failure class and fixed it with strict=False + control-char escaping;
     reuse that proven repair before falling back to truncation handling.
+
+    "Expecting property name enclosed in double quotes" at a mid-document
+    position is a DIFFERENT shape again — typically a trailing comma before
+    a `}` — and none of the above touch it: strict=False only relaxes
+    control-char handling, the escaper only escapes control chars, and
+    _close_truncated_json only helps when the break is at the true end of
+    the response (here the response ended in a proper closing brace, so its
+    trim-and-reclose reproduces the same broken document and returns None).
+    This took out the whole market view again on 2026-08-27.
+    ai_decision_engine.py already carries a general-purpose repair for this
+    class — the json_repair library, a soft dependency — as its last
+    resort; give step 18 the same last resort, tried only after
+    _close_truncated_json has already failed so the genuinely-truncated
+    path above stays untouched.
     """
     try:
         m = re.search(r"\{[\s\S]+\}", full_text)
@@ -921,10 +935,15 @@ def _parse_ai_json(full_text: str, n_candidates: int = 0) -> dict | None:
                 except json.JSONDecodeError:
                     logger.warning(f"JSON parse failed: {e}")
                     fixed = _close_truncated_json(raw)
-                    if not fixed:
-                        return None
-                    result = json.loads(fixed)
-                    recovered = True
+                    if fixed:
+                        result = json.loads(fixed)
+                        recovered = True
+                    else:
+                        repaired = _repair_with_json_repair(raw)
+                        if repaired is None:
+                            return None
+                        result = repaired
+                        recovered = True
 
         issues = _validate_ai_result(result, n_candidates)
         got = len(result.get("candidate_sentiment") or [])
@@ -978,6 +997,22 @@ def _close_truncated_json(s: str) -> str | None:
         return trimmed + closing
     except Exception:
         return None
+
+
+def _repair_with_json_repair(raw: str) -> dict | None:
+    """Last-resort repair for malformed shapes _close_truncated_json can't
+    reach — trailing commas, unquoted/missing property names, unescaped
+    quotes — via the json_repair library. Soft dependency: skipped cleanly
+    if not installed, same as ai_decision_engine.py's identical fallback."""
+    try:
+        from json_repair import repair_json
+    except ImportError:
+        return None
+    try:
+        parsed = repair_json(raw, return_objects=True)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) and parsed else None
     
 # ── Writes ─────────────────────────────────────────────────────────────────
 

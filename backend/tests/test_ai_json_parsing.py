@@ -21,6 +21,17 @@ whole market overlay for the day. ai_decision_engine.py already carries a
 proven fix for this exact failure class (strict=False, then escape control
 chars inside strings); step 18 now reuses it before falling back to
 truncation handling.
+
+Two evenings later (2026-08-27), step 18 failed again with a DIFFERENT
+error shape from the same class of problem: "Expecting property name
+enclosed in double quotes: line 208 column 5" — a trailing comma before a
+`}` mid-document. None of the existing repair tiers touch this (strict=False
+and the control-char escaper don't apply, and _close_truncated_json only
+helps when the break is at the true end of the response). step 18 now falls
+back to the json_repair library — the same soft dependency
+ai_decision_engine.py already uses as its own last resort — after
+_close_truncated_json has had its chance, so the genuinely-truncated path
+is unaffected.
 """
 
 from __future__ import annotations
@@ -114,6 +125,24 @@ def test_market_intel_parse_still_recovers_genuinely_truncated_response():
     assert result["candidate_sentiment"] == [{"symbol": "X"}]
 
 
+def test_market_intel_parse_recovers_trailing_comma_mid_document():
+    """Reproduces the 27-Aug step 18 failure: "Expecting property name
+    enclosed in double quotes: line 208 column 5" — a trailing comma before
+    a `}` sitting mid-document, not at the end. The response closes
+    properly overall, so _close_truncated_json's trim-and-reclose just
+    reproduces the same broken document and returns None; only the
+    json_repair last resort can fix a broken key/value pair like this."""
+    bad_trailing_comma = (
+        '{"market_tone": {"position_sizing_guidance": "normal"}, '
+        '"macro_sector_impacts": [], "regulatory_alerts": [], '
+        '"fii_outlook": "neutral", "dii_outlook": "neutral", '
+        '"candidate_sentiment": [{"symbol": "X", "note": "ok",}]}'
+    )
+    result = _intel_parse_ai_json(bad_trailing_comma, n_candidates=1)
+    assert result is not None
+    assert result["candidate_sentiment"][0]["symbol"] == "X"
+
+
 def test_close_truncated_json_closes_the_textbook_mid_array_case():
     """The most basic truncation shape there is: cut off partway through
     the second of two sibling arrays. Found broken while writing this test
@@ -158,6 +187,8 @@ TESTS = [
      test_market_intel_parse_recovers_raw_newline_in_string_value),
     ("market intel parse still recovers genuinely truncated response",
      test_market_intel_parse_still_recovers_genuinely_truncated_response),
+    ("market intel parse recovers trailing comma mid-document",
+     test_market_intel_parse_recovers_trailing_comma_mid_document),
     ("close_truncated_json closes the textbook mid-array case",
      test_close_truncated_json_closes_the_textbook_mid_array_case),
     ("close_truncated_json handles deeper nesting after last close",
