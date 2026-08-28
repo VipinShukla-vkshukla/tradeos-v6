@@ -1757,13 +1757,26 @@ class IntradayEngine:
 
         # The AI reviews setups ALREADY DETECTED since the last refresh, so its
         # latency is absorbed between slow ticks rather than blocking a decision.
+        #
+        # OPEN POSITIONS MUST BE INTRADAY'S OWN — 27-Aug-2026. self.positions is
+        # the whole open_positions table, swing and intraday pooled, same as the
+        # concurrency check below (line ~4521) reads before filtering by
+        # framework. This call was not filtering: the prompt told the AI "N
+        # positions already open" and listed them as capacity/correlation
+        # context, where N and every symbol were swing's book, not intraday's
+        # (which was 0 held all session on 27-Aug). The AI cited exactly that —
+        # "11 open positions limit new bets" — to veto intraday setups while
+        # intraday itself held nothing. AVOID is a hard block (ai_advisor.
+        # apply()), so a narrative number, not a real cap, was refusing trades.
         if self._pending_review:
             try:
                 from intraday import ai_advisor, market_context as mkt
                 mc = mkt.from_context(self._index_ctx)
+                intraday_positions = [p for p in self.positions
+                                       if (p.get("framework") or "SWING").upper() == "INTRADAY"]
                 self._advice = ai_advisor.review(
                     self._pending_review, mc.state,
-                    [p.get("symbol") for p in self.positions], self.sb)
+                    [p.get("symbol") for p in intraday_positions], self.sb)
             except Exception as e:
                 logger.warning(f"  intraday AI review failed: {e}")
             finally:
