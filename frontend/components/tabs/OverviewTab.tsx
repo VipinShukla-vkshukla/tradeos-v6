@@ -44,18 +44,18 @@ const VERDICT_STYLE: Record<string, string> = {
 // Stage-box funnel — matches Main.dc.html's Row B2 exactly: bordered boxes
 // joined by arrows, the last box highlighted green when it has a nonzero
 // count, muted when it's a zero day.
-function FunnelStages({ stages }: { stages: [string, number][] }) {
+function FunnelStages({ stages }: { stages: [string, number | null][] }) {
   const finalIdx = stages.length - 1;
   return (
     <div className="flex items-center flex-wrap gap-0">
       {stages.map(([label, val], i) => {
         const isFinal = i === finalIdx;
-        const finalHit = isFinal && val > 0;
+        const finalHit = isFinal && (val ?? 0) > 0;
         return (
           <div key={label} className="flex items-center">
             <div className={`rounded-[9px] border px-3.5 py-2 text-center min-w-[92px] ${
               finalHit ? 'border-emerald-500/35 bg-emerald-500/[0.07]' : 'border-border bg-panel-hover'}`}>
-              <div className={`text-[17px] font-bold ${finalHit ? 'text-profit' : ''}`}>{val}</div>
+              <div className={`text-[17px] font-bold ${finalHit ? 'text-profit' : ''}`}>{val ?? '—'}</div>
               <div className="text-[9px] text-muted-foreground uppercase tracking-wide mt-0.5">{label}</div>
             </div>
             {i < finalIdx && <span className="px-2 text-muted-foreground text-sm">→</span>}
@@ -67,7 +67,7 @@ function FunnelStages({ stages }: { stages: [string, number][] }) {
 }
 
 function FunnelBlock({ book, bar, stages, note }: {
-  book: 'SWING' | 'INTRADAY'; bar: number | null; stages: [string, number][]; note: string;
+  book: 'SWING' | 'INTRADAY'; bar: number | null; stages: [string, number | null][]; note: string;
 }) {
   return (
     <div className="py-3.5 border-t border-border first:border-t-0 first:pt-0">
@@ -88,7 +88,6 @@ export function OverviewTab() {
   const [health, setHealth] = useState<HealthSummary | null>(null);
   const [healthErr, setHealthErr] = useState(false);
   const [funnel, setFunnel] = useState<Awaited<ReturnType<typeof queries.getSignalFunnelDetail>> | null>(null);
-  const [funnelDate, setFunnelDate] = useState<string | null>(null);
   const [pending, setPending] = useState<BrainProposal[]>([]);
   const [topSignals, setTopSignals] = useState<Signal[]>([]);
   const [feed, setFeed] = useState<{ key: string; dot: string; text: string; time: string }[]>([]);
@@ -132,7 +131,6 @@ export function OverviewTab() {
     queries.getTradePlans(5).then(({ data, date }) => {
       setTopSignals(data ?? []);
       if (date) {
-        setFunnelDate(date);
         const tradeDate = new Date().toISOString().slice(0, 10);
         queries.getSignalFunnelDetail(date, tradeDate).then(setFunnel);
       }
@@ -216,17 +214,25 @@ export function OverviewTab() {
       </Panel>
 
       <Panel title="Today's Signal Funnel"
-        description={funnelDate ? `plans from ${formatDate(funnelDate, 'dd MMM yyyy')} — detected → gated → allocator-scored → taken, both books` : 'Loading…'}
+        description="each book's own pipeline, watched/scanned through to taken — swing and intraday gate differently, so the stages differ too"
         dataSource="supabase" isLoading={!funnel}>
         {!funnel ? (
           <div className="text-sm text-muted-foreground">Loading…</div>
         ) : (
           <>
             <FunnelBlock book="SWING" bar={funnel.swing.bar}
-              stages={[['Watched', funnel.swing.watched], ['Allocator-scored', funnel.swing.scored], ['Taken', funnel.swing.taken]]}
-              note={`-${Math.max(0, funnel.swing.watched - funnel.swing.scored)} not yet in the buy zone or not scored today`
-                + ` · -${Math.max(0, funnel.swing.scored - funnel.swing.taken)} allocator declined or a slot held for a stronger proposal`
-                + ` (no separate "in buy zone" count is persisted — the daemon evaluates zones live and never writes one)`} />
+              stages={[
+                ['Watched', funnel.swing.watched], ['Buyable now', funnel.swing.buyableNow],
+                ['Ready to enter', funnel.swing.readyNow], ['Taken', funnel.swing.taken],
+              ]}
+              note={funnel.swing.heartbeatTs == null
+                ? 'swing_heartbeat has no row yet — the daemon writes one every cycle it has candidates to report (migration 125); this block fills in once it does'
+                : (funnel.swing.watched == null
+                    ? `Last heartbeat ${formatDate(funnel.swing.heartbeatTs, 'HH:mm')} IST is stale (>30m old) — daemon may be down; showing no numbers rather than guessing`
+                    : `-${Math.max(0, (funnel.swing.watched ?? 0) - (funnel.swing.buyableNow ?? 0))} not at a live BUY_NOW/CHASE_LIMIT price right now`
+                      + ` · -${Math.max(0, (funnel.swing.buyableNow ?? 0) - (funnel.swing.readyNow ?? 0))} buyable but outside today's top-ranked field`
+                      + ` · -${Math.max(0, (funnel.swing.readyNow ?? 0) - (funnel.swing.taken ?? 0))} ready but no slot left in today's budget`)
+                  + ` — same numbers as the daemon's own "swing: ... watched · ... buyable now" log line, as of ${formatDate(funnel.swing.heartbeatTs, 'HH:mm')} IST`} />
             <FunnelBlock book="INTRADAY" bar={funnel.intraday.bar}
               stages={[
                 ['Scanned', funnel.intraday.scanned], ['Detected', funnel.intraday.detected],
@@ -235,7 +241,11 @@ export function OverviewTab() {
               ]}
               note={`-${Math.max(0, funnel.intraday.detected - funnel.intraday.aiCleared)} blocked on structure/event or AI-vetoed`
                 + ` · -${Math.max(0, funnel.intraday.aiCleared - funnel.intraday.convictionFloor)} below the conviction floor`
-                + ` · -${Math.max(0, funnel.intraday.convictionFloor - funnel.intraday.taken)} rejected on cost, liquidity or depth`} />
+                + ` · -${Math.max(0, funnel.intraday.convictionFloor - funnel.intraday.takenSetupRows)} rejected on cost, liquidity or depth`
+                + (funnel.intraday.takenSetupRows > funnel.intraday.taken
+                  ? ` · ${funnel.intraday.takenSetupRows} TAKEN-verdict rows logged (re-marked every cycle a candidate stays`
+                    + ` eligible) but only ${funnel.intraday.taken} became real fills — see Positions for what actually closed`
+                  : '')} />
           </>
         )}
       </Panel>

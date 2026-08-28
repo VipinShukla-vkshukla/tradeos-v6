@@ -1391,6 +1391,39 @@ class IntradayEngine:
         logger.info(f"  swing: {held} held · {len(self.candidates)} watched · "
                     f"{buyable} buyable now · eligible today "
                     f"[{', '.join(elig) or 'none'}] · {taken}/{mx} entries used")
+
+        # WRITTEN, NOT JUST LOGGED — 28-Aug-2026. Same numbers, one more
+        # place they go: the dashboard's signal funnel used to reconstruct
+        # "watched"/"scored" from master_shortlist and a recent-first
+        # allocation_decisions window, neither of which is this function's
+        # own count, and the operator caught the two disagreeing with this
+        # log line. swing_heartbeat mirrors intraday_heartbeat's pattern —
+        # one row, overwritten — so the dashboard reads exactly what this
+        # line prints instead of approximating it from elsewhere.
+        #
+        # THROTTLED, NOT EVERY CYCLE — 28-Aug-2026. This function runs every
+        # ~15s; writing to Supabase on every call would be 60x the rate
+        # notifier.heartbeat() already uses for intraday_heartbeat (900s,
+        # run.py's own `last_beat` gate) — flagged by the operator while
+        # egress/storage headroom is already tight. Nobody reading a
+        # dashboard needs sub-minute freshness on "how many names are
+        # watched"; matching the existing 900s convention rather than
+        # inventing a second cadence to reason about.
+        now = datetime.now(IST)
+        last = getattr(self, "_last_swing_hb_write", None)
+        if last is None or (now - last).total_seconds() >= 900:
+            try:
+                self.sb.table("swing_heartbeat").upsert({
+                    "id": 1, "ts": now.isoformat(),
+                    "held": held, "watched": len(self.candidates),
+                    "buyable_now": buyable, "ready_now": len(ready),
+                    "taken": taken, "entries_cap": mx,
+                    "eligible": ", ".join(elig) or None,
+                }).execute()
+                self._last_swing_hb_write = now
+            except Exception as e:
+                logger.debug(f"  swing heartbeat write failed — {e}")
+
         if ready and left:
             logger.success(f"     ready to enter: {', '.join(ready)}")
         elif buyable and not ready and left:
@@ -1434,6 +1467,37 @@ class IntradayEngine:
         logger.info(f"  intraday: {held} held · {scanned} scanned · "
                     f"{len(setups or [])} setup(s) this cycle "
                     f"[{', '.join(names) or 'none'}]")
+
+        # WRITTEN, NOT JUST LOGGED — 28-Aug-2026, same reasoning as swing_
+        # heartbeat (migration 125). The dashboard's "Scanned" showed
+        # intraday_universe's row count (~40, today's official pre-screened
+        # universe) under this log line's own name, and the operator caught
+        # the two disagreeing ("171 scanned" here vs. "40" on the
+        # dashboard) — intraday_universe is a SUBSET of what this line
+        # actually counts (self._contexts also carries bench/backup names,
+        # both frameworks' open positions, and live swing candidates).
+        # Extends intraday_heartbeat (migration 126) rather than a new
+        # table.
+        #
+        # THROTTLED TO THE SAME 900s notifier.heartbeat() ALREADY USES —
+        # 28-Aug-2026. This function runs every ~15s; an unthrottled write
+        # here would be a second, faster heartbeat cadence competing with
+        # the existing one on the same row, and 60x its write rate, right
+        # as the operator flagged egress/storage headroom running tight.
+        # A separate `last` tracker (not reusing notifier's) because this
+        # writes even on a quiet cycle with zero setups, which notifier.
+        # heartbeat() is never called for.
+        now = datetime.now(IST)
+        last = getattr(self, "_last_intraday_hb_write", None)
+        if last is None or (now - last).total_seconds() >= 900:
+            try:
+                self.sb.table("intraday_heartbeat").upsert({
+                    "id": 1, "ts": now.isoformat(),
+                    "scanned": scanned, "held": held,
+                }).execute()
+                self._last_intraday_hb_write = now
+            except Exception as e:
+                logger.debug(f"  intraday heartbeat scanned/held write failed — {e}")
 
     def _failed_today(self) -> set:
         """

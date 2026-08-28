@@ -438,60 +438,71 @@ export const queries = {
    *  finding elsewhere. ~51 tables exist today; 200 is headroom, not a cap. */
 
   /**
-   * Today's funnel, both books — how many names were even looked at, how
-   * many produced a ranked plan/detected setup, how many were actually
-   * entered. Uses queryTable's exact count (Supabase's `count: 'exact'`
-   * head) rather than fetching rows, so a wide day doesn't pull real data
-   * just to count it. `signal_output_daily`/`master_shortlist`/
-   * `intraday_universe`/`intraday_setups` — no invented aggregate table.
+   * The full watched/scanned → taken path, both books — backs "Today's
+   * Signal Funnel" on Overview. `tradeDate` is today, what the live daemon
+   * stamps on allocation_decisions/open_positions/intraday_setups/
+   * swing_heartbeat. `planDate` is kept for callers still passing the
+   * evening pipeline's plan date; it is no longer used here (see below).
+   *
+   * SWING'S STAGES ARE swing_heartbeat's OWN NUMBERS, NOT A RECONSTRUCTION
+   * — 28-Aug-2026. This used to approximate "watched" from master_shortlist
+   * (last night's ~100-name evening shortlist) and "scored" from a distinct-
+   * symbol count over a 500-row recent-first allocation_decisions window —
+   * both reasonable proxies, neither the number _log_swing_state() actually
+   * computes every cycle. The operator caught the two disagreeing with the
+   * daemon's own log line ("77 watched · 26 buyable now" vs. the dashboard's
+   * "100 watched · 15 scored") and asked for the funnel to say what the
+   * daemon is actually doing. swing_heartbeat (migration 125) is
+   * intraday_heartbeat's pattern applied to swing's equivalent state — one
+   * row, overwritten every cycle — so this reads the exact watched/buyable/
+   * ready/taken counts the log prints, not an approximation of them.
+   *
+   * Intraday's 5 stages stay as they were: intraday_setups.cost_verdict
+   * records the exact gate a detection stopped at (BLOCKED_STRUCTURE/
+   * BLOCKED_EVENT → VETOED_AI → BELOW_CONVICTION → TAKEN/REJECTED_COST, in
+   * that order — see engine.py's evaluate_intraday_setups), so each stage is
+   * a real subtraction over real rows, not an estimate.
    */
-  /**
-   * The full detected → taken path, both books — backs "Today's Signal
-   * Funnel" on Overview. `planDate` is the evening pipeline's plan date
-   * (signal_output_daily/master_shortlist are written the evening BEFORE
-   * the session they're for); `tradeDate` is today, what the live daemon
-   * stamps on allocation_decisions/open_positions/intraday_setups.
-   *
-   * Swing stops at 3 real stages (Watched → Allocator-scored → Taken), not
-   * the mockup's 4 — the backend has no persisted "entered the buy zone"
-   * count independent of the allocator call itself; evaluate_candidates
-   * decides that in memory every 15s and never writes a row for it.
-   * Inventing a number for a box the schema can't back is the exact
-   * silent-default failure CLAUDE.md warns about, so the box is dropped
-   * rather than guessed.
-   *
-   * "Allocator-scored" reads the SAME 500-row recent-first window
-   * getAllocationToday() uses for the Allocator tab's own live hurdle —
-   * not a fresh unbounded query. allocation_decisions gets a new row every
-   * ~15s per live candidate (2,700+ swing rows on an ordinary session), so
-   * counting distinct symbols over the FULL day would mean fetching a
-   * table that grows all session long, on every Overview load. Reusing the
-   * capped window trades a small undercount (~15-20%, confirmed against a
-   * full-table COUNT DISTINCT) for a bounded, already-employed query
-   * rather than adding a second unbounded fetch pattern.
-   *
-   * Intraday's 5 stages ARE all real: intraday_setups.cost_verdict records
-   * the exact gate a detection stopped at (BLOCKED_STRUCTURE/BLOCKED_EVENT
-   * → VETOED_AI → BELOW_CONVICTION → TAKEN/REJECTED_COST, in that order —
-   * see engine.py's evaluate_intraday_setups), so each stage is a real
-   * subtraction, not an estimate.
-   */
-  getSignalFunnelDetail: async (planDate: string, tradeDate: string) => {
+  getSignalFunnelDetail: async (_planDate: string, tradeDate: string) => {
     const head = (table: string, filter: Record<string, unknown>) =>
       queryTable(table, { select: 'symbol', filter, limit: 1 }).then((r) => r.count ?? 0);
 
-    const [watched, openSwing, closedSwing, scanned, setupsRes, allocRes] = await Promise.all([
-      head('master_shortlist', { date: planDate }),
-      head('open_positions', { entry_date: tradeDate, framework: 'SWING' }),
-      head('closed_positions', { entry_date: tradeDate, framework: 'SWING' }),
-      head('intraday_universe', { trade_date: tradeDate }),
+    const [openIntraday, closedIntraday, setupsRes, swingHbRes, intradayHbRes, allocSwingRes, allocIntradayRes] = await Promise.all([
+      head('open_positions', { entry_date: tradeDate, framework: 'INTRADAY' }),
+      head('closed_positions', { entry_date: tradeDate, framework: 'INTRADAY' }),
       queryTable<{ cost_verdict: string | null }>('intraday_setups', {
         select: 'cost_verdict', filter: { trade_date: tradeDate }, limit: 2000,
       }),
-      queryTable<{ symbol: string; framework: string; hurdle: number | null; decided_at: string }>(
+      queryTable<{ watched: number; buyable_now: number; ready_now: number; taken: number; ts: string }>(
+        'swing_heartbeat', { select: 'watched,buyable_now,ready_now,taken,ts', filter: { id: 1 }, limit: 1 },
+      ),
+      // "Scanned" used to be intraday_universe's row count — today's
+      // official ~40-name pre-screened universe. The daemon's own log line
+      // ("intraday: N held · M scanned · ...") counts something bigger:
+      // len(self._contexts), the pooled set it is actually pulling bars for
+      // (universe + bench/backup names + carried positions + live swing
+      // candidates + index) — which is why it does not equal ~40 and moves
+      // through the session. Reading intraday_heartbeat.scanned (migration
+      // 126) instead means this matches the log exactly, not a subset of it.
+      queryTable<{ scanned: number | null; ts: string }>(
+        'intraday_heartbeat', { select: 'scanned,ts', filter: { id: 1 }, limit: 1 },
+      ),
+      // Each book's bar is its own scoped, limit-1, most-recent-decision
+      // fetch — not a shared recent-first window. Swing re-logs a hovering
+      // candidate every ~15s (18,000+ rows on a busy session); a window
+      // shared across both frameworks means swing's volume alone fills it,
+      // and intraday's bar silently reads null the moment swing's last hour
+      // of decisions outnumbers the cap. Two tiny queries, not one big one.
+      queryTable<{ hurdle: number | null }>(
         'allocation_decisions', {
-          select: 'symbol,framework,hurdle,decided_at', filter: { trade_date: tradeDate },
-          order: { column: 'decided_at', ascending: false }, limit: 500,
+          select: 'hurdle', filter: { trade_date: tradeDate, framework: 'SWING' },
+          order: { column: 'decided_at', ascending: false }, limit: 1,
+        },
+      ),
+      queryTable<{ hurdle: number | null }>(
+        'allocation_decisions', {
+          select: 'hurdle', filter: { trade_date: tradeDate, framework: 'INTRADAY' },
+          order: { column: 'decided_at', ascending: false }, limit: 1,
         },
       ),
     ]);
@@ -500,19 +511,47 @@ export const queries = {
     const gateBlocked = setupRows.filter((r) => r.cost_verdict === 'BLOCKED_STRUCTURE' || r.cost_verdict === 'BLOCKED_EVENT').length;
     const vetoedAi = setupRows.filter((r) => r.cost_verdict === 'VETOED_AI').length;
     const belowConviction = setupRows.filter((r) => r.cost_verdict === 'BELOW_CONVICTION').length;
-    const taken = setupRows.filter((r) => r.cost_verdict === 'TAKEN').length;
+    // Rows, not trades: a candidate still in its entry zone gets re-marked
+    // TAKEN on every ~15s cycle it stays eligible (one symbol hit 39 TAKEN
+    // rows in 34 minutes without ever filling), so this is only useful for
+    // the funnel's OWN stage arithmetic below, never as a trade count.
+    const takenSetupRows = setupRows.filter((r) => r.cost_verdict === 'TAKEN').length;
     const detected = setupRows.length;
     const aiCleared = Math.max(0, detected - gateBlocked - vetoedAi);
     const convictionFloor = Math.max(0, aiCleared - belowConviction);
 
-    const allocRows = allocRes.data ?? [];
-    const swingSymbols = new Set(allocRows.filter((r) => r.framework === 'SWING').map((r) => r.symbol));
-    const bars: Record<string, number | null> = {};
-    for (const r of allocRows) if (!(r.framework in bars)) bars[r.framework] = r.hurdle;
+    const swingHb = swingHbRes.data?.[0] ?? null;
+    // A stale swing_heartbeat (daemon down, or this migration not deployed
+    // yet) is a missing number, not a zero — null renders as "—" same as
+    // the bar does, rather than a false "0 watched" that reads as "nothing
+    // is happening" when the truth is just "nobody told the dashboard".
+    const swingStale = !swingHb || (Date.now() - new Date(swingHb.ts).getTime()) > 30 * 60 * 1000;
+    const swingBar = (allocSwingRes.data ?? [])[0]?.hurdle ?? null;
+    const intradayBar = (allocIntradayRes.data ?? [])[0]?.hurdle ?? null;
+
+    const intradayHb = intradayHbRes.data?.[0] ?? null;
+    // Same reasoning as swing's staleness check: a heartbeat this old means
+    // the daemon isn't updating it, and 0 would read as "nothing scanned"
+    // when the truth is "nobody told the dashboard recently."
+    const intradayHbStale = !intradayHb || intradayHb.scanned == null
+      || (Date.now() - new Date(intradayHb.ts).getTime()) > 30 * 60 * 1000;
+    const scanned = intradayHbStale ? null : intradayHb!.scanned;
 
     return {
-      swing: { watched, scored: swingSymbols.size, taken: openSwing + closedSwing, bar: bars.SWING ?? null },
-      intraday: { scanned, detected, aiCleared, convictionFloor, taken, bar: bars.INTRADAY ?? null },
+      swing: {
+        watched: swingStale ? null : swingHb!.watched,
+        buyableNow: swingStale ? null : swingHb!.buyable_now,
+        readyNow: swingStale ? null : swingHb!.ready_now,
+        taken: swingStale ? null : swingHb!.taken,
+        heartbeatTs: swingHb?.ts ?? null,
+        bar: swingBar,
+      },
+      // "taken" is the real trade count (matches swing's own definition:
+      // open + closed position rows), so the box means the same thing in
+      // both funnels. takenSetupRows stays separate, for the note below
+      // to explain the gap against the gate-cleared count.
+      intraday: { scanned, detected, aiCleared, convictionFloor,
+                  taken: openIntraday + closedIntraday, takenSetupRows, bar: intradayBar },
     };
   },
 

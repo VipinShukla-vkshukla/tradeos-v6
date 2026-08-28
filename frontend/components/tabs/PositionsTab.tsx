@@ -719,8 +719,21 @@ export function PositionsTab() {
 
       {/* Closed by month */}
       <Panel title="Closed Trades" description="Grouped by month — click to expand"
-        dataSource="supabase" tableName="closed_positions" isLoading={loading}>
-        <DataGuard data={closed} isLoading={loading} error={errObj}
+        dataSource="supabase" tableName="closed_positions" isLoading={loading}
+        headerExtra={
+          <div className="flex items-center gap-1 mr-1">
+            {([['BOTH', 'Both books'], ['SWING', 'Swing only'], ['INTRADAY', 'Intraday only']] as const).map(([id, label]) => (
+              <button key={id} type="button" onClick={() => setBookFilter(id)}
+                className={`text-[10px] px-2 py-1 rounded-full border transition-colors ${
+                  bookFilter === id
+                    ? 'bg-primary/15 border-primary/40 text-foreground'
+                    : 'border-border/50 text-muted-foreground hover:text-foreground'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        }>
+        <DataGuard data={closed.filter((p) => bookFilter === 'BOTH' || bookOf(p) === bookFilter)} isLoading={loading} error={errObj}
           loadingContent={<SkeletonTable rows={4} cols={1} />}
           emptyTitle="No closed trades"
           emptyDescription="Closed trades appear when your pipeline writes to closed_positions.">
