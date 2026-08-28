@@ -15,8 +15,11 @@
 // Auto-refreshes every 60s so it can be left open on a second screen.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import { ChevronLeft } from 'lucide-react';
 import { KiteConnect } from '@/components/core/KiteConnect';
-import { AlertRail } from '@/components/core/AlertRail';
+import { Header } from '@/components/core/Header';
+import { Sidebar } from '@/components/core/Sidebar';
 
 type Sev = 'OK' | 'WARN' | 'BLOCK' | 'INFO';
 interface Check {
@@ -99,32 +102,33 @@ export default function Preflight() {
   const v = h ? VERDICT[h.verdict] : null;
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
-      <header className="sticky top-0 z-20 border-b border-zinc-800 bg-zinc-950/90 backdrop-blur">
-        <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-6 py-3">
-          <div>
-            <h1 className="text-sm font-semibold tracking-tight">Preflight</h1>
-            <p className="text-[11px] text-zinc-500">
-              {h?.trade_date ? `trade date ${h.trade_date}` : 'checking…'}
-              {h?.is_weekend && ' · weekend'}
-              {ranAt && ` · checked ${ranAt.toLocaleTimeString()}`}
-            </p>
+    <div className="h-screen bg-dashboard flex flex-col overflow-hidden">
+      <Header />
+      <div className="flex flex-1 min-h-0">
+        <Sidebar />
+        <main className="flex-1 min-w-0 overflow-auto p-4">
+        <div className="flex items-center justify-between gap-4 mb-4">
+          <div className="flex items-center gap-3">
+            <Link href="/" className="text-muted-foreground hover:text-foreground">
+              <ChevronLeft className="h-4 w-4" />
+            </Link>
+            <div>
+              <h1 className="text-sm font-semibold tracking-tight text-foreground">Preflight</h1>
+              <p className="text-[11px] text-muted-foreground">
+                {h?.trade_date ? `trade date ${h.trade_date}` : 'checking…'}
+                {h?.is_weekend && ' · weekend'}
+                {ranAt && ` · checked ${ranAt.toLocaleTimeString()}`}
+              </p>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <a href="/control" className="rounded border border-zinc-800 px-3 py-1.5 text-[11px] text-zinc-400 hover:text-zinc-200">
-              Control Room
-            </a>
-            <button
-              onClick={() => void run()} disabled={loading}
-              className="rounded bg-sky-600 px-3 py-1.5 text-[11px] font-medium text-white hover:bg-sky-500 disabled:opacity-50"
-            >
-              {loading ? 'Checking…' : 'Re-check'}
-            </button>
-          </div>
+          <button
+            onClick={() => void run()} disabled={loading}
+            className="rounded bg-sky-600 px-3 py-1.5 text-[11px] font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+          >
+            {loading ? 'Checking…' : 'Re-check'}
+          </button>
         </div>
-      </header>
 
-      <main className="mx-auto max-w-5xl px-6 py-6">
         {err && (
           <div className="mb-5 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300">
             {err}
@@ -236,9 +240,8 @@ export default function Preflight() {
           stop, positions with no plan, an expired broker session, a config blob whose keys the
           code never read. A check that cannot fail is not a check.
         </p>
-      </main>
-
-      <AlertRail />
+        </main>
+      </div>
     </div>
   );
 }

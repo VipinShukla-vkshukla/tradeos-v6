@@ -75,6 +75,9 @@ export interface OpenPosition {
   mode?: string | null;              // LIVE | PAPER
   framework?: string | null;         // SWING | INTRADAY
   product?: string | null;
+  // migration 047 — defaults 'LONG' at the DB level for every pre-shorting
+  // row, so this is always present, never null on a real row.
+  direction?: string | null;         // LONG | SHORT
   intraday_strategy?: string | null;
   reconcile_status?: string | null;
   last_reconciled_at?: string | null;
@@ -140,6 +143,8 @@ export interface ClosedPosition {
   partial_bookings?: unknown;
   mode?: string | null;
   framework?: string | null;
+  // migration 051.
+  direction?: string | null;         // LONG | SHORT
   intraday_strategy?: string | null;
   // The CONDITION, not just the family — migration 094. `strategy` is SDN
   // for all three of its conditions alike; this is what actually separates

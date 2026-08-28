@@ -1,550 +1,233 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { TrendingUp, TrendingDown, Target, BarChart3, Trophy, Activity } from 'lucide-react';
-import { Panel, KPICard } from '@/components/core/Panel';
-import { DataGuard, SkeletonKPI, SkeletonChart, SkeletonTable } from '@/components/core/DataGuard';
-import { WinRateTrendChart } from '@/components/tabs/performance/WinRateTrendChart';
-import { SignalTypeBreakdown } from '@/components/tabs/performance/SignalTypeBreakdown';
-import { EngineLeaderboard } from '@/components/tabs/performance/EngineLeaderboard';
-import { TradeLog } from '@/components/tabs/performance/TradeLog';
-import { formatCurrency, formatPercent } from '@/lib/formatters';
+// Engines — matches Engines.dc.html exactly: filter chips, Swing/Intraday
+// sections, a card grid with a sparkline, a 4-stat row (setups detected →
+// taken → hit rate → avg net), and entry/exit condition lines. Replaces the
+// old Performance tab's KPI/chart/trade-log layout entirely — that content
+// wasn't in the Canvas design, and the closed-trade history it showed is
+// already covered by Positions & P&L's own closed-trades table.
+
+import { useEffect, useState } from 'react';
 import { queries } from '@/lib/supabase';
-import type { PerformanceMetricsRow, ClosedPosition, EngineStatsEntry } from '@/types/database';
-import type { WeeklyPerformance, EngineStats } from '@/types/database';
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Cell,
-} from 'recharts';
+import { EngineDetailDialog } from '@/components/tabs/performance/EngineDetailDialog';
+import type { EngineStats } from '@/types/database';
 
-// ─── Map PerformanceMetricsRow → WeeklyPerformance (what charts expect) ───
-function toWeeklyPerformance(rows: PerformanceMetricsRow[]): WeeklyPerformance[] {
-  return [...rows]
-    .sort((a, b) => a.metric_date.localeCompare(b.metric_date))
-    .map((r) => ({
-      week_start: r.metric_date,
-      win_rate: (r.win_rate_overall ?? 0) / 100,
-      total_trades: r.signals_generated ?? 0,
-      pnl: 0,
-      pnl_percent: r.avg_fwd_ret_5d ?? 0,
-    }));
+interface EngineMeta { label: string | null; description: string | null; lifecycle: string | null }
+interface CardData {
+  code: string; framework: 'SWING' | 'INTRADAY'; meta: EngineMeta | undefined;
+  setups: number; taken: number; hit: number | null; avgNet: number | null;
+  sparkline: number[]; trendPp: number | null;
 }
 
-// ─── Parse engine_stats JSONB → EngineStats[] (what charts expect) ────────
-function toEngineStats(rows: PerformanceMetricsRow[]): EngineStats[] {
-  for (const row of rows) {
-    let parsed: EngineStatsEntry[] | null = null;
-    if (Array.isArray(row.engine_stats)) parsed = row.engine_stats;
-    else if (typeof row.engine_stats === 'string') {
-      try { parsed = JSON.parse(row.engine_stats); } catch { continue; }
-    }
-    if (parsed && parsed.length > 0) {
-      return parsed.map((e) => ({
-        engine_name: e.engine_name,
-        total_signals: e.total_signals,
-        executed_signals: e.total_signals,
-        win_count: e.win_count,
-        loss_count: e.loss_count,
-        win_rate: e.win_rate / 100,
-        avg_pnl_percent: e.avg_pnl_pct ?? 0,
-        total_pnl: e.total_pnl ?? 0,
-        last_signal_date: row.metric_date,
-      }));
-    }
+// Rolling hit-rate over a trailing window, computed from the last N resolved
+// trades in chronological order — a real trend line, not a fabricated one.
+// "Session" in the Canvas copy becomes "trade" here since that's the unit
+// this data actually resolves in; the shape of the trend is what matters.
+function rollingHitRate(results: boolean[], window = 5, points = 14): number[] {
+  const tail = results.slice(-points - window + 1);
+  const out: number[] = [];
+  for (let i = window - 1; i < tail.length; i++) {
+    const slice = tail.slice(Math.max(0, i - window + 1), i + 1);
+    out.push(slice.filter(Boolean).length / slice.length);
   }
-  return [];
+  return out.length ? out : results.length ? [results.filter(Boolean).length / results.length] : [];
 }
 
-// ─── Monthly P&L breakdown chart (from closed_positions) ─────────────────
-function MonthlyPnLChart({ data }: { data: ClosedPosition[] }) {
-  const monthly: Record<string, number> = {};
-  for (const p of data) {
-    if (!p.exit_date) continue;
-    const month = p.exit_date.slice(0, 7); // YYYY-MM
-    monthly[month] = (monthly[month] ?? 0) + (p.realized_pnl ?? 0);
+function Sparkline({ points }: { points: number[] }) {
+  if (points.length < 2) {
+    return <div className="text-[9px] text-muted-foreground mt-2.5">not enough resolved history for a trend</div>;
   }
-  const chartData = Object.entries(monthly)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .slice(-12)
-    .map(([month, pnl]) => ({
-      month: new Date(month + '-01').toLocaleDateString('en-IN', { month: 'short', year: '2-digit' }),
-      pnl,
-    }));
-
-  if (chartData.length === 0) return (
-    <div className="h-48 flex items-center justify-center text-sm text-muted-foreground">
-      No monthly P&L data yet
-    </div>
-  );
-
+  const w = 110, h = 28;
+  const step = w / (points.length - 1);
+  const trendPp = (points[points.length - 1] - points[0]) * 100;
+  const up = trendPp >= 0;
   return (
-    <div className="h-48">
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" opacity={0.4} vertical={false} />
-          <XAxis dataKey="month" fontSize={11} tickLine={false} axisLine={false} stroke="var(--text-muted)" />
-          <YAxis fontSize={11} tickLine={false} axisLine={false} stroke="var(--text-muted)"
-            tickFormatter={(v) => `₹${Math.abs(v) >= 1000 ? (v / 1000).toFixed(0) + 'K' : v}`} />
-          <Tooltip
-            contentStyle={{ backgroundColor: 'var(--bg-tooltip)', border: '1px solid var(--border-default)', borderRadius: '6px', fontSize: '12px' }}
-            formatter={(v: number) => [formatCurrency(v, { showSign: true }), 'Realized P&L']}
-          />
-          <Bar dataKey="pnl" radius={[3, 3, 0, 0]} maxBarSize={32}>
-            {chartData.map((entry, i) => (
-              <Cell key={i} fill={entry.pnl >= 0 ? 'var(--profit-green)' : 'var(--loss-red)'} fillOpacity={0.8} />
-            ))}
-          </Bar>
-        </BarChart>
-      </ResponsiveContainer>
+    <div className="flex items-center justify-between mt-2.5">
+      <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`}>
+        <polyline points={points.map((p, i) => `${(i * step).toFixed(1)},${(h - p * h).toFixed(1)}`).join(' ')}
+          fill="none" stroke={up ? '#22c55e' : '#ef4444'} strokeWidth="1.6" />
+      </svg>
+      <span className={`text-[10px] font-bold ${up ? 'text-profit' : 'text-loss'}`}>
+        {up ? '▲' : '▼'} {up ? '+' : ''}{trendPp.toFixed(1)}pt
+      </span>
     </div>
   );
 }
 
-// ─── Strategy breakdown (from closed_positions) ───────────────────────────
-//
-// GROUPED BY sub_engine, NOT strategy — 22-Aug-2026 (migration 094).
-//
-// `strategy` is the FAMILY (SDN, ORB, VWR, ...), and for SDN specifically
-// that one label covers three conditions with wildly different records —
-// VREJ (VWAP rejection) resolving 83% winners over its clean post-fix
-// sample, BRKD (range breakdown) 8%, TRP (the trap) 0%. Averaged together
-// under "SDN" they read as one mediocre row and the split this whole panel
-// exists to show — which of these is actually working — disappears back
-// into the average.
-//
-// `sub_engine` is that condition, carried from `intraday_setups.meta.
-// sub_engine` through paper_broker.open_position() and position_lifecycle.
-// close() (see F-39/F-41 for the backend correctness, migration 094 for the
-// column). It equals `strategy` for every engine except SDN, so this
-// change is additive: an ORB row still reads "ORB", a SWING row (no
-// sub_engine vocabulary at all) still reads whatever `strategy` always
-// did. Only SDN's pooled row ever splits into three.
-const THIN_SAMPLE_FLOOR = 10;
-
-function StrategyBreakdown({ data }: { data: ClosedPosition[] }) {
-  const byEngine: Record<string, { wins: number; losses: number; pnl: number; family: string }> = {};
-  for (const p of data) {
-    const family = p.strategy ?? 'UNKNOWN';
-    const s = p.sub_engine || family;
-    if (!byEngine[s]) byEngine[s] = { wins: 0, losses: 0, pnl: 0, family };
-    if ((p.realized_pnl ?? 0) > 0) byEngine[s].wins++;
-    else byEngine[s].losses++;
-    byEngine[s].pnl += p.realized_pnl ?? 0;
-  }
-
-  const rows = Object.entries(byEngine)
-    .map(([engine, v]) => ({
-      engine, ...v,
-      n: v.wins + v.losses,
-      wr: v.wins + v.losses > 0 ? (v.wins / (v.wins + v.losses)) * 100 : 0,
-    }))
-    // Winners first, losers last — the point of this panel is to make that
-    // ordering itself the answer to "what's differentiating them".
-    .sort((a, b) => b.pnl - a.pnl);
-
+function EngineCardTile({ c, exitText, onSelect }: { c: CardData; exitText: string; onSelect: (e: EngineStats) => void }) {
+  const borderColor = c.framework === 'SWING' ? 'border-t-swing' : 'border-t-intraday';
+  const lifecycleClass = c.meta?.lifecycle === 'SHADOW' ? 'bg-amber-500/20 text-amber-400'
+    : c.meta?.lifecycle === 'RETIRED' ? 'bg-muted text-muted-foreground'
+    : 'bg-emerald-500/20 text-emerald-400';
+  const openDetail = () => onSelect({
+    engine_name: c.code, total_signals: c.taken, executed_signals: c.taken,
+    win_count: Math.round((c.hit ?? 0) * c.taken), loss_count: c.taken - Math.round((c.hit ?? 0) * c.taken),
+    win_rate: c.hit ?? 0, avg_pnl_percent: c.avgNet ?? 0, total_pnl: 0, last_signal_date: '',
+  });
   return (
-    <div className="space-y-2">
-      {rows.map((r) => {
-        const thin = r.n < THIN_SAMPLE_FLOOR;
-        return (
-          <div key={r.engine} className="flex items-center gap-3 p-2.5 rounded-lg bg-panel-hover">
-            <div className="w-24 shrink-0">
-              <div className="font-medium text-sm flex items-center gap-1">
-                {r.engine}
-                {thin && (
-                  <span
-                    className="text-[9px] px-1 py-0.5 rounded border border-border/60 text-muted-foreground"
-                    title={`Only ${r.n} closed trade(s) — below ${THIN_SAMPLE_FLOOR}, read this row as an early signal, not a verdict`}
-                  >
-                    thin
-                  </span>
-                )}
-              </div>
-              {/* Family shown only when sub_engine actually differs from it
-                  — i.e. only for SDN's three conditions — so every other
-                  row stays exactly as compact as it was before this change. */}
-              {r.engine !== r.family && (
-                <div className="text-[10px] text-muted-foreground/70">{r.family}</div>
-              )}
-              <div className="text-xs text-muted-foreground">{r.n} trades</div>
-            </div>
-            <div className="flex-1">
-              <div className="flex justify-between text-xs mb-1">
-                <span className="text-muted-foreground">Win Rate</span>
-                <span className={r.wr >= 50 ? 'text-profit' : 'text-loss'}>{r.wr.toFixed(0)}%</span>
-              </div>
-              <div className="h-1.5 bg-border rounded-full overflow-hidden">
-                <div className={`h-full rounded-full ${r.wr >= 50 ? 'bg-profit' : 'bg-loss'}`} style={{ width: `${r.wr}%` }} />
-              </div>
-            </div>
-            <div className={`text-right shrink-0 text-sm font-mono font-medium ${r.pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
-              {formatCurrency(r.pnl, { compact: true, showSign: true })}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ─── Trading era ──────────────────────────────────────────────────────────
-//
-// WHY THIS EXISTS
-//   The KPI row used to compute over every row in closed_positions and label
-//   the result "Win Rate" and "Current Streak" — implying it described the
-//   system. It did not. Of the first 70 closed trades, 69 were entered before
-//   signal_log held a single row, so they measure manual trading from an era
-//   that predates the signal engine entirely. Reading 38.6% / -₹9.8K as this
-//   system's record would be wrong in both directions: unfair to the engine,
-//   and a false comfort if it ever looked good.
-//
-//   The honest split is attribution, not a date: a trade belongs to the system
-//   only if it can be traced to the signal that produced it. That is exactly
-//   what signal_date records, and it is what post_trade_analysis and the Brain
-//   learn from.
-type Era = 'system' | 'legacy' | 'all';
-
-// Below this many trades, a win rate is noise. Showing "0%" off one sample is
-// as misleading as showing the legacy number — so we show the count instead.
-const MIN_MEANINGFUL_SAMPLE = 20;
-
-const ERA_META: Record<Era, { label: string; blurb: string }> = {
-  system: { label: 'Since automation', blurb: 'Trades traceable to a signal the engine produced.' },
-  legacy: { label: 'Legacy / manual',  blurb: 'Entered before the signal engine existed. Kept for reference.' },
-  all:    { label: 'All time',         blurb: 'Both eras combined — mixes two different systems.' },
-};
-
-function inEra(p: ClosedPosition, era: Era): boolean {
-  if (era === 'all') return true;
-  // A trade belongs to the system if the system produced it. There are three
-  // ways that can be true, and the original rule only knew about the first:
-  //
-  //   · signal_id / signal_date — a swing plan from signal_output_daily
-  //   · intraday_strategy       — an intraday ENGINE fired it. These never get
-  //                               a signal_id because they are generated live
-  //                               from ticks, not from the evening pipeline.
-  //   · source === 'paper'      — nobody places a paper trade by hand
-  //
-  // Without the last two, the first intraday trade the system ever took landed
-  // under "Legacy / manual" next to 69 trades entered before the engine
-  // existed — the one bucket guaranteed to misread it.
-  const attributed =
-    p.signal_date != null ||
-    p.signal_id != null ||
-    (p.intraday_strategy != null && p.intraday_strategy !== '') ||
-    p.source === 'paper';
-  return era === 'system' ? attributed : !attributed;
-}
-
-// ─── Which book ────────────────────────────────────────────────────────────
-//
-// WHY THIS EXISTS
-//   Every stat below read straight from closed_positions with no mode filter.
-//   That was harmless while paper mode did not exist, and became wrong the
-//   moment it did: a simulated win would raise the win rate on the same screen
-//   that reports real money, and simulated P&L would be added to real P&L.
-//
-//   Paper exists precisely so its results can be COMPARED to live, which
-//   requires them to be separable. Blending them destroys both numbers — the
-//   live record stops being a record of what happened, and the paper record
-//   stops being evidence about what would happen.
-//
-//   Default is LIVE, because the unqualified question "how am I doing" is
-//   always about real money.
-type Book = 'live' | 'paper' | 'all';
-
-const BOOK_META: Record<Book, { label: string; blurb: string }> = {
-  live:  { label: 'Real money',  blurb: 'Trades that actually filled at the broker.' },
-  paper: { label: 'Paper',       blurb: 'Simulated fills. Same decisions, no money at risk.' },
-  all:   { label: 'Both',        blurb: 'Mixes real and simulated — useful for volume, not for P&L.' },
-};
-
-function inBook(p: ClosedPosition, book: Book): boolean {
-  if (book === 'all') return true;
-  const isPaper = (p.mode ?? 'LIVE').toUpperCase() === 'PAPER';
-  return book === 'paper' ? isPaper : !isPaper;
-}
-
-function BookToggle({ book, setBook, counts }: {
-  book: Book; setBook: (b: Book) => void; counts: Record<Book, number>;
-}) {
-  return (
-    <div className="flex items-center gap-2 flex-wrap">
-      <span className="text-[11px] text-muted-foreground">Book:</span>
-      {(['live', 'paper', 'all'] as Book[]).map((b) => (
-        <button
-          key={b}
-          onClick={() => setBook(b)}
-          title={BOOK_META[b].blurb}
-          className={`text-[11px] px-2 py-1 rounded border transition-colors ${
-            book === b
-              ? (b === 'paper'
-                  ? 'bg-blue-500/20 border-blue-500/40 text-blue-400'
-                  : 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400')
-              : 'border-border/50 text-muted-foreground hover:border-border'
-          }`}
-        >
-          {BOOK_META[b].label} ({counts[b]})
-        </button>
-      ))}
-      {book === 'paper' && (
-        <span className="text-[10px] text-blue-400">
-          simulated — no money changed hands
+    <div className={`panel border-t-2 ${borderColor} p-3.5 cursor-pointer hover:bg-panel-hover/50`}
+      onClick={openDetail} title="View factor breakdown — what separates winners from losers">
+      <div className="flex items-start justify-between">
+        <div>
+          <span className="font-mono font-bold text-[15px]">{c.code}</span>
+          <div className="text-[10px] text-muted-foreground mt-0.5">{c.meta?.label ?? c.code}</div>
+        </div>
+        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${lifecycleClass}`}>
+          {c.meta?.lifecycle ?? 'ACTIVE'}
         </span>
-      )}
-      {book === 'all' && (
-        <span className="text-[10px] text-amber-400">
-          real and simulated combined — P&amp;L here is not your account
-        </span>
-      )}
-    </div>
-  );
-}
-
-function EraToggle({ era, setEra, counts }: {
-  era: Era; setEra: (e: Era) => void; counts: Record<Era, number>;
-}) {
-  return (
-    <div className="flex flex-wrap items-center gap-3">
-      <div className="inline-flex rounded-lg border border-border p-0.5">
-        {(['system', 'legacy', 'all'] as Era[]).map((e) => (
-          <button
-            key={e}
-            onClick={() => setEra(e)}
-            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-              era === e ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            {ERA_META[e].label}
-            <span className="ml-1.5 font-mono opacity-60">{counts[e]}</span>
-          </button>
-        ))}
       </div>
-      <p className="text-xs text-muted-foreground">{ERA_META[era].blurb}</p>
+
+      {c.meta?.description && (
+        <div className="text-[11px] text-muted-foreground mt-2 leading-snug min-h-[30px] line-clamp-2">
+          {c.meta.description}
+        </div>
+      )}
+
+      <div className="grid grid-cols-4 gap-1 pt-2.5 mt-2.5 border-t border-border">
+        <div><div className="text-[8.5px] text-muted-foreground uppercase">Setups</div><div className="text-xs font-bold mt-0.5">{c.setups}</div></div>
+        <div><div className="text-[8.5px] text-muted-foreground uppercase">Taken</div><div className="text-xs font-bold mt-0.5">{c.taken}</div></div>
+        <div><div className="text-[8.5px] text-muted-foreground uppercase">Hit</div><div className="text-xs font-bold mt-0.5">{c.hit != null ? `${(c.hit * 100).toFixed(0)}%` : '—'}</div></div>
+        <div><div className="text-[8.5px] text-muted-foreground uppercase">Avg net</div>
+          <div className={`text-xs font-bold mt-0.5 ${(c.avgNet ?? 0) >= 0 ? 'text-profit' : 'text-loss'}`}>
+            {c.avgNet != null ? `${c.avgNet >= 0 ? '+' : ''}${c.avgNet.toFixed(2)}%` : '—'}
+          </div>
+        </div>
+      </div>
+
+      <Sparkline points={c.sparkline} />
+
+      {c.meta?.description && (
+        <div className="text-[9.5px] leading-snug text-muted-foreground mt-2 pt-2 border-t border-border">
+          <b className="text-secondary-foreground mr-1">Entry</b>{c.meta.description}
+        </div>
+      )}
+      <div className="text-[9.5px] leading-snug text-muted-foreground mt-1">
+        <b className="text-secondary-foreground mr-1">Exit</b>{exitText}
+      </div>
     </div>
   );
 }
 
-/** Shown instead of KPIs when the selected era has too few trades to mean anything. */
-function BuildingRecord({ n }: { n: number }) {
-  return (
-    <div className="rounded-lg border border-warning/30 bg-warning/5 p-5">
-      <h3 className="text-sm font-medium text-foreground">
-        {n === 0 ? 'No system trades closed yet' : `${n} system trade${n === 1 ? '' : 's'} closed so far`}
-      </h3>
-      <p className="mt-1.5 max-w-2xl text-xs leading-relaxed text-muted-foreground">
-        A win rate needs roughly {MIN_MEANINGFUL_SAMPLE} closed trades before it says
-        anything about edge rather than luck. Showing one now would be noise dressed
-        as a metric, so the numbers stay hidden until the sample supports them.
-      </p>
-      <p className="mt-2 max-w-2xl text-xs leading-relaxed text-muted-foreground">
-        Meanwhile <strong className="text-foreground">screener_performance</strong> is
-        accumulating forward returns on every shortlisted stock — a read on signal
-        quality that costs nothing and needs no trades. The Control Room shows it
-        per engine.
-      </p>
-      <p className="mt-2 text-xs text-muted-foreground">
-        Switch to <em>Legacy</em> to see the pre-automation record.
-      </p>
-    </div>
-  );
-}
-
-// ─── Main Tab ─────────────────────────────────────────────────────────────
 export function PerformanceTab() {
-  const [metrics, setMetrics] = useState<PerformanceMetricsRow[]>([]);
-  const [closedAll, setClosedAll] = useState<ClosedPosition[]>([]);
-  const [era, setEra] = useState<Era>('system');
-  const [book, setBook] = useState<Book>('live');
+  const [cards, setCards] = useState<CardData[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<'ALL' | 'SWING' | 'INTRADAY'>('ALL');
+  const [selectedEngine, setSelectedEngine] = useState<EngineStats | null>(null);
+  const [swingExitText, setSwingExitText] = useState('swing ladder — loading…');
 
   useEffect(() => {
     async function load() {
       setLoading(true);
-      try {
-        const [m, c] = await Promise.all([
-          queries.getPerformanceMetrics('weekly', 26),
-          queries.getClosedPositions(100),
-        ]);
-        if (m.error) throw m.error;
-        if (c.error) throw c.error;
-        setMetrics(m.data ?? []);
-        setClosedAll(c.data ?? []);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Failed to load');
-      } finally {
-        setLoading(false);
+      const [sc, isc, swingStats, intradayStats, exitPolicy] = await Promise.all([
+        queries.getStrategyConfig(),
+        queries.getIntradayStrategyConfig(),
+        queries.getSwingEngineGridStats(),
+        queries.getIntradayEngineGridStats(),
+        queries.getExitPolicy(),
+      ]);
+      setSwingExitText(
+        `swing ladder — book ${exitPolicy.exit_partial_book_pct}%@${exitPolicy.exit_partial_book_r}R, `
+        + `trail>${exitPolicy.exit_trail_after_r}R, target ${exitPolicy.exit_target_r}R`
+      );
+      const metaByCode = new Map<string, EngineMeta>();
+      for (const r of [...(sc.data ?? []), ...(isc.data ?? [])]) {
+        metaByCode.set(r.strategy, { label: r.label, description: r.description, lifecycle: r.lifecycle });
       }
+
+      const built: CardData[] = [];
+      for (const [code, count] of swingStats.setups) {
+        const closed = swingStats.closedByStrategy.get(code) ?? [];
+        const wins = closed.filter((r) => (r.realized_pnl ?? 0) > 0).length;
+        const results = closed.map((r) => (r.realized_pnl ?? 0) > 0);
+        const avgNet = closed.length ? closed.reduce((s, r) => s + (r.pnl_pct ?? 0), 0) / closed.length : null;
+        built.push({
+          code, framework: 'SWING', meta: metaByCode.get(code),
+          setups: count, taken: closed.length + (swingStats.takenOpen.get(code) ?? 0),
+          hit: closed.length ? wins / closed.length : null, avgNet,
+          sparkline: rollingHitRate(results), trendPp: null,
+        });
+      }
+      for (const [code, count] of intradayStats.setups) {
+        const taken = intradayStats.takenByStrategy.get(code) ?? [];
+        const resolved = taken.filter((r) => r.outcome === 'TARGET' || r.outcome === 'STOP');
+        const wins = resolved.filter((r) => r.outcome === 'TARGET').length;
+        const results = resolved.map((r) => r.outcome === 'TARGET');
+        const avgNet = resolved.length ? resolved.reduce((s, r) => s + (r.outcome_pct ?? 0), 0) / resolved.length : null;
+        built.push({
+          code, framework: 'INTRADAY', meta: metaByCode.get(code),
+          setups: count, taken: taken.length,
+          hit: resolved.length ? wins / resolved.length : null, avgNet,
+          sparkline: rollingHitRate(results), trendPp: null,
+        });
+      }
+      built.sort((a, b) => a.code.localeCompare(b.code));
+      setCards(built);
     }
-    load();
+    load().catch((e) => console.error('Engines load failed:', e)).finally(() => setLoading(false));
   }, []);
 
-  // Every KPI and chart below is scoped to the selected era. Mixing a
-  // pre-automation record into a metric labelled "Win Rate" is what this whole
-  // section exists to prevent.
-  // Book first, then era. Both filters are explicit and both are shown,
-  // because a stat whose population you cannot see is a stat you cannot
-  // check.
-  const inScope = closedAll.filter((p) => inBook(p, book));
-  const closed = inScope.filter((p) => inEra(p, era));
-  const eraCounts: Record<Era, number> = {
-    system: inScope.filter((p) => inEra(p, 'system')).length,
-    legacy: inScope.filter((p) => inEra(p, 'legacy')).length,
-    all:    inScope.length,
-  };
-  const bookCounts: Record<Book, number> = {
-    live:  closedAll.filter((p) => inBook(p, 'live')).length,
-    paper: closedAll.filter((p) => inBook(p, 'paper')).length,
-    all:   closedAll.length,
-  };
-  const tooFewToJudge = era === 'system' && closed.length < MIN_MEANINGFUL_SAMPLE;
-
-  // Derived stats from closed_positions (source of truth for real trades)
-  const wins = closed.filter((p) => (p.realized_pnl ?? 0) > 0);
-  const losses = closed.filter((p) => (p.realized_pnl ?? 0) <= 0);
-  const winRate = closed.length > 0 ? (wins.length / closed.length) * 100 : 0;
-  const totalPnl = closed.reduce((s, p) => s + (p.realized_pnl ?? 0), 0);
-  // Net of what the broker actually took. Charges are NULL on trades closed
-  // before they were recorded, so `costed` says how much of this sample the
-  // net figure can speak for — a net P&L quietly computed over a third of the
-  // rows would be worse than not showing one.
-  const costed = closed.filter((p) => p.charges != null);
-  const totalCharges = costed.reduce((s, p) => s + (p.charges ?? 0), 0);
-  const netPnl = totalPnl - totalCharges;
-  const avgWin = wins.length > 0 ? wins.reduce((s, p) => s + (p.realized_pnl ?? 0), 0) / wins.length : 0;
-  const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((s, p) => s + (p.realized_pnl ?? 0), 0) / losses.length) : 1;
-  const profitFactor = avgLoss > 0 ? (avgWin * wins.length) / (avgLoss * Math.max(losses.length, 1)) : 0;
-
-  // Streak
-  let streak = 0; let streakType: 'WIN' | 'LOSS' = 'WIN';
-  const sorted = [...closed].sort((a, b) => (b.exit_date ?? '').localeCompare(a.exit_date ?? ''));
-  for (const p of sorted) {
-    const won = (p.realized_pnl ?? 0) > 0;
-    if (streak === 0) { streakType = won ? 'WIN' : 'LOSS'; streak = 1; }
-    else if ((won && streakType === 'WIN') || (!won && streakType === 'LOSS')) streak++;
-    else break;
-  }
-
-  const weeklyTrend = toWeeklyPerformance(metrics);
-  const engineStats = toEngineStats(metrics);
-  const errObj = error ? new Error(error) : null;
+  const swingCards = cards.filter((c) => c.framework === 'SWING');
+  const intradayCards = cards.filter((c) => c.framework === 'INTRADAY');
+  const visible = filter === 'ALL' ? cards : filter === 'SWING' ? swingCards : intradayCards;
 
   return (
-    <div className="space-y-4">
-      {!loading && (
-        <div className="space-y-2">
-          <BookToggle book={book} setBook={setBook} counts={bookCounts} />
-          <EraToggle era={era} setEra={setEra} counts={eraCounts} />
+    <div>
+      <div className="mb-1">
+        <h1 className="text-[19px] font-semibold">Engines</h1>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          Detected → taken → outcome, both books — sparkline is rolling hit-rate trend, last resolved trades
+        </p>
+      </div>
+
+      <div className="flex gap-2 my-3.5 mb-5">
+        {([['ALL', `All ${cards.length}`], ['SWING', `Swing ${swingCards.length}`], ['INTRADAY', `Intraday ${intradayCards.length}`]] as const).map(([id, label]) => (
+          <button key={id} onClick={() => setFilter(id)}
+            className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+              filter === id ? 'badge-swing' : 'border-border text-muted-foreground hover:text-foreground'}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+          {Array.from({ length: 8 }).map((_, i) => <div key={i} className="h-48 rounded-xl border border-border bg-panel-hover/40 animate-pulse" />)}
         </div>
-      )}
-
-      {/* KPI Row — replaced by an honest empty state when the sample is too
-          small to support a win rate. */}
-      {!loading && tooFewToJudge ? (
-        <BuildingRecord n={closed.length} />
       ) : (
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {loading ? (
-          <><SkeletonKPI /><SkeletonKPI /><SkeletonKPI /><SkeletonKPI /></>
-        ) : (
-          <>
-            <KPICard title="Win Rate" value={`${winRate.toFixed(1)}%`}
-              description={`${closed.length} closed trades`} icon={<Target className="h-4 w-4" />}
-              change={closed.length > 0 ? { value: `${wins.length}W / ${losses.length}L`, type: winRate >= 50 ? 'increase' : 'decrease' } : undefined} />
-            {/* Headline is NET where costs are known. "Net profitable" over a
-                gross number was a claim the account could not back — a 0.21%
-                round trip is about a fifth of a 1% intraday winner. */}
-            <KPICard
-              title={costed.length === closed.length && closed.length > 0
-                ? 'Realized P&L (net)' : 'Total Realized P&L'}
-              value={formatCurrency(costed.length === closed.length && closed.length > 0
-                ? netPnl : totalPnl, { compact: true })}
-              description={costed.length > 0 && costed.length < closed.length
-                ? `gross — charges known for only ${costed.length}/${closed.length}`
-                : costed.length > 0 ? `after ${formatCurrency(totalCharges)} in charges`
-                : 'gross — charges not recorded for these trades'}
-              icon={<Activity className="h-4 w-4" />}
-              change={totalPnl !== 0 ? { value: totalPnl > 0 ? 'Net profitable' : 'Net loss', type: totalPnl > 0 ? 'increase' : 'decrease' } : undefined} />
-            <KPICard title="Profit Factor"
-              value={closed.length > 0 ? profitFactor.toFixed(2) : '—'}
-              description="Gross profit ÷ gross loss" icon={<BarChart3 className="h-4 w-4" />}
-              change={profitFactor > 0 ? { value: profitFactor >= 1.5 ? 'Healthy' : profitFactor >= 1 ? 'Marginal' : 'Negative edge', type: profitFactor >= 1.5 ? 'increase' : profitFactor >= 1 ? 'neutral' : 'decrease' } : undefined} />
-            <KPICard title="Current Streak"
-              value={closed.length > 0 ? `${streak} ${streakType === 'WIN' ? 'Wins' : 'Losses'}` : '—'}
-              icon={<Trophy className="h-4 w-4" />}
-              change={closed.length > 0 ? { value: streakType === 'WIN' ? 'Keep going' : 'Review setups', type: streakType === 'WIN' ? 'increase' : 'decrease' } : undefined} />
-          </>
-        )}
-      </div>
+        <>
+          {(filter === 'ALL' || filter === 'SWING') && swingCards.length > 0 && (
+            <>
+              <div className="flex items-center gap-2.5 my-5 mt-6 first:mt-0">
+                <span className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">Swing · {swingCards.length} engines</span>
+                <span className="flex-1 h-px bg-border" />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+                {swingCards.map((c) => <EngineCardTile key={c.code} c={c} exitText={swingExitText} onSelect={setSelectedEngine} />)}
+              </div>
+            </>
+          )}
+          {(filter === 'ALL' || filter === 'INTRADAY') && intradayCards.length > 0 && (
+            <>
+              <div className="flex items-center gap-2.5 my-5">
+                <span className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">Intraday · {intradayCards.length} engines</span>
+                <span className="flex-1 h-px bg-border" />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+                {intradayCards.map((c) => (
+                  <EngineCardTile key={c.code} c={c}
+                    exitText="setup target, minute-based time stop, invalidation check, square-off"
+                    onSelect={setSelectedEngine} />
+                ))}
+              </div>
+            </>
+          )}
+          {visible.length === 0 && (
+            <div className="text-sm text-muted-foreground py-8 text-center">No engines registered yet.</div>
+          )}
+        </>
       )}
 
-      {/* Monthly P&L + Win Rate Trend */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Panel title="Monthly Realized P&L" description={`12-month realised P&L — ${ERA_META[era].label.toLowerCase()}`}
-          dataSource="supabase" tableName="closed_positions" isLoading={loading}>
-          <DataGuard data={closed} isLoading={loading} error={errObj}
-            loadingContent={<SkeletonChart className="h-48" />}
-            emptyTitle={era === 'system' ? 'No system trades yet' : 'No closed trades'}
-            emptyDescription={era === 'system' ? 'Appears once a signal-linked trade closes.' : 'Close a trade to see monthly P&L.'}>
-            {(data) => <MonthlyPnLChart data={data} />}
-          </DataGuard>
-        </Panel>
-
-        <Panel title="Win Rate Trend" description="Weekly rolling — from performance_metrics"
-          dataSource="supabase" tableName="performance_metrics" isLoading={loading}>
-          <DataGuard data={weeklyTrend} isLoading={loading} error={errObj}
-            loadingContent={<SkeletonChart className="h-48" />}
-            emptyTitle="No trend data" emptyDescription="Populated by your pipeline's performance_metrics step">
-            {(data) => <WinRateTrendChart data={data} />}
-          </DataGuard>
-        </Panel>
-      </div>
-
-      {/* Trade log — what it ACTUALLY did, day by day. The aggregates above
-          answer "how am I doing"; this answers "what happened", which is the
-          question you have whenever a number looks wrong. */}
-      <Panel title="Trade Log"
-        description={`Every closed trade grouped by exit date — ${BOOK_META[book].label.toLowerCase()}, ${ERA_META[era].label.toLowerCase()}`}
-        dataSource="supabase" tableName="closed_positions" isLoading={loading}>
-        <DataGuard data={closed} isLoading={loading} error={errObj}
-          loadingContent={<SkeletonTable rows={5} cols={1} />}
-          emptyTitle="No closed trades in this selection"
-          emptyDescription="Switch book or era above to see others.">
-          {(data) => <TradeLog trades={data} />}
-        </DataGuard>
-      </Panel>
-
-      {/* Strategy Breakdown + Engine Leaderboard */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Panel title="Strategy P&L Breakdown" description={`Realised P&L and win rate by strategy — ${ERA_META[era].label.toLowerCase()}`}
-          dataSource="supabase" tableName="closed_positions" isLoading={loading}>
-          <DataGuard data={closed} isLoading={loading} error={errObj}
-            loadingContent={<SkeletonTable rows={4} cols={1} />}
-            emptyTitle={era === 'system' ? 'No system trades yet' : 'No closed trades'}
-            emptyDescription={era === 'system' ? 'Appears once a signal-linked trade closes.' : 'Appears after your first closed trade.'}>
-            {(data) => <StrategyBreakdown data={data} />}
-          </DataGuard>
-        </Panel>
-
-        <Panel title="Engine Leaderboard" description="From engine_stats in performance_metrics"
-          dataSource="supabase" tableName="performance_metrics" isLoading={loading}>
-          <DataGuard data={engineStats} isLoading={loading} error={errObj}
-            loadingContent={<SkeletonTable rows={5} cols={4} />}
-            emptyTitle="No engine stats yet"
-            emptyDescription="engine_stats JSONB column needs to be populated by your pipeline's compute_performance step">
-            {(data) => <EngineLeaderboard data={data} />}
-          </DataGuard>
-        </Panel>
-      </div>
-
-      {/* Signal type breakdown (only when engine_stats exist) */}
-      {engineStats.length > 0 && (
-        <Panel title="Signal Type Win Rate vs Avg P&L" description="Side-by-side comparison by engine"
-          dataSource="supabase" tableName="performance_metrics" isLoading={loading}>
-          <SignalTypeBreakdown data={engineStats} />
-        </Panel>
-      )}
+      <EngineDetailDialog engine={selectedEngine} onOpenChange={(o) => { if (!o) setSelectedEngine(null); }} />
     </div>
   );
 }

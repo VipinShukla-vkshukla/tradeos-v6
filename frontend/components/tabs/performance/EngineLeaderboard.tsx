@@ -7,6 +7,7 @@ import type { EngineStats } from '@/types/database';
 
 interface EngineLeaderboardProps {
   data: EngineStats[];
+  onSelect?: (engine: EngineStats) => void;
 }
 
 function getRankBadge(rank: number) {
@@ -22,7 +23,7 @@ function getTrendIcon(value: number) {
   return <Minus className="h-3.5 w-3.5 text-muted-foreground" />;
 }
 
-export function EngineLeaderboard({ data }: EngineLeaderboardProps) {
+export function EngineLeaderboard({ data, onSelect }: EngineLeaderboardProps) {
   // Sort by a composite score (win rate * 0.4 + profit factor * 0.3 + sharpe * 0.3)
   const rankedData = useMemo(() => {
     return [...data]
@@ -51,7 +52,9 @@ export function EngineLeaderboard({ data }: EngineLeaderboardProps) {
       {rankedData.map((engine) => (
         <div
           key={engine.engine_name}
-          className="grid grid-cols-12 gap-2 px-2 py-2.5 text-sm hover:bg-panel-hover rounded-md transition-colors"
+          onClick={() => onSelect?.(engine)}
+          className={`grid grid-cols-12 gap-2 px-2 py-2.5 text-sm hover:bg-panel-hover rounded-md transition-colors ${onSelect ? 'cursor-pointer' : ''}`}
+          title={onSelect ? 'View factor breakdown — what separates winners from losers' : undefined}
         >
           <div className="col-span-1 flex items-center">
             {getRankBadge(engine.rank)}

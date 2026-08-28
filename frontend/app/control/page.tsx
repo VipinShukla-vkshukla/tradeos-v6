@@ -22,12 +22,16 @@
 //               trail intact
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import { ChevronLeft } from 'lucide-react';
 import { EngineCard } from '@/components/control/EngineCard';
 import {
   gateFunnel,
   type EngineConfig, type EnginePerf, type Gates, type Lifecycle, type Stock,
 } from '@/lib/engineGates';
 import { OperatorPanel } from '@/components/core/OperatorPanel';
+import { Header } from '@/components/core/Header';
+import { Sidebar } from '@/components/core/Sidebar';
 
 interface SectorRow {
   sector: string;
@@ -144,39 +148,44 @@ export default function ControlRoom() {
   );
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
-      {/* ── Header ────────────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-20 border-b border-zinc-800 bg-zinc-950/90 backdrop-blur">
-        <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-4 px-6 py-3">
-          <div>
-            <h1 className="text-sm font-semibold tracking-tight">Strategy Control Room</h1>
-            <p className="text-[11px] text-zinc-500">
-              {tradeDate ? `universe ${tradeDate} · ${stocks.length} stocks` : 'loading universe…'}
-            </p>
-          </div>
-          <div className="flex items-center gap-5">
-            {[
-              { label: 'active', value: totals.active, tone: 'text-emerald-400' },
-              { label: 'shadow', value: totals.shadow, tone: 'text-amber-400' },
-              { label: 'retired', value: totals.retired, tone: 'text-zinc-500' },
-              { label: 'reach', value: totals.reach, tone: 'text-sky-400' },
-            ].map((s) => (
-              <div key={s.label} className="text-right">
-                <div className={`font-mono text-lg leading-none ${s.tone}`}>{s.value}</div>
-                <div className="text-[10px] uppercase tracking-wide text-zinc-600">{s.label}</div>
+    <div className="h-screen bg-dashboard flex flex-col overflow-hidden">
+      <Header />
+      <div className="flex flex-1 min-h-0">
+        <Sidebar />
+        <main className="flex-1 min-w-0 overflow-auto p-4">
+          <div className="flex items-center justify-between gap-4 mb-4">
+            <div className="flex items-center gap-3">
+              <Link href="/" className="text-muted-foreground hover:text-foreground">
+                <ChevronLeft className="h-4 w-4" />
+              </Link>
+              <div>
+                <h1 className="text-sm font-semibold tracking-tight text-foreground">Strategy Control Room</h1>
+                <p className="text-[11px] text-muted-foreground">
+                  {tradeDate ? `universe ${tradeDate} · ${stocks.length} stocks` : 'loading universe…'}
+                </p>
               </div>
-            ))}
-            <button
-              onClick={() => void load()}
-              className="rounded border border-zinc-800 px-3 py-1.5 text-[11px] text-zinc-400 hover:text-zinc-200"
-            >
-              Refresh
-            </button>
+            </div>
+            <div className="flex items-center gap-5">
+              {[
+                { label: 'active', value: totals.active, tone: 'text-emerald-400' },
+                { label: 'shadow', value: totals.shadow, tone: 'text-amber-400' },
+                { label: 'retired', value: totals.retired, tone: 'text-muted-foreground' },
+                { label: 'reach', value: totals.reach, tone: 'text-sky-400' },
+              ].map((s) => (
+                <div key={s.label} className="text-right">
+                  <div className={`font-mono text-lg leading-none ${s.tone}`}>{s.value}</div>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground/70">{s.label}</div>
+                </div>
+              ))}
+              <button
+                onClick={() => void load()}
+                className="rounded border border-border px-3 py-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+              >
+                Refresh
+              </button>
+            </div>
           </div>
-        </div>
-      </header>
 
-      <main className="mx-auto max-w-[1600px] px-6 py-6">
         {/* Operator controls first. Engine tuning changes which trades are
             proposed; these decide whether any of them can happen at all. */}
         <div className="mb-6">
@@ -195,7 +204,7 @@ export default function ControlRoom() {
         {/* ── Sector rotation strip ───────────────────────────────────── */}
         {topSectors.length > 0 && (
           <section className="mb-6">
-            <h2 className="mb-2 text-[11px] uppercase tracking-wide text-zinc-500">
+            <h2 className="mb-2 text-[11px] uppercase tracking-wide text-muted-foreground">
               {/* NOT a gate. Nothing in the pipeline refuses a stock for its
                   sector rank — it is a weighted SCORE input: 5% of final_score
                   (100/82/64/46/25 by rank band) and up to 6 of 100 points of
@@ -211,26 +220,26 @@ export default function ControlRoom() {
                 return (
                   <div
                     key={s.sector}
-                    className="min-w-[142px] shrink-0 rounded-lg border border-zinc-800 bg-zinc-900/60 p-2.5"
+                    className="min-w-[142px] shrink-0 rounded-lg border border-border bg-panel-hover/60 p-2.5"
                   >
                     <div className="flex items-baseline justify-between">
-                      <span className="font-mono text-[11px] text-zinc-500">#{s.rank}</span>
+                      <span className="font-mono text-[11px] text-muted-foreground">#{s.rank}</span>
                       <span
                         className={`font-mono text-[10px] ${
-                          d > 0 ? 'text-emerald-400' : d < 0 ? 'text-rose-400' : 'text-zinc-600'
+                          d > 0 ? 'text-profit' : d < 0 ? 'text-loss' : 'text-muted-foreground/60'
                         }`}
                       >
                         {d > 0 ? `▲${d}` : d < 0 ? `▼${Math.abs(d)}` : '—'}
                       </span>
                     </div>
-                    <div className="mt-0.5 truncate text-xs capitalize text-zinc-200">{s.sector}</div>
-                    <div className="mt-1.5 h-1 overflow-hidden rounded bg-zinc-800">
+                    <div className="mt-0.5 truncate text-xs capitalize text-foreground">{s.sector}</div>
+                    <div className="mt-1.5 h-1 overflow-hidden rounded bg-border">
                       <div
                         className="h-full bg-gradient-to-r from-sky-500 to-emerald-500"
                         style={{ width: `${Math.round((s.rotation_score ?? 0) * 100)}%` }}
                       />
                     </div>
-                    <div className="mt-1 flex justify-between text-[9px] text-zinc-600">
+                    <div className="mt-1 flex justify-between text-[9px] text-muted-foreground/70">
                       <span>n={s.stock_count}</span>
                       <span>rot {((s.rotation_score ?? 0) * 100).toFixed(0)}%</span>
                     </div>
@@ -243,14 +252,14 @@ export default function ControlRoom() {
 
         {/* ── Engines ─────────────────────────────────────────────────── */}
         <section>
-          <h2 className="mb-3 text-[11px] uppercase tracking-wide text-zinc-500">
+          <h2 className="mb-3 text-[11px] uppercase tracking-wide text-muted-foreground">
             engines · drag a gate to preview its effect before committing
           </h2>
 
           {loading ? (
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {Array.from({ length: 9 }).map((_, i) => (
-                <div key={i} className="h-64 animate-pulse rounded-xl border border-zinc-800 bg-zinc-900/40" />
+                <div key={i} className="h-64 animate-pulse rounded-xl border border-border bg-panel-hover/40" />
               ))}
             </div>
           ) : (
@@ -276,7 +285,8 @@ export default function ControlRoom() {
             </div>
           )}
         </section>
-      </main>
+        </main>
+      </div>
 
       {toast && (
         <div className="fixed bottom-5 right-5 z-30 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-xs text-emerald-300 shadow-lg">

@@ -44,6 +44,17 @@
   --bearish: #ef4444;
   --neutral: #94a3b8;
 
+  /* Book identity — SWING vs INTRADAY, used anywhere a value needs to be
+     attributed to one book at a glance (badges, KPI splits, chart series). */
+  --swing: #3b82f6;
+  --swing-bg: rgba(59, 130, 246, 0.10);
+  --swing-border: rgba(59, 130, 246, 0.35);
+  --swing-text: #60a5fa;
+  --intraday: #f59e0b;
+  --intraday-bg: rgba(245, 158, 11, 0.10);
+  --intraday-border: rgba(245, 158, 11, 0.35);
+  --intraday-text: #fbbf24;
+
   /* Chart palette */
   --chart-1: #3b82f6;
   --chart-2: #22c55e;
@@ -119,6 +130,10 @@
   --color-chart-6: var(--chart-6);
   --color-chart-7: var(--chart-7);
   --color-chart-8: var(--chart-8);
+  --color-swing: var(--swing);
+  --color-intraday: var(--intraday);
+  --color-profit: var(--profit-green);
+  --color-loss: var(--loss-red);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -258,6 +273,16 @@
   .badge-info {
     background-color: var(--info-bg);
     color: var(--info);
+  }
+  .badge-swing {
+    background-color: var(--swing-bg);
+    color: var(--swing-text);
+    border: 1px solid var(--swing-border);
+  }
+  .badge-intraday {
+    background-color: var(--intraday-bg);
+    color: var(--intraday-text);
+    border: 1px solid var(--intraday-border);
   }
 
   /* Tab styling */

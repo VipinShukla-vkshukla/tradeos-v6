@@ -37,15 +37,16 @@ function dayLabel(iso: string): string {
   });
 }
 
-function Chip({ text, tone }: { text: string; tone: 'paper' | 'live' | 'fw' | 'muted' }) {
+function Chip({ text, tone }: { text: string; tone: 'paper' | 'live' | 'swing' | 'intraday' | 'muted' }) {
   const cls = {
-    paper: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
-    live: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
-    fw: 'bg-purple-500/15 text-purple-400 border-purple-500/30',
-    muted: 'bg-muted/40 text-muted-foreground border-border/40',
+    paper: 'border bg-blue-500/15 text-blue-400 border-blue-500/30',
+    live: 'border bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+    swing: 'badge-swing',
+    intraday: 'badge-intraday',
+    muted: 'border bg-muted/40 text-muted-foreground border-border/40',
   }[tone];
   return (
-    <span className={`text-[9px] px-1.5 py-0.5 rounded border font-medium ${cls}`}>
+    <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${cls}`}>
       {text}
     </span>
   );
@@ -147,7 +148,10 @@ export function TradeLog({ trades }: { trades: ClosedPosition[] }) {
                             <div className="flex items-center gap-1.5">
                               <span className="font-medium">{t.symbol}</span>
                               <Chip text={isPaper ? 'PAPER' : 'LIVE'} tone={isPaper ? 'paper' : 'live'} />
-                              {t.framework && <Chip text={t.framework} tone="fw" />}
+                              {t.framework && (
+                                <Chip text={t.framework}
+                                  tone={t.framework.toUpperCase() === 'INTRADAY' ? 'intraday' : 'swing'} />
+                              )}
                             </div>
                           </td>
                           <td className="px-2 py-1.5 text-muted-foreground">

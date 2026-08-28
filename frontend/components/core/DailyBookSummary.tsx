@@ -1,25 +1,31 @@
 'use client';
 
-// Daily Summary Dashboard — swing framework evolution blueprint, 26-Aug-2026.
-//
-// "Is the swing sleeve up or down, separately from intraday's, based on
-// what TradeOS actually did" — no existing view answers this. PositionsTab's
-// totalUnrealized/totalRealized are pooled across both books and
-// totalRealized is all-time with no date filter (confirmed before building
-// this — not a duplicate of anything already there).
+// Book heroes — matches Main.dc.html's Row A exactly: one card per book,
+// badge + product/mode in the head, entries-used-today (swing) or the
+// square-off reminder (intraday) on the right, a big book value with sleeve
+// + today's realized underneath, and a stat column of open positions /
+// unrealized / open risk / realized all-time / round-trip cost.
 //
 // Book value = sleeve (system_config swing_capital/intraday_capital, same
-// keys OperatorPanel.tsx already reads, same totalCapital fallback chain)
-// + all-time realized P&L for that book + live unrealized P&L for that
-// book's open positions. "Today's change" needs a prior-day baseline to be
-// exact — tools/snapshot_book_value.py writes one row per (date, framework)
-// daily; until at least one snapshot exists this falls back to showing
-// today's realized P&L alone, labelled honestly rather than presenting an
-// approximation as a precise delta.
+// keys OperatorPanel.tsx already reads) + all-time realized P&L for that
+// book + live unrealized P&L for that book's open positions.
+//
+// Open risk uses the identical formula PositionsTab's KPI strip computes
+// (max(0, (price - stop) * qty), summed) — imported as a literal copy of
+// that logic, not a second definition of "risk" that could drift from it.
+//
+// Round-trip cost is EMPIRICAL, not the modelled cost_model.round_trip() —
+// deliberately. That Python model is config-driven (rates live in
+// system_config so they can be corrected without a deploy) and reimplementing
+// it here risks exactly the divergent-cost-model problem this project has
+// already been burned by once (see CLAUDE.md: "three divergent R:R models
+// giving three answers for one stock on one day"). closed_positions.charges
+// is the same number the backend actually charged, so charges/invested_value
+// averaged over this book's recent closed trades is the true observed cost,
+// not a re-derived guess. Trades before migration 025 have no reconstructable
+// charges and are excluded rather than treated as zero-cost.
 
 import { useEffect, useState } from 'react';
-import { TrendingUp, TrendingDown } from 'lucide-react';
-import { Panel, KPICard } from '@/components/core/Panel';
 import { queries } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/formatters';
 import type { OpenPosition, ClosedPosition } from '@/types/database';
@@ -32,8 +38,11 @@ interface BookSummary {
   unrealized: number;
   bookValue: number;
   todayRealized: number;
-  changeSinceSnapshot: number | null;   // null = no snapshot baseline yet
-  snapshotDate: string | null;
+  openCount: number;
+  openRisk: number;
+  entriesToday: number;
+  entryCap: number;
+  roundTripCostPct: number | null;
 }
 
 function computeSleeve(cfg: Record<string, string>, fw: Framework): number {
@@ -47,19 +56,38 @@ function computeSleeve(cfg: Record<string, string>, fw: Framework): number {
   return Number.isFinite(v) ? v : totalCapital;
 }
 
+// Same shape as PositionsTab's own openRisk KPI — a stop at or above entry
+// (breakeven or better) contributes nothing, which is the point of moving to
+// breakeven in the first place.
+function computeOpenRisk(open: OpenPosition[]): number {
+  return open.reduce((sum, p) => {
+    const qty = p.current_qty ?? p.actual_qty ?? 0;
+    const stop = p.active_sl ?? p.planned_stop;
+    const px = p.current_price ?? p.entry_price;
+    if (!qty || !stop || !px) return sum;
+    return sum + Math.max(0, (px - stop) * qty);
+  }, 0);
+}
+
 async function loadBook(cfg: Record<string, string>, fw: Framework): Promise<BookSummary> {
   const sleeve = computeSleeve(cfg, fw);
   const today = new Date().toISOString().slice(0, 10);
 
-  const [openRes, closedRes, snapRes] = await Promise.all([
-    queries.getOpenPositionsByFramework(fw),
-    queries.getAllClosedPositionsByFramework(fw),
-    queries.getBookValueSnapshots(fw, 2),
+  // Narrow selects — this fetch runs on a timer (see the interval below), and
+  // open_positions/closed_positions carry ~50 columns each. Pulling every
+  // column just to sum eight numeric fields was confirmed, against a day of
+  // real edge_logs traffic, to be the largest single contributor to this
+  // dashboard's Supabase egress. List every field loadBook/computeOpenRisk
+  // actually reads, nothing else.
+  const [openRes, closedRes] = await Promise.all([
+    queries.getOpenPositionsByFramework(fw,
+      'entry_date,current_qty,actual_qty,active_sl,planned_stop,current_price,entry_price,unrealized_pnl,current_value,invested_value'),
+    queries.getAllClosedPositionsByFramework(fw,
+      'entry_date,exit_date,realized_pnl,charges,invested_value'),
   ]);
 
   const open = (openRes.data ?? []) as OpenPosition[];
   const closed = (closedRes.data ?? []) as ClosedPosition[];
-  const snaps = snapRes.data ?? [];
 
   const unrealized = open.reduce((sum, p) => {
     const u = p.unrealized_pnl ?? ((p.current_value ?? 0) - (p.invested_value ?? 0));
@@ -70,77 +98,96 @@ async function loadBook(cfg: Record<string, string>, fw: Framework): Promise<Boo
     .filter((p) => (p.exit_date ?? '').slice(0, 10) === today)
     .reduce((sum, p) => sum + (p.realized_pnl ?? 0), 0);
 
-  const bookValue = sleeve + realizedCum + unrealized;
+  const entriesToday = [...open, ...closed]
+    .filter((p) => (p.entry_date ?? '').slice(0, 10) === today).length;
 
-  // Most recent snapshot NOT from today (today's own snapshot, if it
-  // already ran, is not a "prior day" baseline to diff against).
-  const baseline = snaps.find((s) => s.date !== today) ?? null;
-  const changeSinceSnapshot = baseline ? bookValue - baseline.book_value : null;
+  const capKey = fw === 'SWING' ? 'swing_max_new_per_day' : 'intraday_max_new_per_day';
+  const capDefault = fw === 'SWING' ? 2 : 4;
+  const capParsed = parseInt(cfg[capKey] ?? '', 10);
+  const entryCap = Number.isFinite(capParsed) && capParsed > 0 ? capParsed : capDefault;
+
+  const withCharges = closed
+    .slice(0, 30) // most recent — cost rates drift far less than 30 trades' worth
+    .filter((p) => p.charges != null && p.invested_value);
+  const roundTripCostPct = withCharges.length
+    ? withCharges.reduce((s, p) => s + (p.charges! / p.invested_value) * 100, 0) / withCharges.length
+    : null;
 
   return {
-    sleeve, realizedCum, unrealized, bookValue, todayRealized,
-    changeSinceSnapshot, snapshotDate: baseline?.date ?? null,
+    sleeve, realizedCum, unrealized,
+    bookValue: sleeve + realizedCum + unrealized,
+    todayRealized,
+    openCount: open.length,
+    openRisk: computeOpenRisk(open),
+    entriesToday, entryCap,
+    roundTripCostPct,
   };
 }
 
-function BookColumn({ title, mode, s }: { title: string; mode: string; s: BookSummary | null }) {
+function MiniRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex justify-between text-xs">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-semibold">{children}</span>
+    </div>
+  );
+}
+
+function BookHero({ book, s }: { book: Framework; s: BookSummary | null }) {
+  const isSwing = book === 'SWING';
+  const badgeClass = isSwing ? 'badge-swing' : 'badge-intraday';
+  const borderClass = isSwing ? 'border-t-swing' : 'border-t-intraday';
+  const gradClass = isSwing ? 'from-swing/10' : 'from-intraday/10';
+
   if (!s) {
     return (
-      <div className="space-y-3">
-        <div className="text-sm font-semibold">{title}</div>
-        <div className="grid grid-cols-2 gap-3">
-          {[0, 1, 2, 3].map((i) => (
-            <div key={i} className="panel p-4 h-20 animate-pulse bg-panel-hover" />
-          ))}
-        </div>
+      <div className={`panel flex-1 border-t-2 ${borderClass} overflow-hidden`}>
+        <div className="p-4 h-24 animate-pulse bg-panel-hover/40" />
+        <div className="p-4 h-32 animate-pulse bg-panel-hover/20" />
       </div>
     );
   }
 
-  // "Today's change" — the precise delta once a snapshot baseline exists;
-  // today's realized P&L alone, honestly labelled, until one does.
-  const hasBaseline = s.changeSinceSnapshot !== null;
-  const changeValue = hasBaseline ? s.changeSinceSnapshot! : s.todayRealized;
-  const changeType = changeValue > 0 ? 'increase' : changeValue < 0 ? 'decrease' : 'neutral';
-  const changeIcon = changeValue >= 0
-    ? <TrendingUp className="w-3.5 h-3.5" />
-    : <TrendingDown className="w-3.5 h-3.5" />;
-
   return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-2">
-        <span className="text-sm font-semibold">{title}</span>
-        <span className="text-[10px] px-1.5 py-0.5 rounded border border-border/60 text-muted-foreground uppercase tracking-wide">
-          {mode}
+    <div className={`panel flex-1 border-t-2 ${borderClass} overflow-hidden`}>
+      <div className={`px-4 py-3 flex items-center justify-between border-b border-border bg-gradient-to-b ${gradClass} to-transparent`}>
+        <div className="text-sm font-semibold flex items-center gap-2">
+          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide ${badgeClass}`}>
+            {isSwing ? 'Swing' : 'Intraday'}
+          </span>
+          {isSwing ? 'CNC · LIVE' : 'MIS · PAPER'}
+        </div>
+        <span className="text-[11px] text-muted-foreground">
+          {isSwing ? `${s.entriesToday}/${s.entryCap} entries used today` : 'flat by 15:15'}
         </span>
       </div>
-      <div className="grid grid-cols-2 gap-3">
-        <KPICard
-          title="Book value"
-          value={formatCurrency(s.bookValue, { compact: true })}
-          description={`Sleeve ${formatCurrency(s.sleeve, { compact: true })}`}
-        />
-        <KPICard
-          title={hasBaseline ? 'Change since snapshot' : "Today's realized"}
-          value={formatCurrency(Math.abs(changeValue), { compact: true, showSign: false })}
-          change={{
-            value: hasBaseline
-              ? `${changeValue >= 0 ? 'up' : 'down'} since ${s.snapshotDate}`
-              : 'no snapshot baseline yet',
-            type: changeType,
-          }}
-          icon={changeIcon}
-        />
-        <KPICard
-          title="Unrealized (live)"
-          value={formatCurrency(s.unrealized, { compact: true, showSign: true })}
-          description="Open positions, marked now"
-        />
-        <KPICard
-          title="Realized (all-time)"
-          value={formatCurrency(s.realizedCum, { compact: true, showSign: true })}
-          description="Closed positions, this book"
-        />
+      <div className="p-4 grid grid-cols-[1.3fr_1fr] gap-4">
+        <div>
+          <div className="text-[32px] font-bold leading-none">{formatCurrency(s.bookValue, { compact: true })}</div>
+          <div className="text-[11px] text-muted-foreground mt-1.5">
+            Sleeve {formatCurrency(s.sleeve, { compact: true })} ·{' '}
+            <span className={s.todayRealized >= 0 ? 'text-profit' : 'text-loss'}>
+              {formatCurrency(s.todayRealized, { showSign: true })}
+            </span>{' '}realized today
+          </div>
+        </div>
+        <div className="flex flex-col gap-2.5 justify-center">
+          <MiniRow label="Open positions">{s.openCount}</MiniRow>
+          <MiniRow label="Unrealized">
+            <span className={s.unrealized >= 0 ? 'text-profit' : 'text-loss'}>
+              {formatCurrency(s.unrealized, { showSign: true, compact: true })}
+            </span>
+          </MiniRow>
+          <MiniRow label="Open risk">{formatCurrency(s.openRisk, { compact: true })}</MiniRow>
+          <MiniRow label="Realized all-time">
+            <span className={s.realizedCum >= 0 ? 'text-profit' : 'text-loss'}>
+              {formatCurrency(s.realizedCum, { showSign: true, compact: true })}
+            </span>
+          </MiniRow>
+          <MiniRow label="Round-trip cost">
+            {s.roundTripCostPct != null ? `~${s.roundTripCostPct.toFixed(2)}%` : '—'}
+          </MiniRow>
+        </div>
       </div>
     </div>
   );
@@ -155,7 +202,12 @@ export function DailyBookSummary() {
     let cancelled = false;
     async function load() {
       try {
-        const cfgRes = await queries.getSystemConfig();
+        // Named keys only — this used to be an unfiltered `select=*` over
+        // ~600 system_config rows, on this same timer, to read five of them.
+        const cfgRes = await queries.getSystemConfig([
+          'capital_snapshot', 'swing_capital', 'intraday_capital',
+          'swing_max_new_per_day', 'intraday_max_new_per_day',
+        ]);
         if (cfgRes.error) throw cfgRes.error;
         const cfg: Record<string, string> = {};
         for (const row of cfgRes.data ?? []) cfg[row.key] = row.value;
@@ -166,25 +218,27 @@ export function DailyBookSummary() {
         setIntraday(id);
         setError(null);
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'could not load daily summary');
+        if (!cancelled) setError(e instanceof Error ? e.message : 'could not load book summary');
       }
     }
     load();
-    const interval = setInterval(load, 60_000);
+    // 3 minutes, not 1 — this is a summary card, not a live ticker (the
+    // Positions & P&L tab shows the same data on demand, faster if needed).
+    // Combined with the narrow selects above, this is the other half of the
+    // egress fix: same accuracy, a third of the poll frequency.
+    const interval = setInterval(load, 180_000);
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
+  if (error) {
+    return <div className="panel p-4 text-sm text-loss">{error}</div>;
+  }
+
   return (
-    <Panel title="Daily Summary" description="Book value, split by framework — is each sleeve up or down, and why.">
-      {error ? (
-        <div className="text-sm text-loss">{error}</div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <BookColumn title="Swing" mode="CNC" s={swing} />
-          <BookColumn title="Intraday" mode="MIS" s={intraday} />
-        </div>
-      )}
-    </Panel>
+    <div className="flex flex-col md:flex-row gap-4">
+      <BookHero book="SWING" s={swing} />
+      <BookHero book="INTRADAY" s={intraday} />
+    </div>
   );
 }
 

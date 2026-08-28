@@ -11,6 +11,7 @@ import { DataGuard, SkeletonKPI, SkeletonTable } from '@/components/core/DataGua
 import { formatCurrency, formatDate } from '@/lib/formatters';
 import { queries } from '@/lib/supabase';
 import { RLadder } from '@/components/positions/RLadder';
+import { TradeDetailDialog, type TradeDetailTarget } from '@/components/positions/TradeDetailDialog';
 import type { OpenPosition, ClosedPosition } from '@/types/database';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -88,72 +89,92 @@ const LEVEL_STYLE: Record<AttentionLevel, { border: string; bg: string; dot: str
   OK:       { border: 'border-border/50',     bg: '',                dot: 'bg-green-500',  text: 'text-green-400' },
 };
 
-// ─── Position card ────────────────────────────────────────────────────────
-function PositionCard({ p, policy }: { p: OpenPosition; policy: ExitPolicy }) {
+// ─── Position row — table layout, expand for the exit-ladder detail ───────
+function PositionRow({ p, policy, onSelect, expanded, onToggle }: {
+  p: OpenPosition; policy: ExitPolicy; onSelect?: (symbol: string) => void;
+  expanded: boolean; onToggle: () => void;
+}) {
   const level = getAttentionLevel(p);
   const s = LEVEL_STYLE[level];
   const pnl = p.unrealized_pnl ?? 0;
-  const pct = p.pnl_pct ?? 0;
 
   const entry  = p.entry_price ?? 0;
   const stop0  = p.planned_stop ?? null;
   const active = p.active_sl ?? null;
   const target = p.planned_target ?? p.target_price ?? null;
+  const r = p.r_multiple_current;
+  const direction = (p.direction ?? 'LONG').toUpperCase();
 
-  // Initial risk as a % of entry — the denominator the R figures are built on.
   const riskPct = stop0 && entry && stop0 < entry ? ((entry - stop0) / entry) * 100 : null;
   const slDist = active && p.current_price
     ? ((p.current_price - active) / p.current_price) * 100 : null;
-
-  // The stop having moved above the sizing stop is the single most consequential
-  // fact about a live trade, and no price column states it. Say it outright.
   const stopMoved = stop0 != null && active != null && active > stop0 + 0.005;
   const heldDays = p.entry_date
     ? Math.max(0, Math.round((Date.now() - new Date(p.entry_date).getTime()) / 86_400_000))
     : null;
   const timeStopClose = heldDays != null
     && heldDays >= policy.exit_time_stop_days - 3
-    && (p.r_multiple_current ?? 0) < policy.exit_time_stop_min_r;
-
-  // REALISED-SO-FAR, COMPUTED HERE RATHER THAN LEFT INVISIBLE — 11-Aug-2026.
-  // unrealized_pnl (above) is deliberately only the gain on shares STILL
-  // held — correct by its own name, but a partial book locks in a real
-  // profit that then has nowhere to show on an open position's card until
-  // the WHOLE position eventually closes, which for a multi-week swing
-  // hold can be a long wait. PPLPHARMA booked 5 of 11 shares on 10-Aug for
-  // +10.57% and, until this, that gain was genuinely invisible on this
-  // card — only current_qty×unrealized on the remaining 6 shares showed.
-  // LONG-ONLY: this card has no direction field to read (OpenPosition
-  // does not carry one), matching the rest of this component, which is
-  // itself long-only throughout — not something this specific fix takes on.
+    && (r ?? 0) < policy.exit_time_stop_min_r;
   const hasPartial = (p.partial_booked_qty ?? 0) > 0 && p.partial_booked_price != null;
   const realizedPartialPnl = hasPartial
     ? (p.partial_booked_price! - entry) * p.partial_booked_qty!
     : 0;
+  const isIntraday = (p.framework ?? 'SWING').toUpperCase() === 'INTRADAY';
 
   return (
-    <div className={`border rounded-xl p-4 ${s.border} ${s.bg}`}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-start gap-3 flex-1 min-w-0">
-          <div className={`mt-1.5 h-2 w-2 rounded-full shrink-0 ${s.dot}`} />
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-bold">{p.symbol}</span>
+    <>
+      <tr className={`border-b border-border/20 cursor-pointer hover:bg-panel-hover ${s.bg}`} onClick={onToggle}>
+        <td className="py-2 pl-2 pr-1 w-3">
+          <span className={`inline-block h-2 w-2 rounded-full ${s.dot}`} title={level} />
+        </td>
+        <td className="py-2 pr-3">
+          {onSelect ? (
+            <button type="button" className="font-semibold hover:underline decoration-dotted underline-offset-2"
+              onClick={(e) => { e.stopPropagation(); onSelect(p.symbol); }}
+              title="View trade detail — edge/hurdle breakdown, factor snapshot">
+              {p.symbol}
+            </button>
+          ) : <span className="font-semibold">{p.symbol}</span>}
+        </td>
+        <td className="py-2 pr-3">
+          <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${isIntraday ? 'badge-intraday' : 'badge-swing'}`}>
+            {isIntraday ? 'Intraday' : 'Swing'}
+          </span>
+        </td>
+        <td className="py-2 pr-3 text-xs text-muted-foreground whitespace-nowrap">
+          {direction === 'SHORT' ? '▼ SHORT' : '▲ LONG'}
+        </td>
+        <td className="py-2 pr-3 text-xs text-muted-foreground">{p.strategy}</td>
+        <td className="py-2 pr-3 text-right font-mono text-xs">{p.current_qty ?? p.actual_qty ?? '—'}</td>
+        <td className="py-2 pr-3 text-right font-mono text-xs">₹{entry ? entry.toFixed(2) : '—'}</td>
+        <td className="py-2 pr-3 text-right font-mono text-xs">₹{p.current_price?.toFixed(2) ?? '—'}</td>
+        <td className={`py-2 pr-3 text-right font-mono text-xs font-medium ${pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
+          {pnl >= 0 ? '+' : ''}{formatCurrency(pnl)}
+        </td>
+        <td className={`py-2 pr-3 text-right font-mono text-xs ${(r ?? 0) >= 0 ? 'text-profit' : 'text-loss'}`}>
+          {r != null ? `${r >= 0 ? '+' : ''}${r.toFixed(2)}` : '—'}
+        </td>
+        <td className="py-2 pr-2 text-right font-mono text-xs whitespace-nowrap">
+          {active ? `₹${active.toFixed(2)}` : '—'}
+          {stopMoved && <span className="text-profit ml-1">↑</span>}
+        </td>
+        <td className="py-2 pr-2 w-4">
+          {expanded ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+        </td>
+      </tr>
+      {expanded && (
+        <tr className="border-b border-border/20 bg-panel/40">
+          <td colSpan={11} className="py-3 px-4">
+            <div className="flex items-center gap-2 flex-wrap mb-2">
               <span className="text-xs text-muted-foreground">{p.company_name}</span>
-              <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{p.strategy}</span>
-              {/* Mode first: everything else on this card means something
-                  different depending on whether the money is real. */}
               {(p.mode ?? 'LIVE').toUpperCase() === 'PAPER' && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 font-medium"
                   title="Simulated fill. Managed by the same exit engine and feeding the same learning loop — but no real money.">
                   PAPER
                 </span>
               )}
-              {(p.framework ?? 'SWING').toUpperCase() === 'INTRADAY' && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400"
-                  title="Managed by the intraday exit policy — setup target, minute-based time stop, invalidation check, square-off">
-                  INTRADAY{p.intraday_strategy ? ` · ${p.intraday_strategy}` : ''}
-                </span>
+              {isIntraday && p.intraday_strategy && (
+                <span className="text-[10px] text-muted-foreground">sub-engine {p.intraday_strategy}</span>
               )}
               {p.regime_at_entry && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted/60 text-muted-foreground"
@@ -168,105 +189,75 @@ function PositionCard({ p, policy }: { p: OpenPosition; policy: ExitPolicy }) {
                 </span>
               )}
             </div>
-            <div className={`text-xs mt-1 font-medium ${s.text}`}>{attentionReason(p, policy)}</div>
-          </div>
-        </div>
-        <div className="text-right shrink-0">
-          <div className={`font-bold text-lg font-mono ${pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
-            {pnl >= 0 ? '+' : ''}{formatCurrency(pnl)}
-          </div>
-          <div className={`text-sm font-mono ${pct >= 0 ? 'text-profit' : 'text-loss'}`}>
-            {pct >= 0 ? '+' : ''}{pct.toFixed(1)}%
-          </div>
-          {/* Unrealised is only the remaining shares — this is the other
-              half, and without it a booked profit is invisible until the
-              whole position eventually closes. */}
-          {hasPartial && (
-            <div className="text-[10px] text-muted-foreground font-mono mt-0.5"
-              title={`${p.partial_booked_qty} share(s) booked @ ₹${p.partial_booked_price!.toFixed(2)}`}>
-              +{formatCurrency(realizedPartialPnl)} booked
+            <div className={`text-xs mb-2 font-medium ${s.text}`}>{attentionReason(p, policy)}</div>
+
+            <RLadder
+              currentR={r}
+              mfePct={p.max_favorable_excursion}
+              maePct={p.max_adverse_excursion}
+              riskPct={riskPct}
+              rungs={rungsFor(policy)}
+              breakevenMoved={p.breakeven_moved}
+              trailActivated={p.trail_activated}
+              partialBooked={(p.partial_booked_qty ?? 0) > 0}
+            />
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3 pt-3 border-t border-border/20 text-xs">
+              <div>
+                <div className="text-muted-foreground">Stop distance</div>
+                <div className={`font-mono mt-0.5 ${slDist != null && slDist < 3 ? 'text-loss font-semibold' : ''}`}>
+                  {slDist != null ? `${slDist.toFixed(1)}%` : '—'}
+                </div>
+                {stopMoved && <div className="text-[10px] text-muted-foreground line-through">was ₹{stop0!.toFixed(2)}</div>}
+              </div>
+              <div>
+                <div className="text-muted-foreground">Target</div>
+                <div className="font-mono mt-0.5">
+                  {target ? `₹${target.toFixed(2)}` : '—'}
+                  {target && p.current_price && (
+                    <span className="text-muted-foreground ml-1">
+                      ({((target - p.current_price) / p.current_price * 100).toFixed(1)}%)
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">Held</div>
+                <div className="font-mono mt-0.5">{heldDays != null ? `${heldDays}d` : '—'}</div>
+              </div>
+              {hasPartial && (
+                <div>
+                  <div className="text-muted-foreground">Booked</div>
+                  <div className="font-mono mt-0.5 text-profit">
+                    {p.partial_booked_qty} @ ₹{p.partial_booked_price!.toFixed(2)}
+                    {' '}(+{formatCurrency(realizedPartialPnl)})
+                  </div>
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      </div>
 
-      <RLadder
-        currentR={p.r_multiple_current}
-        mfePct={p.max_favorable_excursion}
-        maePct={p.max_adverse_excursion}
-        riskPct={riskPct}
-        rungs={rungsFor(policy)}
-        breakevenMoved={p.breakeven_moved}
-        trailActivated={p.trail_activated}
-        partialBooked={(p.partial_booked_qty ?? 0) > 0}
-      />
-
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3 pt-3 border-t border-border/20 text-xs">
-        <div>
-          <div className="text-muted-foreground">Entry</div>
-          <div className="font-mono mt-0.5">
-            ₹{entry ? entry.toFixed(2) : '—'}
-            {p.current_qty != null && (
-              <span className="text-muted-foreground ml-1">×{p.current_qty}</span>
+            {timeStopClose && (
+              <div className="mt-2 flex items-center gap-1.5 text-xs text-yellow-400">
+                <Clock className="h-3 w-3" />
+                {heldDays}d held and under {policy.exit_time_stop_min_r}R — time stop fires at {policy.exit_time_stop_days}d
+              </div>
             )}
-          </div>
-        </div>
-        <div>
-          <div className="text-muted-foreground">CMP</div>
-          <div className="font-mono mt-0.5">₹{p.current_price?.toFixed(2) ?? '—'}</div>
-        </div>
-        <div>
-          <div className="text-muted-foreground">
-            Stop {stopMoved && <span className="text-profit">↑ moved</span>}
-          </div>
-          <div className={`font-mono mt-0.5 ${slDist != null && slDist < 3 ? 'text-loss font-semibold' : ''}`}>
-            {active ? `₹${active.toFixed(2)}` : '—'}
-            {slDist != null && <span className="text-muted-foreground ml-1">({slDist.toFixed(1)}%)</span>}
-          </div>
-          {stopMoved && (
-            <div className="text-[10px] text-muted-foreground line-through">₹{stop0!.toFixed(2)}</div>
-          )}
-        </div>
-        <div>
-          <div className="text-muted-foreground">Target</div>
-          <div className="font-mono mt-0.5">
-            {target ? `₹${target.toFixed(2)}` : '—'}
-            {target && p.current_price && (
-              <span className="text-muted-foreground ml-1">
-                ({((target - p.current_price) / p.current_price * 100).toFixed(1)}%)
-              </span>
+            {/* Only warn when the quantities genuinely disagree. reconcile_status can
+                be stale — it describes the last time drift was DETECTED, not the
+                current state — and a banner that says "Kite shows 15, book shows 15"
+                under the heading "mismatch" teaches you to ignore the banner. */}
+            {p.reconcile_status && p.reconcile_status !== 'MATCHED'
+              && p.kite_qty != null && p.kite_qty !== (p.current_qty ?? p.actual_qty) && (
+              <div className="mt-2 flex items-center gap-1.5 text-xs text-yellow-400">
+                <Bell className="h-3 w-3" />
+                Broker mismatch ({p.reconcile_status}) — Kite shows {p.kite_qty},
+                book shows {p.current_qty ?? p.actual_qty}
+              </div>
             )}
-          </div>
-        </div>
-      </div>
-
-      {timeStopClose && (
-        <div className="mt-2 flex items-center gap-1.5 text-xs text-yellow-400">
-          <Clock className="h-3 w-3" />
-          {heldDays}d held and under {policy.exit_time_stop_min_r}R — time stop fires at {policy.exit_time_stop_days}d
-        </div>
+          </td>
+        </tr>
       )}
-      {hasPartial && (
-        <div className="mt-2 flex items-center gap-1.5 text-xs text-profit">
-          <CheckCircle className="h-3 w-3" />
-          Booked {p.partial_booked_qty} @ ₹{p.partial_booked_price!.toFixed(2)}
-          {' '}({realizedPartialPnl >= 0 ? '+' : ''}{formatCurrency(realizedPartialPnl)}) —
-          {' '}{p.current_qty ?? p.actual_qty ?? 0} share(s) still open
-        </div>
-      )}
-      {/* Only warn when the quantities genuinely disagree. reconcile_status can
-          be stale — it describes the last time drift was DETECTED, not the
-          current state — and a banner that says "Kite shows 15, book shows 15"
-          under the heading "mismatch" teaches you to ignore the banner. */}
-      {p.reconcile_status && p.reconcile_status !== 'MATCHED'
-        && p.kite_qty != null && p.kite_qty !== (p.current_qty ?? p.actual_qty) && (
-        <div className="mt-2 flex items-center gap-1.5 text-xs text-yellow-400">
-          <Bell className="h-3 w-3" />
-          Broker mismatch ({p.reconcile_status}) — Kite shows {p.kite_qty},
-          book shows {p.current_qty ?? p.actual_qty}
-        </div>
-      )}
-    </div>
+    </>
   );
 }
 
@@ -310,7 +301,7 @@ function EquityCurve({ data }: { data: ClosedPosition[] }) {
 }
 
 // ─── Closed positions grouped by month ───────────────────────────────────
-function ClosedByMonth({ data }: { data: ClosedPosition[] }) {
+function ClosedByMonth({ data, onSelect }: { data: ClosedPosition[]; onSelect?: (id: number) => void }) {
   const groups: Record<string, { trades: ClosedPosition[]; pnl: number; wins: number }> = {};
   for (const p of [...data].sort((a, b) => (b.exit_date ?? '').localeCompare(a.exit_date ?? ''))) {
     const key = (p.exit_date ?? '').slice(0, 7);
@@ -375,7 +366,14 @@ function ClosedByMonth({ data }: { data: ClosedPosition[] }) {
                             <div className="flex items-center gap-1.5">
                               {pnl >= 0 ? <ArrowUpRight className="h-3 w-3 text-profit" /> : <ArrowDownRight className="h-3 w-3 text-loss" />}
                               <div>
-                                <div className="font-semibold">{p.symbol}</div>
+                                {onSelect ? (
+                                  <button type="button" className="font-semibold hover:underline decoration-dotted underline-offset-2"
+                                    onClick={() => onSelect(p.id)} title="View trade detail — edge/hurdle breakdown, factor snapshot">
+                                    {p.symbol}
+                                  </button>
+                                ) : (
+                                  <div className="font-semibold">{p.symbol}</div>
+                                )}
                                 <div className="text-muted-foreground">{p.sector}</div>
                               </div>
                             </div>
@@ -428,6 +426,9 @@ function ClosedByMonth({ data }: { data: ClosedPosition[] }) {
 export function PositionsTab() {
   const [open, setOpen] = useState<OpenPosition[]>([]);
   const [closed, setClosed] = useState<ClosedPosition[]>([]);
+  const [tradeDetail, setTradeDetail] = useState<TradeDetailTarget>(null);
+  const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
+  const [bookFilter, setBookFilter] = useState<'BOTH' | 'SWING' | 'INTRADAY'>('BOTH');
   const [policy, setPolicy] = useState<ExitPolicy>(FALLBACK_POLICY);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -470,7 +471,6 @@ export function PositionsTab() {
   const paperPos = open.filter(isPaper);
   const paperUnrealized = paperPos.reduce((s, p) => s + (p.unrealized_pnl ?? 0), 0);
   const totalUnrealized = livePos.reduce((s, p) => s + (p.unrealized_pnl ?? 0), 0);
-  const totalDeployed = livePos.reduce((s, p) => s + (p.current_value ?? 0), 0);
   const liveClosed = closed.filter((p) => (p.mode ?? 'LIVE').toUpperCase() !== 'PAPER');
   const paperClosed = closed.filter((p) => (p.mode ?? 'LIVE').toUpperCase() === 'PAPER');
   const totalRealized = liveClosed.reduce((s, p) => s + (p.realized_pnl ?? 0), 0);
@@ -483,18 +483,37 @@ export function PositionsTab() {
     ? paperR.reduce((s, p) => s + (p.r_multiple ?? 0), 0) / paperR.length : null;
   const errObj = error ? new Error(error) : null;
 
+  // ── Per-book split for the KPI tiles below ────────────────────────────
+  // The four tiles above pool both books into one number each — legitimate
+  // as a whole-account read, but with no framework label a reader (or an
+  // AI prompt built the same way) cannot tell whether "11 open" means 11
+  // swing, 11 intraday, or a mix. Same framework key the row badges and
+  // DailyBookSummary already use; computed from data already loaded above,
+  // no extra fetch.
+  const bookOf = (p: { framework?: string | null }) =>
+    (p.framework ?? 'SWING').toUpperCase() === 'INTRADAY' ? 'INTRADAY' : 'SWING';
+  const openSwingCount = open.filter((p) => bookOf(p) === 'SWING').length;
+  const openIntradayCount = open.length - openSwingCount;
+  const unrealizedSwing = livePos.filter((p) => bookOf(p) === 'SWING')
+    .reduce((s, p) => s + (p.unrealized_pnl ?? 0), 0);
+  const unrealizedIntraday = livePos.filter((p) => bookOf(p) === 'INTRADAY')
+    .reduce((s, p) => s + (p.unrealized_pnl ?? 0), 0);
+  const riskOf = (rows: OpenPosition[]) => rows.reduce((s, p) => {
+    const qty = p.current_qty ?? p.actual_qty ?? 0;
+    const stop = p.active_sl ?? p.planned_stop;
+    const px = p.current_price ?? p.entry_price;
+    if (!qty || !stop || !px) return s;
+    return s + Math.max(0, (px - stop) * qty);
+  }, 0);
+  const riskSwing = riskOf(open.filter((p) => bookOf(p) === 'SWING'));
+  const riskIntraday = riskOf(open.filter((p) => bookOf(p) === 'INTRADAY'));
+
   // ── Open risk ──────────────────────────────────────────────────────────
   // What the book actually loses if every stop fills at its current level.
   // This is the number that decides whether another position can be taken, and
   // it was nowhere on the dashboard. Positions whose stop is at or above entry
   // contribute nothing — that is the whole point of moving to breakeven.
-  const openRisk = open.reduce((s, p) => {
-    const qty  = p.current_qty ?? p.actual_qty ?? 0;
-    const stop = p.active_sl ?? p.planned_stop;
-    const px   = p.current_price ?? p.entry_price;
-    if (!qty || !stop || !px) return s;
-    return s + Math.max(0, (px - stop) * qty);
-  }, 0);
+  const openRisk = riskSwing + riskIntraday;
   const riskFree = open.filter((p) => p.breakeven_moved).length;
 
   // Realised R only over trades the current system actually produced. Averaging
@@ -504,6 +523,11 @@ export function PositionsTab() {
   const avgR = attributed.length
     ? attributed.reduce((s, p) => s + (p.r_multiple ?? 0), 0) / attributed.length
     : null;
+  const avgROf = (rows: typeof attributed) => rows.length
+    ? rows.reduce((s, p) => s + (p.r_multiple ?? 0), 0) / rows.length
+    : null;
+  const avgRSwing = avgROf(attributed.filter((p) => bookOf(p) === 'SWING'));
+  const avgRIntraday = avgROf(attributed.filter((p) => bookOf(p) === 'INTRADAY'));
 
   return (
     <div className="space-y-4">
@@ -531,7 +555,8 @@ export function PositionsTab() {
         ) : (
           <>
             <KPICard title="Open Positions" value={open.length.toString()}
-              description={needsAttention > 0 ? `${needsAttention} need attention` : 'All holding normally'}
+              description={`Swing ${openSwingCount} · Intraday ${openIntradayCount}`
+                + (needsAttention > 0 ? ` · ${needsAttention} need attention` : '')}
               icon={<TrendingUp className="h-4 w-4" />}
               change={needsAttention > 0
                 ? { value: `${needsAttention} need attention`, type: 'decrease' }
@@ -541,26 +566,26 @@ export function PositionsTab() {
               // Hardcoded lakhs rendered a ₹5,231 book as "₹0.0L". Capital is
               // now ₹20,000, so the compact formatter (which switches units by
               // magnitude) is the only one that stays readable at both scales.
-              description={totalDeployed > 0
-                ? `${(totalUnrealized / totalDeployed * 100).toFixed(1)}% on ${formatCurrency(totalDeployed, { compact: true })} deployed`
-                : 'No open value'}
+              // Split by book — this figure is LIVE swing blended with PAPER
+              // intraday, so an unlabeled total invites reading it as one
+              // account's real P&L.
+              description={`Swing ${formatCurrency(unrealizedSwing, { compact: true, showSign: true })}`
+                + ` · Intraday ${formatCurrency(unrealizedIntraday, { compact: true, showSign: true })}`}
               change={totalUnrealized !== 0 ? {
                 value: totalUnrealized > 0 ? 'Floating profit' : 'Floating loss',
                 type: totalUnrealized > 0 ? 'increase' : 'decrease',
               } : undefined} />
             <KPICard title="Open Risk" value={formatCurrency(openRisk)}
               icon={<AlertTriangle className="h-4 w-4" />}
-              description={openRisk > 0
-                ? `Loss if every stop fills · ${riskFree} risk-free`
-                : open.length > 0 ? 'Every stop is at or above entry' : 'Nothing at risk'}
+              description={`Swing ${formatCurrency(riskSwing, { compact: true })}`
+                + ` · Intraday ${formatCurrency(riskIntraday, { compact: true })}`}
               change={riskFree > 0
                 ? { value: `${riskFree}/${open.length} risk-free`, type: 'increase' }
                 : undefined} />
             <KPICard title="Avg R (attributed)"
               value={avgR != null ? `${avgR >= 0 ? '+' : ''}${avgR.toFixed(2)}R` : '—'}
-              description={avgR != null
-                ? `${attributed.length} signal-attributed closes`
-                : 'No attributed closes with a recorded stop yet'}
+              description={`Swing ${avgRSwing != null ? `${avgRSwing >= 0 ? '+' : ''}${avgRSwing.toFixed(2)}R` : '—'}`
+                + ` · Intraday ${avgRIntraday != null ? `${avgRIntraday >= 0 ? '+' : ''}${avgRIntraday.toFixed(2)}R` : '—'}`}
               icon={<Target className="h-4 w-4" />}
               change={avgR != null
                 ? { value: avgR > 0 ? 'Positive expectancy' : 'Negative expectancy',
@@ -625,16 +650,56 @@ export function PositionsTab() {
       {/* Open positions — attention priority order */}
       <Panel title="Open Positions"
         description={`Progress shown in R against the live exit policy — book ${policy.exit_partial_book_pct.toFixed(0)}% at ${policy.exit_partial_book_r}R, trail past ${policy.exit_trail_after_r}R, target ${policy.exit_target_r}R`}
-        dataSource="supabase" tableName="open_positions" isLoading={loading}>
-        <DataGuard data={sortedOpen} isLoading={loading} error={errObj}
+        dataSource="supabase" tableName="open_positions" isLoading={loading}
+        headerExtra={
+          <div className="flex items-center gap-1 mr-1">
+            {([['BOTH', 'Both books'], ['SWING', 'Swing only'], ['INTRADAY', 'Intraday only']] as const).map(([id, label]) => (
+              <button key={id} type="button" onClick={() => setBookFilter(id)}
+                className={`text-[10px] px-2 py-1 rounded-full border transition-colors ${
+                  bookFilter === id
+                    ? 'bg-primary/15 border-primary/40 text-foreground'
+                    : 'border-border/50 text-muted-foreground hover:text-foreground'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        }>
+        <DataGuard data={sortedOpen.filter((p) => bookFilter === 'BOTH' || bookOf(p) === bookFilter)} isLoading={loading} error={errObj}
           loadingContent={<SkeletonTable rows={3} cols={1} />}
           emptyTitle="No open positions"
           emptyDescription="Positions appear when your pipeline writes to open_positions.">
           {(data) => (
-            <div className="space-y-2">
-              {data.map((p) => <PositionCard key={p.symbol} p={p} policy={policy} />)}
+            <div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-muted-foreground text-left border-b border-border/40">
+                      <th className="py-1.5 w-3" />
+                      <th className="py-1.5 pr-3">Symbol</th>
+                      <th className="py-1.5 pr-3">Book</th>
+                      <th className="py-1.5 pr-3">Dir</th>
+                      <th className="py-1.5 pr-3">Strategy</th>
+                      <th className="py-1.5 pr-3 text-right">Qty</th>
+                      <th className="py-1.5 pr-3 text-right">Entry</th>
+                      <th className="py-1.5 pr-3 text-right">LTP</th>
+                      <th className="py-1.5 pr-3 text-right">P&amp;L</th>
+                      <th className="py-1.5 pr-3 text-right">R</th>
+                      <th className="py-1.5 pr-2 text-right">Stop</th>
+                      <th className="py-1.5 pr-2 w-4" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.map((p) => (
+                      <PositionRow key={p.symbol} p={p} policy={policy}
+                        onSelect={(symbol) => setTradeDetail({ kind: 'open', symbol })}
+                        expanded={expandedSymbol === p.symbol}
+                        onToggle={() => setExpandedSymbol(expandedSymbol === p.symbol ? null : p.symbol)} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
               {policy.source === 'defaults' && (
-                <div className="text-[10px] text-muted-foreground pt-1">
+                <div className="text-[10px] text-muted-foreground pt-2">
                   Exit thresholds could not be read from system_config — showing the
                   backend defaults. Rungs may not match a tuned policy.
                 </div>
@@ -659,9 +724,15 @@ export function PositionsTab() {
           loadingContent={<SkeletonTable rows={4} cols={1} />}
           emptyTitle="No closed trades"
           emptyDescription="Closed trades appear when your pipeline writes to closed_positions.">
-          {(data) => <ClosedByMonth data={data} />}
+          {(data) => (
+            <ClosedByMonth data={data}
+              onSelect={(id) => setTradeDetail({ kind: 'closed', id })} />
+          )}
         </DataGuard>
       </Panel>
+
+      <TradeDetailDialog target={tradeDetail}
+        onOpenChange={(o) => { if (!o) setTradeDetail(null); }} />
     </div>
   );
 }

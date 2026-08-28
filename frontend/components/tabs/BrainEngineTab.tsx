@@ -32,10 +32,10 @@ const PROPOSAL_TYPE_META: Record<string, { icon: React.ElementType; label: strin
 // ─── Status badge ─────────────────────────────────────────────────────────
 function StatusBadge({ status }: { status: string }) {
   const map: Record<string, string> = {
-    PENDING:     'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30',
-    APPROVED:    'bg-green-500/20 text-green-400 border border-green-500/30',
+    PENDING:     'bg-amber-500/20 text-amber-400 border border-amber-500/30',
+    APPROVED:    'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30',
     REJECTED:    'bg-red-500/20 text-red-400 border border-red-500/30',
-    APPLIED:     'bg-blue-500/20 text-blue-400 border border-blue-500/30',
+    APPLIED:     'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30',
     ROLLED_BACK: 'bg-purple-500/20 text-purple-400 border border-purple-500/30',
   };
   return (

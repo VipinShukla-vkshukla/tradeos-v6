@@ -35,6 +35,37 @@ export function getSupabaseWarning(): string | null {
   return null;
 }
 
+/**
+ * Decompose a swing `strategy` value into the real registered engine codes
+ * that produced it — CTL, SEC, MOM, etc., the rows in strategy_config.
+ *
+ * signal_log.strategy/closed_positions.strategy/open_positions.strategy is
+ * NOT one engine's code. screen_stocks.py writes it as `"+".join(sorted(
+ * engines))` — every engine that independently corroborated a candidate that
+ * day, e.g. "CTL+MOM+SEC" (see screen_stocks.py::run_sector_rotation and
+ * allocation/scoring.py::swing_family(), the backend's own authoritative
+ * decomposition, used to bucket combos for the live hurdle). Treating each
+ * distinct combo string as its own engine — what this file did before — is
+ * why the Engines screen showed ~23 "engines" instead of the real ~9: dozens
+ * of corroboration patterns each got their own card with no strategy_config
+ * row to source a label from, while the actual engines never got full credit
+ * for their detections (a CTL+MOM+SEC day counted once for the combo, not
+ * once each for CTL, MOM and SEC, all three of which genuinely fired).
+ *
+ * This mirrors swing_family()'s own paren-stripping (a legacy "CTL (Legacy)"
+ * annotation is metadata about when the row was labelled, not a different
+ * engine) but goes one level finer: swing_family() collapses everything down
+ * to a handful of scoring buckets (CONTINUATION/MOM/RVS/...) because a prior
+ * needs statistical mass; this screen's job is "how is each REGISTERED
+ * engine doing", so it stays at the single-engine grain.
+ */
+function swingBaseEngines(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  const stripParen = (p: string) => p.replace(/\s*\([^)]*\)\s*$/, '').trim();
+  const parts = raw.split('+').map(stripParen).filter(Boolean).map((p) => p.toUpperCase());
+  return [...new Set(parts)];
+}
+
 // ---------------------------------------------------------------------------
 // Generic query helper
 // ---------------------------------------------------------------------------
@@ -260,6 +291,144 @@ export const queries = {
     return [...(open.data ?? []), ...(closed.data ?? [])];
   },
 
+  // ── Trade Detail drill-down ──────────────────────────────────────────────
+  // Powers the click-through from any open/closed position row: the exact
+  // edge/hurdle this trade cleared (straight from allocation_decisions — no
+  // recomputation, so it can never drift from what the allocator actually
+  // decided) and how this trade's own entry-time factors compare to the
+  // engine's own resolved winners/losers. Swing and intraday read different
+  // raw material for the factor side (stock_data_daily indicators vs
+  // intraday_setups.meta) because that is genuinely what each side stores —
+  // there is no shared factor table, and inventing matching column names for
+  // both books would just be a second, fabricated schema.
+
+  getOpenPositionBySymbol: (symbol: string) =>
+    queryTable<OpenPosition>('open_positions', { filter: { symbol }, limit: 1 }),
+
+  getClosedPositionById: (id: number) =>
+    queryTable<ClosedPosition>('closed_positions', { filter: { id }, limit: 1 }),
+
+  /** The allocator's own verdict for this trade — same row getAllocationToday
+   *  reads, scoped to one symbol/day/framework so a single trade can be found
+   *  even outside today. Multiple rows are possible (a DEFER retried later in
+   *  the day); newest first — caller picks the TAKE row. */
+  getAllocationDecisionFor: (symbol: string, tradeDate: string, framework: string) =>
+    queryTable<{
+      id: number; decided_at: string; trade_date: string; symbol: string;
+      framework: string; product: string; verdict: string; reason: string | null;
+      entry: number | null; stop: number | null; target: number | null;
+      edge: number | null; e_r: number | null; cost_r: number | null;
+      hurdle: number | null;
+      hurdle_inputs: { cold_start?: boolean; pooled_across_buckets?: boolean;
+                       base?: number | null; n?: number } | null;
+      regime_bucket: string | null; prior_n: number | null; direction: string | null;
+    }>('allocation_decisions', {
+      filter: { symbol, trade_date: tradeDate, framework },
+      order: { column: 'decided_at', ascending: false },
+      limit: 25,
+    }),
+
+  /** stock_data_daily row for one symbol on the day it was entered — the
+   *  swing factor source (rsi_daily, vol_ratio, high_52w). Not the position's
+   *  OWN entry-time columns (there are none, aside from sector_rank_at_entry)
+   *  — the market's state that day, same table screen_stocks/compute_msl read. */
+  getEntryDayIndicators: (symbol: string, date: string) =>
+    queryTable<{
+      symbol: string; date: string; close: number | null;
+      rsi_daily: number | null; vol_ratio: number | null;
+      high_52w: number | null; low_52w: number | null;
+    }>('stock_data_daily', {
+      select: 'symbol,date,close,rsi_daily,vol_ratio,high_52w,low_52w',
+      filter: { symbol, date },
+      limit: 1,
+    }),
+
+  /**
+   * Winner vs loser mean of every SWING factor this codebase actually stores
+   * at entry, for one strategy. sector_rank_at_entry lives on the position
+   * row itself; rsi_daily/vol_ratio/high_52w need a join to stock_data_daily
+   * on (symbol, entry_date) that Supabase's client can't express as one
+   * filter, so this fetches both sides and joins in JS — the same two-fetch
+   * pattern getAllocationMatchablePositions above already uses.
+   */
+  getSwingEngineFactorProfile: async (strategy: string) => {
+    const closed = await queryTable<{
+      symbol: string; entry_date: string; realized_pnl: number | null;
+      sector_rank_at_entry: number | null; entry_price: number | null;
+    }>('closed_positions', {
+      select: 'symbol,entry_date,realized_pnl,sector_rank_at_entry,entry_price',
+      filter: { strategy, framework: 'SWING' },
+      limit: 500,
+    });
+    const rows = closed.data ?? [];
+    type Ind = { rsi_daily: number | null; vol_ratio: number | null; high_52w: number | null; close: number | null };
+    const indicators = new Map<string, Ind>();
+    if (!rows.length) return { winners: [] as typeof rows, losers: [] as typeof rows, indicators };
+
+    const symbols = [...new Set(rows.map((r) => r.symbol))];
+    const dates = [...rows.map((r) => r.entry_date)].sort();
+    const { data: indicatorRows } = await queryTable<Ind & { symbol: string; date: string }>(
+      'stock_data_daily', {
+        select: 'symbol,date,close,rsi_daily,vol_ratio,high_52w',
+        filter: { symbol: symbols, date: { gte: dates[0], lte: dates[dates.length - 1] } },
+        limit: 2000,
+      },
+    );
+    for (const r of indicatorRows ?? []) indicators.set(`${r.symbol}|${r.date}`, r);
+
+    return {
+      winners: rows.filter((r) => (r.realized_pnl ?? 0) > 0),
+      losers: rows.filter((r) => (r.realized_pnl ?? 0) <= 0),
+      indicators,
+    };
+  },
+
+  /**
+   * Same question for INTRADAY, reusing tools/feature_edge_study.py's own
+   * population definition exactly (cost_verdict TAKEN, outcome resolved) so
+   * this can never disagree with what that tool already found. volume_ratio
+   * and atr_pct_daily live in the meta JSON column; confidence is a
+   * top-level column — matching feature_edge_study.NUMERIC_FEATURES exactly
+   * rather than inventing a different factor set for the dashboard.
+   */
+  getIntradayEngineFactorProfile: async (strategy: string) => {
+    const { data } = await queryTable<{
+      id: number; symbol: string; trade_date: string; confidence: number | null;
+      outcome: string | null; meta: Record<string, unknown> | string | null;
+    }>('intraday_setups', {
+      select: 'id,symbol,trade_date,confidence,outcome,meta',
+      filter: { strategy, cost_verdict: 'TAKEN' },
+      limit: 500,
+    });
+    const resolved = (data ?? []).filter((r) => r.outcome === 'TARGET' || r.outcome === 'STOP');
+    const withMeta = resolved.map((r) => ({
+      ...r,
+      meta: (typeof r.meta === 'string'
+        ? (() => { try { return JSON.parse(r.meta as string); } catch { return {}; } })()
+        : r.meta) as Record<string, unknown>,
+    }));
+    return {
+      winners: withMeta.filter((r) => r.outcome === 'TARGET'),
+      losers: withMeta.filter((r) => r.outcome === 'STOP'),
+    };
+  },
+
+  /** Best-effort match back to the detection row that produced an intraday
+   *  position — no FK exists (intraday has no signal_log row to key off, the
+   *  same reason closed_positions.signal_id is always null for it), so this
+   *  matches on (symbol, trade_date, strategy). Ambiguous only if the same
+   *  engine fired twice on one symbol in one day, which same-day dedup
+   *  (_setup_is_new) already prevents. */
+  getMatchingIntradaySetup: (symbol: string, tradeDate: string, strategy: string) =>
+    queryTable<{
+      id: number; symbol: string; trade_date: string; confidence: number | null;
+      outcome: string | null; meta: Record<string, unknown> | string | null;
+    }>('intraday_setups', {
+      select: 'id,symbol,trade_date,confidence,outcome,meta',
+      filter: { symbol, trade_date: tradeDate, strategy, cost_verdict: 'TAKEN' },
+      limit: 5,
+    }),
+
   /** Storage headroom, from the view tools/health reads. Red above 80% is a
    *  FAIL there, not a warning — the dashboard uses the same threshold.
    *  Limit 200 rather than a display-sized number: tools.health pages through
@@ -267,6 +436,166 @@ export const queries = {
    *  would silently under-report the true total the moment the schema grows
    *  past that N — the exact silent-undercount failure this project keeps
    *  finding elsewhere. ~51 tables exist today; 200 is headroom, not a cap. */
+
+  /**
+   * Today's funnel, both books — how many names were even looked at, how
+   * many produced a ranked plan/detected setup, how many were actually
+   * entered. Uses queryTable's exact count (Supabase's `count: 'exact'`
+   * head) rather than fetching rows, so a wide day doesn't pull real data
+   * just to count it. `signal_output_daily`/`master_shortlist`/
+   * `intraday_universe`/`intraday_setups` — no invented aggregate table.
+   */
+  /**
+   * The full detected → taken path, both books — backs "Today's Signal
+   * Funnel" on Overview. `planDate` is the evening pipeline's plan date
+   * (signal_output_daily/master_shortlist are written the evening BEFORE
+   * the session they're for); `tradeDate` is today, what the live daemon
+   * stamps on allocation_decisions/open_positions/intraday_setups.
+   *
+   * Swing stops at 3 real stages (Watched → Allocator-scored → Taken), not
+   * the mockup's 4 — the backend has no persisted "entered the buy zone"
+   * count independent of the allocator call itself; evaluate_candidates
+   * decides that in memory every 15s and never writes a row for it.
+   * Inventing a number for a box the schema can't back is the exact
+   * silent-default failure CLAUDE.md warns about, so the box is dropped
+   * rather than guessed.
+   *
+   * "Allocator-scored" reads the SAME 500-row recent-first window
+   * getAllocationToday() uses for the Allocator tab's own live hurdle —
+   * not a fresh unbounded query. allocation_decisions gets a new row every
+   * ~15s per live candidate (2,700+ swing rows on an ordinary session), so
+   * counting distinct symbols over the FULL day would mean fetching a
+   * table that grows all session long, on every Overview load. Reusing the
+   * capped window trades a small undercount (~15-20%, confirmed against a
+   * full-table COUNT DISTINCT) for a bounded, already-employed query
+   * rather than adding a second unbounded fetch pattern.
+   *
+   * Intraday's 5 stages ARE all real: intraday_setups.cost_verdict records
+   * the exact gate a detection stopped at (BLOCKED_STRUCTURE/BLOCKED_EVENT
+   * → VETOED_AI → BELOW_CONVICTION → TAKEN/REJECTED_COST, in that order —
+   * see engine.py's evaluate_intraday_setups), so each stage is a real
+   * subtraction, not an estimate.
+   */
+  getSignalFunnelDetail: async (planDate: string, tradeDate: string) => {
+    const head = (table: string, filter: Record<string, unknown>) =>
+      queryTable(table, { select: 'symbol', filter, limit: 1 }).then((r) => r.count ?? 0);
+
+    const [watched, openSwing, closedSwing, scanned, setupsRes, allocRes] = await Promise.all([
+      head('master_shortlist', { date: planDate }),
+      head('open_positions', { entry_date: tradeDate, framework: 'SWING' }),
+      head('closed_positions', { entry_date: tradeDate, framework: 'SWING' }),
+      head('intraday_universe', { trade_date: tradeDate }),
+      queryTable<{ cost_verdict: string | null }>('intraday_setups', {
+        select: 'cost_verdict', filter: { trade_date: tradeDate }, limit: 2000,
+      }),
+      queryTable<{ symbol: string; framework: string; hurdle: number | null; decided_at: string }>(
+        'allocation_decisions', {
+          select: 'symbol,framework,hurdle,decided_at', filter: { trade_date: tradeDate },
+          order: { column: 'decided_at', ascending: false }, limit: 500,
+        },
+      ),
+    ]);
+
+    const setupRows = setupsRes.data ?? [];
+    const gateBlocked = setupRows.filter((r) => r.cost_verdict === 'BLOCKED_STRUCTURE' || r.cost_verdict === 'BLOCKED_EVENT').length;
+    const vetoedAi = setupRows.filter((r) => r.cost_verdict === 'VETOED_AI').length;
+    const belowConviction = setupRows.filter((r) => r.cost_verdict === 'BELOW_CONVICTION').length;
+    const taken = setupRows.filter((r) => r.cost_verdict === 'TAKEN').length;
+    const detected = setupRows.length;
+    const aiCleared = Math.max(0, detected - gateBlocked - vetoedAi);
+    const convictionFloor = Math.max(0, aiCleared - belowConviction);
+
+    const allocRows = allocRes.data ?? [];
+    const swingSymbols = new Set(allocRows.filter((r) => r.framework === 'SWING').map((r) => r.symbol));
+    const bars: Record<string, number | null> = {};
+    for (const r of allocRows) if (!(r.framework in bars)) bars[r.framework] = r.hurdle;
+
+    return {
+      swing: { watched, scored: swingSymbols.size, taken: openSwing + closedSwing, bar: bars.SWING ?? null },
+      intraday: { scanned, detected, aiCleared, convictionFloor, taken, bar: bars.INTRADAY ?? null },
+    };
+  },
+
+  /** Engine registry — real label/description/lifecycle per engine, both
+   *  books. This is what backs an engine card's "conditions" text: it's
+   *  transcribed from the actual declarative gates (migration 006), not
+   *  copy invented for a screen. */
+  getStrategyConfig: () =>
+    queryTable<{ strategy: string; label: string | null; description: string | null; lifecycle: string | null; engine_type: string | null }>(
+      'strategy_config', { select: 'strategy,label,description,lifecycle,engine_type' },
+    ),
+  getIntradayStrategyConfig: () =>
+    queryTable<{ strategy: string; label: string | null; description: string | null; lifecycle: string | null; phases: string | null }>(
+      'intraday_strategy_config', { select: 'strategy,label,description,lifecycle,phases' },
+    ),
+
+  /**
+   * Engine grid stats, both books — setups detected, taken, hit rate, avg
+   * net%, and a resolved-outcome sequence for the sparkline (win/loss per
+   * resolved trade, chronological). Bulk-fetched and grouped client-side —
+   * 19 engines × per-engine queries would be dozens of round trips; this is
+   * 3 queries total regardless of how many engines exist. Swing "setups" is
+   * signal_log (every signal the evening pipeline produced, taken or not);
+   * intraday "setups" is intraday_setups (every detection).
+   *
+   * Every row is attributed to EVERY engine named in its (possibly combo)
+   * strategy string via swingBaseEngines() — see that function's docstring.
+   * A "CTL+MOM+SEC" close counts once for CTL, once for MOM and once for
+   * SEC, full credit each, not a fraction split three ways: all three
+   * engines genuinely fired independently that day (screen_stocks.py scores
+   * each one before joining the string), so each earns the whole outcome as
+   * its own evidence — the same attribution screen_stocks.py's own
+   * engines_list comment describes for forward-return measurement.
+   */
+  getSwingEngineGridStats: async () => {
+    const [signals, closed, open] = await Promise.all([
+      queryTable<{ strategy: string }>('signal_log', { select: 'strategy', limit: 5000 }),
+      queryTable<{ strategy: string; realized_pnl: number | null; pnl_pct: number | null; exit_date: string | null }>(
+        'closed_positions', { select: 'strategy,realized_pnl,pnl_pct,exit_date', filter: { framework: 'SWING' }, order: { column: 'exit_date', ascending: true }, limit: 2000 },
+      ),
+      queryTable<{ strategy: string }>('open_positions', { select: 'strategy', filter: { framework: 'SWING' }, limit: 500 }),
+    ]);
+    const setups = new Map<string, number>();
+    for (const r of signals.data ?? []) {
+      for (const code of swingBaseEngines(r.strategy)) setups.set(code, (setups.get(code) ?? 0) + 1);
+    }
+    const takenOpen = new Map<string, number>();
+    for (const r of open.data ?? []) {
+      for (const code of swingBaseEngines(r.strategy)) takenOpen.set(code, (takenOpen.get(code) ?? 0) + 1);
+    }
+    const byStrategy = new Map<string, { realized_pnl: number | null; pnl_pct: number | null; exit_date: string | null }[]>();
+    for (const r of closed.data ?? []) {
+      for (const code of swingBaseEngines(r.strategy)) {
+        if (!byStrategy.has(code)) byStrategy.set(code, []);
+        byStrategy.get(code)!.push(r);
+      }
+    }
+    return { setups, takenOpen, closedByStrategy: byStrategy };
+  },
+
+  getIntradayEngineGridStats: async () => {
+    const { data } = await queryTable<{
+      strategy: string; cost_verdict: string | null; outcome: string | null;
+      outcome_pct: number | null; trade_date: string;
+    }>('intraday_setups', {
+      select: 'strategy,cost_verdict,outcome,outcome_pct,trade_date',
+      order: { column: 'trade_date', ascending: true },
+      limit: 8000,
+    });
+    const rows = data ?? [];
+    const setups = new Map<string, number>();
+    const takenByStrategy = new Map<string, typeof rows>();
+    for (const r of rows) {
+      if (!r.strategy) continue;
+      setups.set(r.strategy, (setups.get(r.strategy) ?? 0) + 1);
+      if (r.cost_verdict === 'TAKEN') {
+        if (!takenByStrategy.has(r.strategy)) takenByStrategy.set(r.strategy, []);
+        takenByStrategy.get(r.strategy)!.push(r);
+      }
+    }
+    return { setups, takenByStrategy };
+  },
+
   getStorageUsage: () =>
     queryTable<{
       table_name: string; total_size: string; total_bytes: number;
@@ -338,9 +667,19 @@ export const queries = {
   // everything and filters client-side; kept the same pattern rather than
   // inventing a server-side aggregate this codebase doesn't otherwise use).
 
-  /** Open (ACTIVE) positions for one book — SWING or INTRADAY. */
-  getOpenPositionsByFramework: (framework: 'SWING' | 'INTRADAY') =>
+  /**
+   * Open (ACTIVE) positions for one book — SWING or INTRADAY.
+   *
+   * `select` defaults to every column (unchanged for every existing caller —
+   * PositionsTab's table+detail dialog genuinely reads most of them). Pass a
+   * narrow column list from a caller that only needs a handful — see
+   * DailyBookSummary, which used to pull the full ~50-column row on a 60s
+   * timer purely to sum five numeric fields. Confirmed against a day of real
+   * edge_logs traffic that this was a meaningful chunk of frontend egress.
+   */
+  getOpenPositionsByFramework: (framework: 'SWING' | 'INTRADAY', select?: string) =>
     queryTable<OpenPosition>('open_positions', {
+      select,
       filter: { framework, status: 'ACTIVE' },
       order: { column: 'entry_date', ascending: false },
     }),
@@ -351,9 +690,12 @@ export const queries = {
    * input, not a table to render, so it needs the whole history rather than
    * a display page. 2000 is a generous ceiling for how young this system's
    * trade history is; revisit if it's ever actually hit.
+   *
+   * `select` — see getOpenPositionsByFramework's docstring, same reasoning.
    */
-  getAllClosedPositionsByFramework: (framework: 'SWING' | 'INTRADAY') =>
+  getAllClosedPositionsByFramework: (framework: 'SWING' | 'INTRADAY', select?: string) =>
     queryTable<ClosedPosition>('closed_positions', {
+      select,
       filter: { framework },
       order: { column: 'exit_date', ascending: false },
       limit: 2000,
@@ -485,9 +827,22 @@ export const queries = {
       order: { column: 'created_at', ascending: false },
     }),
 
-  // system_config  ← NOT 'config'
-  getSystemConfig: () =>
+  /**
+   * system_config  ← NOT 'config'
+   *
+   * ~600 rows, `select=*` on every one when `keys` is omitted — real cost
+   * for a caller that only needs a handful. Confirmed against a day of
+   * edge_logs: this exact `select=*&order=key.asc` shape was the single
+   * largest frontend egress contributor, because DailyBookSummary called it
+   * on a 60s timer just to read swing_capital/intraday_capital and two
+   * daily-cap keys. Pass `keys` and only `key,value` for those rows comes
+   * back — DataManagementTab's config browser is the one legitimate caller
+   * of the unfiltered form, since showing the whole table is its job.
+   */
+  getSystemConfig: (keys?: string[]) =>
     queryTable<ConfigEntry>('system_config', {
+      select: keys ? 'key,value' : undefined,
+      filter: keys ? { key: keys } : undefined,
       order: { column: 'key', ascending: true },
     }),
 

@@ -32,7 +32,7 @@
  * running at all.
  */
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { Fragment, useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Scale, TrendingUp, TrendingDown, Minus, HardDrive, ListChecks, AlertTriangle,
 } from 'lucide-react';
@@ -87,6 +87,8 @@ export function AllocatorTab() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [lastLoad, setLastLoad] = useState<string>('');
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [bookFilter, setBookFilter] = useState<'BOTH' | 'SWING' | 'INTRADAY'>('BOTH');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -167,6 +169,23 @@ export function AllocatorTab() {
     return byFw;
   }, [today]);
 
+  // ── Regime buckets — STRONG/WEAK, each book's bar and whether the bucket
+  // has cleared the 40-sample floor. Read from the same rows the ledger
+  // already fetched (hurdle_inputs.n / cold_start are recorded per row), one
+  // representative row per (bucket, framework) — same pattern as hurdles/
+  // coldStart above, just keyed on bucket too.
+  const regimeBuckets = useMemo(() => {
+    const seen = new Map<string, { n: number | null; coldStart: boolean; bars: Record<string, number | null> }>();
+    for (const r of today) {
+      const bucket = r.regime_bucket ?? 'UNBUCKETED';
+      if (!seen.has(bucket)) seen.set(bucket, { n: null, coldStart: false, bars: {} });
+      const b = seen.get(bucket)!;
+      if (!(r.framework in b.bars)) b.bars[r.framework] = r.hurdle;
+      if (b.n === null && r.hurdle_inputs?.n != null) { b.n = r.hurdle_inputs.n; b.coldStart = Boolean(r.hurdle_inputs.cold_start); }
+    }
+    return [...seen.entries()].map(([bucket, v]) => ({ bucket, ...v }));
+  }, [today]);
+
   // ── Storage gauge ─────────────────────────────────────────────────────────
   // Summed across EVERY table the query returned (see the 200-row limit note
   // in lib/supabase.ts) — a "top N" sum would silently under-report the true
@@ -190,6 +209,16 @@ export function AllocatorTab() {
           <AlertTriangle className="h-3.5 w-3.5" />{err}
         </div>
       )}
+
+      <div className="flex gap-2">
+        {([['BOTH', 'Both books'], ['SWING', 'Swing only'], ['INTRADAY', 'Intraday only']] as const).map(([id, label]) => (
+          <button key={id} onClick={() => setBookFilter(id)}
+            className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+              bookFilter === id ? 'badge-swing' : 'border-border text-muted-foreground hover:text-foreground'}`}>
+            {label}
+          </button>
+        ))}
+      </div>
 
       {/* ── KPI strip: shadow comparison reduced to one number, plus context ── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -222,6 +251,48 @@ export function AllocatorTab() {
         />
       </div>
 
+      {/* ── Regime buckets — the bar is segmented, a bucket needs 40
+          prior-day samples before it stops being a cold start ──────────── */}
+      {regimeBuckets.length > 0 && (
+        <Panel title="Regime buckets" description="the bar is segmented STRONG/WEAK — a bucket needs 40 prior-day samples before it stops being a cold start"
+          dataSource="supabase" tableName="allocation_decisions" isLoading={loading}>
+          <div className="flex divide-x divide-border">
+            {regimeBuckets.map((b) => {
+              const active = (b.n ?? 0) >= 40 && !b.coldStart;
+              return (
+                <div key={b.bucket} className="flex-1 px-4 first:pl-0 last:pr-0">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-bold">{b.bucket}</span>
+                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase ${
+                      active ? 'bg-emerald-500/15 text-emerald-400' : 'bg-muted text-muted-foreground'}`}>
+                      {active ? `Active — n≥40` : `Cold start — n=${b.n ?? 0}`}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-muted-foreground mt-1">
+                    n = {b.n ?? 0} samples, prior trading days only
+                  </div>
+                  <div className="flex gap-4 mt-2.5">
+                    {(['SWING', 'INTRADAY'] as const).map((fw) => (
+                      <div key={fw} className="flex-1">
+                        <div className="text-[10px] text-muted-foreground">{fw === 'SWING' ? 'Swing bar' : 'Intraday bar'}</div>
+                        <div className={`font-mono text-[15px] font-bold mt-0.5 ${b.bars[fw] == null ? 'text-muted-foreground' : ''}`}>
+                          {fw in b.bars ? (b.bars[fw] != null ? b.bars[fw]!.toFixed(4) : 'permissive') : '—'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="text-[10.5px] text-muted-foreground mt-2 leading-relaxed">
+                    {active
+                      ? "Enough history to price its own percentile — the bar reflects this regime's own arrivals, not the pooled book."
+                      : '"No opinion" stays distinct from "measured bad" — a cold-start bucket is permissive by design, not zero.'}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Panel>
+      )}
+
       {/* ── View 1 + 2: today's ledger, verdict against the live hurdle ──── */}
       <Panel
         title="Today's allocation ledger"
@@ -244,7 +315,7 @@ export function AllocatorTab() {
           </div>
         )}
         <DataGuard
-          data={ledger} isLoading={loading}
+          data={ledger.filter((r) => bookFilter === 'BOTH' || r.framework === bookFilter)} isLoading={loading}
           loadingContent={<SkeletonTable rows={6} cols={7} />}
           emptyDescription="No proposals scored yet today — the allocator writes on the daemon's 300s flush."
         >
@@ -265,30 +336,77 @@ export function AllocatorTab() {
                 </thead>
                 <tbody>
                   {rows.map((r) => (
-                    <tr key={r.id} className="border-b border-border/20 last:border-0">
-                      <td className="py-1.5 pr-3 font-medium">{r.symbol}</td>
-                      <td className="py-1.5 pr-3 text-muted-foreground">{r.framework}/{r.product}</td>
-                      <td className="py-1.5 pr-3 text-muted-foreground">{r.source ?? '—'}</td>
-                      <td className="py-1.5 pr-3">
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${VERDICT_TONE[r.verdict] ?? ''}`}>
-                          {r.verdict}
-                        </span>
-                        {r.shadow && <span className="ml-1 text-[9px] text-muted-foreground">shadow</span>}
-                      </td>
-                      <td className={`py-1.5 pr-3 text-right font-mono tabular-nums ${
-                        (r.edge ?? 0) > 0 ? 'text-profit' : (r.edge ?? 0) < 0 ? 'text-loss' : ''}`}>
-                        {pct(r.edge, 4)}
-                      </td>
-                      <td className="py-1.5 pr-3 text-right font-mono tabular-nums text-muted-foreground">
-                        {pct(r.hurdle, 4)}
-                      </td>
-                      <td className="py-1.5 pr-3 text-right font-mono tabular-nums text-muted-foreground">
-                        {r.prior_n ?? '—'}{r.prior_below_floor && <span className="text-amber-500"> ⚠</span>}
-                      </td>
-                      <td className="py-1.5 text-muted-foreground max-w-[36ch] truncate" title={r.reason ?? ''}>
-                        {r.reason ?? '—'}
-                      </td>
-                    </tr>
+                    <Fragment key={r.id}>
+                      <tr className="border-b border-border/20 last:border-0 cursor-pointer hover:bg-panel-hover"
+                        onClick={() => setExpandedId(expandedId === r.id ? null : r.id)}
+                        title="Click to see how this edge and hurdle were built">
+                        <td className="py-1.5 pr-3 font-medium">{r.symbol}</td>
+                        <td className="py-1.5 pr-3 text-muted-foreground">{r.framework}/{r.product}</td>
+                        <td className="py-1.5 pr-3 text-muted-foreground">{r.source ?? '—'}</td>
+                        <td className="py-1.5 pr-3">
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${VERDICT_TONE[r.verdict] ?? ''}`}>
+                            {r.verdict}
+                          </span>
+                          {r.shadow && <span className="ml-1 text-[9px] text-muted-foreground">shadow</span>}
+                        </td>
+                        <td className={`py-1.5 pr-3 text-right font-mono tabular-nums ${
+                          (r.edge ?? 0) > 0 ? 'text-profit' : (r.edge ?? 0) < 0 ? 'text-loss' : ''}`}>
+                          {pct(r.edge, 4)}
+                        </td>
+                        <td className="py-1.5 pr-3 text-right font-mono tabular-nums text-muted-foreground">
+                          {pct(r.hurdle, 4)}
+                        </td>
+                        <td className="py-1.5 pr-3 text-right font-mono tabular-nums text-muted-foreground">
+                          {r.prior_n ?? '—'}{r.prior_below_floor && <span className="text-amber-500"> ⚠</span>}
+                        </td>
+                        <td className="py-1.5 text-muted-foreground max-w-[36ch] truncate" title={r.reason ?? ''}>
+                          {r.reason ?? '—'}
+                        </td>
+                      </tr>
+                      {expandedId === r.id && (
+                        <tr className="border-b border-border/20 bg-panel/40">
+                          <td colSpan={8} className="py-3 px-3">
+                            <div className="grid grid-cols-2 gap-4 text-xs">
+                              <div>
+                                <div className="text-muted-foreground mb-1">Edge — allocation/scoring.py::score()</div>
+                                <div className="font-mono flex items-center gap-2 flex-wrap">
+                                  <span title="Expected R before cost, from this engine's prior">{pct(r.e_r, 4)}</span>
+                                  <span className="text-muted-foreground">−</span>
+                                  <span title="Round-trip cost in R">{pct(r.cost_r, 4)}</span>
+                                  <span className="text-muted-foreground">=</span>
+                                  <span className={(r.edge ?? 0) >= 0 ? 'text-profit font-semibold' : 'text-loss font-semibold'}>
+                                    {pct(r.edge, 4)}
+                                  </span>
+                                </div>
+                                <div className="text-[10px] text-muted-foreground mt-1">
+                                  prior mean R (e_r) minus cost R. The AI advisor&apos;s PREFER/AVOID delta is a separate
+                                  gate on conviction, not part of this number.
+                                </div>
+                              </div>
+                              <div>
+                                <div className="text-muted-foreground mb-1">Hurdle — allocation/hurdle.py::hurdle()</div>
+                                {r.hurdle_inputs?.cold_start ? (
+                                  <div className="font-mono">permissive — cold start, no bucket history yet</div>
+                                ) : r.hurdle_inputs?.base != null ? (
+                                  <div className="font-mono flex items-center gap-2 flex-wrap">
+                                    <span title="Percentile base for this regime bucket">{pct(r.hurdle_inputs.base, 4)}</span>
+                                    <span className="text-muted-foreground">× time/scarcity</span>
+                                    <span className="text-muted-foreground">=</span>
+                                    <span className="font-semibold">{pct(r.hurdle, 4)}</span>
+                                  </div>
+                                ) : (
+                                  <div className="font-mono text-muted-foreground">no slots left — bar is infinite</div>
+                                )}
+                                <div className="text-[10px] text-muted-foreground mt-1">
+                                  {r.regime_bucket ?? 'unbucketed'} bucket, n={r.hurdle_inputs?.n ?? '—'}. Both
+                                  multipliers are ≥1.0, so the bar can only sit at or above its base within a session.
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>

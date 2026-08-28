@@ -2,9 +2,6 @@
 
 import { useEffect, useCallback, type ReactNode } from 'react'
 import { useLayoutStore } from '@/store/layoutStore'
-import { useThemeStore } from '@/store/themeStore'
-import { useViewStore } from '@/store/viewStore'
-import { THEME_PRESETS } from '@/types/theme'
 
 type ShortcutHandler = () => void
 
@@ -18,34 +15,20 @@ interface Shortcut {
   description: string
 }
 
-// Get preset IDs for cycling
-const PRESET_IDS = THEME_PRESETS.map(p => p.id)
-
 const SHORTCUTS: Shortcut[] = [
-  // Navigation shortcuts
-  { key: '1', meta: true, handler: () => useLayoutStore.getState().setActiveTab('performance'), description: 'Go to Performance' },
-  { key: '2', meta: true, handler: () => useLayoutStore.getState().setActiveTab('positions'), description: 'Go to Positions' },
-  { key: '3', meta: true, handler: () => useLayoutStore.getState().setActiveTab('ai-intelligence'), description: 'Go to AI Intelligence' },
-  { key: '4', meta: true, handler: () => useLayoutStore.getState().setActiveTab('brain-engine'), description: 'Go to Brain Engine' },
-  { key: '5', meta: true, handler: () => useLayoutStore.getState().setActiveTab('data-management'), description: 'Go to Data Management' },
-  
-  // Action shortcuts
-  { key: 'n', meta: true, shift: true, handler: () => useViewStore.getState().openWizard(), description: 'Create new view' },
-  { key: 'b', meta: true, handler: () => useLayoutStore.getState().setChartBuilderOpen(true), description: 'Open Chart Builder' },
+  { key: '1', meta: true, handler: () => useLayoutStore.getState().setActiveTab('overview'), description: 'Go to Overview' },
+  { key: '2', meta: true, handler: () => useLayoutStore.getState().setActiveTab('positions'), description: 'Go to Positions & P&L' },
+  { key: '3', meta: true, handler: () => useLayoutStore.getState().setActiveTab('intraday'), description: 'Go to Intraday' },
+  { key: '4', meta: true, handler: () => useLayoutStore.getState().setActiveTab('performance'), description: 'Go to Engines' },
+  { key: '5', meta: true, handler: () => useLayoutStore.getState().setActiveTab('allocator'), description: 'Go to Allocator' },
+  { key: '6', meta: true, handler: () => useLayoutStore.getState().setActiveTab('brain-engine'), description: 'Go to Brain Engine' },
+  { key: '7', meta: true, handler: () => useLayoutStore.getState().setActiveTab('ai-intelligence'), description: 'Go to AI Intelligence' },
+  { key: '8', meta: true, handler: () => useLayoutStore.getState().setActiveTab('data-management'), description: 'Go to Data Management' },
   { key: 'r', meta: true, shift: true, handler: () => window.location.reload(), description: 'Refresh all data' },
-  
-  // Theme presets - cycle through available themes
-  { key: '`', meta: true, handler: () => {
-    const state = useThemeStore.getState()
-    const currentIndex = PRESET_IDS.indexOf(state.currentPresetId)
-    const nextIndex = (currentIndex + 1) % PRESET_IDS.length
-    state.setPreset(PRESET_IDS[nextIndex])
-  }, description: 'Cycle themes' },
 ]
 
 export function useKeyboardShortcuts() {
   const handleKeyDown = useCallback((event: KeyboardEvent) => {
-    // Don't trigger shortcuts when typing in inputs
     if (
       event.target instanceof HTMLInputElement ||
       event.target instanceof HTMLTextAreaElement ||
