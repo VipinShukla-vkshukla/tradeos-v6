@@ -8,9 +8,10 @@
  * that needs the entry zone, the stop, the target and where price sits between
  * them. Those columns exist on signal_output_daily and nothing rendered them.
  *
- * Rows are ordered by the verdict, not the score, because a TIER_1 name whose
- * price has run 6% past its entry zone is less actionable than a TIER_3 sitting
- * inside its zone — and sorting by score buries exactly that.
+ * Rows are ordered by the verdict, not the score, because a high-scoring name
+ * whose price has run 6% past its entry zone is less actionable than a
+ * lower-scoring one sitting inside its zone — and sorting by score buries
+ * exactly that.
  */
 
 import { useMemo, useState } from 'react';
@@ -82,9 +83,9 @@ export function TradePlanTable({ rows, date }: { rows: Signal[]; date: string | 
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-border/30 bg-panel-hover/50">
-              {['Symbol', 'Tier', 'Verdict', 'Price vs entry zone', 'CMP', 'Buy below', 'Stop', 'Target', 'Risk', 'R:R here'].map((h) => (
+              {['Symbol', 'Verdict', 'Price vs entry zone', 'CMP', 'Buy below', 'Stop', 'Target', 'Risk', 'R:R here'].map((h) => (
                 <th key={h} className={`py-2 px-3 font-medium text-muted-foreground whitespace-nowrap ${
-                  ['Symbol', 'Tier', 'Verdict', 'Price vs entry zone'].includes(h) ? 'text-left' : 'text-right'}`}>
+                  ['Symbol', 'Verdict', 'Price vs entry zone'].includes(h) ? 'text-left' : 'text-right'}`}>
                   {h}
                 </th>
               ))}
@@ -98,9 +99,6 @@ export function TradePlanTable({ rows, date }: { rows: Signal[]; date: string | 
                   <td className="py-2 px-3">
                     <div className="font-semibold">{s.symbol}</div>
                     <div className="text-muted-foreground truncate max-w-[130px]">{s.sector}</div>
-                  </td>
-                  <td className="py-2 px-3">
-                    <span className="text-muted-foreground">{s.ai_tier ?? '—'}</span>
                   </td>
                   <td className="py-2 px-3">
                     <span className={`px-1.5 py-0.5 rounded ${st.chip}`}>{v.action}</span>
@@ -163,7 +161,7 @@ export function TradePlanTable({ rows, date }: { rows: Signal[]; date: string | 
             })}
             {shown.length === 0 && (
               <tr>
-                <td colSpan={10} className="py-6 text-center text-muted-foreground">
+                <td colSpan={9} className="py-6 text-center text-muted-foreground">
                   Every candidate screened out at current prices — nothing to act on.
                 </td>
               </tr>

@@ -175,8 +175,8 @@ export interface Signal {
   regime_warning?: boolean;
   asm_flag?: boolean;
   fo_ban_flag?: boolean;
-  ai_conviction?: string;            // HIGH | MEDIUM | LOW
-  ai_conviction_reason?: string;
+  ai_conviction?: string;            // retired 29-Aug-2026 — AI no longer writes this, always null now
+  ai_conviction_reason?: string;     // now pure narrative text, no tier/conviction label
   ai_suggested_action?: string;
   ai_note?: string;
   ai_provider?: string;
@@ -226,7 +226,7 @@ export interface Signal {
   current_price?: number | null;
   dist_entry_pct?: number | null;        // how far price is from the zone
   expected_r?: number | null;
-  ai_tier?: string | null;               // TIER_1 | TIER_2 | TIER_3
+  ai_tier?: string | null;               // retired 29-Aug-2026, always null now
   ai_max_chase_pct?: number | null;
   sector_rank_at_entry?: number | null;
 }

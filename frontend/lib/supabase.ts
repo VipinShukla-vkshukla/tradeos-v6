@@ -761,13 +761,18 @@ export const queries = {
     }),
 
   /**
-   * The ranked, tiered output for the latest pipeline run.
+   * The ranked output for the latest pipeline run.
    *
    * signal_output_daily rather than signal_log: it is the FINAL artefact of the
-   * run — the only table carrying ai_tier, expected_r and dist_entry_pct — and
+   * run — the only table carrying expected_r and dist_entry_pct — and
    * it is the table alerts/send_alerts.py reads. Showing the dashboard anything
    * else guarantees it can disagree with the Telegram message for the same
    * symbol on the same day.
+   *
+   * ai_tier/ai_conviction dropped from this select 29-Aug-2026 — AI stopped
+   * writing them (measured inversely predictive, see ai_decision_engine.py's
+   * module docstring), so they were always null here and cost egress for
+   * nothing. ai_max_chase_pct stays: lib/tradeDecision.ts still reads it.
    */
   getTradePlans: async (limit = 40) => {
     const latest = await queryTable<{ date: string }>('signal_output_daily', {
@@ -777,7 +782,6 @@ export const queries = {
     if (!day) return { data: [] as Signal[], date: null, error: latest.error };
     const { data, error } = await queryTable<Signal>('signal_output_daily', {
       select: 'date,symbol,company_name,sector,industry,strategy,signal_type,'
-            + 'ai_tier,ai_conviction,ai_conviction_reason,ai_suggested_action,'
             + 'score,final_score,expected_r,entry_zone_low,entry_zone_high,'
             + 'current_price,dist_entry_pct,planned_stop,planned_target,'
             + 'planned_risk_pct,implied_rr,ai_max_chase_pct,regime,'

@@ -305,7 +305,6 @@ export function OverviewTab() {
               <div key={`${s.symbol}-${s.date}`} className="text-xs flex items-center gap-2">
                 <span className="font-mono font-semibold w-20">{s.symbol}</span>
                 <span className="text-muted-foreground w-16">{s.strategy}</span>
-                <span className="text-muted-foreground">{s.ai_conviction ?? '—'}</span>
               </div>
             ))}
           </div>

@@ -1,67 +1,26 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
-import { Brain, BookOpen, Search, Filter, TrendingUp } from 'lucide-react';
+import { Brain, BookOpen, Search } from 'lucide-react';
 import { Panel, KPICard } from '@/components/core/Panel';
 import { DataGuard, SkeletonKPI, SkeletonChart, SkeletonTable } from '@/components/core/DataGuard';
 import { Input } from '@/components/ui/input';
-import { Button } from '@/components/ui/button';
-import { formatDate, formatPercent } from '@/lib/formatters';
+import { formatDate } from '@/lib/formatters';
 import { queries } from '@/lib/supabase';
 import { TradePlanTable } from '@/components/signals/TradePlanTable';
 import type { Signal, AIModelPerformance, Lesson } from '@/types/database';
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Cell, PieChart, Pie, Legend,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 
-// ─── Conviction badge ─────────────────────────────────────────────────────
-function ConvictionBadge({ level }: { level?: string }) {
-  const map: Record<string, string> = {
-    HIGH: 'bg-green-500/20 text-green-400 border border-green-500/30',
-    MEDIUM: 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30',
-    LOW: 'bg-red-500/20 text-red-400 border border-red-500/30',
-  };
-  return (
-    <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${map[level ?? ''] ?? 'bg-muted text-muted-foreground'}`}>
-      {level ?? '—'}
-    </span>
-  );
-}
-
-// ─── Conviction distribution donut ────────────────────────────────────────
-function ConvictionDonut({ signals }: { signals: Signal[] }) {
-  const counted = signals.reduce<Record<string, number>>((acc, s) => {
-    const k = s.ai_conviction ?? 'NONE';
-    acc[k] = (acc[k] ?? 0) + 1;
-    return acc;
-  }, {});
-
-  const data = [
-    { name: 'HIGH', value: counted.HIGH ?? 0, fill: '#22c55e' },
-    { name: 'MEDIUM', value: counted.MEDIUM ?? 0, fill: '#eab308' },
-    { name: 'LOW', value: counted.LOW ?? 0, fill: '#ef4444' },
-    { name: 'NONE', value: counted.NONE ?? 0, fill: '#6b7280' },
-  ].filter((d) => d.value > 0);
-
-  return (
-    <div className="h-48">
-      <ResponsiveContainer width="100%" height="100%">
-        <PieChart>
-          <Pie data={data} cx="50%" cy="50%" innerRadius={50} outerRadius={80}
-            dataKey="value" paddingAngle={3}>
-            {data.map((entry, i) => <Cell key={i} fill={entry.fill} fillOpacity={0.85} />)}
-          </Pie>
-          <Tooltip
-            contentStyle={{ backgroundColor: 'var(--bg-tooltip)', border: '1px solid var(--border-default)', borderRadius: '6px', fontSize: '12px' }}
-            formatter={(v: number, name: string) => [v, name + ' conviction']}
-          />
-          <Legend iconType="circle" iconSize={8} formatter={(v) => <span className="text-xs text-muted-foreground">{v}</span>} />
-        </PieChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
+// ai_conviction/ai_tier badge + donut removed 29-Aug-2026 — AI stopped
+// writing them (measured inversely predictive; see ai_decision_engine.py's
+// module docstring). A donut of an always-null field is not a simpler
+// version of this panel, it's a misleading one — "0 HIGH/MEDIUM" reads as
+// "AI found nothing good today," not "we retired this dimension." Removed
+// rather than rebuilt around ai_suggested_action: nothing here fed a
+// material decision even before the field went null, and there's no case
+// for spending egress to keep a vanity stat around.
 
 // ─── Strategy signal count bar chart ─────────────────────────────────────
 function StrategySignalChart({ signals }: { signals: Signal[] }) {
@@ -142,7 +101,7 @@ function SignalTable({ signals }: { signals: Signal[] }) {
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-border">
-            {['Date', 'Symbol / Sector', 'Strategy', 'Type', 'Subtype', 'Score', 'Conviction', 'Regime', 'Filter Reason'].map((h) => (
+            {['Date', 'Symbol / Sector', 'Strategy', 'Type', 'Subtype', 'Score', 'Regime', 'Filter Reason'].map((h) => (
               <th key={h} className={`py-2.5 px-3 font-medium text-muted-foreground text-xs ${h === 'Date' || h === 'Symbol / Sector' ? 'text-left' : 'text-right'}`}>{h}</th>
             ))}
           </tr>
@@ -163,7 +122,6 @@ function SignalTable({ signals }: { signals: Signal[] }) {
               </td>
               <td className="text-right py-2.5 px-3 text-xs text-muted-foreground">{s.signal_subtype ?? '—'}</td>
               <td className="text-right py-2.5 px-3 font-mono text-xs">{s.score?.toFixed(1) ?? '—'}</td>
-              <td className="text-right py-2.5 px-3"><ConvictionBadge level={s.ai_conviction} /></td>
               <td className="text-right py-2.5 px-3 text-xs text-muted-foreground">{s.regime ?? '—'}</td>
               <td className="text-right py-2.5 px-3 text-xs text-muted-foreground max-w-[140px] truncate" title={s.filter_reason ?? ''}>
                 {s.filter_reason ?? '—'}
@@ -184,7 +142,6 @@ export function AIIntelTab() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [convFilter, setConvFilter] = useState<string | null>(null);
   const [plans, setPlans] = useState<Signal[]>([]);
   const [planDate, setPlanDate] = useState<string | null>(null);
 
@@ -214,14 +171,11 @@ export function AIIntelTab() {
   }, []);
 
   const filtered = useMemo(() => signals
-    .filter((s) => !convFilter || s.ai_conviction === convFilter)
     .filter((s) => !search || s.symbol.toLowerCase().includes(search.toLowerCase()) ||
       (s.sector ?? '').toLowerCase().includes(search.toLowerCase()) ||
       s.signal_type.toLowerCase().includes(search.toLowerCase())),
-    [signals, convFilter, search]);
+    [signals, search]);
 
-  const highConv = signals.filter((s) => s.ai_conviction === 'HIGH').length;
-  const medConv = signals.filter((s) => s.ai_conviction === 'MEDIUM').length;
   const errObj = error ? new Error(error) : null;
 
   return (
@@ -241,18 +195,13 @@ export function AIIntelTab() {
       </Panel>
 
       {/* KPIs */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 gap-4">
         {loading ? (
-          <><SkeletonKPI /><SkeletonKPI /><SkeletonKPI /><SkeletonKPI /></>
+          <><SkeletonKPI /><SkeletonKPI /></>
         ) : (
           <>
             <KPICard title="Total Signals" value={signals.length.toString()}
               description="Last 200 from signal_log" icon={<Brain className="h-4 w-4" />} />
-            <KPICard title="High Conviction" value={highConv.toString()}
-              description="AI rated HIGH" icon={<TrendingUp className="h-4 w-4" />}
-              change={highConv > 0 ? { value: `${((highConv / signals.length) * 100).toFixed(0)}% of total`, type: 'increase' } : undefined} />
-            <KPICard title="Medium Conviction" value={medConv.toString()}
-              description="AI rated MEDIUM" icon={<TrendingUp className="h-4 w-4" />} />
             <KPICard title="System Lessons" value={lessons.length.toString()}
               description="Active lessons loaded" icon={<BookOpen className="h-4 w-4" />} />
           </>
@@ -260,16 +209,7 @@ export function AIIntelTab() {
       </div>
 
       {/* Charts row */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Panel title="Conviction Distribution" description="AI conviction breakdown"
-          dataSource="supabase" tableName="signal_log" isLoading={loading}>
-          <DataGuard data={signals} isLoading={loading} error={errObj}
-            loadingContent={<SkeletonChart className="h-48" />}
-            emptyTitle="No signals" emptyDescription="Run generate_signals.py">
-            {(data) => <ConvictionDonut signals={data} />}
-          </DataGuard>
-        </Panel>
-
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Panel title="Signals by Strategy" description="BUY / WATCH / SELL count per strategy"
           dataSource="supabase" tableName="signal_log" isLoading={loading}>
           <DataGuard data={signals} isLoading={loading} error={errObj}
@@ -316,16 +256,10 @@ export function AIIntelTab() {
 
       {/* Signal log table with filters */}
       <Panel title={`Signal Log (${filtered.length} shown)`}
-        description="Live from signal_log — filter by conviction or search symbol"
+        description="Live from signal_log — search symbol"
         dataSource="supabase" tableName="signal_log" isLoading={loading}
         toolbar={
           <div className="flex items-center gap-2">
-            {['HIGH', 'MEDIUM', 'LOW'].map((c) => (
-              <Button key={c} size="sm" variant={convFilter === c ? 'default' : 'outline'}
-                className="h-6 text-xs" onClick={() => setConvFilter(convFilter === c ? null : c)}>
-                {c}
-              </Button>
-            ))}
             <div className="relative w-36">
               <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
               <Input value={search} onChange={(e) => setSearch(e.target.value)}
