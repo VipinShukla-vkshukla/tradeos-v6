@@ -171,7 +171,12 @@ export async function GET() {
     }
 
     // ═══ GROUP: POSITIONS ═══════════════════════════════════════════════════
-    const { data: pos } = await sb.from('open_positions').select('*').eq('status', 'ACTIVE');
+    // Only the columns read below, not all ~50 - full-row selects here and on
+    // system_config below were the single largest egress contributor, found
+    // via edge_logs on 29-Aug-2026 (this route runs the full check every 60s
+    // whenever Preflight is left open, with no cache).
+    const { data: pos } = await sb.from('open_positions')
+      .select('symbol,framework,planned_stop,signal_id').eq('status', 'ACTIVE');
     const P = pos ?? [];
     add({ id: 'pos_count', group: 'Positions', label: 'Open positions', severity: 'INFO',
           value: `${P.length}`, expected: 'informational' });
@@ -320,7 +325,10 @@ export async function GET() {
     }
 
     // ═══ GROUP: CONFIG ══════════════════════════════════════════════════════
-    const { data: cfgRows } = await sb.from('system_config').select('key,value,updated_at');
+    // Only the keys read below, not all 600+ rows - see the POSITIONS comment
+    // above for why this matters.
+    const { data: cfgRows } = await sb.from('system_config').select('key,value,updated_at')
+      .in('key', ['master_kill_switch', 'quality_gate_enabled', 'msl_final_score_weights', 'capital_snapshot']);
     const C = Object.fromEntries((cfgRows ?? []).map((r) => [r.key, r.value]));
 
     // Capital reconciliation — configured TOTAL_CAPITAL vs the actual account.

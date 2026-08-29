@@ -12,7 +12,10 @@
 //     without saying "run step 13" has only relocated the problem.
 //   - Green checks stay collapsed. Attention is the scarce resource.
 //
-// Auto-refreshes every 60s so it can be left open on a second screen.
+// Auto-refreshes every 5 min so it can be left open on a second screen -
+// nothing this checks (pipeline output, config, positions) moves faster than
+// that, and the route behind it fans out to ~35 Supabase queries per call,
+// so a tighter interval was a real egress cost for no real freshness gain.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
@@ -73,7 +76,7 @@ export default function Preflight() {
   // Runs on open — this is the "one click" being no clicks at all.
   useEffect(() => { void run(); }, [run]);
   useEffect(() => {
-    const t = setInterval(() => void run(), 60000);
+    const t = setInterval(() => void run(), 300000);
     return () => clearInterval(t);
   }, [run]);
 
