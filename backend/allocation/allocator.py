@@ -313,7 +313,8 @@ class Allocator:
                open_positions: list[dict] | None = None,
                field: list[dict] | None = None,
                slots_by_framework: dict[str, int] | None = None,
-               max_slots_by_framework: dict[str, int] | None = None) -> list[dict]:
+               max_slots_by_framework: dict[str, int] | None = None,
+               swing_regime: str | None = None) -> list[dict]:
         """
         One cycle. Pure arithmetic over in-memory data — microseconds, no I/O
         beyond the prior cache, and no synchronous write anywhere.
@@ -332,16 +333,41 @@ class Allocator:
         Each book now brings its own budget, from its own configured cap.
         `slots_left` remains as the fallback for callers that have not been
         updated, so nothing silently loses its limit.
+
+        BUCKETS ARE PER BOOK TOO, same reasoning as slots. `regime` is
+        whatever the caller's own live signal is — for the daemon that is
+        `mc.state`, intraday's 15-second index reading (RISK_ON/NEUTRAL/
+        CAUTION/RISK_OFF). Swing does not have a 15-second regime; it has a
+        once-a-day one (`market_regime`, TRENDING/RISK ON/RECOVERING/
+        NEUTRAL/RISK OFF), and `regime_bucket()` was written to recognise
+        both vocabularies for exactly this reason. But a single `bucket`
+        computed once here, before the per-framework loop, applied that
+        SAME intraday-sourced value to swing proposals too — measured live,
+        21-Aug through 28-Aug: swing's own daily regime read NEUTRAL every
+        one of those 14 sessions (always WEAK), while the bucket actually
+        stored on swing's own `allocation_decisions` rows split STRONG/WEAK
+        within single days, tracking intraday's tick-by-tick reading
+        instead. `swing_regime`, when supplied, is swing's OWN regime
+        (`_current_regime` off `intraday/engine.py`'s once-a-session policy
+        load) and buckets SWING proposals from it; INTRADAY proposals are
+        completely unaffected — `regime` and its bucket are computed exactly
+        as before for that half of the loop. A caller that does not pass
+        `swing_regime` gets the old, shared-bucket behaviour for both
+        books, so the existing test callers of `select()`
+        (`test_allocator_direction.py`, `test_engine_fairness_and_bands.py`)
+        keep their current, unchanged result.
         """
         if not proposals:
             return []
-        bucket = H.regime_bucket(regime)
+        shared_bucket = H.regime_bucket(regime)
+        swing_bucket = H.regime_bucket(swing_regime) if swing_regime else shared_bucket
         out: list[dict] = []
 
         for fw in ("SWING", "INTRADAY"):
             book = [p for p in proposals if p.framework == fw]
             if not book:
                 continue
+            bucket = swing_bucket if fw == "SWING" else shared_bucket
             fw_slots = (slots_by_framework or {}).get(fw, slots_left)
             fw_max   = (max_slots_by_framework or {}).get(fw)
             bar, inputs = H.hurdle(bucket, fw_slots, minutes_left, fw, self.sb,
@@ -392,7 +418,9 @@ class Allocator:
             # test_engine_fairness_and_bands.py). A missing attribute
             # there must read as "no criteria yet", the same fail-open
             # shape self._priors already has via `if self._priors is None`.
-            verdicts = (policy(scored, bar, fw_slots, field) if fw == "SWING"
+            verdicts = (policy(scored, bar, fw_slots, field,
+                               bar_before_floor=inputs.get("bar_before_floor"))
+                        if fw == "SWING"
                         else policy(scored, bar, fw_slots,
                                     inputs.get("bar_before_floor"),
                                     getattr(self, "_priority_criteria", None)))

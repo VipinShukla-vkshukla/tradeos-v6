@@ -131,7 +131,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import get_supabase, today_ist, is_kill_switch_active, logger
-from config import cfg, cfg_float, cfg_int, fetch_all
+from config import cfg, cfg_bool, cfg_float, cfg_int, fetch_all
 
 # ── AI_KEYS: load once at module level ────────────────────────────────────────
 try:
@@ -1027,10 +1027,26 @@ def _call_provider(provider_name: str, keys: dict, prompt: str) -> str:
     if provider_name == "deepseek":
         from openai import OpenAI
         client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+        # THINKING OFF BY DEFAULT — same fix, same reason, as ai_router.py's
+        # own raw_completion(): deepseek-v4-flash is a reasoning model whose
+        # max_tokens budgets reasoning AND output together, reasoning spent
+        # first. This call site built its own client instead of routing
+        # through ai_router and never got that fix — an 800-token budget
+        # here can be consumed entirely by discarded reasoning before a
+        # single character of the lesson text is written. Found 29-Aug-2026
+        # auditing every AI call site's cost; nothing reads reasoning_content
+        # from this call, only the returned string, so there is nothing to
+        # lose by disabling it.
+        extra: dict = {}
+        if not cfg_bool("ai_thinking_enabled", False):
+            extra["extra_body"] = {"thinking": {"type": "disabled"}}
         resp = client.chat.completions.create(
             model="deepseek-v4-flash", max_tokens=800,
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
+            **extra,
         )
+        from ai.usage_tracker import log_usage
+        log_usage("post_trade_analysis", "deepseek", "deepseek-v4-flash", resp)
         return resp.choices[0].message.content.strip()
 
     elif provider_name == "claude":
@@ -1040,6 +1056,8 @@ def _call_provider(provider_name: str, keys: dict, prompt: str) -> str:
             model="claude-haiku-4-5-20251001", max_tokens=800,
             messages=[{"role": "user", "content": prompt}]
         )
+        from ai.usage_tracker import log_usage
+        log_usage("post_trade_analysis", "claude", "claude-haiku-4-5-20251001", msg)
         return msg.content[0].text.strip()
 
     elif provider_name == "openai":
@@ -1049,13 +1067,18 @@ def _call_provider(provider_name: str, keys: dict, prompt: str) -> str:
             model="gpt-4o-mini", max_tokens=800,
             messages=[{"role": "user", "content": prompt}]
         )
+        from ai.usage_tracker import log_usage
+        log_usage("post_trade_analysis", "openai", "gpt-4o-mini", resp)
         return resp.choices[0].message.content.strip()
 
     elif provider_name == "gemini":
         import google.generativeai as genai
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-2.5-flash")
-        return model.generate_content(prompt).text.strip()
+        resp = model.generate_content(prompt)
+        from ai.usage_tracker import log_usage
+        log_usage("post_trade_analysis", "gemini", "gemini-2.5-flash", resp)
+        return resp.text.strip()
 
     elif provider_name == "grok":
         from openai import OpenAI
@@ -1064,6 +1087,8 @@ def _call_provider(provider_name: str, keys: dict, prompt: str) -> str:
             model="grok-4-latest", max_tokens=800,
             messages=[{"role": "user", "content": prompt}]
         )
+        from ai.usage_tracker import log_usage
+        log_usage("post_trade_analysis", "grok", "grok-4-latest", resp)
         return resp.choices[0].message.content.strip()
 
     elif provider_name == "copilot":
@@ -1075,6 +1100,8 @@ def _call_provider(provider_name: str, keys: dict, prompt: str) -> str:
             model=AZURE_DEPLOYMENT, max_tokens=800,
             messages=[{"role": "user", "content": prompt}]
         )
+        from ai.usage_tracker import log_usage
+        log_usage("post_trade_analysis", "copilot", AZURE_DEPLOYMENT, resp)
         return resp.choices[0].message.content.strip()
 
     return ""

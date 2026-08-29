@@ -605,12 +605,22 @@ def c13_fii_regime_sizing_consistency(sb, td):
 
 def c14_signal_enrichment_coverage(sb, td):
     """
-    After step 19 runs, all BUY candidates should have ai_conviction set.
-    Low coverage = step 19 failed or ran with wrong date.
+    After step 19 runs, all BUY candidates should have ai_conviction_reason
+    set (narrative text — thesis/entry/invalidation). Low coverage = step 19
+    failed or ran with wrong date.
+
+    Checks ai_conviction_reason, not ai_conviction, 29-Aug-2026 —
+    ai_conviction itself is no longer written by step 19 at all (see
+    ai/ai_decision_engine.py's own module docstring: tier/conviction
+    removed, measured inversely predictive). ai_conviction_reason is still
+    written for every enriched candidate — it is now pure narrative text
+    with no tier/conviction label prefixed — so it remains a true "did
+    enrichment happen" signal; ai_conviction would now read 0% coverage
+    forever and this check would falsely WARN every single evening.
     """
     buys = (
         sb.table("signal_log")
-          .select("symbol,ai_conviction")
+          .select("symbol,ai_conviction_reason")
           .eq("date", td)
           .in_("signal_type", list(BUY_SIGNAL_TYPES))
           .execute().data
@@ -619,10 +629,10 @@ def c14_signal_enrichment_coverage(sb, td):
         return _result("C14_signal_enrichment_coverage", True, "WARN",
             f"No BUY signals for {td} — step 15 may have used wrong date (check C07)")
 
-    enriched = [r for r in buys if r.get("ai_conviction")]
+    enriched = [r for r in buys if r.get("ai_conviction_reason")]
     pct      = len(enriched) / len(buys) if buys else 0
     ok       = pct >= ENRICH_COVERAGE_WARN
-    unenriched = [r["symbol"] for r in buys if not r.get("ai_conviction")]
+    unenriched = [r["symbol"] for r in buys if not r.get("ai_conviction_reason")]
     return _result("C14_signal_enrichment_coverage", ok, "WARN",
         f"{len(enriched)}/{len(buys)} BUY signals enriched ({pct:.0%})"
         + (f" | Not enriched: {unenriched[:5]}" if unenriched else " ✅"),
@@ -715,9 +725,18 @@ def c17_entry_zone_validity(sb, td):
 
 def c18_tier_distribution(sb, td):
     """
-    Tier distribution sanity: TIER_1 count should be between 1 and 10.
-    0 TIER_1 = step 19 overly conservative or failed.
-    >10 TIER_1 = step 19 not applying sector concentration guards properly.
+    Entry-action distribution sanity: ENTER_NOW/ENTER_ON_DIP count should be
+    between 1 and 10. 0 = step 19 overly conservative or failed. >10 = step
+    19 not applying sector concentration guards properly.
+
+    Counts `action`, not `tier`, 29-Aug-2026 — tier is no longer written by
+    step 19 at all (see ai/ai_decision_engine.py's own module docstring:
+    removed, not just demoted, after being measured inversely predictive).
+    Counting `r.get("tier") == "TIER_1"` here would silently read 0 forever
+    and WARN every single evening — the same "check that cannot pass"
+    failure mode this project's own standing rule exists to catch. ENTER_NOW/
+    ENTER_ON_DIP is the direct semantic successor: the "act now" bucket
+    TIER_1 used to name, now sourced from the field that still gets written.
     """
     rows = (
         sb.table("ai_context")
@@ -727,25 +746,25 @@ def c18_tier_distribution(sb, td):
     )
     if not rows:
         return _result("C18_tier_distribution", True, "WARN",
-            "No __FINAL_PICKS__ — cannot check tier distribution (see C09)")
+            "No __FINAL_PICKS__ — cannot check entry-action distribution (see C09)")
     try:
         data   = json.loads(rows[0].get("conviction_reason") or "{}")
         ranked = data.get("ranked_candidates") or []
     except Exception:
         ranked = []
 
-    tier1 = sum(1 for r in ranked if r.get("tier") == "TIER_1")
-    tier2 = sum(1 for r in ranked if r.get("tier") == "TIER_2")
-    tier3 = sum(1 for r in ranked if r.get("tier") == "TIER_3")
+    entries = sum(1 for r in ranked if r.get("action") in ("ENTER_NOW", "ENTER_ON_DIP"))
+    waiting = sum(1 for r in ranked if r.get("action") == "WAIT_FOR_TRIGGER")
+    skipped = sum(1 for r in ranked if r.get("action") == "SKIP")
 
-    ok  = TIER1_MIN <= tier1 <= TIER1_MAX if ranked else True
+    ok  = TIER1_MIN <= entries <= TIER1_MAX if ranked else True
     msg = (
-        f"TIER_1:{tier1} TIER_2:{tier2} TIER_3:{tier3} total:{len(ranked)}"
+        f"Entries:{entries} Waiting:{waiting} Skipped:{skipped} total:{len(ranked)}"
         + (" ✅" if ok else
-           f" ⚠️ TIER_1={tier1} outside expected {TIER1_MIN}–{TIER1_MAX}")
+           f" ⚠️ Entries={entries} outside expected {TIER1_MIN}–{TIER1_MAX}")
     )
     return _result("C18_tier_distribution", ok, "WARN", msg,
-        value=f"T1:{tier1} T2:{tier2} T3:{tier3}")
+        value=f"Entries:{entries} Waiting:{waiting} Skipped:{skipped}")
 
 
 # ── C19: Signal Date Alignment ────────────────────────────────────────────────

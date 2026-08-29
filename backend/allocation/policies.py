@@ -290,9 +290,25 @@ def intraday_stopping(scored: list[dict], bar: float, slots_left: int,
 
 
 def swing_assignment(scored: list[dict], bar: float, slots_left: int,
-                     field: list[dict] | None = None) -> list[dict]:
+                     field: list[dict] | None = None,
+                     bar_before_floor: float | None = None) -> list[dict]:
     """
     The whole field is known, so a slot may be RESERVED rather than spent.
+
+    `bar_before_floor` / `floor_only_rank` — 29-Aug-2026, closing the SWING
+    half of `intraday_stopping`'s own 12-Aug fix (see that function's
+    docstring for the incident). The paper-book floor-exploration carve-out
+    in `engine.allocator_permits` reads `v.get("floor_only_rank")` for
+    EITHER book, but this function never set it — SWING's own `elif`
+    fallback below (`if not field: ... return intraday_stopping(...)`)
+    called that function WITHOUT `bar_before_floor` either, so even the
+    fallback path left it unset. A floor-declined SWING proposal on the
+    paper book could therefore never use the rescue valve migration 058
+    built for exactly this shape — measured 29-Aug-2026: not yet biting
+    (0 SWING declines sat exactly at the absolute floor in the last 21
+    days), but the mechanism needs to exist before swing_priors() is ever
+    tightened, not after — see docs/FINDINGS.md's own entry on why a
+    taken-only swing prior is not being armed today.
 
     THE RESERVATION IS THE POINT.
 
@@ -315,7 +331,8 @@ def swing_assignment(scored: list[dict], bar: float, slots_left: int,
     """
     if not field:
         logger.debug("  swing policy: no field supplied — degrading to stopping")
-        return intraday_stopping(scored, bar, slots_left)
+        return intraday_stopping(scored, bar, slots_left,
+                                 bar_before_floor=bar_before_floor)
 
     reserve_mult = cfg_float("alloc_reserve_edge_multiple", 1.35)
     min_ptrig    = cfg_float("alloc_reserve_min_p_trigger", 0.35)
@@ -339,13 +356,22 @@ def swing_assignment(scored: list[dict], bar: float, slots_left: int,
     reserved = reserved[:max_reserved]
     spendable = slots_left - len(reserved)
 
-    out, taken = [], 0
+    out, taken, taken_ex_floor = [], 0, 0
     for p in sorted(scored, key=lambda x: -(x.get("edge") or float("-inf"))):
         edge = p.get("edge")
         if edge is None:
             out.append({**p, "verdict": DECLINE,
                         "reason": "not scoreable — levels incoherent or no prior"})
             continue
+        # Same rank, same ordering, same purpose as intraday_stopping's own
+        # floor_only_rank — computed here rather than borrowed because this
+        # loop's own edge-descending order (not that function's engine-fair
+        # interleave) is the one SWING's verdicts are actually decided by.
+        rank = None
+        if (bar_before_floor is not None and edge >= bar_before_floor
+                and taken_ex_floor < slots_left):
+            rank = taken_ex_floor
+            taken_ex_floor += 1
         # A triggered plan that beats every reservation takes the slot anyway.
         # The reservation is a preference, not a lock.
         beats_all = all(edge >= r["edge"] for r in reserved) if reserved else True
@@ -361,8 +387,13 @@ def swing_assignment(scored: list[dict], bar: float, slots_left: int,
                         "reason": "slots spent on higher-edge plans"})
             continue
         if edge < bar:
-            out.append({**p, "verdict": DECLINE,
-                        "reason": f"edge {edge:.4f} below the bar {bar:.4f}"})
+            v = {**p, "verdict": DECLINE,
+                 "reason": f"edge {edge:.4f} below the bar {bar:.4f}"}
+            if rank is not None:
+                v["floor_only_rank"] = rank
+                v["reason"] += (f" (rank {rank + 1} of {slots_left} against the "
+                                f"pre-floor bar {bar_before_floor:.4f})")
+            out.append(v)
             continue
         out.append({**p, "verdict": TAKE,
                     "reason": (f"edge {edge:.4f} clears the bar {bar:.4f}"

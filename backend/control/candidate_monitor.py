@@ -53,8 +53,19 @@ def is_market_open() -> bool:
     return now.weekday() < 5 and MARKET_OPEN <= now.time() <= MARKET_CLOSE
 
 
-def _watch_tiers() -> list[str]:
-    return [t.strip() for t in cfg("candidate_watch_tiers", "TIER_1,TIER_2").split(",") if t.strip()]
+# ENTRY_SIGNAL_TYPES — same set generate_signals.py itself uses to mean
+# "this row is an actual entry candidate", not the AI's now-removed tier
+# label. 29-Aug-2026: candidate_watch_tiers/ai_tier filtering is retired —
+# see module docstring update below and the AI redesign this session's own
+# FINDINGS.md entry (ai_tier/ai_conviction were measured inversely
+# predictive, not merely unhelpful). Duplicated as a literal set, not
+# imported, deliberately: generate_signals.py is the evening pipeline,
+# this is a market-hours cron on a completely different schedule, and this
+# project's own boundary discipline (Track D/E) is "a value handed across,
+# never a function/constant imported across a scheduling boundary" — a
+# literal copy here can't be silently changed by an unrelated edit there.
+ENTRY_SIGNAL_TYPES = ("BUY_CANDIDATE", "PRIME_SETUP", "BREAKOUT_SETUP",
+                      "REENTRY_SETUP", "STAGED_ENTRY", "MOMENTUM_CONTINUATION")
 
 
 def _alerting_actions() -> set[str]:
@@ -62,15 +73,25 @@ def _alerting_actions() -> set[str]:
 
 
 def load_candidates(sb, trade_date: str) -> list[dict]:
-    """Today's ranked candidates, from the immutable decision snapshot."""
-    tiers = _watch_tiers()
+    """
+    Today's ranked candidates, from the immutable decision snapshot.
+
+    Filters on signal_type (the deterministic, gate-passed classification
+    generate_signals.py itself assigns), not ai_tier — 29-Aug-2026. The old
+    filter (candidate_watch_tiers, default TIER_1/TIER_2) watched AI's
+    self-rated highest-conviction candidates specifically; this session
+    measured that bucket UNDERPERFORMING its own lower tiers on real
+    resolved outcomes. Watching by signal_type means every genuine entry
+    candidate is covered, not a subset selected by a since-removed,
+    inversely-predictive label.
+    """
     try:
         rows = (sb.table("signal_output_daily")
-                  .select("symbol,sector,industry,ai_tier,ai_conviction,current_price,"
+                  .select("symbol,sector,industry,strategy,current_price,"
                           "entry_zone_low,entry_zone_high,planned_stop,planned_target,"
                           "planned_risk_pct,implied_rr,ai_max_chase_pct")
                   .eq("date", trade_date)
-                  .in_("ai_tier", tiers)
+                  .in_("signal_type", ENTRY_SIGNAL_TYPES)
                   .execute().data) or []
         return rows
     except Exception as e:
@@ -101,7 +122,7 @@ def run(sb=None, trade_date: str | None = None, require_live: bool = True) -> di
 
     cands = load_candidates(sb, trade_date)
     if not cands:
-        logger.info(f"  No {'/'.join(_watch_tiers())} candidates for {trade_date}")
+        logger.info(f"  No entry candidates for {trade_date}")
         return {"status": "ok", "watched": 0, "alerts": 0}
 
     from analysis.trade_decision import decide, fetch_live_prices
@@ -162,7 +183,9 @@ def run(sb=None, trade_date: str | None = None, require_live: bool = True) -> di
         changed = prev_a != d.action
 
         upserts.append({
-            "trade_date": trade_date, "symbol": sym, "ai_tier": c.get("ai_tier"),
+            # ai_tier column left null going forward — the label it recorded
+            # is retired, not replaced with a same-shaped stand-in.
+            "trade_date": trade_date, "symbol": sym, "ai_tier": None,
             "last_action": d.action, "last_headline": d.headline,
             "last_price": d.live_price, "last_rr": d.rr_live,
             "last_eval_at": now_iso, "price_source": source,
@@ -248,10 +271,60 @@ def _maybe_send_candidate_alerts(sb, alerts: list, source: str) -> bool:
                    f"held by {view.holder}@{view.hostname}, already covers "
                    f"this on real-time prices and a regime-scaled bar")
         return False
+
+    # BLUEJET fix, 29-Aug-2026 — the daemon is down, so this fallback is
+    # about to fire on its own flat bar, the exact shape that already went
+    # wrong once. Before firing, check whether the REAL system (while it
+    # was still up today) ever actually scored this symbol — reusing that
+    # decision, not re-deriving one. A symbol with zero allocation_decisions
+    # rows today is precisely BLUEJET's own signature; a symbol whose last
+    # real verdict was DECLINE means the allocator already said no on
+    # sharper information than this fallback has. Only a last-known TAKE,
+    # or a symbol the daemon never reached (ambiguous, not a red flag on
+    # its own — see below), gets through.
+    confirmed, blocked = [], []
+    try:
+        # PAGED. allocation_decisions is a known-large table (F-88 this
+        # session measured 69,247 rows in a WEAK bucket alone) and a
+        # heavily-repeat-logged symbol-day can carry 100+ rows on its own
+        # (27-Aug ledger entry) — even a short `alerts` symbol list is not
+        # a safe bound against PostgREST's 1000-row cap. order_by="id",
+        # this table's own proven unique key (test_static_analysis.py's
+        # _FETCH_ALL_SORT_KEY), not decided_at — re-sorted by decided_at
+        # in Python below, after every page is in hand.
+        from config import fetch_all
+        syms = [d.symbol for d in alerts]
+        rows = fetch_all(lambda: sb.table("allocation_decisions")
+                         .select("symbol,verdict,decided_at")
+                         .eq("framework", "SWING").in_("symbol", syms)
+                         .gte("trade_date", str(today_ist())),
+                         order_by="id")
+        rows.sort(key=lambda r: r.get("decided_at") or "", reverse=True)
+        last_verdict = {}
+        for r in rows:
+            last_verdict.setdefault(r["symbol"], r["verdict"])   # first = latest, sorted above
+        for d in alerts:
+            v = last_verdict.get(d.symbol)
+            if v == "DECLINE":
+                blocked.append((d.symbol, "allocator's last real verdict today was DECLINE"))
+            else:
+                confirmed.append(d)   # TAKE, DEFER, or never reached — see docstring
+    except Exception as e:
+        logger.warning(f"  allocation_decisions check failed ({e}) — firing "
+                       f"unfiltered, degraded-fallback-of-a-degraded-fallback")
+        confirmed = alerts
+
+    if blocked:
+        logger.warning(f"  {len(blocked)} alert(s) suppressed — real allocator "
+                       f"already declined them today: "
+                       + ", ".join(f"{s} ({why})" for s, why in blocked))
+    if not confirmed:
+        return False
+
     logger.warning(f"  daemon lease not held ({view.detail}) — firing "
-                  f"{len(alerts)} alert(s) as a degraded fallback, flat "
+                  f"{len(confirmed)} alert(s) as a degraded fallback, flat "
                   f"min_rr bar, not regime-scaled")
-    _send(alerts, source, degraded=True)
+    _send(confirmed, source, degraded=True)
     return True
 
 

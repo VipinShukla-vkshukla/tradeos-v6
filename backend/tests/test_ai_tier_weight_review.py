@@ -1,17 +1,30 @@
 """
-`review_ai_tier_weight` — 07-Aug-2026, operator's own request: "ensure it
-gets picked at the right time in future," after agreeing rank_weight_tier
-and rank_weight_conviction should stay at 0 for now (both demoted 04-Aug,
-sample too thin: TIER_1 n=26, TIER_2 n=57, TIER_3 n=133 the day this was
-built — TIER_1 alone still below the 30-sample floor).
+`review_ai_tier_weight` — RETIRED 29-Aug-2026.
 
-This is that check, wired into the weekly review so the question is
-re-asked automatically every week rather than depending on someone
-remembering to ask again. It never sets the weight itself — only raises a
-brain_proposals row once the evidence clears the same bar Prior already
-uses everywhere else in this codebase, and even then proposes "ready for
-calibration," not a specific number, for the same reason the original
-demotion refused to guess one.
+Originally built 07-Aug-2026, operator's own request: "ensure it gets
+picked at the right time in future," after agreeing rank_weight_tier and
+rank_weight_conviction should stay at 0 for now (sample too thin: TIER_1
+n=26 the day this was built, below the 30-sample floor). It was wired
+into the weekly review so the question — "is the evidence strong enough
+to promote the weight off zero yet" — was re-asked automatically every
+week rather than depending on someone remembering to ask.
+
+That question is now closed, not merely re-askable: run for real on
+29-Aug-2026 with n=47/58/99 per tier, it found TIER_1 UNDERPERFORMING
+TIER_2/TIER_3 (E[R] -0.180 vs +0.322 vs +0.372) — the promotion condition
+this test file used to verify (monotonic separation, TIER_1 best) is the
+OPPOSITE of what real data showed. ai_tier/ai_conviction were then removed
+from the evening AI's output entirely (ai/ai_decision_engine.py's own
+module docstring has the full measurement), so `review_ai_tier_weight`
+now returns immediately and never proposes, regardless of what synthetic
+data would once have cleared its own bar.
+
+This module used to verify the PROMOTION logic worked correctly across
+four scenarios (below floor / clears with separation / non-monotonic /
+gap too small). Rewritten to verify the RETIREMENT instead — the same
+favorable-data scenario that used to require a proposal must now produce
+none, proving the early return is unconditional, not merely coincidental
+with today's real data.
 """
 
 from __future__ import annotations
@@ -33,15 +46,6 @@ class _FakeSignalQuery:
         return self
 
     def order(self, col, *a, **k):
-        """Paged reads sort on a unique key (config.fetch_all, 15-Aug-2026).
-
-        LIMIT/OFFSET with no ORDER BY has no stable row order between
-        requests, so pages repeat rows and drop others — 8324 matching rows
-        came back as 5000 distinct on the live book. A fake without this
-        method does not fail loudly: the AttributeError is swallowed by the
-        caller's non-fatal except, or turns a paged fetch into an empty list,
-        which is how test_setup_rehydration silently lost 4 of 7 checks.
-        """
         try:
             self._rows.sort(key=lambda r: (r.get(col) is None, r.get(col)))
         except (AttributeError, TypeError):
@@ -83,8 +87,10 @@ class _FakeSB:
     def __init__(self, signal_rows: list[dict]):
         self._signal_rows = signal_rows
         self.proposals: list[dict] = []
+        self.tables_touched: list[str] = []
 
     def table(self, name):
+        self.tables_touched.append(name)
         if name == "signal_output_daily":
             return _FakeSignalQuery(self._signal_rows)
         if name == "brain_proposals":
@@ -111,60 +117,33 @@ def _population(n1: int, n2: int, n3: int, r1: float, r2: float, r3: float):
     return rows
 
 
-def test_no_proposal_while_any_tier_is_below_the_floor():
-    """The real state the day this was built: TIER_1 n=26 (below 30)."""
-    from tools.weekly_review import review_ai_tier_weight
-    with cfg_ctx():
-        sb = _FakeSB(_population(26, 57, 133, 0.30, 0.10, -0.05))
-        review_ai_tier_weight(sb)
-        assert not sb.proposals, (
-            "must not propose while TIER_1 (n=26) is still below the "
-            "30-sample floor, even though TIER_2/TIER_3 have cleared it")
-
-
-def test_proposes_once_all_tiers_clear_the_floor_with_real_separation():
+def test_never_proposes_even_with_the_exact_data_that_used_to_qualify():
+    """The scenario this file's own history used to require a proposal
+    for (all three tiers clear the 30-sample floor with a monotonic,
+    >=0.05R separation) — proving the retirement is unconditional, not
+    just coincidentally correct against today's real data."""
     from tools.weekly_review import review_ai_tier_weight
     with cfg_ctx({"ai_tier_separation_min": "0.05"}):
         sb = _FakeSB(_population(35, 35, 35, 0.30, 0.10, -0.05))
         review_ai_tier_weight(sb)
-        assert sb.proposals, (
-            "all three tiers cleared the floor with a monotonic, "
-            ">=0.05R separation — must raise a proposal")
-        p = sb.proposals[0]
-        assert p["proposal_type"] == "AI_TIER_WEIGHT_READY"
-        assert p["target_key"] == "rank_weight_tier"
-        assert "0.0" in p["current_value"]
-
-
-def test_no_proposal_when_separation_is_not_monotonic():
-    from tools.weekly_review import review_ai_tier_weight
-    with cfg_ctx({"ai_tier_separation_min": "0.05"}):
-        # TIER_2 beats TIER_1 -- not the expected ordering, no signal to trust.
-        sb = _FakeSB(_population(35, 35, 35, 0.10, 0.30, -0.05))
-        review_ai_tier_weight(sb)
         assert not sb.proposals, (
-            "TIER_1 < TIER_2 is not a monotonic separation and must not "
-            "propose turning the weight on")
+            "review_ai_tier_weight proposed a promotion — the retirement "
+            "early-return is not actually unconditional")
 
 
-def test_no_proposal_when_gap_is_too_small_to_matter():
+def test_never_touches_the_database_at_all():
+    """The retired function should not even query signal_output_daily —
+    the early return is the very first thing that runs."""
     from tools.weekly_review import review_ai_tier_weight
-    with cfg_ctx({"ai_tier_separation_min": "0.20"}):
-        # Monotonic, but TIER_1 - TIER_3 = 0.03R, below the configured 0.20 floor.
-        sb = _FakeSB(_population(35, 35, 35, 0.05, 0.03, 0.02))
+    with cfg_ctx():
+        sb = _FakeSB(_population(35, 35, 35, 0.30, 0.10, -0.05))
         review_ai_tier_weight(sb)
-        assert not sb.proposals, (
-            "a monotonic but tiny (0.03R) separation below the configured "
-            "minimum must not propose turning the weight on")
+        assert not sb.tables_touched, (
+            f"retired function still touched tables: {sb.tables_touched}")
 
 
 TESTS = [
-    ("no proposal while any tier is below the floor",
-     test_no_proposal_while_any_tier_is_below_the_floor),
-    ("proposes once all tiers clear the floor with real separation",
-     test_proposes_once_all_tiers_clear_the_floor_with_real_separation),
-    ("no proposal when separation is not monotonic",
-     test_no_proposal_when_separation_is_not_monotonic),
-    ("no proposal when gap is too small to matter",
-     test_no_proposal_when_gap_is_too_small_to_matter),
+    ("never proposes, even with the exact data that used to qualify",
+     test_never_proposes_even_with_the_exact_data_that_used_to_qualify),
+    ("never touches the database at all", test_never_touches_the_database_at_all),
 ]

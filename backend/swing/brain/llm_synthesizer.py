@@ -405,7 +405,7 @@ def synthesize(quant_findings: dict, dataset: dict,
 
     logger.info("  Calling LLM for synthesis (full data access)...")
     try:
-        raw = raw_completion(prompt, max_tokens=3000)
+        raw = raw_completion(prompt, max_tokens=3000, call_site="llm_synthesizer")
     except Exception as e:
         logger.warning(f"  LLM call failed: {e}")
         return [], {}

@@ -14672,3 +14672,1080 @@ outcomes, not just a bar-level snapshot.** The config row's own
 
 **Gate:** NEEDS DECISION if anyone proposes re-enabling — do not treat this
 as a closed question, only as a "not enough evidence yet" one.
+
+---
+
+## 2026-08-29 — F-87 (bug fix, swing-only, live 15s loop) — a runner's widened stop never reached the broker until the next day's batch
+
+`control/position_lifecycle.py::manage_open_positions()` (the once-a-day
+batch) already persists a RUN decision's `new_sl` to `active_sl`. The live
+15s daemon (`intraday/engine.py::act_on_positions()`) forwarded runner
+TELEMETRY (`runner_evidence`/`runner_verdict`/`runner_since_r`, F-46,
+21-Aug-2026) on the same branch but never the stop itself — found while
+independently reading the code during a trader-lens review of the swing
+book this session (unrelated to any Track D/E session), confirmed against
+the current working tree, not assumed from an earlier finding.
+
+**Ran:**
+
+```bash
+cd backend && python -m tools.verify
+```
+
+**Raw output:** 5 new checks (`tests/test_runner_stop_persistence.py`),
+all pass; 1157/1157 total across 121 modules (up from the pre-session
+baseline of 1152/120). Demonstrated failing first — `git stash push --
+backend/intraday/engine.py` (isolating only the fix, keeping the new test
+in place) reproduces 5/5 new checks failing (`AttributeError: type object
+'IntradayEngine' has no attribute '_runner_stop_update'`); `git stash pop`
+restores the fix, full suite green again.
+
+```bash
+cd backend && python -m tools.health
+```
+
+**Raw output:** `books`/`broker`/`stops`/`qty_fields` all pass, unchanged
+from the pre-change baseline (10 open SWING positions, all on the correct
+side of their stop, qty fields agree, 0 GTTs matching 0 live positions).
+Three pre-existing, unrelated problems (`same_day_discovery`,
+`pending_dup`, `recon_drift`) present before and after this change,
+already covered by F-84/F-85/F-86 — not touched by this fix.
+
+```bash
+cd backend && python -m tools.simulate
+```
+
+**Raw output:** all 10 real open SWING positions process cleanly —
+CARTRADE/CGCL/DIVISLAB HOLD, AUBANK EXIT_FASTFAIL, PAYTM EXIT_STALL, LT/
+BHEL/M&M/HEROMOTOCO/MAHABANK HOLD (`mode=PAPER auto-exit=ON`, matching
+what the operator stated this session). None is currently past the 3R
+target line that triggers a RUN decision, so this run has no live RUN
+case to demonstrate against directly — the same honest limitation F-78
+hit for scale-in ("the real book... correctly shows no signal, none past
+the line yet").
+
+**Found:** the fix is a small addition mirroring the batch path's own
+`elif act == "RUN":` branch exactly (same two fields, same trigger,
+`new_sl`'s never-loosen guard already enforced upstream in
+`exit_rules.py` and not re-checked here), extracted as a pure
+`IntradayEngine._runner_stop_update()` staticmethod so the decision is
+unit-testable without a live daemon or database — matching this
+project's own established pattern (`_merge_day_position`,
+`_same_day_drift_symbols`, `evaluate_scale_in`).
+
+**Could not determine:** whether any currently-open SWING position
+already carries runner telemetry (`runner_verdict`/`runner_since_r`) from
+an earlier RUN decision whose `active_sl` never moved as a result — not
+checked this session; today's `tools.simulate` run shows no position
+currently past the 3R line, but that does not rule out one having
+crossed it earlier in its life and since fallen back. A historical sweep
+of resolved SWING trades for this exact shape was not run.
+
+**Recommends:** watch the next position that actually converts to a
+runner (crosses the 3R target with `assess_trend()` STRONG) and confirm
+`active_sl` moves in the SAME cycle the RUN decision fires, not the
+following day — the direct, live confirmation this session's book did
+not have a case to provide.
+
+**Gate:** PASS — fix built, tested (failing-first demonstrated), full
+`tools.verify` and swing-specific `tools.health` checks clean, live
+`tools.simulate` run against the real book with no regression. Shipped
+directly per the operator's own explicit instruction this session (no
+shadow period, no new config switch — arm directly), consistent with
+this being a pure correctness fix to an already-live mechanism (RUN
+itself was never gated behind a switch) rather than new decision logic.
+
+---
+
+## 2026-08-29 — F-88 (bug fix, swing-only, allocation/allocator.py + intraday/engine.py) — a SWING proposal's hurdle bucket was sourced from intraday's 15s regime, not swing's own daily one
+
+`allocation/hurdle.py::regime_bucket()`'s own docstring (05-Aug-2026,
+migration 044) already named the risk precisely: two vocabularies reach
+this function, swing's own daily `market_regime` (space-separated) and
+intraday's 15-second `market_context` (underscore-separated), and it was
+fixed to classify both correctly. What that fix did NOT touch: `Allocator.
+select()` computed ONE bucket, once per cycle, from whatever `regime` its
+only real caller (`intraday/engine.py::_allocate_shadow`) passed — always
+`mc.state`, intraday's signal — and applied it to BOTH books' proposals in
+that cycle. A SWING proposal's hurdle bar was being drawn from whichever
+mood intraday's index reading happened to be in at that exact moment, not
+from swing's own once-a-day regime. Found this session while working
+through the swing hurdle/priors item of a broader trader-lens blueprint
+(unrelated to Track D/E), independently of the 27-Aug `alloc_hurdle_dedup_
+swing` entry immediately above — related area, different specific defect.
+
+**Ran (quantify, before writing any fix):**
+
+```sql
+-- via Supabase MCP execute_sql, project dbjfwpamxudnolfalpfm
+select date, regime from public.market_regime where date >= current_date - 21 order by date desc;
+
+select trade_date, regime_bucket, count(*) as rows, count(distinct symbol) as symbols
+from public.allocation_decisions
+where framework = 'SWING' and trade_date >= current_date - 21
+group by trade_date, regime_bucket order by trade_date desc;
+
+select regime_bucket, count(*) as rows, count(distinct symbol||trade_date::text) as symbol_days,
+       round(percentile_cont(0.75) within group (order by edge)::numeric,4) as p75_edge,
+       round(percentile_cont(0.95) within group (order by edge)::numeric,4) as p95_edge,
+       round(avg(edge)::numeric,4) as mean_edge, count(*) filter (where verdict='TAKE') as takes
+from public.allocation_decisions
+where framework='SWING' and trade_date >= current_date - 21 group by regime_bucket;
+```
+
+**Raw output:** swing's own daily `market_regime` read **NEUTRAL on all
+14 trading days** from 2026-08-07 through 2026-08-28 — zero TRENDING,
+RISK ON, RECOVERING or RISK OFF days in the window. The `regime_bucket`
+actually stored on SWING `allocation_decisions` rows in the same window
+split STRONG/WEAK **within single days** (e.g. 28-Aug: 6,000 STRONG rows
+across 24 symbols, 12,123 WEAK rows across 23 symbols, same day) —
+confirming the bucket was tracking intraday's tick-by-tick reading, not
+swing's stable daily one. Edge distributions: STRONG p75=0.0169,
+p95=0.0238, mean=0.0083, 8,872 rows/43 symbol-days; WEAK p75=0.0196,
+p95=0.0268, mean=0.0097, 69,247 rows/139 symbol-days — WEAK's bar is
+HIGHER, so collapsing swing to always-WEAK (its true regime) makes the
+bar stricter, not looser. Traced actual capital impact: of TAKE verdicts
+in the STRONG bucket with edge below WEAK's p75 (i.e. would likely have
+been declined under the correct bucket), raw rows collapsed from 394 to
+**4 distinct symbol-days, all on 2026-08-28** (CDSL, MEDANTA, THELEELA,
+VIJAYA) — none of the four ever reached `intraday_broker_log` or
+`open_positions`/`closed_positions`; each was refused by a later,
+independent gate (daily cap / rank floor / liquidity) before any order
+was ever attempted. **Zero real trades were affected by this bug in the
+measured window.**
+
+```bash
+cd backend && python -m tools.verify
+```
+
+**Raw output:** 3 new checks (`tests/test_swing_regime_bucket.py`), all
+pass; 1160/1160 total across 122 modules. Demonstrated failing first —
+`git stash push -- backend/allocation/allocator.py` (isolating only the
+allocator-side fix; `intraday/engine.py`'s F-87 runner-stop fix from
+earlier this session was left untouched) reproduces 2 of 3 new checks
+failing (`TypeError: Allocator.select() got an unexpected keyword
+argument 'swing_regime'`) — the third correctly still passes on the OLD
+code too, since it specifically tests that a caller supplying no
+`swing_regime` reproduces the pre-fix shared-bucket behaviour. `git stash
+pop` restores the fix, full suite green again.
+
+```bash
+cd backend && python -m tools.health
+```
+
+**Raw output:** `allocator`/`hurdle`/`books`/`broker`/`stops`/
+`qty_fields` all pass, unchanged from the pre-change baseline. Same three
+pre-existing, unrelated problems present before and after
+(`same_day_discovery`, `pending_dup`, `recon_drift`, F-84/85/86).
+
+```bash
+cd backend && python -m tools.simulate
+```
+
+**Raw output:** confirms `_current_regime` (the value now fed to the
+allocator as `swing_regime`) reads NEUTRAL live, matching the SQL above.
+Market was CLOSED at run time (`session: CLOSED can_enter=False`), so no
+live cycle actually scored a fresh proposal through `_allocate_shadow`
+during this run — the same class of honest limitation F-87 hit for the
+RUN branch (no live case available to exercise, not a gap in the check).
+
+**Found:** the fix adds one new optional parameter, `swing_regime`, to
+`Allocator.select()` — SWING proposals bucket from it when supplied,
+INTRADAY proposals are completely unaffected (still bucket from `regime`
+exactly as before), and any caller that omits `swing_regime` (both
+existing test callers, `score_hypothetical()`'s separate simpler path)
+reproduces the old shared-bucket behaviour exactly. The value itself
+(`self._policy["_current_regime"]`) already existed — loaded once per
+daemon session for Track E's regime-aware exits — so this fix is wiring,
+not new I/O.
+
+**Could not determine:** forward-looking accuracy — whether a
+consistently-WEAK bucket for swing produces BETTER realized outcomes
+than the mixed STRONG/WEAK bucketing it replaces. This session measured
+that the fix is a correctness fix (the right signal for the right book)
+and that its historical capital impact was zero, not that the resulting
+bar is forward-optimal — the same distinction the 27-Aug
+`alloc_hurdle_dedup_swing` entry drew between "the bar's level shifted"
+and "the bar's level improved." Also not determined: whether swing's
+regime will remain NEUTRAL indefinitely — the fix is regime-adaptive by
+construction (it reads `_current_regime` live each session), so a future
+TRENDING/RISK ON/RECOVERING day will correctly bucket STRONG without any
+further change.
+
+**Recommends:** watch `allocation_decisions.regime_bucket` for SWING
+rows over the next several sessions — every row should now read WEAK for
+as long as `market_regime` stays NEUTRAL, with no more within-day
+STRONG/WEAK splits. A within-day split reappearing would mean this fix
+regressed or a second, uncorrected call path exists.
+
+**Gate:** PASS — fix built, tested (failing-first demonstrated), full
+`tools.verify` and swing-specific `tools.health`/`allocator`/`hurdle`
+checks clean, quantified against 21 days of real `allocation_decisions`
+history showing zero historical capital impact and a stricter (not
+looser) resulting bar. Shipped directly per the operator's own explicit
+instruction this session, scoped to touch only swing's own bucket
+computation — intraday's is provably unchanged (see the failing-first
+test's own third case).
+
+---
+
+## 2026-08-29 — swing_priors() taken-only — quantified, found genuinely blocked by sample size, NOT armed
+
+Investigated whether `allocation/scoring.py::swing_priors()` should mirror
+intraday's `priors_intraday_taken_only` discipline (build the prior from
+trades the system actually TOOK, not every plan whose price zone was
+merely touched) — the same class of fix as F-88 above, one level deeper
+in the allocator. Concluded: the bias is real and confirmed, but the
+taken-only sample is currently far too thin to safely become the live
+prior. **No code changed.**
+
+**Ran:**
+
+```sql
+-- via Supabase MCP execute_sql, project dbjfwpamxudnolfalpfm
+select
+  count(*) as zone_touched_total,
+  count(*) filter (where op.symbol is not null or cp.symbol is not null) as actually_taken,
+  round(avg(sod.outcome_return_pct) filter (where op.symbol is not null or cp.symbol is not null)::numeric,3) as mean_ret_taken,
+  round(avg(sod.outcome_return_pct) filter (where op.symbol is null and cp.symbol is null)::numeric,3) as mean_ret_not_taken
+from public.signal_output_daily sod
+left join public.open_positions op on op.symbol=sod.symbol and op.entry_date=sod.date and op.framework='SWING'
+left join public.closed_positions cp on cp.symbol=sod.symbol and cp.entry_date=sod.date
+where sod.outcome_entered = true and sod.outcome_category is not null;
+```
+
+**Raw output:** `zone_touched_total=2054` (the population `swing_priors()`
+currently draws from), `actually_taken=25` (rows matching a real
+`open_positions`/`closed_positions` row on the same symbol and entry
+date), `mean_ret_taken=1.979` (%), `mean_ret_not_taken=1.031` (%).
+
+**Found:** trades the system actually took earned nearly double the
+average return of the broader zone-touched population it's currently
+pooled with — a real, substantial bias, and the same DIRECTION as
+intraday's already-fixed inverted-learning-loop problem (CLAUDE.md's own
+landmine), though a different MECHANISM: swing's gap is driven mostly by
+capacity (only ~2 new entries/day against ~60 evening plans, so "taken"
+is naturally a best-of selection), not by intraday's quality-based
+BLOCKED_*/REJECTED_*/VETOED_* refusal reasons. But `swing_priors()`'s own
+sample floor (`priors_min_sample_swing`, default 30) cannot be cleared by
+a taken-only filter today: 25 total taken rows, across ALL engine
+families combined, is already below the floor for `SWING/ALL` alone —
+individual families would have single digits or zero. Per this project's
+own already-documented landmine ("A cold start must be PERMISSIVE, never
+0.0"), a below-floor `_dist()` call returns `mean_r=0.0`
+(`scoring.py:170-173`), which would make `edge` NEGATIVE for every swing
+family at once (`edge = mean_r*regime_mult - cost_r`, and `cost_r` is
+always positive) — comfortably below the real, sample-rich hurdle bar
+measured in F-88 (p75 ≈0.017–0.02). Arming a hard taken-only filter today
+would not sharpen the prior, it would silently decline nearly every
+future swing proposal, book-wide — the bar-layer version of this exact
+failure mode, recreated one layer deeper, in the prior itself.
+
+**Could not determine:** whether the 25-row count reflects a structural
+ceiling (swing's own 2-new-entries/day cap) or is partly an artifact of
+how much of swing's history had live/paper auto-entry actually armed —
+if the latter, the taken sample may grow meaningfully faster going
+forward than its historical rate suggests. Not measured this session.
+
+**Recommends:** do not implement a hard taken-only filter now. Revisit
+once the taken sample is larger — the floor-exploration fix built
+immediately below (paper-book "EXPLORATION" trades) is precisely the
+mechanism that lets that sample grow safely, without this needing a
+switch flip or any change to live capital risk. Re-quantify with the
+same query above before ever arming this.
+
+**Gate:** NEEDS DECISION if anyone proposes implementing this — quantified
+and understood, not a closed question. Matches Track E Stage E6's own
+precedent for a piece "checked against this session's own evidence and
+found genuinely blocked, not merely uncautioned about."
+
+---
+
+## 2026-08-29 — F-89 (bug fix, swing-only, allocation/policies.py + allocation/allocator.py) — the paper-book floor-exploration carve-out never worked for SWING
+
+Migration 058 (12-Aug-2026) built a rescue valve for exactly the
+"prior stuck negative forever" trap the entry immediately above
+identifies as a live risk the moment swing_priors() is ever tightened: a
+proposal declined SOLELY because the absolute edge floor clamped the bar
+can still be taken on a PAPER book, ranked and bounded by `slots_left`,
+so the book keeps generating real TAKEN evidence instead of freezing.
+`engine.allocator_permits()` reads `v.get("floor_only_rank")` to decide
+this for EITHER framework — but `policies.swing_assignment()` (SWING's
+own policy function) never set that field anywhere: not in its main
+reservation loop, and not even in its own `if not field:` fallback to
+`intraday_stopping()` (the function that DOES set it), because that
+fallback call omitted `bar_before_floor` too. Found this session while
+investigating the taken-only priors question above — this is the
+mechanism that question's own "Recommends" section depends on existing.
+
+**Ran (quantify, before writing anything):**
+
+```sql
+select count(*) as declines_at_floor from public.allocation_decisions
+where framework='SWING' and verdict='DECLINE' and trade_date >= current_date - 21
+  and round(hurdle::numeric,4) = 0.0000;
+```
+
+**Raw output:** `declines_at_floor=0` — the floor is not currently
+binding for swing (matches F-88's own finding that the real bar sits well
+above zero, p75 ≈0.017–0.02). This fix has zero observable effect on
+today's book; it closes a structural gap for whenever the bar or the
+prior ever pushes toward the floor (including if the taken-only question
+above is ever revisited with more data).
+
+```bash
+cd backend && python -m tools.verify
+```
+
+**Raw output:** 5 new checks (`tests/test_swing_floor_exploration.py`),
+all pass; 1165/1165 total across 123 modules. Demonstrated failing first
+— `git stash push -- backend/allocation/policies.py backend/allocation/
+allocator.py` reproduces 5/5 new checks failing (`TypeError: swing_
+assignment() got an unexpected keyword argument 'bar_before_floor'`);
+`git stash pop` restores both fixes, full suite green again
+(incidentally also reproduced test_swing_regime_bucket.py's F-88 checks
+failing, since allocator.py carries both fixes together — expected, not
+a new regression, confirmed by the full suite passing clean once
+restored).
+
+```bash
+cd backend && python -m tools.health
+```
+
+**Raw output:** `allocator`/`hurdle`/`books`/`stops`/`qty_fields` all
+pass, unchanged from baseline. Kite's access token had separately expired
+between this check and the one earlier in the session (`no valid access
+token — broker features disabled`) — an environmental token-expiry issue
+unrelated to this change; `broker`/`capital`/`exits_open` degrade
+gracefully to "cannot verify" rather than failing, and the checks that
+actually exercise this fix are unaffected. Same three pre-existing,
+unrelated problems present before and after (`same_day_discovery`,
+`pending_dup`, `recon_drift`, F-84/85/86).
+
+**Found:** `swing_assignment()` gained a `bar_before_floor` parameter,
+computing `floor_only_rank` in its main reservation loop with the exact
+same ordering/bounding logic `intraday_stopping()` already uses (own
+counter, bounded by `slots_left`, attached only on the `edge < bar`
+DECLINE branch) — tested directly against the policy function, since
+`test_floor_exploration.py` already proves the CONSUMER side
+(`allocator_permits()`) works correctly for either framework once a
+verdict carries the field; this session's tests prove the PRODUCER side
+for SWING specifically. The `if not field:` fallback now forwards
+`bar_before_floor` to `intraday_stopping()` instead of silently dropping
+it. `allocator.py`'s call site updated to pass
+`inputs.get("bar_before_floor")` for the SWING branch, mirroring what it
+already does for INTRADAY.
+
+**Could not determine:** live behavior on a real floor-declined SWING
+proposal — none occurred in the measured window (see the quantify query
+above), matching the same honest limitation F-87 and F-88 both hit this
+session (no live case available to exercise, not a gap in the check).
+
+**Recommends:** none beyond what the taken-only entry above already
+states — this mechanism now exists and is correct; it has nothing to do
+until either the bar or the prior pushes toward the floor for a real
+proposal.
+
+**Gate:** PASS — fix built, tested (failing-first demonstrated), full
+`tools.verify` and swing-specific `tools.health` checks clean. Zero
+observable live effect today, by design — a structural gap closed ahead
+of when it is needed, matching this project's own precedent (Stage E7's
+detection/sizing built and shadow-logged before any position exercised
+it). Shipped directly per the operator's own explicit instruction this
+session.
+
+---
+
+## 2026-08-29 — Blueprint Part 2 (market-hours entry gate stack) — audited against live config, found ALREADY DONE; two stale config descriptions corrected (no behavior change)
+
+Quantified before assuming there was code to write. Read the live
+`system_config` values (not just coded defaults, which this session had
+been citing from static reads earlier and which do not always match what
+is actually armed) for every switch that governs the swing entry gate
+stack.
+
+**Ran:**
+
+```sql
+-- via Supabase MCP execute_sql, project dbjfwpamxudnolfalpfm
+select key, value, description from public.system_config
+where key in ('alloc_live_swing','swing_min_rank_to_enter','swing_auto_entry',
+              'swing_live_auto_entry','swing_max_new_per_day');
+
+select key, value, description from public.system_config
+where key in ('entry_rank_respect_ai_avoid','entry_respect_filter_reason',
+              'entry_refuse_low_rr_retention','entry_refuse_broken_trend',
+              'rank_weight_tier','rank_weight_conviction','rank_weight_rr',
+              'rank_weight_screener', ...);
+```
+
+**Raw output:** `swing_auto_entry=true`, `swing_live_auto_entry=false`
+(SWING entries are currently PAPER, matching what the operator stated
+earlier this session), `alloc_live_swing=true` (matches `tools.health`'s
+own "veto LIVE for intraday+swing"), `swing_min_rank_to_enter=0`,
+`swing_max_new_per_day=10` (not the coded default of 2 — live config
+differs from source, as it often does). All four `entry_refusals()`
+sub-switches read `true`: `entry_rank_respect_ai_avoid`,
+`entry_respect_filter_reason`, `entry_refuse_low_rr_retention`,
+`entry_refuse_broken_trend`. `rank_weight_tier=0`/`rank_weight_conviction
+=0`, each with its own config description already explaining why (04-Aug
+decision: "an unmeasured component at the top of the decision stack is
+unpriced risk") — a deliberate, evidenced call, not an oversight, and NOT
+the same finding as the two switches below.
+
+**Found:**
+1. **The blueprint's Part 2 goal — one clear economic gate (the
+   allocator), with entry_ranking's competing relative comparison
+   correctly inert — is already exactly how the live system runs.**
+   `alloc_live_swing=true` means `_legacy_rank_gate_blocks()` (traced
+   earlier this session, `intraday/engine.py`) already returns `False`
+   unconditionally. The absolute floor (`swing_min_rank_to_enter=0`)
+   still does real, narrow work — a plan whose composite score falls
+   below zero from stacked penalties (AI risk flags, event proximity,
+   ASM/GSM) is still refused, the TRAVELFOOD case its own description
+   cites — but is not a broad filter at this threshold. `entry_refusals()`
+   is fully armed and catches genuinely different things than the
+   allocator's edge math (AI avoid, the evening pipeline's own
+   filter_reason, live R:R retention, broken trend) — complementary, not
+   redundant. **No code change is needed for Part 2.**
+2. **Two switches are live but their own description text said
+   otherwise.** `entry_refuse_low_rr_retention` and
+   `entry_refuse_broken_trend` both read `value=true` but their
+   `description` still said "Ships OFF; shadow-logged" — stale from
+   whenever each was armed (F-76 built them shadow-only; something later
+   armed them without updating the description). Corrected both
+   descriptions to state ARMED LIVE, no behavior/value change. This is a
+   documentation-only fix — the switches' actual VALUE was never touched.
+
+**Could not determine:** exactly when either switch was flipped from
+`false` to `true`, or by whom/which session — `system_config` does not
+appear to carry a change-history column this session queried for. Not
+blocking; the correction only concerns the description text matching
+the value that was already live.
+
+**Recommends:** none — this was an audit that concluded no code work was
+needed, plus a two-line documentation correction.
+
+**Gate:** PASS — no action needed on Part 2 itself; the stale-description
+fix is a pure config-text edit, no `tools.verify`/`tools.health` cycle
+applicable since no code or live value changed.
+
+---
+
+## 2026-08-29 — Blueprint Part 1 (9→4 engine consolidation) — quantified against real current data, found NOT SUPPORTED; no code changed
+
+Before touching `screen_stocks.py`, found two prior plans on this exact
+question: my own earlier "merge 9 into 4 families" recommendation (a
+trader-lens critique given earlier this session, before any code was
+read), and a 25-day-old, unadopted "Production Decision" committee
+review (`docs/PRODUCTION_DECISION.md`, `docs/TRADING_METHODOLOGY_REVIEW.
+md`, written 2026-08-04, never touched since — superseded by `docs/
+TRADEOS_ROADMAP.md`, created 08-14 and actively maintained through
+08-25) recommending 9→2, on **structural correlation estimates the
+review's own method note admits are not measured** ("the sample does
+not support measurement"). The operator asked to quantify with today's
+data before either premise governs anything.
+
+**Ran:**
+
+```bash
+cd backend && python -m tools.weekly_review   # review_swing_engine_lifecycle()
+```
+
+```sql
+-- via Supabase MCP execute_sql, project dbjfwpamxudnolfalpfm
+select strategy, count(*) as n from public.signal_output_daily
+where outcome_category is not null and strategy is not null
+group by strategy order by n desc;   -- co-firing / combo-string distribution
+
+select strategy as standalone_engine, count(*) as n,
+  round(100.0*count(*) filter (where outcome_return_pct>0)/count(*),1) as win_rate_pct,
+  round(avg(outcome_return_pct)::numeric,3) as avg_return_pct
+from public.signal_output_daily
+where outcome_entered=true and outcome_category in ('TARGET','STOP')
+  and strategy in ('CTL','SEC','MOM','RVS','TPO','IAD','RSB','SBS','VBD')
+group by strategy order by n desc;
+```
+
+**Raw output — standalone (single-engine, no other engine agreeing)
+performance, cleanly-resolved (TARGET/STOP) outcomes only, matching
+`weekly_review`'s own methodology exactly:**
+
+| engine | n | win rate | avg return |
+|---|---|---|---|
+| CTL | 432 | 76.2% | +2.391% |
+| MOM | 123 | 78.0% | +2.994% |
+| SEC | 58 | 72.4% | +2.273% |
+| TPO | 42 | 40.5% | +0.037% |
+| RSB | 13 | 61.5% | +0.713% |
+| RVS | 11 | 36.4% | −1.068% |
+| SBS | 11 | 45.5% | +1.121% |
+| IAD | 3 | 33.3% | −0.480% |
+| VBD | 1 | 100.0% | +3.788% |
+
+Co-firing (from the full `strategy` combo-string distribution, ~2,300
+resolved rows across all history): CTL fires STANDALONE 719 of its
+~1,200 total appearances (~60%) — real, independent detection power, not
+a subset of another engine's picks. SEC's standalone share is lower
+(~37% of its own total appearances) — it co-fires with CTL and/or MOM
+more often than it fires alone. The three biggest combo groups are
+CTL+SEC (192), CTL+MOM+SEC (185), MOM+SEC (130) — real overlap exists,
+concentrated specifically among these three, not spread evenly across
+all nine.
+
+**Found:** the committee's 25-day-old premise — "nine engines correlated
+0.75–0.95, one engine with nine costumes" — does not survive contact
+with today's real, resolved-outcome data for the three engines that have
+enough sample to test it. CTL, MOM and SEC each show real, comparable,
+independently-earned edge (72–78% win rate, 2.2–3.0% avg return,
+n=58–432) — not the "near-zero incremental information" the review
+assumed. My own earlier recommendation ("merge CTL+TPO+MOM into one
+trend-continuation family") is also not supported: MOM's standalone
+numbers are at least as strong as CTL's, and merging it into a pooled
+average would dilute a demonstrably good, independent detector rather
+than remove redundancy — the exact failure mode this project's own
+retirement discipline exists to prevent (`TRADEOS_ROADMAP.md`'s own
+Stage 3 gate: "two of three is not enough").
+
+TPO (n=42, just above the 40-sample floor) is genuinely weak — 40.5% hit,
+essentially flat return — but does not clear `weekly_review`'s own,
+deliberately non-eager retirement bar (`hit < 30% OR avg ≤ 0`; TPO's
+40.5%/+0.037% clears both by a small margin), so it correctly still
+reads "keep." This is the system's existing mechanism working as
+designed, not a gap. RSB/RVS/SBS/IAD/VBD (n=1–13) remain genuinely too
+thin to judge either way — "hold" is the correct verdict for all five,
+matching this project's own "no opinion must not read as measured bad"
+discipline applied elsewhere (intraday priors, the swing hurdle's cold
+start).
+
+**Could not determine:** whether CTL/MOM/SEC's apparent independence
+would survive a stricter test than standalone-vs-combo firing rate —
+e.g., whether their entries cluster in the same sectors/regime windows
+even when the specific symbol differs, which would be a subtler form of
+correlation this session's queries do not measure. Not required to reach
+this stage's conclusion (the return/win-rate evidence alone is enough to
+reject wholesale merging), but named rather than assumed answered.
+
+**Recommends:** no engine consolidation now — the premise that motivated
+it does not hold for the three engines large enough to test. Keep
+running `tools.weekly_review` on its existing cadence and let it decide
+TPO's fate as more data accumulates (it is already the mechanism built
+for exactly this); revisit RSB/RVS/SBS/IAD/VBD once each clears the
+40-sample floor. This blueprint item is superseded by the system's own
+already-working lifecycle review, not by a rewrite of `screen_stocks.py`.
+
+**Gate:** PASS — no code changed; a planned engine-consolidation effort
+was correctly not started once real data contradicted its premise. Matches
+this project's own precedent for a stage concluding "no action" (Track E
+Stage E6's evidence-blocked pieces, this session's own swing-priors
+taken-only finding above).
+
+---
+
+## 2026-08-29 — Blueprint Part 5, piece 1 (bug fix, AI cost) — post-trade analyzer's DeepSeek call never disabled reasoning mode
+
+`ai/post_trade_analysis.py::_call_provider()` builds its own `openai.
+OpenAI` client per provider instead of routing through `ai_router.py`,
+and its deepseek branch never got that module's own fix for this exact
+model. Confirmed earlier this session during the AI usage/cost audit
+(deferred until Part 5); fixed now.
+
+**Ran:**
+
+```bash
+cd backend && python -m tools.verify
+```
+
+**Raw output:** 3 new checks (`tests/test_post_trade_thinking_disabled.
+py`), all pass; 1168/1168 total across 124 modules. Demonstrated failing
+first — `git stash push -- backend/ai/post_trade_analysis.py` reproduces
+1/3 new checks failing (the default-behavior one: thinking was NOT
+disabled without the fix); the other two correctly still pass on the old
+code too, since they test behavior (armed-on stays on; non-deepseek
+providers unaffected) the old code already had right. `git stash pop`
+restores the fix, full suite green again.
+
+**Found:** mirrors `ai_router.raw_completion()`'s own guard exactly —
+`extra_body={"thinking": {"type": "disabled"}}` when `ai_thinking_enabled`
+(default False) is off. This call site's budget is only 800 tokens (far
+smaller than the 20,000–35,000 the evening batch calls use), so the
+proportional risk of the reasoning floor consuming the entire budget
+before any lesson text is written is higher here, not lower. Nothing
+reads `reasoning_content` from this call — only the returned string is
+used — so there is no reasoning output being deliberately preserved.
+
+**Could not determine:** how much of the historical ₹0.15/call cost
+estimate (`PROVIDER_COST_INR`, already hardcoded and not usage-derived —
+see the earlier AI audit this session) this leak actually inflated,
+since no token-level usage was ever logged for this call site before now.
+Addressed by the cost/token accounting piece below.
+
+**Recommends:** none — mirrors an already-proven fix exactly, no new
+judgment call involved.
+
+**Gate:** PASS — fix built, tested (failing-first demonstrated), full
+`tools.verify` clean. No swing-specific health checks applicable — this
+touches only an AI provider call, no position/order/allocator logic.
+Shipped directly per the operator's own explicit instruction this
+session.
+
+---
+
+## 2026-08-29 — Blueprint Part 5, piece 2 (new mechanism, migration 127) — real token/cost visibility for every AI call, wired into all five live call sites
+
+This session's earlier AI usage audit found the three highest-volume call
+sites (evening decision engine, evening market intel, intraday's advisor
+firing up to ~75x/trading day) reporting zero cost or token usage
+anywhere — the only budget mechanism in the codebase
+(`post_trade_analysis.PROVIDER_COST_INR`) is a hardcoded per-call guess,
+scoped to the smallest, cheapest, least-frequent path. Built real
+visibility: every call now logs its actual `resp.usage`.
+
+**Ran:**
+
+```sql
+-- migration 127, applied via Supabase MCP apply_migration, project dbjfwpamxudnolfalpfm
+CREATE TABLE IF NOT EXISTS public.ai_usage_log (...);  -- see backend/db/migrations/127_ai_usage_log.sql
+```
+
+```bash
+cd backend && python -m tools.verify
+```
+
+**Raw output:** 8 new checks (`tests/test_ai_usage_tracker.py`), all
+pass; 1176/1176 total across 125 modules. Demonstrated failing first —
+`git stash push -u -- backend/ai/usage_tracker.py` (the new module is
+untracked, needs `-u`) reproduces 4 checks failing: all 8 new checks
+plus, notably, 3 of the ALREADY-SHIPPED `test_post_trade_thinking_
+disabled.py` checks failed too (`ModuleNotFoundError`) — proof the
+wiring into `post_trade_analysis.py::_call_provider()` is a real,
+executed import, not dead code sitting unused. `git stash pop` restores
+the module, full suite green again.
+
+```bash
+cd backend && python -m tools.health
+cd backend && python -m tools.ai_usage_report --days 7
+```
+
+**Raw output:** health clean (same 3 pre-existing, unrelated problems —
+`same_day_discovery`/`pending_dup`/`recon_drift`). Live schema check via
+Supabase MCP confirms `ai_usage_log`'s columns match `log_usage()`'s row
+exactly. The new report tool runs clean end-to-end against the real
+database and correctly reports "no AI calls logged in this window" —
+honest, since tracking only starts from the moment this shipped, not a
+gap in the tool.
+
+**Found:** `ai/usage_tracker.py` — `_extract_usage()` (pure,
+provider-shape-aware: OpenAI-compatible `resp.usage.prompt_tokens`/
+`completion_tokens`, Claude's `input_tokens`/`output_tokens`, Gemini's
+`usage_metadata`, never raises on an unrecognised or missing shape) and
+`log_usage()` (best-effort — wrapped in try/except so a logging failure
+can never break the AI call it observes; verified live in this session's
+own test run, where a mocked client without a real DB connection
+degraded to a warning log exactly as designed, not a crash). Wired into
+`ai_router.raw_completion()` (new `call_site`/`framework` parameters,
+covering `ai_decision_engine`, `market_intelligence_engine` ×2 call
+sites, `intraday/ai_advisor`, and `swing/brain/llm_synthesizer` in one
+place) and directly into `post_trade_analysis.py::_call_provider()`'s
+six provider branches (the one call site that bypasses `ai_router`
+entirely, per this session's earlier audit). `tools/ai_usage_report.py`
+— new standalone report (not registered in `tools.verify`'s MODULES,
+matching this project's own precedent that `hurdle_population_audit.py`/
+`engine_scorecard.py` are validated by running against real data, not
+folded into the pure-function suite): calls, tokens, truncation count and
+an estimated INR cost (reusing `PROVIDER_COST_INR`'s existing flat rate —
+real, not a second invented number) broken down by `call_site`.
+
+**Could not determine:** actual historical spend — no usage was ever
+logged before this session, so there is no backfillable history; the
+report starts counting from today forward. Also not measured: whether
+`PROVIDER_COST_INR`'s flat per-call rate is itself accurate against a
+real DeepSeek invoice — it was already the only rate this codebase had,
+reused rather than replaced, and remains an estimate labelled as one in
+the report's own output.
+
+**Recommends:** watch `tools.ai_usage_report --days 7` weekly for a few
+weeks to get a real baseline before deciding whether the caching/batching
+efficiency pieces (still open) are worth their own implementation risk —
+this was the whole reason cost visibility was built first.
+
+**Gate:** PASS — new mechanism built, tested (failing-first demonstrated,
+including proof the wiring is live, not dead), full `tools.verify` and
+`tools.health` clean, live schema and live report-tool run confirmed
+against the real database. Purely additive — no existing AI call's
+behavior, budget, or decision output changed. Shipped directly per the
+operator's own explicit instruction this session.
+
+---
+
+## 2026-08-29 — Blueprint Part 5, pieces 3 & 4 (batch-size + candidate cache) — both built, both quantified, real outcome below
+
+Operator's own instruction: "we have enough data... do both... tell me
+the outcome." Both pieces investigated with real data before writing
+code; the batching-restructure premise from earlier in this session
+(strip the resent context) turned out to be wrong on inspection — the
+resend is deliberate, not sloppy — so the actual fix taken is different
+from what was originally proposed. Reported here plainly rather than
+silently substituted.
+
+### Piece 3 — `ai_decision_batch_size` 5 → 15
+
+**Found before writing anything:** `call_ai_batched()`'s own docstring
+states its design intent directly — every batch sees the FULL candidate
+field regardless of batch size, only the OUTPUT list narrows, specifically
+so sector/correlation judgement isn't destroyed by looking at candidates
+in isolation. That makes the earlier Part 5 plan ("stop resending shared
+context per batch") a **regression of a deliberate feature**, not a fix —
+confirmed by reading `build_prompt()`'s per-candidate loop directly
+(`for c in ctx["candidates"]:`, unconditional, no `rank_only` filtering
+on the listing itself). The real, actionable lever is batch COUNT, not
+content: **the original truncation incident this size guards against
+(12 candidates, 2026-07-31) predates the fix that actually addressed its
+root cause (`ai_thinking_enabled=false`, 2026-08-01) by one day**, and
+that fix has held ever since — the failure mode has not recurred, but
+`ai_decision_batch_size` was never revisited after the real fix landed
+elsewhere.
+
+**Ran:**
+
+```sql
+select date, count(*) from public.signal_log
+where signal_type in (...gate-passed types...) and date >= current_date - 20
+group by date order by date desc;
+```
+
+**Raw output:** real daily volume 8–45 candidates/day (median ~20–24,
+14 sessions measured). At the old batch_size=5 that's 2–9 full-context
+resends per evening; at 15, 1–3.
+
+```bash
+cd backend && python -m tools.verify
+```
+
+**Raw output:** 4 new checks (`tests/test_ai_decision_batch_size.py`),
+all pass. Demonstrated failing first properly — the first version of
+this test suite was itself wrong (see "Could not determine" below);
+corrected, then `git stash push -- backend/ai/ai_decision_engine.py`
+reproduces 2/4 failing against the real old default (8 candidates made 2
+calls, not the expected 1), the other 2 (explicit override honoured,
+full-candidate-list invariant) correctly still pass on old code too.
+`git stash pop` restores, full suite green.
+
+**Found:** raised the live `system_config` value (was explicitly `5`,
+not just a code default) to `15` alongside the code default, with the
+description corrected to explain the actual current reasoning rather
+than only the original incident. `WHAT IS PRESERVED` in the function's
+own docstring — full-context-per-batch, escalating token budget,
+per-batch graceful failure — is untouched; this is a size change only.
+
+**Could not determine, and caught by my own review before shipping:**
+the first version of this test suite never actually exercised the code's
+own default — one test called `cfg_int(..., 15)` with 15 hardcoded
+directly in the test (never reading the source file's default at all),
+the other explicitly set `cfg_ctx({"ai_decision_batch_size": "15"})`
+(overriding whatever the code said). Both would have passed identically
+whether the source said 5 or 15 — confirmed by literally stashing the
+file and watching them pass anyway, at which point they were rewritten
+to use `cfg_ctx({})` (no override, forces the code's own literal
+fallback argument to be what's actually read) and a distinguishing
+candidate count (8 → 1 call at 15, 2 calls at 5) that can actually tell
+the two defaults apart. Worth recording as a caught mistake, not just
+the fix — a test that cannot fail is not a test, the exact standing rule
+this project already runs on, and this session's own tests are not
+exempt from it.
+
+**Gate:** PASS.
+
+### Piece 4 — candidate-level cache for a materially unchanged prior-day plan
+
+**Ran (quantify, before designing anything):**
+
+```sql
+-- exact-match check first
+select count(*) filter (where unchanged) / count(*) from ...
+  -- entry_zone_low/high, planned_stop/target, strategy all byte-equal
+  -- across consecutive-day repeats of the same symbol
+```
+
+**Raw output:** 212 consecutive-day repeat candidates over 30 days,
+**0 byte-identical** (avg entry-zone drift ~1.95%) — an exact-match
+cache would have silently never fired, the same "check that cannot
+pass" shape this project has been burned by before, just discovered
+before shipping instead of after. Re-ran with a percentage tolerance
+instead: within 0.5%, 38 (18%); within 1%, 73 (34%); within 2%, 116
+(55%) of the 212, with `same_strategy` required in all cases (170 of 212
+kept the same strategy label day to day).
+
+**Found — the design, after tracing the real data flow rather than
+guessing at field names:** `write_signal_enrichment()` collapses
+tier/thesis/entry_note/invalidation/allocation into ONE truncated,
+human-formatted string (`ai_conviction_reason`, capped 800 chars) — not
+reliably parseable back into its parts. The complete structured entry
+survives only in `ai_context.__FINAL_PICKS__` (`write_final_picks()`'s
+own `conviction_reason` JSON blob, up to 7,800 chars, holding the WHOLE
+`ranked_candidates` list) — that is what a reused verdict is actually
+sourced from. **Scoped to candidate ranking only** — `position_actions`
+(feeding the live TIGHTEN_SL action on open positions, Track E F-70) is
+a structurally separate part of both the prompt and the AI's JSON
+response, keyed off `ctx["positions"]`, never touched by any of this —
+confirmed by reading `write_position_actions()` directly, a different
+function with a different input list.
+
+New: `_cache_eligible()` (pure — same strategy AND both entry-zone bounds
+within `tolerance_pct`, default 1.0%) and `find_reusable_candidates()`
+(impure wrapper — resolves the actual previous TRADING day via the
+already-existing `get_last_trading_date()`, reads that day's
+`master_shortlist`/`signal_log`/`ai_context.__FINAL_PICKS__`, best-effort
+throughout: any failure returns "nothing reusable," never raises).
+**No chaining** — a prior entry that was itself a reuse (`_reused_from`
+set) is never reused again, bounding staleness to exactly one trading
+day. `call_ai_batched()` gained an optional `symbols_to_rank` parameter
+reusing the EXISTING `rank_only` mechanism (already used to split output
+across ordinary batches) — cached symbols are excluded from what the AI
+must return a verdict for while remaining fully visible in the prompt's
+candidate listing, so sector/correlation judgement for the fresh
+candidates is unaffected by what got cached. `main()`'s orchestration
+merges reused entries into `result["ranked_candidates"]` BEFORE
+`_validate_ai_prices()` runs, so a reused verdict gets the identical
+price/chase-pct safety check a fresh one does. Skipped entirely on the
+WATCH-fallback path (no gate-passed candidates today) — that population
+is already degraded/less-certain, not worth compounding with reuse risk.
+On total AI-call failure, the existing ML-fallback path is left
+completely untouched and covers every candidate, ignoring any cache
+hits — a rare degraded path where correctness matters more than
+avoiding one redundant score.
+
+```bash
+cd backend && python -m tools.verify
+```
+
+**Raw output:** 12 new checks (`tests/test_ai_candidate_cache.py`), all
+pass; combined with piece 3, **1192/1192 total across 127 modules**.
+Demonstrated failing first — `git stash push -- backend/ai/
+ai_decision_engine.py` reproduces 3 failures (2 from piece 3's tests
+against the old default, 1 `ImportError` for `_cache_eligible` not
+existing); `git stash pop` restores, full suite green. A real bug in my
+own edit was caught by this same cycle before it ever reached a
+failing-first check: adding the `symbols_to_rank` docstring accidentally
+closed the function's docstring early, leaving the ORIGINAL docstring
+text as bare, unquoted code — a `SyntaxError` on import (`leading zeros
+in decimal integer literals`, from "2026-07-31" being parsed as code,
+not string content), caught immediately on the first verify run after
+the edit and fixed before any test result could be trusted.
+
+```bash
+cd backend && python -m tools.health
+```
+
+**Raw output:** clean, same 3 pre-existing unrelated problems present
+before and after (`same_day_discovery`, `pending_dup`, `recon_drift`,
+F-84/85/86).
+
+**Could not determine:** live token/cost savings — no evening pipeline
+run has happened since either piece shipped (market closed at time of
+writing); `tools.ai_usage_report` (Part 5 piece 2, built earlier this
+session) is exactly the instrument to check this against once the next
+evening run happens. Also not measured: whether the 1% tolerance is the
+right number — chosen as a reasoned middle value between the 0.5%/1%/2%
+bands measured above, not itself validated against forward outcomes: a
+reused verdict's thesis/entry_note text was written against yesterday's
+exact price context, and a materially-unchanged ZONE does not guarantee
+a materially-unchanged THESIS is still the best available reasoning
+(e.g. a real news event overnight would not be caught by a price-zone
+tolerance check at all). Flagged, not resolved — a genuine limitation of
+a price-only eligibility test, not an oversight.
+
+**Recommends:** watch `tools.ai_usage_report --days 7` over the next
+week to see the actual call-count/token reduction from both pieces
+combined, and separately watch whether any reused verdict's thesis ever
+visibly stales against same-day news the price-only check couldn't see
+— if that happens with any frequency, tighten eligibility (e.g. also
+require no new `nifty_upcoming_events`/`event_calendar` row since the
+prior day) rather than lowering the tolerance, since the actual gap is
+event-awareness, not price precision.
+
+**Gate:** PASS — both pieces built, tested (failing-first demonstrated
+for both, including a real bug in my own edit caught and fixed in the
+process), full `tools.verify` (1192/1192) and `tools.health` clean.
+Neither piece's real-world savings are measured yet — that requires a
+live evening run, which the report tool built earlier this session now
+makes checkable. Shipped directly per the operator's own explicit
+instruction this session.
+
+---
+
+## 2026-08-29 — AI role redesign for SWING: ai_tier/ai_conviction removed system-wide, replaced with deterministic signals — 7 files, both books scoped correctly
+
+Operator's own explicit instruction after a course-correction mid-session
+(they caught that earlier AI-efficiency work was not the redesign they'd
+actually asked the independent-auditor pass for): drop tier/conviction
+language entirely, design something that adds real value, redesign
+`candidate_monitor.py` specifically, ship it live for Monday — **swing
+only, intraday completely untouched.**
+
+**Ran (quantify, before designing anything):**
+
+```sql
+-- ai_tier / ai_conviction predictive value, real resolved outcomes since 04-Aug
+select ai_tier, count(*) n, win_rate_pct, avg_return_pct from signal_output_daily ...
+select ai_conviction, count(*) n, win_rate_pct, avg_return_pct from signal_output_daily ...
+-- split by two-week sub-period to rule out a one-off patch
+-- ai_max_chase_pct banded by 0% / 0-2% / 2-4% / 4%+
+```
+
+**Raw output:** TIER_1 n=47 E[R]=-0.180±0.128 (95% CI entirely below zero);
+TIER_2 n=58 E[R]=+0.322±0.112; TIER_3 n=99 E[R]=+0.372±0.063 — AI's
+highest-conviction bucket UNDERPERFORMED its own lowest one, holding
+across two separate two-week sub-periods (widening, not narrowing, in the
+more recent half). Same inversion independently in `ai_conviction`: HIGH
+n=30 avg -1.35%, MEDIUM n=44 avg +2.71%, LOW n=39 avg +3.28% — cleanly
+monotonic, backwards. `ai_max_chase_pct` bands: 0%→+1.83%/68.5%(n=511),
+0-2%→+1.10%/60.9%(n=23), 2-4%→-0.12%/41.2%(n=17), 4%+→-4.61%/14.3%(n=7) —
+not inverted like tier/conviction, but severely degrading past 2%.
+
+Also found, tracing consumers before touching anything: `weekly_review.py`
+already had a well-built weekly check (`review_ai_tier_weight`, built
+07-Aug per the operator's own explicit request) doing exactly this
+measurement and correctly refusing to promote the weight off zero every
+week it ran — that governance was already working; this session's finding
+is what finally closed the question it was re-asking. Also found: a real,
+already-documented incident (BLUEJET, 26-Aug, in `candidate_monitor.py`'s
+own code comments) where that monitor's own flat, reimplemented bar
+diverged from the daemon's real allocator — the exact class of bug this
+redesign's `candidate_monitor.py` piece closes properly, by reuse.
+
+**Found — the redesign, 7 files:**
+
+1. **`ai/ai_decision_engine.py`** — `tier`/`conviction`/`confidence` removed
+   from the AI's OUTPUT SCHEMA entirely (not just the ranking weight, which
+   was already 0 since 04-Aug) — the prompt now explicitly tells the model
+   not to invent a same-shaped replacement under a different name. `rank`
+   dropped too (same self-rated-priority category, never independently
+   validated). `max_chase_pct` is no longer AI's discretion —
+   `SWING_CHASE_PCT_FLAT` (2.0%, the last band the data still supports) is
+   a fixed constant applied uniformly. `write_signal_enrichment()` no
+   longer writes `ai_conviction`/`ai_confidence` (left null going forward);
+   `ai_conviction_reason` is now pure narrative text with no `[TIER_X]`
+   prefix. `_validate_ai_prices()` and the batch-merge sort both moved off
+   tier to `action`. `position_actions`/TIGHTEN_SL (Track E, F-70) is
+   structurally separate — confirmed by tracing `write_position_actions()`
+   directly — completely untouched.
+2. **`control/candidate_monitor.py`** — `load_candidates()` filters on
+   `signal_type in ENTRY_SIGNAL_TYPES` (the same deterministic, gate-passed
+   classification `generate_signals.py` itself assigns), not the
+   since-measured-backwards `ai_tier`. **BLUEJET fix**: the degraded-
+   fallback alert path (fires only when the real daemon's lease is down)
+   now checks each alerting symbol's last real `allocation_decisions`
+   verdict from today via `config.fetch_all()` (paged — caught by this
+   project's own static-analysis check, `allocation_decisions` can carry
+   100+ rows for one heavily-repeat-logged symbol-day) — a real DECLINE
+   suppresses the fallback alert, TAKE or "daemon never reached it" lets it
+   through. Reuses the real decision, does not reimplement scoring.
+3. **`alerts/send_alerts.py`** — every `r.get("tier") == "TIER_N"` list
+   filter (7 occurrences, all message-building sections: evening/morning/
+   afternoon digests) moved to the `action`-based equivalent
+   (ENTER_NOW/ENTER_ON_DIP → "act now", WAIT_FOR_TRIGGER → "watch",
+   SKIP → "monitor") — these were about to silently return empty lists
+   forever, a silent daily alert breakage, not a cosmetic one.
+   `conviction_icon()` calls left as-is: confirmed it degrades gracefully
+   to a neutral icon on empty input, not a crash — a real cosmetic-only
+   gap (every candidate now shows the same icon), named, not fixed, given
+   the size of this file and the marginal value versus risk of a further
+   edit under time pressure.
+4. **`analysis/entry_ranking.py`** — the conviction-scoring block and
+   `_TIER_POINTS` removed (dead code, not merely zero-weighted, since the
+   fields it read are never written again). Separately corrected a stale,
+   actively misleading comment: `eap_action` was described as "the AI
+   review's verdict" — traced the real write site
+   (`screen_stocks.py::run_eap_overlay()`) and confirmed it is deterministic,
+   never AI-derived, despite the `entry_rank_respect_ai_avoid` config key's
+   own name.
+5. **`tools/weekly_review.py`** — `review_ai_tier_weight()` retired via an
+   unconditional early return (historical body kept, unreachable, for
+   reference) — the question it re-asked weekly is now closed, not merely
+   still-open.
+6. **`swing/compute/data_quality_monitor.py`** — two real, functional
+   breaks caught and fixed, not just cosmetic ones: C14 (enrichment
+   coverage) was checking `ai_conviction` presence, which would read 0%
+   forever and WARN every evening — moved to `ai_conviction_reason` (still
+   written). C18 (tier distribution) counted `tier == "TIER_1"` from raw AI
+   output, which would always read 0 and fail its own `TIER1_MIN<=n<=MAX`
+   bound every evening — moved to counting `action in (ENTER_NOW,
+   ENTER_ON_DIP)`, the direct semantic successor.
+7. **`swing/signals/final_snapshot.py`** — the `ai_tier_inferred` fallback
+   (derives a TIER_1/2/3-shaped label from `signal_type` alone whenever no
+   AI source has one — which, now, is unconditionally always) removed.
+   Writing null is the honest choice; a same-shaped stand-in with no real
+   backing is exactly the "silently misleading field" class this project's
+   own rules single out. `tier_counts`/`tier_distribution` renamed to
+   `signal_type_counts`/`signal_type_distribution` — real, undiluted signal
+   instead of a lossy bucketing of it.
+
+**Also fixed along the way:** a real bug in my own edit, caught by this
+project's own static-analysis check before it ever shipped —
+`candidate_monitor.py`'s new `allocation_decisions` read was initially
+unpaged; `allocation_decisions` is confirmed large enough (F-88's own
+measurement: 69,247 rows in one bucket) that an unpaged read of even a
+short symbol list is not provably safe. Fixed with `config.fetch_all()`.
+A pre-existing test (`test_ai_tier_weight_review.py`) correctly caught
+that retiring `review_ai_tier_weight()` broke its own "promotes on
+favourable data" assertion — rewritten to verify the retirement is
+unconditional (the exact scenario that used to require a proposal now
+must produce none) rather than deleted.
+
+**Ran:**
+
+```bash
+cd backend && python -m tools.verify
+cd backend && python -m tools.health
+```
+
+**Raw output:** 1201/1201 across every module touched (net -2 from the
+prior 1203: the ai_tier_weight_review rewrite replaced 4 tests with 2).
+Failing-first demonstrated for every new test file
+(`test_ai_tier_conviction_removed.py`,
+`test_candidate_monitor_no_tier.py`) via `git stash` on the two core
+files together — 5 checks failed against the old code
+(`SWING_CHASE_PCT_FLAT`/`ENTRY_SIGNAL_TYPES` not yet existing), all pass
+restored. Health clean: `allocator`/`hurdle`/`books`/`stops`/
+`qty_fields`/`data_quality` all green, same 3 pre-existing unrelated
+problems present before and after (`same_day_discovery`, `pending_dup`,
+`recon_drift`, F-84/85/86).
+
+**Intraday boundary, verified not just asserted:** every file touched
+reads `signal_output_daily`/`signal_log`/`master_shortlist`/
+`ai_context.__FINAL_PICKS__` — tables that only exist for swing.
+`intraday/ai_advisor.py`'s AVOID-veto logic, `intraday/exit_policy.py`,
+and every intraday detection engine file were not opened. One exception
+named, not silently skipped: `intraday/engine.py` (the shared daemon)
+has a few cosmetic `c.get("ai_tier")` reads inside its own SWING-only
+notification branches (`framework="SWING"` explicit at each site) — left
+untouched given the file's blast radius and the operator's explicit
+"don't touch intraday" instruction; confirmed these degrade gracefully
+(empty string, filtered from display) rather than break.
+
+**Could not determine:** live behavioural confirmation — market was
+closed for the whole of this redesign; the real test is Monday's evening
+pipeline run and the days of `candidate_monitor`/alert behaviour after.
+Also not measured: whether `SWING_CHASE_PCT_FLAT=2.0%` is the truly
+optimal constant, only that it's the last band real data still supports
+positively — a candidate for re-quantification once more resolved
+outcomes accumulate under the new fixed-cap regime specifically (the
+existing 0-2%/2-4% bands were measured under the OLD AI-discretion
+regime, a related but not identical population).
+
+**Recommends:** watch Monday's evening `ai_decision_engine` run and the
+first few `candidate_monitor` cycles closely — this is the single
+largest behavioural change shipped this session. Re-run the chase-pct
+quantify query in 2-3 weeks once enough trades have resolved under the
+fixed 2.0% cap specifically, rather than trusting the pre-redesign bands
+indefinitely.
+
+**Gate:** PASS — full redesign built, tested (failing-first demonstrated,
+including a real bug caught in the paging of my own new query, and a
+real pre-existing test correctly catching a behavioural regression I
+then fixed properly), `tools.verify` and `tools.health` clean, intraday
+boundary traced and confirmed, not assumed. Shipped directly per the
+operator's own explicit instruction this session. The one open risk
+named plainly: this is untested against a real live evening run, because
+none occurred during this session.

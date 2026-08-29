@@ -143,7 +143,8 @@ Reply ONLY with JSON, no prose:
 def _call_ai(payload: str) -> dict | None:
     try:
         from ai.ai_router import raw_completion
-        raw = raw_completion(payload, max_tokens=cfg_int("intraday_ai_max_tokens", 2000))
+        raw = raw_completion(payload, max_tokens=cfg_int("intraday_ai_max_tokens", 2000),
+                             call_site="intraday_ai_advisor", framework="INTRADAY")
         if not raw:
             return None
         t = raw.strip()

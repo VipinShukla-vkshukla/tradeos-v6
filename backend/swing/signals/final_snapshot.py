@@ -19,13 +19,16 @@ IMMUTABILITY CONTRACT
 PROVENANCE TRACKING
   data_sources  : JSONB — which source tables contributed to this row
   entry_zone_source : which table provided entry_zone_low/high
-  ai_tier_source    : which source provided the ai_tier classification
+  ai_tier_source    : RETIRED 29-Aug-2026, always null — ai_tier itself is
+                      always null too, see the AI tier resolution block
+                      below for why (removed, not inferred, after being
+                      measured inversely predictive)
   expected_r_source : which table provided expected_r
 
 SOURCE TABLES (read once per run):
   signal_log            → signal classification, scores, MSL labels, technicals
-  ai_context.__FINAL_PICKS__ → per-symbol tier/conviction/rationale from step 19
-  ai_context (per-symbol)    → ai_note, ai_conviction from step 18
+  ai_context.__FINAL_PICKS__ → per-symbol thesis/action/rationale from step 19
+  ai_context (per-symbol)    → ai_note from step 18
   master_shortlist      → fallback for entry_zone_low/high and expected_r
   market_regime         → regime context snapshot
   fii_dii_flow          → FII/DII context snapshot
@@ -291,7 +294,9 @@ def main(force: bool = False):
 
     # ── Build output rows ─────────────────────────────────────────────────────
     output_rows = []
-    tier_counts: dict[str, int] = {}
+    # signal_type_counts, not tier_counts — 29-Aug-2026, see the AI tier
+    # resolution block below for why.
+    signal_type_counts: dict[str, int] = {}
 
     for sym, sl in sig_map.items():
         msl      = msl_map.get(sym, {})
@@ -303,28 +308,25 @@ def main(force: bool = False):
         score_post = float(sl.get("score_adjusted") or score_pre)
         ai_delta   = round(score_post - score_pre, 2)
 
-        # ── AI tier resolution (with provenance) ──────────────────────────────
-        # tier: from __FINAL_PICKS__ ranked_candidates — field is "tier"
-        ai_tier_fp  = ai_pick.get("tier")
-        # fallback: infer from signal_type if tier not in picks
-        ai_tier_sym = None   # per-symbol ai_context doesn't carry tier
-        # Infer from signal_type when neither AI source has a tier
+        # ── AI tier: RETIRED, 29-Aug-2026 ──────────────────────────────────────
+        # ai_pick (from __FINAL_PICKS__ ranked_candidates) never carries a
+        # "tier" field any more — removed from the AI's own output schema
+        # after being measured inversely predictive (ai/ai_decision_engine.py's
+        # module docstring has the full measurement). The old fallback here
+        # inferred a TIER_1/2/3-SHAPED label from signal_type alone whenever
+        # the AI source was absent — which, now, is unconditionally always —
+        # meaning every future row would carry a fake-looking "TIER_1" that
+        # LOOKS like the old AI judgment but means nothing the old label
+        # meant. Writing null is the honest choice; a same-shaped stand-in
+        # would be exactly the kind of silently-misleading field this
+        # project's own rules single out. signal_type itself (already on
+        # this row) is the real, undiluted signal — read that directly
+        # rather than a lossy tier bucketing of it.
+        ai_tier        = None
+        ai_tier_source = None
         sig_type = sl.get("signal_type", "")
-        ai_tier_inferred = (
-            "TIER_1"       if sig_type == "PRIME_SETUP" else
-            "TIER_2"       if sig_type in ("BREAKOUT_SETUP", "REENTRY_SETUP",
-                                           "MOMENTUM_CONTINUATION") else
-            "TIER_3"       if sig_type in ("BUY_CANDIDATE", "STAGED_ENTRY") else
-            "WATCH_CLOSELY" if sig_type == "WATCH" else
-            None
-        )
-        ai_tier        = ai_tier_fp or ai_tier_sym or ai_tier_inferred
-        ai_tier_source = ("final_picks" if ai_tier_fp
-                          else "per_symbol" if ai_tier_sym
-                          else "inferred"  if ai_tier_inferred
-                          else None)
 
-        tier_counts[ai_tier or "untiered"] = tier_counts.get(ai_tier or "untiered", 0) + 1
+        signal_type_counts[sig_type or "unknown"] = signal_type_counts.get(sig_type or "unknown", 0) + 1
 
         # ── Entry zone resolution (with provenance) ───────────────────────────
         ez_low_sl   = sl.get("entry_zone_low")
@@ -608,9 +610,9 @@ def main(force: bool = False):
     ez_from_sl  = sum(1 for r in output_rows if r["entry_zone_source"] == "signal_log")
     ez_from_msl = sum(1 for r in output_rows if r["entry_zone_source"] == "master_shortlist")
     ez_missing  = sum(1 for r in output_rows if r["entry_zone_source"] is None)
-    tier_str    = " | ".join(f"{t}:{c}" for t, c in sorted(tier_counts.items()))
+    sig_type_str = " | ".join(f"{t}:{c}" for t, c in sorted(signal_type_counts.items()))
 
-    logger.info(f"  Tier distribution: {tier_str}")
+    logger.info(f"  Signal type distribution: {sig_type_str}")
     logger.info(
         f"  Entry zone sources: signal_log={ez_from_sl} "
         f"master_shortlist={ez_from_msl} missing={ez_missing}"
@@ -626,7 +628,7 @@ def main(force: bool = False):
     return {
         "snapshotted":        len(output_rows),
         "date":               today,
-        "tier_distribution":  tier_counts,
+        "signal_type_distribution": signal_type_counts,
         "ez_missing":         ez_missing,
     }
 

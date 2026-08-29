@@ -93,7 +93,16 @@ def analyze(stock_data: dict, context: dict) -> ConvictionResult:
     return UNKNOWN_RESULT
 
 
-def raw_completion(prompt: str, max_tokens: int = 1500) -> str:
+def raw_completion(prompt: str, max_tokens: int = 1500,
+                   call_site: str = "unknown", framework: str | None = None) -> str:
+    """
+    `call_site`/`framework` exist only for `usage_tracker.log_usage()`'s
+    sake — a label naming which caller this is, so the token/cost
+    visibility built 29-Aug-2026 can attribute spend correctly. Every
+    caller should pass its own name; a caller that doesn't gets logged as
+    "unknown" rather than crashing, since this is observability, not a
+    contract.
+    """
     provider_name = cfg("ai_provider", "disabled").lower()
     if provider_name in ("disabled", "ml"):
         raise RuntimeError(
@@ -116,6 +125,8 @@ def raw_completion(prompt: str, max_tokens: int = 1500) -> str:
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
+        from ai.usage_tracker import log_usage
+        log_usage(call_site, "claude", "claude-sonnet-4-20250514", msg, framework)
         return msg.content[0].text.strip()
 
     # ── Gemini ────────────────────────────────────────────────────────────
@@ -125,6 +136,8 @@ def raw_completion(prompt: str, max_tokens: int = 1500) -> str:
         model_name = getattr(provider, "model", None) or "gemini-2.0-flash"
         model_obj = genai.GenerativeModel(model_name)
         resp = model_obj.generate_content(prompt)
+        from ai.usage_tracker import log_usage
+        log_usage(call_site, "gemini", model_name, resp, framework)
         return resp.text.strip()
 
     # ── OpenAI-compatible: openai / deepseek / grok / copilot ────────────
@@ -184,6 +197,8 @@ def raw_completion(prompt: str, max_tokens: int = 1500) -> str:
         # cannot distinguish "the model stopped early" from "the model wrote
         # invalid JSON". Step 19 spent two calls and eight minutes on 2026-07-31
         # inferring what one field states outright.
+        from ai.usage_tracker import log_usage
+        log_usage(call_site, provider_name, model, resp, framework)
         choice = resp.choices[0]
         if getattr(choice, "finish_reason", None) == "length":
             used = getattr(getattr(resp, "usage", None), "completion_tokens", "?")

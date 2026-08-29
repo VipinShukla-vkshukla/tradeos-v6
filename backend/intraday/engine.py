@@ -2577,6 +2577,23 @@ class IntradayEngine:
         return out
 
     # ── acting ──────────────────────────────────────────────────────────────
+    @staticmethod
+    def _runner_stop_update(d: dict) -> dict | None:
+        """
+        Pure: what act_on_positions should persist when evaluate_exit()
+        returns RUN with a widened stop. None means nothing to write — no
+        new_sl was computed, or exit_rules.py's own never-loosen guard on
+        new_sl itself already decided the runner's stop isn't moving.
+
+        Mirrors position_lifecycle.py's manage_open_positions() batch path
+        (elif act == "RUN": update["active_sl"] = decision["new_sl"]) —
+        same two fields, same trigger, so the live daemon and the once-a-
+        day batch can never disagree about what a RUN decision means.
+        """
+        if d.get("action") != "RUN" or not d.get("new_sl"):
+            return None
+        return {"active_sl": d["new_sl"], "trail_activated": True}
+
     def act_on_positions(self, actions: list[dict]) -> None:
         for a in actions:
             p, d, ltp = a["position"], a["decision"], a["ltp"]
@@ -2628,6 +2645,22 @@ class IntradayEngine:
                     p.update(upd)
                 except Exception as e:
                     logger.warning(f"  engine: trail persist failed for {sym} — {e}")
+
+            # RUN is also a book update, not something you do — the same
+            # gap TRAIL_SL above already closed, for the other branch that
+            # widens a stop. Without this, a runner's broker-side GTT stays
+            # pinned to the pre-runner stop until the next day's batch
+            # catches up, while the position itself is carrying the most
+            # open profit it will have all trade. See _runner_stop_update's
+            # own docstring for why this mirrors the batch path exactly.
+            runner_upd = self._runner_stop_update(d)
+            if runner_upd:
+                try:
+                    upd = {**runner_upd, "updated_at": datetime.now(IST).isoformat()}
+                    self._update_position(p, upd)
+                    p.update(upd)
+                except Exception as e:
+                    logger.warning(f"  engine: runner stop persist failed for {sym} — {e}")
 
             # RUNNER TELEMETRY, WHENEVER evaluate_exit() COMPUTED IT —
             # F-46, 21-Aug-2026. control.exit_rules' target_decision()/
@@ -4900,13 +4933,20 @@ class IntradayEngine:
                 continue
             field.append({"symbol": d.symbol, "triggered": False, "edge": edge, "p_trigger": pt})
 
+        # swing_regime: swing's OWN once-a-day regime (market_regime table,
+        # already loaded into self._policy at daemon start for Track E's
+        # regime-aware exits), not mc.state — intraday's 15s index reading,
+        # which is what `regime` above is and what INTRADAY proposals
+        # correctly keep using. See Allocator.select()'s own docstring for
+        # why the two must not share a bucket.
         v = self._allocator.select(
             props, regime=mc.state,
             slots_by_framework=slots,
             max_slots_by_framework={"SWING": swing_max, "INTRADAY": intra_max},
             minutes_left=minutes_left,
             field=field,
-            open_positions=self.positions)
+            open_positions=self.positions,
+            swing_regime=(self._policy or {}).get("_current_regime"))
         takes = sum(1 for x in v if x["verdict"] == "TAKE")
 
         # Keyed for the veto below. (symbol, product) is the same key

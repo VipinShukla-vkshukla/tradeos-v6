@@ -81,13 +81,13 @@ WHAT CHANGED FROM v4 → v5 (kept for reference):
   PATCH 5  — build_evening: echo restored at 300 chars with 📖 label
   PATCH 6  — build_evening: MACRO + FII FLOW section before Market Intel
   PATCH 7  — build_evening: single guidance line with priority cascade
-  PATCH 8  — build_evening: TIER_1 compressed (3 lines) + readiness score
-  PATCH 9  — build_evening: TIER_2 compressed (2 lines)
+  PATCH 8  — build_evening: ACT NOW bucket compressed (3 lines) + readiness score
+  PATCH 9  — build_evening: WATCH bucket compressed (2 lines)
   PATCH 10 — build_evening: TOMORROW'S GTT ORDERS section
   PATCH 11 — build_morning: sb=None signature
   PATCH 12 — build_morning: single guidance line
-  PATCH 13 — build_morning: TIER_1 live zone status + readiness
-  PATCH 14 — build_morning: TIER_2 compact 2-line
+  PATCH 13 — build_morning: ACT NOW bucket live zone status + readiness
+  PATCH 14 — build_morning: WATCH bucket compact 2-line
   PATCH 15 — main(): pass sb to both builders
 
 DATA SOURCES (all bound to confirmed schema):
@@ -117,9 +117,9 @@ MESSAGE STRUCTURE:
     Section 2: Portfolio Health Snapshot
     Section 3: Open Positions (full lifecycle)
     Section 4: EXIT signals
-    Section 5: TIER_1 — Act Now (3-line compact + readiness)
-    Section 6: TIER_2 — Watch for Trigger (2-line compact)
-    Section 7: TIER_3 — Monitor
+    Section 5: ACT NOW — ENTER_NOW/ENTER_ON_DIP (3-line compact + readiness)
+    Section 6: WATCH FOR TRIGGER — WAIT_FOR_TRIGGER (2-line compact)
+    Section 7: MONITOR — SKIP
     Section 8: Near Miss
     Section 9: Sector Warnings + Correlation Groups
     Section 10: Upcoming Events
@@ -130,13 +130,13 @@ MESSAGE STRUCTURE:
     Gap Risk Alert: SL breach risk positions
     Position Pulse: brief position status
     EXIT Today
-    TIER_1 Watchlist (live zone status + entry levels)
-    TIER_2 Intraday Triggers (2-line compact)
+    ACT NOW Watchlist (live zone status + entry levels)
+    WATCH Intraday Triggers (2-line compact)
     Today's Events + Next 3 days events
 
   AFTERNOON:
     Header: date + time
-    TIER_1 zone status only (live yfinance prices)
+    ACT NOW zone status only (live yfinance prices)
 
   COMPACT:
     One-screen mobile summary
@@ -609,8 +609,16 @@ def send_message(text: str, subject_suffix: str = "Alert") -> bool:
 
 # ── Formatters ────────────────────────────────────────────────────────────
 
-def conviction_icon(c: str) -> str:
-    return {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "🔴"}.get((c or "").upper(), "⚪")
+def entry_action_icon(action: str) -> str:
+    """AI conviction/tier was removed system-wide 29-Aug-2026 — measured
+    inversely predictive (see ai/ai_decision_engine.py's module docstring).
+    This icon now colors the AI's actual surviving output, the recommended
+    entry action, rather than a self-rated confidence in it. Named apart
+    from action_icon() below, which colors POSITION actions (TRAIL_SL/
+    EXIT/HOLD/...) — same word, different vocabulary, same TERMINOLOGY.md
+    collision class this project has been burned by before."""
+    return {"ENTER_NOW": "🟢", "ENTER_ON_DIP": "🟡",
+            "WAIT_FOR_TRIGGER": "🔵", "SKIP": "🔴"}.get((action or "").upper(), "⚪")
 
 def regime_icon(r: str) -> str:
     """
@@ -1013,7 +1021,8 @@ def load_data(sb, today: str) -> dict:
     if final_picks_data and final_picks_data.get("ranked_candidates"):
         watchlist_symbols = [
             r["symbol"] for r in final_picks_data["ranked_candidates"]
-            if r.get("tier") in ("TIER_1", "TIER_2") and r.get("symbol")
+            if r.get("action") in ("ENTER_NOW", "ENTER_ON_DIP", "WAIT_FOR_TRIGGER")
+            and r.get("symbol")
         ]
     all_event_symbols = list(set(pos_symbols + watchlist_symbols))
     if all_event_symbols:
@@ -1537,9 +1546,9 @@ def build_evening(data: dict, sb=None) -> str:
     # ── Sections 5–9: Tier structure from step 19 ──
     if fp and fp.get("ranked_candidates"):
         ranked      = fp["ranked_candidates"]
-        tier1       = [r for r in ranked if r.get("tier") == "TIER_1"]
-        tier2       = [r for r in ranked if r.get("tier") == "TIER_2"]
-        tier3       = [r for r in ranked if r.get("tier") == "TIER_3"]
+        tier1       = [r for r in ranked if r.get("action") in ("ENTER_NOW", "ENTER_ON_DIP")]
+        tier2       = [r for r in ranked if r.get("action") == "WAIT_FOR_TRIGGER"]
+        tier3       = [r for r in ranked if r.get("action") == "SKIP"]
         guidance    = fp.get("portfolio_guidance", {})
         warnings    = fp.get("sector_exposure_warnings", [])
         corr_groups = fp.get("correlation_groups", [])
@@ -1562,7 +1571,7 @@ def build_evening(data: dict, sb=None) -> str:
             lines.append(f"  <i>{esc(_gtext[:150])}</i>")
         lines.append("")
 
-        # ── PATCH 8: TIER_1 — 3-line compact + readiness ──
+        # ── PATCH 8: ACT NOW bucket — 3-line compact + readiness ──
         if tier1:
             if _READINESS_AVAILABLE and sb:
                 try:
@@ -1572,12 +1581,10 @@ def build_evening(data: dict, sb=None) -> str:
                 except Exception as e:
                     logger.warning(f"entry_readiness enrichment failed: {e}")
 
-            lines.append(f"⭐ <b>TIER 1 — ACT NOW ({len(tier1)})</b>")
+            lines.append(f"⭐ <b>ACT NOW ({len(tier1)})</b>")
             for c in tier1:
                 sym    = c.get("symbol", "?")
-                conv   = (c.get("conviction") or "").upper()
                 action = c.get("action") or ""
-                conf   = float(c.get("confidence") or 0)
                 alloc  = float(c.get("suggested_allocation_pct") or 0)
                 corr   = c.get("correlation_group") or ""
                 msl    = msl_map.get(sym, {})
@@ -1601,7 +1608,7 @@ def build_evening(data: dict, sb=None) -> str:
                 rr     = _num(msl.get("implied_rr"))
                 if rr is None and sl_p and t1_p and zl and sl_p < zl:
                     rr = round((t1_p - zl) / (zl - sl_p), 2)
-                r_icon    = c.get("readiness_icon") or conviction_icon(conv)
+                r_icon    = c.get("readiness_icon") or entry_action_icon(action)
                 r_score   = c.get("readiness_score")
                 r_label   = c.get("readiness_label", "")
                 dist      = msl.get("dist_entry_pct")
@@ -1620,11 +1627,10 @@ def build_evening(data: dict, sb=None) -> str:
 
                 lines.append(
                     f"\n  {r_icon} <b>{sym}</b>{cmp_str}"
-                    + (f" [{action}·{conv}]" if action else f" [{conv}]")
+                    + (f" [{action}]" if action else "")
                     + (f"  ₹{zl:,.0f}–₹{zh:,.0f} {dist_str}  <i>[DB]</i>"
                        if zl else "  ⚠️ <i>Zone data unavailable</i>")
                     + (f"  <b>{alloc:.0f}%</b>" if alloc else "")
-                    + (f"  conf:{conf:.0%}" if conf else "")
                     + (f"  📎{corr}" if corr else "")
                     + (f"  → T1₹{t1_p:,.0f} | SL₹{sl_p:,.0f} · RR {rr}×  {score_str}"
                        if (t1_p and sl_p) else f"  {score_str}")
@@ -1669,12 +1675,11 @@ def build_evening(data: dict, sb=None) -> str:
 
             lines.append("")
 
-        # ── PATCH 9: TIER_2 — 2-line compact ──
+        # ── PATCH 9: WATCH bucket — 2-line compact ──
         if tier2:
-            lines.append(f"🔭 <b>TIER 2 — WATCH FOR TRIGGER ({len(tier2)})</b>")
+            lines.append(f"🔭 <b>WATCH FOR TRIGGER ({len(tier2)})</b>")
             for c in tier2:
                 sym   = c.get("symbol", "?")
-                conv  = (c.get("conviction") or "").upper()
                 msl   = msl_map.get(sym, {})
                 zl    = float(msl.get("entry_zone_low")  or 0)
                 zh    = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
@@ -1691,7 +1696,7 @@ def build_evening(data: dict, sb=None) -> str:
                 rk_t2_str   = "  📊 " + " · ".join(rk_t2_parts) if rk_t2_parts else ""
 
                 lines.append(
-                    f"\n  {conviction_icon(conv)} <b>{sym}</b>{cmp_str_t2} [{conv}]"
+                    f"\n  {entry_action_icon('WAIT_FOR_TRIGGER')} <b>{sym}</b>{cmp_str_t2}"
                     f"  ₹{zl:,.0f}–₹{zh:,.0f} {dist_str}"
                     + (rk_t2_str)
                 )
@@ -1710,15 +1715,15 @@ def build_evening(data: dict, sb=None) -> str:
 
             lines.append("")
 
-        # TIER_3: Monitor
+        # MONITOR bucket (SKIP)
         if tier3:
-            lines.append(f"👁 <b>TIER 3 — MONITOR ({len(tier3)})</b>")
+            lines.append(f"👁 <b>MONITOR ({len(tier3)})</b>")
             t3_parts = []
             for c in tier3:
                 sym_t3  = c.get("symbol", "?")
                 cmp_t3  = float(msl_map.get(sym_t3, {}).get("current_price") or 0)
                 cmp_t3_str = f"·₹{cmp_t3:,.0f}" if cmp_t3 else ""
-                t3_parts.append(f"{sym_t3}{cmp_t3_str}({conviction_icon(c.get('conviction'))})")
+                t3_parts.append(f"{sym_t3}{cmp_t3_str}")
             lines.append(f"  {' · '.join(t3_parts)}")
             lines.append("")
 
@@ -1778,11 +1783,10 @@ def build_evening(data: dict, sb=None) -> str:
         if buys:
             lines.append(f"\n🎯 <b>RAW SIGNALS ({len(buys)})</b>")
             for s in buys:
-                c_ico = conviction_icon(s.get("ai_conviction"))
                 cmp_raw = float(s.get("current_price") or 0)
                 cmp_raw_str = f" CMP:₹{cmp_raw:,.0f}" if cmp_raw else ""
                 lines.append(
-                    f"\n  {c_ico} <b>{s['symbol']}</b>{cmp_raw_str} [{s.get('strategy', '?')}] "
+                    f"\n  • <b>{s['symbol']}</b>{cmp_raw_str} [{s.get('strategy', '?')}] "
                     f"Score:<b>{float(s.get('score_adjusted') or s.get('score') or 0):.0f}</b>"
                 )
                 if s.get("ai_conviction_reason"):
@@ -1812,7 +1816,7 @@ def build_evening(data: dict, sb=None) -> str:
 
     # ── PATCH 10: TOMORROW'S GTT ORDERS ──
     if fp and fp.get("ranked_candidates"):
-        _t1_orders = [r for r in fp["ranked_candidates"] if r.get("tier") == "TIER_1"]
+        _t1_orders = [r for r in fp["ranked_candidates"] if r.get("action") in ("ENTER_NOW", "ENTER_ON_DIP")]
         if _t1_orders:
             lines.append("─" * 28)
             lines.append("📋 <b>TOMORROW'S GTT ORDERS</b>  <i>Place before 9:15 AM</i>")
@@ -2004,11 +2008,11 @@ def build_morning(data: dict, sb=None) -> str:
             )
         lines.append("")
 
-    # ── TIER_1 + TIER_2 watchlist ──
+    # ── ACT NOW + WATCH watchlist ──
     if fp and fp.get("ranked_candidates"):
         ranked   = fp["ranked_candidates"]
-        tier1    = [r for r in ranked if r.get("tier") == "TIER_1"]
-        tier2    = [r for r in ranked if r.get("tier") == "TIER_2"]
+        tier1    = [r for r in ranked if r.get("action") in ("ENTER_NOW", "ENTER_ON_DIP")]
+        tier2    = [r for r in ranked if r.get("action") == "WAIT_FOR_TRIGGER"]
         guidance = fp.get("portfolio_guidance", {})
         sizing   = guidance.get("position_sizing_override") or fp.get("_sizing", "?")
 
@@ -2025,7 +2029,7 @@ def build_morning(data: dict, sb=None) -> str:
             lines.append(f"  <i>{esc(_mgtext)}</i>")
         lines.append("")
 
-        # ── PATCH 13: TIER_1 live zone status + readiness ──
+        # ── PATCH 13: ACT NOW bucket live zone status + readiness ──
         if tier1:
             if _READINESS_AVAILABLE and sb:
                 try:
@@ -2035,12 +2039,10 @@ def build_morning(data: dict, sb=None) -> str:
                 except Exception as e:
                     logger.warning(f"morning readiness enrichment failed: {e}")
 
-            lines.append(f"⭐ <b>WATCHLIST — TIER_1 ({len(tier1)} picks)</b>")
+            lines.append(f"⭐ <b>WATCHLIST — ACT NOW ({len(tier1)} picks)</b>")
             for c in tier1:
                 sym    = c.get("symbol", "?")
-                conv   = (c.get("conviction") or "").upper()
                 action = c.get("action") or ""
-                conf   = float(c.get("confidence") or 0)
                 alloc  = float(c.get("suggested_allocation_pct") or 0)
                 corr   = c.get("correlation_group") or ""
                 msl    = msl_map.get(sym, {})
@@ -2064,7 +2066,7 @@ def build_morning(data: dict, sb=None) -> str:
                 rr     = _num(msl.get("implied_rr"))
                 if rr is None and sl_p and t1_p and zl and sl_p < zl:
                     rr = round((t1_p - zl) / (zl - sl_p), 2)
-                r_icon    = c.get("readiness_icon") or conviction_icon(conv)
+                r_icon    = c.get("readiness_icon") or entry_action_icon(action)
                 r_score   = c.get("readiness_score")
                 score_str = f"[{r_score}/100]" if r_score else ""
                 timing    = c.get("timing_note", "Verify zone manually")
@@ -2095,10 +2097,9 @@ def build_morning(data: dict, sb=None) -> str:
 
                 lines.append(
                     f"\n  {r_icon} <b>{sym}</b>{cmp_str_m}"
-                    + (f" [{action}·{conv}]" if action else f" [{conv}]")
+                    + (f" [{action}]" if action else "")
                     + f"  {z_status}  {score_str}"
                     + (f"  <b>{alloc:.0f}%</b>" if alloc else "")
-                    + (f"  conf:{conf:.0%}" if conf else "")
                     + (f"  📎{corr}" if corr else "")
                 )
                 if zl:
@@ -2143,12 +2144,11 @@ def build_morning(data: dict, sb=None) -> str:
 
             lines.append("")
 
-        # ── PATCH 14: TIER_2 — 2-line compact ──
+        # ── PATCH 14: WATCH bucket — 2-line compact ──
         if tier2:
-            lines.append(f"🔭 <b>INTRADAY TRIGGERS — TIER_2 ({len(tier2)})</b>")
+            lines.append(f"🔭 <b>INTRADAY TRIGGERS — WATCH ({len(tier2)})</b>")
             for c in tier2:
                 sym   = c.get("symbol", "?")
-                conv  = (c.get("conviction") or "").upper()
                 msl   = msl_map.get(sym, {})
                 zl    = float(msl.get("entry_zone_low")  or 0)
                 zh    = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
@@ -2158,7 +2158,7 @@ def build_morning(data: dict, sb=None) -> str:
                 cmp_str_m2 = f" (CMP: ₹{cmp_m2:,.0f})" if cmp_m2 else ""
 
                 lines.append(
-                    f"  {conviction_icon(conv)} <b>{sym}</b>{cmp_str_m2} [{conv}]"
+                    f"  {entry_action_icon('WAIT_FOR_TRIGGER')} <b>{sym}</b>{cmp_str_m2}"
                     f"  ₹{zl:,.0f}–₹{zh:,.0f} {dist_str}"
                 )
                 if c.get("entry_note"):
@@ -2202,7 +2202,7 @@ def build_afternoon(data: dict, sb=None) -> str:
     date_str = data["signal_date"]
 
     lines = [
-        f"<b>📊 AFTERNOON CONVICTION CHECK — {date_str}  |  TradeOS v7  |  {now_str}</b>",
+        f"<b>📊 AFTERNOON REVIEW — {date_str}  |  TradeOS v7  |  {now_str}</b>",
         "═" * 35,
         "",
     ]
@@ -2212,8 +2212,8 @@ def build_afternoon(data: dict, sb=None) -> str:
         return "\n".join(lines)
 
     ranked = fp["ranked_candidates"]
-    tier1  = [r for r in ranked if r.get("tier") == "TIER_1"]
-    tier2  = [r for r in ranked if r.get("tier") == "TIER_2"]
+    tier1  = [r for r in ranked if r.get("action") in ("ENTER_NOW", "ENTER_ON_DIP")]
+    tier2  = [r for r in ranked if r.get("action") == "WAIT_FOR_TRIGGER"]
 
     if not tier1 and not tier2:
         lines.append("<i>No picks today</i>")
@@ -2242,20 +2242,19 @@ def build_afternoon(data: dict, sb=None) -> str:
             lines.append("")
 
     # ════════════════════════════════════════════════════════════════════
-    # TIER 1 — Full conviction block
+    # ACT NOW — full detail block
     # Each stock gets: CMP · zone status · SL · T1 · RR · alloc ·
     #                  thesis · entry note · timing · invalidation
     # ════════════════════════════════════════════════════════════════════
     any_actionable = False
 
     if tier1:
-        lines.append(f"⭐ <b>TIER 1 — ACT NOW ({len(tier1)})</b>")
+        lines.append(f"⭐ <b>ACT NOW ({len(tier1)})</b>")
 
         for c in tier1:
-            sym   = c.get("symbol", "?")
-            conv  = (c.get("conviction") or "").upper()
-            conf  = float(c.get("confidence") or 0)
-            alloc = float(c.get("suggested_allocation_pct") or 0)
+            sym    = c.get("symbol", "?")
+            action = c.get("action") or ""
+            alloc  = float(c.get("suggested_allocation_pct") or 0)
 
             msl = msl_map.get(sym, {})
             zl  = float(msl.get("entry_zone_low")  or 0)
@@ -2296,9 +2295,8 @@ def build_afternoon(data: dict, sb=None) -> str:
 
             # ── Line 1: Header ──────────────────────────────────────────
             lines.append(
-                f"\n{conviction_icon(conv)} <b>{sym}</b>{cmp_str_aft}"
-                + (f" [{conv}·{conf:.0%}]" if conf else f" [{conv}]")
-                + (f"  <b>{alloc:.0f}% alloc</b>" if alloc else "")
+                f"\n{entry_action_icon(action)} <b>{sym}</b>{cmp_str_aft}"
+                + (f" [{alloc:.0f}% alloc]" if alloc else "")
             )
 
             # ── Line 2: Live zone status (module string already has price + distance) ──
@@ -2386,22 +2384,21 @@ def build_afternoon(data: dict, sb=None) -> str:
 
         if not any_actionable:
             lines.append(
-                "<i>⏳ No TIER_1 picks in zone right now"
+                "<i>⏳ No ACT NOW picks in zone right now"
                 " — monitor for 1:30–2:30 PM entry window</i>"
             )
             lines.append("")
 
     # ════════════════════════════════════════════════════════════════════
-    # TIER 2 — Compact trigger watch
-    # compute_entry_readiness only runs on TIER_1, so T2 has no live data.
+    # WATCH — compact trigger watch
+    # compute_entry_readiness only runs on ACT NOW, so WATCH has no live data.
     # Show EOD price + distance from msl_map; entry_note for trigger condition.
     # ════════════════════════════════════════════════════════════════════
     if tier2:
-        lines.append(f"🔭 <b>TIER 2 — TRIGGER WATCH ({len(tier2)})</b>")
-        lines.append(f"  <i>Zone ranges + EOD price — no live enrichment for TIER 2</i>")
+        lines.append(f"🔭 <b>TRIGGER WATCH ({len(tier2)})</b>")
+        lines.append(f"  <i>Zone ranges + EOD price — no live enrichment for the watch bucket</i>")
         for c in tier2:
             sym  = c.get("symbol", "?")
-            conv = (c.get("conviction") or "").upper()
             msl  = msl_map.get(sym, {})
             zl   = float(msl.get("entry_zone_low")  or 0)
             zh   = float(msl.get("entry_zone_high") or (zl * 1.02 if zl else 0))
@@ -2411,7 +2408,7 @@ def build_afternoon(data: dict, sb=None) -> str:
             cmp_str_t2aft = f" (CMP: ₹{cp:,.0f})" if cp > 0 else ""
 
             lines.append(
-                f"\n  {conviction_icon(conv)} <b>{sym}</b>{cmp_str_t2aft} [{conv}]"
+                f"\n  {entry_action_icon('WAIT_FOR_TRIGGER')} <b>{sym}</b>{cmp_str_t2aft}"
                 f"  Zone:₹{zl:,.0f}–₹{zh:,.0f}{dist_str}"
             )
             if c.get("entry_note"):
@@ -2456,8 +2453,8 @@ def build_compact(data: dict) -> str:
 
     if fp and fp.get("ranked_candidates"):
         ranked   = fp["ranked_candidates"]
-        tier1    = [r for r in ranked if r.get("tier") == "TIER_1"]
-        tier2    = [r for r in ranked if r.get("tier") == "TIER_2"]
+        tier1    = [r for r in ranked if r.get("action") in ("ENTER_NOW", "ENTER_ON_DIP")]
+        tier2    = [r for r in ranked if r.get("action") == "WAIT_FOR_TRIGGER"]
         guidance = fp.get("portfolio_guidance", {})
         sizing   = guidance.get("position_sizing_override") or fp.get("_sizing", "?")
         lines.append(f"💼 {sizing}")
@@ -2465,7 +2462,7 @@ def build_compact(data: dict) -> str:
             lines.append("\n⭐ <b>ACT NOW</b>")
             for c in tier1:
                 lines.append(
-                    f"  {conviction_icon(c.get('conviction'))} <b>{c['symbol']}</b> "
+                    f"  {entry_action_icon(c.get('action'))} <b>{c['symbol']}</b> "
                     f"[{c.get('action', '?')}] {float(c.get('suggested_allocation_pct', 0)):.0f}%"
                 )
         if tier2:
@@ -2481,8 +2478,7 @@ def build_compact(data: dict) -> str:
             lines.append(f"🎯 <b>BUYS ({len(buys)})</b>")
             for s in buys[:5]:
                 lines.append(
-                    f"  {conviction_icon(s.get('ai_conviction'))} "
-                    f"<b>{s['symbol']}</b> "
+                    f"  • <b>{s['symbol']}</b> "
                     f"{float(s.get('score_adjusted') or s.get('score') or 0):.0f}pt"
                 )
 
@@ -2675,8 +2671,8 @@ def main():
 
     fp     = data.get("final_picks") or {}
     ranked = fp.get("ranked_candidates") or []
-    tier1  = len([r for r in ranked if r.get("tier") == "TIER_1"])
-    tier2  = len([r for r in ranked if r.get("tier") == "TIER_2"])
+    tier1  = len([r for r in ranked if r.get("action") in ("ENTER_NOW", "ENTER_ON_DIP")])
+    tier2  = len([r for r in ranked if r.get("action") == "WAIT_FOR_TRIGGER"])
     exits  = len([s for s in data["signals"] if s.get("signal_type") == "EXIT"])
 
     if success:
@@ -2690,9 +2686,9 @@ def main():
 
     # ── Write structured daily summary ──
     try:
-        _tier1   = len([r for r in ranked if r.get("tier") == "TIER_1"])
-        _tier2   = len([r for r in ranked if r.get("tier") == "TIER_2"])
-        _tier3   = len([r for r in ranked if r.get("tier") == "TIER_3"])
+        _tier1   = len([r for r in ranked if r.get("action") in ("ENTER_NOW", "ENTER_ON_DIP")])
+        _tier2   = len([r for r in ranked if r.get("action") == "WAIT_FOR_TRIGGER"])
+        _tier3   = len([r for r in ranked if r.get("action") == "SKIP"])
         _buy_raw  = sum(1 for s in data["signals"] if s.get("signal_type") in ENTRY_TYPES)
         _watch    = sum(1 for s in data["signals"] if s.get("signal_type") == "WATCH")
         _exit_raw = sum(1 for s in data["signals"] if s.get("signal_type") == "EXIT")
@@ -2703,7 +2699,7 @@ def main():
         elif not has_fp:
             _zero_reason = "STEP19_MISSING"
         elif _tier1 == 0 and _tier2 == 0:
-            _zero_reason = "AI_PASSED_ALL_TO_TIER3"
+            _zero_reason = "AI_PASSED_ALL_TO_MONITOR"
 
         sb.table("signal_daily_summary").upsert({
             "date":           today,

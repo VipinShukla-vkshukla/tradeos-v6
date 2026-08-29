@@ -602,22 +602,32 @@ def review_ranking(sb, days: int = 30) -> None:
 
 def review_ai_tier_weight(sb) -> None:
     """
-    Is ai_tier ready to leave the 0.0 weight it has sat at since 04-Aug-2026?
-
-    entry_ranking.score_plan()'s own comment states the exact unlock
-    condition: tier-by-tier forward returns from resolved outcomes, once
-    each tier clears a trustable sample — not a calendar date, not someone
-    remembering to ask. Operator's own request, 07-Aug-2026: "ensure it gets
-    picked at the right time in future." This is that check, run
-    automatically every week the review runs, so the question is re-asked
-    on its own schedule.
-
-    Same query shape as allocation.scoring.tercile_report's ai_tier section
-    (07-Aug-2026) — entered + resolved plans, R = outcome_return_pct /
-    ((entry_zone_high - planned_stop) / entry_zone_high * 100). Reused, not
-    re-derived, so the two can never quietly disagree about what "R" means.
+    RETIRED, 29-Aug-2026 — this was an open question ("is tier ready for a
+    nonzero weight yet"), re-asked weekly per the operator's own 07-Aug-2026
+    request. It is now closed, not merely unready: run one last time with a
+    real sample (n=47/58/99 per tier), it found TIER_1 UNDERPERFORMING
+    TIER_2 and TIER_3 (E[R] -0.180 vs +0.322 vs +0.372) — the self-rated
+    judgment was inversely predictive, not just thin. ai_tier/ai_conviction
+    were then removed from the evening AI's output entirely (see
+    ai/ai_decision_engine.py's own module docstring) — every future
+    signal_output_daily row will carry ai_tier=NULL, so this query has
+    nothing new to measure ever again. Kept, not deleted, so the historical
+    query and its own reasoning stay legible; the body below no longer runs
+    automatically.
     """
-    _hdr("AI TIER WEIGHT — is rank_weight_tier ready to leave 0? (all resolved)")
+    _hdr("AI TIER WEIGHT — RETIRED 29-Aug-2026, see this function's own docstring")
+    logger.info("  ai_tier/ai_conviction are no longer written by the evening AI — "
+               "nothing left to re-measure. Historical verdict: TIER_1 "
+               "underperformed TIER_2/TIER_3 on real resolved outcomes; the "
+               "weight stays at 0 permanently, not pending promotion.")
+    return
+
+    # ── historical body, unreachable, kept for reference only ──────────────
+    #
+    # Same query shape as allocation.scoring.tercile_report's ai_tier section
+    # (07-Aug-2026) — entered + resolved plans, R = outcome_return_pct /
+    # ((entry_zone_high - planned_stop) / entry_zone_high * 100). Reused, not
+    # re-derived, so the two can never quietly disagree about what "R" means.
     from allocation.scoring import _dist
 
     floor = 30   # Prior's own convention: "needs 30 observations to be trusted"

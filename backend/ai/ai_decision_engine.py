@@ -14,15 +14,26 @@ DESIGN PRINCIPLES:
      awareness. This makes 1 call and explicitly asks for group-move analysis,
      sector concentration guards, and portfolio overlap checks.
 
-  2. RANK ALL, TIER ALL — no arbitrary top-12 cutoff.
-     TIER_1 = act now | TIER_2 = watch for trigger | TIER_3 = monitor only
-     On a strong day you may get 10 TIER_1s. On a weak day, 2.
-     The human decides their own capacity; the AI shows true quality distribution.
+  2. NO SELF-RATED CONVICTION, 29-Aug-2026 — tier (TIER_1/2/3) and conviction
+     (HIGH/MEDIUM/LOW) were REMOVED, not just demoted. Measured against real
+     resolved outcomes (n=47-99/tier, n=30-44/conviction, stable across two
+     separate two-week periods): TIER_1/HIGH-conviction picks UNDERPERFORMED
+     TIER_3/LOW-conviction ones (E[R] -0.18 vs +0.37 by tier; -1.35 vs +3.28
+     avg% by conviction) — the self-assessment was inversely predictive, not
+     merely unhelpful (`rank_weight_tier`/`rank_weight_conviction` had already
+     sat at 0 since 04-Aug-2026 for the weaker reason that it was simply
+     unvalidated; this is the follow-up measurement that reason called for).
+     Which candidates get operator attention is now decided deterministically
+     downstream (the allocator's own measured edge — see control/
+     candidate_monitor.py), not from the AI's opinion of quality. The AI's
+     remaining job is narrative and factual: thesis, invalidation, catalyst,
+     cross-candidate correlation — never a re-expression of "how good is this"
+     under a different field name.
 
   3. STEP 15 GATE WORK IS RESPECTED — candidates already passed 11 hard gates.
      Step 19 does NOT re-pick from MSL or re-run technical gates. Its job is:
      portfolio-level reasoning, macro overlay, cross-stock correlation guards,
-     and conviction scoring on already-qualified setups.
+     and narrative on already-qualified setups.
 
   4. STEP 18 OUTPUT IS THE MARKET OVERLAY — sentiment_modifiers already applied
      to signal_log.score_adjusted by step 18. Step 19 reads the final scores
@@ -47,17 +58,20 @@ INPUTS:
   ai_context.__FINAL_PICKS__ (last 5d) — historical echo: what we picked vs outcome
 
 OUTPUTS:
-  signal_log       — ai_conviction, ai_confidence, ai_conviction_reason,
-                     ai_suggested_action, ai_risks, ai_catalyst, ai_note,
-                     ai_provider — written for ALL ranked candidates
+  signal_log       — ai_conviction_reason (now pure narrative text — thesis/
+                     entry_note/invalidation/catalyst, no tier or conviction
+                     label prefixed), ai_suggested_action, ai_risks,
+                     ai_catalyst, ai_note, ai_provider — written for ALL
+                     ranked candidates. ai_conviction/ai_tier are no longer
+                     written (left null going forward; historical rows keep
+                     their old values, read-only, for the record).
                      ai_max_chase_pct, ai_zone_high_extended, ai_chase_rationale
-                     — conviction-aware extension above compute_msl's mechanical
-                     entry_zone_high (see _resolve_chase_pct). Lets a live
-                     intraday check (entry_readiness.py) tell a genuinely
-                     "too extended, skip" situation apart from "still above
-                     the mechanical zone but AI's full-context conviction
-                     supports chasing it" — which compute_msl alone cannot
-                     know, since it never sees conviction/macro/FII context.
+                     — FIXED, deterministic (SWING_CHASE_PCT_FLAT), not an
+                     AI judgment — see write_signal_enrichment. Quantified
+                     29-Aug-2026: chase >2% above the mechanical zone turned
+                     net negative on real resolved outcomes (n=17-24 per
+                     band), so the ceiling is deliberately conservative, not
+                     AI-widened per candidate the way it used to be.
   master_shortlist — same AI fields synced
   ai_context       — symbol=__FINAL_PICKS__, full ranked JSON
   lessons          — new rules from cross-stock pattern detection
@@ -85,13 +99,18 @@ from config import get_supabase, today_ist, is_kill_switch_active, cfg, cfg_floa
 
 DRY_RUN = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
 
-# Ceiling for ai_max_chase_pct (% above compute_msl's entry_zone_high that AI
-# conviction may justify chasing into). Deliberately matches the 8% boundary
-# compute_msl.compute_entry_timing_type() already uses to separate CHASING
-# from EXTENDED — AI decides how much of that existing headroom today's
-# conviction/momentum/macro context justifies; it never invents new headroom
-# beyond what compute_msl itself still calls "chaseable".
-MAX_CHASE_PCT_CEILING = 8.0
+# FIXED, deterministic chase ceiling — 29-Aug-2026, replaces the old
+# AI-proposed-then-clamped ai_max_chase_pct. Quantified against real resolved
+# outcomes (signal_output_daily, n=511/23/17/7 across bands): 0% chase held
+# +1.83% avg/68.5% win; 0-2% held positive (+1.10%/60.9%); 2-4% turned
+# negative (-0.12%/41.2%); 4%+ was disastrous (-4.61%/14.3%, small n but
+# consistent in direction with every other AI self-rated judgment measured
+# this session). The AI no longer proposes a number to clamp — this constant
+# IS the ceiling, applied uniformly, matching the last bin the data still
+# supports. Config-overridable so a future re-measurement can move it
+# without a code change; the number itself is not invented, it is where the
+# real data stopped supporting a wider allowance.
+SWING_CHASE_PCT_FLAT = 2.0
 
 
 # ── Trading-day resolution ─────────────────────────────────────────────────
@@ -150,7 +169,7 @@ def get_last_trading_date(sb, reference_date: date | None = None) -> str:
 _SYSTEM_PROMPT = (
     "You are a senior Indian equity portfolio manager with 20 years of NSE 500 swing trading experience. "
     "TARGET HORIZON: 1–3 weeks (5–15 trading sessions). Every ranking and allocation decision must be "
-    "calibrated to this window — a setup that takes 6 weeks to play out is NOT TIER_1 for us. "
+    "calibrated to this window — a setup that takes 6 weeks to play out is not a fit for us. "
     "You think in terms of capital deployment, risk-adjusted returns, and portfolio construction — "
     "not just individual stock setups. "
     "You are reading a fully enriched, gate-filtered candidate list. Every stock here already passed "
@@ -165,7 +184,7 @@ _SYSTEM_PROMPT = (
     "PRICE RULE: Every price you write in thesis, entry_note, and invalidation "
     "MUST come from the CMP and Zone values shown in the candidate data. "
     "Never use prices from training memory. If CMP or Zone is missing for a candidate, "
-    "assign it TIER_3/SKIP — do not invent a price. "
+    "assign it action SKIP — do not invent a price. "
     "Output ONLY valid JSON — no preamble, no markdown."
 )
 
@@ -795,12 +814,11 @@ def build_prompt(ctx: dict, trade_date: str,
             "  by ATR chase distance. near_miss_data shows exactly how far above zone each is.",
             "  TARGET HORIZON: 1–3 weeks. Evaluate whether today's FII/macro justifies entry.",
             "  Your task:",
-            "    1. For each: check if HOT+EXPANSION+FII_BUYING+SectorTop4 → flag TIER_1",
-            "    2. Apply macro overlay and concentration guards as normal",
-            "    3. Set upgraded_from_watch: true on all entries in ranked_candidates",
-            "    4. Use near_miss_data.gap_atrs to judge how far extended — smaller gap = better",
-            "    5. Assign SKIP if macro does not support chasing at this distance",
-            "    6. Set max_chase_pct per CHASE GUIDANCE below",
+            "    1. Apply macro overlay and concentration guards as normal",
+            "    2. Set upgraded_from_watch: true on all entries in ranked_candidates",
+            "    3. Use near_miss_data.gap_atrs to judge how far extended — smaller gap = better,",
+            "       but this is entry-timing context for entry_note/thesis, not a priority score",
+            "    4. Assign SKIP if macro does not support entry at this distance",
             "",
             _COLUMNS,
         ]
@@ -816,11 +834,10 @@ def build_prompt(ctx: dict, trade_date: str,
             "    2. Detect correlation clusters (cap clustered sectors/styles)",
             "    3. Apply concentration guards against open positions",
             "    4. Apply lessons in confidence order",
-            "    5. Assign TIER_1/2/3 based on setup quality + macro alignment + 1-3wk readiness",
+            "    5. Assign action (ENTER_NOW/ENTER_ON_DIP/WAIT_FOR_TRIGGER/SKIP) based on",
+            "       entry timing only — not a quality or conviction judgment",
             "    6. Suggest capital allocation % (soft guidance, human decides final amount)",
-            "    7. Rank within each tier by conviction",
-            "    8. Apply event awareness per EVENT GUIDANCE below (NOT a uniform cap)",
-            "    9. Set max_chase_pct per CHASE GUIDANCE below",
+            "    7. Apply event awareness per EVENT GUIDANCE below (NOT a uniform cap)",
             "",
             _COLUMNS,
         ]
@@ -834,7 +851,8 @@ def build_prompt(ctx: dict, trade_date: str,
         "  ⚠️EventRisk (company-specific, from nifty_upcoming_events — e.g. earnings,",
         "  board meetings, fund-raising). This carries NO polarity — we cannot know",
         "  in advance whether results beat or miss. Keep this one blanket-cautious:",
-        "    - Present + ≤5d → cap TIER_2 or mandate half-size, same as before.",
+        "    - Present + ≤5d → halve suggested_allocation_pct and name the event",
+        "      in risks, same spirit as the old rule.",
         "    - This is a genuine data limitation, not something to reason around —",
         "      don't infer a direction from the purpose text (e.g. 'Fund Raising' is",
         "      not inherently bad news; don't invent a bias that isn't in the data).",
@@ -842,12 +860,13 @@ def build_prompt(ctx: dict, trade_date: str,
         "  📅SectorEvent (sector-level, from event_calendar — DOES carry event_bias",
         "  and event_intensity, e.g. RBI MPC, monsoon, FII flow windows, festive season).",
         "  Use the bias, don't just react to presence:",
-        "    - NEGATIVE + MEDIUM/HIGH intensity + ≤5d → cap TIER_2 or half-size,",
-        "      same spirit as the old rule, now correctly targeted at bad news only.",
+        "    - NEGATIVE + MEDIUM/HIGH intensity + ≤5d → halve suggested_allocation_pct",
+        "      and name it in risks, same spirit as the old rule, correctly targeted",
+        "      at bad news only.",
         "    - POSITIVE + MEDIUM/HIGH intensity → this is what event tracking is",
         "      FOR — cite it as a supporting catalyst in thesis/catalyst fields,",
-        "      do NOT cap. A sector tailwind landing during your 1-3wk hold is a",
-        "      reason for conviction, not caution.",
+        "      do NOT reduce sizing for it. A sector tailwind landing during your",
+        "      1-3wk hold is a reason to note it positively, not caution.",
         "    - MIXED or LOW intensity, either polarity → contextual awareness only,",
         "      no automatic cap or boost — mention in thesis only if it changes the",
         "      picture, most of the time it won't.",
@@ -897,30 +916,15 @@ def build_prompt(ctx: dict, trade_date: str,
         "      human to review, not something that executes automatically.",
     ]
 
-    lines += [
-        "",
-        "═══ CHASE GUIDANCE (max_chase_pct field) ═══",
-        "  compute_msl's Zone(entry) above is a MECHANICAL zone — ATR/anchor-based,",
-        "  zero awareness of conviction, momentum quality, or today's FII/sector tailwind.",
-        "  A live intraday check re-uses this same zone hours later with no further judgment,",
-        "  so a stock that gaps or rallies a few % above Zone-high gets flatly treated as",
-        "  'missed' even when everything that actually drives conviction still supports it.",
-        "  max_chase_pct is how you fix that: the % ABOVE Zone-high (0 to 8, matching",
-        "  compute_msl's own CHASING/EXTENDED boundary — you decide how much of that existing",
-        "  headroom today's setup earns, never invent more) that this specific stock's setup",
-        "  justifies still entering at, for a 1-3wk swing with a correspondingly tighter stop.",
-        "    - Only meaningful for action=ENTER_NOW/ENTER_ON_DIP. SKIP/WAIT_FOR_TRIGGER → 0.",
-        "    - Entry:EXTENDED or Entry:WAIT in the data above → 0 (compute_msl already says",
-        "      this setup is too far gone; do not override that mechanical read).",
-        "    - Entry:CHASING/OPTIMAL/REENTRY + HIGH conviction + ACCELERATING/EXPANSION + ",
-        "      struct_edge YES + supportive FII/sector tailwind → can justify the upper end (5-8).",
-        "    - Weak/MEDIUM conviction or only some signals aligned → keep it small (1-3) or 0.",
-        "    - HotAdj:Y means compute_msl's own zone math already detected 3+ acceleration",
-        "      signals yesterday and pulled the zone toward that close — treat as one",
-        "      supporting data point for chasing today, never sufficient on its own.",
-        "    - chase_rationale: one short phrase naming the specific signals that justify it",
-        "      (or say so plainly when the answer is 0 — e.g. 'EXTENDED per compute_msl').",
-    ]
+    # CHASE GUIDANCE removed as an AI-discretion prompt section, 29-Aug-2026.
+    # Quantified against real resolved outcomes: candidates entered with zero
+    # chase held +1.83% avg / 68.5% win (n=511); 0-2% chase held positive
+    # (+1.10%/60.9%, n=23); 2-4% chase turned NEGATIVE (-0.12%/41.2%, n=17);
+    # 4%+ chase was disastrous (-4.61%/14.3% win, n=7 — small, but directionally
+    # consistent with every other AI self-rated judgment measured this session).
+    # The AI is no longer asked for a chase number at all — chase_note below
+    # is narrative only; the actual enforced ceiling is a fixed, deterministic
+    # value computed in write_signal_enrichment(), not a model-proposed one.
 
     for c in ctx["candidates"]:
         # Line 1: identity, price, position sizing context
@@ -1001,7 +1005,7 @@ def build_prompt(ctx: dict, trade_date: str,
         lines += [
             "",
             "═══ NEAR-MISS UPGRADES (step 18 flagged — decide whether to include in ranking) ═══",
-            "  If you include any of these, add them to ranked_candidates with appropriate tier.",
+            "  If you include any of these, add them to ranked_candidates normally.",
             "  Set upgraded_from_watch: true on those entries.",
         ]
         for w in ctx["watch_upgrades"]:
@@ -1033,34 +1037,40 @@ def build_prompt(ctx: dict, trade_date: str,
 
     lines.append(r"""
 ═══ OUTPUT FORMAT ═══
-Return ONLY this exact JSON. Rank ALL candidates above — none should be missing.
+Return ONLY this exact JSON. Cover ALL candidates above — none should be missing.
 
-conviction: HIGH | MEDIUM | LOW
-tier: TIER_1 (act now, 1–3 week setup) | TIER_2 (watch for trigger) | TIER_3 (monitor)
-action: ENTER_NOW | ENTER_ON_DIP | WAIT_FOR_TRIGGER | SKIP
+TIER AND CONVICTION ARE GONE, 29-Aug-2026 — DO NOT INVENT REPLACEMENTS.
+Measured against real resolved outcomes: candidates you marked TIER_1/HIGH
+conviction underperformed your own TIER_3/LOW-conviction picks (E[R] -0.18
+vs +0.37, n=47/99, holding across two separate two-week periods) — your
+self-rated confidence was inversely predictive, not just unhelpful. Do not
+add a new field that re-expresses "how good do you think this is" under any
+other name (a 1-10 score, a star rating, "priority", etc.) — the finding was
+about the JUDGMENT, not the label. Your job below is narrative and factual
+observation only: why the setup exists, what breaks it, what to watch for.
+Which candidates actually get attention is decided deterministically
+elsewhere, from real measured edge, not from your assessment of quality.
+
+action: ENTER_NOW | ENTER_ON_DIP | WAIT_FOR_TRIGGER | SKIP — a factual read of
+  entry timing (is price actually in a reasonable zone right now), not a
+  conviction call.
 expected_holding_days: your estimate of how many trading sessions to target exit (e.g. 5, 10, 15)
-suggested_allocation_pct: % of available capital (0 if SKIP, e.g. 5.0 for 5%)
-  Guidelines: TIER_1 high-conviction → 6-8% | TIER_1 medium → 4-5% | TIER_2 → 2-3% | TIER_3/SKIP → 0%
-  Total allocations should not exceed 100% minus existing positions
-max_chase_pct: 0-8, see CHASE GUIDANCE above (0 unless action is ENTER_NOW/ENTER_ON_DIP)
+suggested_allocation_pct: % of available capital (0 if SKIP) — soft, informational
+  context for the human reader only; real position sizing is computed
+  deterministically elsewhere and does not read this field.
 
 {
   "ranked_candidates": [
     {
-      "rank": 1,
       "symbol": "NSE_SYMBOL",
-      "tier": "TIER_1",
       "upgraded_from_watch": false,
-      "conviction": "HIGH",
-      "confidence": 0.85,
       "action": "ENTER_NOW",
       "expected_holding_days": 10,
       "suggested_allocation_pct": 6.0,
       "thesis": "2 sentences — why this stock in these exact macro conditions within 1-3 weeks",
       "entry_note": "specific price level or volume condition to watch for",
       "invalidation": "one precise condition that kills this setup",
-      "max_chase_pct": 4.0,
-      "chase_rationale": "one short phrase — which signals justify chasing this far, or why 0",
+      "chase_note": "one short phrase on entry timing/extension — informational only, the actual chase ceiling is fixed and does not read this",
       "risks": ["risk1", "risk2"],
       "catalyst": "specific macro/FII/sector tailwind driving this",
       "lessons_applied": ["which lesson rules were used in this decision"],
@@ -1097,7 +1107,7 @@ max_chase_pct: 0-8, see CHASE GUIDANCE above (0 unless action is ENTER_NOW/ENTER
     "position_sizing_override": "FULL | REDUCED_25PCT | HALF | MINIMAL",
     "agrees_with_step18": true,
     "override_reason": "null if agrees, else explain why you differ from step 18 sizing",
-    "new_positions_guidance": "e.g. Max 3 new entries today, TIER_1 only given CAUTION regime",
+    "new_positions_guidance": "e.g. Max 3 new entries today given CAUTION regime",
     "capital_deployment_narrative": "2 sentences on how to deploy capital today given all context",
     "sectors_to_overweight": ["sector names"],
     "sectors_to_underweight": ["sector names"]
@@ -1147,7 +1157,8 @@ def call_ai(prompt: str) -> dict | None:
     full_text = None
     for attempt, max_tokens in enumerate(token_budgets, start=1):
         try:
-            full_text = raw_completion(full_prompt, max_tokens=max_tokens)
+            full_text = raw_completion(full_prompt, max_tokens=max_tokens,
+                                       call_site="ai_decision_engine", framework="SWING")
         except Exception as e:
             logger.warning(f"AI call failed: {e}")
             return None
@@ -1171,9 +1182,140 @@ def call_ai(prompt: str) -> dict | None:
     return _parse_ai_json(full_text)
 
 
-def call_ai_batched(ctx: dict, trade_date: str, batch_size: int = 0,
-                    suffix: str = "") -> dict | None:
+# ── Cache: reuse yesterday's verdict for a materially unchanged candidate ──
+#
+# Found 29-Aug-2026, auditing AI cost: a candidate persisting across evenings
+# gets a full, fresh AI analysis every single evening, even when nothing
+# about its plan has actually changed. Quantified before writing this: over
+# 21 days, 212 candidates repeated on consecutive days, but ZERO were
+# byte-identical (avg entry-zone drift ~2%, since ATR-based zones recompute
+# from fresh price data every evening even for a persisting setup) — so an
+# exact-match cache would silently never fire. Within a 2% tolerance, 116 of
+# 212 (55%) qualify; within 1%, 73 (34%).
+#
+# SCOPED TO CANDIDATE RANKING ONLY. `position_actions` (which feeds the live
+# TIGHTEN_SL action on open positions — Track E, F-70) is a structurally
+# separate part of both the prompt and the AI's JSON response, keyed off
+# `ctx["positions"]`, never touched by anything below — an open position
+# always gets a fresh assessment every evening, regardless of whether its
+# entry candidate (if any) was ever cached.
+def _cache_eligible(today: dict, prior: dict, tolerance_pct: float) -> bool:
     """
+    Pure. True if `prior` (yesterday's plan for this symbol — strategy,
+    entry_zone_low/high) is close enough to `today`'s that reusing
+    yesterday's full AI verdict is a reasonable substitute for a fresh one.
+
+    Same strategy label required — a plan that changed which engine(s)
+    produced it is a different plan, not a continuation of the old one,
+    regardless of how close the price levels happen to sit.
+    """
+    if not today.get("strategy") or today.get("strategy") != prior.get("strategy"):
+        return False
+    for field in ("entry_zone_low", "entry_zone_high"):
+        a, b = today.get(field), prior.get(field)
+        if a is None or b is None:
+            return False
+        try:
+            a, b = float(a), float(b)
+        except (TypeError, ValueError):
+            return False
+        if b == 0 or abs(a - b) / abs(b) > tolerance_pct / 100.0:
+            return False
+    return True
+
+
+def find_reusable_candidates(sb, candidates: list[dict], trade_date: str,
+                             tolerance_pct: float = 1.0
+                             ) -> tuple[dict[str, dict], list[str]]:
+    """
+    For each of today's candidates, checks whether yesterday's plan for the
+    same symbol was materially unchanged (`_cache_eligible`) and already
+    carries a genuine — never itself reused, no chaining — AI verdict worth
+    reusing. Returns (reused_by_symbol, symbols_still_needing_fresh_analysis).
+
+    The full prior verdict comes from `ai_context.__FINAL_PICKS__`
+    (`write_final_picks`'s own `conviction_reason` JSON blob), the one place
+    the complete `ranked_candidates` entry survives — `signal_log`'s own
+    written columns (`write_signal_enrichment`) collapse tier/thesis/
+    entry_note/invalidation/allocation into one truncated, human-readable
+    string that is not reliably parseable back into its parts.
+
+    Best-effort throughout: any failure (no prior trading date resolvable,
+    missing prior-day data, a malformed JSON blob) returns "nothing
+    reusable" rather than raising — caching is a cost optimisation, never
+    something that may cost a candidate its analysis.
+    """
+    symbols = [c.get("symbol") for c in candidates if c.get("symbol")]
+    if not symbols:
+        return {}, []
+
+    try:
+        ref = date.fromisoformat(trade_date) - timedelta(days=1)
+        prior_date = get_last_trading_date(sb, ref)
+    except Exception as e:
+        logger.warning(f"  cache: could not resolve prior trading date ({e}) — skipping cache")
+        return {}, symbols
+    if not prior_date or prior_date == trade_date:
+        return {}, symbols
+
+    try:
+        prior_msl = {r["symbol"]: r for r in
+                    sb.table("master_shortlist")
+                      .select("symbol,entry_zone_low,entry_zone_high")
+                      .eq("date", prior_date).in_("symbol", symbols)
+                      .execute().data or []}
+        prior_sig = {r["symbol"]: r for r in
+                    sb.table("signal_log").select("symbol,strategy")
+                      .eq("date", prior_date).in_("symbol", symbols)
+                      .execute().data or []}
+        picks_rows = (sb.table("ai_context").select("conviction_reason")
+                        .eq("date", prior_date).eq("symbol", "__FINAL_PICKS__")
+                        .execute().data or [])
+        prior_ranked: dict[str, dict] = {}
+        if picks_rows:
+            payload = json.loads(picks_rows[0].get("conviction_reason") or "{}")
+            prior_ranked = {r.get("symbol"): r
+                           for r in (payload.get("ranked_candidates") or [])
+                           if r.get("symbol")}
+    except Exception as e:
+        logger.warning(f"  cache: prior-day data unavailable ({e}) — skipping cache")
+        return {}, symbols
+
+    reused: dict[str, dict] = {}
+    to_rank: list[str] = []
+    for c in candidates:
+        sym = c.get("symbol")
+        if not sym:
+            continue
+        prior_zone  = prior_msl.get(sym)
+        prior_entry = prior_ranked.get(sym)
+        prior_full  = {**(prior_zone or {}), "strategy": prior_sig.get(sym, {}).get("strategy")}
+        if (prior_zone and prior_entry is not None
+                and not prior_entry.get("_reused_from")
+                and _cache_eligible(c, prior_full, tolerance_pct)):
+            reused[sym] = {**prior_entry, "_reused_from": prior_date}
+        else:
+            to_rank.append(sym)
+
+    if reused:
+        logger.info(f"  cache: {len(reused)} of {len(symbols)} candidate(s) reused "
+                   f"from {prior_date}'s materially unchanged analysis "
+                   f"(tolerance {tolerance_pct}%)")
+    return reused, to_rank
+
+
+def call_ai_batched(ctx: dict, trade_date: str, batch_size: int = 0,
+                    suffix: str = "", symbols_to_rank: list[str] | None = None) -> dict | None:
+    """
+    `symbols_to_rank`, when given, narrows which symbols this call must
+    RETURN a verdict for — same mechanism `rank_only` already uses to split
+    across batches, reused here so a caller (e.g. find_reusable_candidates'
+    cache) can exclude specific symbols from needing a fresh AI verdict at
+    all, without touching `ctx["candidates"]` — every batch still sees
+    every candidate for sector/correlation judgement, cache-excluded ones
+    included. `None` (the default) reproduces the exact old behaviour:
+    every symbol in `ctx["candidates"]` is ranked.
+
     Rank the field in batches small enough to come back whole.
 
     WHY THIS EXISTS
@@ -1189,6 +1331,22 @@ def call_ai_batched(ctx: dict, trade_date: str, batch_size: int = 0,
     and stops generating anyway — attempt one returned 4,321 characters against
     a 20,000-token budget. Output length is the constraint, so the request has
     to be smaller, which is what the previous code's own warning said.
+
+    ROOT CAUSE, FOUND LATER (01-Aug-2026, ai_router.py) — 12 candidates should
+    never have been near a 20,000-token ceiling for output this terse.
+    deepseek-v4-flash is a reasoning model: `max_tokens` budgets hidden
+    reasoning AND the actual output from ONE allowance, reasoning spent first,
+    and that reasoning is discarded — nothing here reads it. The 07-31 incident
+    predates that fix by one day; `ai_thinking_enabled` has been OFF ever since,
+    so the failure mode this docstring describes has not recurred. `batch_size`
+    was never revisited after the root cause was actually fixed elsewhere —
+    raised 29-Aug-2026 (`ai_decision_batch_size` 5→15, `system_config`) once
+    real daily volume (8–45 candidates/day, median ~20–24, measured over 20
+    sessions) showed batch_size=5 meant 2–9 full-context resends on a typical
+    evening for a truncation risk that no longer applies at the size that
+    caused it. The escalating budget and per-batch failure handling below stay
+    exactly as they were — this is a size change, not a removal of the safety
+    net.
 
     WHAT IS PRESERVED
     -----------------
@@ -1211,16 +1369,32 @@ def call_ai_batched(ctx: dict, trade_date: str, batch_size: int = 0,
     if not cands:
         return None
 
-    batch_size = batch_size or cfg_int("ai_decision_batch_size", 5)
+    batch_size = batch_size or cfg_int("ai_decision_batch_size", 15)
     symbols = [c.get("symbol") for c in cands if c.get("symbol")]
+    # to_rank is the OUTPUT obligation; `symbols`/`cands`/ctx["candidates"]
+    # stay the full field throughout — build_prompt below always receives
+    # the whole ctx, never a trimmed one.
+    to_rank = symbols if symbols_to_rank is None else [
+        s for s in symbols if s in set(symbols_to_rank)]
+    if not to_rank:
+        # Every candidate was excluded (e.g. fully cache-covered) — nothing
+        # for the AI to do this call. A distinct, valid outcome from "the
+        # AI call failed": returns a real, empty-but-truthy result rather
+        # than None, so the caller's `if not result:` ML-fallback branch
+        # does not fire over having nothing left to ask.
+        return {"ranked_candidates": []}
+    # rank_only only when to_rank is a STRICT subset — passing the full
+    # symbol list would add build_prompt's "SCOPE FOR THIS RESPONSE" text
+    # for no reason, a needless behaviour change on a day nothing is cached.
+    only = to_rank if len(to_rank) < len(symbols) else None
 
     # One call is cheaper and keeps a single global rank order, so it stays the
     # path for a field small enough to answer in one response.
-    if len(symbols) <= batch_size:
-        return call_ai(build_prompt(ctx, trade_date) + suffix)
+    if len(to_rank) <= batch_size:
+        return call_ai(build_prompt(ctx, trade_date, rank_only=only) + suffix)
 
-    batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
-    logger.info(f"  {len(symbols)} candidates exceeds the {batch_size}-per-call "
+    batches = [to_rank[i:i + batch_size] for i in range(0, len(to_rank), batch_size)]
+    logger.info(f"  {len(to_rank)} candidates exceeds the {batch_size}-per-call "
                 f"budget — splitting into {len(batches)} batches, each seeing "
                 f"the full field")
 
@@ -1261,15 +1435,11 @@ def call_ai_batched(ctx: dict, trade_date: str, batch_size: int = 0,
         logger.warning("  every batch failed — nothing to rank")
         return None
 
-    # Renumber. The per-batch ranks are 1..n within their own batch, so leaving
-    # them would produce several rank 1s and a downstream sort on a field that
-    # no longer means anything.
-    _tier = {"TIER_1": 0, "TIER_2": 1, "TIER_3": 2}
-    ranked.sort(key=lambda r: (_tier.get(str(r.get("tier")).upper(), 3),
-                               -float(r.get("confidence") or 0)))
-    for n, row in enumerate(ranked, start=1):
-        row["rank"] = n
-
+    # No re-sort, no rank assignment, 29-Aug-2026 — both used to order by
+    # tier then confidence, the two fields this session's own measurement
+    # showed were inversely predictive. Priority among candidates is decided
+    # deterministically downstream (the allocator's own measured edge, see
+    # control/candidate_monitor.py), not by an AI-native ordering here.
     merged["ranked_candidates"] = ranked
     if failed:
         missing = [s for g in failed for s in g]
@@ -1483,18 +1653,20 @@ def _escape_control_chars_in_strings(s: str) -> str:
 def write_signal_enrichment(sb, result: dict, candidates: list[dict],
                             trade_date: str, provider: str) -> int:
     """
-    Write AI conviction fields to signal_log and master_shortlist for ALL ranked candidates.
-    Also writes portfolio_guidance as a note on the TIER_1 records.
+    Write AI narrative fields to signal_log and master_shortlist for ALL
+    ranked candidates.
+
+    NO TIER, NO CONVICTION — 29-Aug-2026. ai_tier/ai_conviction are no
+    longer written (see the module docstring for the measurement that
+    removed them). ai_conviction_reason is now pure narrative text
+    (thesis/entry/invalidation/allocation/correlation), with no tier label
+    prefixed onto it. Chase allowance is a fixed constant
+    (SWING_CHASE_PCT_FLAT), not a clamped AI number — the AI is no longer
+    asked to propose one at all.
     """
     ranked = result.get("ranked_candidates") or []
     if not ranked:
         return 0
-
-    guidance   = result.get("portfolio_guidance") or {}
-    guidance_note = (
-        f"Sizing:{guidance.get('position_sizing_override','?')} | "
-        f"{guidance.get('capital_deployment_narrative','')[:150]}"
-    )
 
     # Build id + entry_zone_high lookups from candidates for signal_log update.
     # zone_high is compute_msl's mechanical ceiling — needed here so the AI's
@@ -1525,15 +1697,11 @@ def write_signal_enrichment(sb, result: dict, candidates: list[dict],
     }
 
     written  = 0
-    chase_clamped = 0
     for item in ranked:
         sym = item.get("symbol")
         if not sym:
             continue
 
-        tier        = item.get("tier", "TIER_3")
-        conviction  = item.get("conviction", "LOW")
-        confidence  = float(item.get("confidence") or 0)
         action      = item.get("action", "SKIP")
         allocation  = float(item.get("suggested_allocation_pct") or 0)
         thesis      = item.get("thesis", "")
@@ -1543,20 +1711,12 @@ def write_signal_enrichment(sb, result: dict, candidates: list[dict],
         catalyst     = item.get("catalyst", "")
         corr_group   = item.get("correlation_group") or ""
         lessons_used = item.get("lessons_applied") or []
+        chase_note   = (item.get("chase_note") or "")[:200]
 
-        # ── max_chase_pct: clamp defensively — never trust raw AI output for
-        # a value that will directly widen a live trading zone. Force to 0
-        # for any action that isn't an actual entry, regardless of what the
-        # AI returned (prompt asks for this too, but the write path is the
-        # actual safety boundary, same philosophy as _validate_ai_prices).
-        raw_chase_pct = float(item.get("max_chase_pct") or 0)
-        if action not in ("ENTER_NOW", "ENTER_ON_DIP"):
-            max_chase_pct = 0.0
-        else:
-            max_chase_pct = min(max(raw_chase_pct, 0.0), MAX_CHASE_PCT_CEILING)
-        if max_chase_pct != raw_chase_pct:
-            chase_clamped += 1
-        chase_rationale = (item.get("chase_rationale") or "")[:200]
+        # FIXED chase ceiling, not an AI number — see SWING_CHASE_PCT_FLAT's
+        # own comment for the measurement behind this. Still 0 for anything
+        # that isn't an actual entry, same asymmetry the old clamp had.
+        max_chase_pct = SWING_CHASE_PCT_FLAT if action in ("ENTER_NOW", "ENTER_ON_DIP") else 0.0
 
         zone_high = zone_high_map.get(sym)
         ai_zone_high_extended = (
@@ -1565,20 +1725,17 @@ def write_signal_enrichment(sb, result: dict, candidates: list[dict],
         )
 
         conviction_reason = (
-            f"[{tier}] {thesis} | Entry: {entry_note} | "
+            f"{thesis} | Entry: {entry_note} | "
             f"Invalidation: {invalidation} | "
             f"Alloc: {allocation:.1f}% | Corr: {corr_group}"
         )[:800]
 
         ai_note = (
-            f"[{tier}/{action}] {thesis[:100]} | "
+            f"[{action}] {thesis[:100]} | "
             + (f"Lessons: {', '.join(lessons_used[:2])}" if lessons_used else "")
-            + (f" | {guidance_note}" if tier == "TIER_1" else "")
         )[:500]
 
         signal_update = {
-            "ai_conviction":        conviction,
-            "ai_confidence":        confidence,
             "ai_conviction_reason": conviction_reason,
             "ai_suggested_action":  action,
             "ai_risks":             risks,
@@ -1586,7 +1743,7 @@ def write_signal_enrichment(sb, result: dict, candidates: list[dict],
             "ai_note":              ai_note,
             "ai_provider":          provider,
             "ai_max_chase_pct":     max_chase_pct,
-            "ai_chase_rationale":   chase_rationale,
+            "ai_chase_rationale":   chase_note,
             "ai_zone_high_extended": ai_zone_high_extended,
             **sector_event_map.get(sym, {}),
             **regulatory_alert_map.get(sym, {}),
@@ -1603,29 +1760,22 @@ def write_signal_enrichment(sb, result: dict, candidates: list[dict],
 
         try:
             sb.table("master_shortlist").update({
-                "ai_conviction":        conviction,
                 "ai_conviction_reason": conviction_reason,
                 "ai_risks":             risks,
                 "ai_suggested_action":  action,
                 "ai_note":              ai_note[:300],
                 "ai_provider":          provider,
-                "ai_shortlist_rank":    item.get("rank"),
-                "ai_shortlist_reason":  f"[{tier}/{action}] {thesis[:150]}",
+                "ai_shortlist_reason":  f"[{action}] {thesis[:150]}",
                 "ai_max_chase_pct":     max_chase_pct,
-                "ai_chase_rationale":   chase_rationale,
+                "ai_chase_rationale":   chase_note,
                 "ai_zone_high_extended": ai_zone_high_extended,
             }).eq("date", trade_date).eq("symbol", sym).execute()
         except Exception as e:
             logger.warning(f"master_shortlist update failed for {sym}: {e}")
 
-
         written += 1
 
-    logger.info(
-        f"signal_log + master_shortlist: {written} candidates enriched"
-        + (f" | ⚠️ {chase_clamped} max_chase_pct values clamped (out-of-range or non-entry action)"
-           if chase_clamped else "")
-    )
+    logger.info(f"signal_log + master_shortlist: {written} candidates enriched")
     return written
 
 
@@ -1727,9 +1877,8 @@ def write_final_picks(sb, result: dict, trade_date: str, provider: str,
  
     guidance = result.get("portfolio_guidance") or {}
     ranked   = result.get("ranked_candidates") or []
-    tier1    = [r for r in ranked if r.get("tier") == "TIER_1"]
-    tier2    = [r for r in ranked if r.get("tier") == "TIER_2"]
- 
+    entries  = [r for r in ranked if r.get("action") in ("ENTER_NOW", "ENTER_ON_DIP")]
+
     # ── Payload split ──────────────────────────────────────────────────────
     # conviction_reason: ranked_candidates only — the heavy list
     candidates_payload = {"ranked_candidates": ranked}
@@ -1763,7 +1912,7 @@ def write_final_picks(sb, result: dict, trade_date: str, provider: str,
             "provider":           provider,
             "ai_note": (
                 result.get("summary") or (
-                    f"TIER_1:{len(tier1)} TIER_2:{len(tier2)} total:{candidate_count} | "
+                    f"entries:{len(entries)} total:{candidate_count} | "
                     f"{guidance.get('new_positions_guidance', '')[:200]} | "
                     f"{guidance.get('capital_deployment_narrative', '')[:300]}"
                 )
@@ -1830,10 +1979,10 @@ def _validate_ai_prices(result: dict, candidates: list[dict]) -> None:
     for item in (result.get("ranked_candidates") or []):
         sym    = item.get("symbol", "?")
         db_cmp = db_map.get(sym, 0)
-        tier   = item.get("tier", "TIER_3")
+        action = item.get("action", "SKIP")
         if not db_cmp:
-            if tier in ("TIER_1", "TIER_2"):
-                issues.append(f"{sym}({tier}): no DB price — output unverifiable")
+            if action != "SKIP":
+                issues.append(f"{sym}({action}): no DB price — output unverifiable")
             continue
         for field in ("entry_note", "invalidation", "thesis"):
             for raw in price_re.findall(item.get(field) or ""):
@@ -1941,12 +2090,33 @@ def main():
         return {"status": "dry_run", "prompt_chars": len(prompt),
                 "candidates": len(candidates)}
 
+    # Cache: reuse yesterday's verdict for a materially unchanged candidate
+    # — see find_reusable_candidates' own docstring. Skipped entirely on
+    # the WATCH-fallback path (no gate-passed candidates today): that
+    # population is already a degraded, less-certain one, and is not worth
+    # the added risk of also reusing a prior verdict on top of it.
+    reused: dict[str, dict] = {}
+    if not ctx.get("promoted_from_watch"):
+        try:
+            reused, symbols_to_rank = find_reusable_candidates(sb, candidates, trade_date)
+        except Exception as e:
+            logger.warning(f"  cache lookup failed ({e}) — analysing every candidate fresh")
+            reused, symbols_to_rank = {}, [c.get("symbol") for c in candidates if c.get("symbol")]
+    else:
+        symbols_to_rank = [c.get("symbol") for c in candidates if c.get("symbol")]
+
     # Batched when the field is too large to answer in one response. Small
     # fields still go in a single call — see call_ai_batched.
-    logger.info(f"Calling AI ({len(candidates)} candidates)...")
-    t0     = time.time()
-    result = call_ai_batched(ctx, trade_date, suffix=ml_suffix)
-    elapsed = time.time() - t0
+    if symbols_to_rank:
+        logger.info(f"Calling AI ({len(symbols_to_rank)} of {len(candidates)} "
+                   f"candidates" + (f", {len(reused)} reused" if reused else "") + ")...")
+        t0     = time.time()
+        result = call_ai_batched(ctx, trade_date, suffix=ml_suffix,
+                                 symbols_to_rank=symbols_to_rank)
+        elapsed = time.time() - t0
+    else:
+        logger.info(f"  all {len(reused)} candidate(s) reused — no AI call needed today")
+        result, elapsed = {"ranked_candidates": []}, 0.0
 
     if not result:
         # ML FALLBACK. Rather than exiting with nothing, rank on the trained
@@ -1954,11 +2124,14 @@ def main():
         # event or correlation context — which is a large drop in nuance and a
         # small one in usefulness compared with emitting no tiering at all.
         # The output carries source='ml_fallback' so nothing downstream, and no
-        # later post-mortem, mistakes it for an LLM decision.
+        # later post-mortem, mistakes it for an LLM decision. Operates on
+        # every candidate, ignoring any cache hits — a rare degraded path
+        # where correctness matters more than avoiding one redundant score.
         logger.warning("AI call returned nothing — trying the ML conviction model")
         try:
             from ai.ml_support import rank_by_ml
             result = rank_by_ml(candidates)
+            reused = {}
         except Exception as e:
             logger.warning(f"  ML fallback unavailable: {e}")
             result = None
@@ -1967,13 +2140,20 @@ def main():
             return {"status": "ai_failed"}
 
     logger.info(f"AI responded in {elapsed:.1f}s")
+
+    # Merge reused entries in BEFORE validation, so a reused verdict gets
+    # exactly the same price/chase-pct safety checks a fresh one does —
+    # today's price can still have moved within tolerance since yesterday.
+    if reused:
+        result = {**result,
+                 "ranked_candidates": (result.get("ranked_candidates") or [])
+                                       + list(reused.values())}
     _validate_ai_prices(result, candidates)
 
     provider = cfg("ai_provider", "unknown")
     ranked   = result.get("ranked_candidates") or []
-    tier1    = [r for r in ranked if r.get("tier") == "TIER_1"]
-    tier2    = [r for r in ranked if r.get("tier") == "TIER_2"]
-    tier3    = [r for r in ranked if r.get("tier") == "TIER_3"]
+    entries  = [r for r in ranked if r.get("action") in ("ENTER_NOW", "ENTER_ON_DIP")]
+    waiting  = [r for r in ranked if r.get("action") == "WAIT_FOR_TRIGGER"]
     guidance = result.get("portfolio_guidance") or {}
 
     # Writes
@@ -1985,7 +2165,7 @@ def main():
     # Summary log
     logger.success(
         f"Step 19 done in {elapsed:.1f}s | "
-        f"TIER_1:{len(tier1)} TIER_2:{len(tier2)} TIER_3:{len(tier3)} | "
+        f"Entries:{len(entries)} Waiting:{len(waiting)} Total:{len(ranked)} | "
         f"Enriched:{enriched} | New rules:{new_rules} | "
         f"PosActions:{pos_actions_written} | "
         f"Sizing:{guidance.get('position_sizing_override','?')}"
@@ -1994,12 +2174,12 @@ def main():
     logger.info(f"  Overweight: {guidance.get('sectors_to_overweight',[])} | "
                 f"Underweight: {guidance.get('sectors_to_underweight',[])}")
 
-    if tier1:
-        t1_str = " | ".join(
-            f"{r['symbol']}({r.get('conviction','?')},{r.get('suggested_allocation_pct',0):.0f}%)"
-            for r in tier1
+    if entries:
+        e_str = " | ".join(
+            f"{r['symbol']}({r.get('action','?')},{r.get('suggested_allocation_pct',0):.0f}%)"
+            for r in entries
         )
-        logger.info(f"  ★ TIER_1: {t1_str}")
+        logger.info(f"  ★ Entries: {e_str}")
 
     if result.get("sector_exposure_warnings"):
         for w in result["sector_exposure_warnings"]:
@@ -2015,13 +2195,13 @@ def main():
 
     return {
         "status":     "ok",
-        "tier1":      len(tier1),
-        "tier2":      len(tier2),
-        "tier3":      len(tier3),
+        "entries":    len(entries),
+        "waiting":    len(waiting),
+        "total":      len(ranked),
         "enriched":   enriched,
         "new_rules":  new_rules,
         "sizing":     guidance.get("position_sizing_override"),
-        "top_picks":  [r["symbol"] for r in tier1[:5]],
+        "top_picks":  [r["symbol"] for r in entries[:5]],
     }
 
 

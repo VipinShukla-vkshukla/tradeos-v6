@@ -265,6 +265,11 @@ _FETCH_ALL_SORT_KEY = {
     # uniqueness are guaranteed by construction, the same confidence every
     # other freshly-created id-keyed table in this map is built on.
     "swing_same_day_candidates": "id",
+    # ai_usage_log — 29-Aug-2026, migration 127. `id bigserial PRIMARY KEY`,
+    # the same construction-guaranteed confidence as swing_same_day_
+    # candidates above — not yet live-probed with real rows since token
+    # tracking only started this session (tools/ai_usage_report.py).
+    "ai_usage_log": "id",
     # Probed 2026-08-17 on the live table: 191,775 rows; `.order("id")` page
     # one returned 1000 rows, 1000 distinct, ids 1..1000. This table is why
     # both readers were paging in the first place — the unpaged health check

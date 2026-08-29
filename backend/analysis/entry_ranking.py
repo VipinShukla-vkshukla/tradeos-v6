@@ -41,17 +41,12 @@ from loguru import logger
 
 from config import cfg_bool, cfg_float
 
-# AI tier is a bucket, not a number. These are the weights it contributes.
-# WATCH_CLOSELY is the model's default when it does not promote a name, so it
-# earns nothing rather than being penalised — most plans carry it, and treating
-# the common case as a demerit would just re-rank on the AI's willingness to
-# commit rather than on the plan.
-_TIER_POINTS = {
-    "TIER_1": 20.0,
-    "TIER_2": 12.0,
-    "TIER_3": 4.0,
-    "WATCH_CLOSELY": 0.0,
-}
+# _TIER_POINTS removed, 29-Aug-2026, along with the scoring block below that
+# used it — see that block's own historical note for why the weights sat at
+# 0.0 since 04-Aug, and docs/FINDINGS.md for the measurement that closed the
+# question: TIER_1/HIGH-conviction picks UNDERPERFORMED TIER_3/LOW-conviction
+# ones on real resolved outcomes. ai_tier/ai_conviction are no longer written
+# by the evening AI at all, so this was dead code, not just zero-weighted.
 
 _TIMING_POINTS = {
     "OPTIMAL": 8.0,
@@ -167,44 +162,21 @@ def score_plan(p: dict) -> Ranked:
     comp["screener"] = bp
     reasons.append(f"screener {base:.0f} {bp:+.0f}")
 
-    # ── the conviction layer: ANNOTATION, not a ranking input ───────────────
+    # ── the conviction layer: REMOVED, not merely zero-weighted ────────────
     #
-    # DEMOTED 04-Aug-2026 (Stage 7), pending validation.
-    #
-    # ai_tier and ai_conviction sat at the top of the decision stack and moved
-    # the rank of every plan, and no tier-by-tier forward return had ever been
-    # produced from the unbiased record. An unmeasured component deciding which
-    # plan gets scarce capital is unpriced risk: if the tiers carry no signal it
-    # is noise weighted at 20 points, and if they carry negative signal it is
-    # actively destructive — and nothing in the system could tell those apart.
-    #
-    # The gate for restoring it is stated and is not a matter of taste:
-    # tier-by-tier forward returns from signal_output_daily's resolved outcomes,
-    # which Stage 4's resolver began producing on 04-Aug-2026. Until that exists
-    # the values are carried alongside the decision and audited against
-    # outcomes, exactly as the architecture requires of enrichment output —
-    # "never an unaudited input to ranking".
-    #
-    # Both weights default to 0.0. The arithmetic is preserved rather than
-    # deleted so that restoring the layer is a config change and the historical
-    # scores stay reconstructable.
-    tier = str(p.get("ai_tier") or "").upper()
-    tp = _TIER_POINTS.get(tier, 0.0) * cfg_float("rank_weight_tier", 0.0)
-    if tier:
-        annot["ai_tier"] = tier
-    if tp:
-        comp["ai_tier"] = tp
-        reasons.append(f"{tier} +{tp:.0f}")
-
-    conv = _f(p.get("ai_conviction"))
-    if conv:
-        # Stored 0-1 or 0-100 depending on the model run; normalise both.
-        conv01 = conv / 100.0 if conv > 1.0 else conv
-        annot["ai_conviction"] = round(conv01, 3)
-        cp = (conv01 - 0.5) * 20.0 * cfg_float("rank_weight_conviction", 0.0)
-        if cp:
-            comp["ai_conviction"] = cp
-            reasons.append(f"AI conviction {conv01:.0%} {cp:+.0f}")
+    # DEMOTED 04-Aug-2026 (Stage 7) pending validation; REMOVED 29-Aug-2026
+    # once that validation actually ran. Real resolved outcomes (n=47-99 per
+    # tier, n=30-44 per conviction level, stable across two separate two-week
+    # periods): TIER_1/HIGH-conviction picks UNDERPERFORMED TIER_3/LOW ones
+    # (E[R] -0.18 vs +0.37 by tier; avg% -1.35 vs +3.28 by conviction). The
+    # gate this block's own prior comment named — "tier-by-tier forward
+    # returns from resolved outcomes" — is exactly the measurement that
+    # closed the question, in the opposite direction restoration would have
+    # needed. ai_tier/ai_conviction are no longer written by the evening AI
+    # at all (see ai/ai_decision_engine.py's own module docstring), so there
+    # is nothing left here to weight — rank_weight_tier/rank_weight_conviction
+    # stay in system_config at 0.0 for historical-score reconstructability,
+    # but this function no longer reads either field.
 
     # ── reward per unit of risk, measured at TODAY's price ──────────────────
     # implied_rr is the live figure; expected_r is the plan's own estimate.
@@ -349,13 +321,18 @@ def entry_refusals(p: dict, rr_live: float | None = None,
     """
     out: list[str] = []
 
-    # eap_action is the AI review's verdict on ENTERING, as distinct from
-    # ai_tier which is its view of the OPPORTUNITY. GABRIEL carried
-    # AVOID_ENTRY on 03-Aug 2026 and was bought three sessions later; nothing
-    # in the entry path had ever read this column. Note the direction of the
-    # asymmetry: a refusal is honoured, a recommendation is not — the AI can
-    # veto a trade here but can never promote one, which is the same
-    # "annotation, never promotion" rule the conviction score already follows.
+    # eap_action is deterministic, not an AI judgment — despite this config
+    # key's own name (entry_rank_respect_ai_avoid) and this function's
+    # earlier comment here, both corrected 29-Aug-2026 after tracing the
+    # actual write site: swing/signals/generate_signals.py writes eap_action
+    # from screen_stocks.py's run_eap_overlay(), a rules-based event-calendar
+    # overlay (buffer_days/pre_penalty/post_boost), never from ai_decision_
+    # engine.py's LLM call. GABRIEL carried AVOID_ENTRY on 03-Aug 2026 and
+    # was bought three sessions later; nothing in the entry path had ever
+    # read this column. Note the direction of the asymmetry: a refusal is
+    # honoured, a recommendation is not — this veto can block a trade but
+    # never promote one, the same "annotation, never promotion" shape the
+    # since-removed AI conviction layer used to follow too.
     if cfg_bool("entry_rank_respect_ai_avoid", False):
         if str(p.get("eap_action") or "").strip().upper() == "AVOID_ENTRY":
             note = str(p.get("ai_note") or p.get("ai_risks") or "").strip()
