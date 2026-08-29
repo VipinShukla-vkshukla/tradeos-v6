@@ -281,14 +281,18 @@ def apply(setup, advice: dict[str, Advice]) -> tuple[bool, float, str]:
     """
     Apply advice to one setup. Returns (allow, adjusted_confidence, note).
 
-    AVOID blocks. Everything else only nudges confidence — and the cost model
-    still has the final word, because no amount of enthusiasm makes a trade that
-    cannot clear its round trip worth taking.
+    AVOID no longer hard-blocks — measured 29-Aug-2026 against 24 sessions
+    (17,545 resolved detections): what AI vetoed resolved at -0.034% net
+    while what it approved and got TAKEN resolved at -0.302% net, inverted
+    in both sub-periods and within every engine checked (docs/FINDINGS.md).
+    AVOID now applies its own negative confidence_delta like PREFER does,
+    and the existing confidence floor / gates decide from there.
+    `intraday_ai_avoid_hard_block` restores the old block for instant rollback.
     """
     a = advice.get(setup.symbol)
     if not a:
         return True, setup.confidence, ""
-    if a.verdict == "AVOID":
+    if a.verdict == "AVOID" and cfg_bool("intraday_ai_avoid_hard_block", False):
         return False, setup.confidence, f"AI veto: {a.reason}"
     adj = max(0.05, min(0.99, setup.confidence + a.confidence_delta))
     return True, round(adj, 2), (f"{a.source}: {a.reason}" if a.reason else "")

@@ -4213,9 +4213,11 @@ class IntradayEngine:
             # waiting for an opinion that takes 88 seconds to form.
             self._pending_review.append(best)
             from intraday import ai_advisor
+            advice = self._advice.get(best.symbol)
             allow_ai, adj_conf, ai_note = ai_advisor.apply(best, self._advice)
             if not allow_ai:
-                self._record_setup(best, st.phase, 0.0, "VETOED_AI", 0, mc_state=(mc.state if mc else None))
+                self._record_setup(best, st.phase, 0.0, "VETOED_AI", 0,
+                                   mc_state=(mc.state if mc else None), advice=advice)
                 continue
             best.confidence = adj_conf
             if ai_note:
@@ -4235,7 +4237,8 @@ class IntradayEngine:
             # trade costs nothing while a mediocre one costs 0.21% plus the risk.
             floor = self._confidence_floor()
             if best.confidence < floor:
-                self._record_setup(best, st.phase, 0.0, "BELOW_CONVICTION", 0, mc_state=(mc.state if mc else None))
+                self._record_setup(best, st.phase, 0.0, "BELOW_CONVICTION", 0,
+                                   mc_state=(mc.state if mc else None), advice=advice)
                 logger.info(f"      {sym}: {best.strategy} conf {best.confidence:.2f} "
                             f"< floor {floor:.2f} — passing, budget is better spent later")
                 continue
@@ -4290,7 +4293,8 @@ class IntradayEngine:
                 planned_value=qty * best.entry,
             )
             if not liq_ok:
-                self._record_setup(best, st.phase, 0.0, "BLOCKED_LIQUIDITY", 0, mc_state=(mc.state if mc else None))
+                self._record_setup(best, st.phase, 0.0, "BLOCKED_LIQUIDITY", 0,
+                                   mc_state=(mc.state if mc else None), advice=advice)
                 logger.info(f"      {sym}: {best.strategy} — {liq_why}")
                 continue
 
@@ -4307,7 +4311,8 @@ class IntradayEngine:
             side = "BUY" if best.direction == "LONG" else "SELL"
             d_ok, d_why = depth_ok(ctx.depth, side, qty)
             if not d_ok:
-                self._record_setup(best, st.phase, 0.0, "BLOCKED_DEPTH", 0, mc_state=(mc.state if mc else None))
+                self._record_setup(best, st.phase, 0.0, "BLOCKED_DEPTH", 0,
+                                   mc_state=(mc.state if mc else None), advice=advice)
                 logger.info(f"      {sym}: {best.strategy} — {d_why}")
                 continue
 
@@ -4328,7 +4333,8 @@ class IntradayEngine:
                                       direction=best.direction)
             rt = round_trip(best.entry, qty)
             self._record_setup(best, st.phase, rt.pct_of_position,
-                               "TAKEN" if ok else "REJECTED_COST", qty, mc_state=(mc.state if mc else None))
+                               "TAKEN" if ok else "REJECTED_COST", qty,
+                               mc_state=(mc.state if mc else None), advice=advice)
             if not ok:
                 continue
 
@@ -5095,9 +5101,15 @@ class IntradayEngine:
         return False, v.get("reason") or f"allocator returned {v['verdict']}"
 
     def _record_setup(self, s, phase: str, cost_pct: float, verdict: str, qty: int,
-                      mc_state: str | None = None) -> None:
+                      mc_state: str | None = None, advice=None) -> None:
         """
         Persist every setup DETECTED, including cost rejections.
+
+        `advice` (an ai_advisor.Advice, migration 128) is only ever passed by
+        call sites AFTER ai_advisor.apply() ran — a setup blocked earlier
+        (BLOCKED_STRUCTURE etc.) never reached the AI and correctly stays
+        NULL. Needed because cost_verdict alone only ever captured AVOID
+        (as VETOED_AI); PREFER/NEUTRAL never had anywhere to land.
 
         "How often did ORB fire and how did those resolve" is unanswerable if
         only taken trades are stored — and that question is the only way an
@@ -5182,6 +5194,8 @@ class IntradayEngine:
                 # every row from here forward carries the real moment the
                 # trusted polling loop recorded this detection.
                 "detected_at": datetime.now(IST).isoformat(),
+                "ai_verdict": advice.verdict if advice else None,
+                "ai_source": advice.source if advice else None,
             }).execute()
             self._recorded[f"{s.symbol}:{s.strategy}"] = (s.entry, verdict)
         except Exception as e:

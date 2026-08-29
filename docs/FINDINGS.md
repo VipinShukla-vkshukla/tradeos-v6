@@ -15749,3 +15749,224 @@ boundary traced and confirmed, not assumed. Shipped directly per the
 operator's own explicit instruction this session. The one open risk
 named plainly: this is untested against a real live evening run, because
 none occurred during this session.
+
+## 2026-08-30 — Independent-auditor pass on INTRADAY's AI advisor: AVOID hard-block found inversely predictive, demoted to a confidence penalty — `ai_advisor.py` only
+
+Operator's own explicit instruction: run the same independent-auditor
+exercise just finished for swing (ai_tier/ai_conviction removal) on
+INTRADAY — but measure, don't assume the finding carries over.
+Intraday's AI (`intraday/ai_advisor.py`) is a structurally different
+design from swing's retired tier/conviction system: DeepSeek issues a
+per-setup `PREFER`/`NEUTRAL`/`AVOID` verdict on the slow timer, `AVOID`
+hard-blocks entry, `PREFER`/`NEUTRAL` only nudge confidence. Explicit
+scope boundary: intraday only, swing untouched, no shared file
+(`intraday/engine.py`, `allocation/*`) edited.
+
+**Reviewed first (read, not assumed):** `docs/0_SYSTEM_BLUEPRINT.md`,
+`docs/TERMINOLOGY.md`, `intraday/ai_advisor.py` in full,
+`intraday/engine.py`'s call sites, `intraday/outcomes.py`'s resolution
+logic. Confirmed clean: `market_state` passed into the AI prompt is
+`mc.state` (intraday's own `RISK_ON`-underscore vocabulary), dropped in
+as free text, never string-matched — the `regime_bucket()` class of bug
+cannot recur here. Also found already fixed, not by this session: a
+27-Aug-2026 patch at `engine.py:1825` that filtered the "open positions"
+context fed to the AI down to INTRADAY's own book — it had been reading
+the pooled swing+intraday table, so on 27-Aug the AI cited swing's 11
+open positions to veto intraday setups while intraday held zero.
+
+**Instrumentation gap found, and left alone (operator's explicit
+choice):** `AVOID` is recoverable cleanly — it writes a permanent,
+never-overwritten `intraday_setups.cost_verdict='VETOED_AI'` row.
+`PREFER`/`NEUTRAL` are not: neither is ever written to the setup row:
+only one `ai_context` row per DAY survives (`symbol='__INTRADAY_REVIEW__'`,
+upserted on `(date, symbol)`), so every slow-tick review overwrites the
+previous one and only the day's last call is recoverable. Reconstructing
+from that gave 76 verdicts across 23 days — too thin to trust (checked
+anyway: PREFER did worst, NEUTRAL best, n≈130 joined to outcomes — not
+acted on, sample far too small). Operator chose to ship the AVOID fix on
+today's evidence and leave PREFER/NEUTRAL unmeasured rather than add
+instrumentation and wait.
+
+**Ran (quantify, before designing anything) — Supabase `execute_sql`
+against `intraday_setups`, 17,545 resolved detections, 24 sessions,
+28-Jul to 28-Aug-2026, every row resolved via `outcomes.resolve_day`'s
+bar-replay regardless of whether it was taken:**
+
+```sql
+-- TAKEN vs VETOED_AI, pooled, with 95% CI
+-- same split by two ~12-day sub-periods to rule out a one-off
+-- same split by strategy family (ORB/SDN/VCE/VWR) to rule out an engine-mix confound
+```
+
+**Raw output — pooled:** `TAKEN` n=4,110, E[R]=−0.302%±0.028 (95% CI
+entirely below zero); `VETOED_AI` n=1,256, E[R]=−0.034%±0.029 (95% CI
+straddles zero, essentially breakeven). **What AI blocked did better than
+what it let through** — backwards for a veto. Stable across sub-periods
+(H1 28Jul–12Aug: TAKEN −0.316%/n=955, VETOED −0.037%/n=484; H2
+13Aug–28Aug: TAKEN −0.297%/n=3,155, VETOED −0.032%/n=772) — not narrowing,
+not a one-week fluke. Holds within every engine checked independently,
+ruling out an engine-mix confound (SDN is 55% of all detections and
+performs better than ORB on its own, so a naive pooled comparison could
+have just been reflecting "AI vetoes more SDN"; it is not — ORB TAKEN
+−0.401%/n=2,387 vs VETOED −0.106%/n=89; SDN TAKEN −0.112%/n=1,090 vs
+VETOED −0.040%/n=937; VWR and VCE same direction, smaller n).
+
+**Found — the fix, one function, `intraday/ai_advisor.py::apply()`:**
+`AVOID` no longer returns `allow=False` outright. It now applies its own
+`confidence_delta` (already computed in `review()` as
+`-intraday_ai_avoid_delta`, 0.25 by default) exactly the way `PREFER`
+already applies its `+0.10` — clamped at the existing `[0.05, 0.99]`
+bound — and lets the already-validated, budget-aware confidence floor and
+every downstream gate (cost, structure, allocator hurdle) decide from
+there, instead of one LLM call unilaterally killing a setup nothing else
+rejected. New switch `intraday_ai_avoid_hard_block` (default `false`,
+no migration needed — `cfg_bool` falls back to the Python default same as
+`intraday_ai_enabled` and `intraday_ai_prefer_delta` already do) restores
+the exact old behavior for instant rollback. Deliberately NOT a sign
+flip and NOT a deletion: the evidence indicts the hard *block*, not
+necessarily the underlying judgement, and intraday's AI reasons about
+concentration/correlation/event-context the mechanical engines cannot
+see at all — unlike swing's tier, which was redundant with a deterministic
+signal that already existed. `PREFER`/`NEUTRAL` untouched.
+
+**Paper vs. live, checked precisely rather than asserted:** operator
+pushed back on treating PAPER-only as license to be less careful, and
+asked that intraday behave identically whichever mode is armed.
+`engine.py:4670` (`if not is_paper("INTRADAY"):`) is the ONLY branch
+point between the two books; `ai_advisor.apply()` runs inside
+`evaluate_intraday_setups()`, entirely upstream of it. `intraday_live_
+auto_entry` has no execution behind it yet regardless (blueprint §9) —
+this fix sits in the one code path both modes already share, so it
+governs both identically today and will keep doing so the day live
+execution is built.
+
+**Ran:**
+
+```bash
+cd backend && python -m tools.verify
+cd backend && python -m tools.health
+```
+
+**Raw output:** New module `tests.test_ai_advisor`, 5 checks, registered
+in `tools/verify.py::MODULES`. Failing-first demonstrated: `git stash`
+on `ai_advisor.py` alone (test file and registration left in place) —
+2 of 5 checks failed against the old code (`AVOID no longer blocks by
+default`, `AVOID confidence clamped at the 0.05 floor`), both for the
+exact reason expected (old code still hard-blocked); `git stash pop`
+restored, all 5 pass. Full suite: **1,206/1,206 across 130 modules**, no
+regressions. `tools.health`: allocator/hurdle/books/learning/simulate
+all green for intraday. 3 pre-existing, unrelated problems present
+(`same_day_discovery`, `pending_dup`, `recon_drift` — swing-side,
+HINDCOPPER, F-84/85/86) — same three as before this change, confirmed
+not caused by it.
+
+**Could not determine:** whether the soft-nudge produces a BETTER
+outcome going forward — only that the hard block was measurably worse
+than no veto. That is itself now measurable the same way (`VETOED_AI`
+stops being written except when the rollback switch is armed, so the
+learning-loop signal for this specific question will thin out — a
+natural consequence, not a defect, since the whole point is to stop
+funding that comparison at the expense of every softly-penalized setup
+now getting a real chance to prove itself). Also not answered: WHY the
+veto was backwards — a plausible but unconfirmed hypothesis is that the
+model penalizes exactly the assertive/high-confidence breakouts that
+tend to work and approves the more cautious-looking ones that stall,
+mirroring the 12-Aug audit's own finding that late/under-confirmed
+entries were the dominant loss shape — not verified this session, flagged
+for anyone revisiting the prompt.
+
+**Recommends:** re-run this exact quantify query in 2-3 weeks under the
+new regime to see whether the softly-penalized-but-taken population
+performs better than the old TAKEN population did. `PREFER`/`NEUTRAL`
+remain a genuinely open question — the instrumentation gap is real and
+was named, not fixed, on the operator's explicit choice this session.
+
+**Gate:** PASS — quantified first (pooled, sub-period, and per-engine,
+all three ruling out the obvious confounds), fix is minimal (one
+function, no schema change, no shared-file touch), failing-first
+demonstrated, `tools.verify`/`tools.health` clean, paper/live identity
+checked against the actual branch point in `engine.py` rather than
+assumed, rollback is a single config flip. Shipped directly per the
+operator's explicit sign-off this session. Open questions named
+plainly: PREFER/NEUTRAL unmeasured, and the mechanism behind AVOID's
+inversion is a named hypothesis, not a confirmed cause.
+
+## 2026-08-30 — Same session, follow-up: closed the two open items above — `ai_verdict`/`ai_source` instrumentation (migration 128) + a data-grounded (not confirmed) mechanism for the AVOID inversion
+
+Operator asked directly: (1) are the three pre-existing health problems
+still real, and (2) address the two open items from the entry above —
+PREFER/NEUTRAL still unmeasured, and the unconfirmed mechanism hypothesis.
+
+**(1) Health status, checked against the actual data, not re-asserted:**
+`pending_dup` and `recon_drift` are the SAME 24-Aug/25-Aug HINDCOPPER
+event (F-84/85) still inside their own lookback windows (7 and 14 days) —
+confirmed via `position_reconcile_log`, no QTY_REDUCED/QTY_INCREASED event
+for any symbol between then and today. Both self-clear on their own
+schedule (~31-Aug and ~7-Sep) if nothing new happens; not a live problem.
+`same_day_discovery` is a genuine standing gap, not aging out:
+`swing_same_day_candidates` has **0 rows, ever** (`select count(*)` —
+not "last 10 sessions", the whole table), while
+`swing_same_day_discovery_shadow`/`_enabled` are both `true`. Swing-side,
+pre-existing, unrelated to this session's intraday work — named, not
+fixed, since it wasn't asked for.
+
+**(2a) PREFER/NEUTRAL instrumentation — migration 128, `intraday_setups`
+gains `ai_verdict`/`ai_source` (both nullable text).** Cannot produce
+retroactive history — only starts the clock. Written by
+`_record_setup()` (new optional `advice` param) from the 5 call sites in
+`evaluate_intraday_setups()` that run AFTER `ai_advisor.apply()`
+(VETOED_AI, BELOW_CONVICTION, BLOCKED_LIQUIDITY, BLOCKED_DEPTH,
+TAKEN/REJECTED_COST) — NULL for setups blocked earlier in the gate stack,
+which never reached the AI, same as `regime_at_detection`'s NULL
+convention (migration 068). `ai_source` (`ai`/`prior`/`blend`) kept
+separate from `ai_verdict` so a future query can exclude the
+always-NEUTRAL empirical-prior fallback and see only real LLM verdicts.
+Applied directly via Supabase MCP, `.sql` file kept for history per this
+project's convention.
+
+**Ran:** `git stash` on `engine.py` alone (test file + registration left
+in place) — all 4 new checks failed against the old code (3 on the
+missing `advice` kwarg, 1 on the static call-site count reading 0 instead
+of 5); `git stash pop` restored, all 4 pass. Full suite: **1,210/1,210
+across 131 modules.** `tools.health`: same 3 pre-existing problems from
+(1) above, confirmed unchanged by this edit.
+
+**(2b) The AVOID-inversion mechanism — investigated, still not
+confirmed, but the guess in the prior entry was WRONG and is corrected
+here rather than left standing.** Prior entry speculated the model
+penalizes high-confidence/assertive setups. Checked directly:
+`VETOED_AI` avg confidence is 0.690 vs `TAKEN`'s 0.719 — VETOED_AI is
+if anything LOWER confidence, not higher. **That hypothesis is refuted.**
+
+What the data actually shows, within-engine (ruling out the engine-mix
+confound the same way the outcome comparison did): `VETOED_AI` setups
+carry a MUCH tighter `risk_pct` and MUCH better `rr` than `TAKEN` ones —
+SDN: TAKEN risk_pct 0.774%/rr 1.95 vs VETOED_AI risk_pct 0.331%/rr 3.16;
+VWR: TAKEN 0.687%/2.08 vs VETOED_AI 0.384%/3.03; ORB and VCE show the
+same direction, smaller gap. **The AI's veto correlates with tight-stop,
+high-R:R setups being blocked** — exactly the profile a disciplined
+trader would usually prefer, not avoid. Plausible read: a small stop
+distance may read to the model as "thin"/"fragile" in prose even though
+the prompt explicitly says the engine's levels are fixed and not to be
+re-judged — but this is inference from a correlation, not a read of the
+model's actual reasoning text (which isn't recoverable at scale; see the
+instrumentation gap above). Separately checked and ruled out as the
+explanation: `regime_at_detection` — VETOED_AI skews heavily to
+RISK_OFF/CAUTION (74% of it), but `TAKEN` has ZERO rows in RISK_OFF at
+all — every RISK_OFF setup gets blocked by SOMETHING (structure,
+conviction floor, or AI), not specifically by AI, so regime isn't what's
+driving the AI-specific signal.
+
+**Could not determine:** the model's literal reasoning (reason text
+isn't stored per-row for blocked setups, only for allowed ones via
+`ai_note`) — so "tight stops read as risky to the LLM" remains the
+best-supported hypothesis on the data available, not a confirmed cause.
+The new `ai_verdict`/`ai_source` columns don't fix this either — they
+record the verdict, not the model's reasoning per setup; that would need
+a further, larger schema change (storing `reason` on the row) not
+requested this session.
+
+**Gate:** PASS on both sub-items — instrumentation quantified, minimal,
+failing-first proven, full suites clean; the mechanism investigation is
+honestly reported as still unresolved with the prior session's wrong
+guess corrected rather than left uncorrected.

@@ -211,6 +211,10 @@ MODULES = [
      "tests.test_ai_tier_conviction_removed"),
     ("candidate_monitor: signal_type filter + BLUEJET fix",
      "tests.test_candidate_monitor_no_tier"),
+    ("intraday AVOID veto: soft-nudge instead of hard block",
+     "tests.test_ai_advisor"),
+    ("intraday_setups.ai_verdict/ai_source persisted (migration 128)",
+     "tests.test_intraday_setups_ai_verdict"),
 ]
 
 
