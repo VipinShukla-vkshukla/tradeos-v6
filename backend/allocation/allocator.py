@@ -79,6 +79,12 @@ class Allocator:
         # absent, so an empty dict here behaves exactly as if this feature
         # did not exist — the same fail-open shape as self._priors being None.
         self._swing_hold_days_by_family: dict[str, tuple[float, int]] = {}
+        # (framework, bucket) -> hurdle._empirical_base()'s own (base, meta,
+        # edges) tuple. See refresh_hurdle_populations()'s own docstring —
+        # empty until the first refresh, which select() below handles by
+        # falling through to hurdle()'s live fetch (cached_population=None
+        # is a cache miss, not an error).
+        self._hurdle_populations: dict[tuple[str, str], tuple] = {}
 
     # ── priors, refreshed on the slow timer rather than per cycle ──────────
     def refresh_priors(self) -> None:
@@ -138,6 +144,36 @@ class Allocator:
             logger.warning(f"  allocator: priority-criteria refresh failed ({e}) — keeping previous")
             return
         self._priority_criteria = P.build_priority_criteria(rows)
+
+    def refresh_hurdle_populations(self) -> None:
+        """
+        Pre-fetch hurdle()'s arrival population for every (framework,
+        bucket) combination, on the same slow timer as refresh_priors() —
+        31-Aug-2026. Every call to `hurdle()` was re-running `_empirical_
+        base()`'s full PAGED fetch from scratch, with nothing upstream ever
+        caching it: measured live, the SWING/WEAK population alone (~29-85
+        pages depending on the day's row count) was being re-fetched on
+        essentially every 15-second cycle — 1,401 full re-fetches in one
+        session, 118,977 of that day's 187,801 total API requests (63%).
+
+        Four combinations, not a lookup keyed on whatever the current regime
+        happens to be — `regime_bucket()` only ever returns STRONG or WEAK,
+        so this is the complete set, and pre-fetching all four means
+        select()'s cache lookup can never miss because the wrong bucket
+        wasn't warmed. Failures degrade to a per-entry cold-start tuple
+        (`_empirical_base()` already does this internally and never raises)
+        rather than losing the whole cache over one bad combination.
+        """
+        from allocation.hurdle import _empirical_base, STRONG, WEAK
+        try:
+            self._hurdle_populations = {
+                (fw, bucket): _empirical_base(bucket, fw, self.sb)
+                for fw in ("SWING", "INTRADAY")
+                for bucket in (STRONG, WEAK)
+            }
+        except Exception as e:
+            logger.warning(f"  allocator: hurdle population refresh failed "
+                           f"({e}) — keeping previous")
 
     def score_hypothetical(self, symbol: str, entry: float, stop: float, target: float,
                            qty: int, product: str, source: str,
@@ -388,6 +424,14 @@ class Allocator:
         this file's own standing policy on unevidenced per-regime tuning:
         "Per-regime fitting is ... gated on years of data, not on
         cleverness."
+
+        HURDLE'S ARRIVAL POPULATION IS READ FROM refresh_hurdle_populations()'S
+        CACHE, NOT FETCHED HERE — 31-Aug-2026. See that method's own
+        docstring for the egress this closes. `self._hurdle_populations.get
+        ((fw, bucket))` misses (returns None) until the first refresh has
+        run; `hurdle()` treats a None cached_population as "fetch it
+        yourself", so a cold cache degrades to exactly today's live-fetch
+        behaviour rather than a wrong answer.
         """
         if not proposals:
             return []
@@ -405,8 +449,15 @@ class Allocator:
             fw_minutes_left = (swing_minutes_left if
                                (fw == "SWING" and swing_minutes_left is not None)
                                else minutes_left)
+            # getattr, not self._hurdle_populations directly — same reason
+            # allocator_permits() reads self._verdicts that way.
+            # Allocator.__new__(Allocator) (test_engine_fairness_and_bands.py,
+            # test_allocator_direction.py) builds an instance without ever
+            # running __init__, so this attribute may not exist at all; a
+            # miss must degrade to hurdle()'s live fetch, not crash.
+            cached = (getattr(self, "_hurdle_populations", None) or {}).get((fw, bucket))
             bar, inputs = H.hurdle(bucket, fw_slots, fw_minutes_left, fw, self.sb,
-                                   max_slots=fw_max)
+                                   max_slots=fw_max, cached_population=cached)
             days, n_days = self._hold_days.get(fw, (1.0, 0))
 
             scored = []

@@ -385,6 +385,40 @@ class IntradayEngine:
         # (shadow, default) writes to swing_same_day_candidates and never
         # reaches this dict's consumer at all.
         self._same_day_candidates: dict[str, dict] = {}
+        # order_manager._today_totals()'s own (count, framework spend, all
+        # spend) result, memoized for the CURRENT cycle only — 31-Aug-2026.
+        # Reset to {} at the top of cycle() (see there); _today_totals_
+        # cached() below fills it on first use within that cycle. Every
+        # candidate walked in a cycle was independently re-issuing the same
+        # unfiltered intraday_broker_log fetch (the query has no framework
+        # filter — order_manager._today_totals() filters client-side, so
+        # "SWING" and "INTRADAY" callers would hit the identical query
+        # anyway): measured live, 21,214 of one session's 187,801 total API
+        # requests were this one query, repeated per candidate rather than
+        # once per cycle.
+        self._today_totals_cache: dict[str, tuple[int, float, float]] = {}
+
+    def _today_totals_cached(self, framework: str = "SWING") -> tuple[int, float, float]:
+        """
+        order_manager._today_totals(), memoized for this cycle only.
+
+        Freshness matters here in a way it does not for the hurdle
+        population (allocation/allocator.py's refresh_hurdle_populations) —
+        this number gates a hard daily entry cap, not a slow statistical
+        bar, so it is rebuilt every cycle (15s, eval_interval_s()) rather
+        than stretched to the 300s slow timer. Within one cycle it cannot
+        go stale relative to itself: nothing this process does between one
+        candidate and the next changes how many orders were placed today
+        except this process's OWN entries, and every caller already counts
+        those separately (self._entries_taken / entry_reserved()'s
+        in-process counter) specifically because a cross-process read like
+        this one cannot be trusted to be instantaneous — see
+        _maybe_enter_swing()'s own comment on why both counters are taken.
+        """
+        if framework not in self._today_totals_cache:
+            from execution.order_manager import _today_totals
+            self._today_totals_cache[framework] = _today_totals(self.sb, framework)
+        return self._today_totals_cache[framework]
 
     # ── state ───────────────────────────────────────────────────────────────
     def _rehydrate_recorded(self) -> None:
@@ -1379,8 +1413,7 @@ class IntradayEngine:
                 ready.append(sym)
 
         try:
-            from execution.order_manager import _today_totals
-            taken, _m, _a = _today_totals(self.sb, "SWING")
+            taken, _m, _a = self._today_totals_cached("SWING")
         except Exception:
             taken = 0
         taken = max(taken, self._entries_taken)
@@ -3037,9 +3070,8 @@ class IntradayEngine:
             # regardless of pacing, and the only thing worth asking is
             # whether it beats the weakest position held.
             slot_full = e.get("state") == "SLOT_FULL"
-            from execution.order_manager import _today_totals
             try:
-                n_today, _m, _a = _today_totals(self.sb, "SWING")
+                n_today, _m, _a = self._today_totals_cached("SWING")
             except Exception:
                 n_today = 0
             room = (not slot_full) and n_today < cfg_int("swing_max_new_per_day", 2)
@@ -3212,8 +3244,7 @@ class IntradayEngine:
         # this process, so a restart does not hand the day a fresh budget and
         # the laptop and the server cannot each take two.
         try:
-            from execution.order_manager import _today_totals
-            n_today, _mine, _all = _today_totals(self.sb, "SWING")
+            n_today, _mine, _all = self._today_totals_cached("SWING")
         except Exception:
             n_today = 0
 
@@ -4880,6 +4911,7 @@ class IntradayEngine:
             self._allocator = Allocator(self.sb)
             self._allocator.refresh_priors()
             self._allocator.refresh_priority_criteria()
+            self._allocator.refresh_hurdle_populations()
 
         props = []
         for e in entries or []:
@@ -5298,6 +5330,13 @@ class IntradayEngine:
 
     def cycle(self, prices: dict[str, float], sync_gtt: bool = False,
               feed=None) -> dict:
+        # Cleared FIRST, unconditionally — every _today_totals_cached() call
+        # below this point in THIS cycle reuses one fetch; the next cycle()
+        # invocation gets a fresh one. Same "cleared first so nothing stale
+        # survives an early return" discipline _allocate_shadow() already
+        # uses for self._verdicts.
+        self._today_totals_cache = {}
+
         # Live day range, volume and VWAP onto the contexts BEFORE anything
         # reads them. Cheap — a dict lookup per symbol over data the websocket
         # already delivered — and it is what makes a 10:47 breakout measured

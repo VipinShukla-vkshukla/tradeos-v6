@@ -358,7 +358,9 @@ def label_quantile(slots_left: int, remaining: float | None,
 
 def hurdle(bucket: str, slots_left: int, minutes_left: int,
            framework: str = "INTRADAY", sb=None,
-           max_slots: int | None = None) -> tuple[float, dict]:
+           max_slots: int | None = None,
+           cached_population: tuple[float, dict, list[float] | None] | None = None
+           ) -> tuple[float, dict]:
     """
     Returns (bar, inputs). `inputs` is recorded with the verdict so the decision
     can be re-derived later — §19: a decision that cannot be reconstructed is a
@@ -369,8 +371,27 @@ def hurdle(bucket: str, slots_left: int, minutes_left: int,
     passed a per-book `slots_left`, so the scarcity term was computed against a
     denominator that had nothing to do with the numerator: an intraday book with
     4 of its 4 slots free scored as though it had already spent two of two.
+
+    `cached_population`, when supplied, is `_empirical_base()`'s own
+    `(base, meta, edges)` return value, fetched by the CALLER ahead of time —
+    31-Aug-2026. Without it, every call re-runs `_empirical_base()`'s full
+    PAGED fetch from scratch: measured live, the SWING/WEAK population alone
+    (~29-85 pages depending on the day's row count) was being re-fetched on
+    essentially every 15-second cycle — 1,401 full re-fetches in one session,
+    118,977 of that day's 187,801 total API requests (63%), because nothing
+    upstream of this function ever cached it. `Allocator.refresh_hurdle_
+    populations()` now fetches all (framework, bucket) combinations once on
+    the existing 300-second slow timer (the same cadence `refresh_priors()`
+    already uses, for the identical reason) and `Allocator.select()` passes
+    the cached tuple in. Optional and additive: omitting it (every existing
+    test caller, and any future one) reproduces exactly today's live-fetch
+    behaviour — this parameter only changes WHEN the population is read, not
+    what hurdle() does with it once it has it.
     """
-    base, base_meta, edges = _empirical_base(bucket, framework, sb)
+    if cached_population is not None:
+        base, base_meta, edges = cached_population
+    else:
+        base, base_meta, edges = _empirical_base(bucket, framework, sb)
 
     # No slot, no decision to make. Returned as an infinite bar rather than as a
     # special case so callers have one code path.

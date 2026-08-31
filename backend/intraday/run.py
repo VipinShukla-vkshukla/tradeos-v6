@@ -513,6 +513,7 @@ def main(once: bool = False, dry: bool = False) -> None:
                         logger.info(f"  allocator: flushed {n} verdict(s)")
                     engine._allocator.refresh_priors()
                     engine._allocator.refresh_priority_criteria()
+                    engine._allocator.refresh_hurdle_populations()
                 last_state = now
 
             # Stage D2, 23-Aug-2026 (docs/TRADEOS_ROADMAP.md, Track D). Its

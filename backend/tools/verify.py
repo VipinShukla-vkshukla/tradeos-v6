@@ -219,6 +219,10 @@ MODULES = [
      "tests.test_swing_slot_full_swap"),
     ("hurdle's minutes_left is now per-framework — SWING no longer follows intraday's clock",
      "tests.test_hurdle_minutes_left_framework"),
+    ("hurdle's arrival population is cached on the slow timer, not fetched every cycle",
+     "tests.test_hurdle_population_cache"),
+    ("_today_totals is cached per cycle, not re-fetched per candidate",
+     "tests.test_today_totals_cache"),
 ]
 
 
