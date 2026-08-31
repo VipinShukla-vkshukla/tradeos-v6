@@ -314,7 +314,8 @@ class Allocator:
                field: list[dict] | None = None,
                slots_by_framework: dict[str, int] | None = None,
                max_slots_by_framework: dict[str, int] | None = None,
-               swing_regime: str | None = None) -> list[dict]:
+               swing_regime: str | None = None,
+               swing_minutes_left: int | None = None) -> list[dict]:
         """
         One cycle. Pure arithmetic over in-memory data — microseconds, no I/O
         beyond the prior cache, and no synchronous write anywhere.
@@ -356,6 +357,37 @@ class Allocator:
         books, so the existing test callers of `select()`
         (`test_allocator_direction.py`, `test_engine_fairness_and_bands.py`)
         keep their current, unchanged result.
+
+        MINUTES_LEFT IS THE SAME BUG, ONE PARAMETER OVER — 31-Aug-2026.
+        `hurdle()`'s other time-varying input never got the fix above.
+        `minutes_left` is intraday's own `minutes_to_squareoff` (engine.py's
+        `_allocate_shadow`) and was applied to BOTH books' bars — a SWING
+        proposal's bar loosening as intraday's 15:15 square-off approaches,
+        though a swing plan is held for 1-3 WEEKS and has no relationship to
+        today's clock. Measured directly against `hurdle()`: same bucket,
+        population and slots, only minutes_left changed — the SWING bar
+        moved from 0.4152 (91.7th percentile) at market open to 0.3136
+        (80.1st percentile) near square-off. docs/FINDINGS.md, 31-Aug-2026,
+        and `tests/test_hurdle_minutes_left_framework.py` (which pinned the
+        bug before this fix and now asserts the fix instead).
+
+        `swing_minutes_left`, when supplied, replaces `minutes_left` for the
+        SWING half of the loop only — INTRADAY always reads the original
+        `minutes_left` parameter, unconditionally, the same isolation
+        `swing_regime` already proved safe above. A caller that does not
+        pass it (every caller before this change) gets exactly today's
+        shared-clock behaviour for both books — this parameter is additive
+        and opt-in, not a default-behaviour change.
+
+        `intraday/engine.py::_allocate_shadow` passes `swing_minutes_left=0`
+        — SWING's scarcity is already correctly slot-based
+        (`slots_by_framework`/`max_slots_by_framework`); it does not need a
+        minutes-based time term at all, and 0 neutralises `hurdle()`'s
+        `time_mult` to an exact 1.0 no-op (`time_frac = min(0/session, 1) =
+        0`) rather than inventing a new, unevidenced meaning for it. Matches
+        this file's own standing policy on unevidenced per-regime tuning:
+        "Per-regime fitting is ... gated on years of data, not on
+        cleverness."
         """
         if not proposals:
             return []
@@ -370,7 +402,10 @@ class Allocator:
             bucket = swing_bucket if fw == "SWING" else shared_bucket
             fw_slots = (slots_by_framework or {}).get(fw, slots_left)
             fw_max   = (max_slots_by_framework or {}).get(fw)
-            bar, inputs = H.hurdle(bucket, fw_slots, minutes_left, fw, self.sb,
+            fw_minutes_left = (swing_minutes_left if
+                               (fw == "SWING" and swing_minutes_left is not None)
+                               else minutes_left)
+            bar, inputs = H.hurdle(bucket, fw_slots, fw_minutes_left, fw, self.sb,
                                    max_slots=fw_max)
             days, n_days = self._hold_days.get(fw, (1.0, 0))
 

@@ -82,6 +82,15 @@ class Decision:
     rr_at_zone_low: float | None = None  # R:R if filled at the zone low
     min_rr_used:   float | None = None
 
+    # The raw portfolio_constraints.ConstraintVerdict.reason code (e.g.
+    # "max_positions") when a SKIP came from check_new_entry() refusing room
+    # rather than the trade itself being bad — None for every other SKIP
+    # (stop broken, target hit, R:R too low, missing data). A caller deciding
+    # whether "no room" is worth comparing against the weakest position held
+    # needs this distinction; the headline/reason strings alone are prose,
+    # not a code meant to be matched on.
+    block_reason:  str | None = None
+
     def as_dict(self) -> dict:
         return asdict(self)
 
@@ -219,7 +228,8 @@ def decide(
                             f"{sym}: SKIP — {v.reason.replace('_', ' ')}",
                             v.detail, px, zlo, stop, tgt, round(rr, 2),
                             round(risk_pct, 2), round(up_pct, 2), None,
-                            0, 0.0, 0.0, stale_price=stale)
+                            0, 0.0, 0.0, stale_price=stale,
+                            block_reason=v.reason)
     except Exception as e:
         logger.debug(f"  {sym}: sizing unavailable — {e}")
 

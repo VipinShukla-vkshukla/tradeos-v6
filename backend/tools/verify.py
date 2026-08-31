@@ -215,6 +215,10 @@ MODULES = [
      "tests.test_ai_advisor"),
     ("intraday_setups.ai_verdict/ai_source persisted (migration 128)",
      "tests.test_intraday_setups_ai_verdict"),
+    ("swing swap sees slot-limit refusals, not just daily-pace ones",
+     "tests.test_swing_slot_full_swap"),
+    ("hurdle's minutes_left is now per-framework — SWING no longer follows intraday's clock",
+     "tests.test_hurdle_minutes_left_framework"),
 ]
 
 

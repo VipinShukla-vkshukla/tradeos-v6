@@ -2497,7 +2497,7 @@ class IntradayEngine:
 
     def evaluate_candidates(self, prices: dict[str, float]) -> list[dict]:
         """Run the shared entry decision against live prices."""
-        from analysis.trade_decision import decide
+        from analysis.trade_decision import decide, ACT_SKIP
         from config import capital_for
 
         # Phase 4, 26-Aug-2026 — Stage 2. self.candidates (the evening
@@ -2554,6 +2554,27 @@ class IntradayEngine:
             if d.action in ("BUY_NOW", "CHASE_LIMIT"):
                 out.append({"candidate": c, "decision": d, "ltp": float(ltp),
                             "state": "BUYABLE"})
+                continue
+
+            # PORTFOLIO FULL, NOT A BAD TRADE.
+            #
+            # decide() already ran check_new_entry(), and the ONLY reason this
+            # candidate was refused is the regime-scaled slot limit
+            # (max_positions) — not price, R:R, or missing data. That is
+            # exactly the case act_on_candidates()._replacement_case() exists
+            # for: a plan competing for capital against the weakest thing
+            # already held, not against cash. Before this, a candidate refused
+            # here was simply dropped and never reached that comparison at
+            # all — the book could be sitting at 10/6 slots (RISK_OFF) while
+            # swing_max_new_per_day (a different, unrelated pacing counter)
+            # still had room left in it, and the swap alert — gated only on
+            # that pacing counter — would never fire. Scoped to max_positions
+            # specifically, not every constraint check_new_entry can return:
+            # sector/industry/risk-budget refusals are a separate question
+            # not addressed here.
+            if d.action == ACT_SKIP and d.block_reason == "max_positions":
+                out.append({"candidate": c, "decision": d, "ltp": float(ltp),
+                            "state": "SLOT_FULL"})
                 continue
 
             # THIS is what intraday data buys the swing strategy.
@@ -3006,12 +3027,22 @@ class IntradayEngine:
 
             # Room for another position, or is this a swap? Two different
             # decisions, and the alert should not present them as one.
+            #
+            # "Room" has two independent ways to run out: the day's pacing
+            # counter (swing_max_new_per_day) and the regime-scaled slot
+            # limit (max_positions, checked inside decide()'s own
+            # check_new_entry() call). A SLOT_FULL candidate already failed
+            # the second one — decide() never even got to size it — so there
+            # is no daily-count question left to ask; it cannot be bought
+            # regardless of pacing, and the only thing worth asking is
+            # whether it beats the weakest position held.
+            slot_full = e.get("state") == "SLOT_FULL"
             from execution.order_manager import _today_totals
             try:
                 n_today, _m, _a = _today_totals(self.sb, "SWING")
             except Exception:
                 n_today = 0
-            room = n_today < cfg_int("swing_max_new_per_day", 2)
+            room = (not slot_full) and n_today < cfg_int("swing_max_new_per_day", 2)
             swap, swap_why = (False, "") if room else self._replacement_case(rk)
             if not room and not swap:
                 # Cannot buy it and it does not beat what is held. Silence here
@@ -3080,6 +3111,13 @@ class IntradayEngine:
         not form a second one. If the alert and the order ever disagree about a
         symbol, one of them is broken.
 
+        act_on_candidates() also calls this for a SLOT_FULL candidate (decide()
+        returned SKIP because the regime-scaled position cap, not this trade,
+        was the refusal) so the swap comparison in that function can run. Such
+        a call always carries qty=0 — decide() never sized it — and is refused
+        below on that alone; the guard here just says so explicitly instead of
+        falling through every rail beneath it to find that out.
+
         THE RAILS, IN ORDER OF WHAT EACH PROTECTS
         -----------------------------------------
           swing_auto_entry        whether entries happen at all
@@ -3096,6 +3134,8 @@ class IntradayEngine:
         Only the last reads broker truth rather than the book, which is why it
         is last and why nothing here tries to reason around it.
         """
+        if d.action not in ("BUY_NOW", "CHASE_LIMIT"):
+            return
         from execution.gates import is_paper
         if not cfg_bool("swing_auto_entry", False):
             return
@@ -4945,6 +4985,18 @@ class IntradayEngine:
         # which is what `regime` above is and what INTRADAY proposals
         # correctly keep using. See Allocator.select()'s own docstring for
         # why the two must not share a bucket.
+        #
+        # swing_minutes_left=0 — same reasoning, one parameter over, F-88's
+        # bucket fix never covered `minutes_left`. `minutes_left` below is
+        # `minutes_to_squareoff`, intraday's own clock; a SWING plan held
+        # for 1-3 weeks has no relationship to today's square-off, but
+        # hurdle()'s time_mult was moving swing's bar with it regardless —
+        # measured 0.4152 (market open) vs 0.3136 (near square-off) on an
+        # identical proposal. 0 makes hurdle()'s time_frac exactly 0, so
+        # time_mult is a constant 1.0 no-op for SWING; INTRADAY is
+        # unaffected — it never reads this parameter, only the original
+        # `minutes_left`. See Allocator.select()'s own docstring and
+        # tests/test_hurdle_minutes_left_framework.py.
         v = self._allocator.select(
             props, regime=mc.state,
             slots_by_framework=slots,
@@ -4952,7 +5004,8 @@ class IntradayEngine:
             minutes_left=minutes_left,
             field=field,
             open_positions=self.positions,
-            swing_regime=(self._policy or {}).get("_current_regime"))
+            swing_regime=(self._policy or {}).get("_current_regime"),
+            swing_minutes_left=0)
         takes = sum(1 for x in v if x["verdict"] == "TAKE")
 
         # Keyed for the veto below. (symbol, product) is the same key
