@@ -85,6 +85,8 @@ MODULES = [
     ("hurdle since floor",   "tests.test_hurdle_since"),
     ("allocation_decisions JSONB slimming", "tests.test_alloc_decisions_jsonb_slim"),
     ("allocation_decisions archive-then-delete", "tests.test_archive_allocation_decisions"),
+    ("allocation_decisions write-time collapse", "tests.test_alloc_write_collapse"),
+    ("hurdle repeat_count expansion", "tests.test_hurdle_repeat_count"),
     ("feature edge study",   "tests.test_feature_edge_study"),
     ("intraday volume decay", "tests.test_intraday_volume_decay"),
     ("sub_engine on positions", "tests.test_sub_engine_on_positions"),

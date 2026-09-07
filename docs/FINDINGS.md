@@ -15970,3 +15970,138 @@ requested this session.
 failing-first proven, full suites clean; the mechanism investigation is
 honestly reported as still unresolved with the prior session's wrong
 guess corrected rather than left uncorrected.
+
+## 2026-09-08 — Storage — allocator write-time collapse (migration 129, armed) + stock_data_daily/raw_prices/chartink_raw_data shrink (migration 130, run) — 286,471 rows deleted, ~97.7% write reduction expected
+
+**Ran:**
+
+```sql
+-- via Supabase MCP execute_sql, project dbjfwpamxudnolfalpfm
+select * from v_storage_usage limit 15;
+select framework, trade_date, count(*) from allocation_decisions
+  where trade_date >= current_date - 25 group by 1,2;
+select count(*) from NETWEB-style TAKE-repeat check (symbol/date grouped, distinct entry/stop/target)
+select count(distinct symbol||date) vs count(*) for stock_data_daily/price_history_yf overlap
+```
+```bash
+cd backend && python "<scratchpad>/repeat_count_replay.py"      # custom, not committed
+cd backend && python -m tools.verify
+cd backend && python -c "from tools.health import check_price_source_parity, check_storage; ..."
+```
+
+**Found — the real driver, and why the two prior attempts missed it:**
+`allocation_decisions` (86MB, 212,226 rows at session start, now the single
+biggest table) grows 18k-34k SWING rows/trading day since 24-Aug-2026,
+because `Allocator._record()` (`allocation/allocator.py:709`, pre-session)
+is called unconditionally every 15s cycle with zero change detection. The
+27-Aug mean-collapse dedup (`alloc_hurdle_dedup_swing`, reverted same day)
+and the 29-Aug `tools/material_change_replay_audit.py` (built, never run
+until this session) both exempt every TAKE row unconditionally, on the
+assumption a TAKE fires once. Checked live: it does not — NETWEB,
+2026-08-31, logged **1,348 separate TAKE rows for one position**, identical
+entry/stop/target on every one (`count(distinct entry)=1` etc), spanning
+the full 6.3-hour session. TAKE re-affirmation of an already-open position
+was never touched by either prior mechanism and was the majority of the
+uncounted opportunity.
+
+**Built:** `_write_or_collapse()` (`allocation/allocator.py`), SWING-only,
+collapses a materially-unchanged observation (verdict/regime_bucket
+unchanged, edge within `alloc_write_collapse_edge_threshold`, within
+`alloc_write_collapse_heartbeat_s` of first write) into `repeat_count` on
+the existing row instead of a new INSERT — via in-buffer mutation if still
+unflushed, or a queued UPDATE-by-id on the next `flush()` tick if already
+flushed, never a synchronous write inside the 15s cycle. `hurdle.py::
+_empirical_base()`'s `_extract()` expands each row by `repeat_count` before
+taking a percentile — reconstructing the exact original multiset, not an
+approximation (`repeat_count=1` on every row while off, or for INTRADAY, is
+a provable no-op). `weekly_review.py`'s SWING defer-rate and `allocator_
+report.py::_greedy_choice()` (top-N by native_rank) made repeat_count/
+distinct-symbol aware so neither silently drifts once armed.
+
+**Measured, live 14-day SWING replay (208,247 raw rows) before shipping:**
+the shipped rule (0.03R edge / 1800s heartbeat, DECLINE and DEFER kept
+distinct, TAKE not exempted) — **4,848 physical rows (97.7% fewer)**, hurdle
+bar delta **0.00000 at p75 and p95**, exact verdict-count reconciliation
+(DECLINE 158,506/158,506, DEFER 35,962/35,962, TAKE 13,779/13,779), zero
+native_rank drift across 3,728 collapsed groups. INTRADAY's own replay only
+reached 61.9% with a non-zero bar delta — deliberately excluded from the
+switch.
+
+**12 new tests** (`tests/test_alloc_write_collapse.py`,
+`tests/test_hurdle_repeat_count.py`), registered in `tools.verify`.
+**Demonstrated failing first**: temporarily forced `keep=True` unconditionally,
+3 of 9 collapse tests failed with the exact expected messages, reverted,
+1,246/1,246 checks green.
+
+**Second thread, same session — stock_data_daily's 250-trading-day
+retention was justified by code that doesn't exist.** `sma_200`/`sma_50`/
+`atr_14`/`supertrend` are Chartink vendor passthroughs
+(`compute_indicators.py` `PASSTHROUGH_FIELDS`), never a rolling computation
+over `stock_data_daily`'s own rows — migrations 016/030's "200-day moving
+average" justification described nothing real. The actual longest reader of
+`stock_data_daily`'s own history was `allocation/outcomes.py` at 120
+calendar days, reading only `high/low/close` — never `sector`/`asm_flag`/
+`delivery_pct`/`value_cr`/`market_cap`, which every historical reader only
+ever wants from *today's* row. Five call sites (`control/exit_rules.py`,
+`allocation/outcomes.py`, `swing/signals/outcomes.py`, `swing/brain/
+performance_tracker.py`, `swing/brain/data_aggregator.py`) moved to
+`price_history_yf` this session (same OHLCV columns, back to 2025-01-02).
+
+**Verified before shipping, not assumed:** today's active ~500-symbol
+universe has IDENTICAL per-symbol row counts in both tables over the live
+120-day window (0 short, 0 missing) and close prices agree EXACTLY (40,991
+symbol-days compared, max abs diff 0.0000). A SEPARATE unbounded comparison
+(no date/universe filter) DID find real divergence — 87 symbols, entirely
+clustered in `stock_data_daily`'s own first ~7 weeks (2026-03-06 through
+2026-04-29, e.g. ECLERX ~2x), a data-quality artifact of its early bring-up,
+more than 120 days old and never read by anything live. New standing check
+`tools/health.py::check_price_source_parity()` compares `stock_data_daily`
+against `price_history_yf` on whatever window the former still retains —
+catches a FUTURE real corporate action (confirmed live:
+`compute_indicators.py`'s yfinance fetch uses `auto_adjust=True`, so a
+future split/dividend retroactively rewrites `price_history_yf`'s history
+while `stock_data_daily`'s bhavcopy/Chartink rows never get retroactively
+adjusted) the day it first appears in the retained window, not months later
+inside a silently-wrong price-level comparison. **Real bug caught building
+this check**: its first version read `stock_data_daily`/`price_history_yf`
+unpaged (`tools/health.py`, no `fetch_all`) — `tools.verify`'s own static
+analysis module caught it (PostgREST's 1000-row cap), which is exactly why
+the first live run of the check under-reported 35 divergent rows instead of
+the true 546 (still 100% outside the 120-day window either way, confirmed
+by raw SQL both times). `price_history_yf`'s `(symbol, date)` PRIMARY KEY
+registered in `tests/test_static_analysis.py::_FETCH_ALL_SORT_KEY`.
+
+**Applied live, this session (migrations 129 + 130):**
+- `allocation_decisions`: `repeat_count`/`first_decided_at` columns added;
+  `alloc_write_collapse_swing_enabled` **armed true**.
+- `storage_rolloff_keep_days` (stock_data_daily): 250 → 8 trading days.
+  `archive_stock_data(8)` run once manually: **59,458 rows archived to
+  `stock_data_archive` then deleted**, cutoff 2026-08-26.
+- `storage_staging_keep_days` (raw_prices/chartink_raw_data): 120 → 8
+  calendar days. `rolloff_staging(8)` run once manually: **188,527 rows
+  deleted from raw_prices, 38,486 from chartink_raw_data** (delete-only,
+  both re-derivable from source bhavcopy/Chartink exports per migration
+  032's own reasoning), cutoff 2026-08-30.
+
+**Could not determine:** the root cause of `stock_data_daily`'s own
+March-April 2026 divergence from `price_history_yf` (a one-time historical
+data-quality question, now moot — those rows are deleted and outside every
+live reader's window). Also could not verify the INTRADAY daemon has
+actually picked up the new `allocator.py` — the process needs a restart to
+load it; the config flip alone does nothing until it does.
+
+**Recommends:** restart/redeploy the intraday daemon so `_write_or_
+collapse()` actually runs (SWING write volume will not drop otherwise —
+the arm flip is live but inert until the running process reloads the
+code); run `VACUUM FULL` on `allocation_decisions`, `stock_data_daily`,
+`raw_prices`, `chartink_raw_data` to reclaim the physical disk space the
+three deletes above freed logically but not yet physically (`v_storage_
+usage` still reports pre-delete sizes — Postgres MVCC, not a failure of
+the delete). Watch `check_price_source_parity` and `check_alloc_decisions_
+retention` in the next few `tools.health` runs.
+
+**Gate:** PASS — both mechanisms built, measured against real data before
+arming (not after), 1,246/1,246 offline checks green, two new standing
+health checks added. NEEDS FOLLOW-UP: confirm post-restart SWING write rate
+and post-VACUUM disk size in the next session, not assumed from today's
+measurement alone.

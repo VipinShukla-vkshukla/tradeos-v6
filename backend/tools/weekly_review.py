@@ -792,15 +792,22 @@ def review_swing_reservation_engagement(sb, days: int = 14) -> None:
     _hdr("SWING RESERVATION — is the multiple actually engaging?")
     since = (today_ist() - timedelta(days=days)).isoformat()
     # SORTED PAGING — allocation_decisions is 20,873 rows.
-    rows = fetch_all(lambda: sb.table("allocation_decisions").select("verdict,id")
+    rows = fetch_all(lambda: sb.table("allocation_decisions").select("verdict,id,repeat_count")
                      .eq("framework", "SWING").gte("trade_date", since))
 
-    total = len(rows)
+    # STORAGE — 08-Sep-2026, migration 129. Weighted by repeat_count, not a
+    # plain row count: under alloc_write_collapse_swing_enabled one physical
+    # row can represent many original 15s-cycle observations. repeat_count
+    # is 1 on every row while that switch is off, so this is a no-op today —
+    # it only matters once collapsing is armed, and keeps `total` measuring
+    # the true sample size (and swing_reservation_min_sample comparable to
+    # what it always meant) rather than the count of collapsed rows.
+    total = sum(int(r.get("repeat_count") or 1) for r in rows)
     if total == 0:
         logger.info(f"  no swing decisions in the last {days}d — nothing to measure")
         return
 
-    defers = sum(1 for r in rows if r.get("verdict") == "DEFER")
+    defers = sum(int(r.get("repeat_count") or 1) for r in rows if r.get("verdict") == "DEFER")
     rate = defers / total * 100.0
     mult = cfg_float("alloc_reserve_edge_multiple", 1.15)
     logger.info(f"  {total} decision(s) over {days}d · {defers} DEFER "

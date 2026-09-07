@@ -85,6 +85,18 @@ class Allocator:
         # falling through to hurdle()'s live fetch (cached_population=None
         # is a cache miss, not an error).
         self._hurdle_populations: dict[tuple[str, str], tuple] = {}
+        # STORAGE — 08-Sep-2026, see migration 129 and _write_or_collapse().
+        # (symbol, framework, product, trade_date) -> {verdict, regime_bucket,
+        # edge, row_ref, row_id}. `row_ref` is the exact dict object sitting
+        # in self._buffer for an anchor not yet flushed; flush() nulls it and
+        # sets row_id once the insert returns. Scoped by trade_date in the
+        # key itself, so a stale prior-day entry simply never matches again —
+        # no explicit reset needed for a process that runs one trading day.
+        self._collapse_state: dict[tuple, dict] = {}
+        # row_id -> fields to sync for an anchor that already flushed before
+        # this cycle's collapse decision arrived. Applied on the same 300s
+        # timer flush() already uses — never inside the 15s cycle.
+        self._pending_updates: dict[int, dict] = {}
 
     # ── priors, refreshed on the slow timer rather than per cycle ──────────
     def refresh_priors(self) -> None:
@@ -536,7 +548,8 @@ class Allocator:
 
         out = self._basket_recheck(out, open_positions or [])
         self._age_deferrals(out)
-        self._buffer += [self._record(v) for v in out]
+        for v in out:
+            self._write_or_collapse(v)
         return out
 
     # ── basket recheck ─────────────────────────────────────────────────────
@@ -614,6 +627,84 @@ class Allocator:
                     continue
             self._deferred[p.key()] = {"entry": p.entry, "at": now}
 
+    # ── write-time collapse — migration 129, 08-Sep-2026 ────────────────────
+    def _write_or_collapse(self, v: dict) -> None:
+        """
+        Route a verdict to self._buffer either as a brand-new row or as a
+        repeat_count bump on the last row written for this exact candidate —
+        SWING only, and only when alloc_write_collapse_swing_enabled is on.
+        Every other case (INTRADAY, or the switch off) appends via _record()
+        exactly as before this migration — byte-identical behaviour, not an
+        approximation of it, because repeat_count defaults to 1 and hurdle()
+        expanding one row by repeat_count=1 is a no-op.
+
+        The predicate — verdict change, regime_bucket change, |edge move| >=
+        threshold, or heartbeat elapsed since the row was FIRST written — is
+        the one measured live against 208,247 real SWING rows before this
+        shipped (see migration 129's own comment): 97.7% fewer physical
+        rows, 0.00000 hurdle-bar delta, exact verdict-count reconciliation.
+        Deliberately does NOT treat DECLINE and DEFER as equivalent (that
+        variant reached a similar reduction but blurred ~0.4% of rows
+        between the two verdicts) and does NOT exempt TAKE from collapsing —
+        the transition INTO TAKE is itself a verdict change and is always
+        kept as the permanent entry record; only a TAKE that stays open
+        across cycles with nothing else moving gets folded into repeat_count,
+        which is exactly the NETWEB pattern this migration was built to fix.
+        """
+        p: Proposal = v["proposal"]
+        if p.framework != "SWING" or not cfg_bool("alloc_write_collapse_swing_enabled", False):
+            self._buffer.append(self._record(v))
+            return
+
+        now = datetime.now(IST)
+        key = (p.symbol, p.framework, p.product, now.date().isoformat())
+        edge = v.get("edge")
+        regime_bucket = v.get("regime_bucket")
+        verdict = v.get("verdict")
+
+        state = self._collapse_state.get(key)
+        edge_threshold = cfg_float("alloc_write_collapse_edge_threshold", 0.03)
+        heartbeat_s = cfg_int("alloc_write_collapse_heartbeat_s", 1800)
+
+        keep = (
+            state is None
+            or verdict != state["verdict"]
+            or regime_bucket != state["regime_bucket"]
+            or (edge is None) != (state["edge"] is None)
+            or (edge is not None and state["edge"] is not None
+                and abs(edge - state["edge"]) >= edge_threshold)
+            or (now - state["first_decided_at"]).total_seconds() >= heartbeat_s
+        )
+
+        if keep:
+            row = self._record(v)
+            self._collapse_state[key] = {
+                "verdict": verdict, "regime_bucket": regime_bucket, "edge": edge,
+                "first_decided_at": now, "row_ref": row, "row_id": None,
+            }
+            self._buffer.append(row)
+            return
+
+        # Collapse: this cycle's observation contributes nothing new. Update
+        # the anchor's edge/timestamp/repeat_count in place, and route the
+        # DB write to wherever the anchor physically lives right now.
+        state["edge"] = edge
+        state["repeat_count"] = state.get("repeat_count", 1) + 1
+        if state["row_ref"] is not None:
+            # Still sitting in self._buffer, unflushed — mutate the same
+            # dict object flush() will insert; no separate write needed.
+            state["row_ref"]["repeat_count"] = state["repeat_count"]
+            state["row_ref"]["edge"] = edge
+            state["row_ref"]["decided_at"] = now.isoformat()
+        else:
+            # Already flushed in an earlier cycle — queue an UPDATE by id,
+            # applied on the next flush() tick, never inside this 15s cycle.
+            self._pending_updates[state["row_id"]] = {
+                "repeat_count": state["repeat_count"],
+                "edge": edge,
+                "decided_at": now.isoformat(),
+            }
+
     # ── recording ──────────────────────────────────────────────────────────
     def _record(self, v: dict) -> dict:
         p: Proposal = v["proposal"]
@@ -633,8 +724,16 @@ class Allocator:
         # reads changes here — see docs/FINDINGS.md, 27-Aug-2026, for the full
         # investigation this followed.
         slim = v["verdict"] != TAKE
+        decided_at = datetime.now(IST).isoformat()
         return {
-            "decided_at": datetime.now(IST).isoformat(),
+            "decided_at": decided_at,
+            # STORAGE — 08-Sep-2026, migration 129. repeat_count=1 and
+            # first_decided_at=decided_at on every row is what makes the
+            # write-collapse feature a no-op when it's off (or for
+            # INTRADAY, which never collapses): hurdle.py expands a row by
+            # repeat_count before taking a percentile, and 1 copy of 1 edge
+            # value is exactly what it reads today.
+            "repeat_count": 1, "first_decided_at": decided_at,
             "symbol": p.symbol, "framework": p.framework, "product": p.product,
             "direction": p.direction,
             "source": p.source, "verdict": v["verdict"], "reason": v.get("reason"),
@@ -686,16 +785,47 @@ class Allocator:
         in front of exit evaluation on live positions. The catch-and-continue
         wrapper protects against a write FAILING; it does nothing about a write
         being SLOW, and slow is the failure that costs money here.
+
+        STORAGE — 08-Sep-2026, migration 129. Two independent write groups,
+        both still only on this slow timer, never the 15s cycle:
+          - new physical rows (self._buffer), as before this migration.
+          - repeat_count/edge/decided_at SYNCS for a collapsed candidate
+            whose anchor row already flushed in an earlier cycle
+            (self._pending_updates) — a candidate hovering unchanged for
+            longer than one flush interval needs its repeat_count kept
+            current in the DB, not just in this process's memory.
         """
-        if not self._buffer:
-            return 0
-        rows, self._buffer = self._buffer, []
-        try:
-            self.sb.table("allocation_decisions").insert(rows).execute()
-            return len(rows)
-        except Exception as e:
-            logger.error(f"  allocator: flush of {len(rows)} verdict(s) FAILED: {e}")
-            # Loud, not swallowed. Buffered writes that vanish leave silent holes
-            # in the promotion evidence, and the promotion gate is denominated in
-            # exactly these rows.
-            return 0
+        n = 0
+        if self._buffer:
+            rows, self._buffer = self._buffer, []
+            # id(dict) -> collapse_state entry, for every anchor still
+            # unflushed going into this call — lets the insert's own
+            # returned rows (same order as sent) tell us each anchor's new
+            # DB id, so a LATER cycle's collapse can route to an UPDATE
+            # instead of assuming the row is still sitting in the buffer.
+            pending_anchor = {id(s["row_ref"]): s for s in self._collapse_state.values()
+                               if s.get("row_ref") is not None}
+            try:
+                resp = self.sb.table("allocation_decisions").insert(rows).execute()
+                inserted = resp.data or []
+                for row, back in zip(rows, inserted):
+                    st = pending_anchor.get(id(row))
+                    if st is not None and back.get("id") is not None:
+                        st["row_id"] = back["id"]
+                        st["row_ref"] = None
+                n = len(rows)
+            except Exception as e:
+                logger.error(f"  allocator: flush of {len(rows)} verdict(s) FAILED: {e}")
+                # Loud, not swallowed. Buffered writes that vanish leave silent
+                # holes in the promotion evidence, and the promotion gate is
+                # denominated in exactly these rows.
+
+        if self._pending_updates:
+            updates, self._pending_updates = self._pending_updates, {}
+            for row_id, fields in updates.items():
+                try:
+                    self.sb.table("allocation_decisions").update(fields).eq("id", row_id).execute()
+                except Exception as e:
+                    logger.error(f"  allocator: repeat_count sync for row {row_id} FAILED: {e}")
+
+        return n

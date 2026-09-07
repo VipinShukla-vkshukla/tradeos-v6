@@ -75,8 +75,18 @@ def _greedy_choice(day_rows: list[dict], slots: int = 2) -> set[tuple]:
     same rows the allocator saw is what makes the comparison fair: both policies
     are shown the identical proposal set.
     """
+    # Distinct (symbol, product) pairs first, THEN take the top `slots` —
+    # not top-`slots` ROWS. Same symbol/product repeated across many rows
+    # (write-time collapse, migration 129, or plain multi-poll before it)
+    # must count as ONE candidate for a slot, not silently shrink the
+    # reconstructed greedy basket below `slots` distinct names.
     ranked = sorted(day_rows, key=lambda r: -(float(r.get("native_rank") or 0)))
-    return {(r["symbol"], r["product"]) for r in ranked[:slots]}
+    seen: set[tuple] = set()
+    for r in ranked:
+        seen.add((r["symbol"], r["product"]))
+        if len(seen) >= slots:
+            break
+    return seen
 
 
 def scorecard(sb) -> int:

@@ -150,7 +150,13 @@ def _compute_forward_returns(sb, signals: pd.DataFrame,
         # read. Nothing raised; the frame was simply short.
         # `order_by` IS NOT OPTIONAL — see performance_tracker: this table has
         # no `id` column and the default key raises 42703 on the first page.
-        rows = fetch_all(lambda c=chunk: sb.table("stock_data_daily")
+        # STORAGE — 08-Sep-2026. price_history_yf, not stock_data_daily: only
+        # close/high/low read here, and stock_data_daily's own retention is
+        # being cut well below this window (migration 130). Verified live:
+        # today's active universe has IDENTICAL per-symbol row counts in
+        # both tables over 120 days — docs/FINDINGS.md, 08-Sep-2026.
+        # price_history_yf ALSO has no `id` column, so order_by stays required.
+        rows = fetch_all(lambda c=chunk: sb.table("price_history_yf")
                   .select("date,symbol,close,high,low")
                   .in_("symbol", c)
                   .gte("date", str(min_date))

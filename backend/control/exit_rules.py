@@ -425,7 +425,15 @@ def load_signal_context(sb, symbols: list[str]) -> dict[str, dict]:
     # assess_trend stays pure.
     bars: dict[str, dict] = {}
     try:
-        raw = (sb.table("stock_data_daily").select("symbol,date,high,low")
+        # STORAGE — 08-Sep-2026. price_history_yf, not stock_data_daily: this
+        # only ever needs high/low, and stock_data_daily's own retention is
+        # being cut well below 70 days (migration 130). Verified live before
+        # this shipped: today's active universe has IDENTICAL per-symbol row
+        # counts in both tables over the last 120 days (0 short, 0 missing) —
+        # see docs/FINDINGS.md, 08-Sep-2026. `len(hi) >= 10` below already
+        # degrades this to one fewer vote, never a crash, on any symbol thin
+        # in price_history_yf.
+        raw = (sb.table("price_history_yf").select("symbol,date,high,low")
                  .in_("symbol", symbols).order("date", desc=True)
                  .limit(len(symbols) * 70).execute().data or [])
         for r in reversed(raw):

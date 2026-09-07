@@ -637,7 +637,7 @@ def _empirical_base(bucket: str, framework: str, sb=None
         # True. Two independent builders is the fix, not a workaround.
         def base_query():
             return (sb.table("allocation_decisions")
-                      .select("symbol,edge,framework,regime_bucket,trade_date")
+                      .select("symbol,edge,framework,regime_bucket,trade_date,repeat_count")
                       .eq("framework", fw)
                       .gte("trade_date", since)
                       .not_.is_("edge", "null"))
@@ -699,13 +699,29 @@ def _empirical_base(bucket: str, framework: str, sb=None
 
     def _extract(rowset: list) -> list[float]:
         if not dedup:
+            # STORAGE — 08-Sep-2026, migration 129. A row written under
+            # alloc_write_collapse_swing_enabled represents repeat_count
+            # original 15s-cycle observations, not one. Expanding by it here
+            # reconstructs the EXACT population this function read before
+            # that switch existed — repeat_count is 1 on every row while the
+            # switch is off (and always, for INTRADAY), so this is a no-op
+            # until collapsing is armed. This is not the dedup path below:
+            # dedup discards rows and changes the multiset; this preserves it.
             out = []
             for r in rowset:
                 try:
-                    out.append(float(r["edge"]))
+                    e = float(r["edge"])
                 except (TypeError, ValueError, KeyError):
                     continue
+                out.extend([e] * int(r.get("repeat_count") or 1))
             return out
+        # NOTE: does not weight by repeat_count. alloc_hurdle_dedup_* is
+        # reverted OFF for both books (27-Aug-2026, docs/FINDINGS.md) and
+        # not part of what migration 129 measured — if it's ever re-enabled
+        # alongside alloc_write_collapse_swing_enabled, this mean would
+        # under-weight a collapsed row relative to its true repeat_count.
+        # Not fixed here: combining two independently-gated, individually
+        # unproven mechanisms is its own decision, not a side effect of this one.
         by_symbol_day: dict[tuple, list[float]] = {}
         for r in rowset:
             try:

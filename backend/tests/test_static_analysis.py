@@ -251,6 +251,10 @@ _FETCH_ALL_SORT_KEY = {
     "brain_proposals":      "id",
     # 55,963 rows and no `id` column. (symbol, date) is the table's natural key.
     "stock_data_daily":     "symbol,date",
+    # price_history_yf — 08-Sep-2026, migration 130. Confirmed via
+    # pg_constraint: PRIMARY KEY (symbol, date) — a real constraint, not
+    # just a probed-unique pair like stock_data_daily's own natural key.
+    "price_history_yf":     "symbol,date",
     # Measured 2026-08-16 on the live table: 2,716 rows, NO `id` column — the
     # same trap as stock_data_daily. `sector` alone is NOT unique (25 distinct
     # across 1000 rows); (date, sector) probed unique.

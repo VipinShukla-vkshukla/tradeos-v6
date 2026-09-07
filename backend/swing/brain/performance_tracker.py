@@ -111,7 +111,13 @@ def _load_outcomes_for_date_range(sb, signal_date_min: date,
         # truncation into a hard failure of the whole outcome scorer —
         # verified 15-Aug-2026 by calling this function directly. (symbol,
         # date) is unique on the table: 16,489 distinct of 16,489 rows.
-        pr = fetch_all(lambda c=chunk: sb.table("stock_data_daily")
+        # STORAGE — 08-Sep-2026. price_history_yf, not stock_data_daily: only
+        # `close` is read here, and stock_data_daily's own retention is being
+        # cut well below this function's window (migration 130). Verified
+        # live: today's active universe has IDENTICAL per-symbol row counts
+        # in both tables over 120 days — docs/FINDINGS.md, 08-Sep-2026.
+        # price_history_yf ALSO has no `id` column, so order_by stays required.
+        pr = fetch_all(lambda c=chunk: sb.table("price_history_yf")
                 .select("date,symbol,close")
                 .in_("symbol", c)
                 .gte("date", str(signal_date_min))

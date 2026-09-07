@@ -1619,6 +1619,79 @@ def check_alloc_decisions_retention() -> tuple[bool, str]:
     return True, f"oldest row is {oldest_date}, within the {keep_days}-day retention window"
 
 
+def check_price_source_parity() -> tuple[bool, str]:
+    """
+    stock_data_daily and price_history_yf must still agree on price, on
+    every date both currently hold.
+
+    08-Sep-2026, migration 130. Five historical readers (control/exit_
+    rules.py, allocation/outcomes.py, swing/signals/outcomes.py, swing/
+    brain/performance_tracker.py, swing/brain/data_aggregator.py) were
+    moved from stock_data_daily to price_history_yf once stock_data_daily's
+    own retention was cut from 250 trading days to a few days — verified
+    live before the move that both tables agreed exactly (40,991 symbol-
+    days compared, max abs diff 0.0000) on close price.
+
+    THE RISK THIS WATCHES FOR: price_history_yf's yfinance-sourced rows are
+    fetched with auto_adjust=True (compute_indicators.py's own
+    fetch_bulk_history_yf), so a future stock split/bonus retroactively
+    rewrites its HISTORICAL closes; stock_data_daily's bhavcopy/Chartink-
+    sourced rows never get retroactively adjusted. The two agreeing today
+    does not mean they will keep agreeing — this compares them on every
+    date stock_data_daily still retains (a shrinking window by design), so
+    a divergence introduced by a real corporate action is caught the day it
+    first appears, while there is still an unadjusted row to compare
+    against, not discovered months later in a price-level comparison that
+    silently used the wrong number.
+    """
+    from config import get_supabase, fetch_all
+
+    sb = get_supabase()
+    try:
+        # PAGED — stock_data_daily is known to exceed PostgREST's 1000-row
+        # cap; (symbol, date) is its verified sort key (tests/
+        # test_static_analysis.py::_FETCH_ALL_SORT_KEY).
+        sdd = fetch_all(lambda: sb.table("stock_data_daily").select("symbol,date,close")
+                         .not_.is_("close", "null"), order_by="symbol,date")
+    except Exception as e:
+        return False, f"could not read stock_data_daily: {e}"
+
+    if not sdd:
+        return True, "stock_data_daily is empty — nothing to compare"
+
+    dates = sorted({r["date"] for r in sdd})
+    symbols = list({r["symbol"] for r in sdd})
+    try:
+        # PAGED — same cap risk once the symbol/date filter still spans
+        # more than 1000 rows. price_history_yf's own PRIMARY KEY (symbol,
+        # date) is verified in the same sort-key registry (migration 130).
+        phy = fetch_all(lambda: sb.table("price_history_yf").select("symbol,date,close")
+                         .in_("symbol", symbols).gte("date", dates[0]).lte("date", dates[-1])
+                         .not_.is_("close", "null"), order_by="symbol,date")
+    except Exception as e:
+        return False, f"could not read price_history_yf: {e}"
+
+    phy_by_key = {(r["symbol"], r["date"]): float(r["close"]) for r in phy}
+    tolerance = 0.01
+    mismatches = []
+    for r in sdd:
+        key = (r["symbol"], r["date"])
+        other = phy_by_key.get(key)
+        if other is None:
+            continue
+        if abs(float(r["close"]) - other) > tolerance:
+            mismatches.append((r["symbol"], r["date"], r["close"], other))
+
+    if mismatches:
+        worst = sorted(mismatches, key=lambda m: -abs(m[2] - m[3]))[:5]
+        detail = ", ".join(f"{s} {d}: sdd={a} phy={b}" for s, d, a, b in worst)
+        return False, (f"{len(mismatches)} symbol-day(s) diverge between stock_data_daily "
+                       f"and price_history_yf by more than {tolerance} — a corporate action "
+                       f"or adjustment drift is likely; worst: {detail}")
+    return True, (f"{len(sdd)} stock_data_daily row(s) checked against price_history_yf "
+                 f"on the same dates — no divergence beyond {tolerance}")
+
+
 def check_governance() -> tuple[bool, str]:
     """
     Is there still exactly one door, and is the conviction layer still annotation?
@@ -2434,6 +2507,7 @@ CHECKS = [
     ("feed",     "decisions run on data of unknown age, or ticks arrive late",  check_feed_integrity, False),
     ("quote_parity", "a live quote-mode field drifted from the historical endpoint and nobody is watching", check_quote_parity, False),
     ("alloc_decisions_retention", "the archive job is armed but not actually pruning allocation_decisions", check_alloc_decisions_retention, False),
+    ("price_source_parity", "price_history_yf silently diverges from stock_data_daily after a corporate action, and the five readers moved onto it never notice", check_price_source_parity, False),
     ("exits",    "an exit rule can sell without alerting, or fires from only one caller", check_exit_actions, False),
     ("costs",    "charges are priced off a stale or wrong-product rate",         check_cost_rates, False),
     ("selects",  "a query reads a column the schema no longer has",              check_selects,  False),

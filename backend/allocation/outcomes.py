@@ -69,12 +69,18 @@ NOT_TRIGGERED = "counterfactual: entry never reached"
 
 
 def _bars(sb, symbols: list[str], since: str) -> dict[str, list[dict]]:
+    # STORAGE — 08-Sep-2026. price_history_yf, not stock_data_daily: only
+    # high/low/close are read here, and stock_data_daily's own retention is
+    # being cut well below this function's up-to-120-day window (migration
+    # 130). Verified live before this shipped: today's active universe has
+    # IDENTICAL per-symbol row counts in both tables over 120 days (0 short,
+    # 0 missing) — docs/FINDINGS.md, 08-Sep-2026.
     out: dict[str, list[dict]] = {}
     for i in range(0, len(symbols), 60):
         chunk = symbols[i:i + 60]
         off = 0
         while True:
-            rows = (sb.table("stock_data_daily")
+            rows = (sb.table("price_history_yf")
                       .select("symbol,date,high,low,close")
                       .in_("symbol", chunk).gte("date", since)
                       .order("date").range(off, off + PAGE - 1).execute().data) or []
