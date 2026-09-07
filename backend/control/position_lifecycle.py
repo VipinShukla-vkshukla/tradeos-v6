@@ -2399,8 +2399,56 @@ def manage_open_positions(sb, trade_date: str, require_live: bool = False) -> di
     return {"status": "ok", "managed": len(rows), "actions": actions}
 
 
-def send_action_alerts(actions: list[dict]):
-    """Telegram alert for anything needing a decision. Silent when nothing does."""
+def _rehydrate_notifier_memory(notifier, sb, symbols: list[str]) -> None:
+    """
+    Seed the Notifier's material-change memory from persisted alert rows.
+
+    intraday/engine.py keeps one Notifier alive for the whole session, so its
+    `_last` dict already remembers what it told you an hour ago. This function
+    runs inside a fresh process every 30 minutes (the GH Actions cron) with no
+    such memory of its own — without this, every run would treat every still-
+    pending action as brand new and re-announce it, which is exactly the
+    "alert for every single action" noise this fallback path exists to avoid.
+    `intraday_alerts` is the one table both the daemon and this cron already
+    write every notified action to, so it is the natural shared memory rather
+    than a second one invented here — same idea as engine.py's own
+    `_rehydrate_recorded()` for the setup-dedup map, applied to this map.
+
+    Non-fatal: an unreadable table leaves the map empty, which just means this
+    run behaves like a cold start (fires once more than strictly necessary),
+    never like it should stay silent when it should not.
+    """
+    if not symbols:
+        return
+    try:
+        rows = (sb.table("intraday_alerts")
+                  .select("symbol,kind,headline,ts")
+                  .in_("symbol", symbols)
+                  .order("ts", desc=True)
+                  .limit(500).execute().data) or []
+    except Exception as e:
+        logger.debug(f"  notifier rehydration skipped ({e})")
+        return
+    seen = set()
+    for r in rows:
+        key = f"{r['symbol']}:{r['kind']}"
+        if key in seen:
+            continue          # rows arrive newest-first; first hit per key wins
+        seen.add(key)
+        try:
+            ts = datetime.fromisoformat(str(r["ts"]).replace("Z", "+00:00")).astimezone(IST)
+        except Exception:
+            continue
+        notifier._last[key] = (r["headline"], ts)
+
+
+def send_action_alerts(actions: list[dict], sb=None):
+    """
+    Telegram alert for a material change in a SWING position — a sellable
+    action needing a manual decision, or a stop/runner update FYI. Silent
+    when nothing has changed, and silent outright while intraday/engine.py's
+    daemon holds the lease (it already covers these, live, with its own gate).
+    """
     if not actions:
         return
     # EVERY ACTION THAT CAN SELL MUST BE ABLE TO ALERT.
@@ -2414,24 +2462,65 @@ def send_action_alerts(actions: list[dict]):
     SELLABLE = ("EXIT_STOP", "EXIT_TARGET", "EXIT_TIME", "EXIT_DETERIORATION",
                 "EXIT_GIVEBACK", "EXIT_STALL", "EXIT_FASTFAIL", "BOOK_PARTIAL")
     urgent = [a for a in actions if a["action"] in SELLABLE]
-    if not urgent:
+    # TRAIL_SL/RUN place no order — manage_open_positions() persists the new
+    # stop unconditionally, whatever swing_auto_exit is set to — but a moved
+    # stop or a target converted to a runner is exactly the kind of material
+    # change the operator asked to be told about, not just the ones that need
+    # a manual sell. FYI only: urgency stays NORMAL, never CRITICAL, below.
+    informational = [a for a in actions if a["action"] in ("TRAIL_SL", "RUN")]
+    if not urgent and not informational:
         return
-    icons = {"EXIT_STOP": "🔴", "EXIT_TARGET": "🎯", "EXIT_TIME": "⏰",
-             "EXIT_DETERIORATION": "⚠️", "EXIT_GIVEBACK": "🩸",
-             "EXIT_STALL": "🐌", "EXIT_FASTFAIL": "✂️",
-             "BOOK_PARTIAL": "💰", "RUN": "🏃"}
-    lines = ["<b>⚡ Position Actions Required</b>", ""]
-    for a in urgent:
-        lines.append(f"{icons.get(a['action'], '•')} <b>{a['symbol']}</b> — {a['action']}")
-        lines.append(f"    LTP Rs.{a['ltp']:.2f}"
-                     + (f" | {a['r']:+.2f}R" if a.get("r") is not None else ""))
-        lines.append(f"    <i>{a['detail']}</i>")
-    lines.append("\n<i>Execute in Kite. Positions reconcile automatically on the next run.</i>")
+
+    sb = sb or get_supabase()
+
+    # THE DAEMON ALREADY COVERS THIS, ON LIVE TICKS, WITH ITS OWN MATERIAL-
+    # CHANGE GATE. Same "second actor" check candidate_monitor.py already
+    # applies to entry alerts (Phase 2b, 26-Aug-2026) — intraday/engine.py's
+    # 15s loop calls this exact evaluate_exit() for every SWING position and
+    # alerts through Notifier, which only speaks on a genuine transition. This
+    # function is invoked every 30 minutes by pipeline_intraday.yml regardless
+    # of whether that daemon is running, so without this check a manual-exit
+    # position sitting in EXIT_STOP with swing_auto_exit off (the default)
+    # would re-announce the identical instruction every half hour for as long
+    # as it stayed unactioned — the precise complaint this closes. Only when
+    # the daemon looks down does this fire at all.
+    to_alert = urgent + informational
     try:
-        from alerts.send_alerts import send_message
-        send_message("\n".join(lines), subject_suffix="Position Actions")
+        from intraday.lease import observe as _observe_daemon_lease
+        view = _observe_daemon_lease(sb)
+        if getattr(view, "held_by_other", False):
+            logger.info(f"  {len(to_alert)} action alert(s) suppressed — daemon "
+                       f"lease held by {view.holder}@{view.hostname}, already "
+                       f"covers these live with its own material-change gate")
+            return
     except Exception as e:
-        logger.warning(f"  Position alert send failed: {e}")
+        logger.debug(f"  lease check failed ({e}) — alerting unfiltered")
+
+    # Fallback path (daemon down): route through the SAME Notifier the daemon
+    # uses rather than a bespoke digest, so a repeat cron run gets the same
+    # material-change comparison and rearm timeout instead of restating an
+    # unchanged instruction every 30 minutes.
+    from intraday.notifier import Notifier, Action
+    notifier = Notifier(sb)
+    _rehydrate_notifier_memory(notifier, sb, [a["symbol"] for a in to_alert])
+
+    sent = 0
+    for a in to_alert:
+        ok = notifier.send(Action(
+            symbol=a["symbol"], kind=a["action"],
+            headline=a["detail"] or a["action"].replace("_", " ").title(),
+            detail=f"reason: {a['reason']}"
+                   + (" · execute in Kite — positions reconcile automatically "
+                      "on the next run." if a["action"] in SELLABLE else ""),
+            ltp=a.get("ltp"), r_multiple=a.get("r"),
+            urgency="CRITICAL" if a["action"].startswith("EXIT") else "NORMAL",
+            framework="SWING",
+        ))
+        sent += 1 if ok else 0
+    if sent < len(to_alert):
+        logger.info(f"  {sent}/{len(to_alert)} action alert(s) actually sent — "
+                    f"the rest were unchanged since the last notification, "
+                    f"still within the rearm window, or delivery failed")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2483,7 +2572,7 @@ def main(reconcile: bool = True, manage: bool = True,
         managed = manage_open_positions(sb, trade_date, require_live=require_live)
         result["manage"] = managed
         if alert:
-            send_action_alerts(managed.get("actions", []))
+            send_action_alerts(managed.get("actions", []), sb)
         elif managed.get("actions"):
             logger.info(f"  {len(managed['actions'])} action(s) — alerting suppressed; "
                         f"the evening digest carries them")

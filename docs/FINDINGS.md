@@ -16105,3 +16105,81 @@ arming (not after), 1,246/1,246 offline checks green, two new standing
 health checks added. NEEDS FOLLOW-UP: confirm post-restart SWING write rate
 and post-VACUUM disk size in the next session, not assumed from today's
 measurement alone.
+
+## 2026-09-08 — bug fix, swing-only, control/position_lifecycle.py — the 30-minute cron alerted on every unchanged SWING action, not just material changes
+
+**The complaint that started this:** operator wants an alert only on a
+material change in a trade — bought, sold, exit, partial booking, SL hit,
+trail SL update — not "for every single action."
+
+**What was actually happening.** Two independent alerters exist for SWING
+exits during market hours: intraday/engine.py's 15s daemon (routes every
+decision through `Notifier`, which only speaks on a genuine transition —
+see intraday/notifier.py's own module docstring, written after an earlier
+session measured 45 of 48 alerts in a day as "the same three situations
+restated") and `pipeline_intraday.yml`'s GH Actions cron, calling
+`position_lifecycle --manage-only --require-live` every 30 minutes
+regardless of whether the daemon is up. The cron's `send_action_alerts()`
+built its own "Position Actions Required" digest and sent it unconditionally
+on every run that found any SELLABLE action pending, with **no
+material-change gate at all** — unlike `control/candidate_monitor.py`,
+which already got this exact "second actor" treatment on 26-Aug (BLUEJET).
+`swing_auto_exit` defaults OFF (`execution/gates.py`), so a position sitting
+in EXIT_STOP waiting for the operator to act manually would re-announce the
+identical instruction every half hour for as long as it stayed unactioned
+— the precise complaint.
+
+**Fixed, mirroring two patterns this codebase already established rather
+than inventing a third:**
+1. Same daemon-lease check `candidate_monitor._daemon_lease_healthy` uses
+   (`intraday.lease.observe`) — while the daemon holds the lease, the cron
+   now stays silent; the daemon already covers these SAME positions, live,
+   with its own gate.
+2. When the daemon is down (the real fallback case), `send_action_alerts`
+   now routes through the SAME `Notifier` the daemon uses instead of a
+   bespoke digest, and rehydrates its `_last` dedup map from `intraday_alerts`
+   — the one table both already write to — before sending. Same idea as
+   `engine.py`'s own `_rehydrate_recorded()` for the setup-dedup map, applied
+   here: a fresh cron process every 30 minutes now inherits the same
+   material-change/rearm comparison a long-lived process gets for free,
+   instead of treating every still-pending action as brand new.
+
+**Also closed in passing, same function:** TRAIL_SL/RUN were never in the
+cron's alert set at all (only SELLABLE actions were), even though
+`manage_open_positions()` persists a moved stop or a runner conversion
+unconditionally regardless of `swing_auto_exit`. The operator explicitly
+named "trail SL update" as a wanted alert, so these are now included,
+FYI-only at NORMAL urgency (never CRITICAL, since no order is pending) —
+same distinction `engine.py`'s own `act_on_positions` already draws.
+
+**New test module** `tests/test_position_alert_dedup.py` (7 checks,
+registered in `tools.verify`): no-urgent-actions never reaches the lease
+check; a healthy lease suppresses the cron entirely; a dead lease fires
+through the shared Notifier with a dashboard row; two identical cron calls
+(simulating two 30-minute runs) send exactly once, not twice; a genuinely
+different position/action is never swallowed by the gate; TRAIL_SL alerts
+at NORMAL urgency; rehydration keeps the newest row per (symbol, kind), not
+the first one read. **Demonstrated failing first**: temporarily forced
+`force=True` on the Notifier.send() call, the repeat-suppression test
+failed exactly as expected (2 deliveries instead of 1), reverted.
+
+`tools/health.py::check_exit_actions()` (the literal-source-parsing check
+that the SELLABLE lists in pipeline/daemon/alerts never drift apart)
+re-verified passing after the edit — the SELLABLE tuple itself is untouched,
+only what happens around it changed. 1,253/1,253 offline checks green,
+`tools.simulate`/`tools.health` re-run clean (one pre-existing, unrelated
+failure: `same_day_discovery`, not touched here).
+
+**Could not verify live:** this session has no way to actually run the GH
+Actions cron against a live daemon lease — the lease-suppression path is
+proven by the offline test (mocked `intraday.lease.observe`), not by a real
+30-minute cron cycle against a running `intraday/engine.py`. Worth watching
+the next live session with the daemon up: confirm the cron actually logs
+"suppressed" rather than double-alerting.
+
+**Gate:** PASS — root cause identified and reproduced (not assumed), fix
+reuses two already-proven patterns rather than inventing a new dedup
+mechanism, regression test written and shown failing before the fix and
+passing after, no schema migration needed, 1,253/1,253 offline checks green.
+NEEDS FOLLOW-UP: confirm behaviour on the next live market-hours session
+with the daemon running.

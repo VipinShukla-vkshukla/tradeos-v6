@@ -58,6 +58,7 @@ MODULES = [
     ("swing alert reflects allocator verdict", "tests.test_swing_alert_allocator_verdict"),
     ("telegram approval routes through order_manager", "tests.test_telegram_fill_slot_accounting"),
     ("candidate monitor lease-gated fallback", "tests.test_candidate_monitor_lease_fallback"),
+    ("position alert lease-gated + material-change dedup", "tests.test_position_alert_dedup"),
     ("swing zone-aware entry slip", "tests.test_swing_zone_aware_slip"),
     ("swing resting entry ladder", "tests.test_swing_pending_entry_ladder"),
     ("swing same-day setup discovery", "tests.test_swing_same_day_discovery"),
