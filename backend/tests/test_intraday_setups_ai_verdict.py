@@ -91,10 +91,14 @@ def test_every_post_ai_review_call_site_passes_advice():
     """
     Asserted against the source, not by eye -- the same discipline
     test_sdn_confidence_cap.py's test_every_sdn_setup_path_consults_it uses.
-    Five call sites sit after ai_advisor.apply() (VETOED_AI,
-    BELOW_CONVICTION, BLOCKED_LIQUIDITY, BLOCKED_DEPTH, TAKEN/REJECTED_COST)
-    and must all pass advice=advice, so a sixth site added later without it
-    fails this rather than silently staying NULL.
+    Six call sites sit after ai_advisor.apply() (VETOED_AI,
+    BELOW_CONVICTION, BLOCKED_SIZING, BLOCKED_LIQUIDITY, BLOCKED_DEPTH,
+    TAKEN/REJECTED_COST) and must all pass advice=advice, so a seventh site
+    added later without it fails this rather than silently staying NULL.
+    BLOCKED_SIZING added 09-Sep-2026 alongside the fix that stopped a
+    RISK_OFF-zeroed budget refusing a candidate with no row at all (see
+    docs/FINDINGS.md, 09-Sep-2026) -- the count here is the reason that fix
+    could not silently omit advice the way the original bug omitted a row.
 
     Points at _evaluate_one_intraday_candidate(), not evaluate_intraday_
     setups() itself -- 08-Sep-2026, the per-symbol decision body (including
@@ -108,9 +112,38 @@ def test_every_post_ai_review_call_site_passes_advice():
     import inspect
     from intraday import engine as M
     src = inspect.getsource(M.IntradayEngine._evaluate_one_intraday_candidate)
-    assert src.count("advice=advice") == 5, (
-        f"expected exactly 5 call sites passing advice=advice, "
+    assert src.count("advice=advice") == 6, (
+        f"expected exactly 6 call sites passing advice=advice, "
         f"found {src.count('advice=advice')}")
+
+
+def test_qty_zero_is_recorded_as_blocked_sizing_not_a_bare_return():
+    """
+    09-Sep-2026. `if qty <= 0:` used to be a BARE `return None` -- the one
+    gate in this function that could refuse a candidate with NO row in
+    intraday_setups at all, found while investigating why a RISK_OFF day's
+    real gainers/losers were not caught: mc.size_multiplier is 0.0 for a
+    LONG in RISK_OFF (market_context.py), which zeroes `budget` here for
+    EVERY long candidate rather than refusing it with a name. Source-pinned
+    like the advice=advice count above, for the same reason -- exercising
+    this branch end to end needs a live stock row, AI advisor state and
+    depth data this file's own tests already avoid reconstructing from
+    scratch.
+    """
+    import inspect
+    from intraday import engine as M
+    src = inspect.getsource(M.IntradayEngine._evaluate_one_intraday_candidate)
+    i = src.find("if qty <= 0:")
+    assert i != -1, "the qty<=0 sizing gate must still exist"
+    window = src[i:i + 1300]
+    ret_pos = window.find("return None")
+    assert ret_pos != -1, "the gate must still return None"
+    rec_pos = window.find("_record_setup(")
+    assert rec_pos != -1 and "BLOCKED_SIZING" in window[:ret_pos], (
+        "a qty<=0 refusal must be recorded, not a bare return -- the exact "
+        "gap this fix closed")
+    assert rec_pos < ret_pos, (
+        "the row must be recorded BEFORE returning, not after (dead code)")
 
 
 TESTS = [
@@ -121,4 +154,6 @@ TESTS = [
      test_prior_only_advice_is_distinguishable_from_a_real_ai_call),
     ("every post-AI-review call site passes advice=advice",
      test_every_post_ai_review_call_site_passes_advice),
+    ("qty<=0 is recorded as BLOCKED_SIZING, not a bare return",
+     test_qty_zero_is_recorded_as_blocked_sizing_not_a_bare_return),
 ]

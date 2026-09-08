@@ -61,6 +61,31 @@ every other engine's TAKE already uses. No new decision logic exists
 here; every gate is imported, not reimplemented. Every OTHER engine's
 `best`/`found` still only ever reaches the shadow-log path below,
 completely unchanged.
+
+A SECOND EXCEPTION — THE IGN EXIT-LAG PROBE, 09-Sep-2026
+--------------------------------------------------------------------
+`intraday_ign_exit_lag_probe_enabled` (migration 135). Unlike the
+fast-entry path above, this one CHANGES NOTHING about what happens to
+any position — it is pure measurement, built to answer a real question
+without guessing: does the ordinary 15s exit cycle actually cost
+anything on a fast-moving IGN hold, and if so how much? This system
+stores no tick-level price history, so that question is unanswerable
+retroactively — it has to be instrumented BEFORE the trades it would
+measure, or the evidence is gone. `_probe_ign_exit_lag()` below re-runs
+`exit_policy.evaluate_intraday_exit()` — the EXACT function the
+ordinary 15s loop uses, never a second implementation of the ladder —
+against the freshest 2s tick, for any symbol that is a currently open
+INTRADAY/IGN position. The first time it would return a real action
+(not HOLD/TRAIL_SL), that moment is written once to `open_positions`
+(`exit_lag_action`/`exit_lag_probe_at`) and never again for that
+position. The REAL exit is still decided ONLY by the ordinary 15s
+loop, exactly as before — this probe never calls close_position()
+itself, never books a partial, never moves a stop. `close_position()`
+computes `exit_lag_seconds` (probe time vs the real close time) so the
+gap is queryable once enough IGN trades exist:
+`SELECT avg(exit_lag_seconds) FROM closed_positions WHERE sub_engine=
+'IGN' AND exit_lag_seconds IS NOT NULL`. See docs/FINDINGS.md,
+09-Sep-2026.
 """
 
 from __future__ import annotations
@@ -136,6 +161,23 @@ def check(engine, feed) -> int:
             price = feed.get(sym)
             if price:
                 ctx.ltp = float(price)
+        except Exception as e:
+            logger.debug(f"  event_core: price refresh failed for {sym} — {e}")
+
+        # EXIT-LAG PROBE — see this module's own docstring, second
+        # exception. A DIFFERENT set of symbols than best/found below (an
+        # OPEN position, not a new detection), so it runs unconditionally
+        # per dirty symbol rather than being folded into the found-setup
+        # branch — most dirty symbols will not be an open IGN position at
+        # all, and _ign_open_position()'s own lookup is the cheap way to
+        # find out.
+        if cfg_bool("intraday_ign_exit_lag_probe_enabled", True):
+            try:
+                _probe_ign_exit_lag(engine, sym, ctx, detected_at)
+            except Exception as e:
+                logger.debug(f"  event_core: exit-lag probe failed for {sym} — {e}")
+
+        try:
             best, _all = evaluate_all(ctx, phase)
         except Exception as e:
             logger.debug(f"  event_core: evaluation failed for {sym} — {e}")
@@ -275,3 +317,45 @@ def _try_ign_fast_entry(engine, sym: str, ctx, best, phase: str) -> None:
         pick_label=v[0].get("pick_label"))
     logger.info(f"      {sym}: IGN fast-entry — TAKE, entering on the 2s loop "
                 f"rather than waiting for the next 15s cycle")
+
+
+def _probe_ign_exit_lag(engine, sym: str, ctx, now: datetime) -> None:
+    """
+    IGN only. See this module's own "A SECOND EXCEPTION" docstring section
+    for the full reasoning — this is pure measurement, not a decision.
+
+    Re-runs exit_policy.evaluate_intraday_exit() — the SAME pure function
+    (documented "no I/O") the ordinary 15s loop uses via
+    IntradayEngine.evaluate_positions() — against the freshest 2s tick,
+    for the one open INTRADAY/IGN position in this symbol, if any. Writes
+    NOTHING per tick: only the FIRST time a real action (not HOLD/
+    TRAIL_SL) would fire does this write anything at all, and it writes
+    exactly once — `_ign_open_position()`'s own `exit_lag_action` check is
+    what stops every subsequent 2s pass from doing it again. Never calls
+    close_position(), never books a partial, never moves a stop: the
+    REAL exit is still decided only by the ordinary 15s loop, unchanged.
+    """
+    pos = engine._ign_open_position(sym)
+    if pos is None or pos.get("exit_lag_action"):
+        return
+    from intraday.exit_policy import evaluate_intraday_exit, load_intraday_policy
+    policy = load_intraday_policy()
+    result = evaluate_intraday_exit(pos, ltp=ctx.ltp, policy=policy, now=now)
+    action = result.get("action")
+    if action in ("HOLD", "TRAIL_SL"):
+        # TRAIL_SL is a tightening, not an exit -- not what this measures.
+        return
+    try:
+        engine.sb.table("open_positions").update({
+            "exit_lag_action": action,
+            "exit_lag_probe_at": now.isoformat(),
+        }).eq("symbol", sym).eq("product", pos.get("product") or "MIS").execute()
+        # Kept in sync with the DB write so a second dirty tick for the
+        # same symbol later in this same process sees it without needing
+        # a fresh load_state() round trip.
+        pos["exit_lag_action"] = action
+        pos["exit_lag_probe_at"] = now.isoformat()
+        logger.info(f"      {sym}: IGN exit-lag probe — {action} would fire "
+                    f"now, ahead of the ordinary 15s cycle")
+    except Exception as e:
+        logger.debug(f"  event_core: exit-lag probe write failed for {sym} — {e}")

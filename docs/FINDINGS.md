@@ -17146,3 +17146,392 @@ config and both new columns confirmed by a fresh, cache-bypassing read
 rather than by trusting the migration's own reported success. NEEDS
 FOLLOW-UP: first live session where IGN actually fires with a bootstrap
 slot available, watched closely — same standard as the launch entry above.
+
+## 2026-09-09 — Four follow-on fixes, migration 134 — a silent sizing refusal closed, ORB's open-hour restriction, VWR's bars_below bonus corrected, intraday_giveback_pct tightened
+
+Prompted by the operator asking, directly, why RISK_OFF blocked IGN when
+real gainers/losers existed regardless of the index — a question that led
+straight to a genuine, previously-invisible bug — and by "go ahead" on
+acting on the 08-Sep-2026 "Why intraday trades close at nominal profit"
+diagnostic's own recommendations.
+
+### 1 — `BLOCKED_SIZING`: the sizing gate was the one silent refusal left
+
+Traced `market_context.py`'s own RISK_OFF branch: `allow_longs=False,
+size_multiplier=0.0`. `evaluate_intraday_setups()`'s own scan-level gate
+(`if not mc.allow_longs and not shorts_live: return []`) only bails when
+NEITHER side is tradeable — RISK_OFF also sets `allow_shorts=True`
+("SHORTS are with the tape here"), so the scan runs, and a LONG candidate
+sails past the one `best.is_short` check (short-only) straight into
+sizing, where `budget = capital_for(...) * pos_pct * mc.size_multiplier(=
+0.0) * ...` computes to zero. `_evaluate_one_intraday_candidate()`'s own
+`if qty <= 0: return None` was a BARE return — the ONE gate left in this
+function that didn't call `_record_setup()`, four `if qty <= 0:` blocks
+exist in `intraday/engine.py` and this was genuinely the only silent one
+of the four. This means a RISK_OFF LONG refusal left **zero trace** in
+`intraday_setups` — not `BLOCKED_SHORTS_MARKET`, nothing — for every
+engine, not just IGN, for as long as this code has existed. Exactly the "a
+refusal that leaves no row is a rule nobody can price" failure this file's
+own 10-Aug-2026 fix was supposed to have closed everywhere.
+
+**Fixed:** the gate now calls `_record_setup(..., "BLOCKED_SIZING", ...,
+mc_state=(mc.state if mc else None), advice=advice)` before returning. The
+practical effect: `SELECT count(*) FROM intraday_setups WHERE
+cost_verdict='BLOCKED_SIZING' AND regime_at_detection='RISK_OFF'` is now
+the exact, honest answer to "how many longs did the regime gate zero out
+today" — unanswerable before this fix, on ANY day, for ANY engine.
+
+**Not fixed, deliberately, this pass — the actual policy question the
+operator's question raised.** IGN's whole premise is a violent, circuit-
+adjacent, volume-confirmed move — closer to an idiosyncratic single-stock
+dislocation than to the "stock quietly holding up while the index rolls
+over" pattern `market_context.py`'s own docstring names as the reason
+RISK_OFF blocks longs uniformly. Whether IGN specifically should be exempt
+from `mc.size_multiplier` zeroing its longs is a real, undecided question
+— not resolved here, because it changes IGN's risk exposure and deserves
+its own explicit decision, not a byproduct of a bug-fix pass. Recorded as
+open, not silently deferred.
+
+### 2 — ORB: not before 10:00
+
+`tools/feature_edge_study.py`'s `_hour_bucket()` decomposition (08-Sep-2026
+diagnostic, section 2): ORB at 0% win (n=210, mean -0.67%) in the
+09:15-10:00 OPEN bucket vs 18% (mean +0.03%) in the 10:00-13:00 MID one —
+backwards from how the engine is deployed, since `phases=(PRIME,)`
+(09:30-11:00) lets it fire from the very start of PRIME. New
+`SymbolContext.minutes_since_open()` (real elapsed time from the bar
+timestamps, NOT `len(bars)` — `Bar`'s own docstring says bar granularity is
+configurable, so a bar count is not a minute count) gates `orb.py`'s
+`evaluate()`: `orb_min_minutes_since_open` default 45.0 (09:15+45=10:00,
+the exact OPEN/MID split). 0 restores the old behaviour.
+
+### 3 — VWR's `bars_below` confidence bonus was backwards
+
+Decomposed every TAKEN, resolved VWR row with a `bars_below` value in
+`meta` (127 total): `bars_below==3` (the engine's own minimum) wins 64.3%
+(n=14); 4 wins 40.0% (n=10); then a clean, roughly monotonic decay — 5:
+25.0%, 7:16.7%, 8:22.2%, 9:9.1%, 11:18.2% (n=55, the largest single
+bucket). The confidence formula's `if len(below) >= min_below + 2: conf +=
+0.08` — labelled "a proper flush, not a one-bar dip" — paid its bonus to
+exactly the population that performs worst. Flipped to `if len(below) <=
+min_below + 1: conf += 0.08` ("a quick flush, not an extended one").
+
+Also decomposed `volume_ratio` by tercile, the other named suspect from
+the 08-Sep-2026 diagnostic: 27.9% (n=43, vr 0.22-1.15) / 35.7% (n=42, vr
+1.15-2.26, the BEST tercile) / 19.0% (n=42, vr 2.26-13.16, the worst,
+despite being where the current formula pays its full +0.2 cap) — a real,
+non-monotonic (inverted-U) effect, but thinner (n≈42/tercile vs 127 total
+for bars_below) and not safely reducible to a simple directional
+reweighting without risking encoding noise as signal. **Left unchanged
+this pass** — a capped-band treatment is the right shape for a future
+fix, not attempted here without more data.
+
+`rs_vs_index_pct` — the third component the confidence formula reads —
+was never persisted into `meta` at all, so it could not be decomposed the
+way `bars_below` was. Now stamped (`"rs_vs_index_pct": ctx.rs_vs_index_pct`
+in the Setup's meta), instrument-first-calibrate-second, matching ORB's
+own `retest_confirmed`/`measured_move_used` precedent. Nothing reads it
+yet; it exists so a future session can ask the same question `bars_below`
+was just answered on.
+
+### 4 — `intraday_giveback_pct` tightened 50 → 30 (migration 134)
+
+Re-measured the 08-Sep-2026 diagnostic's own number live: 49 closed
+INTRADAY positions that reached ≥0.5R MFE, kept-fraction median **0.509**,
+average 0.447, p25 **0.154**, p75 0.720. The guard's 50% tolerance is
+barely better than the median outcome it is supposed to be protecting
+against. Tightened to 30 (locks in ≥70% of peak once `giveback_min_r` is
+reached) — directionally supported by the same re-measurement, not a fresh
+independent calibration study, so treat this as a first pass, not a final
+number.
+
+**A deeper, separate gap surfaced and NOT fixed here:** the bottom quartile
+(p25 kept = 15.4%) is giving back far more than a 50%-tolerance guard
+should ever allow, which the median case does not explain. `exit_policy.py`
+line ~487's own comment already names why: `BOOK_PARTIAL`'s move-to-
+breakeven rung requires `qty > 1`, and `intraday_max_order_value` sizes a
+real fraction of the traded universe to a single share — for those
+positions the stop never moves off its original structural level no
+matter how far the trade has run, so a fast reversal can hit the ORIGINAL
+stop before the giveback guard's own R-relative check ever engages. This is
+plausibly the actual driver of the worst-quartile trades, not the giveback
+threshold itself, and tightening `intraday_giveback_pct` does nothing for
+a position the giveback rung never gets a chance to protect. Named here,
+not investigated further this session — a candidate for its own dedicated
+review (does breakeven need a trigger independent of `BOOK_PARTIAL`?), not
+folded into this migration.
+
+### 5 — IGN's own storage footprint, measured, not assumed
+
+Asked directly: how much does IGN strain Supabase storage? Measured live
+rather than guessed. `intraday_event_shadow`: 9,271 rows since 24-Aug (11
+sessions, ~843/day), **0 from IGN** — and, traced through `event_core.py`'s
+own loop, IGN cannot add an INCREMENTAL row here even once it fires: one
+shadow row is written per checked symbol per pass regardless of which
+engine is `best`, so IGN merely becomes an occasional occupant of a row
+that would exist anyway. `intraday_setups`: 20 MB / 21,032 rows total
+(~0.98 KB/row), **0 from IGN** so far (zero live firings this session,
+RISK_OFF/after-hours throughout). IGN's real, non-zero cost is here — a
+new row per genuine detection, same mechanism every engine already uses —
+but its trigger bar (≥3.5%/1.2×ATR move, 2x+ volume required, circuit-
+adjacent) is far more restrictive than the highest-volume engines (SDN
+11,306 rows, ORB 6,418) and structurally closer in expected frequency to
+the smallest (VCE 977, RNG 322, GAP 109) — a rounding error against the
+20 MB table and the account's 142 MB / 500 MB (28.4%) budget either way.
+Migration 133's own `bootstrap_override_slot` columns (nullable INTEGER ×
+2 tables) are functionally free. **Answer: not zero, but small and
+bounded — closer to VCE/RNG's shape than SDN/ORB's, and the shared shadow
+log costs nothing extra at all.**
+
+### Verified
+
+New/extended tests, demonstrated failing against the pre-fix behaviour
+first (10 of 1323 checks broke the moment these four changes landed,
+traced to exactly the fixtures whose bar timestamps fell inside the new
+open-hour window or the `advice=advice`/`qty<=0` source-inspection pins,
+all fixed): `test_intraday_setups_ai_verdict.py` (+1, the `BLOCKED_SIZING`
+source pin; `advice=advice` count 5→6), `test_orb_retest_and_target.py`
+(+5: `minutes_since_open()` pure-function ×2, the open-hour gate refusing/
+firing/disabled ×3; 6 existing fixtures updated to disable the new gate
+explicitly since none of them were testing it), `test_break_confirmation.py`
+and `test_detection_instrumentation.py` (2 and 3 fixtures updated the same
+way), `test_vwap_reclaim.py` (+2: the bars_below reversal, the
+rs_vs_index_pct stamp). Full suite: **1331/146**, up from 1323/146.
+`tools.health`: clean except the same pre-existing `same_day_discovery`
+failure. `tools.simulate`: clean, no exceptions (after-hours at run time,
+0 engines fired — the new gates loaded and ran without error but were not
+exercised against a live detection).
+
+**Live-verified:** `intraday_giveback_pct` reads back `30.0` via a fresh,
+cache-bypassing config read. `orb_min_minutes_since_open` needs no
+system_config row (Python-side default only, matching every other
+unrecalibrated orb_*/vwr_* tunable).
+
+**Recommends, not yet decided:** whether IGN should be exempt from
+`mc.size_multiplier`'s long-side zeroing in RISK_OFF (§1); a capped-band
+treatment for VWR's `volume_ratio` weight once more data exists (§3); an
+independent breakeven trigger not gated on `BOOK_PARTIAL`'s `qty > 1` (§4).
+
+**Gate:** PASS — every fix traced to a real, measured number from this
+session's own live queries (127 VWR rows, 49 giveback rows, the shadow-log/
+setups row counts), not a hunch; the thinner, non-monotonic `volume_ratio`
+finding explicitly left unfixed rather than encoded on weak evidence,
+matching this project's own "verify, never assert" standard in the
+direction of NOT changing something, not just the direction of changing
+it; a genuinely new, previously-unknown bug (`BLOCKED_SIZING`) found while
+answering a question, not while looking for one, and fixed in the same
+pass rather than filed for later. NEEDS FOLLOW-UP: the three open
+questions in Recommends above; a live session where ORB's tightened
+window and VWR's corrected bonus actually fire, to confirm the measured
+history's shape holds going forward.
+
+## 2026-09-09 — Instrumentation only, migration 135 — IGN's exit-lag probe, built to answer "does a faster exit ladder help" from real data, deliberately not the ladder itself
+
+The operator asked how a dedicated fast exit for IGN would work; the
+honest answer was that its benefit versus the ordinary 15s cycle cannot
+be quantified — this system stores no tick-level price history, so
+"would faster polling have caught the exit sooner" is unanswerable
+retroactively for any IGN trade already closed (there are none) or any
+that will close before instrumentation exists. Building the ladder on a
+guess was explicitly rejected, matching this project's own repeated
+lesson (`hurdle.py`'s STRONG-bucket self-reference, `giveback_pct`
+shipping off until ~20 positions existed). This entry is the
+alternative: instrument BEFORE the trades that would be measured, decide
+after, once the number is real.
+
+**What was built.** `intraday/event_core.py`'s 2-second loop now also
+re-runs `exit_policy.evaluate_intraday_exit()` — the SAME pure function
+the ordinary 15s loop calls via `evaluate_positions()`, never a second
+implementation of the ladder — against the freshest tick, for any dirty
+symbol that is a currently open `INTRADAY`/`IGN` position
+(`IntradayEngine._ign_open_position()`, new). The first time this would
+return a real action (not `HOLD`/`TRAIL_SL`), that moment is written
+ONCE to `open_positions` (`exit_lag_action`, `exit_lag_probe_at`) and
+never again for that position — `_ign_open_position()`'s own "already
+probed" check is what stops every later 2s pass from repeating the
+write. `control.position_lifecycle.close_position()` (a new pure helper,
+`_exit_lag_seconds()`) computes the gap between the probe's timestamp
+and the REAL close time and carries all three fields through to
+`closed_positions`, the same `pos.get(...)` pattern already used for
+`sub_engine`/`bootstrap_override_slot`.
+
+**What this does NOT do, stated as plainly as event_core.py's own
+existing "decides nothing that writes anywhere the trusted loop reads"
+rule.** The probe never calls `close_position()`, never books a partial,
+never moves a stop, never touches sizing or entries. The REAL exit is
+still decided only by the ordinary 15s loop, exactly as before this
+migration — the two new columns on `open_positions` are read by nothing
+that makes a decision, only by `close_position()`'s own arithmetic and,
+later, a human query. A second exception to this module's own rule,
+alongside the 08-Sep-2026 IGN fast-entry one — but a strictly narrower
+one: that exception acts on trades; this one only watches them.
+
+**Storage, sized before building, not after** (the operator's own direct
+question). A naive per-2-second-tick log table was costed first and
+rejected: a 75-minute hold at 2s cadence is 2,250 samples, ~400 KB/trade,
+projecting to 4-6 MB/month at IGN's expected trade frequency — a real
+12-18% addition to the account's current 34 MB/month growth rate, exactly
+the kind of creeping cost this same week's storage-hygiene work (three
+migrations, 215,936 rows deleted) was built to prevent. The shipped
+design keeps samples in memory only and persists nothing per tick — at
+most 3 small scalar columns, written once, only for a position that
+actually crosses a threshold early. Real cost: bytes, not megabytes.
+
+### Verified
+
+New `tests/test_ign_exit_lag_probe.py` (15 checks): `_ign_open_position()`
+matches framework+sub_engine correctly and returns the live dict, not a
+copy; the probe does nothing with no open IGN position, never fires
+twice for the same position, does nothing on HOLD/TRAIL_SL, fires and
+writes correctly on a real giveback (reusing the exact textbook scenario
+`test_intraday_giveback.py` already pins — same function, not a second
+implementation), and a downstream write failure neither raises nor
+mutates state; `_exit_lag_seconds()` pure-function cases (no probe,
+a real ~42s gap, an unparseable value); `close()`'s dict construction
+carries all three fields through, present and absent; a source-inspection
+pin confirming `check()`'s own body actually calls the probe, gated by
+its own switch. One real bug caught by the suite itself while building
+this, not shipped: a leftover duplicate line from an earlier edit this
+session left `engine.py` with a syntax error one method away from
+`_ign_open_position()` — caught by `ast.parse()` before any test ran
+against it, not discovered live.
+
+Full suite: **1346/147**, up from 1331/146. `tools.health`: clean except
+the same pre-existing `same_day_discovery` failure. `tools.simulate`:
+clean, no exceptions (after-hours at run time, 0 engines fired — the new
+probe loaded and ran without error but had no open IGN position to
+observe this session, which is exactly the state before an operator ever
+sees a real number from it).
+
+**Live-verified:** all 5 new columns present (`open_positions.
+exit_lag_action`/`exit_lag_probe_at`; `closed_positions.exit_lag_action`/
+`exit_lag_probe_at`/`exit_lag_seconds`); `intraday_ign_exit_lag_probe_
+enabled` reads back `True` via a fresh, cache-bypassing config read.
+
+**Could not determine, by design — the whole point of this entry:**
+whether a faster IGN exit path is actually worth building. That is the
+one question this migration deliberately leaves open, on purpose, until
+`SELECT avg(exit_lag_seconds) FROM closed_positions WHERE sub_engine=
+'IGN' AND exit_lag_seconds IS NOT NULL` has a real sample behind it.
+
+**Gate:** PASS — the ladder itself was NOT built on a guess, the
+instrumentation that makes the future decision possible WAS built now
+rather than after the evidence window had already closed, the storage
+cost was measured and designed down before shipping rather than
+discovered afterward, and the probe reuses the real decision function
+rather than risking a second, driftable copy of the exit ladder — the
+same "decision reuse is the core design" rule this project holds
+everywhere else. NEEDS FOLLOW-UP: the first IGN trade that crosses a
+real exit condition, to produce this session's first actual
+`exit_lag_seconds` value.
+
+## 2026-09-09 — Bug fix, `swing/signals/same_day_discovery.py` — Phase 4 has produced zero candidates in two weeks of live sessions because it queried today's own market_regime/sector_strength, which cannot exist until that evening
+
+The operator asked what `tools.health`'s persistent `same_day_discovery`
+failure actually was, and whether it was fixable. It was — a real,
+structural bug, not organic rarity.
+
+**Confirmed live before touching anything:** `swing_same_day_candidates`
+has had **zero rows, ever** — not just the last 10 sessions the health
+check samples; the entire history since this module shipped (26-Aug-2026).
+Meanwhile the same three engines (VBD/SBS/RSB) fire routinely in the
+EVENING pipeline over the same window (RSB: 12 hits across 8 of the last
+30 days; SBS: 4 hits across 4 days) — ruling out "these are just rare" as
+the explanation.
+
+**Root cause.** `scan()` reads `market_regime`/`sector_strength` with
+`.eq("date", trade_date)` — an exact match on TODAY. Confirmed live via
+`computed_at`/`created_at`: both tables are evening-pipeline outputs,
+written around 22:00 IST **that same night**, after that day's market
+close. `scan()` only ever runs from `intraday/run.py`'s 300s block —
+i.e., only ever DURING that day's live session, hours before that day's
+own row exists. Directly confirmed: `SELECT count(*) FROM
+sector_strength WHERE date = '2026-09-09'` (today, live) returns **0**.
+With `sector_rank == {}`, `run_vbd`/`run_sbs`/`run_rsb`'s own
+`sector_rank.get(sector, 99)` defaults every sector to rank 99, which
+fails their `s_rank > gate(10-14)` check universally — not a rare
+trigger condition, a structural one, on every symbol, every session,
+since the feature shipped.
+
+This is the exact same class of gap the module's own docstring already
+named and fixed for VBD's `delivery_pct` ("uses YESTERDAY's ... as a
+same-day proxy rather than silently inventing a number or skipping the
+gate") — that reasoning was simply never applied to the other two
+evening-only reads sitting a few lines below it in the same function.
+
+**Fixed:** both queries changed from `.eq("date", trade_date)` to `.lte
+("date", trade_date).order("date", desc=True)` (sector_strength keeps
+`.limit(100)` to pull every sector row from whichever date is most
+recent; market_regime keeps `.limit(1)`) — the exact "most recent
+available on or before" pattern `_latest_daily_rows()` two sections
+below already used correctly for `stock_data_daily`. Verified against
+real, live data before considering it fixed: re-running `run_vbd`/
+`run_sbs`/`run_rsb` with the corrected sector_rank fetch (which
+correctly fell back to 2026-09-08, since 2026-09-09's own row does not
+exist yet) against 500 real `stock_data_daily` rows found **SBS: 6,
+RSB: 14** candidates — versus a guaranteed 0 for all three under the old
+query, every single day.
+
+**A second, related gap fixed in the same pass:** `_trigger()` was the
+one per-symbol call in `scan()`'s loop with no `try/except` — every
+sibling call (`compute_entry_zones`, `compute_trade_plan`) already
+caught its own exception and moved to the next symbol; `_trigger()`
+did not, so one bad row would have aborted the ENTIRE cycle for every
+other watched symbol that pass, silently, since `run.py`'s own caller
+wraps the whole `scan()` call in one bare `except` that cannot
+distinguish "one bad symbol" from "nothing triggered today." Found by
+inspection while fixing the sector_rank bug, not separately reported;
+fixed the same way its siblings already are.
+
+### Verified
+
+The existing `tests/test_swing_same_day_discovery.py` suite had the
+identical latent gap its own fixture never caught: `_FakeTable.order()`
+was a no-op passthrough and had no `.limit()` at all, so with the old
+fixtures (always exactly one row, always dated the SAME as `trade_date`)
+"exact match on today" and "most recent available" read identically —
+the test suite could not have caught this bug even if it had tried.
+Fixed `_FakeTable` to actually filter on `.lte()` and sort/limit for
+real, then:
+- Re-dated the existing `test_scan_writes_a_genuine_new_trigger`'s
+  regime/sector rows to the day BEFORE trade_date (the real production
+  shape) instead of the same day.
+- New: `test_sector_rank_uses_the_most_recent_available_date_not_an_
+  exact_match_on_today` — reproduces the exact bug (sector_strength/
+  market_regime dated 5 days before trade_date, nothing closer) and
+  confirms the fix still finds the row.
+- New: `test_sector_rank_never_reads_a_date_after_trade_date` — the
+  other half of `.lte()`: a future-dated row must never be used.
+- New: `test_a_trigger_exception_for_one_symbol_does_not_abort_the_
+  whole_batch` — one symbol's `_trigger()` raising must not stop a
+  second, genuinely valid symbol from being discovered in the same pass.
+
+Full suite: **1349/147**, up from 1346/147. `tools.health`: **same_day_
+discovery still reports red** — expected, not a residual bug. That check
+samples `swing_same_day_candidates` over the last 10 CALENDAR days, a
+backward-looking window; the fix changes behaviour only going forward,
+and no live trading session has run since it landed (after-hours at fix
+time). It will go green the first live session this fix is deployed for
+that actually produces a row — nothing here claims otherwise.
+`tools.simulate`: clean (this module isn't in its scope — it only runs
+from `run.py`'s own 300s block).
+
+**Live-verified, read-only** (no synthetic writes to the live
+`swing_same_day_candidates` table — deliberately: a scan run with
+yesterday's close standing in for a live tick is not a genuine discovery
+and would misdate a real row): the corrected sector_rank query against
+the actual database, right now, resolves to 2026-09-08's 23 real sector
+ranks (2026-09-09's own row confirmed absent) and finds real SBS/RSB
+candidates against real `stock_data_daily`.
+
+**Gate:** PASS — root cause confirmed with a live query
+(`sector_strength WHERE date='2026-09-09'` = 0 rows) before writing a
+single line of fix, not inferred from reading the code alone; the fix
+verified against real production data (500 real stock rows, real
+sector ranks) before being called correct; a second, related gap
+(`_trigger()`'s missing try/except) found and fixed in the same pass,
+not left for later; the existing test suite's own blind spot (a fixture
+that could not distinguish the bug from correct behaviour) fixed
+alongside the code, not left standing to hide a regression next time.
+NEEDS FOLLOW-UP: confirm `swing_same_day_candidates` gets its first-ever
+row on the next live trading session.

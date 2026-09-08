@@ -156,8 +156,25 @@ class VwapReclaim:
             conf += min(0.2, (vr - 1.0) * 0.2)
         if ctx.rs_vs_index_pct:
             conf += min(0.2, ctx.rs_vs_index_pct * 0.06)
-        if len(below) >= min_below + 2:
-            conf += 0.08                   # a proper flush, not a one-bar dip
+        # ── "A QUICK FLUSH, NOT AN EXTENDED ONE" — 09-Sep-2026, was backwards.
+        #
+        # This bonus used to reward `len(below) >= min_below + 2` as "a
+        # proper flush, not a one-bar dip". Decomposed against every TAKEN,
+        # resolved VWR row (127 with a bars_below value): bars_below==3 (the
+        # minimum this engine allows) wins 64.3% (n=14), 4 wins 40.0%
+        # (n=10), then a clean, strong, roughly monotonic decay — 5:25.0%,
+        # 7:16.7%, 8:22.2%, 9:9.1%, 11:18.2% (n=55, the largest single
+        # bucket). The OLD condition paid its bonus to exactly the
+        # population that performs worst. An extended stay below VWAP is
+        # not conviction, it is a stock that has genuinely been weak for
+        # longer — the reclaim is more often a dead-cat bounce than a real
+        # change of control. (volume_ratio's own decomposition, by
+        # contrast, showed a non-monotonic, thinner shape — moderate volume
+        # winning, both low AND high volume worse — not safe to encode into
+        # a directional bonus yet; left unchanged. See docs/FINDINGS.md,
+        # 09-Sep-2026, for both decompositions in full.)
+        if len(below) <= min_below + 1:
+            conf += 0.08                   # a quick flush, not an extended one
         conf = round(min(0.92, conf), 2)
 
         return Setup(
@@ -172,5 +189,11 @@ class VwapReclaim:
                           f"before the stop at {stop:.2f}"),
             valid_phases=self.phases,
             meta={**frame.meta(), "vwap": round(ctx.vwap, 2), "bars_below": len(below),
-                  "swing_low": round(swing_low, 2), "volume_ratio": vr},
+                  "swing_low": round(swing_low, 2), "volume_ratio": vr,
+                  # Instrument first, calibrate second (ORB's own
+                  # retest_confirmed/measured_move_used precedent) — this
+                  # confidence formula reads ctx.rs_vs_index_pct but never
+                  # stored it, which is why bars_below could be decomposed
+                  # against real outcomes 09-Sep-2026 and this could not.
+                  "rs_vs_index_pct": ctx.rs_vs_index_pct},
         )

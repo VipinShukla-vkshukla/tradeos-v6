@@ -238,6 +238,8 @@ MODULES = [
      "tests.test_ignition_fast_entry"),
     ("IGN bootstrap override — bounded lifetime cold-start exit (migration 133)",
      "tests.test_ign_bootstrap_override"),
+    ("IGN exit-lag probe — measures the 15s-cycle gap, changes nothing (migration 135)",
+     "tests.test_ign_exit_lag_probe"),
 ]
 
 

@@ -362,6 +362,27 @@ class SymbolContext:
         return [b for b in self.bars
                 if (b.ts - open_dt).total_seconds() / 60 >= start_min]
 
+    def minutes_since_open(self) -> float | None:
+        """
+        Minutes since the session's 09:15 open, from the most recent bar's
+        timestamp. None with no bars yet.
+
+        09-Sep-2026, built for orb.py's own open-hour restriction —
+        `_hour_bucket()` (tools/feature_edge_study.py) found ORB at 0% win
+        (n=210) in the 09:15-10:00 OPEN bucket vs 18% in the 10:00-13:00 MID
+        one. `len(self.bars)` is NOT the same question — Bar's own docstring
+        says bars are "Minute or 5-minute, as configured", so a bar COUNT
+        silently means a different number of elapsed minutes depending on
+        that setting. Real elapsed time, from `ts`, is what range_between()/
+        bars_after()/volume_ratio() already use for exactly this reason;
+        this is the same computation, promoted to a shared method rather
+        than a fourth private copy of it.
+        """
+        if not self.bars:
+            return None
+        open_dt = self.bars[0].ts.replace(hour=9, minute=15, second=0, microsecond=0)
+        return (self.bars[-1].ts - open_dt).total_seconds() / 60
+
     def volume_ratio(self) -> float | None:
         """Today's volume so far against the 20-day average, time-adjusted."""
         if not self.bars or not self.avg_volume_20d:

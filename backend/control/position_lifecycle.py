@@ -1401,6 +1401,25 @@ def open_position_from_holding(sb, holding: dict, trade_date: str) -> bool:
         return False
 
 
+def _exit_lag_seconds(probe_at) -> float | None:
+    """
+    PURE. IGN's exit-lag probe (event_core.py, migration 135) writes a
+    timestamp the moment its 2s check would already have acted; this is
+    the gap between that moment and NOW — the real close, decided only by
+    the ordinary 15s loop that calls close_position(). None when no probe
+    ever fired for this position (the common case), or when the stored
+    value cannot be parsed (a probe write racing a schema not yet
+    migrated must not fail a real close over an optional column).
+    """
+    if not probe_at:
+        return None
+    try:
+        probed = datetime.fromisoformat(str(probe_at))
+        return round((datetime.now(IST) - probed).total_seconds(), 1)
+    except Exception:
+        return None
+
+
 def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
                    detail: str, trade_date: str, source: str = "kite") -> bool:
     """Move an open position into closed_positions with full outcome metrics."""
@@ -1511,6 +1530,16 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
         # pick_label/sub_engine are, for the same reason: a marker only on
         # the open row cannot be queried against a closed outcome.
         "bootstrap_override_slot": pos.get("bootstrap_override_slot"),
+        # IGN's exit-lag probe (migration 135, docs/FINDINGS.md 09-Sep-
+        # 2026) — pure measurement, changes nothing about this close.
+        # exit_lag_action/exit_lag_probe_at are carried straight through
+        # from open_positions (event_core.py's 2s probe wrote them, if it
+        # ever fired for this position); exit_lag_seconds is computed HERE
+        # against the real close time, which is the one timestamp the
+        # probe itself cannot know in advance.
+        "exit_lag_action":    pos.get("exit_lag_action"),
+        "exit_lag_probe_at":  pos.get("exit_lag_probe_at"),
+        "exit_lag_seconds":   _exit_lag_seconds(pos.get("exit_lag_probe_at")),
         "entry_date":       pos.get("entry_date"),
         "entry_price":      entry,
         "actual_qty":       total_qty,
@@ -1655,6 +1684,18 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
                 sb.table("closed_positions").insert(
                     {k: v for k, v in closed.items()
                      if k != "bootstrap_override_slot"}).execute()
+            elif "exit_lag" in str(e):
+                # Same shape again — ships ahead of migration 135 on
+                # purpose. All three exit_lag_* columns share this prefix,
+                # so one check strips whichever of them PostgREST rejected
+                # (it reports the first missing column, and a retry could
+                # still hit a second one before this branch is reached
+                # again — matches k != check below rather than a single key).
+                logger.warning("  closed_positions.exit_lag_* is missing — apply "
+                               "migration 135. Closing without the probe fields.")
+                sb.table("closed_positions").insert(
+                    {k: v for k, v in closed.items()
+                     if not k.startswith("exit_lag")}).execute()
             else:
                 raise
         # KEYED ON (symbol, product), like every other write since migration 028.

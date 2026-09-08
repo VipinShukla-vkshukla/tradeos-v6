@@ -70,7 +70,8 @@ def test_atr_reaches_the_setups_meta_through_the_real_engine():
     from intraday.strategies.orb import OpeningRangeBreakout
     from intraday.strategies.registry import evaluate_all
 
-    with cfg_ctx({"orb_max_risk_pct": "5.0"}):     # isolate: not testing the cap here
+    with cfg_ctx({"orb_max_risk_pct": "5.0",       # isolate: not testing the cap here
+                  "orb_min_minutes_since_open": "0"}):  # nor the open-hour gate
         best, found = evaluate_all(_orb_ctx(1086.00), PRIME)
     assert found, "the fixture is a real, confirmed ORB break — it must fire"
     s = found[0]
@@ -94,7 +95,7 @@ def test_atr_is_recorded_as_none_when_unknown_not_omitted():
     narrow_bars = _range_bars(1070.00, 1078.56)     # ~0.80% wide, clears 0.15-0.70x2.0
     ctx = SymbolContext(symbol="SBIN", bars=narrow_bars, ltp=1082.00,
                         prev_high=1000.0, rs_vs_index_pct=0.4)  # atr_pct_daily unset
-    with cfg_ctx({"orb_max_risk_pct": "5.0"}):
+    with cfg_ctx({"orb_max_risk_pct": "5.0", "orb_min_minutes_since_open": "0"}):
         best, found = evaluate_all(ctx, PRIME)
     assert found, "fixture must fire at ORB's own ATR fallback (2.0)"
     s = found[0]
@@ -198,7 +199,8 @@ def test_the_capped_meta_reaches_a_real_engine_end_to_end():
     from intraday.strategies.orb import OpeningRangeBreakout
     from intraday.strategies.registry import evaluate_all
 
-    with cfg_ctx({"orb_max_risk_pct": "0.5", "intraday_stop_cap_mode": "tighten"}):
+    with cfg_ctx({"orb_max_risk_pct": "0.5", "intraday_stop_cap_mode": "tighten",
+                  "orb_min_minutes_since_open": "0"}):
         best, found = evaluate_all(_orb_ctx(1086.00), PRIME)
     assert found, "a wide-range ORB break under a 0.5% cap must still fire (tighten)"
     s = found[0]

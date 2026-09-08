@@ -128,17 +128,25 @@ def _weak_break_ctx_with_retest():
     return SymbolContext(symbol="TEST", ltp=101.95, bars=bars)
 
 
+
+# orb_min_minutes_since_open (09-Sep-2026) is disabled ("0") throughout this
+# file's evaluate() fixtures: every bar set here is timestamped within the
+# first ~26 minutes of the 09:15 open, because that timing is what each
+# fixture is ACTUALLY isolating (retest confirmation, target construction) —
+# none of them are testing the open-hour restriction itself, which has its
+# own dedicated tests below.
+
 def test_a_weak_break_is_refused_with_retest_confirmation_off():
     ctx = _weak_break_ctx_with_retest()
     with cfg_ctx({"orb_retest_confirmation_enabled": "false",
-                  "intraday_min_risk_pct": "0.0"}):
+                  "intraday_min_risk_pct": "0.0", "orb_min_minutes_since_open": "0"}):
         assert OpeningRangeBreakout().evaluate(ctx, PRIME) is None
 
 
 def test_the_same_weak_break_is_rescued_by_a_genuine_retest():
     ctx = _weak_break_ctx_with_retest()
     with cfg_ctx({"orb_retest_confirmation_enabled": "true",
-                  "intraday_min_risk_pct": "0.0"}):
+                  "intraday_min_risk_pct": "0.0", "orb_min_minutes_since_open": "0"}):
         setup = OpeningRangeBreakout().evaluate(ctx, PRIME)
     assert setup is not None, "a genuinely retested break must be taken"
     assert setup.meta.get("retest_confirmed") is True
@@ -154,7 +162,7 @@ def test_a_weak_break_with_no_retest_is_still_refused_even_when_enabled():
     ]
     ctx = SymbolContext(symbol="TEST", ltp=101.95, bars=bars)
     with cfg_ctx({"orb_retest_confirmation_enabled": "true",
-                  "intraday_min_risk_pct": "0.0"}):
+                  "intraday_min_risk_pct": "0.0", "orb_min_minutes_since_open": "0"}):
         assert OpeningRangeBreakout().evaluate(ctx, PRIME) is None
 
 
@@ -187,7 +195,7 @@ def test_measured_move_widens_the_target_when_the_range_is_wide():
     ctx = _wide_range_ctx()
     with cfg_ctx({"orb_measured_move_target_enabled": "true",
                   "intraday_min_risk_pct": "0.0", "orb_max_risk_pct": "3.0",
-                  "orb_target_r": "0.3"}):
+                  "orb_target_r": "0.3", "orb_min_minutes_since_open": "0"}):
         setup = OpeningRangeBreakout().evaluate(ctx, PRIME)
     assert setup is not None
     by_r = setup.entry + (setup.entry - setup.stop) * 0.3
@@ -201,7 +209,7 @@ def test_measured_move_off_restores_the_flat_multiple_exactly():
     ctx = _wide_range_ctx()
     with cfg_ctx({"orb_measured_move_target_enabled": "false",
                   "intraday_min_risk_pct": "0.0", "orb_max_risk_pct": "3.0",
-                  "orb_target_r": "0.3"}):
+                  "orb_target_r": "0.3", "orb_min_minutes_since_open": "0"}):
         setup = OpeningRangeBreakout().evaluate(ctx, PRIME)
     assert setup is not None
     by_r = setup.entry + (setup.entry - setup.stop) * 0.3
@@ -220,12 +228,67 @@ def test_measured_move_does_not_win_at_the_default_target_r():
     """
     ctx = _wide_range_ctx()
     with cfg_ctx({"orb_measured_move_target_enabled": "true",
-                  "intraday_min_risk_pct": "0.0", "orb_max_risk_pct": "3.0"}):
+                  "intraday_min_risk_pct": "0.0", "orb_max_risk_pct": "3.0",
+                  "orb_min_minutes_since_open": "0"}):
         setup = OpeningRangeBreakout().evaluate(ctx, PRIME)
     assert setup is not None
     by_r = setup.entry + (setup.entry - setup.stop) * 2.0
     assert abs(setup.target - by_r) < 0.01, (setup.target, by_r)
     assert setup.meta.get("measured_move_used") is False
+
+
+# ── SymbolContext.minutes_since_open(), pure ────────────────────────────
+
+def test_minutes_since_open_measures_from_the_real_open_not_bar_count():
+    """The whole reason this is a timestamp computation, not len(bars): a
+    5-minute-bar context must not read as '2 bars = 2 minutes'."""
+    t0 = datetime(2026, 8, 19, 9, 15, tzinfo=IST)
+    bars = [_bar(0, high=101, low=100, close=100.5, t0=t0),
+           _bar(50, high=101, low=100, close=100.5, t0=t0)]  # a 5-min-bar ctx
+    ctx = SymbolContext(symbol="TEST", ltp=100.5, bars=bars)
+    assert ctx.minutes_since_open() == 50.0
+
+
+def test_minutes_since_open_is_none_with_no_bars():
+    ctx = SymbolContext(symbol="TEST", ltp=100.5, bars=[])
+    assert ctx.minutes_since_open() is None
+
+
+# ── the open-hour restriction itself, 09-Sep-2026 ────────────────────────
+
+def _strong_break_ctx(minutes_after_open: float):
+    """A clean, strongly-confirmed break (0.29% of a 2.475%-wide range, well
+    past the strength floor) so ONLY the timing gate is what a test here can
+    be isolating — everything else about the setup is deliberately generous."""
+    t0 = datetime(2026, 8, 19, 9, 15, tzinfo=IST)
+    bars = [
+        _bar(0, high=103.5, low=101.0, close=102.0, t0=t0),
+        _bar(minutes_after_open, high=103.9, low=103.6, close=103.85, t0=t0),
+    ]
+    return SymbolContext(symbol="TEST", ltp=103.8, bars=bars, atr_pct_daily=5.0)
+
+
+def test_a_break_inside_the_first_45_minutes_is_refused():
+    ctx = _strong_break_ctx(30)   # 09:45 — inside the OPEN bucket
+    with cfg_ctx({"intraday_min_risk_pct": "0.0", "orb_max_risk_pct": "3.0"}):
+        assert OpeningRangeBreakout().evaluate(ctx, PRIME) is None, (
+            "a break at 09:45 must be refused at the default 45-minute gate")
+
+
+def test_the_identical_break_fires_once_45_minutes_have_passed():
+    ctx = _strong_break_ctx(46)   # 10:01
+    with cfg_ctx({"intraday_min_risk_pct": "0.0", "orb_max_risk_pct": "3.0"}):
+        assert OpeningRangeBreakout().evaluate(ctx, PRIME) is not None, (
+            "the identical setup must fire once past the open-hour cutoff")
+
+
+def test_zero_disables_the_open_hour_gate():
+    ctx = _strong_break_ctx(16)   # 09:31 — would be refused at the default
+    with cfg_ctx({"intraday_min_risk_pct": "0.0", "orb_max_risk_pct": "3.0",
+                  "orb_min_minutes_since_open": "0"}):
+        assert OpeningRangeBreakout().evaluate(ctx, PRIME) is not None, (
+            "0 must restore the pre-fix behaviour, not merely shrink the window"
+        )
 
 
 TESTS = [
@@ -257,4 +320,14 @@ TESTS = [
      test_measured_move_off_restores_the_flat_multiple_exactly),
     ("measured move does not win at the default target_r",
      test_measured_move_does_not_win_at_the_default_target_r),
+    ("a break inside the first 45 minutes is refused",
+     test_a_break_inside_the_first_45_minutes_is_refused),
+    ("the identical break fires once 45 minutes have passed",
+     test_the_identical_break_fires_once_45_minutes_have_passed),
+    ("0 disables the open-hour gate",
+     test_zero_disables_the_open_hour_gate),
+    ("minutes_since_open measures from the real open, not bar count",
+     test_minutes_since_open_measures_from_the_real_open_not_bar_count),
+    ("minutes_since_open is None with no bars",
+     test_minutes_since_open_is_none_with_no_bars),
 ]

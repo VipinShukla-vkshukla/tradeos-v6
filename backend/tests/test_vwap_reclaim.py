@@ -102,9 +102,57 @@ def test_still_below_vwap_on_the_last_bar_is_refused():
     assert s is None
 
 
-# ── target construction ────────────────────────────────────────────────────
+# ── the bars_below confidence bonus — 09-Sep-2026, was backwards ───────────
 
 _FRESH_CLOSES = [99.8, 99.8, 99.8, 99.8, 99.8, 99.8, 99.8, 99.8, 99.8, 99.85, 99.9, 100.2]
+# Same shape (8 bars above, a dip, a fresh reclaim), but only the MINIMUM
+# 3 bars below vwap rather than 11 — a quick flush instead of an extended
+# one, dipping to the same depth so risk_from_structure sizes it the same.
+_QUICK_FLUSH_CLOSES = [100.3, 100.3, 100.3, 100.3, 100.3, 100.3, 100.3, 100.3,
+                       99.8, 99.85, 99.9, 100.2]
+
+
+def test_a_quick_flush_now_scores_at_least_as_high_as_an_extended_one():
+    """
+    Real decomposition of every TAKEN, resolved VWR row with a bars_below
+    value (127 rows): bars_below==3 (the minimum this engine allows) wins
+    64.3% (n=14) vs 18.2% at 11 (n=55, the largest single bucket) — a
+    clean, roughly monotonic decay in between. The OLD `len(below) >=
+    min_below + 2` bonus paid its +0.08 to exactly the population that
+    performs worst; see this engine's own confidence comment for the full
+    breakdown and docs/FINDINGS.md, 09-Sep-2026.
+    """
+    from intraday.strategies.vwap_reclaim import VwapReclaim
+    eng = VwapReclaim()
+    with cfg_ctx({}):
+        quick = eng.evaluate(_ctx(_QUICK_FLUSH_CLOSES, ltp=100.3), PRIME)
+        extended = eng.evaluate(_ctx(_FRESH_CLOSES, ltp=100.3), PRIME)
+    assert quick is not None and extended is not None
+    assert quick.meta["bars_below"] == 3
+    assert extended.meta["bars_below"] == 11
+    assert quick.confidence >= extended.confidence, (
+        f"a 3-bar flush ({quick.confidence}) must not score below an "
+        f"11-bar one ({extended.confidence}) — the bonus this fix moved")
+    assert quick.confidence - extended.confidence >= 0.07, (
+        "the 0.08 bonus must actually have moved from the extended case to "
+        "the quick one, not merely tied out by other terms")
+
+
+def test_rs_vs_index_pct_is_now_stamped_into_meta():
+    """
+    Instrument first, calibrate second (ORB's own retest_confirmed/
+    measured_move_used precedent) — this confidence formula reads
+    ctx.rs_vs_index_pct but never stored it, which is why bars_below could
+    be decomposed against real outcomes and this could not. 09-Sep-2026.
+    """
+    from intraday.strategies.vwap_reclaim import VwapReclaim
+    with cfg_ctx({}):
+        s = VwapReclaim().evaluate(_ctx(_FRESH_CLOSES, ltp=100.3, rs=1.23), PRIME)
+    assert s is not None
+    assert s.meta.get("rs_vs_index_pct") == 1.23
+
+
+# ── target construction ────────────────────────────────────────────────────
 
 
 def test_target_prefers_a_worthwhile_day_high_over_the_r_multiple():
@@ -165,6 +213,10 @@ TESTS = [
      test_a_fresh_single_bar_crossing_still_fires),
     ("still below VWAP on the last bar is refused",
      test_still_below_vwap_on_the_last_bar_is_refused),
+    ("a quick flush now scores at least as high as an extended one",
+     test_a_quick_flush_now_scores_at_least_as_high_as_an_extended_one),
+    ("rs_vs_index_pct is now stamped into meta",
+     test_rs_vs_index_pct_is_now_stamped_into_meta),
     ("target prefers a worthwhile day high over the R-multiple",
      test_target_prefers_a_worthwhile_day_high_over_the_r_multiple),
     ("target uses a partial day high instead of overshooting past it",

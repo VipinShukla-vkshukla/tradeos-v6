@@ -1697,6 +1697,25 @@ class IntradayEngine:
                     and (x.get("framework") or "SWING").upper() == fw)
                    for x in self.positions)
 
+    def _ign_open_position(self, symbol: str) -> dict | None:
+        """
+        The open INTRADAY/IGN position for this symbol, if any — the
+        exit-lag probe's own lookup (event_core.py, migration 135).
+        Returns the actual dict from self.positions, not a copy, so a
+        caller mutating it (recording the probe's own result in-process)
+        stays consistent with what the next load_state() would re-fetch.
+
+        Only one match is possible: two INTRADAY positions in the same
+        symbol cannot coexist (_held_by_framework's own guard, one book
+        one symbol).
+        """
+        for p in self.positions:
+            if (p.get("symbol") == symbol
+                    and (p.get("framework") or "").upper() == "INTRADAY"
+                    and (p.get("sub_engine") or "").upper() == "IGN"):
+                return p
+        return None
+
     def _stock_row(self, symbol: str) -> dict:
         """
         The daily fundamentals row the shortability filter reads.
@@ -4572,6 +4591,20 @@ class IntradayEngine:
         budget = liquidity_capped_budget(ctx.value_cr, budget)
         qty = int(budget // best.entry) if best.entry else 0
         if qty <= 0:
+            # RECORDED, NOT SILENT — 09-Sep-2026. Every other refusal in this
+            # function calls _record_setup(); this one was a bare `return
+            # None`, found while investigating why a RISK_OFF day's real
+            # gainers/losers were not caught: mc.size_multiplier is 0.0 for a
+            # LONG in RISK_OFF (market_context.py), which zeroes `budget`
+            # here for every long candidate rather than refusing it earlier
+            # with a name — the exact "a refusal that leaves no row is a
+            # rule nobody can price" failure this file's own 10-Aug-2026 fix
+            # closed everywhere else. mc_state is recorded so this is now the
+            # queryable answer to "how many longs did the regime gate zero
+            # out today", not an invisible one. See docs/FINDINGS.md,
+            # 09-Sep-2026.
+            self._record_setup(best, st.phase, 0.0, "BLOCKED_SIZING", 0,
+                               mc_state=(mc.state if mc else None), advice=advice)
             return None
 
         # LIQUIDITY / CIRCUIT-BAND GATE — can this be got out of at plan?

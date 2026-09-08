@@ -146,7 +146,7 @@ def test_orb_produces_no_setup_on_a_two_paise_break_but_does_on_a_real_one():
     # lifted to isolate that one variable. The production consequence (ORB
     # cannot honestly fund a break of a range this wide) is deliberate and is
     # pinned by tests/test_structural_stop.py, not waved away here.
-    with cfg_ctx({"orb_max_risk_pct": "5.0"}):
+    with cfg_ctx({"orb_max_risk_pct": "5.0", "orb_min_minutes_since_open": "0"}):
         quote = eng.evaluate(_ctx("SBIN", bars, 1082.00, **common), PRIME)
         assert quote is None, "a 0.02% break must not become a Setup"
 
@@ -183,7 +183,7 @@ def test_orb_confidence_no_longer_rewards_the_weakest_break():
     # lifted to isolate that one variable. The production consequence (ORB
     # cannot honestly fund a break of a range this wide) is deliberate and is
     # pinned by tests/test_structural_stop.py, not waved away here.
-    with cfg_ctx({"orb_max_risk_pct": "5.0"}):
+    with cfg_ctx({"orb_max_risk_pct": "5.0", "orb_min_minutes_since_open": "0"}):
         a = eng.evaluate(_ctx("SBIN", bars, just_confirmed, **common), PRIME)
         b = eng.evaluate(_ctx("SBIN", bars, nearly_chased, **common), PRIME)
     assert a is not None and b is not None

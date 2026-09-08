@@ -34,6 +34,11 @@ exist because each one corresponds to a specific way the naive version loses:
                         otherwise be refused as a quote.
   phase                 PRIME only. The same pattern in the 11:00-13:30 drift
                         is the textbook false break.
+  open-hour restriction Not before 10:00 (orb_min_minutes_since_open, 09-Sep-
+                        2026) — measured 0% win (n=210) in the 09:15-10:00
+                        window vs 18% from 10:00, the overnight-imbalance
+                        absorption this engine's own range depends on not
+                        yet having finished.
   cost                  Enforced by the caller — a target inside the round trip
                         is not a trade, however clean the chart.
 
@@ -120,6 +125,22 @@ class OpeningRangeBreakout:
 
     def evaluate(self, ctx: SymbolContext, phase: str) -> Setup | None:
         if phase not in self.phases:
+            return None
+
+        # NOT THE LITERAL OPEN — 09-Sep-2026. `tools/feature_edge_study.py`'s
+        # `_hour_bucket()` decomposition found ORB at 0% win (n=210, mean
+        # -0.67%) in the 09:15-10:00 OPEN bucket vs 18% (mean +0.03%) in the
+        # 10:00-13:00 MID one — backwards from how this engine is deployed,
+        # since `phases=(PRIME,)` (09:30-11:00) lets it fire from the very
+        # start of PRIME. The first 15-45 minutes absorb overnight order
+        # imbalance the docstring above already names as the reason the
+        # range MEANS something; that same imbalance is also exactly what
+        # makes an early "breakout" prone to reversing once the imbalance
+        # clears. Default matches the OPEN/MID split precisely (09:15 + 45
+        # = 10:00). 0 restores the pre-fix behaviour.
+        min_since_open = cfg_float("orb_min_minutes_since_open", 45.0)
+        mso = ctx.minutes_since_open()
+        if min_since_open > 0 and mso is not None and mso < min_since_open:
             return None
 
         window = cfg_int("orb_window_min", 15)
