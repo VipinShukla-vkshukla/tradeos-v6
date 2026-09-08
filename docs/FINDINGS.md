@@ -16364,3 +16364,110 @@ would-be data-corruption bug before it touched real data), and full
 execute all completed as planned; reconciliation and hurdle-bar invariance
 verified independently from the plan both before and after applying, not
 assumed from the plan's own arithmetic.
+
+## 2026-09-08 — Storage — intraday_quote_parity write-time collapse built, measured, armed (migration 131) — 93.3% fewer rows, verdict-invariance proven against the real production check
+
+**Ran:**
+
+```bash
+cd backend && python -m tools.verify
+cd backend && python -m tools.replay_quote_parity_collapse --days 5
+```
+```sql
+-- via Supabase MCP execute_sql, project dbjfwpamxudnolfalpfm
+select field, count(*), count(distinct symbol) from intraday_quote_parity group by field;
+-- LAG()-based exact/tolerance survivor counts per field, used only to scope
+-- the first estimate before the real replay tool existed
+```
+
+**Context:** the operator asked directly why intraday_quote_parity should
+be stored in Supabase at all rather than kept in memory (answered: it must
+survive process restarts to serve as a pre-session gate, and past
+investigations — F-30, F-33/F-34 — needed multi-day history an in-memory
+cache would have lost on the first restart), then asked for the same
+~98%-class reduction already applied to allocation_decisions. Investigated
+before proposing anything: `SCORED = ("day_high","day_low","vwap",
+"prev_close")` in `tools/quote_parity.py` already excludes `volume`
+entirely (never affects any verdict, logged for visibility only, per the
+module's own docstring), and `range_verdict()`/`vwap_verdict()` are a
+BOOLEAN "was any value ever bad" test over the whole window, not a
+statistical average — a materially different shape from hurdle()'s
+percentile, and one that changes what "safe to collapse" means.
+
+**Built** `quote_parity.should_log()` (pure, tested standalone): `volume`
+never logged under collapse; `prev_close` collapses to once per symbol per
+day (static all session — a second comparison tells you nothing the first
+didn't); `day_high`/`day_low` collapse on an EXACT match only — since
+range_verdict() only asks whether any DISTINCT value was ever bad, an
+exact-duplicate row is provably redundant, not merely probably safe;
+`vwap` collapses within a tolerance (config `quote_parity_vwap_collapse_
+tolerance`) since it recalculates continuously and exact-match barely
+helps. Wired into `intraday/engine.py::apply_live_quotes()` behind
+`quote_parity_write_collapse_enabled` (ships false — switch-off is
+byte-identical to today, every built comparison still gets logged).
+
+**First measurement caught its own default being wrong, not just the
+final config.** The heartbeat default (forces a write during a long
+unchanged stretch, so a quiet market stays distinguishable from a dead
+logger) was initially copied uncritically from the allocator's own 1800s —
+measured against real data via a NEW replay tool
+(`tools/replay_quote_parity_collapse.py`, calling the ACTUAL production
+`range_verdict()`/`vwap_verdict()`, not a reimplementation): only 86.0%
+fewer rows, because a 30-minute heartbeat forces a write up to 12 times a
+6.25-hour session regardless of whether anything changed — the heartbeat,
+not the material-change threshold, was the binding constraint. Swept
+1800/3600/7200/14400/21600s against the same real data: the pass/fail
+verdict stayed an EXACT MATCH between raw and collapsed populations at
+every value tried (a longer heartbeat only adds MORE confirmations of an
+already-collapsed value, never removes a real one) — so 7200s (2 hours)
+was chosen for the row count, not because anything shorter was measured
+unsafe. `quote_parity_vwap_collapse_tolerance` set to 0.04%, exactly HALF
+the tightest real engine gate (0.08%, `vwr_stop_buffer_pct`) any engine
+that reads vwap actually trades on.
+
+**Also caught, same pass:** the replay tool's own `cfg_float(...)`
+fallback defaults were left at the pre-sweep values (0.03/1800) after the
+production code's defaults were updated to the final 0.04/7200 — the tool
+silently ran against the WRONG config for one cycle before the mismatch
+was noticed and fixed. Three separate copies of the same two numbers
+(engine.py's cfg_float call, the replay tool's cfg_float call, migration
+131's system_config INSERT) is exactly the class of drift this project has
+been burned by before; flagged in a comment rather than silently trusted
+to stay in sync.
+
+**Final measured result** (150,686 real rows, 5 trading days, at the
+shipped 0.04/7200 configuration): 10,085 rows survive (**93.3% fewer**).
+Per field: `volume` 31,399→0, `prev_close` 25,090→360, `day_high`
+31,399→2,992, `day_low` 31,399→3,397, `vwap` 31,399→3,372.
+`range_verdict()` and `vwap_verdict()` — the real functions
+`check_quote_parity()` calls, not a reimplementation — produce an
+IDENTICAL pass/fail verdict on the collapsed population as on the raw one.
+11 new offline tests (`tests/test_quote_parity_collapse.py`), demonstrated
+failing first (temporarily broke the day_high/day_low exact-match rule,
+watched 2 of 11 tests catch it with the expected messages, restored),
+1,276/1,276 offline checks green.
+
+**Applied live:** migration 131 (3 new `system_config` rows, no schema
+change — this collapse only decides which built comparisons get written,
+unlike migration 129's `repeat_count` column). `quote_parity_write_
+collapse_enabled` armed **true**.
+
+**Could not determine:** whether 93.3% would hold on a longer or
+differently-shaped window (measured on 5 trading days, all from the same
+recent market regime) — the honest ceiling stated to the operator before
+building was ~94.8% from a naive material-change-only estimate that
+turned out to not account for the heartbeat's own binding effect; 93.3%
+is the real, swept, verdict-verified number, not the original estimate.
+
+**Recommends:** restart/redeploy the intraday daemon so `apply_live_quotes()`
+actually runs the new collapse logic — same caveat as migration 129: the
+config flip is live but inert until the running process reloads the code.
+Watch `check_quote_parity` in the next few `tools.health` runs post-restart
+to confirm it still reads clean under the collapsed population, not just
+in this session's own replay.
+
+**Gate:** PASS — built, measured against real data using the actual
+production verdict functions (not a reimplementation), demonstrated
+failing first, a real bug (drifted replay-tool defaults) caught in the
+same pass it was introduced. NEEDS FOLLOW-UP: confirm post-restart
+row-growth rate and a live `tools.health` pass, next session.

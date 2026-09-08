@@ -131,6 +131,74 @@ def compare(symbol: str, field: str, live, fetched) -> dict | None:
             "diff_pct": round((live - fetched) / fetched * 100.0, 4)}
 
 
+def should_log(field: str, diff_pct: float, state: dict | None, now,
+               vwap_tolerance: float, heartbeat_s: float) -> bool:
+    """
+    Write-time collapse — 10-Sep-2026. Whether to log this comparison, or
+    skip it as a duplicate of the last one recorded for this (symbol,
+    field) today. `state` is the caller's own {"diff_pct", "logged_at"}
+    for that key, or None if nothing has been logged yet today.
+
+    Measured live before this shipped (docs/FINDINGS.md, 10-Sep-2026),
+    against 150,686 real rows, using tools/replay_quote_parity_collapse.py
+    (calls the ACTUAL production range_verdict()/vwap_verdict(), not a
+    reimplementation) at the shipped defaults (vwap_tolerance=0.04,
+    heartbeat_s=7200):
+
+        volume       31,399 -> 0. Never logged at all under collapse —
+                     SCORED excludes it, and it never has (see this
+                     module's own docstring: "different quantities",
+                     never comparable).
+        prev_close   25,090 -> 360. Logged once per symbol per day. It
+                     cannot change during a session (yesterday's close is
+                     a fixed fact), so a second comparison the same day
+                     tells you nothing the first one didn't.
+        day_high/low 31,399 each -> 2,978 / 3,391. EXACT-match collapse —
+                     skip only when the new value is identical to the last
+                     one logged. range_verdict() asks "was any value EVER
+                     bad", so the set of DISTINCT values fully determines
+                     the verdict; a repeated identical value changes
+                     nothing about it — PROVABLY lossless, not merely
+                     likely-fine. The heartbeat below adds MORE rows on
+                     top of this, never fewer.
+        vwap         31,399 -> 3,356. Tolerance-based collapse
+                     (vwap_tolerance, default 0.04%, HALF the tightest
+                     engine gate — 0.08%, vwr_stop_buffer_pct) —
+                     continuously recalculating, so exact-match barely
+                     helps.
+
+    TOTAL: 150,686 -> 10,085 (93.3% fewer), range_verdict()/vwap_verdict()
+    an exact pass/fail MATCH between the raw and collapsed populations.
+
+    `heartbeat_s` (default 7200s = 2 hours) still forces a write during a
+    long unchanged stretch (day_high/low/vwap only — prev_close never
+    needs one, see above), so a quiet market stays distinguishable from a
+    logger that silently stopped. The FIRST version of this shipped with
+    the allocator's own 1800s default, uncritically copied rather than
+    re-derived — measured result: only 86.0% fewer rows, because a
+    30-minute heartbeat forces a write up to 12 times a session even when
+    nothing changed, which turned out to be the BINDING constraint, not
+    the material-change threshold. Swept 1800–21600s against the real
+    data: the verdict stayed an exact match at every value tried (a longer
+    heartbeat only adds MORE confirmations of an already-collapsed value,
+    never removes a real one), so 7200s was chosen for the row count, not
+    because a shorter one was unsafe. Layered on top of
+    check_quote_parity()'s own "zero rows in 2 full days" failure, not a
+    substitute for it.
+    """
+    if field == "volume":
+        return False
+    if field == "prev_close":
+        return state is None
+    if state is None:
+        return True
+    if (now - state["logged_at"]).total_seconds() >= heartbeat_s:
+        return True
+    if field == "vwap":
+        return abs(diff_pct - state["diff_pct"]) >= vwap_tolerance
+    return diff_pct != state["diff_pct"]
+
+
 def record_many(sb, rows: list[dict]) -> int:
     """
     Write a batch. Deliberately tolerant: parity logging must never be able to

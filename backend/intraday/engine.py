@@ -325,6 +325,14 @@ class IntradayEngine:
         # Epoch-ish sentinel so the first cycle logs parity immediately rather
         # than waiting a full interval for the first sample.
         self._last_parity_at = datetime.fromtimestamp(0, IST)
+        # STORAGE — 10-Sep-2026. (symbol, field, date) -> {"diff_pct",
+        # "logged_at"} for quote_parity.should_log()'s write-time collapse.
+        # Dated key so a multi-day-running process treats each new day's
+        # first observation as fresh, not a duplicate of yesterday's last
+        # value — matters most for prev_close, which is only static WITHIN
+        # a day. Only read/written when quote_parity_write_collapse_enabled
+        # is on; harmless dead weight otherwise.
+        self._quote_parity_state: dict = {}
         # Throttles merge_live_bars()'s own summary line to the same 300s
         # cadence as the parity log above, for the same reason: it runs
         # every 15s cycle and logging on every one would be noise, not
@@ -915,6 +923,17 @@ class IntradayEngine:
                 self._last_parity_at = now
                 try:
                     from tools import quote_parity
+                    # STORAGE — 10-Sep-2026, write-time collapse. Ships OFF;
+                    # switch-off leaves this whole block byte-identical to
+                    # before it existed — every comparison built gets logged,
+                    # nothing is filtered. See quote_parity.should_log()'s
+                    # own docstring for what each field's collapse rule is
+                    # and the measured, real-data reduction it produced.
+                    collapse_on = cfg_bool("quote_parity_write_collapse_enabled", False)
+                    vwap_tol = cfg_float("quote_parity_vwap_collapse_tolerance", 0.04)
+                    qp_heartbeat_s = cfg_float("quote_parity_heartbeat_s", 7200.0)
+                    today_key = now.date().isoformat()
+
                     batch = []
                     no_snapshot = 0
                     for sym, ctx in (self._contexts or {}).items():
@@ -945,8 +964,18 @@ class IntradayEngine:
                         for field in quote_parity.LOGGED:
                             row = quote_parity.compare(
                                 sym, field, q.get(field), ctx.fetched.get(field))
-                            if row:
-                                batch.append(row)
+                            if not row:
+                                continue
+                            if collapse_on:
+                                key = (sym, field, today_key)
+                                state = self._quote_parity_state.get(key)
+                                if not quote_parity.should_log(
+                                        field, row["diff_pct"], state, now,
+                                        vwap_tol, qp_heartbeat_s):
+                                    continue
+                                self._quote_parity_state[key] = {
+                                    "diff_pct": row["diff_pct"], "logged_at": now}
+                            batch.append(row)
                     quote_parity.record_many(self.sb, batch)
                     if no_snapshot:
                         logger.warning(

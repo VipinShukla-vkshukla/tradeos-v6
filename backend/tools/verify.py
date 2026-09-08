@@ -90,6 +90,7 @@ MODULES = [
     ("allocation_decisions write-time collapse", "tests.test_alloc_write_collapse"),
     ("hurdle repeat_count expansion", "tests.test_hurdle_repeat_count"),
     ("allocation_decisions retroactive backfill compaction", "tests.test_compact_allocation_decisions"),
+    ("quote_parity write-time collapse", "tests.test_quote_parity_collapse"),
     ("feature edge study",   "tests.test_feature_edge_study"),
     ("intraday volume decay", "tests.test_intraday_volume_decay"),
     ("sub_engine on positions", "tests.test_sub_engine_on_positions"),
