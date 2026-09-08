@@ -799,8 +799,9 @@ class Allocator:
 
         A synchronous write inside the decision loop puts a network round trip
         in front of exit evaluation on live positions. The catch-and-continue
-        wrapper protects against a write FAILING; it does nothing about a write
-        being SLOW, and slow is the failure that costs money here.
+        wrapper protects against a write FAILING by RE-QUEUING rather than
+        losing it; it does nothing about a write being SLOW, and slow is the
+        failure that costs money here.
 
         STORAGE — 08-Sep-2026, migration 129. Two independent write groups,
         both still only on this slow timer, never the 15s cycle:
@@ -831,17 +832,46 @@ class Allocator:
                         st["row_ref"] = None
                 n = len(rows)
             except Exception as e:
-                logger.error(f"  allocator: flush of {len(rows)} verdict(s) FAILED: {e}")
-                # Loud, not swallowed. Buffered writes that vanish leave silent
-                # holes in the promotion evidence, and the promotion gate is
-                # denominated in exactly these rows.
+                # RE-QUEUE, DO NOT DISCARD — 08-Sep-2026. This used to pop
+                # `rows` out of self._buffer and never put them back: a single
+                # transient PostgREST/network failure silently erased up to
+                # 300 seconds of decisions across BOTH frameworks — including
+                # a TAKE that had already, correctly, gated a real entry via
+                # self._verdicts (a separate in-memory dict select() builds
+                # from this same per-cycle loop). Confirmed live: every
+                # INTRADAY position closed 2026-09-01..07 carries a genuine
+                # DECLINE in allocation_decisions for its own (symbol, date,
+                # direction) and zero TAKE rows — this is the mechanism.
+                #
+                # `rows + self._buffer` re-queues the SAME dict objects, not
+                # copies — load-bearing, not stylistic. self._collapse_state's
+                # row_ref for an unflushed SWING anchor IS one of these exact
+                # objects, mutated in place by _write_or_collapse() when the
+                # same candidate recurs; a copy would silently orphan the
+                # anchor. `pending_anchor` above is rebuilt fresh from
+                # self._collapse_state on every call, so repeated consecutive
+                # failures never go stale. See docs/FINDINGS.md, 08-Sep-2026
+                # ("Intraday trader review") and tests.test_allocator_flush_
+                # requeue for the full trace and the regression coverage.
+                logger.error(f"  allocator: flush of {len(rows)} verdict(s) FAILED — "
+                             f"re-queued for the next attempt: {e}")
+                self._buffer = rows + self._buffer
 
         if self._pending_updates:
-            updates, self._pending_updates = self._pending_updates, {}
+            # Iterate a SNAPSHOT, delete from the LIVE dict only on success —
+            # not a pop-everything-then-retry-failures shape, because this is
+            # per-row (unlike the bulk insert above): row 1's sync can succeed
+            # while row 2's fails in the same pass, and a succeeded sibling
+            # must never be re-sent. Single-threaded execution (this whole
+            # daemon runs on one thread — see event_core.py's own docstring)
+            # means nothing else can touch self._pending_updates mid-loop.
+            updates = dict(self._pending_updates)
             for row_id, fields in updates.items():
                 try:
                     self.sb.table("allocation_decisions").update(fields).eq("id", row_id).execute()
+                    del self._pending_updates[row_id]
                 except Exception as e:
-                    logger.error(f"  allocator: repeat_count sync for row {row_id} FAILED: {e}")
+                    logger.error(f"  allocator: repeat_count sync for row {row_id} FAILED — "
+                                 f"will retry next flush: {e}")
 
         return n
