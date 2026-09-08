@@ -90,8 +90,9 @@ def test_auto_entry_off_is_recorded():
     sb = _RecordingSB()
     eng = _engine(sb)
     with cfg_ctx({"intraday_auto_entry": "false"}):
-        eng._maybe_open_paper(_FakeSetup(), 10, None, phase="PRIME")
+        ret = eng._maybe_open_paper(_FakeSetup(), 10, None, phase="PRIME")
     assert _verdicts(sb) == ["BLOCKED_AUTO_ENTRY_OFF"]
+    assert ret is False, "a blocked entry must return False, not None"
 
 
 def test_concurrency_cap_is_recorded():
@@ -99,8 +100,9 @@ def test_concurrency_cap_is_recorded():
     positions = [{"framework": "INTRADAY"}] * 10
     eng = _engine(sb, positions=positions)
     with cfg_ctx({"intraday_auto_entry": "true", "intraday_max_concurrent": "10"}):
-        eng._maybe_open_paper(_FakeSetup(), 10, None, phase="PRIME")
+        ret = eng._maybe_open_paper(_FakeSetup(), 10, None, phase="PRIME")
     assert _verdicts(sb) == ["BLOCKED_CONCURRENCY"]
+    assert ret is False
 
 
 def test_daily_budget_is_recorded():
@@ -109,8 +111,9 @@ def test_daily_budget_is_recorded():
     eng._entries_today = lambda: 10
     with cfg_ctx({"intraday_auto_entry": "true", "intraday_max_concurrent": "50",
                   "intraday_max_new_per_day": "10"}):
-        eng._maybe_open_paper(_FakeSetup(), 10, None, phase="PRIME")
+        ret = eng._maybe_open_paper(_FakeSetup(), 10, None, phase="PRIME")
     assert _verdicts(sb) == ["BLOCKED_DAILY_BUDGET"]
+    assert ret is False
 
 
 def test_paper_capacity_refusal_is_recorded():
@@ -121,8 +124,9 @@ def test_paper_capacity_refusal_is_recorded():
                   "intraday_max_new_per_day": "50"}), \
          patch("execution.gates.is_paper", return_value=True), \
          patch("execution.paper_broker.capacity", return_value=(False, "book full", 0)):
-        eng._maybe_open_paper(_FakeSetup(), 10, None, phase="PRIME")
+        ret = eng._maybe_open_paper(_FakeSetup(), 10, None, phase="PRIME")
     assert _verdicts(sb) == ["BLOCKED_PAPER_CAPACITY"]
+    assert ret is False
 
 
 def test_already_held_race_is_recorded():
@@ -134,8 +138,9 @@ def test_already_held_race_is_recorded():
                   "intraday_max_new_per_day": "50"}), \
          patch("execution.gates.is_paper", return_value=True), \
          patch("execution.paper_broker.capacity", return_value=(True, "", 5)):
-        eng._maybe_open_paper(_FakeSetup(), 10, None, phase="PRIME")
+        ret = eng._maybe_open_paper(_FakeSetup(), 10, None, phase="PRIME")
     assert _verdicts(sb) == ["BLOCKED_ALREADY_HELD"]
+    assert ret is False
 
 
 def test_a_failed_fill_is_recorded():
@@ -151,8 +156,57 @@ def test_a_failed_fill_is_recorded():
          patch("execution.paper_broker.capacity", return_value=(True, "", 5)), \
          patch("execution.paper_broker.simulate_fill", return_value=bad_fill), \
          patch("execution.paper_broker.product_for", return_value="MIS"):
-        eng._maybe_open_paper(_FakeSetup(), 10, None, phase="PRIME")
+        ret = eng._maybe_open_paper(_FakeSetup(), 10, None, phase="PRIME")
     assert _verdicts(sb) == ["BLOCKED_FILL_FAILED"]
+    assert ret is False
+
+
+def test_position_write_failure_is_recorded():
+    """08-Sep-2026 fix, alongside the IGN bootstrap-override build: until
+    now, paper_broker.open_position()'s own bool return was never even
+    read here — a write failure this deep was indistinguishable from a
+    clean success both to intraday_setups AND to this function's own
+    caller. See _maybe_open_paper()'s own docstring."""
+    sb = _RecordingSB()
+    eng = _engine(sb)
+    from unittest.mock import patch
+    from execution.paper_broker import PaperFill
+    good_fill = PaperFill(ok=True, order_id="x", fill_price=100.0,
+                          quantity=10, charges=1.5, message="")
+    with cfg_ctx({"intraday_auto_entry": "true", "intraday_max_concurrent": "50",
+                  "intraday_max_new_per_day": "50"}), \
+         patch("execution.gates.is_paper", return_value=True), \
+         patch("execution.paper_broker.capacity", return_value=(True, "", 5)), \
+         patch("execution.paper_broker.simulate_fill", return_value=good_fill), \
+         patch("execution.paper_broker.product_for", return_value="MIS"), \
+         patch("execution.paper_broker.open_position", return_value=False):
+        ret = eng._maybe_open_paper(_FakeSetup(), 10, None, phase="PRIME")
+    assert _verdicts(sb) == ["BLOCKED_POSITION_WRITE_FAILED"]
+    assert ret is False
+
+
+def test_a_confirmed_open_returns_true():
+    """The other half of the write-failure fix: a REAL success must read
+    back as True, not just avoid reading as a refusal — this is the exact
+    signal act_on_setups()/_try_ign_fast_entry() gate an IGN bootstrap-
+    override slot's consumption on (migration 133)."""
+    sb = _RecordingSB()
+    eng = _engine(sb)
+    eng.load_state = lambda: None   # real load_state() needs a live sb; not under test here
+    from unittest.mock import patch
+    from execution.paper_broker import PaperFill
+    good_fill = PaperFill(ok=True, order_id="x", fill_price=100.0,
+                          quantity=10, charges=1.5, message="")
+    with cfg_ctx({"intraday_auto_entry": "true", "intraday_max_concurrent": "50",
+                  "intraday_max_new_per_day": "50"}), \
+         patch("execution.gates.is_paper", return_value=True), \
+         patch("execution.paper_broker.capacity", return_value=(True, "", 5)), \
+         patch("execution.paper_broker.simulate_fill", return_value=good_fill), \
+         patch("execution.paper_broker.product_for", return_value="MIS"), \
+         patch("execution.paper_broker.open_position", return_value=True):
+        ret = eng._maybe_open_paper(_FakeSetup(), 10, None, phase="PRIME")
+    assert _verdicts(sb) == [], "a confirmed open must not also record a BLOCKED_* verdict"
+    assert ret is True
 
 
 def test_an_exception_is_recorded_not_only_logged():
@@ -168,8 +222,9 @@ def test_an_exception_is_recorded_not_only_logged():
          patch("execution.gates.is_paper", return_value=True), \
          patch("execution.paper_broker.capacity",
                side_effect=RuntimeError("PostgREST 503")):
-        eng._maybe_open_paper(_FakeSetup(), 10, None, phase="PRIME")
+        ret = eng._maybe_open_paper(_FakeSetup(), 10, None, phase="PRIME")
     assert _verdicts(sb) == ["BLOCKED_EXCEPTION"]
+    assert ret is False
 
 
 def test_the_exception_detail_lands_in_meta_not_the_verdict_column():
@@ -209,6 +264,10 @@ TESTS = [
      test_already_held_race_is_recorded),
     ("a failed fill is recorded",
      test_a_failed_fill_is_recorded),
+    ("a position write failure is recorded",
+     test_position_write_failure_is_recorded),
+    ("a confirmed open returns True",
+     test_a_confirmed_open_returns_true),
     ("an exception is recorded, not only logged",
      test_an_exception_is_recorded_not_only_logged),
     ("the exception detail lands in meta, not the verdict column",

@@ -1506,6 +1506,11 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
         # this column existed and on every SWING row (sub_engine is an
         # intraday-only vocabulary) — both read back as `strategy` alone.
         "sub_engine":       pos.get("sub_engine"),
+        # 1..N for one of IGN's bounded lifetime bootstrap-override entries
+        # (migration 133), None otherwise — carried through the same way
+        # pick_label/sub_engine are, for the same reason: a marker only on
+        # the open row cannot be queried against a closed outcome.
+        "bootstrap_override_slot": pos.get("bootstrap_override_slot"),
         "entry_date":       pos.get("entry_date"),
         "entry_price":      entry,
         "actual_qty":       total_qty,
@@ -1641,6 +1646,15 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
                                "(the P&L and R above are still correct).")
                 sb.table("closed_positions").insert(
                     {k: v for k, v in closed.items() if k != "direction"}).execute()
+            elif "bootstrap_override_slot" in str(e):
+                # Same shape as charges/direction above — ships ahead of
+                # migration 133 on purpose so a real close is never blocked
+                # by one optional traceability column.
+                logger.warning("  closed_positions.bootstrap_override_slot is missing — "
+                               "apply migration 133. Closing without the marker.")
+                sb.table("closed_positions").insert(
+                    {k: v for k, v in closed.items()
+                     if k != "bootstrap_override_slot"}).execute()
             else:
                 raise
         # KEYED ON (symbol, product), like every other write since migration 028.

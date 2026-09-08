@@ -88,6 +88,7 @@ MODULES = [
     ("allocation_decisions JSONB slimming", "tests.test_alloc_decisions_jsonb_slim"),
     ("allocation_decisions archive-then-delete", "tests.test_archive_allocation_decisions"),
     ("allocation_decisions write-time collapse", "tests.test_alloc_write_collapse"),
+    ("allocator flush re-queues on insert/update failure", "tests.test_allocator_flush_requeue"),
     ("hurdle repeat_count expansion", "tests.test_hurdle_repeat_count"),
     ("allocation_decisions retroactive backfill compaction", "tests.test_compact_allocation_decisions"),
     ("quote_parity write-time collapse", "tests.test_quote_parity_collapse"),
@@ -229,6 +230,14 @@ MODULES = [
      "tests.test_hurdle_population_cache"),
     ("_today_totals is cached per cycle, not re-fetched per candidate",
      "tests.test_today_totals_cache"),
+    ("_score_proposals extraction — pure delegation, self._verdicts owned once",
+     "tests.test_score_proposals_extraction"),
+    ("IGN (Ignition Momentum) engine — circuit/volume-pump detection",
+     "tests.test_ignition"),
+    ("IGN fast-entry path wiring (event_core.py)",
+     "tests.test_ignition_fast_entry"),
+    ("IGN bootstrap override — bounded lifetime cold-start exit (migration 133)",
+     "tests.test_ign_bootstrap_override"),
 ]
 
 

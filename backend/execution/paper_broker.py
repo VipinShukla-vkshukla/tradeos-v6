@@ -365,6 +365,13 @@ def open_position(symbol: str, qty: int, fill_price: float, setup: dict,
             # closed_positions the same way `sector` is, for the same reason:
             # a field only on the open row cannot be queried against outcomes.
             "pick_label": setup.get("pick_label"),
+            # 1..N (intraday_ign_exploration_trades) for one of IGN's bounded
+            # lifetime bootstrap-override entries (migration 133), None for
+            # every ordinary entry. The authoritative, queryable record of
+            # which trades bypassed the allocator's edge/hurdle verdict on a
+            # cold-start prior — see intraday/engine.py::_maybe_open_paper()
+            # and IntradayEngine._ign_bootstrap_used_count().
+            "bootstrap_override_slot": setup.get("bootstrap_override_slot"),
             "entry_signal_type": setup.get("strategy"),
             # Attribution back to signal_log. INTRADAY has no signal_log rows
             # (its outcomes live in intraday_setups), so this is None there by

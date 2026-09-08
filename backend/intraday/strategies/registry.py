@@ -35,6 +35,7 @@ from intraday.strategies.squeeze import SqueezeExpansion
 from intraday.strategies.range_fade import RangeFade
 from intraday.strategies.short_distribution import ShortDistribution
 from intraday.strategies.gap_down_bounce import GapDownBounce
+from intraday.strategies.ignition import IgnitionMomentum
 
 # Ordered by family so the coverage is visible: three that pay when a level
 # breaks, one that pays when a trend continues, two that pay when nothing
@@ -50,6 +51,9 @@ _ALL = [
     RangeFade(),              # RNG — the low of a proven range
     ShortDistribution(),      # SDN — the short family: VWAP rejection, trap, breakdown
     GapDownBounce(),          # GDB — brain_proposals#190; SHADOW until scored, see its own module docstring
+    IgnitionMomentum(),       # IGN — circuit-bound or violent volume-pump ignition, any
+                              # phase; ACTIVE from day one, operator's own explicit
+                              # instruction (migration 132), see its own module docstring
 ]
 
 
@@ -106,6 +110,8 @@ FAMILIES = {
     # thing worth measuring about either.
     "SDN": "SDN",     # SHORT: VWAP rejection · failed-breakout trap · range breakdown
     "GDB": "GDB",     # shadowed; new engine from brain_proposals#190, own family until proven
+    "IGN": "IGN",     # ACTIVE from day one; own family — neither a breakout-level nor a
+                      # mean-reversion mechanism, pooling it with either would misprice both
 }
 
 

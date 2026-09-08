@@ -1028,6 +1028,15 @@ ENGINE_ARCHETYPE = {
     # mean-reversion LONG engine: buy the recovery off a gap-down open"), so
     # unlike the pooled VWR family there is no archetype ambiguity to resolve.
     "GDB": MEAN_REVERSION,  # gap-down bounce — buy the recovery, not the gap
+    # IGN — 08-Sep-2026. Registered here the SAME session it was added to
+    # registry.py, precisely to avoid GDB's own gap above (a real family
+    # silently missing a row for weeks). Unambiguously MOMENTUM by its own
+    # module docstring: fires on violent, uncompressed acceleration in
+    # EITHER direction — needs an active move to break INTO, the literal
+    # definition this table already uses for ORB/GAP/PDL/PBK/VCE/SDN. No
+    # mean-reversion reading is defensible — there is no "absence of a
+    # trend" this engine trades, only its presence.
+    "IGN": MOMENTUM,        # ignition momentum — circuit-bound or violent volume-pump
 }
 
 # Bounded nudge, as a FRACTION of 1.0, before `intraday_regime_fit_weight`

@@ -91,14 +91,23 @@ def test_every_post_ai_review_call_site_passes_advice():
     """
     Asserted against the source, not by eye -- the same discipline
     test_sdn_confidence_cap.py's test_every_sdn_setup_path_consults_it uses.
-    Five call sites sit after ai_advisor.apply() in evaluate_intraday_setups
-    (VETOED_AI, BELOW_CONVICTION, BLOCKED_LIQUIDITY, BLOCKED_DEPTH,
-    TAKEN/REJECTED_COST) and must all pass advice=advice, so a sixth site
-    added later without it fails this rather than silently staying NULL.
+    Five call sites sit after ai_advisor.apply() (VETOED_AI,
+    BELOW_CONVICTION, BLOCKED_LIQUIDITY, BLOCKED_DEPTH, TAKEN/REJECTED_COST)
+    and must all pass advice=advice, so a sixth site added later without it
+    fails this rather than silently staying NULL.
+
+    Points at _evaluate_one_intraday_candidate(), not evaluate_intraday_
+    setups() itself -- 08-Sep-2026, the per-symbol decision body (including
+    all five of these call sites) was factored out into that method so
+    IGN's fast-entry path (event_core.py) could reuse the exact same
+    pipeline for one candidate. Re-pointed here rather than widening the
+    source scan to both methods, so this stays a check on the ONE place
+    these call sites actually live, not a check that could pass by summing
+    across two functions.
     """
     import inspect
     from intraday import engine as M
-    src = inspect.getsource(M.IntradayEngine.evaluate_intraday_setups)
+    src = inspect.getsource(M.IntradayEngine._evaluate_one_intraday_candidate)
     assert src.count("advice=advice") == 5, (
         f"expected exactly 5 call sites passing advice=advice, "
         f"found {src.count('advice=advice')}")

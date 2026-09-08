@@ -322,6 +322,17 @@ class IntradayEngine:
         # tick-only, bench-only context its prev_close/prev_high/prev_low/
         # atr_pct/avg_volume_20d without spending a historical_data call.
         self._daily_ref: dict = {}
+        # symbol -> {"upper_circuit", "lower_circuit", ...} — 08-Sep-2026,
+        # built for IGN (intraday/strategies/ignition.py). Refreshed
+        # alongside self._daily_ref in refresh_contexts(), on the SAME 300s
+        # timer rather than a separate once-per-session cache: no file in
+        # this repo confirms NSE circuit bands are fixed for the whole
+        # session (they're computed off previous close, but an exchange-
+        # ordered band revision after a halt is a real, if rare,
+        # possibility this system has no way to rule out) — reusing the
+        # existing cadence means a revision is picked up within one cycle
+        # instead of silently going stale for the rest of the day.
+        self._circuit_ref: dict = {}
         # Epoch-ish sentinel so the first cycle logs parity immediately rather
         # than waiting a full interval for the first sample.
         self._last_parity_at = datetime.fromtimestamp(0, IST)
@@ -345,6 +356,12 @@ class IntradayEngine:
         self._session_cal: list[str] = []
         self._session_cal_day = None
         self._allocator = None
+        # IGN's bounded lifetime bootstrap-override counter (10 lifetime
+        # entries, migration 133) -- see _ign_bootstrap_used_count(). None,
+        # not 0, is the "not yet fetched this process lifetime" sentinel,
+        # mirroring self._allocator's own lazy-init pattern immediately
+        # above.
+        self._ign_bootstrap_used: int | None = None
         # The intraday universe, selected on its OWN criteria. Until this
         # existed the engines only saw swing shortlist names — stocks chosen for
         # a one-to-three-week thesis, which predicts almost nothing about
@@ -700,6 +717,22 @@ class IntradayEngine:
         # prev_close/prev_high/prev_low/atr_pct/avg_volume_20d without
         # spending a single extra historical_data call.
         ref_symbols = sorted(set(symbols) | {e.symbol for e in (self._bench or [])})
+
+        # CIRCUIT LIMITS — 08-Sep-2026, built for IGN. A genuinely new fetch,
+        # not an addition to an already-happening call: kite.ltp() a few
+        # lines above returns only last_price/instrument_token, no circuit
+        # fields. fetch_quotes() already returns lower_circuit/upper_circuit
+        # (kite_client.py) and already chunks at 200 — negligible next to
+        # the hundreds of per-symbol historical_data() calls this same
+        # function makes every cycle. A failure here must never take down
+        # context building; every reader treats a missing entry as None,
+        # not as "no circuit exists" (see SymbolContext's own field comment).
+        try:
+            self._circuit_ref = kite_client.fetch_quotes(ref_symbols)
+        except Exception as e:
+            logger.debug(f"  contexts: circuit-limit fetch unavailable — {e}")
+            self._circuit_ref = {}
+
         # Stage D2h, 24-Aug-2026 — a Population B/C name has no stock_data_
         # daily row (`prev` below stays empty for it), so ctx.value_cr was
         # permanently None, and analysis.overlays.liquidity_ok() (which
@@ -756,6 +789,7 @@ class IntradayEngine:
 
             p = prev.get(sym, {})
             bench_entry = bench_by_symbol.get(sym)
+            q = self._circuit_ref.get(sym) or {}
             ctx = SymbolContext(
                 symbol=sym, ltp=float(meta.get("last_price") or bars[-1].close),
                 bars=bars, vwap=vwap,
@@ -770,6 +804,13 @@ class IntradayEngine:
                 value_cr=(float(p.get("value_cr") or 0) or
                          (bench_entry.value_cr if bench_entry and bench_entry.value_cr else None)),
                 universe_population=bench_entry.source if bench_entry else "bench",
+                # 08-Sep-2026, IGN. Same "or 0 or None" idiom as every other
+                # optional float in this block — self._circuit_ref may not
+                # have an entry for this symbol at all (fetch failed, or the
+                # symbol wasn't in ref_symbols yet), or fetch_quotes() may
+                # report 0 for a name with no configured band.
+                upper_circuit=(float(q.get("upper_circuit") or 0) or None),
+                lower_circuit=(float(q.get("lower_circuit") or 0) or None),
                 # Stage D6, 24-Aug-2026 — same prior-day stock_data_daily
                 # row as atr_pct_daily/avg_volume_20d above, read for
                 # intraday/candidate_template.py. See SymbolContext's own
@@ -1115,6 +1156,13 @@ class IntradayEngine:
             if len(live) < min_bars:
                 continue
             ref = self._daily_ref.get(sym) or {}
+            # getattr, not self._circuit_ref directly — several tests build
+            # an IntradayEngine via IntradayEngine.__new__(IntradayEngine)
+            # (test_bar_builder.py, bypassing __init__'s I/O) and set only
+            # the attributes their scenario needs. A miss must degrade to
+            # "no circuit data yet", not crash — same reasoning as
+            # allocator.py's own getattr(self, "_hurdle_populations", ...).
+            cq = (getattr(self, "_circuit_ref", None) or {}).get(sym) or {}
             ltp = feed.get(sym) or live[-1].close
             tv = sum(((b.high + b.low + b.close) / 3.0) * b.volume for b in live)
             vol = sum(b.volume for b in live)
@@ -1132,6 +1180,13 @@ class IntradayEngine:
                 avg_volume_20d=float(ref.get("volume") or 0) or None,
                 value_cr=float(ref.get("value_cr") or 0) or None,
                 sector=ref.get("sector") or "",
+                # 08-Sep-2026, IGN — same self._circuit_ref cache
+                # refresh_contexts() populates for ref_symbols, which
+                # already covers the full bench (see that function's own
+                # comment), so no separate fetch is needed for a bench-only,
+                # tick-built context either.
+                upper_circuit=(float(cq.get("upper_circuit") or 0) or None),
+                lower_circuit=(float(cq.get("lower_circuit") or 0) or None),
                 as_of=datetime.now(IST),
                 live_fields=("bars",),
                 fetched=_fetched_snapshot(
@@ -1830,6 +1885,56 @@ class IntradayEngine:
             # system take worse trades. Assume the budget is spent instead.
             logger.debug(f"  entries-today count failed, assuming budget spent: {e}")
             return self._entry_cap()
+
+    def _ign_bootstrap_used_count(self) -> int:
+        """
+        How many of IGN's lifetime bootstrap-override slots (act_on_setups()
+        / event_core._try_ign_fast_entry(), migration 133) have already been
+        spent -- across open AND closed positions, across every process this
+        daemon has ever been, not just this one.
+
+        LIFETIME, not per-day like _entries_today() -- so this is fetched
+        ONCE per process lifetime and cached rather than re-queried on every
+        candidate: the only way it changes within a process is
+        _consume_ign_bootstrap_slot(), called right after a bootstrap entry
+        is confirmed. DB-backed rather than purely in-process because this
+        daemon can restart mid-session (see _rehydrate_recorded()'s own
+        reasoning) -- a purely in-memory counter would silently reset to 0
+        on every restart and let the lifetime cap be exceeded.
+        """
+        if self._ign_bootstrap_used is not None:
+            return self._ign_bootstrap_used
+        try:
+            open_n = len([
+                p for p in self.positions
+                if (p.get("framework") or "").upper() == "INTRADAY"
+                and (p.get("sub_engine") or "").upper() == "IGN"
+                and p.get("bootstrap_override_slot") is not None])
+            closed = (self.sb.table("closed_positions")
+                      .select("id", count="exact")
+                      .eq("framework", "INTRADAY")
+                      .eq("sub_engine", "IGN")
+                      .not_.is_("bootstrap_override_slot", "null")
+                      .execute())
+            self._ign_bootstrap_used = open_n + int(closed.count or 0)
+        except Exception as e:
+            # Fail to the STRICT side, same philosophy as _entries_today() --
+            # an unreadable count must never read as "budget available" for
+            # a mechanism whose entire point is a hard lifetime cap. NOT
+            # cached as spent: the failure is transient-query shaped, so the
+            # next call gets a fresh chance to read it properly rather than
+            # refusing IGN's bootstrap for the rest of the process on one
+            # bad query.
+            logger.debug(f"  IGN bootstrap-used count failed, assuming spent: {e}")
+            return cfg_int("intraday_ign_exploration_trades", 10)
+        return self._ign_bootstrap_used
+
+    def _consume_ign_bootstrap_slot(self) -> None:
+        """Call ONLY immediately after _maybe_open_paper() returns True for
+        a bootstrap-override entry -- a downstream failure (fill failure,
+        concurrency cap, paper capacity, ...) must not cost a lifetime slot
+        (constraint 6 of the design)."""
+        self._ign_bootstrap_used = self._ign_bootstrap_used_count() + 1
 
     def _swing_positions(self) -> list[dict]:
         """
@@ -4091,8 +4196,6 @@ class IntradayEngine:
         from intraday.strategies.registry import evaluate_all
         from intraday.strategies.base import SymbolContext
         from intraday import market_context as mkt
-        from intraday.cost_model import is_worth_taking, round_trip
-        from config import capital_for
 
         if not cfg_bool("intraday_strategies_enabled", True):
             return []
@@ -4189,288 +4292,10 @@ class IntradayEngine:
             if not best:
                 continue
 
-            # ── CAN THIS BE SHORTED, AND MORE TO THE POINT, COVERED? ────────
-            #
-            # Runs before conviction, cost or the allocator, because it is not a
-            # quality filter — it is a solvency filter. Every other gate here
-            # asks whether the trade is good. This one asks whether the position
-            # can be closed at all, and a "no" from it cannot be outweighed by
-            # any amount of edge.
-            #
-            # Two switches, both of which must be on: the master
-            # `intraday_allow_shorts`, and the market context actively
-            # confirming weakness. A short is refused by default in every state
-            # that is not RISK_OFF or CAUTION, including an unreadable index.
-            #
-            # THE VERDICT NAMES WHICH OF THE TWO SAID NO — 10-Aug-2026.
-            # `shorts_live` is an AND of a config switch and a market state,
-            # and the single verdict "BLOCKED_SHORTS_OFF" reported both as the
-            # switch. On 10-Aug that produced 27 BLOCKED_SHORTS_OFF rows while
-            # `intraday_allow_shorts` was true and `intraday_engine_sdn_
-            # lifecycle` was ACTIVE — the refusals were the index being risk-on
-            # (mc.allow_shorts False), which is the SDN engine working exactly
-            # as designed. Anyone reading that histogram concluded shorting was
-            # switched off and went looking for a config bug that did not
-            # exist. Two causes, two names: one is a standing operator
-            # decision, the other is today's tape.
-            if best.is_short:
-                if not shorts_live:
-                    self._record_setup(
-                        best, st.phase, 0.0,
-                        "BLOCKED_SHORTS_OFF" if not cfg_bool("intraday_allow_shorts", False)
-                        else "BLOCKED_SHORTS_MARKET", 0, mc_state=(mc.state if mc else None))
-                    continue
-                from intraday import shortability
-                # NOT getattr(st, "minutes_to_close", 0). SessionState has no
-                # such field — it is minutes_to_squareoff, and minutes_to_close
-                # is a module function — so the default 0 was taken silently on
-                # every call, and every short saw a runway of 0 - 10 = -10 min.
-                # -10 >= 75 is false at every hour of every session, so no short
-                # has ever cleared this gate; the log read like a market with no
-                # shortable names. A getattr default is precisely what let a
-                # wrong attribute name look like a working call.
-                from intraday.session import minutes_to_cover_deadline
-                ok_sh, why_sh, notes = shortability.can_short(
-                    ctx, self._stock_row(sym),
-                    minutes_left=minutes_to_cover_deadline())
-                best.meta["shortability"] = notes
-                if not ok_sh:
-                    # Persisted, not just logged — requeue_runway_refused_shorts()
-                    # reads this back tomorrow to tell a runway refusal apart
-                    # from a circuit-band/squeeze/liquidity one, both filed
-                    # under the same BLOCKED_SHORTABILITY verdict. Without it,
-                    # meta carried only `notes` (the checks that PASSED before
-                    # the one that failed), never the failure reason itself.
-                    best.meta["shortability_reason"] = why_sh
-                    self._record_setup(best, st.phase, 0.0, "BLOCKED_SHORTABILITY", 0, mc_state=(mc.state if mc else None))
-                    logger.info(f"      {sym}: short refused — {why_sh[:120]}")
-                    # "cover deadline" is the literal phrase can_short() uses
-                    # for the runway check specifically (shortability.py) —
-                    # distinct from the circuit-band/squeeze/liquidity refusals
-                    # the same function can also return, which are about the
-                    # STOCK, not the clock, and have no "try again tomorrow"
-                    # story the way a runway refusal does.
-                    if "cover deadline" in why_sh:
-                        runway_refused.append(sym)
-                    continue
-
-            # ONE SYMBOL, ONE BOOK. The swing book got here first, so it owns
-            # the name until it closes.
-            #
-            # RECORDED, not skipped silently. This used to be a bare `continue`
-            # at the top of the loop and it is the single most confusing thing
-            # the two frameworks do to each other from the outside: the engines
-            # find a setup, say nothing, and the operator sees a name the
-            # scanner clearly liked produce no detection at all. A refusal that
-            # leaves no row is also a rule nobody can price — the weekly review
-            # cannot ask what standing down cost.
-            # THE TERMINAL CHECK RUNS BEFORE THE ANNOUNCEMENT — 10-Aug-2026.
-            #
-            # The satellite-join notice below used to print BEFORE the
-            # re-entry guard, so a name that had already lost money today
-            # produced this pair, every cycle, for hours:
-            #
-            #   MANAPPURAM: VWR conf 0.51 — ... joining as a same-direction
-            #                                  LONG satellite ...
-            #   MANAPPURAM: VWR conf 0.51 — already lost money in this name
-            #                                  today, standing down
-            #
-            # An announcement of an entry that the very next line refuses. It
-            # is not merely noise: read live, it says the book is joining a
-            # swing position when it is doing nothing of the kind, and it
-            # repeated twice a minute across the whole session. `_failed_today`
-            # is cached per session, terminal, and cheaper than the holding
-            # lookup, so it belongs first on both counts.
-            if cfg_bool("intraday_block_reentry_after_loss", True) \
-                    and sym in self._failed_today():
-                self._record_setup(best, st.phase, 0.0, "BLOCKED_REENTRY", 0, mc_state=(mc.state if mc else None))
-                logger.info(f"      {sym}: {best.strategy} conf {best.confidence:.2f} "
-                            f"— already lost money in this name today, standing down")
-                continue
-
-            other = self._other_framework_holding(sym, "INTRADAY")
-            if other is not None:
-                if _intraday_may_join_swing_holding(other, best.direction):
-                    logger.info(
-                        f"      {sym}: {best.strategy} conf {best.confidence:.2f} — SWING "
-                        f"already holds this name ({other.get('current_qty') or other.get('actual_qty')} "
-                        f"@ {other.get('entry_price')}); joining as a same-direction LONG "
-                        f"satellite (intraday_allow_swing_held_symbols). The swing position "
-                        f"is untouched — only this MIS tranche squares off at session end")
-                    # falls through to the gates below, no `continue`
-                else:
-                    self._record_setup(best, st.phase, 0.0, "BLOCKED_CROSS_FRAMEWORK", 0, mc_state=(mc.state if mc else None))
-                    logger.info(
-                        f"      {sym}: {best.strategy} conf {best.confidence:.2f} — the "
-                        f"{(other.get('framework') or 'SWING').upper()} book already holds "
-                        f"this name ({other.get('current_qty') or other.get('actual_qty')} "
-                        f"@ {other.get('entry_price')}). One book per symbol; the intraday "
-                        f"square-off must not sell a multi-week thesis")
-                    continue
-
-            # Event gate BEFORE cost: a results-day setup is not a pricing
-            # question, and computing a position size for a trade that must not
-            # be taken wastes the check that matters.
-            # Carry the sector onto the setup. ctx has it, the setup does not,
-            # and _maybe_open_paper never sees ctx — which is why sector was
-            # NULL on every intraday position ever opened.
-            best.meta["sector"] = ctx.sector
-
-            if self._news is not None:
-                ev = self._news.check(best.symbol, ctx.sector)
-                if not ev.allow:
-                    self._record_setup(best, st.phase, 0.0, "BLOCKED_EVENT", 0, mc_state=(mc.state if mc else None))
-                    continue
-                if ev.reason:
-                    best.meta["event_note"] = ev.reason
-
-            # Swing STRUCTURE gate, on intraday settings. Every engine here
-            # reasons about a static level — the range high, VWAP, the coil top
-            # — and none knows the SEQUENCE that level sits in. Breaking the
-            # opening range high while making lower highs all morning is buying
-            # a lower high, which is the trade a downtrend exists to punish.
-            if cfg_bool("intraday_structure_gate", True) and ctx.bars:
-                from analysis.market_structure import gate_for_framework
-                ok_s, why_s, st_struct = gate_for_framework(
-                    "INTRADAY", [b.high for b in ctx.bars], [b.low for b in ctx.bars],
-                    direction=best.direction)
-                if not ok_s:
-                    self._record_setup(best, st.phase, 0.0, "BLOCKED_STRUCTURE", 0, mc_state=(mc.state if mc else None))
-                    continue
-                best.meta["structure"] = st_struct.state
-
-            # AI advice from the previous slow tick. Queue this setup for the
-            # next review regardless, so a first sighting is never delayed
-            # waiting for an opinion that takes 88 seconds to form.
-            self._pending_review.append(best)
-            from intraday import ai_advisor
-            advice = self._advice.get(best.symbol)
-            allow_ai, adj_conf, ai_note = ai_advisor.apply(best, self._advice)
-            if not allow_ai:
-                self._record_setup(best, st.phase, 0.0, "VETOED_AI", 0,
-                                   mc_state=(mc.state if mc else None), advice=advice)
-                continue
-            best.confidence = adj_conf
-            if ai_note:
-                best.meta["ai_note"] = ai_note
-
-            # CONVICTION FLOOR, TIGHTENING AS THE DAY'S BUDGET IS SPENT.
-            #
-            # The cap is 5 orders a day and the session is six hours long, so
-            # taking the first five qualifying setups is a strictly worse policy
-            # than taking the best five — and a fixed threshold cannot express
-            # that, because "good enough" at 09:20 with the whole budget intact
-            # is not good enough at 14:30 with one order left.
-            #
-            # So the floor rises with the fraction of the budget already used.
-            # Early, a decent setup is worth taking; late, only a strong one is,
-            # because the alternative to a mediocre trade is no trade, and no
-            # trade costs nothing while a mediocre one costs 0.21% plus the risk.
-            floor = self._confidence_floor()
-            if best.confidence < floor:
-                self._record_setup(best, st.phase, 0.0, "BELOW_CONVICTION", 0,
-                                   mc_state=(mc.state if mc else None), advice=advice)
-                logger.info(f"      {sym}: {best.strategy} conf {best.confidence:.2f} "
-                            f"< floor {floor:.2f} — passing, budget is better spent later")
-                continue
-
-            # Size against the market state, then ask whether the trade still
-            # survives its own costs at that size. A setup that only works at
-            # full size on a CAUTION day is not a setup, it is leverage.
-            # Three limits, smallest wins:
-            #   · a fixed FRACTION of capital per position. Without this the
-            #     budget was TOTAL_CAPITAL x multiplier, i.e. the entire account
-            #     in a single intraday setup on any risk-on day.
-            #   · the market-state multiplier, which shrinks size when the index
-            #     is not cooperating.
-            #   · the per-order rupee cap, the same one preflight enforces.
-            #     Sizing above it would produce orders that are computed and
-            #     then rejected, and in PAPER — which does not run preflight —
-            #     a book the live account would have refused.
-            from execution.gates import max_order_value
-            pos_pct = cfg_float("intraday_max_position_pct", 25.0) / 100.0
-            # mc.size_multiplier reacts to the INDEX's technical state
-            # (RISK_ON/CAUTION/...); self._overlay_intraday_mult reacts to
-            # expiry mechanics and the VIX level. Different signals, both
-            # real — multiplied together rather than one replacing the other.
-            budget = min(capital_for("INTRADAY") * pos_pct * mc.size_multiplier * self._overlay_intraday_mult,
-                         max_order_value("INTRADAY"))
-            # LIQUIDITY-SCALED, NOT FLAT — Stage D2h, 24-Aug-2026. Every name
-            # up to here was sized at the SAME fraction of capital regardless
-            # of its own liquidity — a name Population B/C just admitted got
-            # exactly RELIANCE's sizing. Caps the budget to what this name's
-            # own traded value can actually absorb BEFORE quantity is
-            # computed, so a thin name is sized down rather than sized flat
-            # and then refused outright by liquidity_ok() below. See
-            # analysis.overlays.liquidity_capped_budget()'s own docstring for
-            # exactly which cases this does and does not change.
-            from analysis.overlays import liquidity_capped_budget
-            budget = liquidity_capped_budget(ctx.value_cr, budget)
-            qty = int(budget // best.entry) if best.entry else 0
-            if qty <= 0:
-                continue
-
-            # LIQUIDITY / CIRCUIT-BAND GATE — can this be got out of at plan?
-            # Structural, not a pricing question, so it runs before the cost
-            # check: a setup that cannot be exited at plan is not made viable
-            # by being cheap to enter. Now mostly a backstop for the cases
-            # liquidity_capped_budget() above deliberately leaves alone (no
-            # data at all, or below the absolute floor) — a name sized down
-            # to fit its own turnover will very rarely trip the share check
-            # here too, by construction.
-            from analysis.overlays import liquidity_ok
-            liq_ok, liq_why = liquidity_ok(
-                {"value_cr": ctx.value_cr, "atr_pct": ctx.atr_pct_daily},
-                planned_value=qty * best.entry,
-            )
-            if not liq_ok:
-                self._record_setup(best, st.phase, 0.0, "BLOCKED_LIQUIDITY", 0,
-                                   mc_state=(mc.state if mc else None), advice=advice)
-                logger.info(f"      {sym}: {best.strategy} — {liq_why}")
-                continue
-
-            # EXECUTION-QUALITY DEPTH GATE — Stage D4, 24-Aug-2026. Same shape
-            # as the liquidity gate above but same-second, not same-day: is the
-            # book resting RIGHT NOW wide/thin enough that this fill would not
-            # land near plan? ctx.depth is None until FULL mode has ticked at
-            # least once for this symbol (set_depth_symbols() in run.py scopes
-            # FULL mode to context_symbols() only), so this is advisory-only —
-            # never refuses a candidate for lack of capture, only for a
-            # measured bad book. direction LONG opens with a BUY (consumes the
-            # ask side); SHORT opens with a SELL (consumes the bid side).
-            from analysis.overlays import depth_ok
-            side = "BUY" if best.direction == "LONG" else "SELL"
-            d_ok, d_why = depth_ok(ctx.depth, side, qty)
-            if not d_ok:
-                self._record_setup(best, st.phase, 0.0, "BLOCKED_DEPTH", 0,
-                                   mc_state=(mc.state if mc else None), advice=advice)
-                logger.info(f"      {sym}: {best.strategy} — {d_why}")
-                continue
-
-            # DIRECTION MUST BE PASSED, NOT DEFAULTED. is_worth_taking() was
-            # made direction-aware in the sign-convention spine and defaults to
-            # LONG so every pre-shorting caller keeps working unchanged — but
-            # this IS the caller a short setup reaches, and omitting the
-            # argument here silently invoked that same default. A short's
-            # target sits BELOW entry and its stop ABOVE it; scored as LONG
-            # that reads as "target is on the wrong side of entry", and every
-            # short would be REJECTED_COST regardless of how good the trade
-            # was — the setup detects, passes shortability and the structure
-            # gate, and dies at the one check that never learned it was a
-            # short. The exact shape of the open_positions.direction gap found
-            # during merge review, one call site over: a correct function,
-            # forgotten at its call.
-            ok, why = is_worth_taking(best.entry, qty, best.target, best.stop,
-                                      direction=best.direction)
-            rt = round_trip(best.entry, qty)
-            self._record_setup(best, st.phase, rt.pct_of_position,
-                               "TAKEN" if ok else "REJECTED_COST", qty,
-                               mc_state=(mc.state if mc else None), advice=advice)
-            if not ok:
-                continue
-
-            out.append({"setup": best, "qty": qty, "cost_pct": rt.pct_of_position,
-                        "market": mc, "phase": st.phase, "cost_note": why})
+            result = self._evaluate_one_intraday_candidate(
+                sym, ctx, best, mc, st, shorts_live, runway_refused)
+            if result:
+                out.append(result)
 
         # BEST FIRST, not first-seen first.
         #
@@ -4495,6 +4320,321 @@ class IntradayEngine:
             logger.info(msg)
 
         return out
+
+    def _evaluate_one_intraday_candidate(self, sym: str, ctx, best, mc, st,
+                                         shorts_live: bool,
+                                         runway_refused: list) -> dict | None:
+        """
+        Every gate one intraday detection must clear between `best` (already
+        produced by registry.evaluate_all()) and being handed to the
+        allocator — shortability, re-entry, cross-framework holding, event
+        risk, structure, AI advice, conviction, sizing, liquidity, depth and
+        cost. Returns the exact {"setup", "qty", "cost_pct", "market",
+        "phase", "cost_note"} shape evaluate_intraday_setups() appends to
+        its own `out` list, or None if any gate refused.
+
+        FACTORED OUT OF evaluate_intraday_setups()'S OWN LOOP BODY — 08-Sep-
+        2026, so IGN's fast-entry path (event_core.py, 2-second loop) can run
+        ONE candidate through the EXACT SAME pipeline the ordinary 15s loop
+        uses for the one symbol it just detected, rather than a second,
+        narrower copy. The alternative — reimplementing just the shorts_live/
+        can_short check and skipping sizing, liquidity, depth and the cost
+        gate — would have let a fast entry bypass real economics the ordinary
+        path always applies; this is why the extraction exists at all, not
+        merely a code-tidiness choice. Every _record_setup() call below fires
+        exactly as it does on the ordinary path, so a fast-path refusal is
+        just as auditable in intraday_setups as a slow-path one, and every
+        gate here runs identically regardless of which loop called it.
+        """
+        # Local imports, matching this file's own convention (avoids
+        # circular imports at module load) — these were previously imported
+        # once at the top of evaluate_intraday_setups() itself; moved here
+        # because this method is now the actual consumer.
+        from intraday.cost_model import is_worth_taking, round_trip
+        from config import capital_for
+
+        # ── CAN THIS BE SHORTED, AND MORE TO THE POINT, COVERED? ────────
+        #
+        # Runs before conviction, cost or the allocator, because it is not a
+        # quality filter — it is a solvency filter. Every other gate here
+        # asks whether the trade is good. This one asks whether the position
+        # can be closed at all, and a "no" from it cannot be outweighed by
+        # any amount of edge.
+        #
+        # Two switches, both of which must be on: the master
+        # `intraday_allow_shorts`, and the market context actively
+        # confirming weakness. A short is refused by default in every state
+        # that is not RISK_OFF or CAUTION, including an unreadable index.
+        #
+        # THE VERDICT NAMES WHICH OF THE TWO SAID NO — 10-Aug-2026.
+        # `shorts_live` is an AND of a config switch and a market state,
+        # and the single verdict "BLOCKED_SHORTS_OFF" reported both as the
+        # switch. On 10-Aug that produced 27 BLOCKED_SHORTS_OFF rows while
+        # `intraday_allow_shorts` was true and `intraday_engine_sdn_
+        # lifecycle` was ACTIVE — the refusals were the index being risk-on
+        # (mc.allow_shorts False), which is the SDN engine working exactly
+        # as designed. Anyone reading that histogram concluded shorting was
+        # switched off and went looking for a config bug that did not
+        # exist. Two causes, two names: one is a standing operator
+        # decision, the other is today's tape.
+        if best.is_short:
+            if not shorts_live:
+                self._record_setup(
+                    best, st.phase, 0.0,
+                    "BLOCKED_SHORTS_OFF" if not cfg_bool("intraday_allow_shorts", False)
+                    else "BLOCKED_SHORTS_MARKET", 0, mc_state=(mc.state if mc else None))
+                return None
+            from intraday import shortability
+            # NOT getattr(st, "minutes_to_close", 0). SessionState has no
+            # such field — it is minutes_to_squareoff, and minutes_to_close
+            # is a module function — so the default 0 was taken silently on
+            # every call, and every short saw a runway of 0 - 10 = -10 min.
+            # -10 >= 75 is false at every hour of every session, so no short
+            # has ever cleared this gate; the log read like a market with no
+            # shortable names. A getattr default is precisely what let a
+            # wrong attribute name look like a working call.
+            from intraday.session import minutes_to_cover_deadline
+            ok_sh, why_sh, notes = shortability.can_short(
+                ctx, self._stock_row(sym),
+                minutes_left=minutes_to_cover_deadline())
+            best.meta["shortability"] = notes
+            if not ok_sh:
+                # Persisted, not just logged — requeue_runway_refused_shorts()
+                # reads this back tomorrow to tell a runway refusal apart
+                # from a circuit-band/squeeze/liquidity one, both filed
+                # under the same BLOCKED_SHORTABILITY verdict. Without it,
+                # meta carried only `notes` (the checks that PASSED before
+                # the one that failed), never the failure reason itself.
+                best.meta["shortability_reason"] = why_sh
+                self._record_setup(best, st.phase, 0.0, "BLOCKED_SHORTABILITY", 0, mc_state=(mc.state if mc else None))
+                logger.info(f"      {sym}: short refused — {why_sh[:120]}")
+                # "cover deadline" is the literal phrase can_short() uses
+                # for the runway check specifically (shortability.py) —
+                # distinct from the circuit-band/squeeze/liquidity refusals
+                # the same function can also return, which are about the
+                # STOCK, not the clock, and have no "try again tomorrow"
+                # story the way a runway refusal does.
+                if "cover deadline" in why_sh:
+                    runway_refused.append(sym)
+                return None
+
+        # ONE SYMBOL, ONE BOOK. The swing book got here first, so it owns
+        # the name until it closes.
+        #
+        # RECORDED, not skipped silently. This used to be a bare `continue`
+        # at the top of the loop and it is the single most confusing thing
+        # the two frameworks do to each other from the outside: the engines
+        # find a setup, say nothing, and the operator sees a name the
+        # scanner clearly liked produce no detection at all. A refusal that
+        # leaves no row is also a rule nobody can price — the weekly review
+        # cannot ask what standing down cost.
+        # THE TERMINAL CHECK RUNS BEFORE THE ANNOUNCEMENT — 10-Aug-2026.
+        #
+        # The satellite-join notice below used to print BEFORE the
+        # re-entry guard, so a name that had already lost money today
+        # produced this pair, every cycle, for hours:
+        #
+        #   MANAPPURAM: VWR conf 0.51 — ... joining as a same-direction
+        #                                  LONG satellite ...
+        #   MANAPPURAM: VWR conf 0.51 — already lost money in this name
+        #                                  today, standing down
+        #
+        # An announcement of an entry that the very next line refuses. It
+        # is not merely noise: read live, it says the book is joining a
+        # swing position when it is doing nothing of the kind, and it
+        # repeated twice a minute across the whole session. `_failed_today`
+        # is cached per session, terminal, and cheaper than the holding
+        # lookup, so it belongs first on both counts.
+        if cfg_bool("intraday_block_reentry_after_loss", True) \
+                and sym in self._failed_today():
+            self._record_setup(best, st.phase, 0.0, "BLOCKED_REENTRY", 0, mc_state=(mc.state if mc else None))
+            logger.info(f"      {sym}: {best.strategy} conf {best.confidence:.2f} "
+                        f"— already lost money in this name today, standing down")
+            return None
+
+        other = self._other_framework_holding(sym, "INTRADAY")
+        if other is not None:
+            if _intraday_may_join_swing_holding(other, best.direction):
+                logger.info(
+                    f"      {sym}: {best.strategy} conf {best.confidence:.2f} — SWING "
+                    f"already holds this name ({other.get('current_qty') or other.get('actual_qty')} "
+                    f"@ {other.get('entry_price')}); joining as a same-direction LONG "
+                    f"satellite (intraday_allow_swing_held_symbols). The swing position "
+                    f"is untouched — only this MIS tranche squares off at session end")
+                # falls through to the gates below, no `return`
+            else:
+                self._record_setup(best, st.phase, 0.0, "BLOCKED_CROSS_FRAMEWORK", 0, mc_state=(mc.state if mc else None))
+                logger.info(
+                    f"      {sym}: {best.strategy} conf {best.confidence:.2f} — the "
+                    f"{(other.get('framework') or 'SWING').upper()} book already holds "
+                    f"this name ({other.get('current_qty') or other.get('actual_qty')} "
+                    f"@ {other.get('entry_price')}). One book per symbol; the intraday "
+                    f"square-off must not sell a multi-week thesis")
+                return None
+
+        # Event gate BEFORE cost: a results-day setup is not a pricing
+        # question, and computing a position size for a trade that must not
+        # be taken wastes the check that matters.
+        # Carry the sector onto the setup. ctx has it, the setup does not,
+        # and _maybe_open_paper never sees ctx — which is why sector was
+        # NULL on every intraday position ever opened.
+        best.meta["sector"] = ctx.sector
+
+        if self._news is not None:
+            ev = self._news.check(best.symbol, ctx.sector)
+            if not ev.allow:
+                self._record_setup(best, st.phase, 0.0, "BLOCKED_EVENT", 0, mc_state=(mc.state if mc else None))
+                return None
+            if ev.reason:
+                best.meta["event_note"] = ev.reason
+
+        # Swing STRUCTURE gate, on intraday settings. Every engine here
+        # reasons about a static level — the range high, VWAP, the coil top
+        # — and none knows the SEQUENCE that level sits in. Breaking the
+        # opening range high while making lower highs all morning is buying
+        # a lower high, which is the trade a downtrend exists to punish.
+        if cfg_bool("intraday_structure_gate", True) and ctx.bars:
+            from analysis.market_structure import gate_for_framework
+            ok_s, why_s, st_struct = gate_for_framework(
+                "INTRADAY", [b.high for b in ctx.bars], [b.low for b in ctx.bars],
+                direction=best.direction)
+            if not ok_s:
+                self._record_setup(best, st.phase, 0.0, "BLOCKED_STRUCTURE", 0, mc_state=(mc.state if mc else None))
+                return None
+            best.meta["structure"] = st_struct.state
+
+        # AI advice from the previous slow tick. Queue this setup for the
+        # next review regardless, so a first sighting is never delayed
+        # waiting for an opinion that takes 88 seconds to form.
+        self._pending_review.append(best)
+        from intraday import ai_advisor
+        advice = self._advice.get(best.symbol)
+        allow_ai, adj_conf, ai_note = ai_advisor.apply(best, self._advice)
+        if not allow_ai:
+            self._record_setup(best, st.phase, 0.0, "VETOED_AI", 0,
+                               mc_state=(mc.state if mc else None), advice=advice)
+            return None
+        best.confidence = adj_conf
+        if ai_note:
+            best.meta["ai_note"] = ai_note
+
+        # CONVICTION FLOOR, TIGHTENING AS THE DAY'S BUDGET IS SPENT.
+        #
+        # The cap is 5 orders a day and the session is six hours long, so
+        # taking the first five qualifying setups is a strictly worse policy
+        # than taking the best five — and a fixed threshold cannot express
+        # that, because "good enough" at 09:20 with the whole budget intact
+        # is not good enough at 14:30 with one order left.
+        #
+        # So the floor rises with the fraction of the budget already used.
+        # Early, a decent setup is worth taking; late, only a strong one is,
+        # because the alternative to a mediocre trade is no trade, and no
+        # trade costs nothing while a mediocre one costs 0.21% plus the risk.
+        floor = self._confidence_floor()
+        if best.confidence < floor:
+            self._record_setup(best, st.phase, 0.0, "BELOW_CONVICTION", 0,
+                               mc_state=(mc.state if mc else None), advice=advice)
+            logger.info(f"      {sym}: {best.strategy} conf {best.confidence:.2f} "
+                        f"< floor {floor:.2f} — passing, budget is better spent later")
+            return None
+
+        # Size against the market state, then ask whether the trade still
+        # survives its own costs at that size. A setup that only works at
+        # full size on a CAUTION day is not a setup, it is leverage.
+        # Three limits, smallest wins:
+        #   · a fixed FRACTION of capital per position. Without this the
+        #     budget was TOTAL_CAPITAL x multiplier, i.e. the entire account
+        #     in a single intraday setup on any risk-on day.
+        #   · the market-state multiplier, which shrinks size when the index
+        #     is not cooperating.
+        #   · the per-order rupee cap, the same one preflight enforces.
+        #     Sizing above it would produce orders that are computed and
+        #     then rejected, and in PAPER — which does not run preflight —
+        #     a book the live account would have refused.
+        from execution.gates import max_order_value
+        pos_pct = cfg_float("intraday_max_position_pct", 25.0) / 100.0
+        # mc.size_multiplier reacts to the INDEX's technical state
+        # (RISK_ON/CAUTION/...); self._overlay_intraday_mult reacts to
+        # expiry mechanics and the VIX level. Different signals, both
+        # real — multiplied together rather than one replacing the other.
+        budget = min(capital_for("INTRADAY") * pos_pct * mc.size_multiplier * self._overlay_intraday_mult,
+                     max_order_value("INTRADAY"))
+        # LIQUIDITY-SCALED, NOT FLAT — Stage D2h, 24-Aug-2026. Every name
+        # up to here was sized at the SAME fraction of capital regardless
+        # of its own liquidity — a name Population B/C just admitted got
+        # exactly RELIANCE's sizing. Caps the budget to what this name's
+        # own traded value can actually absorb BEFORE quantity is
+        # computed, so a thin name is sized down rather than sized flat
+        # and then refused outright by liquidity_ok() below. See
+        # analysis.overlays.liquidity_capped_budget()'s own docstring for
+        # exactly which cases this does and does not change.
+        from analysis.overlays import liquidity_capped_budget
+        budget = liquidity_capped_budget(ctx.value_cr, budget)
+        qty = int(budget // best.entry) if best.entry else 0
+        if qty <= 0:
+            return None
+
+        # LIQUIDITY / CIRCUIT-BAND GATE — can this be got out of at plan?
+        # Structural, not a pricing question, so it runs before the cost
+        # check: a setup that cannot be exited at plan is not made viable
+        # by being cheap to enter. Now mostly a backstop for the cases
+        # liquidity_capped_budget() above deliberately leaves alone (no
+        # data at all, or below the absolute floor) — a name sized down
+        # to fit its own turnover will very rarely trip the share check
+        # here too, by construction.
+        from analysis.overlays import liquidity_ok
+        liq_ok, liq_why = liquidity_ok(
+            {"value_cr": ctx.value_cr, "atr_pct": ctx.atr_pct_daily},
+            planned_value=qty * best.entry,
+        )
+        if not liq_ok:
+            self._record_setup(best, st.phase, 0.0, "BLOCKED_LIQUIDITY", 0,
+                               mc_state=(mc.state if mc else None), advice=advice)
+            logger.info(f"      {sym}: {best.strategy} — {liq_why}")
+            return None
+
+        # EXECUTION-QUALITY DEPTH GATE — Stage D4, 24-Aug-2026. Same shape
+        # as the liquidity gate above but same-second, not same-day: is the
+        # book resting RIGHT NOW wide/thin enough that this fill would not
+        # land near plan? ctx.depth is None until FULL mode has ticked at
+        # least once for this symbol (set_depth_symbols() in run.py scopes
+        # FULL mode to context_symbols() only), so this is advisory-only —
+        # never refuses a candidate for lack of capture, only for a
+        # measured bad book. direction LONG opens with a BUY (consumes the
+        # ask side); SHORT opens with a SELL (consumes the bid side).
+        from analysis.overlays import depth_ok
+        side = "BUY" if best.direction == "LONG" else "SELL"
+        d_ok, d_why = depth_ok(ctx.depth, side, qty)
+        if not d_ok:
+            self._record_setup(best, st.phase, 0.0, "BLOCKED_DEPTH", 0,
+                               mc_state=(mc.state if mc else None), advice=advice)
+            logger.info(f"      {sym}: {best.strategy} — {d_why}")
+            return None
+
+        # DIRECTION MUST BE PASSED, NOT DEFAULTED. is_worth_taking() was
+        # made direction-aware in the sign-convention spine and defaults to
+        # LONG so every pre-shorting caller keeps working unchanged — but
+        # this IS the caller a short setup reaches, and omitting the
+        # argument here silently invoked that same default. A short's
+        # target sits BELOW entry and its stop ABOVE it; scored as LONG
+        # that reads as "target is on the wrong side of entry", and every
+        # short would be REJECTED_COST regardless of how good the trade
+        # was — the setup detects, passes shortability and the structure
+        # gate, and dies at the one check that never learned it was a
+        # short. The exact shape of the open_positions.direction gap found
+        # during merge review, one call site over: a correct function,
+        # forgotten at its call.
+        ok, why = is_worth_taking(best.entry, qty, best.target, best.stop,
+                                  direction=best.direction)
+        rt = round_trip(best.entry, qty)
+        self._record_setup(best, st.phase, rt.pct_of_position,
+                           "TAKEN" if ok else "REJECTED_COST", qty,
+                           mc_state=(mc.state if mc else None), advice=advice)
+        if not ok:
+            return None
+
+        return {"setup": best, "qty": qty, "cost_pct": rt.pct_of_position,
+                "market": mc, "phase": st.phase, "cost_note": why}
 
     def _intraday_alert_worthy(self, st) -> bool:
         """
@@ -4547,27 +4687,58 @@ class IntradayEngine:
             # on opportunity cost is evidence, and dropping it silently would
             # make the allocator unscoreable against the greedy path.
             ok, why = self.allocator_permits(st.symbol, "MIS", "INTRADAY")
+            bootstrap_slot = None
             if not ok:
                 self._record_setup(st, s["phase"], s.get("cost_pct") or 0.0,
                                    "ALLOCATOR_DECLINED", 0, mc_state=(mc.state if mc else None))
                 logger.info(f"      {st.symbol}: allocator declined — {why[:90]}")
-                continue
-            # TOP_PICK vs EXPLORATION — read from the same verdict
-            # `allocator_permits` just consulted, so the label can never
-            # disagree with the decision that let this setup through. None
-            # whenever `alloc_intraday_pick_label` is off or no arrival
-            # population existed to build a label bar from; carried onto the
-            # position itself (paper_broker.open_position -> closed_positions)
-            # rather than left in allocation_decisions' JSON, which is where it
-            # lived before and where nobody could query it.
-            pick_label = (self._verdicts.get((st.symbol, "MIS")) or {}).get("pick_label")
+                # THE BOUNDED BOOTSTRAP OVERRIDE — 08-Sep-2026, migration 133.
+                # IGN launched with no INTRADAY/IGN prior of its own (see
+                # ignition.py's own header and docs/FINDINGS.md, 08-Sep-2026)
+                # so every proposal falls through to the pooled INTRADAY/ALL
+                # prior, which is currently negative — a well-formed IGN
+                # setup cannot clear the edge/hurdle bar on that alone.
+                # UNCONDITIONAL within the cap (constraint 5): every IGN
+                # decline gets the same treatment while slots remain, no
+                # cherry-picking which declines "look" better — that would
+                # bias the sample toward looking better than a fair test.
+                # The allocator's own honest verdict is ALWAYS recorded
+                # above first; this never touches allocation_decisions, only
+                # whether the decline is ACTED on.
+                if st.strategy == "IGN":
+                    used = self._ign_bootstrap_used_count()
+                    cap = cfg_int("intraday_ign_exploration_trades", 10)
+                    if used < cap:
+                        bootstrap_slot = used + 1
+                        logger.info(f"      {st.symbol}: IGN bootstrap-override "
+                                    f"slot {bootstrap_slot}/{cap} — proceeding "
+                                    f"despite the decline above")
+                if bootstrap_slot is None:
+                    continue
+                pick_label = None
+            else:
+                # TOP_PICK vs EXPLORATION — read from the same verdict
+                # `allocator_permits` just consulted, so the label can never
+                # disagree with the decision that let this setup through. None
+                # whenever `alloc_intraday_pick_label` is off or no arrival
+                # population existed to build a label bar from; carried onto the
+                # position itself (paper_broker.open_position -> closed_positions)
+                # rather than left in allocation_decisions' JSON, which is where it
+                # lived before and where nobody could query it.
+                pick_label = (self._verdicts.get((st.symbol, "MIS")) or {}).get("pick_label")
             # In PAPER mode, actually TAKE the setup. Without this the
             # simulation measures exits but never a full round trip, and a
             # system judged only on how it leaves trades tells you nothing
             # about which trades it should have entered.
-            self._maybe_open_paper(st, qty, mc, phase=s["phase"],
+            opened_ok = self._maybe_open_paper(st, qty, mc, phase=s["phase"],
                                    cost_pct=s.get("cost_pct") or 0.0,
-                                   pick_label=pick_label)
+                                   pick_label=pick_label,
+                                   bootstrap_override_slot=bootstrap_slot)
+            if bootstrap_slot is not None and opened_ok:
+                # Only a CONFIRMED write consumes the lifetime slot
+                # (constraint 6) — a downstream failure (fill failure,
+                # concurrency cap, paper capacity, ...) must not.
+                self._consume_ign_bootstrap_slot()
 
             if not self._intraday_alert_worthy(st):
                 logger.info(f"      {st.symbol}: {st.strategy} conf {st.confidence:.2f} "
@@ -4709,9 +4880,14 @@ class IntradayEngine:
         return bool(prev_entry and abs(s.entry - prev_entry) / prev_entry > drift)
 
     def _maybe_open_paper(self, st, qty: int, mc, phase: str = "?",
-                          cost_pct: float = 0.0, pick_label: str | None = None) -> None:
+                          cost_pct: float = 0.0, pick_label: str | None = None,
+                          bootstrap_override_slot: int | None = None) -> bool:
         """
         Simulate the entry, so the paper book contains real round trips.
+        Returns True only once a position row is confirmed written — see
+        act_on_setups()/_try_ign_fast_entry() for the one thing this return
+        value gates: whether an IGN bootstrap-override slot (migration 133)
+        is actually consumed.
 
         Gated on capacity as well as the usual rails: a simulation that opens
         forty positions tests nothing about a system that can hold five, and its
@@ -4732,11 +4908,21 @@ class IntradayEngine:
         that leaves no row is a rule nobody can price" failure this file's own
         cross-framework guard was written to stop, one level deeper in the
         same function.
+
+        08-Sep-2026: the function's OWN success was one more gap of the same
+        shape, one level deeper still — `paper_broker.open_position()` has
+        returned a real `bool` since it was written, and nothing here ever
+        looked at it. A write failure there was invisible not just to the
+        caller but to this function itself. Fixed as part of the IGN
+        bootstrap-override build (constraint 6: only a CONFIRMED entry may
+        consume a lifetime slot), not bundled in silently — see
+        docs/FINDINGS.md, 08-Sep-2026.
         """
         from execution.gates import is_paper
 
-        def _blocked(verdict: str) -> None:
+        def _blocked(verdict: str) -> bool:
             self._record_setup(st, phase, cost_pct, verdict, 0, mc_state=(mc.state if mc else None))
+            return False
 
         # Two switches, mirroring control/paper_entry.py for swing.
         # intraday_auto_entry says whether setups are taken at all;
@@ -4745,8 +4931,7 @@ class IntradayEngine:
         # them as on, and they did nothing, which is the same class of failure as
         # swing_auto_entry before it was wired.
         if not cfg_bool("intraday_auto_entry", True):
-            _blocked("BLOCKED_AUTO_ENTRY_OFF")
-            return
+            return _blocked("BLOCKED_AUTO_ENTRY_OFF")
 
         # How many NEW intraday positions today. Distinct from
         # intraday_max_orders_per_day, which caps ORDERS — the same distinction
@@ -4768,13 +4953,11 @@ class IntradayEngine:
                         if (p.get("framework") or "").upper() == "INTRADAY"])
         if open_now >= cfg_int("intraday_max_concurrent",
                                cfg_int("intraday_max_new_per_day", 4)):
-            _blocked("BLOCKED_CONCURRENCY")
-            return
+            return _blocked("BLOCKED_CONCURRENCY")
         if self._entries_today() >= cfg_int("intraday_max_new_per_day", 4):
             logger.info(f"  {st.symbol}: intraday daily entry budget spent "
                         f"({self._entries_today()}) — no more new risk today")
-            _blocked("BLOCKED_DAILY_BUDGET")
-            return
+            return _blocked("BLOCKED_DAILY_BUDGET")
 
         # A RESERVE, NOT A GAP — 11-Aug-2026, replacing the same day's
         # gap-based pacing. See order_manager.entry_reserved()'s docstring
@@ -4802,31 +4985,26 @@ class IntradayEngine:
                                       reserve_n, cutoff)
         if blocked:
             logger.info(f"  {st.symbol}: intraday entry reserved — {why}")
-            _blocked("BLOCKED_ENTRY_RESERVED")
-            return
+            return _blocked("BLOCKED_ENTRY_RESERVED")
         if not is_paper("INTRADAY"):
             if not cfg_bool("intraday_live_auto_entry", False):
                 logger.info(f"  {st.symbol}: INTRADAY is LIVE and "
                             f"intraday_live_auto_entry is off — alerting only")
-                _blocked("BLOCKED_LIVE_AUTO_ENTRY_OFF")
-                return
+                return _blocked("BLOCKED_LIVE_AUTO_ENTRY_OFF")
             # Live auto-entry is deliberately not implemented here. Committing
             # capital on a single live tick is the highest-variance action this
             # system can take, and it is not one to enable by flipping a switch.
             logger.warning(f"  {st.symbol}: live auto-entry is not implemented — "
                            f"entries stay manual. Alerting only.")
-            _blocked("BLOCKED_LIVE_NOT_IMPLEMENTED")
-            return
+            return _blocked("BLOCKED_LIVE_NOT_IMPLEMENTED")
         try:
             from execution import paper_broker
             allowed, why, _left = paper_broker.capacity("INTRADAY", self.sb)
             if not allowed:
                 logger.info(f"  📄 paper skip {st.symbol} — {why}")
-                _blocked("BLOCKED_PAPER_CAPACITY")
-                return
+                return _blocked("BLOCKED_PAPER_CAPACITY")
             if self._held_by_framework(st.symbol, "INTRADAY"):
-                _blocked("BLOCKED_ALREADY_HELD")
-                return
+                return _blocked("BLOCKED_ALREADY_HELD")
             # A SHORT OPENS WITH A SELL. Hardcoding "BUY" would have simulated
             # the wrong leg: paper_broker fills a BUY at the worse side of the
             # spread going UP, so a short's entry would have been modelled at a
@@ -4838,11 +5016,22 @@ class IntradayEngine:
                                            value_cr=st.meta.get("value_cr"))
             if not f.ok:
                 logger.info(f"  📄 fill failed {st.symbol} — {f.message}")
-                _blocked("BLOCKED_FILL_FAILED")
-                return
+                return _blocked("BLOCKED_FILL_FAILED")
             from intraday.exit_policy import invalidation_level_from
             inv_level, inv_note = invalidation_level_from(st)
-            paper_broker.open_position(
+            entry_rationale = st.rationale
+            if bootstrap_override_slot is not None:
+                # Human-readable convenience only — the authoritative,
+                # queryable record is the bootstrap_override_slot COLUMN
+                # itself (migration 133), written by open_position() below
+                # from this same dict. See act_on_setups()/
+                # _try_ign_fast_entry() for what this marker means: this
+                # entry proceeded despite an allocator DECLINE/DEFER, as one
+                # of IGN's 10 lifetime bootstrap slots.
+                n_slots = cfg_int("intraday_ign_exploration_trades", 10)
+                entry_rationale = (f"[IGN-BOOTSTRAP {bootstrap_override_slot}/{n_slots}] "
+                                   f"{entry_rationale or ''}").strip()
+            opened_ok = paper_broker.open_position(
                 st.symbol, qty, f.fill_price,
                 {"stop": st.stop, "target": st.target, "strategy": st.strategy,
                  # setdefault()'d onto every setup at detection (registry.py,
@@ -4853,6 +5042,8 @@ class IntradayEngine:
                  "invalidation_level": inv_level, "invalidation_note": inv_note,
                  "sector": st.meta.get("sector"),
                  "pick_label": pick_label,
+                 "entry_rationale": entry_rationale,
+                 "bootstrap_override_slot": bootstrap_override_slot,
                  # FOUND DURING MERGE REVIEW, migration 047: this was the one
                  # missing link. The entry FILL already used D.entry_side(
                  # st.direction) a few lines up, so a short's opening leg was
@@ -4864,9 +5055,17 @@ class IntradayEngine:
                  # long for the rest of its life.
                  "direction": st.direction},
                 "INTRADAY", self.sb, charges=f.charges)
+            if not opened_ok:
+                # paper_broker.open_position() has returned a real bool since
+                # it was written; nothing here ever looked at it until this
+                # gap was found alongside the IGN bootstrap-override build —
+                # a write failure this deep was previously indistinguishable
+                # from a clean success. See this function's own docstring.
+                return _blocked("BLOCKED_POSITION_WRITE_FAILED")
             # Reload so the same setup cannot be opened twice in one session and
             # so the exit engine sees it on the very next cycle.
             self.load_state()
+            return True
         except Exception as e:
             logger.warning(f"  paper entry failed for {st.symbol}: {e}")
             # A FIXED verdict string, not the exception folded into it — every
@@ -4875,7 +5074,7 @@ class IntradayEngine:
             # and a dynamic value would silently stop matching any of them.
             # The detail belongs in meta, same as ai_note/event_note elsewhere.
             st.meta["exception"] = str(e)[:200]
-            _blocked("BLOCKED_EXCEPTION")
+            return _blocked("BLOCKED_EXCEPTION")
 
     def square_off_paper(self, prices: dict) -> int:
         """
@@ -4963,15 +5162,6 @@ class IntradayEngine:
             return
 
         from allocation.proposal import from_intraday, from_swing
-        from allocation.allocator import Allocator
-        from intraday.session import session_state
-        from intraday import market_context as mkt
-
-        if self._allocator is None:
-            self._allocator = Allocator(self.sb)
-            self._allocator.refresh_priors()
-            self._allocator.refresh_priority_criteria()
-            self._allocator.refresh_hurdle_populations()
 
         props = []
         for e in entries or []:
@@ -4995,6 +5185,104 @@ class IntradayEngine:
                 props.append(p)
         if not props:
             return
+
+        v = self._score_proposals(props)
+        takes = sum(1 for x in v if x["verdict"] == "TAKE")
+
+        # Keyed for the veto below. (symbol, product) is the same key
+        # open_positions has been unique on since migration 028 — a bare symbol
+        # would let a swing CNC tranche and an intraday MIS tranche of one name
+        # collide, which is the corruption that key exists to prevent.
+        self._verdicts = {(x["proposal"].symbol, x["proposal"].product): x for x in v}
+
+        # Recomputed here, not carried out of _score_proposals() — this is
+        # display only (the log line below), and _score_proposals()'s own
+        # contract is "returns the verdict list, nothing more" so a fast-path
+        # caller scoring one candidate never has to unpack or discard a
+        # tuple it doesn't need. Cheap: arithmetic over self.positions and
+        # config, no I/O, same numbers _score_proposals() computed internally.
+        today = today_ist().isoformat()
+        swing_used = len([x for x in self.positions
+                          if (x.get("framework") or "SWING").upper() == "SWING"
+                          and str(x.get("entry_date") or "")[:10] == today])
+        swing_max = max(cfg_int("swing_max_new_per_day", 2), 1)
+        intra_max = max(cfg_int("intraday_max_new_per_day", 4), 1)
+        slots = {"SWING":    max(swing_max - swing_used, 0),
+                 "INTRADAY": max(intra_max - self._entries_today(), 0)}
+
+        live_books = [b for b in ("intraday", "swing")
+                      if cfg_bool(f"alloc_live_{b}", False)]
+        mode = f"LIVE for {'+'.join(live_books)}" if live_books else "shadow"
+        bars = {x["proposal"].framework: (x.get("hurdle_inputs") or {})
+                for x in v}
+        detail = " · ".join(
+            f"{fw} slots {slots.get(fw, '?')} bar "
+            + ("cold start" if (i or {}).get("cold_start")
+               else f"{(i or {}).get('base')}"
+                    + (" POOLED" if (i or {}).get("pooled_across_buckets") else "")
+                    + (" FLOORED@0" if (i or {}).get("absolute_floor_applied") else ""))
+            for fw, i in bars.items())
+        logger.info(f"  allocator ({mode}): {len(v)} proposal(s) scored, "
+                    f"{takes} to take, {len(v)-takes} refused — {detail}")
+
+        # A BOOK THAT STANDS DOWN MUST SAY WHY, LOUDLY — 10-Aug-2026.
+        #
+        # The absolute edge floor can legitimately refuse an entire session's
+        # proposals: if every candidate's net-of-cost expected R is negative,
+        # taking none of them is the correct answer, not a malfunction. But
+        # "correct" and "obvious from the console" are different properties,
+        # and a quiet book has been misread as a broken one in this project
+        # more than once. So when the floor is the thing doing the refusing,
+        # the line says so in the operator's terms rather than leaving them to
+        # infer it from a bar that reads 0.0.
+        for fw, i in bars.items():
+            if (i or {}).get("absolute_floor_applied") and not any(
+                    x["verdict"] == "TAKE" and x["proposal"].framework == fw for x in v):
+                logger.warning(
+                    f"  {fw}: every proposal this cycle was refused by the ABSOLUTE "
+                    f"EDGE FLOOR, not by a market judgement. The measured "
+                    f"{fw.lower()} population is currently negative "
+                    f"(unclamped bar {(i or {}).get('base')}), so every candidate's "
+                    f"expected R is below its own round trip. Standing down is the "
+                    f"correct answer to that — but if this persists for a full "
+                    f"session, the prior is the thing to investigate "
+                    f"(tools/expectancy_ledger.py), not the bar.")
+        return v
+
+    def _score_proposals(self, props: list, minutes_left: int | None = None) -> list[dict]:
+        """
+        The scoring-only half of what _allocate_shadow() does — factored out
+        08-Sep-2026 so a caller that needs a verdict for ONE candidate outside
+        the ordinary 15s cycle (IGN's fast-entry path, event_core.py) can get
+        one without touching self._verdicts, which _allocate_shadow() owns
+        for the cycle-wide view both books read all cycle long.
+
+        WHY THIS MUST NEVER TOUCH self._verdicts ITSELF
+        -------------------------------------------------
+        self._verdicts is a shared, cycle-scoped dict: allocator_permits(),
+        the swing alert-kind logic and the pick-label logic all read it
+        assuming it reflects the FULL set of candidates the ordinary 15s
+        cycle just proposed. A caller scoring one single candidate out of
+        band (a 2-second tick, mid-cycle) that overwrote this dict would
+        silently narrow that shared view to just its own candidate until the
+        next 15s cycle ran — corrupting whatever any other code path reads
+        from it in between. This function returns the verdict list and stops;
+        assigning self._verdicts is _allocate_shadow()'s job alone.
+
+        Pure arithmetic plus one call into Allocator.select() (itself
+        in-memory, microseconds, no I/O beyond the prior cache — see that
+        method's own docstring) — no network, no database write. Safe to
+        call from a 2-second loop for exactly that reason.
+        """
+        from allocation.allocator import Allocator
+        from intraday.session import session_state
+        from intraday import market_context as mkt
+
+        if self._allocator is None:
+            self._allocator = Allocator(self.sb)
+            self._allocator.refresh_priors()
+            self._allocator.refresh_priority_criteria()
+            self._allocator.refresh_hurdle_populations()
 
         st = session_state()
         mc = mkt.from_context(self._index_ctx)
@@ -5040,7 +5328,14 @@ class IntradayEngine:
         # half of the hurdle's own docstring has never once operated. The
         # scarcity term still worked, which is why the bar still moved at
         # all and nothing looked obviously dead.
-        minutes_left = max(st.minutes_to_squareoff or 0, 0)
+        #
+        # `minutes_left` is now a parameter, defaulting to None, so the
+        # ordinary call site (which never passes it) computes it exactly as
+        # before — a fast-path caller could override it, though IGN's own
+        # fast-entry path does not: the same real session clock applies to
+        # it as to everything else.
+        if minutes_left is None:
+            minutes_left = max(st.minutes_to_squareoff or 0, 0)
 
         # swing_assignment()'s reservation field, built and unused since it was
         # written: `select()` never received a `field` kwarg, so swing has run
@@ -5089,7 +5384,7 @@ class IntradayEngine:
         # unaffected — it never reads this parameter, only the original
         # `minutes_left`. See Allocator.select()'s own docstring and
         # tests/test_hurdle_minutes_left_framework.py.
-        v = self._allocator.select(
+        return self._allocator.select(
             props, regime=mc.state,
             slots_by_framework=slots,
             max_slots_by_framework={"SWING": swing_max, "INTRADAY": intra_max},
@@ -5098,52 +5393,6 @@ class IntradayEngine:
             open_positions=self.positions,
             swing_regime=(self._policy or {}).get("_current_regime"),
             swing_minutes_left=0)
-        takes = sum(1 for x in v if x["verdict"] == "TAKE")
-
-        # Keyed for the veto below. (symbol, product) is the same key
-        # open_positions has been unique on since migration 028 — a bare symbol
-        # would let a swing CNC tranche and an intraday MIS tranche of one name
-        # collide, which is the corruption that key exists to prevent.
-        self._verdicts = {(x["proposal"].symbol, x["proposal"].product): x for x in v}
-
-        live_books = [b for b in ("intraday", "swing")
-                      if cfg_bool(f"alloc_live_{b}", False)]
-        mode = f"LIVE for {'+'.join(live_books)}" if live_books else "shadow"
-        bars = {x["proposal"].framework: (x.get("hurdle_inputs") or {})
-                for x in v}
-        detail = " · ".join(
-            f"{fw} slots {slots.get(fw, '?')} bar "
-            + ("cold start" if (i or {}).get("cold_start")
-               else f"{(i or {}).get('base')}"
-                    + (" POOLED" if (i or {}).get("pooled_across_buckets") else "")
-                    + (" FLOORED@0" if (i or {}).get("absolute_floor_applied") else ""))
-            for fw, i in bars.items())
-        logger.info(f"  allocator ({mode}): {len(v)} proposal(s) scored, "
-                    f"{takes} to take, {len(v)-takes} refused — {detail}")
-
-        # A BOOK THAT STANDS DOWN MUST SAY WHY, LOUDLY — 10-Aug-2026.
-        #
-        # The absolute edge floor can legitimately refuse an entire session's
-        # proposals: if every candidate's net-of-cost expected R is negative,
-        # taking none of them is the correct answer, not a malfunction. But
-        # "correct" and "obvious from the console" are different properties,
-        # and a quiet book has been misread as a broken one in this project
-        # more than once. So when the floor is the thing doing the refusing,
-        # the line says so in the operator's terms rather than leaving them to
-        # infer it from a bar that reads 0.0.
-        for fw, i in bars.items():
-            if (i or {}).get("absolute_floor_applied") and not any(
-                    x["verdict"] == "TAKE" and x["proposal"].framework == fw for x in v):
-                logger.warning(
-                    f"  {fw}: every proposal this cycle was refused by the ABSOLUTE "
-                    f"EDGE FLOOR, not by a market judgement. The measured "
-                    f"{fw.lower()} population is currently negative "
-                    f"(unclamped bar {(i or {}).get('base')}), so every candidate's "
-                    f"expected R is below its own round trip. Standing down is the "
-                    f"correct answer to that — but if this persists for a full "
-                    f"session, the prior is the thing to investigate "
-                    f"(tools/expectancy_ledger.py), not the bar.")
-        return v
 
     def allocator_permits(self, symbol: str, product: str, framework: str) -> tuple[bool, str]:
         """

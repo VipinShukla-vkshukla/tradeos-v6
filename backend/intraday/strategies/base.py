@@ -220,6 +220,19 @@ class SymbolContext:
     # applied to this symbol, or nothing has ticked since it was) — NOT
     # "book is empty". analysis.overlays.depth_ok() reads this.
     depth: dict | None = None
+    # Today's NSE circuit limits, from kite_client.fetch_quotes() — 08-Sep-
+    # 2026, built for intraday/strategies/ignition.py (IGN, the circuit/
+    # volume-pump engine). None means "not fetched yet for this symbol this
+    # session" (a bench-only symbol before its first merge_live_bars()
+    # build, or a quote-fetch failure), NOT "no circuit exists" — every
+    # reader must treat these as optional. See shortability.py/direction.py
+    # for why no OTHER field in this system carries real circuit data: NSE
+    # circuit bands are absent from the live tick stream this codebase
+    # otherwise reads (migration 040); these two come from a REST quote()
+    # call instead, the same one control/sl_monitor.py already trusts for
+    # open positions.
+    upper_circuit: float | None = None
+    lower_circuit: float | None = None
     sector: str = ""
     # Relative strength against the index, computed the same way for every
     # engine so "strong today" means one thing across the system.

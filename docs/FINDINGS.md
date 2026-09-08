@@ -16365,6 +16365,234 @@ execute all completed as planned; reconciliation and hurdle-bar invariance
 verified independently from the plan both before and after applying, not
 assumed from the plan's own arithmetic.
 
+## 2026-09-08 — Intraday trader review (diagnostic, read-only) — a circuit/momentum detection gap quantified at 121 in-universe symbol-days, a real entry/exit diagnosis on the closed book, and a durability gap in `Allocator.flush()` that can silently erase up to 5 minutes of decision history
+
+**Prompted by the operator's own two concerns, framed as a professional intraday
+trader would: (1) circuit-lock / volume-pump moves the current 8 engines cannot
+catch, (2) why intraday trades keep closing at a nominal few-rupee profit
+instead of running. Not a Track D/E stage — a standalone review, same evidence
+discipline.**
+
+### 1 — Circuit/momentum capture: a real, quantified gap, not a hypothesis
+
+**Ran (code inspection):** `intraday/shortability.py:27` states outright that
+NSE circuit bands are in no feed this system ingests over the live tick stream;
+`kite_client.fetch_quotes()` (`kite/kite_client.py:118-119`) DOES carry
+`upper_circuit_limit`/`lower_circuit_limit` via the REST `quote()` call, already
+used by `control/sl_monitor.py:58` for open positions, never for the scanning
+universe. `intraday/strategies/gap_and_go.py:58-63` explicitly refuses anything
+beyond `gap_max_atr_frac` (1.6× ATR) as "exhaustion territory" — the exact
+population in question — and only fires in the opening 15 minutes. No other
+engine (ORB/PDL/VCE/PBK/VWR/RNG/SDN) is built for a mid-session momentum
+ignition. `intraday/event_core.py` (Stage D3, already built) is a 2-second
+tick-triggered loop reusing the same detection/scoring functions, currently
+`intraday_event_core_enabled=false`, writing only to `intraday_event_shadow`.
+
+**Ran (quantification, price_history_yf vs intraday_setups):**
+```sql
+with universe as (select distinct symbol from intraday_setups),
+moves as (select p.symbol, p.date, p.high, p.close,
+  lag(p.close) over (partition by p.symbol order by p.date) as prev_close
+  from price_history_yf p join universe u on u.symbol=p.symbol
+  where p.date >= (select min(trade_date) from intraday_setups)),
+big as (select symbol, date,
+  round(((close-prev_close)/nullif(prev_close,0)*100)::numeric,2) as close_move_pct,
+  round(((high-prev_close)/nullif(prev_close,0)*100)::numeric,2) as high_move_pct
+  from moves where prev_close>0),
+detected as (select distinct symbol, trade_date from intraday_setups)
+select count(*) filter (where abs(close_move_pct)>=8 or high_move_pct>=8) n_big_8pct,
+  count(*) filter (where (abs(close_move_pct)>=8 or high_move_pct>=8) and d.symbol is null) n_missed_8pct
+from big left join detected d on d.symbol=big.symbol and d.trade_date=big.date;
+```
+**Found:** over the 31-day window `intraday_setups` covers (2026-07-28 to
+2026-09-08), restricted to the 253 symbols the intraday scanner has touched at
+least once (a loose proxy for universe membership — see caveat below), **121
+symbol-days had an ≥8% single-day move; 92 of them (76%) had zero detection
+from any of the 8 engines that day.** Spot-checked the top 20 by move size for
+data artifacts: one (HEG, −62.6% on 2026-09-07) is almost certainly a
+corporate-action distortion, not a real trading move, and was excluded from
+the qualitative read. The remaining 19 carry volume from 2.2M to 173M shares —
+genuine active-day repricing, not thin-stock noise. One (BALRAMCHIN,
+2026-08-20) shows `high_move_pct` of exactly 20.00%, consistent with actually
+touching a 20%-band upper circuit — corroborating that this proxy is catching
+real circuit-adjacent action despite carrying no real circuit-band data.
+
+**Could not determine:** precise intraday-resolution entry/exit economics for
+these missed moves — `stock_data_daily`'s own retention was cut to 8 trading
+days earlier this same session (see the storage entries above), and no
+intraday-bar archive exists further back, so "would it have been worth it" is
+answerable only qualitatively (BALRAMCHIN ran from open to +20% same day — room
+for several R at almost any reasonable entry) rather than with a real R-multiple
+backtest. Also could not reconstruct the ACTUAL daily universe on each
+historical date (`scanner.symbols()` is a live, today-only snapshot,
+re-qualified every morning) — the 253-symbol proxy is the same limitation
+`tools/discover_engines.py::moved_but_unseen()` already accepts, not a new one.
+
+**Recommends:** build a dedicated momentum-ignition engine on `event_core`'s
+already-built 2s loop (not the 15s poll), gated by the SAME cost/allocator
+stack as every other engine (never bypassed), with (a) new `SymbolContext`
+circuit fields sourced from a bounded-cadence `fetch_quotes()` poll of the live
+universe, (b) direction discipline reusing `shortability.can_short()`'s
+existing upper-circuit short refusal rather than a new copy of it, (c) its own
+capital lane and a scalp-shaped exit ladder, not the standard 2R/1.5R one. Per
+this project's own sequencing discipline, this is new capital-risk-adding work
+and deserves its own Stage-C1-style shadow build, not a same-session change.
+**NEEDS DECISION** on whether/when to start building it.
+
+### 2 — Why intraday trades close at nominal profit: entry quality, not primarily giveback
+
+**Ran:**
+```sql
+select count(*) n, sum(case when realized_pnl>0 then 1 else 0 end) wins,
+  avg(r_multiple), sum(realized_pnl), avg(max_favorable_excursion)
+from closed_positions where framework='INTRADAY';
+
+select exit_reason, count(*) n, avg(r_multiple), avg(realized_pnl),
+  avg(max_favorable_excursion), avg(max_adverse_excursion)
+from closed_positions where framework='INTRADAY' group by exit_reason order by n desc;
+```
+**Found:** 166 closed paper trades (2026-07-29 to 2026-09-08). Net ₹192.40
+total, ₹1.16/trade average, avg R-multiple **−0.054** — flat-to-negative once
+normalised for size, despite 40% winning by raw P&L. `SETUP_INVALIDATED` (n=57,
+avg R −0.473, avg MFE 0.129R) + `TIME_EXIT` (n=33, avg R −0.151, avg MFE
+0.336R) + `STOP_LOSS_HIT` (n=14, avg R −0.865, avg MFE 0.146R) = **104/166
+(63%) of exits, all with average favorable excursion under 0.35R before
+failing** — these trades never really developed; this is an entry-quality
+signature, not a giveback signature. Only 6/166 (3.6%) ever reach TARGET_HIT.
+Separately, of the 49/166 (30%) trades that DO reach ≥0.5R MFE: average peak
+1.031R, average final 0.529R, **average kept fraction 44.7%**, 14/49 (29%) gave
+back over 70% of their own peak — despite `intraday_giveback_pct` being armed
+live at 50% (`system_config`, confirmed by direct query — the exit_policy.py
+source comments describing it as unarmed are stale; verify code, not comments,
+same rule this project already holds).
+
+`tools/feature_edge_study.py --dry-run` (65 real findings, nothing written)
+independently corroborates the entry-quality read: ORB at the literal open
+shows 0% win (n=210, mean −0.67%) vs 18% mid-session (mean +0.03%), and 1% win
+in RISK_ON vs 26% in CAUTION — backwards from how ORB is presumably deployed.
+BRKD/VCE/SDN all show volume_ratio and confidence cleanly separating winners
+from losers (SDN: 0% win below a volume_ratio tercile split vs 83% above,
+n=15/15). TRP reads near-zero win rate across every segment tested. VWR shows
+an INVERTED confidence relationship (41% win at low confidence vs 18% at high)
+— read `intraday/strategies/vwap_reclaim.py:153-161`: its confidence formula
+rewards volume_ratio, rs_vs_index_pct and flush depth, all of which read as
+sensible signals for a BREAKOUT engine but may be anti-signals for a
+MEAN-REVERSION engine (a stock already strong/extended is a worse VWAP-dip-buy
+candidate, not a better one) — a hypothesis, not yet decomposed by
+sub-component, and thin (n=46/tercile).
+
+**Could not determine:** clean per-engine dollar attribution on the closed
+book — 101/166 (61%) of `closed_positions` rows have `sub_engine IS NULL`,
+predating the 20-Aug `F-39` sub_engine fix. Among the labeled 65, VWR is the
+largest $ loser (n=22, avg R −0.143, total −₹192.0) and GAP second (n=8, avg R
+−0.249, total −₹217.3) — real but thin against this project's own 30-obs floor.
+
+**Recommends:** review the 65 pending `feature_edge_study` findings via
+`tradeos learn show`; tighten or tier `intraday_giveback_pct` given the 44.7%
+observed kept-fraction is barely better than the 50% allowance; investigate
+restricting ORB to non-OPEN hours; decompose VWR's confidence formula by
+sub-component before trusting it for sizing/tie-breaks. **NEEDS DECISION** on
+which to actually apply — none of this was changed live this session.
+
+### 3 — Tracing why only ~24% of gate-cleared setups become a position surfaced a bigger, unrelated defect: `Allocator.flush()` can silently lose an entire batch of decisions, including a TAKE that already gated a real entry
+
+**Ran:** `intraday_setups.cost_verdict='TAKEN'` collapses 5,501 raw rows (this
+project's own documented "same setup counted many times" duplication) to 690
+distinct (symbol, trade_date, strategy) detections over 30 days — but only 166
+of those ever became a real `closed_positions` row. Traced the gap by joining
+`closed_positions` against `allocation_decisions` on (symbol, trade_date,
+framework='INTRADAY') for the window the latter actually covers (2026-08-20 to
+2026-09-08, confirmed by `min`/`max` query — a real Population B/C
+liquidity-population style gate the number sits in):
+
+```sql
+select cp.symbol, cp.entry_date,
+  (select count(*) from allocation_decisions ad where ad.symbol=cp.symbol
+    and ad.trade_date=cp.entry_date and ad.framework='INTRADAY') n_decisions,
+  (select count(*) from allocation_decisions ad where ad.symbol=cp.symbol
+    and ad.trade_date=cp.entry_date and ad.framework='INTRADAY'
+    and ad.verdict='TAKE') n_take
+from closed_positions cp
+where cp.framework='INTRADAY' and cp.entry_date >= '2026-08-20';
+```
+
+**Found:** of 80 closed intraday positions in this window, only 2 (both dated
+TODAY, 2026-09-08) have a matching `TAKE` row. Every position dated 2026-09-01
+through 2026-09-07 (38 checked directly, including direction cross-check —
+`RRKABEL`/`VEDL`/`TATASTEEL`/`TMPV` are SHORTs and their decision rows'
+`direction` column was verified to match, ruling out a direction-mismatch
+false positive) has one or more `DECLINE` rows for the EXACT (symbol, date,
+direction) that was actually entered — often many, spanning the whole session
+(VEDL/2026-09-03: 15 DECLINE rows from 04:01 to 05:47 UTC) — and zero TAKE
+rows. `alloc_live_intraday` has been `true` since 2026-08-07 and
+`alloc_shadow_enabled` since 2026-08-04 (`system_config.updated_at`, both
+predate this entire window), ruling out a shadow-mode explanation.
+
+Read the code rather than guessing further: `allocator.py::_write_or_collapse()`
+(line 653) only collapses/overwrites for `framework=='SWING'` — INTRADAY always
+appends a fresh row to `self._buffer` every cycle, never overwriting an
+in-memory verdict, so the audit trail cannot be silently overwritten in memory.
+`select()` builds `self._verdicts` (which actually gates
+`engine.py::allocator_permits()`, the live veto) and `self._buffer` (which
+`flush()` eventually writes to `allocation_decisions`) from the SAME per-cycle
+loop output — they cannot structurally diverge in content. But `flush()`
+(`allocator.py:796-847`) runs only on `run.py`'s 300-second slow timer, and its
+own code:
+
+```python
+rows, self._buffer = self._buffer, []   # popped BEFORE the try
+try:
+    resp = self.sb.table("allocation_decisions").insert(rows).execute()
+    ...
+except Exception as e:
+    logger.error(f"  allocator: flush of {len(rows)} verdict(s) FAILED: {e}")
+    # Loud, not swallowed. Buffered writes that vanish leave silent holes...
+```
+pops the buffer BEFORE the `insert()` call, so if that single insert raises for
+ANY reason — this project has hit exactly this shape before, from
+double-JSON-encoded jsonb (F-40) to PostgREST rejecting a whole payload over
+one bad column — the entire batch (up to 300 seconds of decisions across BOTH
+frameworks) is logged via `logger.error` and never retried or recovered. The
+comment shows the author already knew this residual risk existed ("Loud, not
+swallowed") but chose logging over durability. This is a fully plausible,
+code-confirmed mechanism for the exact pattern observed: an in-memory TAKE
+correctly gates a real entry, then the flush that would have persisted THAT
+specific verdict fails, while a LATER flush (after the symbol is already held,
+now correctly re-evaluated as DECLINE) succeeds — leaving a DB record that
+looks like the allocator refused a trade it in fact approved.
+
+**Could not determine:** whether a flush failure actually occurred on any of
+these specific dates — no query of historical daemon logs was available this
+session to confirm an actual `logger.error` firing, so this is a **confirmed
+CAPABLE mechanism, not a confirmed root cause with certainty**. Could not rule
+out a second, unidentified mechanism contributing to the same symptom.
+
+**Why this matters beyond the immediate gap:** `allocation/hurdle.py`'s bar and
+`allocation/scoring.py`'s priors are both built from `allocation_decisions`
+directly (see `CLAUDE.md`'s own hurdle landmines) — if flush failures are not
+rare, the population feeding the live bar and the priors is silently
+incomplete in a way that is NOT randomly distributed (a TAKE is exactly the
+row most likely to be followed by re-evaluation-as-DECLINE before the next
+successful flush, if the entered symbol keeps getting proposed). Section 2's
+`feature_edge_study` findings above draw from `intraday_setups`, a DIFFERENT
+table populated on a DIFFERENT write path (`_record_setup`, not
+`Allocator.flush()`) — not directly implicated by this specific defect, stated
+so this is not read as invalidating section 2.
+
+**Recommends:** (1) make `flush()` durable — do not pop `self._buffer` until
+the insert succeeds, or re-queue `rows` back onto the buffer in the `except`
+branch, so a transient failure delays a write instead of discarding it; (2)
+add a `tools.health` check counting `logger.error` "flush of N verdict(s)
+FAILED" occurrences (or a written sentinel) so a silent gap is visible without
+grepping historical logs by hand. **NEEDS DECISION** — this touches the live,
+armed allocator write path for BOTH frameworks; not changed this session.
+
+**Gate:** NEEDS DECISION on all three sections. Read-only this session — no
+code, config, or `system_config` value changed. Section 3's finding is the
+highest-priority follow-up: it affects the trustworthiness of the very table
+(`allocation_decisions`) this project's own hurdle/priors mechanism, and any
+future session's analysis of the allocator's real behaviour, depend on.
+
 ## 2026-09-08 — Storage — intraday_quote_parity write-time collapse built, measured, armed (migration 131) — 93.3% fewer rows, verdict-invariance proven against the real production check
 
 **Ran:**
@@ -16471,3 +16699,450 @@ production verdict functions (not a reimplementation), demonstrated
 failing first, a real bug (drifted replay-tool defaults) caught in the
 same pass it was introduced. NEEDS FOLLOW-UP: confirm post-restart
 row-growth rate and a live `tools.health` pass, next session.
+
+## 2026-09-08 — Fix, `allocation/allocator.py::flush()` — closes recommendation (1) of the same day's "Intraday trader review" entry: a failed write now re-queues instead of discarding
+
+**Follows directly from the diagnostic entry above (§3, "Tracing why only
+~24% of gate-cleared setups become a position...") — same session, operator
+approved building the fix immediately after reviewing the diagnosis.**
+
+**Ran:**
+```bash
+cd backend && python -m tools.verify --quiet                              # baseline
+cd backend && python -m tools.verify --module test_allocator_flush_requeue  # new tests, BEFORE the fix
+cd backend && python -m tools.verify --module test_allocator_flush_requeue  # new tests, AFTER the fix
+cd backend && python -m tools.verify --quiet                              # full suite, after
+cd backend && python -m tools.health
+```
+
+**Found (baseline):** 1276 checks / 141 modules, clean.
+
+**Demonstrated failing first**, per this project's own rule — all 4 new
+tests in `tests/test_allocator_flush_requeue.py` failed against the
+unfixed `flush()`, each for the expected reason:
+- (a) `a failed insert must leave both rows re-queued, got 0`
+- (b) the retry had nothing to insert (buffer was already empty)
+- (c) `IndexError: list index out of range` — a collapse decision arriving
+  between a failed flush and its retry created a brand-new anchor row in
+  an emptied buffer instead of mutating the lost one
+- (d) `row 2's update failed — must be re-queued` — the old code swapped
+  away the ENTIRE `_pending_updates` dict regardless of per-row outcome, so
+  a sibling's success didn't save it from being discarded
+
+**Fixed**, `allocation/allocator.py::flush()` (lines 796-847 → same
+function, ~15 lines changed): the `_buffer` insert failure path now does
+`self._buffer = rows + self._buffer` — the SAME dict objects, not copies,
+which matters because `self._collapse_state[key]["row_ref"]` (the SWING
+write-collapse anchor, migration 129) is literally one of these objects,
+mutated in place by `_write_or_collapse()` when a candidate recurs; a copy
+would silently orphan the anchor. The `_pending_updates` sync path changed
+from pop-everything-then-retry to iterate-a-snapshot-delete-on-success, so
+a sibling that succeeds in the same batch as a failure is never lost or
+re-sent. No retry cap or backoff, deliberately — this book's volume is
+small enough that an unbounded-but-slow-growing in-memory list during a
+real outage is the correct tradeoff against ever dropping data again; a
+capped/dropping retry would reintroduce the same failure one level later.
+Both `except` branches' comments rewritten to state the new behaviour
+rather than the old ("Loud, not swallowed" is now "re-queued, not lost").
+
+**Re-ran the 4 tests against the fix: 4/4 green.** Full suite: **1280
+checks / 142 modules**, zero regressions elsewhere. `tools.health`: same
+single pre-existing, unrelated `same_day_discovery` failure as the session
+baseline (Phase 4 same-day discovery shadow switch producing nothing —
+untouched by this change); `simulate` (folded into the same health run)
+clean: `swing 5 pos / 66 plans · intraday 40 universe / 0 takeable`.
+
+**Could not determine:** whether a flush failure actually occurred on the
+specific 2026-09-01..07 dates that motivated this fix — no historical
+daemon-log query was available this session to confirm a `logger.error`
+line actually fired on those dates. The diagnostic entry above already
+named this precisely: a confirmed CAPABLE mechanism, not a confirmed root
+cause with certainty. This fix closes the mechanism regardless of whether
+it was THE cause or A cause of the specific gap observed.
+
+**Recommends:** the diagnostic entry's recommendation (2) — a `tools.health`
+check surfacing repeated flush failures for future visibility — remains
+open and was explicitly out of scope for this fix (agreed with the
+operator before starting). Also still open: restart-durability — the
+buffer is in-memory only, so a daemon restart mid-outage still loses
+whatever is queued at that moment; a different failure mode than the
+in-process retry this fix covers, not addressed here.
+
+**Gate:** PASS — root cause traced to real code (not inferred), fix
+demonstrated failing first against the unfixed function, object-identity
+safety for the SWING collapse mechanism specifically proven by a dedicated
+test (not merely assumed from reading `_write_or_collapse`), full suite
+green with the expected +4/+1 delta, `tools.health`/`tools.simulate`
+re-run clean. NEEDS FOLLOW-UP: recommendation (2) (health-check visibility)
+and restart-durability, both explicitly deferred, not silently dropped.
+
+## 2026-09-08 — New engine, ARMED ACTIVE, migration 132 — IGN (Ignition Momentum): circuit/volume-pump detection with its own fast-entry path on the 2s event_core loop, operator's own explicit instruction, zero scored outcomes
+
+**Closes the build side of the same day's "Intraday trader review" entry
+(§1, circuit/momentum capture) — same session, same operator conversation.
+Full design trace (DEFER-for-INTRADAY non-issue, the prior fallback ladder,
+the allocator-latency finding, the `can_short()`/fast-path safety-gap
+finding, the per-symbol pipeline-extraction decision) is in the chat
+transcript and the approved plan; this entry records what was actually
+built, tested and armed, with the numbers behind each claim.**
+
+**Ran (build-time verification, in order):**
+```bash
+cd backend && python -m tools.verify --quiet                    # baseline: 1280/142
+cd backend && python -m tools.verify --module test_score_proposals_extraction
+cd backend && python -m tools.verify --module test_ignition     # 16 checks, first run: 16/16
+cd backend && python -m tools.verify --module test_ignition_fast_entry  # 6/6, first run
+cd backend && python -m tools.verify --quiet                    # full suite after every stage
+cd backend && python -m tools.health
+cd backend && python -m tools.simulate
+```
+```sql
+-- via Supabase MCP execute_sql, project dbjfwpamxudnolfalpfm — migration 132
+INSERT INTO system_config (...) VALUES
+  ('intraday_engine_ign_enabled','true', ...),
+  ('intraday_engine_ign_lifecycle','ACTIVE', ...),
+  ('intraday_event_core_enabled','true', ...)
+  ON CONFLICT (key) DO UPDATE ...;
+INSERT INTO system_config (...) VALUES
+  ('intraday_ign_fast_entry_enabled','true', ...) ON CONFLICT (key) DO NOTHING;
+```
+
+**Quantify-first, run live against this session's own data before any code
+was written:**
+- BALRAMCHIN, 2026-08-20 (the real ≥20%-high-move day found earlier this
+  session): `high_move_pct=+20.01%` off prev_close, volume 33.5M vs
+  ~0.3–1.6M the prior week — the trigger's own `min_move` (≈5.16% for this
+  stock's ATR) sits well inside that range, fires early rather than only
+  at the extreme.
+- Broader calibration, ~253-symbol universe, 2026-07-20 to 2026-09-05,
+  every symbol-day with `(high-prev_close)/prev_close >= 8%` (174 rows):
+  p10 volume ratio **3.13×**, p10 move/ATR ratio **2.21×**. Shipped
+  defaults (`ign_min_volume_ratio=2.00`, `ign_min_atr_frac=1.2`) sit below
+  both — margin to catch a move while still forming.
+
+**Built:**
+
+1. **`intraday/strategies/ignition.py`** (new) — `IgnitionMomentum`, one
+   class handling both directions. Magnitude: `max(ign_min_pct=3.5,
+   atr*ign_min_atr_frac=1.2)`, no ceiling — the exact inverse of GAP's own
+   `gap_max_atr_frac` exhaustion exclusion. Volume: **required**, not
+   merely rewarded (`ign_min_volume_ratio=2.00`), a deliberate break from
+   GAP/VCE/GDB's own convention, following SDN's `_range_breakdown`
+   precedent instead. Circuit data (`ctx.upper_circuit`/`lower_circuit`,
+   new optional `SymbolContext` fields) gates only an already-frozen entry
+   (±0.10% tolerance, reusing `sl_monitor.check_circuit_locks()`'s exact
+   pattern) — never a proximity requirement, so the engine catches both a
+   genuine circuit-run AND a pure volume-pump with no circuit in sight, per
+   the operator's own explicit framing. Stop: a buffered recent-window
+   swing low/high (`ign_stop_lookback_bars=20`), routed through
+   `risk_from_structure()` — refused, never re-priced, when too wide
+   (`ign_max_risk_pct=1.75`). Target: flat `ign_target_r=1.5`, below the
+   book's 2.0R default — a VCE-style measured-move projection was
+   considered and declined (risks the exact defect PBK/VWR each already
+   had fixed: a target past a level the stock never proved, on a move
+   already extended by construction).
+2. **Circuit-data plumbing** — `SymbolContext.upper_circuit`/`lower_circuit`
+   (base.py), a new `self._circuit_ref` cache (`engine.py.__init__`),
+   populated in `refresh_contexts()` via a genuinely new
+   `kite_client.fetch_quotes(ref_symbols)` call (confirmed: the existing
+   `kite.ltp()` call in that function carries no circuit fields; this is
+   not a one-line addition to an already-happening call) on the SAME 300s
+   cadence rather than a separate once-per-session cache — deliberately,
+   since no file in this repo confirms NSE circuit bands are fixed for the
+   whole session, and the 300s-reuse design would pick up an exchange-
+   ordered band revision within one cycle where a fetch-once design would
+   carry a stale band the rest of the day. Same fields wired into
+   `merge_live_bars()`'s bench-only context-construction branch from the
+   same cache.
+3. **`registry.py`** — IGN registered in `_ALL` and `FAMILIES` (own family,
+   matching SDN/GDB/VCE/RNG's own "not proven yet, don't pool" precedent).
+4. **`allocation/scoring.py::ENGINE_ARCHETYPE`** — IGN classified `MOMENTUM`
+   — caught by `tools.verify` itself (`regime-aware engine fit (shipped
+   inert)`, exact same class of gap GDB itself once had: "family reaches
+   `regime_fit_multiplier()` via `p.source` but has no archetype"). Fixed
+   the same session it was introduced, not left for a future session to
+   rediscover.
+5. **THE PER-SYMBOL DECISION EXTRACTION — the largest, highest-stakes piece,
+   not originally scoped this large.** Investigating "how does IGN's fast
+   path get a real entry decision" surfaced that the actual per-candidate
+   pipeline (`evaluate_intraday_setups()`'s own loop body: shortability,
+   re-entry-after-loss, cross-framework holding, event/results risk,
+   structure gate, AI advisor review, conviction floor, position sizing,
+   liquidity gate, depth gate, cost gate) is ~280 lines deeply entangled
+   with real economics — a narrower fast-path check (just shorts_live +
+   `can_short()`, as originally planned) would have silently bypassed
+   sizing, liquidity, depth and cost entirely. Extracted the ENTIRE
+   per-symbol body into a new method, `IntradayEngine.
+   _evaluate_one_intraday_candidate(sym, ctx, best, mc, st, shorts_live,
+   runway_refused) -> dict | None`, called identically by the ordinary
+   loop (once per symbol) and by IGN's fast path (once, for the one symbol
+   just detected) — same pipeline, same `_record_setup()` calls for every
+   refusal reason, zero duplicated logic. A companion extraction,
+   `_score_proposals()` (this session's earlier flush-fix work already
+   built this for a different reason — reused here directly), gives the
+   fast path a single-candidate allocator verdict without ever touching
+   `self._verdicts`, the ordinary 15s cycle's own shared, cycle-scoped
+   state.
+6. **`intraday/event_core.py`** — the one deliberate, narrowly-scoped
+   exception to this module's own "decides nothing that writes anywhere
+   the trusted loop reads" rule, stated as such in its own docstring. New
+   `_try_ign_fast_entry()`: `_evaluate_one_intraday_candidate()` →
+   single-proposal `_score_proposals()` → `_maybe_open_paper()` on TAKE,
+   `_record_setup(..., "ALLOCATOR_DECLINED")` on DECLINE — every step
+   reusing an existing function, none reimplemented. Gated by both
+   `best.strategy == "IGN"` and its own switch; every other engine's
+   `best`/`found` continues to the pre-existing shadow-log path,
+   unchanged.
+
+**Two real regressions caught by `tools.verify` itself while building,
+both fixed the same pass, neither a defect in the new engine's own logic:**
+- `tests/test_long_path_unchanged.py` hardcoded "the eight long engines" —
+  updated to nine, `family_of("IGN") == "IGN"` asserted alongside the
+  existing GAP/PBK/GDB/SDN family checks.
+- `tests/test_intraday_setups_ai_verdict.py` and `tools/health.py`'s
+  `check_shorts()` both do literal source-inspection against
+  `evaluate_intraday_setups()` — one counting `advice=advice` call sites,
+  one matching an exact indented literal for the `is_worth_taking(...,
+  direction=...)` cost-gate call. Both broke when finding #5 above moved
+  that code one indentation level shallower into
+  `_evaluate_one_intraday_candidate()`. Re-pointed/re-indented to match,
+  not disabled — `tools.health`'s `shorts` check genuinely regressed
+  (`1 of 27 direction-aware sites are missing: cost gate (caller)`) and was
+  confirmed fixed by re-running `tools.health` clean afterward, not assumed
+  from the source edit alone.
+
+**Live-verified, not just offline (`config._sys_config = None` to force a
+fresh fetch, bypassing any process cache):**
+```
+IGN lifecycle (live DB): ACTIVE
+intraday_ign_fast_entry_enabled: True
+intraday_event_core_enabled: True
+```
+Also found live, before applying: `intraday_event_core_enabled` was
+**already `true`** in `system_config` — armed by a different, concurrent
+session's own work this same session window (unrelated `intraday_
+quote_parity` write-collapse, migration 131) rather than by anything here.
+Migration 132's own `ON CONFLICT ... DO UPDATE` on that key is therefore a
+no-op against the live row, not a new arm — noted so a future reader does
+not credit this entry with switching on a loop that was, in fact, already
+running.
+
+**Final suite state:** 1306/145, up from the session's 1280/142 baseline
+(+4 `test_score_proposals_extraction`, +16 `test_ignition`, +6
+`test_ignition_fast_entry`). `tools.health`: clean except the same
+pre-existing, unrelated `same_day_discovery` failure present at session
+start. `tools.simulate`: clean end-to-end run, no exceptions, market
+RISK_OFF at run time so zero live IGN detections to observe this session —
+expected, not a gap in verification.
+
+**Could not determine:** whether IGN's proposed thresholds are "not too
+loose" — the quantify-first check validates only that they sit below the
+p10 of a REAL big-move population (not obviously too tight); the null-
+population question (do these thresholds also correctly stay quiet on
+ordinary days) has no SHADOW buffer to answer it in advance this time,
+since the engine shipped ACTIVE — real trades, watched closely, are what
+answers it now. Also could not verify the fast-entry path firing against a
+genuine live tick this session — market was RISK_OFF throughout, so no IGN
+candidate existed to exercise `_try_ign_fast_entry()` end-to-end outside
+its own unit tests.
+
+**Recommends:** watch `intraday_setups`/`closed_positions`/
+`allocation_decisions` for IGN specifically, closely, over the first
+several live sessions — this is real paper capital on zero prior evidence,
+the same standard this project already held VCE/RNG/scale-in to at their
+own zero-evidence arms. Explicitly still open, named in the plan and not
+silently dropped: an allocator slot-reservation carve-out (watch whether
+`intraday_max_concurrent`/`intraday_max_new_per_day` scarcity actually
+binds on IGN before building one), a dedicated scalp exit ladder (IGN uses
+the book's standard exit ladder for now), and teaching `shortability.py`
+to prefer the new real circuit data over its own ATR/prev-close proxy.
+
+**Gate:** PASS — quantify-first numbers real and sourced from this
+session's own queries, every new safety claim (can_short()'s two-check
+replication is unnecessary because the extraction already includes it;
+the allocator adds no latency; self._verdicts is never touched by the
+fast path) verified against the actual code rather than assumed, two
+real regressions caught by the project's own check suite and fixed in
+the same pass, live config confirmed armed by a fresh, cache-bypassing
+read rather than by trusting the INSERT's own success. NEEDS FOLLOW-UP:
+first live session's real detections and entries, watched closely, per
+Recommends above.
+
+## 2026-09-08 — New mechanism, bounded and lifetime-capped, migration 133 — IGN's bootstrap override: 10 lifetime paper entries permitted despite an allocator DECLINE, and the correction to this session's own earlier framing of why
+
+### 0 — Correcting this session's own earlier claim, before building on top of it
+
+Earlier the same day, while designing this mechanism, IGN's cold-start prior
+situation was described to the operator as a "trap" that "doesn't
+self-correct... stays stuck indefinitely." That was wrong, and was corrected
+in-session before any code was written on the strength of it: read directly
+from `allocation/scoring.py`'s own documented design, `intraday_setups.
+cost_verdict='TAKEN'` is set by the **cost gate**, before the allocator ever
+runs, and survives an allocator decline unchanged. `resolve_day()` resolves
+every such row at the close of each trading day via a real bar-walk,
+independent of whether a position was ever opened, and `intraday_priors()`
+builds `INTRADAY/IGN` from exactly those rows. IGN's own prior starts
+accumulating on its own the moment a trading day closes — today's `n=0` is
+because IGN has not lived through a single session close yet (it shipped
+ACTIVE this same day, migration 132), not because of a structural dead end.
+
+What this migration actually buys, correctly scoped, is **speed and
+fidelity, not survival**: the organic path gives a synthetic bar-walk
+estimate off idealised fills — no partial booking, no trailing stop, no
+giveback guard, none of the real exit-ladder behaviour this book's other
+engines are scored on. A small number of genuinely executed paper round
+trips is a materially better signal, faster. The operator, walked through
+both the original (overstated) framing and this correction, chose to build
+it anyway: 10 real IGN entries, lifetime, that may proceed despite an
+allocator DECLINE/DEFER, after which IGN must clear the standard bar like
+everything else — the same discipline this project already held VCE/RNG,
+F-82 and IGN's own launch to at their own zero/thin-evidence starts.
+
+### 1 — Why IGN needed this at all (measured, not assumed)
+
+Checked live before building: `INTRADAY/ALL` (the pooled prior IGN borrows,
+having none of its own) sat at `n=302, mean_r=-0.1345`. `score()`'s own
+formula (`e_r = prior.mean_r × regime_mult − cost_r`) never consumes the
+candidate's own R:R geometry — `r_target` is computed and returned but not
+read by the edge calculation — so a realistic IGN candidate scored
+`e_r ≈ -0.27` regardless of how well-formed the individual setup was, which
+cannot clear `alloc_edge_absolute_floor=0.0`. Backtested against 8 real
+trades built from the operator's own NIFTY 500 gainer/loser data earlier
+this session: all 8 produced the identical edge (-0.2720) and would have
+DECLINEd, confirming the gap was real and not a one-off unlucky prior read.
+
+### 2 — What was built
+
+**`_maybe_open_paper()` now returns a real `bool`** (`intraday/engine.py`) —
+previously `-> None`, silently discarding `paper_broker.open_position()`'s
+own `bool` return. Every one of its 9 `_blocked(...)` refusal paths now
+returns `False` through a small helper; a NEW check —
+`if not opened_ok: _blocked("BLOCKED_POSITION_WRITE_FAILED")` — makes a
+`paper_broker.open_position()` write failure visible for the first time,
+one level deeper than this function's own 10-Aug-2026 "every refusal is
+recorded" fix ever reached. Both existing callers previously discarded the
+return value, so this was safe to land; both now use it. This was not
+optional scope creep: it is the only way a bootstrap slot's consumption can
+be tied to a CONFIRMED write (constraint 6 of the design) rather than an
+attempt.
+
+**Two new `IntradayEngine` methods**, mirroring `_entries_today()`'s own
+hybrid shape (in-memory `self.positions` for the open half, a live
+`closed_positions` query for the closed half) and fail-to-the-strict-side
+philosophy on a query error, but LIFETIME rather than per-cycle:
+- `_ign_bootstrap_used_count()` — lazy, fetched once per process lifetime,
+  cached (`self._ign_bootstrap_used`, `None` sentinel for "not yet
+  fetched"). DB-backed specifically because this daemon can restart
+  mid-session; a purely in-process counter would silently reset to 0 and
+  let the lifetime cap be exceeded. On a query failure, returns the
+  configured cap (treats it as spent) WITHOUT caching that as the answer —
+  the next call gets a fresh chance rather than refusing IGN's bootstrap
+  for the rest of the process on one bad query.
+- `_consume_ign_bootstrap_slot()` — increments the cached count in-process.
+  Called ONLY immediately after `_maybe_open_paper()` returns `True`.
+
+**Wiring, identical shape on both of IGN's entry paths** — the ordinary 15s
+`act_on_setups()` and the 2s fast path's `_try_ign_fast_entry()`: the
+allocator's real `ALLOCATOR_DECLINED` row is ALWAYS recorded first
+(constraint 3 — the honest verdict is never skipped), then, only for
+`st.strategy == "IGN"` (checked explicitly on both paths, not left to the
+fast path's own caller-side gate alone) and only while
+`_ign_bootstrap_used_count() < intraday_ign_exploration_trades` (10), the
+candidate proceeds instead of stopping, carrying the next 1-based slot
+number. Unconditional within the cap (constraint 5) — every IGN decline
+gets the same treatment while slots remain, no cherry-picking which
+declines "look" better, which would bias the sample toward looking better
+than a fair test. The allocator's own `Allocator.select()`/
+`_write_or_collapse()` are never touched — `allocation_decisions` records
+exactly what the allocator actually decided; the override changes only
+whether that decline is ACTED on.
+
+**Traceability — `bootstrap_override_slot` (INTEGER, nullable)** on both
+`open_positions` and `closed_positions` (migration 133), `NULL` for every
+ordinary entry, the slot number for an override. `SELECT * FROM
+closed_positions WHERE bootstrap_override_slot IS NOT NULL` finds every one
+from the database alone. Chose a new column over reusing `pick_label`'s own
+`EXPLORATION` value or `allocator_permits()`'s own "taken as EXPLORATION"
+floor-waiver text — both are different, existing, unbounded mechanisms;
+reusing the word for this third, narrower, capped concept would have made
+all three unqueryable from one another. A human-readable
+`[IGN-BOOTSTRAP n/N]` prefix is also written onto `entry_rationale` (a real
+column `_maybe_open_paper()` had never populated at all until this change)
+as a convenience — the column is the authoritative record.
+
+**One correction to the plan's own claim, caught during implementation, not
+before:** the plan asserted `paper_broker.open_position()`'s row-build was
+generic enough that the new column would "flow through" with no changes
+there. Read directly: `open_position()` builds an explicit, fixed-key `row`
+dict from `setup.get(...)` calls, not a generic forward — `pick_label` has
+exactly such an explicit line, and `bootstrap_override_slot` needed the
+identical one. Added it (`paper_broker.py`). Separately, `control.
+position_lifecycle.close()`'s own `closed_positions` insert is NOT the
+fully generic strip-and-retry `_upsert_position()` provides for
+`open_positions` — it is a hardcoded `elif "colname" in str(e)` chain
+(`charges`, `direction`, ...). Added a matching `elif
+"bootstrap_override_slot" in str(e)` branch so a close can never be blocked
+by this one optional column shipping ahead of its own migration, following
+this file's own established pattern for exactly that failure shape.
+
+### 3 — Verified
+
+- New `tests/test_ign_bootstrap_override.py` (12 checks): the counter's
+  lazy single-fetch and in-process caching; fail-to-the-strict-side on a
+  query error, confirmed NOT to poison the cache for a later successful
+  call; the override fires for `IGN` with slots free and consumes exactly
+  one; the explicit negative case — a non-IGN engine's decline never
+  overrides even with every slot free; a cap-exhausted IGN decline stays
+  declined; a downstream `_maybe_open_paper()` failure does not consume a
+  slot; the allocator's real `ALLOCATOR_DECLINED` is always recorded before
+  the override is considered; a clean allocator TAKE never touches the
+  counter at all; the marker reaches both `open_positions`
+  (`paper_broker.open_position()`) and `closed_positions` (`close()`'s dict
+  construction), mirroring `test_sub_engine_on_positions.py`'s own pattern.
+- `tests/test_ignition_fast_entry.py` extended from 6 to 9 checks: the
+  identical override wiring on the 2s fast path (fires with slots free,
+  stays declined once spent, a downstream failure does not consume a
+  slot), plus its `_FakeEngine` updated with the two counter stubs and a
+  `_maybe_open_paper` stub returning `True` by default — needed, or the
+  new caller code's `if opened_ok: _consume_ign_bootstrap_slot()` would
+  have silently no-opped against every existing test's implicit `None`.
+- `tests/test_paper_entry_verdicts.py` extended from 8 to 10 checks: every
+  existing `_blocked` path now also asserts `ret is False`; two new cases —
+  a `paper_broker.open_position()` failure now records
+  `BLOCKED_POSITION_WRITE_FAILED` and returns `False`; a confirmed open
+  returns `True` and records no `BLOCKED_*` row.
+- Full suite: **1323/146**, up from this session's 1306/145 baseline (+12
+  `test_ign_bootstrap_override`, +3 `test_ignition_fast_entry`, +2
+  `test_paper_entry_verdicts`). `tools.health`: clean except the same
+  pre-existing, unrelated `same_day_discovery` failure present at session
+  start. `tools.simulate`: clean end-to-end run — market was `CLOSED`
+  (after-hours) at run time, so 0 engines fired and the override path was
+  not exercised live this session; its wiring is exercised only by the new
+  unit tests, not yet by a real detection.
+
+**Live-verified, not just offline** (`config._sys_config = None` to force a
+fresh fetch):
+```
+intraday_ign_exploration_trades: 10
+open_positions.bootstrap_override_slot: integer, present
+closed_positions.bootstrap_override_slot: integer, present
+```
+
+**Could not determine this session:** whether the override will actually
+fire in practice before market conditions or IGN's own organic prior make
+it moot — RISK_OFF/after-hours throughout, so no live IGN candidate existed
+to exercise either entry path end-to-end outside its own unit tests, same
+gap noted at IGN's own launch entry above.
+
+**Gate:** PASS — the cold-start reasoning corrected against the actual
+documented design before being built on, not left standing; every
+constraint from the plan (bounded/lifetime, overrides only the allocator's
+verdict, the allocator's own real decision always recorded first,
+unconditional within the cap, only a confirmed write consumes a slot)
+verified by a test written to fail without the corresponding code, not
+asserted; one real gap in the plan's own claim about `paper_broker.py`
+found and fixed during implementation, not silently patched over; live
+config and both new columns confirmed by a fresh, cache-bypassing read
+rather than by trusting the migration's own reported success. NEEDS
+FOLLOW-UP: first live session where IGN actually fires with a bootstrap
+slot available, watched closely — same standard as the launch entry above.

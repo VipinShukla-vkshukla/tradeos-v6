@@ -39,6 +39,28 @@ not reimplemented). Every result is written to `intraday_event_shadow`
 ONLY (migration 105) — never `intraday_setups`, never
 `execution.paper_broker`, never `allocation.allocator`. A bug here can
 pollute only its own shadow log.
+
+THE ONE DELIBERATE EXCEPTION — IGN's FAST-ENTRY PATH, 08-Sep-2026
+--------------------------------------------------------------------
+`intraday_ign_fast_entry_enabled` (migration 132), scoped to the IGN
+engine ONLY, the operator's own explicit instruction: a genuinely
+violent circuit/volume-pump move can be gone before the ordinary 15s
+cycle ever sees it. Investigated first, not assumed — `Allocator.
+select()`'s own docstring says it is "pure arithmetic... microseconds,
+no I/O", already runs every 15s cycle, not on a slower timer; the real
+bottleneck was the cycle INTERVAL, not the allocator's own logic. So
+this is the one place in the file where that changes: when the
+symbol's `best` is IGN AND the switch is armed, `_try_ign_fast_entry()`
+below calls `engine._evaluate_one_intraday_candidate()` — the EXACT
+same pipeline (shortability with real stock/runway data, re-entry,
+cross-framework, event risk, structure, AI advice, conviction, sizing,
+liquidity, depth, cost) the ordinary loop runs for every candidate, for
+the ONE symbol this tick just detected — then a single-proposal
+allocator pass, then `engine._maybe_open_paper()`, the exact function
+every other engine's TAKE already uses. No new decision logic exists
+here; every gate is imported, not reimplemented. Every OTHER engine's
+`best`/`found` still only ever reaches the shadow-log path below,
+completely unchanged.
 """
 
 from __future__ import annotations
@@ -51,7 +73,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import IST, cfg_bool, today_ist
+from config import IST, cfg_bool, cfg_int, today_ist
 
 
 def check(engine, feed) -> int:
@@ -120,6 +142,17 @@ def check(engine, feed) -> int:
             continue
         if best is None:
             continue
+
+        # IGN FAST-ENTRY — see this module's own docstring for the full
+        # reasoning. Scoped by strategy name AND its own switch; every
+        # other engine's best/found falls straight through to the
+        # shadow-log path below, unchanged.
+        if best.strategy == "IGN" and cfg_bool("intraday_ign_fast_entry_enabled", False):
+            try:
+                _try_ign_fast_entry(engine, sym, ctx, best, phase)
+            except Exception as e:
+                logger.debug(f"  event_core: IGN fast-entry failed for {sym} — {e}")
+
         try:
             engine.sb.table("intraday_event_shadow").insert({
                 "trade_date":  trade_date,
@@ -140,3 +173,105 @@ def check(engine, feed) -> int:
             logger.debug(f"  event_core: shadow log failed for {sym} — {e}")
 
     return logged
+
+
+def _try_ign_fast_entry(engine, sym: str, ctx, best, phase: str) -> None:
+    """
+    IGN only. Reuses `engine._evaluate_one_intraday_candidate()` — the
+    EXACT pipeline the ordinary 15s loop runs for every candidate
+    (shortability with REAL stock/runway data, re-entry, cross-framework,
+    event risk, structure, AI advice, conviction, sizing, liquidity,
+    depth, cost) — for the ONE symbol this tick just detected, then a
+    single-proposal allocator pass, then the same paper-entry function
+    every other engine's TAKE already uses.
+
+    NEVER TOUCHES `engine._verdicts`. That dict is the ordinary 15s
+    cycle's shared, cycle-scoped view — allocator_permits(), the swing
+    alert-kind logic and the pick-label logic all read it assuming it
+    reflects the full candidate set that cycle proposed. Scoring this
+    ONE candidate through `engine._score_proposals()` directly (not
+    `_allocate_shadow()`, which owns that assignment) keeps this call
+    from corrupting that view between one 15s cycle and the next — see
+    `_score_proposals()`'s own docstring for the full reasoning.
+
+    Every refusal below is recorded exactly as the ordinary path records
+    it — `_evaluate_one_intraday_candidate()` calls `_record_setup()`
+    internally for each of its own gates, and this function does the same
+    for the one gate that sits after it (the allocator) — so a fast-path
+    refusal is exactly as auditable in `intraday_setups` as a slow-path
+    one, not a second, invisible decision path.
+    """
+    from intraday.session import session_state
+    from intraday import market_context as mkt
+    from allocation.proposal import from_intraday
+    from allocation.policies import TAKE
+
+    if engine._held_by_framework(sym, "INTRADAY"):
+        return
+
+    st = session_state()
+    if not st.can_enter:
+        # Cannot actually happen if `best` exists at all — IGN's own
+        # `phases` tuple is exactly session.TRADEABLE, the set that
+        # defines can_enter — kept as a defensive mirror of the ordinary
+        # path's own first gate, not because this is expected to fire.
+        return
+    mc = mkt.from_context(engine._index_ctx)
+    shorts_live = cfg_bool("intraday_allow_shorts", False) and mc.allow_shorts
+
+    # `[]` for runway_refused: the ordinary loop accumulates this across
+    # every symbol in one cycle for its own end-of-cycle summary line: a
+    # single fast-path call has no such summary to feed, and the
+    # BLOCKED_SHORTABILITY row this function may still write below
+    # carries the same "cover deadline" reason text either way.
+    result = engine._evaluate_one_intraday_candidate(
+        sym, ctx, best, mc, st, shorts_live, [])
+    if not result:
+        return
+
+    proposal = from_intraday(result["setup"], result["qty"])
+    if proposal is None:
+        return
+    v = engine._score_proposals([proposal])
+    if not v or v[0].get("verdict") != TAKE:
+        why = (v[0].get("reason") if v else "no allocator verdict") or "declined"
+        engine._record_setup(
+            result["setup"], result["phase"], result["cost_pct"],
+            "ALLOCATOR_DECLINED", 0,
+            mc_state=(result["market"].state if result["market"] else None))
+        logger.info(f"      {sym}: IGN fast-entry — allocator declined — {why[:90]}")
+
+        # THE BOUNDED BOOTSTRAP OVERRIDE — 08-Sep-2026, migration 133. Same
+        # shape as act_on_setups()'s own wiring on the ordinary 15s loop,
+        # same two engine methods, no duplicated counting logic — see that
+        # function's own comment for the full reasoning. `best.strategy ==
+        # "IGN"` is defensive here (event_core.check() already gates this
+        # whole function on it), mirroring the ordinary path's own explicit
+        # check rather than relying solely on the caller.
+        bootstrap_slot = None
+        if best.strategy == "IGN":
+            used = engine._ign_bootstrap_used_count()
+            cap = cfg_int("intraday_ign_exploration_trades", 10)
+            if used < cap:
+                bootstrap_slot = used + 1
+                logger.info(f"      {sym}: IGN bootstrap-override slot "
+                            f"{bootstrap_slot}/{cap} — proceeding despite "
+                            f"the decline above")
+        if bootstrap_slot is None:
+            return
+        opened_ok = engine._maybe_open_paper(
+            result["setup"], result["qty"], result["market"],
+            phase=result["phase"], cost_pct=result["cost_pct"],
+            pick_label=None, bootstrap_override_slot=bootstrap_slot)
+        if opened_ok:
+            # Only a CONFIRMED write consumes the lifetime slot (constraint
+            # 6) — a downstream failure must not.
+            engine._consume_ign_bootstrap_slot()
+        return
+
+    engine._maybe_open_paper(
+        result["setup"], result["qty"], result["market"],
+        phase=result["phase"], cost_pct=result["cost_pct"],
+        pick_label=v[0].get("pick_label"))
+    logger.info(f"      {sym}: IGN fast-entry — TAKE, entering on the 2s loop "
+                f"rather than waiting for the next 15s cycle")

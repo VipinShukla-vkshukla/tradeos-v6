@@ -2217,9 +2217,16 @@ _SHORT_SPINE = [
     # is_worth_taking() with the literal call from evaluate_intraday_setups()
     # and getting "target is on the wrong side of entry for a LONG" on a
     # coherent short.
+    # Indentation shifted 08-Sep-2026 when this call site (and everything
+    # around it) was extracted out of evaluate_intraday_setups()'s own for-
+    # loop into _evaluate_one_intraday_candidate() — one less nesting level
+    # — so IGN's fast-entry path (event_core.py) could call the exact same
+    # pipeline for one candidate instead of a second, narrower copy. Same
+    # call, same arguments, new home; the marker text below is updated to
+    # match, not the claim it verifies.
     ("cost gate (caller)", "intraday/engine.py",
      "ok, why = is_worth_taking(best.entry, qty, best.target, best.stop,\n"
-     "                                      direction=best.direction)"),
+     "                                  direction=best.direction)"),
     ("allocator prior carried", "allocation/proposal.py",    'direction   = getattr(setup, "direction"'),
     ("allocator coherence",     "allocation/proposal.py",    "from intraday.direction import validate"),
     # 11-Aug-2026: marker updated from "direction=p.direction)" to
