@@ -184,17 +184,39 @@ def scan(symbols: list[str], contexts: dict, sb, trade_date: str) -> list[dict]:
     if not to_check:
         return []
 
+    # NOT `.eq("date", trade_date)` — THE BUG THAT MADE THIS MODULE FIRE
+    # ZERO TIMES SINCE IT SHIPPED, 09-Sep-2026. Both market_regime and
+    # sector_strength are evening-pipeline outputs, computed once after
+    # that day's own close (confirmed live: sector_strength.computed_at
+    # for a session's own date sits at ~22:00 IST that night; querying
+    # TODAY's date during TODAY's live session — the only time this
+    # function ever runs — returns zero rows, every day, always). With
+    # sector_rank == {} every symbol's sector defaults to rank 99
+    # (run_vbd/run_sbs/run_rsb's own `sector_rank.get(sector, 99)`), which
+    # fails every one of their `s_rank > gate(10-14)` checks universally —
+    # not a rare trigger condition, a structural one. This is the exact
+    # same class of gap the module's own docstring already named and
+    # fixed for VBD's delivery_pct ("uses YESTERDAY's ... as a same-day
+    # proxy rather than silently inventing a number or skipping the
+    # gate") — that reasoning was just never applied to these two other
+    # evening-only reads. Fixed the same way _latest_daily_rows() below
+    # already reads stock_data_daily: most recent available ON OR BEFORE
+    # trade_date, not an exact match on a date that cannot exist yet.
     try:
-        regime_row = (sb.table("market_regime").select("regime")
-                        .eq("date", trade_date).limit(1).execute().data or [])
+        regime_row = (sb.table("market_regime").select("regime,date")
+                        .lte("date", trade_date)
+                        .order("date", desc=True).limit(1).execute().data or [])
         regime_ctx = _simple_regime_ctx(regime_row[0].get("regime") if regime_row else None)
     except Exception:
         regime_ctx = _simple_regime_ctx(None)
 
     try:
-        sector_rank = {r["sector"]: r["rank"] for r in
-                       sb.table("sector_strength").select("sector,rank")
-                         .eq("date", trade_date).execute().data or []}
+        sector_rows = (sb.table("sector_strength").select("sector,rank,date")
+                         .lte("date", trade_date)
+                         .order("date", desc=True).limit(100).execute().data or [])
+        latest_sector_date = sector_rows[0]["date"] if sector_rows else None
+        sector_rank = {r["sector"]: r["rank"] for r in sector_rows
+                       if r["date"] == latest_sector_date}
     except Exception:
         sector_rank = {}
 
@@ -211,7 +233,19 @@ def scan(symbols: list[str], contexts: dict, sb, trade_date: str) -> list[dict]:
 
         s = _build_live_stock(ctx, daily_row)
         s["symbol"] = sym
-        triggered_by = _trigger(s, sector_rank)
+        # WAS THE ONE UNGUARDED CALL IN THIS LOOP — 09-Sep-2026. Every
+        # other per-symbol step below (compute_entry_zones,
+        # compute_trade_plan) already catches its own exception and
+        # continues to the next symbol; a bad row reaching _trigger() had
+        # no such guard and would have aborted the ENTIRE batch — every
+        # other watched symbol this cycle, silently, since run.py's own
+        # caller wraps the whole scan() call in one bare except. Matches
+        # the sibling calls' own shape now.
+        try:
+            triggered_by = _trigger(s, sector_rank)
+        except Exception as e:
+            logger.debug(f"  same_day_discovery: {sym} trigger check failed — {e}")
+            continue
         if not triggered_by:
             continue
 
