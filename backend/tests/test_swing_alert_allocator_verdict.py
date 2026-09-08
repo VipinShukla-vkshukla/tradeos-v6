@@ -55,15 +55,22 @@ def test_no_verdict_falls_back_to_room_swap_exactly_as_before():
     assert kind_swap == "SWAP_CANDIDATE" and declined_swap is False
 
 
-def test_defer_verdict_is_not_treated_as_declined():
-    """DEFER is a real, distinct allocator lifecycle state (allocator.py's
-    _age_deferrals) — deliberately out of scope for this change. Only a
-    literal DECLINE re-labels the alert; anything else falls through to the
-    normal room/swap behaviour, unchanged."""
+def test_defer_verdict_gets_its_own_kind_not_folded_into_entry_or_declined():
+    """PETRONET, 08-Sep-2026: DEFER means a slot is held for a stronger
+    same-cycle proposal — allocator_permits() refuses it exactly like a
+    DECLINE a few lines later in the same call chain, so the alert must not
+    say plain "ENTRY" (confirmed live: PETRONET alternated DECLINE/DEFER all
+    session while the operator kept receiving "BUY — in zone" every few
+    minutes for a trade the system had no intention of taking). Also not
+    folded into ENTRY_DECLINED: a decline is "no", a defer is "not yet" —
+    different dedup buckets, different words. Supersedes the old
+    test_defer_verdict_is_not_treated_as_declined, which documented this gap
+    as deliberately out of scope for the narrower 26-Aug fix."""
     from intraday.engine import _swing_alert_kind
     verdict = {"verdict": "DEFER", "reason": "a slot is held for a better proposal"}
-    kind, declined = _swing_alert_kind(verdict, room=True)
-    assert kind == "ENTRY" and declined is False
+    kind, blocked = _swing_alert_kind(verdict, room=True)
+    assert kind == "ENTRY_DEFERRED", f"expected a distinct DEFER kind, got {kind}"
+    assert blocked is True, "DEFER must be treated as blocked — allocator_permits() refuses it too"
 
 
 def test_swing_alert_reflect_allocator_defaults_true():
@@ -78,7 +85,8 @@ TESTS = [
     ("declined verdict overrides SWAP_CANDIDATE too", test_declined_verdict_overrides_swap_candidate_too),
     ("TAKE verdict leaves today's alert unchanged", test_take_verdict_is_unchanged),
     ("no verdict falls back to room/swap exactly as before", test_no_verdict_falls_back_to_room_swap_exactly_as_before),
-    ("DEFER is not treated as declined", test_defer_verdict_is_not_treated_as_declined),
+    ("DEFER gets its own kind, not folded into ENTRY or ENTRY_DECLINED",
+     test_defer_verdict_gets_its_own_kind_not_folded_into_entry_or_declined),
     ("swing_alert_reflect_allocator defaults true", test_swing_alert_reflect_allocator_defaults_true),
 ]
 

@@ -56,6 +56,7 @@ MODULES = [
     ("gabriel gap",        "tests.test_gabriel_gap"),
     ("ai json parsing",     "tests.test_ai_json_parsing"),
     ("swing alert reflects allocator verdict", "tests.test_swing_alert_allocator_verdict"),
+    ("notifier push flag (silent-but-recorded alerts)", "tests.test_notifier_push_flag"),
     ("telegram approval routes through order_manager", "tests.test_telegram_fill_slot_accounting"),
     ("candidate monitor lease-gated fallback", "tests.test_candidate_monitor_lease_fallback"),
     ("position alert lease-gated + material-change dedup", "tests.test_position_alert_dedup"),

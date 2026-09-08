@@ -145,7 +145,7 @@ def _zone_aware_slip_bps(ltp: float, zone_low, zone_high,
 def _swing_alert_kind(verdict: dict | None, room: bool) -> tuple[str, bool]:
     """
     What Action.kind a swing entry alert should carry, given this cycle's
-    allocator verdict — 26-Aug-2026.
+    allocator verdict — 26-Aug-2026, extended 08-Sep-2026 for DEFER.
 
     RKFORGE, 26-Aug: DECLINE'd by the allocator every cycle all day (edge
     -0.016 vs hurdle 0.029) while act_on_candidates() kept sending "BUY — in
@@ -162,11 +162,32 @@ def _swing_alert_kind(verdict: dict | None, room: bool) -> tuple[str, bool]:
     "ENTRY" bucket, and reverts immediately — as a fresh state — the moment
     the allocator flips back to TAKE.
 
-    Returns (kind, declined).
+    PETRONET, 08-Sep-2026: this closed only half of RKFORGE's gap. DEFER
+    means the allocator's edge clears the bar but a slot is being HELD for a
+    stronger same-cycle proposal (allocator.py's deferral queue) — a real
+    "not now", and allocator_permits() refuses it exactly like a DECLINE a
+    few lines later in the same call chain. But this function only ever
+    checked for the literal string "DECLINE", so DEFER fell through to plain
+    "ENTRY" — confirmed live: PETRONET alternated DECLINE/DEFER in
+    allocation_decisions essentially all session while the operator kept
+    receiving "PETRONET: BUY — in zone" every few minutes, the price ticking
+    underneath an instruction the system itself had no intention of acting
+    on. Given its own kind ("ENTRY_DEFERRED") rather than folded into
+    ENTRY_DECLINED — a decline is "no", a defer is "not yet, something else
+    is ahead of it in the queue" — collapsing the two would just be this same
+    mislabeling bug at one remove. (`test_defer_verdict_is_not_treated_as_
+    declined` documented DEFER as deliberately out of scope for the original,
+    narrower fix; this is the follow-up with live evidence in hand.)
+
+    Returns (kind, blocked) — blocked is True for DECLINE or DEFER, either of
+    which allocator_permits() will refuse moments later; only a bare
+    ENTRY/SWAP_CANDIDATE result may actually buy this cycle.
     """
-    declined = bool(verdict) and verdict.get("verdict") == "DECLINE"
-    if declined:
+    v = (verdict or {}).get("verdict")
+    if v == "DECLINE":
         return "ENTRY_DECLINED", True
+    if v == "DEFER":
+        return "ENTRY_DEFERRED", True
     return ("ENTRY" if room else "SWAP_CANDIDATE"), False
 
 
@@ -3096,13 +3117,17 @@ class IntradayEngine:
             # new.
             verdict = (self._verdicts.get((sym, "CNC"))
                        if cfg_bool("swing_alert_reflect_allocator", True) else None)
-            kind, declined = _swing_alert_kind(verdict, room)
+            kind, blocked = _swing_alert_kind(verdict, room)
+            declined = kind == "ENTRY_DECLINED"
+            deferred = kind == "ENTRY_DEFERRED"
 
             self.notifier.send(Action(
                 symbol=c["symbol"],
                 kind=kind,
                 headline=(f"Allocator declined — {verdict.get('reason') or 'edge below the bar'}"
                           if declined
+                          else f"Not yet — {verdict.get('reason') or 'a slot is held for a stronger candidate'}"
+                          if deferred
                           else d.headline if room
                           else f"Better than what you hold — {d.headline}"),
                 detail=(f"{d.reason}\n"
@@ -3115,12 +3140,18 @@ class IntradayEngine:
                         + (f"\nedge {verdict['edge']:.4f} vs hurdle {verdict['hurdle']:.4f}"
                            if declined and verdict.get("edge") is not None
                            and verdict.get("hurdle") is not None else "")),
-                ltp=ltp, urgency="INFO" if declined else "NORMAL",
+                ltp=ltp, urgency="INFO" if blocked else "NORMAL",
                 meta={"tier": c.get("ai_tier"), "action": d.action,
                       "rank": rk.total, "rank_pos": pos, "swap": swap,
                       "allocator_verdict": verdict.get("verdict") if verdict else None,
                       "allocator_edge": verdict.get("edge") if verdict else None},
                 framework="SWING",       # from signal_output_daily, a swing plan
+                # A DECLINE/DEFER is not a trade event — nothing was bought,
+                # sold, or changed. Recorded on the dashboard like every other
+                # alert, but never pushed to Telegram: the operator asked
+                # twice (08-Sep-2026) not to be interrupted for a candidate
+                # that never became a position.
+                push=not blocked,
             ))
             self._maybe_enter_swing(c, d, ltp)
 

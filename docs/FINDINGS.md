@@ -16183,3 +16183,86 @@ mechanism, regression test written and shown failing before the fix and
 passing after, no schema migration needed, 1,253/1,253 offline checks green.
 NEEDS FOLLOW-UP: confirm behaviour on the next live market-hours session
 with the daemon running.
+
+## 2026-09-08 — bug fix + new mechanism, swing-only, intraday/engine.py + intraday/notifier.py — DEFER verdicts alerted as plain "BUY", and non-trade alerts pushed to Telegram anyway
+
+**The report that found this, same session as the cron fix above:** two
+live observations mid-session. (1) "Why am I still seeing the entry
+declined notifications?" — OIL, ENTRY_DECLINED. (2) "Why am I getting
+repetitive notifications when they are not getting through for buy?" —
+PETRONET, two "BUY — in zone" alerts 5m13s apart (11:12:18, 11:17:31 IST)
+with the price and R:R drifting underneath an instruction that never
+resulted in a purchase.
+
+**Checked live** (Supabase MCP, project dbjfwpamxudnolfalpfm — this was
+verified against real data, not inferred from source alone):
+- `system_config.intraday_restate_minutes = 5` (not the module's own
+  documented default of 15) — a "genuinely different" material headline is
+  allowed to restate every 5 minutes here, which alone explains the
+  11:12→11:17 cadence once the headline is shown to differ (below).
+- `allocation_decisions` for PETRONET today: DECLINE/DEFER alternating all
+  session, edge ≈ -0.616 against a hurdle ≈ 0.016 — nowhere near TAKE.
+  DEFER reason: "edge -0.6169 clears the bar, but a slot is held for BEML
+  at edge 0.0066 with P(trigger)=84% today."
+- `intraday_alerts` for PETRONET today: kind alternated ENTRY /
+  ENTRY_DECLINED all session, in lock-step with the DECLINE/DEFER rows
+  above — confirming the DEFER cycles were the ones mislabeled ENTRY.
+- `intraday_broker_log` for PETRONET today: zero rows — the order path was
+  never even reached, consistent with `allocator_permits()` refusing it.
+
+**Root cause.** `intraday/engine.py::_swing_alert_kind()` (built 26-Aug for
+the RKFORGE incident) only special-cased the literal string `"DECLINE"`.
+DEFER — a real, distinct allocator state meaning "the edge clears the bar
+but a slot is being held for a stronger same-cycle proposal" — fell through
+to plain `"ENTRY"`, the same kind a genuine TAKE gets. `allocator_permits()`
+a few lines later in the SAME call chain refuses DECLINE and DEFER
+identically (only TAKE passes; see its own `return False, ... f"allocator
+returned {v['verdict']}"` fallthrough) — so the alert and the code that
+actually decides were telling two different stories, exactly the class of
+bug RKFORGE was, one state further along than what that fix covered. This
+was NOT an oversight: `test_defer_verdict_is_not_treated_as_declined`
+explicitly documented DEFER as "deliberately out of scope for this change"
+on 26-Aug — a scoping call made without the live evidence gathered today.
+
+**Also, independently:** `ENTRY_DECLINED`/`ENTRY_APPROACHING`/every other
+INFO-urgency swing alert was pushed to Telegram exactly like a real trade
+event, just with a softer icon. Both of the operator's questions above
+converge on the same ask, stated twice now: interrupt only for a material
+change to an actual position, not for the allocator's ongoing opinion of a
+candidate that was never bought.
+
+**Fixed:**
+1. `_swing_alert_kind()` now returns `"ENTRY_DEFERRED"` for a DEFER verdict
+   — its own dedup bucket (a decline is "no", a defer is "not yet, behind a
+   stronger candidate" — different enough that folding them together would
+   just be this same mislabeling bug one level up). `act_on_candidates()`
+   builds an honest headline for it ("Not yet — a slot is held for...").
+2. `intraday/notifier.py::Action` gains `push: bool = True`. `Notifier.
+   send()` still runs the full material-change gate and still writes the
+   dashboard row when `push=False` — the audit trail is unchanged — it only
+   skips the Telegram/Discord network call. `act_on_candidates()` sets
+   `push=not blocked`, so ENTRY_DECLINED and the new ENTRY_DEFERRED are
+   recorded but silent; a genuine ENTRY (TAKE, about to actually buy) is
+   unaffected.
+
+**Tests:** `tests.test_swing_alert_allocator_verdict` — replaced the
+now-wrong DEFER assertion with one asserting the new kind and `blocked is
+True` (6/6 green). New `tests.test_notifier_push_flag` (3 checks): push=True
+still delivers; push=False skips delivery but still records + dedupes;
+push=False stays gated by the SAME material-change rule as any other alert.
+Both registered in `tools.verify`. 1,256/1,256 offline checks green,
+`tools.health`/`tools.simulate` re-run clean (same pre-existing, unrelated
+`same_day_discovery` failure, untouched).
+
+**Could not verify live:** whether PETRONET's underlying edge of -0.616 is
+itself a correct number or a separate computation defect — out of scope for
+an alerting fix, flagged for a future session; the allocator's OWN verdict
+is what the alert must match regardless of whether that verdict is
+well-calibrated.
+
+**Gate:** PASS — root cause confirmed against live production data (not
+assumed), fix directly closes both reported observations, existing test
+explicitly updated with the reasoning for the reversal (not silently
+changed), no schema migration, 1,256/1,256 offline checks green. NEEDS
+FOLLOW-UP: whether PETRONET's -0.616 edge itself deserves investigation is
+a separate question from this one.

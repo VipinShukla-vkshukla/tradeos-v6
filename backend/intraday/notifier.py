@@ -70,6 +70,13 @@ class Action:
     # book raised by the intraday loop is still swing news, and belongs in the
     # swing channel where swing decisions are read.
     framework: str = "INTRADAY"
+    # False for a "nothing happened to your trade" alert — an allocator
+    # DECLINE/DEFER on a candidate that was never bought, say. Still recorded
+    # on the dashboard (the audit trail this project always keeps) and still
+    # governed by the same material-change gate, but never sent to Telegram/
+    # Discord — 08-Sep-2026, after the operator asked twice not to be
+    # interrupted for anything short of a real change to a position.
+    push: bool = True
 
     def state_key(self) -> str:
         """What counts as 'the same alert' for de-duplication purposes."""
@@ -175,16 +182,21 @@ class Notifier:
         if not force and not self._should_send(a):
             return False
 
-        text = self._format(a)
-        ok_any = self._deliver(text, a.framework)
+        # a.push=False: recorded and deduped exactly like any other alert,
+        # just never pushed to a phone — see the field's own docstring.
+        ok_any = True
+        if a.push:
+            text = self._format(a)
+            ok_any = self._deliver(text, a.framework)
 
-        # The dashboard row is written regardless of chat success. If Telegram
-        # is rate-limited the alert must still exist somewhere you can see it.
+        # The dashboard row is written regardless of chat success (or of
+        # push at all). If Telegram is rate-limited — or this alert was never
+        # meant for it — it must still exist somewhere you can see it.
         self._write_dashboard(a)
 
         self._last[a.state_key()] = (a.headline, datetime.now(IST))
         self._sent_today += 1
-        logger.info(f"  🔔 {a.kind} {a.symbol}: {a.headline}")
+        logger.info(f"  {'🔔' if a.push else '📋'} {a.kind} {a.symbol}: {a.headline}")
         return ok_any
 
     # ── delivery, on the INTRADAY channels ──────────────────────────────────
