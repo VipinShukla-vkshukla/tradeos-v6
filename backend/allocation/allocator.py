@@ -628,6 +628,28 @@ class Allocator:
             self._deferred[p.key()] = {"entry": p.entry, "at": now}
 
     # ── write-time collapse — migration 129, 08-Sep-2026 ────────────────────
+    @staticmethod
+    def is_material_change(state: dict | None, *, verdict, regime_bucket, edge,
+                            now, edge_threshold: float, heartbeat_s: float) -> bool:
+        """
+        The one predicate deciding "new anchor row" vs. "fold into the
+        existing one's repeat_count" — shared verbatim between the live 15s
+        path (_write_or_collapse, below) and tools/compact_allocation_
+        decisions.py's retroactive backfill (10-Sep-2026), so the two can
+        never silently drift into judging the same history two different
+        ways. `state` is the anchor's own tracked {verdict, regime_bucket,
+        edge, first_decided_at} (or None for "no anchor yet").
+        """
+        return (
+            state is None
+            or verdict != state["verdict"]
+            or regime_bucket != state["regime_bucket"]
+            or (edge is None) != (state["edge"] is None)
+            or (edge is not None and state["edge"] is not None
+                and abs(edge - state["edge"]) >= edge_threshold)
+            or (now - state["first_decided_at"]).total_seconds() >= heartbeat_s
+        )
+
     def _write_or_collapse(self, v: dict) -> None:
         """
         Route a verdict to self._buffer either as a brand-new row or as a
@@ -666,15 +688,9 @@ class Allocator:
         edge_threshold = cfg_float("alloc_write_collapse_edge_threshold", 0.03)
         heartbeat_s = cfg_int("alloc_write_collapse_heartbeat_s", 1800)
 
-        keep = (
-            state is None
-            or verdict != state["verdict"]
-            or regime_bucket != state["regime_bucket"]
-            or (edge is None) != (state["edge"] is None)
-            or (edge is not None and state["edge"] is not None
-                and abs(edge - state["edge"]) >= edge_threshold)
-            or (now - state["first_decided_at"]).total_seconds() >= heartbeat_s
-        )
+        keep = self.is_material_change(state, verdict=verdict, regime_bucket=regime_bucket,
+                                        edge=edge, now=now, edge_threshold=edge_threshold,
+                                        heartbeat_s=heartbeat_s)
 
         if keep:
             row = self._record(v)

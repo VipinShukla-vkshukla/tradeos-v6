@@ -16266,3 +16266,101 @@ explicitly updated with the reasoning for the reversal (not silently
 changed), no schema migration, 1,256/1,256 offline checks green. NEEDS
 FOLLOW-UP: whether PETRONET's -0.616 edge itself deserves investigation is
 a separate question from this one.
+
+## 2026-09-08 — Storage — retroactive backfill compaction of allocation_decisions' pre-armed backlog (tools/compact_allocation_decisions.py) — 215,936 rows deleted, 3,917 anchors updated, zero hurdle-bar delta
+
+**Ran:**
+
+```bash
+cd backend && python -m tools.verify
+cd backend && python -m tools.compact_allocation_decisions              # dry run
+cd backend && python -m tools.compact_allocation_decisions --execute --probe-first
+cd backend && python -m tools.compact_allocation_decisions --execute
+```
+```sql
+-- via Supabase MCP execute_sql, project dbjfwpamxudnolfalpfm
+select repeat_count, count(*) from allocation_decisions group by repeat_count;
+select symbol, product, trade_date, count(distinct entry), count(distinct stop),
+       count(distinct target), count(distinct outcome_r) from allocation_decisions
+  where framework='SWING' and repeat_count=1 and trade_date < current_date
+  group by symbol, product, trade_date;
+```
+
+**Found:** `alloc_write_collapse_swing_enabled` only started collapsing NEW
+writes from the 08-Sep-2026 daemon restart onward — the ~221,000 SWING rows
+written 21-Aug through 07-Sep still sat at the pre-fix, one-row-per-15s-cycle
+density (`repeat_count=1` on all of them). The operator asked directly
+whether that backlog should also be corrected.
+
+**Built `tools/compact_allocation_decisions.py`**, reusing the live
+predicate verbatim — `Allocator.is_material_change()` extracted from
+`_write_or_collapse()` into a shared `@staticmethod` (migration 129's own
+logic, not a reimplementation, so the retroactive and live paths can never
+silently judge the same history two different ways). Dry-run by default,
+`--probe-first` applies to 3 real rows only and reads them back before
+anything else is touched — same safety posture as `tools/archive_
+allocation_decisions.py`.
+
+**A real bug caught by --probe-first, not assumed safe:** the first
+implementation batched anchor updates via `.upsert(payload, on_conflict=
+"id")` with a payload of only `{id, repeat_count, decided_at}`. PostgREST
+does not merge a partial upsert payload into the existing row — it builds a
+full-row INSERT ... ON CONFLICT DO UPDATE, and every column absent from the
+payload gets its DEFAULT (NULL for most columns here). The very first
+3-row probe attempt tried to null out `symbol` on a live production row and
+was rejected only because that column happens to be NOT NULL — no
+corruption occurred (Postgres rejects the whole statement), but it would
+have silently blanked other nullable columns had the constraint not
+existed. Fixed: genuine `.update(fields).eq("id", anchor_id)` calls, a true
+partial UPDATE. Re-probed after the fix: 3 real rows, read back, confirmed
+only `repeat_count`/`decided_at`/`outcome_r` changed, every other column
+byte-identical.
+
+**Two additional correctness checks added before executing, prompted by
+the operator's explicit "100% confident" bar, not run in the original
+live-arming pass:**
+1. Verified live that entry/stop/target never vary within any of the 336
+   real (symbol, product, trade_date) groups in the backlog — confirming
+   every collapsed group really is duplicate observations of the identical
+   proposed trade, not distinct opportunities that happen to share a key.
+2. `outcome_r` carry-forward: 17,049 of the to-be-deleted rows already had
+   a value from a past `outcomes.resolve()` run, which may have landed on
+   any row in a group, not necessarily the one `plan()` picks as anchor.
+   Without carrying it forward, an anchor could show `outcome_r=NULL`
+   despite the group having already been scored — self-healing (the next
+   `resolve()` run recomputes an identical value, deterministic given
+   identical entry/stop/target/trade_date, confirmed zero `outcome_r`
+   variance in the same check) but not actually "exactly the same" until
+   it does. `plan()` now carries a resolved value from any absorbed row
+   onto the anchor if the anchor doesn't already have one.
+3. Scoped to `trade_date < today` (filtered in Python — adding it to the
+   SQL query caused a statement timeout against the live table, measured
+   twice; the plain framework+repeat_count fetch that already worked stayed
+   as-is). The live daemon owns today's rows and may still be mid-episode
+   on one; this backfill only ever touches history it has stopped updating.
+
+**Applied live:** 220,996 rows fetched (2026-08-21 to 2026-09-07) → plan:
+5,057 physical rows survive (97.7% fewer), 3,917 of them get a
+repeat_count/decided_at (and where applicable outcome_r) update, 215,936
+deleted. Hurdle-bar invariance re-verified independently from the plan
+(repeat_count-weighted population vs. raw) immediately before applying:
+WEAK n=212,124→212,124, STRONG n=8,872→8,872, **p75 delta +0.00000, p95
+delta +0.00000 in both buckets**. Executed: 3,917 updated, 215,936 deleted,
+confirmed live afterward (`sum(repeat_count)` across all surviving SWING
+rows reconciles to the true total observation count). 9 new offline tests
+(2 specifically for the outcome_r carry-forward), registered in `tools.
+verify`, 1,265/1,265 green.
+
+**Could not determine:** exact physical disk-space reclaimed by this pass
+alone — `v_storage_usage` dropped from ~290MB (post earlier VACUUM) to
+248MB within the same session without a fresh VACUUM FULL yet run on
+`allocation_decisions`, so some of that is Postgres reusing freed pages
+for concurrent writes rather than a shrink recorded by the storage
+dashboard. Recommends a `VACUUM FULL public.allocation_decisions` pass to
+get an exact final number.
+
+**Gate:** PASS — dry-run, probe-first (which itself caught a real
+would-be data-corruption bug before it touched real data), and full
+execute all completed as planned; reconciliation and hurdle-bar invariance
+verified independently from the plan both before and after applying, not
+assumed from the plan's own arithmetic.
