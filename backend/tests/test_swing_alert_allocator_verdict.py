@@ -80,6 +80,32 @@ def test_swing_alert_reflect_allocator_defaults_true():
             "must default on — migration 118 ships it true")
 
 
+def test_chase_limit_is_scored_by_the_allocator():
+    """JSWSTEEL, 09-Sep-2026 — the half of the RKFORGE gap DECLINE-checking
+    alone still left open. `_swing_alert_kind()` can only label a chase
+    correctly if a verdict for it EXISTS to look up; before this,
+    allocation.proposal.TAKEABLE_SWING did not include CHASE_LIMIT, so
+    `from_swing()` returned None for every chase candidate, none were ever
+    scored, and self._verdicts never had an entry for one — meaning
+    `allocator_permits()` hit its own "no allocator verdict — failing open"
+    path for EVERY chase, regardless of edge. Confirmed live: JSWSTEEL sat
+    in CHASE_LIMIT most of the session with edge -2.33 against a hurdle of
+    ~0.015 — a decline this stark on the BUY_NOW side (which WAS scored) —
+    and alerted as plain "ENTRY" 35+ times because the allocator was never
+    even asked."""
+    from allocation.proposal import from_swing, TAKEABLE_SWING
+    assert "CHASE_LIMIT" in TAKEABLE_SWING
+    with cfg_ctx():
+        class D:
+            symbol = "JSWSTEEL"; action = "CHASE_LIMIT"
+            entry = 1308.90; stop = 1275.26; target = 1395.89
+            qty = 22; rr_live = 2.59
+            headline = "x"; stale_price = False
+        p = from_swing(D())
+    assert p is not None, "CHASE_LIMIT must convert to a Proposal, not be silently dropped"
+    assert p.symbol == "JSWSTEEL" and p.direction == "LONG"
+
+
 TESTS = [
     ("declined verdict overrides ENTRY kind", test_declined_verdict_overrides_entry_kind),
     ("declined verdict overrides SWAP_CANDIDATE too", test_declined_verdict_overrides_swap_candidate_too),
@@ -88,6 +114,7 @@ TESTS = [
     ("DEFER gets its own kind, not folded into ENTRY or ENTRY_DECLINED",
      test_defer_verdict_gets_its_own_kind_not_folded_into_entry_or_declined),
     ("swing_alert_reflect_allocator defaults true", test_swing_alert_reflect_allocator_defaults_true),
+    ("CHASE_LIMIT is scored by the allocator", test_chase_limit_is_scored_by_the_allocator),
 ]
 
 if __name__ == "__main__":

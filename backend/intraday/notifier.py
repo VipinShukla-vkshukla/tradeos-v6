@@ -159,7 +159,7 @@ class Notifier:
         # For this alert class the exact number is not itself decision-
         # relevant, so a "different" reading is worth exactly as little as
         # an identical one, and both wait out the full rearm window.
-        if self._material(prev_headline) == self._material(a.headline):  # TEMP: prove the test fails
+        if not a.restate_on_change or self._material(prev_headline) == self._material(a.headline):
             if a.urgency == "CRITICAL":
                 rearm_min = min(rearm_min, cfg_int("intraday_rearm_critical_minutes", 15))
             return now - prev_at >= timedelta(minutes=rearm_min)

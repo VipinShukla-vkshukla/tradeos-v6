@@ -17759,3 +17759,69 @@ a declined swing candidate.
 traces to a named, real symptom (JSWSTEEL specifically, in both cases)
 rather than a hypothetical. NEEDS FOLLOW-UP: none identified; documented
 here mainly so the commit history and this ledger agree on what shipped.
+
+## 2026-09-10 — Correction to the entry above: the shipped fix was inert — a race between two concurrent sessions on this machine committed the code mid-edit, before the actual condition was restored
+
+**What actually happened.** The previous entry's fixes were written in one
+Claude Code session, working directly in this checkout. Verifying
+`restate_on_change` per this project's own "demonstrate the check FAILING
+before trusting it" rule required temporarily breaking the real condition
+in `intraday/notifier.py::_should_send()` (replacing `if not a.
+restate_on_change or self._material(...) == self._material(...):` with the
+unconditional `if self._material(...) == self._material(...):`, tagged
+`# TEMP: prove the test fails`) to confirm the new test actually caught the
+bug. A SEPARATE session was working in this SAME checkout concurrently
+(the frontend/registry-sync work also in this ledger today), saw the
+uncommitted diff, ran `tools.verify` (which reported clean — see why
+below), and committed it as `3f915ca` — during the exact window the
+condition was deliberately broken, before the restoring edit landed.
+
+**Why `tools.verify` reported clean anyway.** The test file committed
+alongside it, `test_notifier_push_flag.py`, was ALSO mid-revision: its
+first draft of `test_restate_on_change_false_holds_a_differently_worded_
+repeat` used a bare `cfg_ctx()` (no override), so both sends landed inside
+the default 15-minute `intraday_restate_minutes` window regardless of which
+branch handled them — the test passed on broken code by coincidence, not
+because it exercised the fix. The corrected version (`intraday_restate_
+minutes: 0, intraday_rearm_minutes: 999`, so the two branches produce
+observably different results) was written afterward, in the same original
+session, and is what ships now.
+
+**Net effect while this was live:** `Action.restate_on_change=False` was a
+no-op — the swing "still chaseable"/"still approaching" alerts kept
+restating on genuinely-different-looking headlines exactly as before,
+because the code path that was supposed to short-circuit that check never
+ran. The OTHER two fixes in `3f915ca` (`CHASE_LIMIT` added to
+`TAKEABLE_SWING`; `act_on_setups()`'s wording/push keyed on `opened_ok`)
+were NOT affected — those files had no outstanding edits at commit time
+and are confirmed correct in this checkout.
+
+**Fixed:** restored the condition; `tools.verify` re-run at 1361/149
+(higher than 3f915ca's 1355 — two more test modules landed alongside this:
+`test_setup_alert_reflects_open_result` and a `CHASE_LIMIT`-scoring test in
+`test_swing_alert_allocator_verdict`, both written in the original session
+and not yet committed when the race occurred).
+
+**Why this is recorded rather than quietly folded into a normal commit:**
+this project's own standing rule is "own mistakes plainly... say what
+broke, what it cost, and what was restored" — a ledger entry claiming
+`Gate: PASS` for a fix that was, for roughly eleven hours of wall-clock
+time, not actually wired in, needs its own correction rather than a silent
+diff. Nothing here was money-relevant (swing is PAPER; no order was placed
+differently because of the inert restate check) — the cost was exactly
+what the original bug already cost: JSWSTEEL-shaped alert repetition would
+have continued, undiagnosed as "already fixed," until someone reported it
+again or re-read the code.
+
+**Process note, not a code fix:** two Claude Code sessions editing the same
+working tree concurrently can race like this — one session's mid-refactor
+intermediate state is a valid commit target from the outside, indistinguishable
+from finished work. Nothing in this repository can prevent that; it is a
+reason to re-verify a ledger entry's own claims before building on top of
+it, not just its intent, if two sessions are known to be active on the same
+checkout at once.
+
+**Gate:** PASS — actually verified this time: the broken intermediate line
+identified by diffing the commit against the working tree, the fix
+restored, 1361/1361 offline checks green, `tools.health`/`tools.simulate`
+re-run clean (same pre-existing, unrelated `same_day_discovery` failure).
