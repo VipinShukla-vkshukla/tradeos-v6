@@ -77,6 +77,23 @@ class Action:
     # Discord — 08-Sep-2026, after the operator asked twice not to be
     # interrupted for anything short of a real change to a position.
     push: bool = True
+    # False when the EXACT number in the headline is not itself the news —
+    # 09-Sep-2026. A swing "still chaseable" alert recomputes its live R:R,
+    # gap-to-zone and derived risk/invested amounts every cycle from a
+    # ticking price, and none of that arithmetic changes the answer to the
+    # one question the alert is actually asking ("is this worth chasing
+    # right now") until the KIND itself changes (to ENTRY_DECLINED, or the
+    # candidate drops out of contention). But _material()'s integer-rounding
+    # was tuned for PRICES, not for a ratio like R:R hovering in a narrow
+    # band — 2.59 and 2.61 round to different integers on either side of a
+    # coin flip — so consecutive cycles kept reading as "genuinely
+    # different" and restating every `intraday_restate_minutes` (5, live)
+    # instead of holding for the full rearm window. Confirmed live: JSWSTEEL
+    # alerted 35+ times between 10:45 and 15:28 IST on one unbroken "CHASE
+    # OK" recommendation. Default True (unchanged) preserves the exit
+    # alerts' existing behaviour, where the exact number IS the decision —
+    # a stop that moved from ₹190 to ₹200 deserves the faster restate.
+    restate_on_change: bool = True
 
     def state_key(self) -> str:
         """What counts as 'the same alert' for de-duplication purposes."""
@@ -136,7 +153,13 @@ class Notifier:
         # Same action AND same substance -> nothing has changed. Re-arm only
         # after a timeout so a stop that has been breached for an hour says so
         # again rather than being announced once at 09:31 and never repeated.
-        if self._material(prev_headline) == self._material(a.headline):
+        #
+        # `not a.restate_on_change` takes the SAME branch even when the
+        # rounded headline text differs — see the field's own docstring.
+        # For this alert class the exact number is not itself decision-
+        # relevant, so a "different" reading is worth exactly as little as
+        # an identical one, and both wait out the full rearm window.
+        if self._material(prev_headline) == self._material(a.headline):  # TEMP: prove the test fails
             if a.urgency == "CRITICAL":
                 rearm_min = min(rearm_min, cfg_int("intraday_rearm_critical_minutes", 15))
             return now - prev_at >= timedelta(minutes=rearm_min)

@@ -32,7 +32,21 @@ from config import IST
 
 # The swing actions that represent "this is takeable now". Anything else —
 # WAIT, AVOID, HOLD, an event block — produces no proposal at all.
-TAKEABLE_SWING = ("BUY", "BUY_NOW", "ENTER", "STAGED_ENTRY")
+#
+# CHASE_LIMIT ADDED 09-Sep-2026 — JSWSTEEL. `_maybe_enter_swing()` (engine.py)
+# has always treated CHASE_LIMIT as buyable, exactly like BUY_NOW: `if
+# d.action not in ("BUY_NOW", "CHASE_LIMIT"): return`. But it was missing
+# here, so a chase candidate was never converted to a Proposal, never scored,
+# and never appeared in `self._verdicts` — meaning `allocator_permits()`
+# hit its own documented fail-open path ("no allocator verdict — failing
+# open") for EVERY chase candidate, all day, regardless of edge. Confirmed
+# live: JSWSTEEL sat in CHASE_LIMIT essentially all session with edge
+# -2.33 against a hurdle of ~0.015 — a decline this stark on the BUY_NOW
+# side (which WAS scored) — yet the allocator had no opinion on it at all
+# once price moved 0.1-0.5% above the zone into chase territory. The same
+# gap silently defeated `_swing_alert_kind()`'s own DECLINE/DEFER labelling
+# (intraday/engine.py) for the identical reason: no verdict to label.
+TAKEABLE_SWING = ("BUY", "BUY_NOW", "CHASE_LIMIT", "ENTER", "STAGED_ENTRY")
 
 
 @dataclass(frozen=True)

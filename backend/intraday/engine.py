@@ -3229,6 +3229,10 @@ class IntradayEngine:
                     meta={"tier": c.get("ai_tier"), "max_entry": d.max_entry,
                           "state": "APPROACHING", "rank": rk.total, "rank_pos": pos},
                     framework="SWING",   # a swing plan nearing its entry limit
+                    # "Still approaching" is not news the second time — only
+                    # crossing into buyable (a different KIND, ENTRY) is. See
+                    # restate_on_change's own docstring, 09-Sep-2026.
+                    restate_on_change=False,
                 ))
                 continue
 
@@ -3305,6 +3309,19 @@ class IntradayEngine:
                 # twice (08-Sep-2026) not to be interrupted for a candidate
                 # that never became a position.
                 push=not blocked,
+                # THE NUMBER IS NOT THE NEWS — 09-Sep-2026, JSWSTEEL.
+                # d.headline recomputes R:R/gap/risk from a live, ticking
+                # price every 15s; none of that arithmetic changes "still
+                # chaseable" into a different answer, only the KIND does
+                # (ENTRY -> ENTRY_DECLINED, or dropping out of `entries`
+                # altogether). Without this, _material()'s integer-rounding
+                # of a R:R hovering in one narrow band reads as "genuinely
+                # different" almost every cycle, and intraday_restate_minutes
+                # (5, live) let it restate on that cadence — confirmed live:
+                # JSWSTEEL alerted 35+ times between 10:45 and 15:28 IST on
+                # one unbroken recommendation. See Action.restate_on_change's
+                # own docstring.
+                restate_on_change=False,
             ))
             self._maybe_enter_swing(c, d, ltp)
 
@@ -4780,20 +4797,42 @@ class IntradayEngine:
                 continue
             self._record_alerted(st)
 
+            # THE WORDING MUST SAY WHAT ACTUALLY HAPPENED — 09-Sep-2026.
+            # "SDN — buy 19 @ ..." read identically whether `_maybe_open_
+            # paper()` a few lines above actually opened the paper position
+            # or was refused underneath it (BLOCKED_CONCURRENCY, a capacity
+            # cap, a race) — the operator had no way to tell a real paper
+            # fill from a setup that fired and went nowhere, and asked
+            # directly: does this mean a buy happened? `opened_ok` (the
+            # confirmed-write signal `_maybe_open_paper` already returns,
+            # used a few lines up to gate the IGN bootstrap slot) answers
+            # that with certainty available nowhere else at this call site.
+            # A setup that did NOT convert to a position is not a trade
+            # event by this project's own definition — recorded on the
+            # dashboard like every other alert (intraday_setups already
+            # carries the refusal reason `_maybe_open_paper` wrote), but not
+            # pushed, same `push` mechanism already used for a declined/
+            # deferred swing candidate.
             self.notifier.send(Action(
                 symbol=st.symbol, kind=f"SETUP_{st.strategy}",
-                headline=(f"{st.strategy} — buy {qty} @ ₹{st.entry:.2f}, "
+                headline=(f"{st.strategy} — BOUGHT {qty} @ ₹{st.entry:.2f}, "
                           f"stop ₹{st.stop:.2f}, target ₹{st.target:.2f} "
-                          f"(R:R {st.rr:.1f})"),
+                          f"(R:R {st.rr:.1f})"
+                          if opened_ok else
+                          f"{st.strategy} — setup at ₹{st.entry:.2f} fired but "
+                          f"was NOT taken (stop ₹{st.stop:.2f}, target "
+                          f"₹{st.target:.2f}, R:R {st.rr:.1f})"),
                 detail=(f"{st.rationale}\n"
                         f"Dies if: {st.invalidation}\n"
                         f"Risk {st.risk_pct:.2f}% · reward {st.reward_pct:.2f}% · "
                         f"{s['cost_note']}\n"
                         f"Market {mc.state} (size ×{mc.size_multiplier:g}) · {s['phase']}"
                         + (f"\nAlso flagged by: {', '.join(corro)}" if corro else "")),
-                ltp=st.entry, urgency="NORMAL",
-                meta={"strategy": st.strategy, "qty": qty, "rr": round(st.rr, 2)},
+                ltp=st.entry, urgency="NORMAL" if opened_ok else "INFO",
+                meta={"strategy": st.strategy, "qty": qty, "rr": round(st.rr, 2),
+                      "opened": opened_ok},
                 framework="INTRADAY",
+                push=opened_ok,
             ))
 
     def _ensure_allocator(self):

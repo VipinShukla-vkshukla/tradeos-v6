@@ -1,8 +1,8 @@
 """
-intraday/notifier.py — Action.push, 08-Sep-2026.
+intraday/notifier.py — Action.push and Action.restate_on_change.
 
-WHY THIS EXISTS
-----------------
+WHY push EXISTS (08-Sep-2026)
+------------------------------
 The operator asked twice not to be interrupted by anything short of a real
 change to a position — buy, sell, exit, partial, stop hit, trail update.
 "Allocator declined OIL" and "allocator is holding PETRONET's slot for
@@ -16,6 +16,20 @@ This exercises `Notifier.send()` directly: `push=True` still calls
 `_deliver()` (the network hop); `push=False` skips it but still writes the
 dashboard row and still updates the dedup memory, so a later `push=True`
 alert for the same (symbol, kind) is compared against it exactly as before.
+
+WHY restate_on_change EXISTS (09-Sep-2026, JSWSTEEL)
+------------------------------------------------------
+A swing "still chaseable" alert recomputes its live R:R, gap-to-zone and
+derived risk/invested amounts every cycle from a ticking price. None of
+that arithmetic changes the actual recommendation until the KIND itself
+changes — but `_material()`'s integer-rounding was tuned for prices, not a
+ratio hovering in one narrow band, so consecutive cycles kept reading as
+"genuinely different" and restating on `intraday_restate_minutes` (5 live)
+instead of the long rearm window. Confirmed live: JSWSTEEL alerted 35+
+times between 10:45 and 15:28 IST on one unbroken "CHASE OK". `Action.
+restate_on_change=False` (default True) makes the "different material"
+branch behave exactly like "same material" — governed by the long rearm
+window regardless of what the numbers say.
 """
 
 from __future__ import annotations
@@ -93,6 +107,49 @@ def test_push_false_still_gated_by_material_change():
     assert len(sb.alerts) == 1
 
 
+def test_restate_on_change_false_holds_a_differently_worded_repeat():
+    """THE BUG, reproduced and closed. Two sends for the same (symbol, kind)
+    with genuinely different-looking headlines (R:R/qty/risk drifting from a
+    ticking price) — default behaviour (restate_on_change=True, the
+    exit-alert case) would restate on intraday_restate_minutes; with it
+    False, the second send must be held exactly like an unchanged repeat."""
+    from intraday.notifier import Action
+    sb = _FakeSB()
+    with cfg_ctx(), patch("intraday.notifier.Notifier._deliver", return_value=True) as deliver_mock:
+        notifier = _notifier(sb)
+        notifier.send(Action(symbol="JSWSTEEL", kind="ENTRY",
+                             headline="JSWSTEEL: CHASE OK — 0.2% above zone, R:R still 2.59",
+                             restate_on_change=False))
+        sent_again = notifier.send(Action(symbol="JSWSTEEL", kind="ENTRY",
+                                          headline="JSWSTEEL: CHASE OK — 0.5% above zone, R:R still 2.20",
+                                          restate_on_change=False))
+    assert deliver_mock.call_count == 1, (
+        f"expected exactly 1 delivery — restate_on_change=False must ignore "
+        f"the differently-rounded headline, got {deliver_mock.call_count}")
+    assert sent_again is False
+
+
+def test_restate_on_change_true_still_restates_a_genuine_difference():
+    """The default must not regress the exit-alert case this project
+    already depends on — a materially different headline (a stop that
+    actually moved) still restates faster than the full rearm window."""
+    from intraday.notifier import Action
+    sb = _FakeSB()
+    # restate_minutes=0 isolates "is a genuine difference even ELIGIBLE to
+    # restate" from "has enough wall-clock time passed" — the two sends in
+    # this test are back-to-back, and a nonzero throttle would fail this for
+    # a reason unrelated to what it is testing.
+    with cfg_ctx({"intraday_restate_minutes": 0}), \
+         patch("intraday.notifier.Notifier._deliver", return_value=True) as deliver_mock:
+        notifier = _notifier(sb)
+        notifier.send(Action(symbol="SBIN", kind="TRAIL_SL",
+                             headline="Trail SL 780.00 -> 802.00"))
+        sent_again = notifier.send(Action(symbol="SBIN", kind="TRAIL_SL",
+                                          headline="Trail SL 802.00 -> 815.00"))
+    assert deliver_mock.call_count == 2, "a genuinely different trail level must still restate"
+    assert sent_again is True
+
+
 TESTS = [
     ("push=True delivers and returns the delivery result",
      test_push_true_delivers_and_returns_the_delivery_result),
@@ -100,6 +157,10 @@ TESTS = [
      test_push_false_skips_delivery_but_still_records_and_dedupes),
     ("push=False is still gated by material change",
      test_push_false_still_gated_by_material_change),
+    ("restate_on_change=False holds a differently-worded repeat",
+     test_restate_on_change_false_holds_a_differently_worded_repeat),
+    ("restate_on_change=True (default) still restates a genuine difference",
+     test_restate_on_change_true_still_restates_a_genuine_difference),
 ]
 
 if __name__ == "__main__":
