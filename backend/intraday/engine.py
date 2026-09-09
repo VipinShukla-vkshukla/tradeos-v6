@@ -2128,8 +2128,8 @@ class IntradayEngine:
         so there is something real to look at before deciding whether to
         arm `intraday_live_requalify_enabled`.
 
-        TWO CANDIDATE POPULATIONS, TWO SEPARATE ARM SWITCHES. Stage D2b,
-        23-Aug-2026 — added after the operator armed
+        THREE CANDIDATE POPULATIONS, THREE SEPARATE ARM SWITCHES. Stage
+        D2b, 23-Aug-2026 — added after the operator armed
         `intraday_live_requalify_enabled` for Population A alone and
         separately asked for the nifty_total_market / IPO gap to be
         closed. Population B/C (unreferenced_candidates() — names outside
@@ -2143,6 +2143,14 @@ class IntradayEngine:
         Population B/C stays behind its OWN switch,
         `intraday_live_requalify_unreferenced_enabled`, defaulting OFF
         independently of Population A's.
+
+        POPULATION D — 10-Sep-2026, docs/FINDINGS.md. Names that pass every
+        static gate but were outranked out of today's bench (unlike
+        Population A, which failed the movement gate outright) — confirmed
+        live as why GRAPHITE/JSL/SARDAEN/PTCIL/PPLPHARMA were invisible all
+        session despite qualifying. Fully vetted like the bench itself, so
+        `intraday_live_requalify_unranked_enabled` ships armed True, unlike
+        A/B/C's weaker-vetting caveat.
         """
         if not self._bench:
             return 0
@@ -2157,7 +2165,10 @@ class IntradayEngine:
             pop_a = scanner.movement_rejected_candidates(self.sb, exclude=existing)
             pop_bc = scanner.unreferenced_candidates(
                 self.sb, exclude=existing | {c.symbol for c in pop_a})
-            candidates = pop_a + pop_bc
+            pop_d = scanner.unranked_qualifying_candidates(
+                self.sb, exclude=existing | {c.symbol for c in pop_a}
+                                 | {c.symbol for c in pop_bc})
+            candidates = pop_a + pop_bc + pop_d
             if not candidates:
                 return 0
 
@@ -2171,12 +2182,17 @@ class IntradayEngine:
                 logger.info(f"  live requalify: {e.symbol} — {e.reason}")
 
             bc_symbols = {c.symbol for c in pop_bc}
+            d_symbols = {c.symbol for c in pop_d}
             to_add = []
             a_enabled = cfg_bool("intraday_live_requalify_enabled", False)
             bc_enabled = cfg_bool("intraday_live_requalify_unreferenced_enabled", False)
+            d_enabled = cfg_bool("intraday_live_requalify_unranked_enabled", True)
             for e in admitted:
                 if e.symbol in bc_symbols:
                     if bc_enabled:
+                        to_add.append(e)
+                elif e.symbol in d_symbols:
+                    if d_enabled:
                         to_add.append(e)
                 elif a_enabled:
                     to_add.append(e)

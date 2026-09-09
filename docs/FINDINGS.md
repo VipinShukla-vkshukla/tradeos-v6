@@ -17917,3 +17917,44 @@ both as real, evidenced candidates for the operator's own decision.
 NEEDS FOLLOW-UP: more IGN closed trades before tuning anything
 IGN-specific; a decision on whether to build the third universe-catch-up
 population.
+
+## 10-Sep-2026 — Population D built and validated; B confirmed already complete
+
+Follow-up to the 09/10-Sep review above. Operator approved building "A"
+(universe-catch-up) and "B" (IGN long/short split), asked what the 20-30
+trade threshold on "C" (exit ladder) actually unlocks.
+
+**B needs no code.** `allocation/scoring.py::_intraday_priors_single_population()`
+already segments every prior by direction (`f"{k}/SHORT"` when
+`D.is_short(d)`), and `allocator.py::_prior_for()` already refuses to let a
+SHORT proposal fall back to the long-only book distribution
+(`test_allocator_direction.py::test_a_short_uses_its_own_prior_not_the_long_books()`
+proves it directly). This is engine-agnostic — IGN gets it for free. I
+initially proposed building this as new work; corrected myself before
+building anything redundant.
+
+**A — Population D built**: `scanner.unranked_qualifying_candidates()`,
+wired into `engine.py::live_requalify_universe()` alongside Population
+A/B/C behind its own switch, `intraday_live_requalify_unranked_enabled`
+(migration 137, armed True — unlike A/B/C, these names are fully vetted,
+no weaker-vetting caveat to wait out). Covers the specific gap neither A
+nor B/C touches: a name that qualifies on every static gate but simply
+scored lower than the ~120 that made the bench.
+
+Validated against the real 08-Sep-2026 row for each of the 5 missed
+movers — the exact data `build_universe()` would have used going into
+09-Sep's session, before their moves happened — through the real
+`_qualifies()` gate directly: GRAPHITE, JSL, SARDAEN, PTCIL and PPLPHARMA
+all pass outright (`qualifies=True` for all 5, checked live, not
+inferred). Population D would have surfaced every one of them for a live
+re-check that morning. 5 new offline tests
+(`tests/test_scanner_population_d.py`), including this exact fixture
+shape as a regression guard.
+
+**C — deferred, as planned.** 20-30 more IGN trades unlocks: a real
+percentile-based kept-fraction distribution (6 trades is too few for a
+meaningful percentile), separating the giveback-threshold question from
+the separate single-share/`BOOK_PARTIAL` structural gap already flagged,
+confirming whether HBLENGINE's 72.9s exit-lag was representative, and
+enough long/short separation (given B) to check if shorts need different
+numbers. Not building until that evidence exists.

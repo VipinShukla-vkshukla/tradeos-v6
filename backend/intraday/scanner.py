@@ -510,6 +510,76 @@ def movement_rejected_candidates(sb=None, exclude: set[str] | None = None
     return out
 
 
+def unranked_qualifying_candidates(sb=None, exclude: set[str] | None = None
+                                   ) -> list[UniverseEntry]:
+    """
+    Population D, 10-Sep-2026 (docs/FINDINGS.md). EQ names that pass
+    EVERY static gate in _qualifies() but missed today's bench purely
+    because build_universe()'s score (off yesterday's numbers) ranked
+    something else higher. Neither existing population covers this —
+    Population A failed the ATR band, Population B/C have no
+    stock_data_daily row at all. Confirmed live 09-Sep-2026: GRAPHITE
+    (+15%), JSL, SARDAEN, PTCIL, PPLPHARMA all qualified outright and
+    were invisible all session for exactly this reason.
+
+    Deliberately unbounded (same shape as movement_rejected_candidates())
+    — a stock's odds of an extraordinary day today don't correlate with
+    yesterday's rank, so capping this by rank would reintroduce the same
+    blind spot further down. fetch_quotes() already chunks any size.
+
+    source="population_d" falls through _population_class() to
+    "established" (same as Population A) with no change needed there —
+    only a population_b/population_c prefix counts as "admitted".
+
+    `exclude` is normally the bench union every other population already
+    checked this cycle.
+    """
+    sb = sb or get_supabase()
+    exclude = exclude or set()
+    d = _latest_date(sb)
+    if not d:
+        return []
+
+    rows = (sb.table("stock_data_daily")
+              .select("symbol,close,value_cr,atr_pct,delivery_pct,volume,"
+                      "avg_vol_20d,sector,industry,asm_flag,fo_ban_flag,market_cap")
+              .eq("date", d).execute().data or [])
+    if not rows:
+        return []
+
+    min_price   = cfg_float("intraday_min_price", 50.0)
+    min_value   = cfg_float("intraday_min_turnover_cr", 25.0)
+    min_atr     = cfg_float("intraday_min_atr_pct", 1.20)
+    max_atr     = cfg_float("intraday_max_atr_pct", 8.00)
+    min_deliv   = cfg_float("intraday_min_delivery_pct", 20.0)
+    skip_flagged = cfg_bool("intraday_skip_flagged", True)
+
+    out: list[UniverseEntry] = []
+    for r in rows:
+        sym = r.get("symbol")
+        if not sym or sym in exclude:
+            continue
+        passes, _ = _qualifies(
+            r, min_price=min_price, min_value=min_value, min_atr=min_atr,
+            max_atr=max_atr, min_deliv=min_deliv, skip_flagged=skip_flagged,
+            require_movement=True)
+        if not passes:
+            continue   # a genuine gate failure — Population A/B own those reasons
+        atr = float(r.get("atr_pct") or 0)
+        deliv = r.get("delivery_pct")
+        deliv = float(deliv) if deliv is not None else None
+        out.append(UniverseEntry(
+            symbol=sym, close=float(r.get("close") or 0),
+            value_cr=round(float(r.get("value_cr") or 0), 1),
+            atr_pct=round(atr, 2), delivery_pct=deliv,
+            sector=r.get("sector") or "", score=0.0,
+            reason="qualifies on every static gate, outranked into the bench cut",
+            avg_vol_20d=float(r.get("avg_vol_20d") or 0),
+            source="population_d",
+        ))
+    return out
+
+
 def live_requalify(candidates: list[UniverseEntry], quotes: dict[str, dict],
                    *, move_pct: float, turnover_cr: float,
                    min_price: float | None = None) -> list[UniverseEntry]:

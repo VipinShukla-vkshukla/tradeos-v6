@@ -243,6 +243,8 @@ MODULES = [
      "tests.test_ign_exit_lag_probe"),
     ("intraday engine registry sync — wired into run.py, lifecycle/description bugs fixed",
      "tests.test_intraday_registry_sync"),
+    ("scanner Population D — outranked-but-qualifying live catch-up",
+     "tests.test_scanner_population_d"),
 ]
 
 
