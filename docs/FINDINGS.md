@@ -17958,3 +17958,62 @@ the separate single-share/`BOOK_PARTIAL` structural gap already flagged,
 confirming whether HBLENGINE's 72.9s exit-lag was representative, and
 enough long/short separation (given B) to check if shorts need different
 numbers. Not building until that evidence exists.
+
+## 10-Sep-2026 — ATR-trail and volume-decay tested by replay, found inert; giveback guard validated instead
+
+Follow-up to "make the engine wiser" — the operator asked to prove two
+proposed exit-ladder improvements (ATR-scaled trail, arming the existing
+but dormant VOLUME_DECAY rung, §7a) would help before building anything,
+rather than take it on assertion.
+
+**The formal May validation window (REPLAY_DESIGN.md §8) is dead.**
+`stock_data_daily` only reaches back to 28-Aug-2026 — this session's own
+retention-shrink migration (130) has already trimmed past it. Pivoted to
+the only reachable window, 28-Aug through 09-Sep (~7 sessions).
+
+**Built `tools/replay/ladder_variant_check.py`** — replays real historical
+minute bars (Kite historical API, cached) through the actual, imported
+`evaluate_intraday_exit()` under several policy variants, book-wide
+across all 9 replay-covered engines (IGN not yet wired into the replay
+harness's detection side — separate work). 238 real replayed trades.
+
+**Round 1 — ATR-trail and volume-decay: both inert, 0/238 trades changed.**
+Traced to ladder ORDER: the giveback guard (rung 5b) is checked before
+the trail (rung 6, needs 1.5R) and volume-decay (rung 7a, only applies
+below 1.2R). It closes 60.5% of all 238 trades before either candidate
+is ever reached. Isolating giveback off on a 25-trade slice did show the
+ATR-trail differentiating — confirming the mechanism works, just that it
+never gets a turn under the live ladder as it's configured.
+
+**Round 2 — tested the giveback guard itself, since it's what's actually
+dominant.** Compared the live 30% (tightened this session, migration 134,
+on ~6 IGN trades) against the pre-session 50% and against off entirely,
+on the same 238 trades:
+
+```
+                mean R    median R    win rate
+gb=30% (live)  -0.0046    +0.332      64.7%
+gb=50%         -0.0189    +0.228      60.9%
+gb=off         +0.0242    -0.286      45.8%
+```
+
+30% beats 50% on both mean and median — the tightening this session was
+correct, now confirmed on 238 trades across the whole book rather than
+the 6 that motivated it. "off" LOOKS better on mean R only because 5
+outlier trades (2.09R-2.92R) mask a majority-losing, negative-median
+distribution (win rate 45.8%) — exactly the outlier-driven-mean pattern
+that flips sign on a different week. Not acted on.
+
+**Conclusion: no code change.** The giveback guard is correctly
+calibrated, confirmed rather than assumed. ATR-trail and volume-decay
+remain unbuilt/unarmed — not because they're bad ideas, but because
+nothing in this pass found a reason to loosen the guard that would give
+them room to matter. Revisit if/when there's a reason to reopen the
+giveback question specifically.
+
+**Also found, unrelated to the ladder question:** the replay harness's
+documented May validation/holdout windows are silently unreachable now
+that `stock_data_daily`'s retention window has shrunk past them
+(migration 130). Any future replay work needs a redesignated window;
+`params/frozen.json`'s validity against current data has not been
+re-checked.
