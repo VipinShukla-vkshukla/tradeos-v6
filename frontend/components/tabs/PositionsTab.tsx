@@ -346,7 +346,7 @@ function ClosedByMonth({ data, onSelect }: { data: ClosedPosition[]; onSelect?: 
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="border-b border-border/30 bg-panel-hover/50">
-                      {['Symbol', 'Strategy', 'Entry', 'Exit', 'Qty', 'P&L', '%', 'R', 'Held', 'Exit Date', 'Reason'].map((h) => (
+                      {['Symbol', 'Dir', 'Strategy', 'Entry', 'Exit', 'Qty', 'P&L', '%', 'R', 'Held', 'Exit Date', 'Reason'].map((h) => (
                         <th key={h} className={`py-2 px-3 font-medium text-muted-foreground ${h === 'Symbol' ? 'text-left' : 'text-right'}`}>{h}</th>
                       ))}
                     </tr>
@@ -377,6 +377,17 @@ function ClosedByMonth({ data, onSelect }: { data: ClosedPosition[]; onSelect?: 
                                 <div className="text-muted-foreground">{p.sector}</div>
                               </div>
                             </div>
+                          </td>
+                          <td className="text-right py-2.5 px-3">
+                            {(() => {
+                              const d = (p.direction ?? 'LONG').toUpperCase();
+                              return (
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                                  d === 'SHORT' ? 'bg-loss/15 text-loss' : 'bg-profit/15 text-profit'}`}>
+                                  {d === 'SHORT' ? '▼ S' : '▲ L'}
+                                </span>
+                              );
+                            })()}
                           </td>
                           <td className="text-right py-2.5 px-3 text-muted-foreground">{p.strategy}</td>
                           <td className="text-right py-2.5 px-3 font-mono">₹{p.entry_price?.toFixed(0)}</td>

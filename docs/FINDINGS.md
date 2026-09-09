@@ -17825,3 +17825,95 @@ checkout at once.
 identified by diffing the commit against the working tree, the fix
 restored, 1361/1361 offline checks green, `tools.health`/`tools.simulate`
 re-run clean (same pre-existing, unrelated `same_day_discovery` failure).
+
+## 2026-09-09/10 — IGN's first live trading day, reviewed against real NIFTY 500 gainers/losers — a universe-selection gap found (not a detection-logic one), the giveback guard confirmed as the dominant exit driver, and a frontend direction column added
+
+The operator asked six concrete questions about IGN's actual live
+performance today, screenshot in hand. Answered from real data — 262
+IGN setups, 90 taken, 6 closed round trips (several MULTI_LEG-folded) —
+not from re-reading the engine's own code.
+
+**1/5 — why several real top gainers/losers (GRAPHITE +15%, MRPL, JSL,
+AEGISLOG, SARDAEN, PVRINOX, CARTRADE, PTCIL, IFCI, PPLPHARMA, LODHA)
+were never caught.** Not IGN's detection logic — three (AEGISLOG:ASM-
+flagged, MRPL/IFCI: delivery% just under the 20% floor) are real,
+correct gate refusals. The other eight are the real gap: `_qualifies()`
+confirms they'd pass every static gate, but `build_universe()` ranks by
+YESTERDAY's ATR+turnover and keeps only the top 40 (bench 120) — a
+symbol having an extraordinary day TODAY that wasn't already volatile
+YESTERDAY is invisible all session, because the daemon never subscribes
+to it at all. The two existing "catch it live" mechanisms both miss this
+exact population: `rerank_universe_live()` can only re-rank names
+ALREADY in the bench using LIVE volume, but a bench-only (unsubscribed)
+name has no live ticks to re-rank with (confirmed in code: a missing
+quote leaves its score unchanged, forever). `live_requalify_universe()`
+(Stage D2, already armed live) explicitly targets only two OTHER
+populations — names that failed YESTERDAY's ATR gate specifically, and
+names outside `stock_data_daily` entirely — neither of which these eight
+symbols belong to, since they qualify normally and are simply outranked.
+A third, currently uncovered population: qualifies structurally, ranks
+outside the top 40/120 by yesterday's score, having an outsized day
+today. NOT fixed this pass — flagged with the exact mechanism and
+population identified, for a deliberate decision on whether/how to build
+it (extending `live_requalify_universe()`'s candidate set, or a
+dedicated periodic re-scan against TODAY's own move).
+
+**2 — why CHENNPETRO/PAYTM captured only a fraction of the visible move.**
+The "+10%"/"+4.9%" in the screenshot is the STOCK's move since prev
+close; IGN's own entries happen well INTO that move (its trigger
+requires ≥3.5% already) at a subsequently-elevated price, so the
+POSITION's own excursion from ITS entry is a much smaller number by
+construction — CHENNPETRO's row shows entry 1524.5, MFE only +0.899%,
+MAE -1.528%. More importantly: EVERY closed IGN round trip today folded
+2-3 separate entries into one `MULTI_LEG` row (real re-entries after an
+earlier exit, not a data artifact), and `exit_reason_detail` names the
+actual driver directly: **`GAVE_BACK_THE_MOVE` fired in 3 of 4 multi-leg
+symbols** (PAYTM, HBLENGINE, CHENNPETRO) before a subsequent leg's stop
+or time-exit closed the position. The giveback guard (tightened 50%→30%
+this same session, migration 134) is the dominant exit mechanism on
+IGN's own trades so far — and IGN's own volatility profile (7-30x
+volume, violent moves) may need a TIGHTER, IGN-specific giveback/target
+than the shared book-wide ladder currently gives it. The exit-lag probe
+(migration 135) gave its first real numbers: 2.9s/3.6s lag on CHENNPETRO/
+PAYTM (the 15s cycle was not meaningfully slow there) but 72.9s on
+HBLENGINE — real evidence the ordinary cycle CAN lag meaningfully, on
+some but not most exits. NOT fixed this pass — this is exactly the "does
+IGN need its own exit ladder" question the exit-lag probe was built to
+eventually answer with real data; six closed trades is a real first
+sample, not yet enough to commit numbers to.
+
+**3 — closed trades had no direction column.** Added: a compact ▲L/▼S
+badge in `PositionsTab.tsx`'s Closed Trades table, matching the color/
+style already used for open positions. `direction` was already selected
+(`select: '*'`); only the render was missing.
+
+**4 — why COFORGE, why the loss.** -5.90% off prev close on 30.9x
+volume — a genuine, violent collapse, correctly read as a short
+candidate (real data: `rationale` recorded at detection). Entered 1835,
+stopped at 1856.73 (STOP_LOSS_HIT, -1.003R, -1.188%, clean single-leg
+trade, MFE never exceeded 0.104%) — the short was hit by a real counter-
+rally on the same violent volume that triggered the entry, exactly the
+risk `market_context.py`'s own RISK_OFF docstring already names ("a
+short squeeze runs faster than any long unwind"). A correct process, a
+losing outcome — not every well-reasoned trade wins.
+
+**6 — the seven off-screenshot symbols (HBLENGINE, MAXHEALTH,
+ADANIPORTS, NATIONALUM, FINCABLES, ADANIPOWER, MUTHOOTFIN) — legitimate
+or noise?** Checked every one's own recorded rationale: all seven were
+genuine 3.5-5.5% moves on 2.3-7.9x volume, correctly above IGN's own
+bar — simply outside the 8-gainer/8-loser window one NIFTY 500
+screenshot can show. Not a false-positive population. The real, data-
+backed accuracy lever identified this pass is §1/5/2 above (the universe
+gap and the giveback tuning), not IGN's own trigger logic, which is
+finding real moves accurately on the data checked.
+
+**Gate:** PASS — every answer traced to a real row (`intraday_setups`,
+`intraday_event_shadow`, `closed_positions`, `stock_data_daily`), not
+inferred from code alone; the universe-selection finding named the
+EXACT population neither existing live-catch-up mechanism covers,
+rather than a vague "improve the universe" gesture; explicitly did NOT
+ship a giveback/universe change on a six-trade, one-day sample — flagged
+both as real, evidenced candidates for the operator's own decision.
+NEEDS FOLLOW-UP: more IGN closed trades before tuning anything
+IGN-specific; a decision on whether to build the third universe-catch-up
+population.
