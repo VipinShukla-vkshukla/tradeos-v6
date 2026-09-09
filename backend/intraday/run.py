@@ -190,6 +190,23 @@ def main(once: bool = False, dry: bool = False) -> None:
     # re-inflate both the prior population and the allocator's arrival bar.
     # See IntradayEngine._rehydrate_recorded().
     engine._rehydrate_recorded()
+    # ALSO ONCE, AT STARTUP — 09-Sep-2026. registry.sync_to_db() has existed
+    # since migration 014 and was never called from anywhere in this
+    # codebase (grep confirmed): intraday_strategy_config, the table the
+    # frontend's engine cards read their "conditions" text from
+    # (frontend/lib/supabase.ts::getIntradayStrategyConfig()), has had zero
+    # rows for every intraday engine, not just the ones added since —
+    # exactly the "a step that completes producing nothing" failure this
+    # file's own CLAUDE.md names as the dominant one. Idempotent and never
+    # overwrites an operator's own edit (see its own docstring); gated on
+    # `ls.may_act` so a STANDBY process, which commits nothing else either,
+    # does not race the active one to insert the same rows.
+    if ls.may_act:
+        from intraday.strategies import registry
+        try:
+            registry.sync_to_db(sb)
+        except Exception as e:
+            logger.debug(f"  engine registry sync skipped: {e}")
     engine.refresh_universe()
     symbols = engine.watch_symbols()
     if not symbols:

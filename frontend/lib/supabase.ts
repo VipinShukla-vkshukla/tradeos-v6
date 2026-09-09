@@ -587,10 +587,20 @@ export const queries = {
    * engines_list comment describes for forward-return measurement.
    */
   getSwingEngineGridStats: async () => {
+    // BOTH descending — same fix and same reasoning as
+    // getIntradayEngineGridStats() just below: signal_log had NO order
+    // at all (5,747 live rows against a limit of 5000 — already being
+    // silently truncated, arbitrarily, before this fix) and
+    // closed_positions was ascending (116 of 2000 today, not yet biting,
+    // but the same "can never show a new engine or recent activity once
+    // the table outgrows the limit" defect, fixed now rather than waiting
+    // for it to actually lose data first).
     const [signals, closed, open] = await Promise.all([
-      queryTable<{ strategy: string }>('signal_log', { select: 'strategy', limit: 5000 }),
+      queryTable<{ strategy: string }>('signal_log', {
+        select: 'strategy', order: { column: 'date', ascending: false }, limit: 5000,
+      }),
       queryTable<{ strategy: string; realized_pnl: number | null; pnl_pct: number | null; exit_date: string | null }>(
-        'closed_positions', { select: 'strategy,realized_pnl,pnl_pct,exit_date', filter: { framework: 'SWING' }, order: { column: 'exit_date', ascending: true }, limit: 2000 },
+        'closed_positions', { select: 'strategy,realized_pnl,pnl_pct,exit_date', filter: { framework: 'SWING' }, order: { column: 'exit_date', ascending: false }, limit: 2000 },
       ),
       queryTable<{ strategy: string }>('open_positions', { select: 'strategy', filter: { framework: 'SWING' }, limit: 500 }),
     ]);
@@ -602,8 +612,19 @@ export const queries = {
     for (const r of open.data ?? []) {
       for (const code of swingBaseEngines(r.strategy)) takenOpen.set(code, (takenOpen.get(code) ?? 0) + 1);
     }
+    // Re-sorted back to ASCENDING before bucketing — the query above fetches
+    // descending so the LIMIT keeps the most recent rows, but
+    // rollingHitRate() (PerformanceTab.tsx) reads its input oldest-first
+    // (`.slice(-N)` for "the last N", then walks forward): feeding it a
+    // descending array would grab the OLDEST rows of this already-recent
+    // batch and walk them backwards through time — silently reversing the
+    // sparkline's trend direction, a strictly worse regression than the
+    // staleness bug this fix closes. Sorting back here keeps that contract
+    // intact for every existing caller without touching PerformanceTab.tsx.
+    const closedSorted = [...(closed.data ?? [])].sort(
+      (a, b) => (a.exit_date ?? '').localeCompare(b.exit_date ?? ''));
     const byStrategy = new Map<string, { realized_pnl: number | null; pnl_pct: number | null; exit_date: string | null }[]>();
-    for (const r of closed.data ?? []) {
+    for (const r of closedSorted) {
       for (const code of swingBaseEngines(r.strategy)) {
         if (!byStrategy.has(code)) byStrategy.set(code, []);
         byStrategy.get(code)!.push(r);
@@ -613,18 +634,40 @@ export const queries = {
   },
 
   getIntradayEngineGridStats: async () => {
+    // DESCENDING, NOT ASCENDING — 09-Sep-2026. intraday_setups passed
+    // 8000 rows a long time ago (21,827 live, growing every session) and
+    // this query's own `limit: 8000` with ascending order was silently
+    // fetching only the OLDEST 8000 — a window that can never move
+    // forward as the table grows, and can NEVER include a newly-shipped
+    // engine's setups at all: a brand-new engine's rows are, by
+    // construction, at the newest end of the table, which ascending
+    // order with this limit had already excluded before that engine's
+    // first detection was even written. Confirmed live: IGN fired for
+    // real today (real TAKEN rows, real symbols) and was invisible on
+    // this tab for exactly this reason, not because it had no data.
+    // Descending makes this a rolling "most recent 8000" window instead
+    // of a frozen, ever-more-stale historical slice — the right shape
+    // for a tab whose own purpose is "is my system profitable and
+    // improving," not "what did it do first."
     const { data } = await queryTable<{
       strategy: string; cost_verdict: string | null; outcome: string | null;
       outcome_pct: number | null; trade_date: string;
     }>('intraday_setups', {
       select: 'strategy,cost_verdict,outcome,outcome_pct,trade_date',
-      order: { column: 'trade_date', ascending: true },
+      order: { column: 'trade_date', ascending: false },
       limit: 8000,
     });
     const rows = data ?? [];
     const setups = new Map<string, number>();
     const takenByStrategy = new Map<string, typeof rows>();
-    for (const r of rows) {
+    // Re-sorted back to ASCENDING before bucketing — same reasoning as
+    // getSwingEngineGridStats() just above: the query fetches descending
+    // so the LIMIT keeps the most recent rows, but rollingHitRate() reads
+    // its input oldest-first. `setups` (a plain count) doesn't care about
+    // order; `takenByStrategy` feeds the sparkline and does.
+    const rowsChrono = [...rows].sort(
+      (a, b) => (a.trade_date ?? '').localeCompare(b.trade_date ?? ''));
+    for (const r of rowsChrono) {
       if (!r.strategy) continue;
       setups.set(r.strategy, (setups.get(r.strategy) ?? 0) + 1);
       if (r.cost_verdict === 'TAKEN') {

@@ -376,8 +376,35 @@ def engine_names() -> list[str]:
 def sync_to_db(sb=None) -> None:
     """
     Register engines in intraday_strategy_config so the Control Room can see
-    and toggle them. Idempotent; never overwrites an operator's choice.
+    and toggle them. Idempotent; never overwrites an operator's choice — the
+    `if existing: continue` below is deliberate, matching strategy_config's
+    own ON CONFLICT ... COALESCE(existing, new) contract for the swing side:
+    once a row exists, only an explicit operator edit is authoritative.
+
+    NEVER CALLED — 09-Sep-2026. Existed since migration 014, exactly the "a
+    step that completes producing nothing" failure this project's own rule
+    names: intraday_strategy_config (what the frontend's engine cards read
+    their "conditions" text from) had zero rows for every intraday engine,
+    not only the ones added since. Wired into intraday/run.py's own startup
+    sequence, alongside _rehydrate_recorded(), so a new engine registers
+    itself the day it ships rather than needing a manual migration each
+    time — see docs/FINDINGS.md, 09-Sep-2026.
+
+    TWO BUGS FOUND IN THE SAME PASS, FIXED HERE. `"lifecycle": "ACTIVE"` was
+    hardcoded rather than read from `engine_lifecycle(e.name)` — the ACTUAL
+    live state (`system_config`-overridable, SHADOW/RETIRED possible) —
+    so a shadowed or retired engine would have been seeded into this
+    operator-facing table reading as ACTIVE regardless of its real state.
+    `e.__class__.__doc__` was empty for 9 of this project's 10 engines,
+    because this codebase documents at the MODULE level (a big docstring at
+    the top of each engine's own file), not the class level — confirmed
+    live: only ShortDistribution happens to carry its own class docstring,
+    every other engine's class body has none. Reads the module's docstring
+    instead, first paragraph (up to the first blank line), the same
+    "transcribed, not invented" standard migration 006 already holds swing
+    engines to.
     """
+    import sys as _sys
     sb = sb or get_supabase()
     for e in _ALL:
         try:
@@ -385,13 +412,16 @@ def sync_to_db(sb=None) -> None:
                           .eq("strategy", e.name).execute().data)
             if existing:
                 continue
+            mod = _sys.modules.get(e.__class__.__module__)
+            doc = (getattr(mod, "__doc__", None) or "").strip()
+            first_para = doc.split("\n\n", 1)[0].replace("\n", " ").strip()
             sb.table("intraday_strategy_config").insert({
                 "strategy":  e.name,
                 "enabled":   True,
-                "lifecycle": "ACTIVE",
+                "lifecycle": engine_lifecycle(e.name),
                 "phases":    ",".join(e.phases),
                 "label":     e.__class__.__name__,
-                "description": (e.__class__.__doc__ or "").strip().split("\n")[0],
+                "description": first_para,
             }).execute()
             logger.info(f"  registered intraday engine {e.name}")
         except Exception as ex:

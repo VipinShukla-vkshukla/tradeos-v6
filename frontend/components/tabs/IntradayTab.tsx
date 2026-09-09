@@ -49,7 +49,17 @@ interface ScoreRow {
   avg_confidence: number | null; last_seen: string | null;
 }
 
-/** What each engine looks for — so the code names mean something on screen. */
+/**
+ * What each engine looks for — so the code names mean something on screen.
+ *
+ * SDN/GDB/IGN added 09-Sep-2026 — all three engines were missing here (SDN/
+ * GDB predate this session; IGN shipped this session without this map being
+ * touched). Falls back to the setup's own phase (`?? s.phase`) or an em-dash
+ * (`?? '—'`) below, so a gap here was never a crash, only a missing label —
+ * but the same real conditions text now also lives in intraday_strategy_
+ * config (migration 136, registry.sync_to_db()), the source of truth this
+ * map should be checked against if the two ever drift.
+ */
 const ENGINE_LABEL: Record<string, string> = {
   ORB: 'Opening range break',
   GAP: 'Gap held',
@@ -58,6 +68,9 @@ const ENGINE_LABEL: Record<string, string> = {
   PBK: 'Trend pullback',
   VWR: 'VWAP reclaim',
   RNG: 'Range low',
+  SDN: 'Short distribution (VWAP rejection / trap / breakdown)',
+  GDB: 'Gap-down bounce',
+  IGN: 'Ignition momentum (circuit/volume-pump)',
 };
 const OUTCOME_TONE: Record<string, string> = {
   TARGET: 'bg-profit/15 text-profit',

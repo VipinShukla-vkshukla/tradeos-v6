@@ -102,6 +102,14 @@ interface ViewModel {
   entryDate: string; entryPrice: number; exitOrCmpLabel: string; exitOrCmp: number | null;
   qty: number | null; stop: number | null; pnl: number | null; r: number | null;
   status: 'open' | 'win' | 'loss';
+  // IGN's bounded lifetime bootstrap-override (migration 133) and exit-lag
+  // probe (migration 135) — both pure traceability/measurement, neither
+  // changes what happened to the trade. bootstrapSlot null for every
+  // ordinary entry; exitLagSeconds null unless the 2s probe actually
+  // caught a real exit condition ahead of the 15s cycle (the common case,
+  // even for IGN, is null — most holds never cross one early).
+  bootstrapSlot: number | null;
+  exitLagSeconds: number | null;
 }
 
 export function TradeDetailDialog({ target, onOpenChange }: {
@@ -148,6 +156,7 @@ export function TradeDetailDialog({ target, onOpenChange }: {
               exitOrCmpLabel: 'CMP', exitOrCmp: p.current_price,
               qty: p.current_qty ?? p.actual_qty ?? null, stop: p.active_sl ?? p.planned_stop ?? null,
               pnl: p.unrealized_pnl, r: p.r_multiple_current ?? null, status: 'open',
+              bootstrapSlot: p.bootstrap_override_slot ?? null, exitLagSeconds: null,
             };
           })()
         : (() => {
@@ -159,6 +168,8 @@ export function TradeDetailDialog({ target, onOpenChange }: {
               qty: p.actual_qty ?? null, stop: p.planned_stop_at_entry ?? null,
               pnl: p.realized_pnl, r: p.r_multiple ?? null,
               status: (p.realized_pnl ?? 0) > 0 ? 'win' : 'loss',
+              bootstrapSlot: p.bootstrap_override_slot ?? null,
+              exitLagSeconds: p.exit_lag_seconds ?? null,
             };
           })();
       if (cancelled) return;
@@ -270,6 +281,12 @@ export function TradeDetailDialog({ target, onOpenChange }: {
                   {vm.framework === 'INTRADAY' ? 'INTRADAY' : 'SWING'}
                 </span>
                 <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{vm.strategy}</span>
+                {vm.bootstrapSlot != null && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-500 font-medium"
+                    title="Proceeded despite an allocator DECLINE — IGN has no prior of its own yet. Bounded lifetime cap, migration 133 (intraday_ign_exploration_trades in system_config).">
+                    BOOTSTRAP SLOT {vm.bootstrapSlot}
+                  </span>
+                )}
                 {vm.mode === 'PAPER' && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 font-medium">PAPER</span>
                 )}
@@ -290,6 +307,14 @@ export function TradeDetailDialog({ target, onOpenChange }: {
               <div><div className="text-muted-foreground">R</div><div className={`font-mono mt-0.5 font-semibold ${(vm.r ?? 0) >= 0 ? 'text-profit' : 'text-loss'}`}>{vm.r != null ? `${vm.r >= 0 ? '+' : ''}${vm.r.toFixed(2)}` : '—'}</div></div>
               <div><div className="text-muted-foreground">Qty · Stop</div><div className="font-mono mt-0.5">{vm.qty ?? '—'} · {vm.stop != null ? `₹${vm.stop.toFixed(2)}` : '—'}</div></div>
             </div>
+
+            {vm.exitLagSeconds != null && (
+              <div className="text-[11px] text-amber-500 -mt-1"
+                title="exit_lag_seconds (migration 135) — the ordinary 15s exit cycle vs the 2-second probe re-running the same real exit_policy.evaluate_intraday_exit(). Pure measurement; never changed what happened to this trade.">
+                IGN exit-lag probe: the 2s loop would have acted {vm.exitLagSeconds.toFixed(1)}s
+                before the ordinary 15s cycle did
+              </div>
+            )}
 
             <div className="panel">
               <div className="px-4 py-3 border-b border-border">

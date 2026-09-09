@@ -79,6 +79,19 @@ export interface OpenPosition {
   // row, so this is always present, never null on a real row.
   direction?: string | null;         // LONG | SHORT
   intraday_strategy?: string | null;
+  // The CONDITION, not just the family — NULL for SWING. See ClosedPosition's
+  // own copy of this comment below.
+  sub_engine?: string | null;
+  // IGN's bounded lifetime bootstrap-override (migration 133) — 1..N when
+  // this entry proceeded despite an allocator DECLINE because IGN has no
+  // prior of its own yet, null for every ordinary entry.
+  bootstrap_override_slot?: number | null;
+  // IGN's exit-lag probe (migration 135) — pure measurement, set once if
+  // the 2-second loop caught a real exit condition ahead of the ordinary
+  // 15s cycle. Never influences the position itself; see exit_lag_seconds
+  // on ClosedPosition for the actual gap once this trade closes.
+  exit_lag_action?: string | null;
+  exit_lag_probe_at?: string | null;
   reconcile_status?: string | null;
   last_reconciled_at?: string | null;
   kite_avg_price?: number | null;
@@ -152,6 +165,18 @@ export interface ClosedPosition {
   // engine label. NULL for SWING (sub_engine is intraday-only vocabulary)
   // and for any row closed before this column existed.
   sub_engine?: string | null;
+  // IGN's bounded lifetime bootstrap-override (migration 133) — 1..N when
+  // this entry proceeded despite an allocator DECLINE because IGN has no
+  // prior of its own yet, null for every ordinary entry.
+  bootstrap_override_slot?: number | null;
+  // IGN's exit-lag probe (migration 135) — pure measurement, changes
+  // nothing about the trade itself. exit_lag_seconds is the real close
+  // time minus exit_lag_probe_at: how much earlier the 2-second loop
+  // would have acted than the ordinary 15s cycle did. Null on almost
+  // every row — most holds never cross an exit condition early.
+  exit_lag_action?: string | null;
+  exit_lag_probe_at?: string | null;
+  exit_lag_seconds?: number | null;
 }
 
 // ---------------------------------------------------------------------------

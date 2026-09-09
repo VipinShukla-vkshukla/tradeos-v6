@@ -18,7 +18,16 @@ import type { EngineStats } from '@/types/database';
 // The documented intraday engine codes (docs/0_SYSTEM_BLUEPRINT.md) — every
 // other engine_name is swing. Not inferred from data because framework
 // isn't a column on performance_metrics.engine_stats.
-const INTRADAY_ENGINES = new Set(['ORB', 'GAP', 'PDL', 'VCE', 'PBK', 'VWR', 'RNG', 'SDN']);
+//
+// GDB and IGN added 09-Sep-2026 — both were missing (GDB predates this
+// session; IGN shipped this session without this Set being touched), which
+// meant clicking either engine's card routed to the SWING factor-profile
+// query instead of the INTRADAY one, returning empty/wrong data rather than
+// a missing label — a real misroute, not just cosmetic. registry.
+// engine_names() (backend/intraday/strategies/registry.py) is the actual
+// source of truth this Set is transcribing; check it there if this list
+// and that one ever look like they've drifted.
+const INTRADAY_ENGINES = new Set(['ORB', 'GAP', 'PDL', 'VCE', 'PBK', 'VWR', 'RNG', 'SDN', 'GDB', 'IGN']);
 
 const MIN_SEGMENT = 15;
 

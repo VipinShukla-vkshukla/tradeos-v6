@@ -17535,3 +17535,227 @@ that could not distinguish the bug from correct behaviour) fixed
 alongside the code, not left standing to hide a regression next time.
 NEEDS FOLLOW-UP: confirm `swing_same_day_candidates` gets its first-ever
 row on the next live trading session.
+
+## 2026-09-09 — Frontend gaps closed: a dead sync function found and wired in, two bugs inside it fixed, engine-name maps completed, new diagnostic fields surfaced
+
+The operator asked whether the frontend dashboard had been updated for this
+session's backend work. It had not — checked directly rather than assumed,
+and the check surfaced a real, pre-existing backend gap along the way, not
+only frontend omissions.
+
+### The real root cause — `intraday_strategy_config` was never populated, for ANY engine
+
+Traced `frontend/lib/supabase.ts::getIntradayStrategyConfig()`'s own
+comment — "what backs an engine card's conditions text... transcribed from
+the actual declarative gates, not copy invented for a screen" — to
+`intraday_strategy_config` (migration 014). Queried live: **zero rows**,
+for every intraday engine, not only IGN. `registry.py` already has a
+`sync_to_db()` function built for exactly this, matching swing's own
+`strategy_config` seeding pattern — and a `grep -rn "sync_to_db"` across
+the entire codebase found exactly one hit: its own definition. Never
+called from anywhere. The exact "a step that completes producing nothing"
+failure this project's own rule names, and it predates this session
+entirely — IGN merely made it visible by being the engine the operator
+happened to go looking for.
+
+**Fixed at the root, not the symptom.** Wired `registry.sync_to_db(sb)`
+into `intraday/run.py`'s own startup sequence, right beside
+`_rehydrate_recorded()`, gated on `ls.may_act` so a STANDBY process
+doesn't race the active one to insert the same rows. A future new engine
+now registers itself the day it ships, without a manual migration each
+time.
+
+**Two more bugs found INSIDE `sync_to_db()` itself while wiring it in —
+running it live surfaced both immediately:**
+1. `"lifecycle": "ACTIVE"` was hardcoded rather than read from
+   `engine_lifecycle(e.name)` — the real, `system_config`-overridable
+   state. A SHADOW or RETIRED engine would have been seeded into this
+   operator-facing table reading as fully live. (Checked: all 10 engines'
+   real live lifecycle happens to be ACTIVE right now, so this bug's
+   first real run produced correct data by coincidence, not because the
+   bug wasn't real — a future demotion would have gone unreflected.)
+2. `description` read `e.__class__.__doc__` — empty for 9 of the 10
+   engines, confirmed directly (`OpeningRangeBreakout.__doc__ is None`),
+   because this codebase documents at the MODULE level, not the class
+   level. Fixed to read the module's own docstring instead.
+
+Both fixed in `registry.py`; a fresh live run produced real, non-blank
+labels for all 10 engines. Migration 136 then corrected what the FIRST
+(pre-fix) live run of `sync_to_db()` had already written moments earlier
+— hand-curated, module-docstring-sourced descriptions for all 10 engines,
+matching migration 006's own quality bar for the swing side — since the
+table had no operator edits yet to protect, `label`/`description` were
+overwritten unconditionally; `lifecycle`/`enabled`/`phases` left alone
+(already correct).
+
+### The two hardcoded engine-name maps
+
+- `ENGINE_LABEL` in `IntradayTab.tsx` — missing SDN and GDB (both predate
+  this session) and now IGN. Cosmetic only (falls back to the phase name
+  or `—`) — added all three.
+- `INTRADAY_ENGINES` Set in `EngineDetailDialog.tsx` — missing GDB and
+  IGN. This one **routes** which factor-profile query a click runs
+  (`getIntradayEngineFactorProfile` vs the swing equivalent) — a real
+  misroute, not just a missing label, for anyone who clicked a GDB or IGN
+  engine card. Added both.
+
+### New diagnostic fields — surfaced in `TradeDetailDialog.tsx`
+
+`bootstrap_override_slot` (migration 133) and `exit_lag_action`/
+`exit_lag_probe_at`/`exit_lag_seconds` (migration 135) had zero UI surface
+anywhere. Added to `types/database.ts` (`OpenPosition`/`ClosedPosition`;
+`sub_engine` was also missing from `OpenPosition` specifically, added
+alongside since it's needed to identify an IGN row at all) and to the
+trade-detail dialog: a "BOOTSTRAP SLOT n" badge in the header when a trade
+used one (no hardcoded cap number shown, deliberately — a hardcoded "/10"
+would silently go stale if `intraday_ign_exploration_trades` is ever
+retuned), and an amber note when `exit_lag_seconds` is set. Both queries
+feeding this dialog already used `select: '*'` (confirmed in
+`lib/supabase.ts`), so no query changes were needed — only the types and
+the render.
+
+**Deliberately NOT touched:** the funnel `lib/supabase.ts` builds from a
+fixed 4-stage list of `cost_verdict` values doesn't name `BLOCKED_SIZING`
+(this session's new verdict) — but neither does it name ~13 other real
+verdicts already (`BLOCKED_LIQUIDITY`, `BLOCKED_SHORTABILITY`, etc.). This
+is a pre-existing, deliberately coarse summary, not a regression from
+today's work — left alone rather than redesigned on the side of a gap-
+closing pass.
+
+### Verified
+
+New `tests/test_intraday_registry_sync.py` (6 checks): `sync_to_db()`
+skips an engine that already has a row; reads the REAL, config-overridable
+lifecycle rather than hardcoding ACTIVE (proven by overriding one engine
+to SHADOW via `cfg_ctx` and checking the insert payload); description
+comes from the module docstring, not the (confirmed-empty) class one;
+label is the engine's class name; phases are comma-joined correctly;
+every registered engine gets covered when the table starts empty.
+
+Frontend: `npx tsc --noEmit` across the whole project — zero new errors
+in any of the 4 files touched (confirmed by grep against the full output,
+which does have a number of PRE-EXISTING errors in unrelated files, left
+alone as out of scope for this pass).
+
+Full backend suite: **1355/148**, up from 1349/147. `tools.health`: clean
+except the same pre-existing `same_day_discovery` note from earlier today
+(now itself a fixed-but-not-yet-observed state, not a new problem).
+`tools.simulate`: clean.
+
+**Live-verified:** `intraday_strategy_config` now has real rows for all 10
+engines (`SELECT strategy, label, lifecycle, phases FROM
+intraday_strategy_config` — checked directly, not assumed from the insert
+succeeding).
+
+**Gate:** PASS — the frontend question led straight to a real, deeper
+backend gap instead of stopping at the symptom the operator could see;
+that gap's own fix (`sync_to_db()`) was run live and its OWN bugs were
+caught by watching its real output (blank descriptions, not by reading
+the function and assuming it was fine) before being trusted; the funnel's
+missing `BLOCKED_SIZING` entry was explicitly identified and explicitly
+left alone rather than silently "fixed" into a wider redesign nobody
+asked for. NEEDS FOLLOW-UP: none outstanding from this entry — the
+concrete gaps raised are closed; the funnel simplification and any
+further diagnostic-field UI beyond the trade-detail dialog remain open,
+named choices, not gaps.
+
+### Addendum, same day — the operator asked "where is IGN under Engines tab" after all of the above, and that surfaced a second, more consequential frontend bug
+
+`intraday_strategy_config` being fixed above was necessary but not
+sufficient — IGN (and SDN, GDB) still did not render as cards on the
+Engines tab even after migration 136. Traced `getIntradayEngineGridStats()`
+(`frontend/lib/supabase.ts`): it read `intraday_setups` with `order:
+{column: 'trade_date', ascending: true}, limit: 8000` — the OLDEST 8000
+rows of a table now at 21,827 and growing. Confirmed live: real IGN
+activity exists TODAY (real symbols — CHENNPETRO, COFORGE — real TAKEN
+rows, real TARGET/STOP outcomes, timestamps inside today's actual market
+hours), meaning IGN traded for real on its first live day. It was invisible
+purely because a brand-new engine's rows are, by construction, at the
+newest end of the table — which ascending-order-plus-limit had already
+excluded before IGN's first detection was even written. This is a
+worsening bug, not a one-time miss: as `intraday_setups` keeps growing
+past 8000, an ever-larger and more recent slice of EVERY engine's activity
+silently drops off this tab, not only a new engine's.
+
+**Fixed:** flipped to `ascending: false` (most recent 8000, a rolling
+window instead of a frozen historical one) for `intraday_setups`. Found
+and fixed the same pattern in `getSwingEngineGridStats()` in the same
+pass: `signal_log` had NO order at all against a `limit: 5000` while
+holding 5,747 live rows (already silently truncating, arbitrarily, before
+this fix), and its own `closed_positions` sub-query was ascending too (not
+yet biting at 116 of a 2000 cap, fixed anyway rather than waiting for it
+to actually lose data first).
+
+**One regression caught before it shipped, not after:** `PerformanceTab.
+tsx`'s `rollingHitRate()` (the sparkline) reads its input oldest-first —
+`.slice(-N)` for "the last N," then walks forward. Naively flipping the
+query to descending would have fed it a newest-first array, silently
+reversing every sparkline's trend direction — a worse defect than the one
+being fixed. Re-sorted the fetched batch back to ascending, in
+`lib/supabase.ts`, immediately after fetching and before the per-strategy
+bucketing that both grid-stats functions already do — the SELECTION uses
+"most recent N," the DOWNSTREAM order every existing caller already
+depends on stays untouched.
+
+**Live-verified in the browser, not just by the query logic** — loaded
+the actual running dashboard (`localhost:3000`, the operator's own dev
+server) and confirmed real numbers rendering: IGN — 262 setups, 90 taken,
+**79% hit rate**, +0.62% avg net, on its first live trading day. GDB and
+SDN also newly visible with real data. `npx tsc --noEmit`: zero new
+errors.
+
+**Gate:** PASS — the fix was verified against the real, live, currently-
+changing dashboard rather than trusted from reading the corrected query;
+the sparkline regression was caught by reading its actual consumer
+(`rollingHitRate()`) before shipping the order flip, not discovered after;
+the same bug pattern was checked for and fixed in the sibling swing
+function in the same pass rather than left for a future "why is CTL's
+sparkline reversed" session.
+
+## 2026-09-09 — Fix, alert fidelity (found already in the working tree, not this session's own investigation — documented here so it does not land undocumented): JSWSTEEL alerted 35+ times on one unbroken recommendation, and a chase candidate had no allocator opinion at all
+
+Found uncommitted alongside this session's own frontend/registry work,
+verified sound (`tools.verify` clean, 1355/148) and committed rather than
+left stranded. Recorded here per this project's own standing rule that a
+real fix does not go undocumented, even one this session did not author.
+
+**`allocation/proposal.py`** — `TAKEABLE_SWING` never included
+`CHASE_LIMIT`, though `_maybe_enter_swing()` (engine.py) has always
+treated it as buyable identically to `BUY_NOW`. A chase candidate was
+therefore never converted to a `Proposal`, never scored, and never
+reached `self._verdicts` — `allocator_permits()` hit its own documented
+fail-open path for every chase candidate, all day, regardless of edge.
+Live: JSWSTEEL sat in `CHASE_LIMIT` most of a session at edge -2.33
+against a hurdle of ~0.015 — the allocator had no opinion on it at all
+once price moved into chase territory. Fixed: `CHASE_LIMIT` added to
+`TAKEABLE_SWING`.
+
+**`intraday/notifier.py`/`intraday/engine.py`** — new `Action.
+restate_on_change` field (default `True`, existing alert classes
+unaffected). A "still chaseable" alert recomputes R:R/gap/risk from a
+live, ticking price every cycle; none of that arithmetic changes the
+answer to "is this worth chasing" until the alert's own KIND changes.
+`_material()`'s integer rounding of a R:R hovering in a narrow band read
+consecutive cycles as "genuinely different" almost every time, so
+`intraday_restate_minutes` (5, live) let it restate on that cadence
+instead of holding the full rearm window. Live: JSWSTEEL alerted 35+
+times between 10:45 and 15:28 IST on one unbroken "CHASE OK"
+recommendation. Set `restate_on_change=False` on the swing
+still-approaching/still-chaseable alert sites; exit alerts (where the
+exact number IS the decision) keep the default.
+
+**`intraday/engine.py::act_on_setups()`** — the alert headline for a
+fired setup read "buy N @ ..." identically whether `_maybe_open_paper()`
+actually opened the position or was refused underneath it. Now reads
+`opened_ok` (the confirmed-write signal that function already returns —
+this session's own earlier fix) and says "BOUGHT" only when true,
+otherwise "fired but was NOT taken," with `push=opened_ok` — a setup that
+never became a position is not a trade event by this project's own
+definition, recorded but not pushed, the same mechanism already used for
+a declined swing candidate.
+
+**Gate:** PASS (by verification, not by having watched it built) —
+`tools.verify` clean at 1355/148 with these changes in the tree; each fix
+traces to a named, real symptom (JSWSTEEL specifically, in both cases)
+rather than a hypothetical. NEEDS FOLLOW-UP: none identified; documented
+here mainly so the commit history and this ledger agree on what shipped.

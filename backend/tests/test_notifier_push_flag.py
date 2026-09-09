@@ -115,7 +115,15 @@ def test_restate_on_change_false_holds_a_differently_worded_repeat():
     False, the second send must be held exactly like an unchanged repeat."""
     from intraday.notifier import Action
     sb = _FakeSB()
-    with cfg_ctx(), patch("intraday.notifier.Notifier._deliver", return_value=True) as deliver_mock:
+    # Headlines chosen so _material() rounds them to DIFFERENT text (0/3 vs
+    # 0/2 below) — restate_minutes=0 means the old "different material"
+    # branch would allow an immediate resend; rearm_minutes=999 means the
+    # "treat as unchanged" branch this field forces will not. The two
+    # settings are what make this test actually discriminate the fix from
+    # its absence, rather than both paths agreeing by the accident of a
+    # zero-second gap between sends.
+    with cfg_ctx({"intraday_restate_minutes": 0, "intraday_rearm_minutes": 999}), \
+         patch("intraday.notifier.Notifier._deliver", return_value=True) as deliver_mock:
         notifier = _notifier(sb)
         notifier.send(Action(symbol="JSWSTEEL", kind="ENTRY",
                              headline="JSWSTEEL: CHASE OK — 0.2% above zone, R:R still 2.59",
