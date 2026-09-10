@@ -18124,15 +18124,20 @@ question is answerable by joining data already being collected, with zero
 new live write path — strictly safer than the planned new probe, so built
 that way instead: `tools/entry_lag_analysis.py`.
 
-First real run surfaced a genuine data-quality gap before it surfaced
-anything about lag: joining on `intraday_setups.detected_at` returned
-ZERO matches for four engines (RNG/GAP/PDL/PBK) and undercounted every
-other one — checked directly: `detected_at` is NULL on 100% of RNG/GAP/
-PDL/PBK's rows, and only partially populated everywhere else (SDN 22%,
-ORB 23%, VWR 22%, VCE 52%, only IGN at 100%). `ts` is populated on every
-row of every engine. Fixed to join on `ts`. Real, separate finding worth
-its own note: any future code trusting `intraday_setups.detected_at` to
-be present would silently misbehave for at least four engines.
+First real run surfaced what looked like a data-quality gap before it
+surfaced anything about lag: joining on `intraday_setups.detected_at`
+returned ZERO matches for four engines (RNG/GAP/PDL/PBK) and undercounted
+every other one. **Investigated further and corrected**: this is fully
+explained, not a live bug. `detected_at` was added by migration 106,
+applied partway through 24-Aug-2026 — every NULL row on or after that
+date is on 24-Aug itself (checked directly: 0 NULLs on any later day for
+ORB/SDN/VCE/VWR), and RNG/GAP/PDL/PBK's real detections all predate
+24-Aug entirely (their last real row is 04-Aug or 19-Aug). `_record_setup()`
+has set `detected_at` unconditionally on every insert since the column
+existed. `ts`, which is 100% populated across all ten engines regardless
+of date, is still the right column for this tool's join (it covers the
+full history, not just post-migration rows), so the fix to use it stands
+— but there is no ongoing write-path bug to chase here.
 
 With that fixed, median entry lag (the reliable figure — mean is dragged
 by a handful of multi-hour outliers from the join pairing unrelated
@@ -18152,3 +18157,60 @@ pass — flagged, not solved; a real candidate for its own look.
 **Not acted on.** No engine gets a fast-entry path from this pass — the
 lag numbers found don't support one yet, and GAP's silence is a separate
 question this tool surfaced but didn't answer.
+
+## 10-Sep-2026 — RNG/PBK's silence diagnosed and fixed; GAP/PDL's stays open, and one hypothesis ruled out
+
+Follow-up to the GAP silence found above, requested as a direct follow-up:
+diagnose and fix rather than only flag.
+
+**RNG and PBK — confirmed mechanism, fixed.** `_arbitrate_symbol()`
+correctly never lets an engine with no mature prior (`expected_r_for()`
+returns `None` below `priors_min_sample_intraday`=30) outrank a rival
+that has one — `test_engine_fairness_and_bands.py`'s own
+`test_a_measured_negative_engine_still_beats_an_unmeasured_one` already
+pins this as intended (using PBK as its literal example). RNG has 11
+lifetime taken trades, PBK has 5 — both permanently below the floor, so
+both lose to any rival that fires on the same symbol. The bug was never
+the comparison; it's that the LOSER was discarded with no row at all,
+the exact "retirement with extra steps" failure the SHADOW-lifecycle
+block was built to prevent (`intraday/engine.py`, "SHADOWED ENGINES ARE
+RECORDED, NOT DISCARDED") — except that fix only covers `lifecycle==
+SHADOW`, not an ACTIVE engine that simply keeps losing. A structural
+lock-out: an engine that can't win never gets the evidence that would
+let it start winning.
+
+**Fixed**: a second recording block, parallel to the SHADOW one, writes
+every ACTIVE-lifecycle setup in `_all` that is not `best` with a new
+verdict, `ARBITRATED_AWAY` (qty 0, same as SHADOW — never mistaken for a
+trade, and deliberately a different verdict so the two populations —
+retired vs. eligible-but-beaten — are never conflated). Reuses
+`_record_setup()` unmodified and its existing `_setup_is_new()` dedup, so
+an engine losing every cycle for an hour still writes one row, not sixty.
+5 new offline tests (`tests/test_intraday_arbitrated_away_recording.py`),
+using `_record_setup()` directly rather than a reimplementation.
+`tools.verify` 1382/1382, `health`/`simulate` clean (same pre-existing
+`same_day_discovery` gap).
+
+**GAP and PDL — one hypothesis ruled out, genuinely still open.** Traced
+`Allocator._prior_for()` in full: it checks an engine's OWN prior FIRST,
+family second — the code's own 18-Aug-2026 comment names GAP directly
+("pricing on the family alone means GAP is scored on ORB's record...
+GAP is +0.587R, ORB is -0.534R") specifically to explain why that would
+be wrong. Pulled GAP's real prior: n=59, mean R -0.094 — usable, and
+*better* than ORB's -0.145. By this mechanism GAP should be winning
+arbitration against ORB, not losing every time for five weeks straight.
+Also confirmed the shadow log calls the IDENTICAL `registry.evaluate_all()`
+the real 15s loop calls (not a different/looser code path) — ruling out
+a gate-logic divergence between the two loops as the explanation.
+
+So the arbitration-by-thin-prior story, confirmed for RNG/PBK, does NOT
+explain GAP/PDL — correcting the earlier report rather than forcing a fit.
+Left genuinely open: something upstream of arbitration (most likely a
+difference in how `ctx` — the SymbolContext each path evaluates against —
+gets built or refreshed between the 2s event_core path and the 15s
+polling loop, though not confirmed) is the more likely remaining
+candidate, but this needs a dedicated look — live logging or a targeted
+side-by-side replay of a day GAP fired in shadow but not for real — not
+another pass of static reading. The fix above will help going forward
+regardless: if GAP ever does reach arbitration and lose, it will now be
+recorded instead of silently vanishing, narrowing where to look next.

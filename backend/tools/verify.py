@@ -247,6 +247,8 @@ MODULES = [
      "tests.test_scanner_population_d"),
     ("intraday per-engine exit policy — load_intraday_policy(engine=...)",
      "tests.test_intraday_per_engine_policy"),
+    ("intraday ARBITRATED_AWAY recording — a losing ACTIVE engine is not discarded",
+     "tests.test_intraday_arbitrated_away_recording"),
 ]
 
 

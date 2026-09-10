@@ -4350,6 +4350,33 @@ class IntradayEngine:
                     except Exception as e:
                         logger.debug(f"  shadow record failed for {s.strategy}: {e}")
 
+            # AN ACTIVE ENGINE THAT KEEPS LOSING ARBITRATION HAS THE SAME
+            # BLIND SPOT AS A SHADOWED ONE — 10-Sep-2026.
+            #
+            # The block above protects a RETIRED-candidate engine from going
+            # quiet. It does nothing for an ACTIVE one whose setup simply was
+            # not `best` this cycle — `_arbitrate_symbol()` or evaluate_all()'s
+            # own top-confidence pick chose a rival instead, and that engine's
+            # candidate was discarded with no row at all. Found live: RNG (11
+            # taken, lifetime) and PBK (5) sit below priors_min_sample_intraday
+            # (30), so `expected_r_for()` returns None for them and a None
+            # NEVER wins arbitration against any rival that has a prior at
+            # all — a structural lock-out that starves the very evidence that
+            # would let it start winning. docs/FINDINGS.md, 10-Sep-2026.
+            #
+            # ARBITRATED_AWAY, not SHADOW — a different fact (eligible for
+            # capital, lost the contest this cycle) deserves a different,
+            # ungrepped-together verdict. qty 0, same as SHADOW, so it can
+            # never be mistaken for a trade.
+            for s in _all:
+                if s is best or s.meta.get("lifecycle") == "SHADOW":
+                    continue
+                try:
+                    self._record_setup(s, st.phase, 0.0, "ARBITRATED_AWAY", 0,
+                                       mc_state=(mc.state if mc else None))
+                except Exception as e:
+                    logger.debug(f"  arbitrated-away record failed for {s.strategy}: {e}")
+
             if not best:
                 continue
 
