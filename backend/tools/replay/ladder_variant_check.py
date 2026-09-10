@@ -137,13 +137,20 @@ def run(start: str = "2026-05-04", end: str = "2026-05-29",
         k_atr: float = 2.5, universe_limit: int = 40) -> list[Trade]:
     sb = get_supabase()
     src = BarSource(kite=get_kite())
-    base_policy = load_intraday_policy()
-    vol_policy = dict(base_policy)
-    vol_policy["volume_decay_enabled"] = True
-    gb50_policy = dict(base_policy)
-    gb50_policy["giveback_pct"] = 50.0
-    gb_off_policy = dict(base_policy)
-    gb_off_policy["giveback_pct"] = 0.0
+    # Per-engine, lazily built -- each detection's baseline is now that
+    # engine's OWN prospective policy (load_intraday_policy(engine=...)),
+    # not one pooled dict for everyone. An engine with no override still
+    # gets back the pooled default, unchanged from before this existed.
+    policy_cache: dict[str, dict] = {}
+
+    def _policies_for(engine: str) -> tuple[dict, dict, dict, dict]:
+        if engine not in policy_cache:
+            base = load_intraday_policy(engine=engine)
+            vol = dict(base); vol["volume_decay_enabled"] = True
+            gb50 = dict(base); gb50["giveback_pct"] = 50.0
+            gb_off = dict(base); gb_off["giveback_pct"] = 0.0
+            policy_cache[engine] = (base, vol, gb50, gb_off)
+        return policy_cache[engine]
 
     trades: list[Trade] = []
     for day in _daterange(start, end):
@@ -174,6 +181,7 @@ def run(start: str = "2026-05-04", end: str = "2026-05-29",
                     "current_qty": _qty_for(det.entry),
                 }
 
+                base_policy, vol_policy, gb50_policy, gb_off_policy = _policies_for(det.engine)
                 atr_policy = dict(base_policy)
                 risk = D.risk_per_share(det.entry, det.stop, det.direction) or det.entry * 0.005
                 if atr_pct > 0 and risk > 0:

@@ -339,7 +339,11 @@ def _probe_ign_exit_lag(engine, sym: str, ctx, now: datetime) -> None:
     if pos is None or pos.get("exit_lag_action"):
         return
     from intraday.exit_policy import evaluate_intraday_exit, load_intraday_policy
-    policy = load_intraday_policy()
+    # IGN's own prospective policy, not the pooled one -- this function is
+    # IGN-only already, and once IGN has its own management-rung override
+    # (see docs/FINDINGS.md, 10-Sep-2026) the probe should measure against
+    # what IGN would ACTUALLY run under, not a policy it may no longer use.
+    policy = load_intraday_policy(engine="IGN")
     result = evaluate_intraday_exit(pos, ltp=ctx.ltp, policy=policy, now=now)
     action = result.get("action")
     if action in ("HOLD", "TRAIL_SL"):

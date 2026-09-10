@@ -47,28 +47,63 @@ from intraday.session import (phase_at, SQUARE_OFF, CLOSED, minutes_to_close,
 from intraday import direction as D
 
 
-def load_intraday_policy() -> dict:
-    """Deliberately NOT load_exit_policy(). See the module docstring."""
+def load_intraday_policy(engine: str | None = None) -> dict:
+    """Deliberately NOT load_exit_policy(). See the module docstring.
+
+    `engine` scopes the MANAGEMENT rungs -- giveback, trail, partial-book,
+    breakeven, time stop -- to that engine's own `{engine}_*` key, falling
+    back to the pooled `intraday_*` default when unset. Same shape every
+    engine file already uses for its own ENTRY parameters (gap_min_pct,
+    ign_target_r, ...) -- this extends it to the rungs that were still
+    pooled across every engine. No `engine` passed (or a key never set)
+    reads back byte-identical to the pooled call, unchanged from before
+    this existed. See docs/FINDINGS.md, 10-Sep-2026.
+
+    `target_r`, `use_setup_target`, `move_to_breakeven`,
+    `check_invalidation`, `must_exit_time`, `squareoff_buffer`,
+    `cost_buffer_pct`, the short-runway and volume-decay rungs stay
+    pooled-only -- no replay evidence yet for scoping them per engine.
+    """
+    prefix = (engine or "").strip().lower()
+
+    def _f(key: str, pooled_default: float) -> float:
+        return cfg_float(f"{prefix}_{key}", pooled_default) if prefix else pooled_default
+
+    def _i(key: str, pooled_default: int) -> int:
+        return cfg_int(f"{prefix}_{key}", pooled_default) if prefix else pooled_default
+
+    # partial_book_r is resolved FIRST (engine override, else pooled) so
+    # breakeven_at_r's own fallback below cascades through an engine's
+    # partial_book_r override too, exactly as it cascades through the
+    # pooled value for a call with no engine -- not just the pooled
+    # partial_book_r regardless of engine, which would silently break the
+    # nested-fallback intent for exactly the engines this exists for.
+    partial_book_r = _f("partial_book_r", cfg_float("intraday_partial_book_r", 1.2))
+    # The pooled breakeven default itself has a nested fallback (its own
+    # key, else partial_book_r) -- resolve that FIRST, using the already
+    # engine-resolved partial_book_r, so _f's override check below has the
+    # right value to fall back to either way.
+    breakeven_default = cfg_float("intraday_breakeven_at_r", partial_book_r)
+
     return {
         "use_setup_target":   cfg_bool("intraday_use_setup_target", True),
-        "partial_book_r":     cfg_float("intraday_partial_book_r", 1.2),
-        "partial_book_pct":   cfg_float("intraday_partial_book_pct", 50.0),
+        "partial_book_r":     partial_book_r,
+        "partial_book_pct":   _f("partial_book_pct", cfg_float("intraday_partial_book_pct", 50.0)),
         "move_to_breakeven":  cfg_bool("intraday_move_to_breakeven", True),
-        "trail_r":            cfg_float("intraday_trail_r", 1.0),
-        "trail_after_r":      cfg_float("intraday_trail_after_r", 1.5),
+        "trail_r":            _f("trail_r", cfg_float("intraday_trail_r", 1.0)),
+        "trail_after_r":      _f("trail_after_r", cfg_float("intraday_trail_after_r", 1.5)),
         "target_r":           cfg_float("intraday_target_r", 2.0),
-        "time_stop_min":      cfg_int("intraday_time_stop_minutes", 75),
-        "time_stop_min_r":    cfg_float("intraday_time_stop_min_r", 0.3),
+        "time_stop_min":      _i("time_stop_minutes", cfg_int("intraday_time_stop_minutes", 75)),
+        "time_stop_min_r":    _f("time_stop_min_r", cfg_float("intraday_time_stop_min_r", 0.3)),
         "squareoff_buffer":   cfg_int("intraday_squareoff_buffer_min", 12),
         "check_invalidation": cfg_bool("intraday_check_invalidation", True),
         "must_exit_time":     cfg("intraday_must_exit_time", "15:15"),
         # Breakeven as its OWN rung, defaulting to the partial's level so a
         # multi-share position behaves exactly as before. See evaluate_intraday_exit.
-        "breakeven_at_r":     cfg_float("intraday_breakeven_at_r",
-                                        cfg_float("intraday_partial_book_r", 1.2)),
+        "breakeven_at_r":     _f("breakeven_at_r", breakeven_default),
         "cost_buffer_pct":    cfg_float("intraday_breakeven_cost_pct", 0.21),
         # Give-back guard. OFF by default — see the note in evaluate_intraday_exit.
-        "giveback_pct":       cfg_float("intraday_giveback_pct", 0.0),
+        "giveback_pct":       _f("giveback_pct", cfg_float("intraday_giveback_pct", 0.0)),
         # Runway-aware tightening for OPEN shorts. OFF by default, same
         # reasoning as giveback_pct just above: never measured against this
         # book's own outcomes yet, so it ships inert until an operator arms
@@ -99,7 +134,7 @@ def load_intraday_policy() -> dict:
         # `python -m tools.exit_ladder_replay --min-r <x>` as the sample
         # grows — n=27 is real but still thin; treat this as the data's
         # current best answer, not a settled one.
-        "giveback_min_r":     cfg_float("intraday_giveback_min_r", 0.5),
+        "giveback_min_r":     _f("giveback_min_r", cfg_float("intraday_giveback_min_r", 0.5)),
 
         # VOLUME DECAY — a LEADING signal ahead of the time stop, off by
         # default for the same reason giveback_pct shipped off: this exact

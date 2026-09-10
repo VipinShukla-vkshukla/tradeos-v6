@@ -18066,3 +18066,89 @@ session.
 trades behind it. Next: build a per-IGN giveback override, shipped
 switched off, and confirm the replay signal against real trades once
 IGN has accumulated more of them before ever arming it live.
+
+## 10-Sep-2026 — Per-engine exit curation shipped; entry-lag analysis built and a real data gap found
+
+Implements the approved plan (per-engine exit curation): the CAPABILITY to
+curate exits ships for all 10 engines; only the NUMBERS stay evidence-gated
+(none set this pass — see below).
+
+**`load_intraday_policy(engine=...)`** — every management rung (giveback,
+trail, partial-book, breakeven, time stop) now checks that engine's own
+`{engine}_*` key first, falling back to the pooled `intraday_*` default —
+the exact pattern every engine file already uses for its own entry
+parameters, extended to the rungs that were still pooled. An engine with
+no override reads back byte-identical to today, proven by 11 new offline
+tests (`tests/test_intraday_per_engine_policy.py`), not just asserted.
+Caught and fixed one real bug before it shipped: `breakeven_at_r`'s nested
+fallback (defaults to `partial_book_r` when unset) initially still fell
+back to the *pooled* `partial_book_r` even for an engine with its own
+override — silently breaking the "engine's own numbers" intent for exactly
+the case this exists for. Fixed to cascade through the engine-resolved
+value first; a dedicated test pins it.
+
+Both real call sites updated: `intraday/engine.py`'s position-management
+loop (per-engine policy cache, keyed on `sub_engine`/`strategy`, the same
+field `_engine_of()` already uses for priors) and `intraday/event_core.py`'s
+exit-lag probe (now reads IGN's own prospective policy). `tools/replay/
+ladder_variant_check.py` updated the same way, so future per-engine replay
+comparisons use each engine's real prospective policy, not one shared dict.
+
+`tools.verify`: 1377/1377. `tools.health`/`simulate`: clean (same
+pre-existing `same_day_discovery` gap). No new `system_config` rows this
+pass — IGN's own values (sized from the earlier replay comparison) are
+deliberately NOT set yet, pending real-trade confirmation, per the plan.
+
+**Regression re-check surfaced a real, separate finding**: re-running
+`ladder_variant_check.py` against the same 28-Aug..09-Sep window no longer
+reproduces the exact 238/78-trade counts recorded two entries above —
+`stock_data_daily`'s retention window has moved again since that run
+(earliest date shifted 28-Aug -> 31-Aug, a new 10-Sep row appeared),
+confirming this reachable window is a genuinely moving target, not a fixed
+one. Re-run on the currently-reachable 31-Aug..09-Sep window (n=69 IGN,
+n=208 other): the qualitative finding holds — IGN's median stays positive
+under a looser giveback (+0.206), the other 9's goes negative (-0.157) —
+but the exact point estimates will keep drifting day to day. The
+deterministic, stable proof that the refactor itself is safe is the
+offline test suite above, not a replay re-run against a table whose window
+keeps shrinking.
+
+**Entry-lag analysis, built differently than planned, and for a real
+reason.** The plan called for a new probe mirroring the exit-lag probe
+(new columns, new migration). Checked first and found `intraday_event_shadow`
+(Stage D3, migration 105) already logs 2-second-cadence detections for
+every engine with `intraday_event_core_enabled` on — which is all of them,
+live since 24-Aug (14,199 rows across 7 engines) — and `intraday_setups`
+already records the ordinary 15s loop's own real detections. The lag
+question is answerable by joining data already being collected, with zero
+new live write path — strictly safer than the planned new probe, so built
+that way instead: `tools/entry_lag_analysis.py`.
+
+First real run surfaced a genuine data-quality gap before it surfaced
+anything about lag: joining on `intraday_setups.detected_at` returned
+ZERO matches for four engines (RNG/GAP/PDL/PBK) and undercounted every
+other one — checked directly: `detected_at` is NULL on 100% of RNG/GAP/
+PDL/PBK's rows, and only partially populated everywhere else (SDN 22%,
+ORB 23%, VWR 22%, VCE 52%, only IGN at 100%). `ts` is populated on every
+row of every engine. Fixed to join on `ts`. Real, separate finding worth
+its own note: any future code trusting `intraday_setups.detected_at` to
+be present would silently misbehave for at least four engines.
+
+With that fixed, median entry lag (the reliable figure — mean is dragged
+by a handful of multi-hour outliers from the join pairing unrelated
+re-detections of the same symbol+engine later in the day, a real
+limitation of this first-pass tool, not a finding) is small for every
+engine with real data: SDN 8.6s, VCE 7.9s, VWR 4.6s, ORB 5.6s, GDB 14.4s,
+IGN 0.1s. Nothing here looks like HBLENGINE's 72.9s exit-lag outlier —
+on this first pass, no engine shows a clear case for its own fast-entry
+path the way IGN's exit-lag probe found for exits. GAP: zero matches,
+for a real reason unrelated to lag — its last REAL detection in
+`intraday_setups` is 04-Aug-2026, over a month before the shadow log
+(which has been finding GAP-shaped setups continuously since 25-Aug)
+started running. GAP hasn't produced a single real detection in over a
+month despite continuous shadow activity. Not diagnosed further this
+pass — flagged, not solved; a real candidate for its own look.
+
+**Not acted on.** No engine gets a fast-entry path from this pass — the
+lag numbers found don't support one yet, and GAP's silence is a separate
+question this tool surfaced but didn't answer.

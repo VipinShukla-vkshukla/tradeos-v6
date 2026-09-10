@@ -303,7 +303,11 @@ class IntradayEngine:
         self.positions: list[dict] = []
         self.candidates: list[dict] = []
         self._policy = None
-        self._intraday_policy = None
+        # Per-engine, lazily populated -- {"" : <pooled policy>, "IGN": ...}.
+        # "" is the pooled/no-override policy, same cache shape kept for
+        # every engine that has no override of its own. See
+        # exit_policy.load_intraday_policy()'s own docstring.
+        self._intraday_policy: dict[str, dict] = {}
         # Live trend/deterioration evidence for held SWING positions — see
         # refresh_trend_context(). Kept separate from self._policy (the exit
         # RULES, loaded once) because this is EVIDENCE, refreshed on its own
@@ -2258,8 +2262,13 @@ class IntradayEngine:
                 from intraday.exit_policy import (evaluate_intraday_exit,
                                                   load_intraday_policy,
                                                   last_completed_close)
-                if self._intraday_policy is None:
-                    self._intraday_policy = load_intraday_policy()
+                # Engine identity, same field the bootstrap-override/exit-lag
+                # probe call sites already key on. "" (pooled) for any
+                # position with neither field set.
+                eng = (p.get("sub_engine") or p.get("strategy") or "").upper()
+                if eng not in self._intraday_policy:
+                    self._intraday_policy[eng] = load_intraday_policy(engine=eng or None)
+                policy = self._intraday_policy[eng]
                 # The close of the last FINISHED bar, for the invalidation
                 # check. None when this symbol has no context or too few bars
                 # yet, which `_invalidated` reads as "not confirmed" rather
@@ -2268,7 +2277,7 @@ class IntradayEngine:
                 _c = self._contexts.get(p["symbol"])
                 _bars = getattr(_c, "bars", None) or []
                 d = evaluate_intraday_exit(
-                    p, float(ltp), self._intraday_policy,
+                    p, float(ltp), policy,
                     last_close=last_completed_close(_bars), bars=_bars)
             else:
                 d = evaluate_exit(p, float(ltp), held, self._policy)

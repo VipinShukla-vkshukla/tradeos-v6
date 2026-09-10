@@ -245,6 +245,8 @@ MODULES = [
      "tests.test_intraday_registry_sync"),
     ("scanner Population D — outranked-but-qualifying live catch-up",
      "tests.test_scanner_population_d"),
+    ("intraday per-engine exit policy — load_intraday_policy(engine=...)",
+     "tests.test_intraday_per_engine_policy"),
 ]
 
 
