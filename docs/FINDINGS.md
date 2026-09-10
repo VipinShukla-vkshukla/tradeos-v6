@@ -18214,3 +18214,60 @@ side-by-side replay of a day GAP fired in shadow but not for real — not
 another pass of static reading. The fix above will help going forward
 regardless: if GAP ever does reach arbitration and lose, it will now be
 recorded instead of silently vanishing, narrowing where to look next.
+
+## 11-Sep-2026 — IGN's initial stop tested against a replay; no improvement found, current logic holds
+
+Follow-up to the operator's own read of 10-Sep's two live IGN losses (TEGA,
+REDINGTON — both `STOP_LOSS_HIT`, entered within 1-1.5% of the session high,
+both stocks still closed the day up): does the stop sit too tight on an
+already-extended entry? A genuinely different question from the giveback/
+trail/volume-decay work (`abef966`, earlier today) — those rungs only ever
+fire on a position already in profit, and neither live loss ever reached one.
+
+**Built `tools/replay/ign_stop_variant_check.py`.** Reuses `replay_symbol_day`,
+`_walk`, `_gross_r`, `_qty_for` unmodified — same detection population, same
+exit ladder, same forward walk as the giveback work. The structural-stop
+arithmetic itself (`ignition.py::_long`/`_short`) is REPLICATED, not
+monkeypatched via `system_config`, specifically to avoid touching a live
+trading system's actual config table mid-run. `risk_from_structure`'s refusal
+behaviour is replicated too: a stop widened past `ign_max_risk_pct` is
+refused outright under the live `intraday_stop_cap_mode=refuse` default, not
+resized — so every variant can only ever hold a trade steady or turn it into
+a refusal, never rescue one. Baseline is asserted to reproduce `det.stop`
+exactly (rounded) as a faithfulness check; zero mismatches on every run.
+
+**Result, n=72 (31-Aug..10-Sep, the fully reachable window as of this
+session):**
+
+```
+              n taken  refused   mean R    median R   win%
+baseline        71        1     +0.045R    +0.329R    66.2%
+wide_buffer     58       14     +0.121R    +0.339R    72.4%
+long_lookback   49       23     +0.116R    +0.338R    71.4%
+atr_floor_0.5x  37       35     -0.002R    +0.286R    64.9%
+atr_floor_1.0x   0       72        —          —         —
+```
+
+Baseline is already net positive on the broader sample — median +0.329R,
+66.2% win rate. Every wider-stop variant is flat on median R (well inside
+the ~0.08-0.09R SE — noise) while refusing 19-32% of baseline's current
+trades outright (structural stop now exceeds the 1.75% risk cap). Both
+ATR-floor variants are strictly worse: 0.5x drags mean negative and win
+rate down; 1.0x refuses every single detection, categorically incompatible
+with the current risk cap for this stock population. **No code change
+indicated** — same shape as `abef966`'s ATR-trail/volume-decay result.
+Today's two live losses read as ordinary variance in a book that already
+loses 33.8% of the time under current logic (71-47=24 losers/71), not
+evidence of a systemic entry-timing defect.
+
+**Real, separate finding: Kite's historical minute-bar backfill lags the
+session close by some margin, not instantly available.** First run (00:05
+IST, 11-Sep) returned `empty_response` for 39/40 universe symbols on
+10-Sep — 8.5 hours after that session's 15:30 IST close. The identical
+`historical_data()` call for the same symbol 15 minutes later (00:20 IST)
+returned the full 375 bars. A same-night replay of the just-completed
+session cannot assume its bars are reachable yet; not investigated further
+— how long the lag actually runs, or whether it is a fixed window, stays
+open for whoever hits it next.
+
+**Not acted on.** No `system_config` change, no change to `ignition.py`.
