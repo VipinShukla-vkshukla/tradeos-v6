@@ -18017,3 +18017,52 @@ that `stock_data_daily`'s retention window has shrunk past them
 (migration 130). Any future replay work needs a redesignated window;
 `params/frozen.json`'s validity against current data has not been
 re-checked.
+
+## 10-Sep-2026 — IGN wired into the replay harness; its profile genuinely differs from the pool
+
+Follow-up to the giveback-guard replay above. IGN was excluded from
+`tools/replay/detect.py` (hardcoded to the original 9 engines), so
+everything known about it came from 6 real live trades. Added
+`IgnitionMomentum` as a 10th engine, same shape as the other nine
+(instantiated directly, lifecycle recorded as a column, same
+`evaluate(ctx, phase)` contract) — replaying it against the only
+reachable window (28-Aug..09-Sep) produced **78 synthetic detections**.
+
+Replaying does not claim IGN "really" traded those days — its entry
+rules are a pure function of a symbol's own price/volume, so a day's
+bars either satisfy them or they don't, independent of when the code
+was deployed. The value is a much bigger sample of what the RULES would
+find against real history, faster than waiting weeks for live trades.
+
+**Compared IGN's 78 replayed trades against the pooled other-9-engine
+238, across the same giveback settings tested earlier:**
+
+```
+                    IGN (n=78)                      OTHER 9 (n=238)
+                    mean       median    win%       mean       median    win%
+gb=30% (live)      +0.0665    +0.313    67.9%      -0.0046    +0.332    64.7%
+gb=50%             +0.0100    +0.209    67.9%      -0.0189    +0.228    60.9%
+gb=off             +0.2943    +0.335    56.4%      +0.0242    -0.286    45.8%
+```
+
+For the other 9, "off" was the same outlier-driven trap flagged above
+(positive mean, negative median, minority win rate). **For IGN, "off" is
+not a trap by the same test** — median is positive and even slightly
+above the mean, win rate stays a healthy majority. That is a genuinely
+different, structurally healthier shape, not a mean fooled by a few big
+winners. IGN's best trades cluster near ~1.5R across all three giveback
+settings — IGN's own target level capping the upside, not a giveback
+artifact, and consistent with the setup type: already-in-motion, high-
+volume moves that IGN's `min_vr=2.0`/`min_move` gates are built to catch.
+
+**Read as real evidence the shared 30% giveback setting, correctly
+calibrated for the 9 established engines, may be costing IGN
+specifically** — not proof. n=78 is synthetic (replayed, not real
+fills), still under the harness's own n=100 sufficiency bar, one
+window, no holdout — same limits as every other replay result this
+session.
+
+**Not acted on.** IGN has only 1 real trading day and 6 real closed
+trades behind it. Next: build a per-IGN giveback override, shipped
+switched off, and confirm the replay signal against real trades once
+IGN has accumulated more of them before ever arming it live.

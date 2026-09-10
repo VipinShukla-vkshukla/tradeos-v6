@@ -9,8 +9,16 @@ would produce zero detections across the entire replayed history — and the
 harness would report "no evidence" for precisely the engine it was built to
 judge. That is not a small distortion; it is the inversion of the tool's purpose.
 
-So all nine engines are instantiated directly and lifecycle is recorded as a
+So all ten engines are instantiated directly and lifecycle is recorded as a
 COLUMN, never applied as a filter.
+
+IGN added 10-Sep-2026 — see docs/FINDINGS.md. It was live for only one real
+session (09-Sep) at the time this was wired in; replaying it against days
+before its deployment is deliberate, not an oversight — IGN's rules are a
+pure function of a symbol's own price/volume, so a day's bars either satisfy
+them or don't regardless of whether the daemon was watching for it that day.
+The point is a bigger sample of what the RULES would find against real
+history, not a claim IGN "really" traded those days.
 
 BUT THERE IS A SEAM, AND IT IS NOT PAPERED OVER
 ------------------------------------------------
@@ -65,11 +73,12 @@ from intraday.strategies.vwap_reclaim import VwapReclaim
 from intraday.strategies.range_fade import RangeFade
 from intraday.strategies.short_distribution import ShortDistribution
 from intraday.strategies.gap_down_bounce import GapDownBounce
+from intraday.strategies.ignition import IgnitionMomentum
 
 from tools.replay.contexts import apply_forming_bar, build_context, bars_before
 from tools.replay.conventions import BAR_CLOSE, Convention, evaluation_points
 
-# All nine, instantiated directly. Order matches `registry._ALL` so that any
+# All ten, instantiated directly. Order matches `registry._ALL` so that any
 # confidence tie breaks the same way it would live.
 ENGINES = [
     OpeningRangeBreakout(),
@@ -81,6 +90,7 @@ ENGINES = [
     RangeFade(),
     ShortDistribution(),
     GapDownBounce(),
+    IgnitionMomentum(),
 ]
 
 
