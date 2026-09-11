@@ -304,17 +304,25 @@ def _try_ign_fast_entry(engine, sym: str, ctx, best, phase: str) -> None:
         opened_ok = engine._maybe_open_paper(
             result["setup"], result["qty"], result["market"],
             phase=result["phase"], cost_pct=result["cost_pct"],
-            pick_label=None, bootstrap_override_slot=bootstrap_slot)
+            pick_label=None, bootstrap_override_slot=bootstrap_slot,
+            entry_path="fast_bootstrap")
         if opened_ok:
             # Only a CONFIRMED write consumes the lifetime slot (constraint
             # 6) — a downstream failure must not.
             engine._consume_ign_bootstrap_slot()
         return
 
+    # A genuine single-candidate TAKE — the allocator approved this ONE
+    # setup scored alone, via _score_proposals(), which never writes to
+    # allocation_decisions (see that function's own docstring: "no
+    # database write... safe to call from a 2-second loop"). Without this
+    # tag a trade opened here is indistinguishable from an ordinary
+    # competitive-pass approval, or from a bootstrap-forced one, purely
+    # from the position record — migration 139, docs/FINDINGS.md 12-Sep-2026.
     engine._maybe_open_paper(
         result["setup"], result["qty"], result["market"],
         phase=result["phase"], cost_pct=result["cost_pct"],
-        pick_label=v[0].get("pick_label"))
+        pick_label=v[0].get("pick_label"), entry_path="fast_organic")
     logger.info(f"      {sym}: IGN fast-entry — TAKE, entering on the 2s loop "
                 f"rather than waiting for the next 15s cycle")
 

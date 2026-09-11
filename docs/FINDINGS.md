@@ -18379,3 +18379,82 @@ every other proposal this tool produces. **Not acted on.** The RISK_ON
 result in particular looks like the highest-value next thing to run for
 real (drop `--dry-run`) and walk through the gate review for, ahead of
 anything else surfaced this session.
+
+## 12-Sep-2026 (2) — LATE-hour finding already live (no build needed); entry_path tag shipped (migration 139); short-timing filter tested, too small to trust
+
+Follow-up to the same day's earlier entry. Three threads: the operator's
+"build #1" (turn the VALIDATED `IGN/_hour_bucket/LATE` finding into
+something real), "build #2" (the entry-path tag), and "test #5" (a
+longer-lookback short-entry-timing filter) before building it.
+
+**#1 — traced the consumption path before writing any code, and found
+there is none to write.** `allocation.allocator.Allocator.
+refresh_priority_criteria()` already loads every `status=VALIDATED`,
+`proposal_type=FEATURE_FILTER`, `current_value=favourable` row from
+`brain_proposals` — exactly `IGN/_hour_bucket/LATE`'s current state
+(id 457) — into `_priority_criteria`, consumed by `policies.
+_confirmation_key()` as a tie-break when the allocator is choosing between
+otherwise-similar candidates (never a hard filter — matches the operator's
+own 22-Aug instruction: "priority criteria... not the hard filter to
+block everything"). Called from `run.py:532` on the ordinary 300s slow
+timer. **This finding is already structurally live** and will be
+consulted the next real trading session with no further engineering —
+confirmed by reading the full chain (`refresh_priority_criteria()` ->
+`build_priority_criteria()` -> `_confirmation_key()` -> its use inside
+`_interleave_by_engine()`/`select()`), not assumed from the docstring
+alone. Nothing built; nothing needed building.
+
+**#2 — shipped. Migration 139**: `open_positions.entry_path` /
+`closed_positions.entry_path` (TEXT, nullable), same shape as
+`bootstrap_override_slot` (migration 133). Four values: `ordinary`
+(`act_on_setups()`'s normal competitive pass), `bootstrap` (same
+function's override branch), `fast_organic` (`event_core.py::
+_try_ign_fast_entry()`'s own single-candidate TAKE — the exact path that
+made HINDALCO look unexplained), `fast_bootstrap` (the fast path's own
+override branch). Wired at both real write sites
+(`intraday/engine.py::_maybe_open_paper()` threads it through to
+`execution/paper_broker.py::open_position()`; `control/position_lifecycle.
+py::close()` carries it through to `closed_positions`, with the same
+graceful degradation `bootstrap_override_slot` already has if the
+migration is somehow not yet applied — never blocks a close on one
+optional traceability column). Six existing test-file stubs of
+`_maybe_open_paper()` (`test_ign_bootstrap_override.py`,
+`test_ignition_fast_entry.py`, `test_setup_alert_reflects_open_result.py`)
+needed their fixed signatures updated for the new kwarg — caught by
+running the suite, not assumed safe. Three new tests written into
+`test_ign_bootstrap_override.py` (traceability, mirroring
+`bootstrap_override_slot`'s own three) plus two existing tests extended
+with `entry_path` assertions at both real branch points (bootstrap slot
+opened, ordinary TAKE opened) and one more in `test_ignition_fast_entry.py`
+for the fast path's own TAKE branch. `tools.verify`: 1385/1385 of what
+this touched (the suite's one failure is the same pre-existing, unrelated
+`test_outcome_resolution_gap` pagination bug from the earlier entry
+today). `tools.health`: clean, same pre-existing `same_day_discovery` gap.
+Migration applied live via Supabase MCP (`apply_migration`), columns
+confirmed present by direct `information_schema` query afterward, not
+assumed from a success response alone.
+
+**#5 — tested, not shipped. Too small to trust, honestly.** Extended the
+5-bar fresh-low filter from earlier today with two more shapes: a longer
+lookback (10, 15 bars) and a "minutes since the extreme was set" framing
+(within a 30-bar window). All four candidate cuts against the same n=23
+replayed short population:
+
+```
+                                    n(keep)  median R   win%
+5-bar fresh-low                       8      +0.193R   62.5%
+10-bar fresh-low                      4      +0.318R   100.0%
+15-bar fresh-low                      2      +0.225R   100.0%
+minutes-since-extreme <= 2            5      +0.204R   80.0%
+minutes-since-extreme <= 5            9      +0.079R   66.7%
+```
+
+The 10-bar and 15-bar cuts LOOK the best — and are exactly the kind of
+result this project's own `feature_edge_study.py` would refuse to even
+report: its own `MIN_SEGMENT=15` floor exists precisely because a "keep"
+bucket of 2 or 4 trades is an anecdote, not a finding, no matter how clean
+the win rate looks. IGN's entire replayed short population is 23 trades;
+slicing it any further cannot currently produce a segment large enough to
+trust. **Not built.** The honest next step is not a cleverer filter — it
+is more real short detections, live or via a wider replay window, before
+this question is answerable at all.

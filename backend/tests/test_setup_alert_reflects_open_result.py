@@ -60,7 +60,7 @@ def _engine(open_result: bool):
     eng._intraday_alert_worthy = lambda st: True
     eng._maybe_open_paper = (
         lambda st, qty, mc, phase="?", cost_pct=0.0, pick_label=None,
-               bootstrap_override_slot=None: open_result)
+               bootstrap_override_slot=None, entry_path=None: open_result)
     return eng
 
 

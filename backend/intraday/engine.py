@@ -4835,7 +4835,9 @@ class IntradayEngine:
             opened_ok = self._maybe_open_paper(st, qty, mc, phase=s["phase"],
                                    cost_pct=s.get("cost_pct") or 0.0,
                                    pick_label=pick_label,
-                                   bootstrap_override_slot=bootstrap_slot)
+                                   bootstrap_override_slot=bootstrap_slot,
+                                   entry_path=("bootstrap" if bootstrap_slot is not None
+                                               else "ordinary"))
             if bootstrap_slot is not None and opened_ok:
                 # Only a CONFIRMED write consumes the lifetime slot
                 # (constraint 6) — a downstream failure (fill failure,
@@ -5005,7 +5007,8 @@ class IntradayEngine:
 
     def _maybe_open_paper(self, st, qty: int, mc, phase: str = "?",
                           cost_pct: float = 0.0, pick_label: str | None = None,
-                          bootstrap_override_slot: int | None = None) -> bool:
+                          bootstrap_override_slot: int | None = None,
+                          entry_path: str | None = None) -> bool:
         """
         Simulate the entry, so the paper book contains real round trips.
         Returns True only once a position row is confirmed written — see
@@ -5168,6 +5171,11 @@ class IntradayEngine:
                  "pick_label": pick_label,
                  "entry_rationale": entry_rationale,
                  "bootstrap_override_slot": bootstrap_override_slot,
+                 # 'ordinary'/'bootstrap'/'fast_organic'/'fast_bootstrap' —
+                 # see migration 139. Caller-supplied, not inferred here:
+                 # act_on_setups() and _try_ign_fast_entry() are the only
+                 # two call sites and each knows which of the four it is.
+                 "entry_path": entry_path,
                  # FOUND DURING MERGE REVIEW, migration 047: this was the one
                  # missing link. The entry FILL already used D.entry_side(
                  # st.direction) a few lines up, so a short's opening leg was

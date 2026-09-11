@@ -372,6 +372,13 @@ def open_position(symbol: str, qty: int, fill_price: float, setup: dict,
             # cold-start prior — see intraday/engine.py::_maybe_open_paper()
             # and IntradayEngine._ign_bootstrap_used_count().
             "bootstrap_override_slot": setup.get("bootstrap_override_slot"),
+            # 'ordinary' / 'bootstrap' / 'fast_organic' / 'fast_bootstrap' —
+            # which write path opened this position (migration 139). None
+            # for any caller that does not pass it (every non-IGN engine,
+            # today). See that migration's own comment for the full trace —
+            # bootstrap_override_slot alone cannot tell an ordinary approval
+            # from a fast-path one; this can.
+            "entry_path": setup.get("entry_path"),
             "entry_signal_type": setup.get("strategy"),
             # Attribution back to signal_log. INTRADAY has no signal_log rows
             # (its outcomes live in intraday_setups), so this is None there by

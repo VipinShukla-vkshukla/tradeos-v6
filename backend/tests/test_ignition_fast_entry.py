@@ -92,9 +92,11 @@ class _FakeEngine:
         return self.score_verdict
 
     def _maybe_open_paper(self, setup, qty, mc, phase="?", cost_pct=0.0,
-                          pick_label=None, bootstrap_override_slot=None):
+                          pick_label=None, bootstrap_override_slot=None,
+                          entry_path=None):
         self.opened.append({"setup": setup, "qty": qty, "pick_label": pick_label,
-                            "bootstrap_override_slot": bootstrap_override_slot})
+                            "bootstrap_override_slot": bootstrap_override_slot,
+                            "entry_path": entry_path})
         return self._open_result
 
     def _record_setup(self, setup, phase, cost_pct, verdict, qty, mc_state=None):
@@ -148,6 +150,10 @@ def test_take_verdict_opens_a_paper_position():
     assert len(eng.opened) == 1, "a TAKE verdict must call _maybe_open_paper exactly once"
     assert eng.opened[0]["pick_label"] == "TOP_PICK", (
         "pick_label must come from the local verdict, not engine._verdicts")
+    assert eng.opened[0]["entry_path"] == "fast_organic", (
+        "a genuine single-candidate TAKE (never touches allocation_decisions) "
+        "must be tagged 'fast_organic' so it is not confused with an ordinary "
+        "competitive-pass approval")
     assert not eng.recorded, "a TAKE must not also record an ALLOCATOR_DECLINED row"
 
 
@@ -248,6 +254,9 @@ def test_decline_with_bootstrap_slot_available_opens_as_override():
         "when the override goes on to act anyway")
     assert len(eng.opened) == 1, "a decline with slots free must still open, overridden"
     assert eng.opened[0]["bootstrap_override_slot"] == 4, "next slot after 3 used is 4"
+    assert eng.opened[0]["entry_path"] == "fast_bootstrap", (
+        "the fast path's own override branch must be tagged 'fast_bootstrap', "
+        "distinct from the ordinary loop's 'bootstrap'")
     assert eng.bootstrap_consumed == [4], "a confirmed open must consume exactly one slot"
 
 

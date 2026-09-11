@@ -1530,6 +1530,13 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
         # pick_label/sub_engine are, for the same reason: a marker only on
         # the open row cannot be queried against a closed outcome.
         "bootstrap_override_slot": pos.get("bootstrap_override_slot"),
+        # Which write path opened this position — migration 139. Carried
+        # through the same way bootstrap_override_slot is, for the same
+        # reason: a marker only on the open row cannot be queried against a
+        # closed outcome. See that migration's own comment for what the
+        # four values mean and why bootstrap_override_slot alone cannot
+        # answer this.
+        "entry_path": pos.get("entry_path"),
         # IGN's exit-lag probe (migration 135, docs/FINDINGS.md 09-Sep-
         # 2026) — pure measurement, changes nothing about this close.
         # exit_lag_action/exit_lag_probe_at are carried straight through
@@ -1684,6 +1691,13 @@ def close_position(sb, pos: dict, exit_price: float, exit_reason: str,
                 sb.table("closed_positions").insert(
                     {k: v for k, v in closed.items()
                      if k != "bootstrap_override_slot"}).execute()
+            elif "entry_path" in str(e):
+                # Same shape again — ships ahead of migration 139 on purpose.
+                logger.warning("  closed_positions.entry_path is missing — apply "
+                               "migration 139. Closing without the marker.")
+                sb.table("closed_positions").insert(
+                    {k: v for k, v in closed.items()
+                     if k != "entry_path"}).execute()
             elif "exit_lag" in str(e):
                 # Same shape again — ships ahead of migration 135 on
                 # purpose. All three exit_lag_* columns share this prefix,

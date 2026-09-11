@@ -159,10 +159,12 @@ def _wiring_engine(bootstrap_used=10, open_result=True, allocator_ok=False):
     eng._intraday_alert_worthy = lambda st: False
 
     def _maybe_open_paper(st, qty, mc, phase="?", cost_pct=0.0,
-                          pick_label=None, bootstrap_override_slot=None):
+                          pick_label=None, bootstrap_override_slot=None,
+                          entry_path=None):
         eng._opened_calls.append({
             "st": st, "pick_label": pick_label,
-            "bootstrap_override_slot": bootstrap_override_slot})
+            "bootstrap_override_slot": bootstrap_override_slot,
+            "entry_path": entry_path})
         return eng._open_result
     eng._maybe_open_paper = _maybe_open_paper
 
@@ -188,6 +190,9 @@ def test_ign_decline_with_a_slot_available_opens_as_override():
         "the allocator's own real verdict must always be recorded first")
     assert len(eng._opened_calls) == 1, "a decline with a slot free must still open"
     assert eng._opened_calls[0]["bootstrap_override_slot"] == 1
+    assert eng._opened_calls[0]["entry_path"] == "bootstrap", (
+        "a bootstrap-override entry must be tagged 'bootstrap', not left "
+        "indistinguishable from an ordinary approval")
     assert eng._consumed == [1]
 
 
@@ -228,6 +233,8 @@ def test_allocator_take_never_touches_the_bootstrap_counter():
     assert eng._recorded_setups == [], "a TAKE must not record ALLOCATOR_DECLINED"
     assert len(eng._opened_calls) == 1
     assert eng._opened_calls[0]["bootstrap_override_slot"] is None
+    assert eng._opened_calls[0]["entry_path"] == "ordinary", (
+        "the ordinary competitive pass must be tagged 'ordinary'")
     assert eng._consumed == []
 
 
@@ -285,6 +292,52 @@ def test_close_carries_none_through_for_an_ordinary_position():
     assert closed["bootstrap_override_slot"] is None
 
 
+# ── 4. entry_path traceability (migration 139) — same shape as §3 ──────
+
+def test_open_position_carries_entry_path():
+    from execution import paper_broker
+    captured = {}
+
+    def _capture(sb, row):
+        captured.update(row)
+
+    with patch("control.position_lifecycle._upsert_position", side_effect=_capture):
+        paper_broker.open_position(
+            "IGNCO", 10, 100.0,
+            {"stop": 98.0, "target": 106.0, "strategy": "IGN",
+             "sub_engine": "IGN", "direction": "LONG",
+             "entry_path": "fast_organic"},
+            "INTRADAY", sb=object(), charges=5.0)
+    assert captured.get("entry_path") == "fast_organic"
+
+
+def test_open_position_writes_none_entry_path_when_caller_omits_it():
+    """Every non-IGN engine, today — the ordinary swing/other-engine path
+    never passes entry_path at all, and that must read back as NULL, not
+    error or silently default to a real-looking value."""
+    from execution import paper_broker
+    captured = {}
+
+    def _capture(sb, row):
+        captured.update(row)
+
+    with patch("control.position_lifecycle._upsert_position", side_effect=_capture):
+        paper_broker.open_position(
+            "GAPCO", 10, 100.0,
+            {"stop": 98.0, "target": 106.0, "strategy": "GAP",
+             "sub_engine": "GAP", "direction": "LONG"},
+            "INTRADAY", sb=object(), charges=5.0)
+    assert captured.get("entry_path") is None
+
+
+def test_close_carries_entry_path_through_to_the_closed_row():
+    pos = {"symbol": "IGNCO", "strategy": "IGN", "sub_engine": "IGN",
+          "entry_path": "fast_bootstrap"}
+    closed = {"sub_engine": pos.get("sub_engine"),
+             "entry_path": pos.get("entry_path")}
+    assert closed["entry_path"] == "fast_bootstrap"
+
+
 TESTS = [
     ("counter lazily fetches once and caches",
      test_counter_lazily_fetches_once_and_caches),
@@ -310,6 +363,12 @@ TESTS = [
      test_close_carries_bootstrap_override_slot_through_to_the_closed_row),
     ("close() carries None through for an ordinary position",
      test_close_carries_none_through_for_an_ordinary_position),
+    ("open_position carries entry_path",
+     test_open_position_carries_entry_path),
+    ("open_position writes None entry_path when the caller omits it",
+     test_open_position_writes_none_entry_path_when_caller_omits_it),
+    ("close() carries entry_path through to the closed row",
+     test_close_carries_entry_path_through_to_the_closed_row),
 ]
 
 if __name__ == "__main__":
