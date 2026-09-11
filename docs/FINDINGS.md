@@ -18458,3 +18458,65 @@ slicing it any further cannot currently produce a segment large enough to
 trust. **Not built.** The honest next step is not a cleverer filter — it
 is more real short detections, live or via a wider replay window, before
 this question is answerable at all.
+
+## 12-Sep-2026 (3) — the LATE-hour finding actually made reachable (_hour_bucket wired into the live meta chain)
+
+The operator's own question caught what the earlier entry today missed:
+"so now the trades can happen in last 2 hours as well?" — no, IGN's
+`phases` already spans the full session; nothing about time-of-day was
+ever gated. But the question sent a re-read of `_matches_priority_
+criteria()`, and that turned up the real defect this entry's title
+answers: `IGN/_hour_bucket/LATE` (VALIDATED, confidence 0.85) was loaded
+into `_priority_criteria` correctly but then **unconditionally skipped**
+by the one function that acts on it — `if feature == "_hour_bucket":
+continue`, because no live candidate's `meta` carried an hour-bucket
+value at all, only `feature_edge_study.py`'s own offline recomputation
+from a resolved row's `ts`. For IGN, whose only VALIDATED+favourable
+criterion right now IS `_hour_bucket`, this made the tie-break a complete
+no-op — corrects the earlier entry today, which said this finding was
+"already live" without checking one level deeper.
+
+**Fixed at the source, not the skip.** `intraday.session.hour_bucket()`
+(new) canonicalises the exact three boundaries `feature_edge_study.py`
+already used (OPEN 09:15-10:00, MID 10:00-13:00, LATE 13:00-15:15),
+with one deliberate behavioural addition: returns `None` outside
+09:15-15:15, which the offline version never needed because every row it
+ever saw was already in-session. `feature_edge_study.py::_hour_bucket()`
+now delegates to it rather than keeping a second definition — single
+source of truth for a boundary two different systems now both act on.
+
+`intraday/strategies/registry.py::evaluate_all()` stamps
+`meta["_hour_bucket"]` at real detection time (`datetime.now(IST)`, same
+clock basis `intraday_setups.ts` — the column the original finding was
+measured against — is written from), same "stamped here, uniform across
+every engine" pattern already used for `atr_pct_daily`/
+`universe_population`/`value_cr`. `allocation/proposal.py::from_intraday()`
+carries it into `Proposal.meta` the same way `universe_population` is.
+`allocation/policies.py::_matches_priority_criteria()`'s special case is
+simply removed — `_hour_bucket` is now an ordinary meta field like any
+other, checked by the same one line every other feature already goes
+through.
+
+Demonstrated the fix rather than asserted it: reproduced the removed
+`continue` branch standalone and confirmed it returns `False` for a
+LATE-bucket IGN candidate against `{"IGN": {"_hour_bucket": {"LATE"}}}`
+where the current code returns `True`. New test
+(`test_confirmation_key_prioritises_a_validated_hour_bucket_match`,
+`tests/test_engine_fairness_and_bands.py`) mirrors the existing sector
+test exactly, proving the same thing through the real `_interleave_by_engine`
+call path, not just the leaf function. `tools.verify`: 1386/1386 of
+everything this touched or could touch (`test_feature_edge_study.py`'s
+existing `test_hour_bucket_boundaries` — five fixed UTC/IST pairs
+including both LATE-boundary edges — still passes unchanged, confirming
+the delegation preserves the original tool's exact behaviour for every
+real input). Same one pre-existing, unrelated `test_outcome_resolution_gap`
+failure as every other run today. `tools.health`/`simulate`: clean, same
+pre-existing `same_day_discovery` gap.
+
+Not touched: replay's `tools/replay/detect.py::evaluate_one()` does not
+call `registry.evaluate_all()` (see that module's own docstring) and so
+does not get this stamp either — matching the EXISTING gap for
+`atr_pct_daily`/`universe_population`/`value_cr`, not a new one this
+change introduces. A replayed Setup's `meta` simply has no `_hour_bucket`
+key, which every consumer already treats as "no match" rather than
+erroring.

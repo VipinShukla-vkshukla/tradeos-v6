@@ -217,6 +217,13 @@ def from_intraday(setup, quantity: int, product: str = "MIS") -> Proposal | None
             # on its own evidence instead of the established bench's. See
             # allocation/scoring.py's "ESTABLISHED VS ADMITTED" section.
             "universe_population": (setup.meta or {}).get("universe_population") or "bench",
+            # Carried through the same way — 12-Sep-2026, so a VALIDATED
+            # IGN/_hour_bucket/LATE-shaped finding has a live value to be
+            # checked against at allocation time. See intraday/strategies/
+            # registry.py::evaluate_all() for where this is stamped and
+            # allocation/policies.py::_matches_priority_criteria() for
+            # where it is read.
+            "_hour_bucket": (setup.meta or {}).get("_hour_bucket"),
         },
     )
     return p if p.coherent else None

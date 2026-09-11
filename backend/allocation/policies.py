@@ -92,12 +92,27 @@ def _matches_priority_criteria(meta: dict, engine: str,
     """Pure. True when this candidate's own meta carries a value on ANY
     VALIDATED, favourable feature for its engine — one match is enough,
     this is a tie-break, not a scoring function that needs to weigh how
-    many criteria agree."""
+    many criteria agree.
+
+    `_hour_bucket` USED TO BE SKIPPED HERE UNCONDITIONALLY — 12-Sep-2026.
+    The comment on the removed line read "computed from `ts` at study
+    time, not a meta field", which was true and also meant every
+    VALIDATED, favourable `_hour_bucket` finding this project ever
+    produces was silently unreachable, regardless of status or
+    confidence — confirmed live for IGN/_hour_bucket/LATE (VALIDATED,
+    confidence 0.85): it was the only IGN criterion loaded, so the loop
+    had one entry, skipped it, and returned False for every IGN candidate
+    at every hour. Fixed at the SOURCE, not here: `intraday/strategies/
+    registry.py::evaluate_all()` now stamps `meta["_hour_bucket"]` at
+    detection time (`intraday.session.hour_bucket()`, the same boundaries
+    `feature_edge_study.py` measures against) and `allocation/proposal.py
+    ::from_intraday()` carries it through — so `_hour_bucket` is now an
+    ordinary meta field like any other, and the special case above is
+    simply gone rather than replaced with a different one. See
+    docs/FINDINGS.md, 12-Sep-2026."""
     if not criteria:
         return False
     for feature, categories in criteria.get(engine, {}).items():
-        if feature == "_hour_bucket":
-            continue  # computed from `ts` at study time, not a meta field
         if str(meta.get(feature)) in categories:
             return True
     return False

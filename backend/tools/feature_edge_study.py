@@ -126,19 +126,23 @@ def _hour_bucket(ts: str | None) -> str | None:
     """OPEN (09:15-10:00, the volatile opening hour), MID (10:00-13:00),
     LATE (13:00-15:15) — coarse enough to have real sample per bucket,
     fine enough to separate the opening-range regime from the drift a lot
-    of mean-reversion engines are built for."""
+    of mean-reversion engines are built for.
+
+    Delegates to `intraday.session.hour_bucket()`, 12-Sep-2026 —
+    canonicalised there so this study and the live allocator's tie-break
+    (allocation/policies.py::_matches_priority_criteria, which used to
+    have no live equivalent of this value to check at all) read the exact
+    same boundaries by construction. See that function's own docstring
+    for the one real behavioural difference (a bound check this tool
+    never needed because every real `ts` here is already in-session)."""
     if not ts:
         return None
     try:
         dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00")).astimezone(IST)
     except (ValueError, TypeError):
         return None
-    hm = dt.hour * 60 + dt.minute
-    if hm < 10 * 60:
-        return "OPEN"
-    if hm < 13 * 60:
-        return "MID"
-    return "LATE"
+    from intraday.session import hour_bucket
+    return hour_bucket(dt)
 
 
 def _numeric_value(r: dict, feature: str) -> float | None:

@@ -100,6 +100,47 @@ def phase_at(now: datetime | None = None) -> str:
     return current
 
 
+OPEN = "OPEN"
+MID  = "MID"
+LATE = "LATE"
+
+# Deliberately its own, coarser 3-way split — NOT the same boundaries as
+# PRIME/DRIFT/AFTERNOON above. Built for tools/feature_edge_study.py
+# (22-Aug-2026): "coarse enough to have real sample per bucket, fine
+# enough to separate the opening-range regime from the drift a lot of
+# mean-reversion engines are built for." That module's own `_hour_bucket`
+# used to recompute this straight from a resolved row's `ts` after the
+# fact; canonicalised HERE, 12-Sep-2026, so the live allocator's tie-break
+# (allocation/policies.py::_matches_priority_criteria) and the offline
+# study that FOUND the finding it acts on are reading the same boundaries
+# by construction, not by two definitions staying in sync by luck. See
+# docs/FINDINGS.md, 12-Sep-2026 — a VALIDATED, favourable
+# IGN/_hour_bucket/LATE proposal was silently unreachable by the live
+# allocator because no live meta field carried this value at all; this
+# function is what a caller now stamps into a Setup's meta to fix that.
+def hour_bucket(now: datetime | None = None) -> str | None:
+    """OPEN (09:15-10:00), MID (10:00-13:00), LATE (13:00-15:15) — same
+    three boundaries `feature_edge_study.py`'s own `_hour_bucket` used.
+    One real behavioural difference, deliberate: that function never
+    bound-checked the lower/upper edge (every real row it ever saw was
+    already inside the session, so `hm < 600` silently read anything
+    before 10:00 — including a hypothetical 3 AM — as OPEN). THIS
+    function is called from the live evaluation loop, which runs
+    continuously rather than only against pre-filtered historical rows,
+    so it returns None outside 09:15-15:15 rather than mis-bucketing an
+    edge case that could not occur in the offline tool's own inputs but
+    can occur here."""
+    now = now or datetime.now(IST)
+    t = now.time()
+    if t < dtime(9, 15) or t >= dtime(15, 15):
+        return None
+    if t < dtime(10, 0):
+        return OPEN
+    if t < dtime(13, 0):
+        return MID
+    return LATE
+
+
 def session_state(now: datetime | None = None) -> SessionState:
     """Everything a strategy needs to know about the clock, computed once."""
     now = now or datetime.now(IST)

@@ -134,10 +134,12 @@ def test_confirmation_priority_switch_off_restores_plain_edge_order():
         "switch off must stop confirmation from influencing the order at all")
 
 
-def _sc(symbol, engine, edge, sector=None):
+def _sc(symbol, engine, edge, sector=None, hour_bucket=None):
     s = _s(symbol, engine, edge)
     if sector is not None:
         s["proposal"].meta["sector"] = sector
+    if hour_bucket is not None:
+        s["proposal"].meta["_hour_bucket"] = hour_bucket
     return s
 
 
@@ -169,6 +171,22 @@ def test_confirmation_key_prioritises_a_validated_sector_match():
     other = _sc("INFY", "SDN", 0.50, sector="i.t")
     order = [s["symbol"] for s in P._interleave_by_engine([other, matching], criteria)]
     assert order == ["MARUTI", "INFY"], order
+
+
+def test_confirmation_key_prioritises_a_validated_hour_bucket_match():
+    """12-Sep-2026. `_hour_bucket` used to be unconditionally skipped in
+    `_matches_priority_criteria` — a VALIDATED, favourable
+    IGN/_hour_bucket/LATE finding (docs/FINDINGS.md, this date) was
+    silently unreachable no matter its status or confidence, because the
+    only entry in IGN's own criteria dict was the one feature this
+    function refused to check. Same shape as the sector test above,
+    proving the fix the same way: a LATE-bucket candidate now ranks first
+    against a same-edge, same-engine candidate that isn't."""
+    criteria = {"IGN": {"_hour_bucket": {"LATE"}}}
+    matching = _sc("PINELABS", "IGN", 0.50, hour_bucket="LATE")
+    other = _sc("HINDALCO", "IGN", 0.50, hour_bucket="OPEN")
+    order = [s["symbol"] for s in P._interleave_by_engine([other, matching], criteria)]
+    assert order == ["PINELABS", "HINDALCO"], order
 
 
 def test_confirmation_key_ignores_an_unlisted_engine_or_feature():
@@ -735,6 +753,8 @@ TESTS = [
      test_build_priority_criteria_merges_multiple_categories_per_feature),
     ("confirmation_key prioritises a validated sector match",
      test_confirmation_key_prioritises_a_validated_sector_match),
+    ("confirmation_key prioritises a validated hour-bucket match",
+     test_confirmation_key_prioritises_a_validated_hour_bucket_match),
     ("confirmation_key ignores an unlisted engine or feature",
      test_confirmation_key_ignores_an_unlisted_engine_or_feature),
     ("confirmation_key: retest and priority criteria both lead to rank zero",

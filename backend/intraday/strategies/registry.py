@@ -312,6 +312,23 @@ def evaluate_all(ctx: SymbolContext, phase: str) -> tuple[Setup | None, list[Set
                 # not ctx. Stamped here rather than threading ctx through
                 # another function signature. Stage D2h, 24-Aug-2026.
                 s.meta["value_cr"] = ctx.value_cr
+                # WHICH OF feature_edge_study.py's OWN OPEN/MID/LATE
+                # BUCKETS THIS DETECTION FELL IN -- 12-Sep-2026, same
+                # "stamped here, uniform, cannot be skipped" reasoning as
+                # the three fields above. Read from the real clock, not
+                # ctx.as_of (which tracks context STALENESS, a different
+                # question) -- matches the basis feature_edge_study.py's
+                # own historical buckets were built on: intraday_setups.ts,
+                # written at real detection time. Exists so
+                # allocation/policies.py::_matches_priority_criteria() has
+                # a live value to check a VALIDATED IGN/_hour_bucket/LATE
+                # finding against at all -- before this it had none, and
+                # silently skipped every _hour_bucket criterion regardless
+                # of status. See docs/FINDINGS.md, 12-Sep-2026.
+                from datetime import datetime
+                from config import IST
+                from intraday.session import hour_bucket
+                s.meta["_hour_bucket"] = hour_bucket(datetime.now(IST))
                 found.append(s)
         except Exception as ex:
             # One misbehaving engine must not stop the others. A scanner that
