@@ -18271,3 +18271,111 @@ session cannot assume its bars are reachable yet; not investigated further
 open for whoever hits it next.
 
 **Not acted on.** No `system_config` change, no change to `ignition.py`.
+
+## 12-Sep-2026 — IGN: entry threshold replay-tested (positive), a real 0%-win RISK_ON finding surfaced, universe-coverage claim corrected, short trigger confirmed to check magnitude only
+
+Follow-up to 11-Sep's PINELABS/HINDALCO review. Four separate threads.
+
+**Universe coverage — an earlier claim this session corrected itself.**
+Told the operator "only 40 stocks get reviewed"; the operator's own log line
+(`209 scanned`) contradicted it. Traced `scanned = len(self._contexts)` to
+`context_symbols()` -> `self._universe`, which is NOT fixed at the static
+top-40 — `live_requalify_universe()` (45s timer) checks names outside the
+bench against live move%/turnover and admits qualifiers. **Population D**
+(migration 137) exists specifically for outranked-but-qualifying names and
+its own code comment names PTCIL directly as the real case that motivated
+it: `"GRAPHITE/JSL/SARDAEN/PTCIL/PPLPHARMA were invisible all session
+despite qualifying"` ([engine.py:2154](backend/intraday/engine.py:2154)).
+Confirmed all three requalify switches (A/B/C/D) are armed live. A 5-8%
+mover from the 311-name qualifying pool clears Population D's own admission
+bar (+1.2% live move, >=Rs 25cr turnover) trivially.
+
+**Real bottleneck identified: not the 45s requalify check, the 300s bar
+refresh.** A name admitted by `live_requalify_universe()` still has no bars
+until `refresh_contexts()`'s NEXT tick — confirmed that function runs on
+run.py's 300-second slow timer, explicitly costed as expensive (per-symbol
+`historical_data()`, "rate-limited far more tightly than quotes"). Speeding
+up 45s alone would not meaningfully speed up detection of an outside-bench
+mover; the 300s bar-refresh is the actual ceiling, and shortening THAT has
+a real, uncosted rate-limit tradeoff of its own. Not built — flagged as the
+right next question if faster catch-up is wanted.
+
+**Short trigger checks magnitude only, confirmed by reading `_short()`
+directly.** `evaluate()` gates on `chg_pct <= -min_move` — a CUMULATIVE
+comparison against `prev_close`, never the current or recent bar's own
+direction. `_short()` itself checks circuit-freeze tolerance and
+`can_short()` (surveillance/ASM/already-collapsed-too-far), then computes
+the stop from a swing-high lookback — nothing here asks whether the move is
+still extending. This is the exact, named mechanism behind HINDALCO
+(11-Sep): entry landed 8 minutes after the real low, with nothing in the
+trigger able to tell the difference between "still falling" and "already
+recovering." Two concrete, untested candidate fixes (freshest-bar-is-the-
+extreme; a minimum bars-since-extreme cooldown) — not built this pass,
+belong in a dedicated replay study given IGN's real short sample is 2
+trades, both losses.
+
+**Entry/exit 2x2 replay — one lever real, one isn't.** Built
+`tools/replay/ign_entry_exit_variant_check.py`: reuses `replay_symbol_day`/
+`_walk`/`_gross_r` unmodified; the entry-side lever is applied through a new
+`_cfg_override()` that MERGES onto the real live `config._sys_config`
+snapshot rather than `tests.cfg_ctx()`'s full replace, specifically so
+every other live switch (`ign_target_r`, `ign_max_risk_pct`,
+`intraday_giveback_pct`, ...) keeps reading its true production value for
+the duration — a full-replace would have silently reverted them to each
+call site's hardcoded default and contaminated the comparison.
+
+n=75 trade-rows, 31-Aug..11-Sep, 2x2 (entry x exit):
+
+```
+                              n    median R   win%
+base_entry  / base_exit      23    +0.256R   56.5%
+early_entry / base_exit      52    +0.328R   65.4%
+base_entry  / long_exit      23    +0.094R   56.5%
+early_entry / long_exit      52    +0.115R   63.5%
+```
+
+`early_entry` = `ign_min_pct` 3.5->2.2, `ign_min_atr_frac` 1.2->0.85.
+`long_exit` = `giveback_pct` 30->65, target_r effectively removed (3.5R).
+
+Enter-earlier more than doubled the detected trade count AND improved both
+median R and win rate — an improvement on both axes, not a tradeoff.
+Stay-longer cut median R roughly in half on BOTH entry variants, despite one
+single trade (PINELABS, 11-Sep) showing +3.50R under it — the same
+"one outlier inflates the aggregate" trap the gb=off finding already
+warned about, deliberately not acted on for the same reason.
+
+**Shipped, pending operator confirmation of the live write**: migration
+138 (`ign_min_pct`=2.2, `ign_min_atr_frac`=0.85) — file written, the actual
+`system_config` INSERT was blocked by the harness's own permission
+classifier (a live-system write correctly requires explicit sign-off, not
+pushed through). n=52 is still below this project's own n=100 sufficiency
+bar, one window, no holdout — real evidence, not proof, same standard as
+every other number in this ledger.
+
+**Stay-longer: not acted on**, same standard as `abef966`'s ATR-trail
+result — consistent, not a fluke, tested rather than assumed.
+
+**`tools/feature_edge_study.py --dry-run` run for the first time against
+IGN's pooled resolved population (n=539+ TAKEN-and-resolved, bar-walked —
+far larger than IGN's ~9 real live trades because `resolve_day()` scores
+every detection, taken or not). One finding stands well above the others in
+both sample size and effect size:**
+
+```
+IGN/regime_at_detection: NOT RISK_ON -> win 68% (n=532, mean +0.46%)
+                          RISK_ON     -> win  0% (n=46,  mean -1.46%)
+```
+
+confidence 0.85, the highest of every finding this run produced. Every
+single one of 46 IGN setups detected during a RISK_ON market context lost.
+Two more real, lower-confidence findings from the same run: IGN setups in
+`sector=telecom` underperform sharply (41% win, n=39, vs 63% elsewhere,
+n=539); `regime_at_detection=CAUTION` setups outperform (82% win, n=107,
+vs 58%, n=471) — counter to the intuitive read of "caution."
+
+Run in `--dry-run`, so nothing was written to `brain_proposals` yet — these
+are HYPOTHESES over a real but not-yet-reviewed sample, same status as
+every other proposal this tool produces. **Not acted on.** The RISK_ON
+result in particular looks like the highest-value next thing to run for
+real (drop `--dry-run`) and walk through the gate review for, ahead of
+anything else surfaced this session.
