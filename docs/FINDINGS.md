@@ -18520,3 +18520,45 @@ does not get this stamp either — matching the EXISTING gap for
 change introduces. A replayed Setup's `meta` simply has no `_hour_bucket`
 key, which every consumer already treats as "no match" rather than
 erroring.
+
+## 12-Sep-2026 (4) — migration 138 reverted after a real single-day rupee check found it net negative
+
+Direct request: rerun 11-Sep with the change applied and report real P&L,
+old vs new. Built the comparison — both variants walked through the SAME
+live exit ladder and real `intraday.cost_model` charges, only the entry
+threshold differing:
+
+```
+OLD (3.5 / 1.2)    6 trades   net +Rs229.43
+NEW (2.2 / 0.85)  13 trades   net -Rs146.81
+```
+
+A Rs376 swing the wrong way. Checked whether this was narrowly a short-
+side effect (the looser threshold's new detections were 7/7 short) — it
+is not: the 3 LONG trades common to both variants also did worse under
+the looser threshold that day (Rs427 old vs Rs255 new, identical three
+symbols), so this reads as genuine day-to-day variance touching both
+directions, not one diagnosable mechanism.
+
+**Migration 140 reverts 138.** `ign_min_pct` back to 3.5, `ign_min_atr_frac`
+back to 1.2 — explicit UPDATE, not a delete-back-to-code-default, so the
+revert is a visible, queryable event in `system_config`'s own history
+rather than silently disappearing. Confirmed the revert took by re-running
+the identical 11-Sep replay against live config afterward: 6 trades,
+net +Rs229.43 — an exact match to the OLD baseline above, not
+approximately close. `tools.verify` 1386/1386 of everything this could
+touch (same one pre-existing, unrelated failure). `tools.health`/
+`simulate`: clean, same pre-existing `same_day_discovery` gap.
+
+**What this does and does not settle.** The replay AGGREGATE that
+motivated 138 (n=52, median +0.328R vs +0.256R) is still real — this
+entry does not undo that finding, and one day's rupee result cannot by
+itself disprove a many-day median. What it settles is narrower: n=52 was
+already flagged, at the time, as below this project's own n=100
+sufficiency bar, and given a straight choice between holding a thin,
+unconfirmed aggregate edge and a concrete, real loss on a day already
+under review, the operator's call was to hold the proven values. Revisit
+once a genuinely independent second window is reachable (today's
+retention floor moves daily — see the 11-Sep stop-variant entry) or once
+enough real IGN trades accumulate under 138-shaped conditions to check
+directly rather than by replay.
