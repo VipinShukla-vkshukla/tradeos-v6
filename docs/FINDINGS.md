@@ -18661,3 +18661,458 @@ reports `stock_data_daily`/`signal_output_daily` 5 days stale
 (2026-09-10) — the evening pipeline has not landed fresh data since
 before this week's IGN work began. Flagged to the operator; not this
 entry's concern, not chased here.
+
+## 15-Sep-2026 (2) — SDN performance review: costs are the real leak, not
+## signal quality; a real replay-harness bug found and fixed; the pending
+## atr_pct_daily proposal contradicted by independent replay
+
+**The "mystery file" in the entry directly above this one was this
+session's own work-in-progress**, not a third party: `tools/replay/
+sdn_atr_floor_variant_check.py`, mid-write when the concurrent IGN
+session's `tools.verify` run caught it. `git status` now shows exactly
+this session's own changes (that file plus a `detect.py` fix below) and
+nothing else — no corruption, no unexplained state. Left the prior
+entry untouched per this file's own append-only rule; recorded here so
+a future reader isn't left with an open question.
+
+**Direct request: a full evidence-backed review of SDN — where it
+stands, real losing trades reconstructed, the resolved population
+mined, any real hypothesis replay-tested, and a read on whether SDN
+needs its own dedicated allocator.** Followed the prescribed order
+(current-state → losers → population → replay → ship), did not skip to
+a fix on instinct.
+
+### Phase 1 — where SDN actually stands
+
+Real `closed_positions`, `intraday_strategy='SDN'`, last three weeks
+(25-Aug through today, 35 rows, all SHORT):
+
+```
+n=35   win 68.6%   mean R +0.064   median R +0.264
+gross P&L +Rs550.84   charges -Rs695.02   NET -Rs144.18
+```
+
+**Win rate and median R are both healthy. The book is net negative
+anyway, because fixed MIS costs (~Rs10-11/trade round trip) exceed the
+average win.** By `exit_reason`: `GAVE_BACK_THE_MOVE` (n=20, mean
++0.406R, net +Rs283.90) is the whole positive side; `STOP_LOSS_HIT`
+(n=4, mean -1.051R), `TIME_EXIT` (n=6, mean -0.252R) and
+`SETUP_INVALIDATED` (n=3, mean -0.386R) are the whole negative side. By
+`sub_engine`: VREJ n=23 (net -Rs131.24), BRKD n=9 (net -Rs49.99), TRP
+n=3, 100% win (net +Rs37.05) — thin, but every one of this session's
+three independent measurements below agrees on the same ranking.
+
+**`tools.taken_reconciliation` (whole book, `--days 21`): 22% of TAKEN
+detections became a real position.** Redone SDN-only by direct query:
+**171 distinct TAKEN symbol-days, 35 became a position (20.5%)**. Of
+the 136 that didn't: 39 `ALLOCATOR_DECLINED` (by design), 28
+`BELOW_CONVICTION`, 27 `BLOCKED_SHORTS_MARKET`, 17 `BLOCKED_SIZING`, 7
+`BLOCKED_STRUCTURE`, 6 each `BLOCKED_SHORTABILITY`/`VETOED_AI`/
+`BLOCKED_ENTRY_RESERVED` — zero unexplained. `BLOCKED_SHORTS_MARKET` is
+`mc.allow_shorts` reading false at that moment (a market-context gate,
+independent of the `intraday_allow_shorts` switch) — working as
+designed. `BELOW_CONVICTION` is `best.confidence < self._confidence_
+floor()` — `_confidence_floor()` rises through the session assuming
+higher confidence is a stronger signal; SDN's own confidence field does
+NOT have that property cleanly (see Phase 3/4) — this is the one gate
+in the gap worth a second look, not because it is wrong on its face but
+because the assumption it leans on is shakier for this engine than for
+most.
+
+**One real day, cross-checked against the tape**: 2026-09-10's top 20
+NIFTY 500 losers against what SDN actually caught. 14/20 (70%) were
+never in the day's scanning universe at all — the dominant miss cause
+by far, and a universe-coverage question, not an engine-logic one.
+NIACL (-3.97%) was in universe and never fired any of SDN's three
+conditions — a real detection-logic gap (a steady bleed has no VWAP-
+rejection, trap, or range-break moment for any of the three shapes to
+catch). ZEEL/TEJASNET/GVT&D reached TAKEN or close to it and lost the
+allocator/gate race; SAILIFE is the one real trade this day produced.
+Three different failure modes, as the brief asked to keep separate:
+universe coverage (dominant), engine-shape gap (real but narrow), and
+allocation loss (real, and see Phase 4 on whether the confidence-floor
+mechanism is part of the cause).
+
+### Phase 2 — two real stop-outs reconstructed on real minute bars
+
+`ADANIENSOL` (2-Sep, VREJ, -1.043R) and `MCX` (9-Sep, BRKD, -1.288R
+detected / -0.837R filled): both show the SAME shape — price confirms
+the short thesis for 30-70 minutes, drifting sideways to slightly in
+favour, well inside the stop — then a sudden, sharp, high-volume
+reversal spike blows through the stop and keeps going well past it
+(ADANIENSOL 1362->1384+ in six minutes; MCX 3330->3376+ in nine). This
+is not late entry (both were within the chase-distance rule at entry)
+and not a bad exit calibration — the structural stop did exactly its
+job, capping the loss before the reversal became much worse. This
+reads as the real, structural risk `short_distribution.py`'s own
+header already names ("downside is faster... but more likely to snap
+back"), not a defect to fix.
+
+**`GAVE_BACK_THE_MOVE` (57% of all SDN closes) is the same mechanism on
+the winning side.** `intraday_giveback_pct=30`, `intraday_giveback_min_
+r=0.5` (pool-wide, not SDN-scoped) exits once a position that peaked
+>=0.5R gives back 30%+ of that peak. Real `max_favorable_excursion` vs
+realized `r_multiple` across all 20 GAVE_BACK rows: MFE consistently
+exceeds realized R by a wide margin (e.g. RRKABEL 7-Sep MFE 1.066R,
+kept 0.903R; LODHA 15-Sep MFE 1.607R, kept 0.764R) — SDN is capturing
+roughly a third to a half of its own designed R:R (`intraday_short_min_
+rr=1.3`) on its winners. Given the same snap-back risk shows up on both
+sides in Phase 2's own two loser reconstructions, an aggressively early
+profit-lock may be the CORRECT response to this engine's real
+volatility, not a bug — `load_intraday_policy(engine=...)` already
+supports a per-engine override (`sdn_giveback_pct`, unset today, falls
+back to the pooled default) and this is the honest next replay
+question, not answered here: is 30% too tight FOR THIS ENGINE
+specifically, given it was calibrated on n=27 pool-wide trades in
+mid-August before SDN was the book's dominant volume.
+
+### Phase 3 — the resolved population, and what was already known
+
+`tools.feature_edge_study --dry-run` reproduces the SAME PENDING
+`brain_proposals` already on file from 23-Aug-2026 almost exactly
+(`SDN/atr_pct_daily`: <=2.07 0% win vs >=3.27 39% win, n=32 each,
+confidence 0.79; `SDN/volume_ratio`: n=15 each, 0% vs 83%;
+`SDN/confidence`: n=32 each, 5% vs 35%) — nothing rediscovered, per
+this project's own instruction not to. One PENDING proposal outranks
+the rest: `SDN` -> `SHADOW`, confidence 0.8, priority 1, evidence "16%
+of 630 tradeable — detects but does not deliver, avg -0.13%",
+23-Aug-2026. That population predates this session's 25-Aug-onward
+window, which shows a materially different, better picture (Phase 1)
+— read together with Phase 4 below, this session's finding is that the
+SHADOW proposal is STALE, not wrong when it was written; it does not
+by itself settle whether SDN should stay live, because Phase 1's real
+book is net-negative for a different reason (costs, not a missing
+edge). Left PENDING, not touched — a future session with a longer
+post-25-Aug window is better placed to close it than this one.
+`BLOCKED_SIZING/SDN`, `BLOCKED_CROSS_FRAMEWORK/SDN`, `BLOCKED_STRUCTURE/
+SDN`, `BLOCKED_SHORTS_OFF/SDN` are all still below this project's own
+20pp-gap bar (9-11pp gaps) despite clearing n>=15 on some — correctly
+still PENDING at priority 3, not chased further here.
+
+### Phase 4 — replay, and a real harness bug found along the way
+
+**Real bug, found and fixed: `tools/replay/detect.py`'s own copy of
+F-39.** `evaluate_one()` wrote `s.meta["sub_engine"] = s.strategy`
+unconditionally — the exact overwrite F-39 fixed in `registry.py`
+(20-Aug-2026, now `s.meta.setdefault("sub_engine", s.strategy)`) — but
+this file's copy, "the detection loop, reproduced, not called" per its
+own docstring, was never updated to match. Every SDN condition
+(VREJ/BRKD/TRP) replayed through this harness before today therefore
+collapsed into one indistinguishable "SDN" bucket, silently — the same
+failure mode F-39 itself catalogued ("a dict key and the key its
+consumer looks up are two different claims"), reintroduced in the one
+place built specifically to answer questions like this one. Fixed with
+the identical `setdefault` pattern; `Detection.sub_engine` (the
+dataclass field, what live dedup keys on) is deliberately left as
+`s.strategy` — that mirrors production's real dedup key, not a second
+bug. Demonstrated: `tools.verify --module test_replay_harness` caught
+this session's FIRST version of the new script for a different reason
+(reading `intraday_setups` directly makes a replay circular — the
+harness's own independence scan is exactly right to refuse that);
+fixing THAT surfaced the sub_engine collapse as a single flat "SDN"
+bucket in the corrected script's own output, which is what led here.
+`tools.verify`: 1389 total, 6 failing — the same pre-existing
+`test_outcome_resolution_gap` failure (row-cap/pagination, unrelated to
+SDN or this file) present before this session touched anything;
+`test_replay_harness` now 25/25.
+
+**`tools/replay/sdn_atr_floor_variant_check.py` (new, read-only,
+independent)**: real minute bars (local cache only, no broker session
+this environment has — coverage capped at 1-15 Sep, 54-66% symbol-day
+coverage, honestly reported), SDN's own `ShortDistribution.evaluate()`
+re-run against them via `replay_symbol_day` (not the recorded setup —
+this is a genuine re-detection), `load_intraday_policy(engine="SDN")`
+for the real exit walk, `atr_pct_daily` read from `stock_data_daily`
+(never from the live detection record). n=143 independently redetected
+trades:
+
+```
+by sub_engine   VREJ n=75  mean +0.021R  win 64%
+                BRKD n=56  mean -0.201R  win 54%
+                TRP  n=12  mean +0.371R  win 83%
+```
+
+**Three independent measurements now agree on the same ranking** — real
+`closed_positions` (Phase 1: TRP +0.380R/n=3, VREJ +0.052R/n=23, BRKD
+-0.010R/n=9), this replay's first (sub_engine-collapsed, since-fixed)
+run at family level, and this corrected run. TRP is SDN's best
+condition by a wide, repeated margin; BRKD is its weakest, real-money
+net-negative in two of three measurements. TRP's n stays thin
+everywhere (bar cache coverage is the limit here, not the population)
+— real but not yet at the 40-100 sufficiency bar this project holds
+itself to.
+
+**The `atr_pct_daily` and `volume_ratio` PENDING proposals do NOT
+survive this replay.** `atr_pct_daily`: mid-band (2.07-3.27) beat the
+high band (>=3.27) the proposal favours — mean +0.041R/n=50 vs
+-0.078R/n=93, opposite direction from "higher is better". `volume_
+ratio`: non-monotonic and weak across all three bands (n=18/12/26, all
+mean-negative, none resembling the proposal's 0% vs 83% split, which
+was n=15 each side — below this project's own sufficiency bar even
+though it cleared the 20pp gap rule). `confidence`: also non-monotonic
+under replay (low -0.051R/n=58, mid +0.026R/n=26, high -0.050R/n=59,
+the middle band best) — no clean threshold either direction. **None of
+the three feature-floor proposals are actionable as stated; this is
+recorded as the negative result Phase 5 asked for, not silently
+dropped.**
+
+### Phase 5 — what shipped, what didn't, and the dedicated-allocator question
+
+**Shipped**: the `detect.py` `sub_engine` fix above (demonstrated
+broken, now fixed, `tools.verify` clean on the affected module). No
+`system_config` migration — nothing here cleared this project's own bar
+for a threshold change. `tools.health`/`tools.simulate`: clean, barring
+the three pre-existing, unrelated items already flagged in the entry
+above this one (`stock_data_daily` 5 days stale, `same_day_discovery`
+empty) — not this session's concern, not touched.
+
+**Not shipped, and why**: `atr_pct_daily`/`volume_ratio` floors —
+contradicted by independent replay (above). `confidence` floor/band —
+non-monotonic under replay, no clean threshold. SDN->SHADOW — the
+proposal it would act on is stale relative to this session's own
+25-Aug-onward numbers (Phase 3) and this session's diagnosis is a
+DIFFERENT problem (costs, not signal) than the one the proposal names.
+SDN-scoped `giveback_pct` — a real, well-reasoned hypothesis (Phase 2)
+with the scoping mechanism already built and unused, but not replay-
+tested as an actual intervention this session; the honest next step,
+not a finding to ship on a read of the code alone.
+
+**On a dedicated allocator for SDN**: evidence does not support one.
+The infrastructure that would matter most already exists and is
+per-engine — `hurdle()`'s `_prior_for()` keys on engine/sub_engine,
+`load_intraday_policy(engine=...)` supports per-engine exit rungs,
+`intraday_max_new_per_day` is already a per-BOOK (not per-engine, but
+also not globally pooled with swing) budget since the earlier slot-
+pooling fix. SDN's real bottleneck (Phase 1) is 70% "never in the
+scanning universe" (a universe problem, shared by every engine, not
+SDN-specific) and the confidence-floor mechanism's assumption not
+holding for SDN's own confidence field (a calibration question inside
+the EXISTING shared allocator, not a case for a parallel one). Building
+a second allocator would duplicate the cost gate, the hurdle, and the
+slot budget for a benefit this session found no evidence for, against
+this project's own stated preference for incremental change over
+redesign. The narrower, evidenced levers above (SDN-scoped giveback,
+BRKD's real underperformance, universe coverage) are where the real
+leverage is.
+
+## 15-Sep-2026 (3) — SDN-scoped giveback replay-tested: a real, well-powered
+## NEGATIVE result — does not survive the median-first standard
+
+Direct follow-up to the session directly above: the one flagged-but-
+untested lever was `load_intraday_policy(engine="SDN")`'s unused
+`sdn_giveback_pct` override. Built `tools/replay/sdn_giveback_variant_
+check.py` — same independence contract as `sdn_atr_floor_variant_
+check.py` (real bars, genuine re-detection via `replay_symbol_day`,
+`_cfg_override` moving only `sdn_giveback_pct` per variant, every other
+live switch untouched). Three variants: `baseline_30` (today's pooled
+default), `loosen_45`, `loosen_65` (matching the magnitude `ign_entry_
+exit_variant_check.py` already tested for IGN's own "long_exit").
+n=143, whole population, clears the 40-100 sufficiency bar:
+
+```
+                 mean       median     win
+baseline_30    -0.036R    +0.333R    62%
+loosen_45      -0.032R    +0.242R    59%
+loosen_65      +0.020R    +0.156R    57%
+```
+
+**Loosening improves the mean and makes everything else worse.** Median
+R drops by more than half (0.333 -> 0.156) and win rate drops 5pp as
+the giveback threshold loosens from 30% to 65% — a shift toward fewer,
+smaller-typical wins with an occasional bigger one pulling the mean up.
+This project's own standing instruction is to read median R, never
+mean, as the primary number — by that standard this is a real,
+well-powered NEGATIVE result, not a mixed one to hedge on. Per
+sub_engine: BRKD gets worse at every step (median +0.230 -> +0.159 ->
+-0.053 — the loosest variant flips BRKD's median negative); VREJ's
+mean improves but its median falls the same way the pool does; TRP is
+roughly flat (n=12, below sufficiency, directional only). `worst` R is
+exactly -1.000 in all three variants — the stop, not the giveback rule,
+is what bounds the tail, so loosening carries no NEW catastrophic risk,
+only a worse typical outcome.
+
+**Conclusion: do not arm `sdn_giveback_pct`.** The pooled 30%/0.5R
+default, despite being calibrated on a small, pre-SDN-dominance sample
+in mid-August, is not shown wrong by this replay — SDN's small-win/
+big-loss asymmetry (prior session's entry) is not primarily an exit-
+timing miscalibration this lever can fix. Recorded as the tested
+negative Phase 4/5 asked for. Not chased further into a 2-D grid
+(giveback_pct x giveback_min_r) this session — n=143 is already at the
+edge of what local bar-cache coverage (54-66% of symbol-days, no
+broker session in this environment) supports without fragmenting cells
+below the sufficiency bar.
+
+**Unrelated, real, flagged not chased**: mid-session, `git status`
+showed `backend/swing/ingestion/ingest_bhavcopy.py` modified by a
+process this session never touched, and `tools/replay/detect.py`
+transiently appeared (via a tool-level diff notice) to show its
+pre-fix content before a direct read confirmed the on-disk fix was
+intact. Consistent with the concurrent-session activity the entry
+above this one already flagged (same day, same working directory).
+This session's own files were verified correct by direct read and by
+`tools.verify` before proceeding; `ingest_bhavcopy.py` is swing/
+pipeline, out of this session's scope ("Touch only Intraday
+Framework"), and was left untouched.
+
+## 15-Sep-2026 (4) — SDN/BRKD volume_ratio floor replay-tested: not
+## monotonic, not well-powered past a thin cut — a second real negative
+
+Direct follow-up: with the giveback lever tested-and-rejected above,
+the next candidate was BRKD's own entry-side volume confirmation gate
+(`intraday_short_orb_min_vol_ratio`, live 1.1) — the only SDN condition
+that GATES on volume_ratio at all (VREJ/TRP only use it as a confidence
+boost). Built `tools/replay/sdn_brkd_volume_floor_variant_check.py`:
+genuine re-detection at today's live floor (independent of the live
+detection record, same contract as this session's other checks), then
+bucketed by whether each detection's own engine-stamped `volume_ratio`
+clears successively higher candidate floors — valid because the live
+gate is a pure minimum, so a stricter floor's population is always a
+subset of today's; no re-detection per variant needed, unlike a
+looser-trigger test.
+
+```
+floor        n    removed    mean       median     win
+>= 1.1      56      0.0%    -0.201R    +0.230R    54%   (today's live floor)
+>= 1.3      41     26.8%    -0.224R    +0.161R    51%
+>= 1.5      27     51.8%    -0.176R    +0.318R    56%
+>= 1.8      16     71.4%    -0.066R    +0.322R    62%
+```
+
+**Not monotonic, and the one comparison with real power is the wrong
+direction.** Raising the floor from 1.1 to 1.3 (n=41, still reasonably
+powered) makes mean, median AND win rate all worse — the 1.1-1.3 band
+being removed was not BRKD's worst population, it was better than what
+is left. 1.5 and 1.8 look directionally better, but at n=27 and n=16 —
+both below this project's own 40-100 sufficiency bar, and BRKD's total
+real population is capped near 56 by both its own real frequency and
+this environment's bar-cache coverage (54-66% of symbol-days, no
+broker session available here), not by analysis effort. Tightening
+this floor is not shown to work; it is not shown NOT to work at 1.5+
+either — genuinely unresolved, not a disguised negative.
+
+**Conclusion: do not arm a higher `intraday_short_orb_min_vol_ratio`.**
+Two SDN-specific levers tested this session (giveback_pct, this one);
+neither clears this project's own bar for a change. BRKD's real
+underperformance (three independent measurements, prior entries) is
+confirmed; what FIXES it is not yet found. The honest next step is
+more real bar coverage (a live broker session in a future run of these
+same two scripts would roughly triple n for both), not a fourth
+hypothesis invented to fill the gap.
+
+## 15-Sep-2026 (5) — the universe-coverage gap was Stage D2's own admissions
+## being silently discarded every 300s, not a missing feature (migration-free
+## bug fix, ships with the same switches already armed)
+
+Direct follow-up: with both SDN-specific levers tested and rejected, asked
+to scope "universe coverage" — the earlier entry's own diagnosis was "70%
+of real movers never in the scanning universe... shared by every engine."
+Read as a fresh-build initiative at first. It is not one — **Stage D2**
+(`docs/TRADEOS_ROADMAP.md:524-736`) already built exactly this
+(`live_requalify_universe()`, four populations, all four arming switches
+confirmed `true` in live `system_config` since 23-Aug/9-Sep) — so the real
+question was why a built, armed mechanism was still producing the gap the
+prior entry measured, on 2026-09-10, five days AFTER Population D itself
+shipped.
+
+**Diagnosis, per-symbol, using the actual retained log
+(`backend/logs/tradeos_2026-09-10.log`, 30-day retention) and Supabase —
+not re-derivation from memory.** Of the 14 symbols the prior entry found
+missing:
+- **10/14 correctly excluded by legitimate, working gates** — no bug.
+  IDEA/SUZLON: below `intraday_min_price` (Rs50). IFCI: delivery_pct 15.12%
+  < the 20% floor. AEGISLOG: ASM-flagged. KAYNES: F&O-banned. SONATSOFTW:
+  value_cr 24.41cr, 0.59cr under the 25cr floor. TBOTEK/LTFOODS: today's
+  own turnover (Rs16.8cr/Rs15.0cr) genuinely below the Rs25cr admission
+  floor despite a real 2.66-2.88% move — real movers too thin in absolute
+  turnover, a threshold the operator owns, not a defect.
+- **2/14 (HEG, HFCL) are not in this system's price data source
+  (`raw_prices`) at all** on or around 09-10 — a separate, minor data-
+  coverage question, out of scope for this fix, not chased further.
+- **4/14 (AFCONS, URBANCO, BEML, EIDPARRY) were the real bug.** All four
+  are genuine Population D admissions ("qualifies on every static gate,
+  outranked into the bench cut") — grep-confirmed repeatedly admitted
+  (`"live requalify: <SYMBOL>"`, `engine.py:2186`) for hours (URBANCO
+  09:56→15:36, continuously re-logged), yet **zero** rows in
+  `intraday_setups` from any of the 8 engines all day, and — checked
+  directly, not assumed — URBANCO and AFCONS/EIDPARRY appear in the
+  09-10 log ONLY on that one admission line, nowhere else at all (BEML's
+  3,141 other mentions are unrelated SWING same-day-candidate activity for
+  the same ticker, confirmed by reading the actual lines).
+
+**Root cause, traced directly in current source, then confirmed
+quantitatively — two instances of the same defect shape:**
+1. `refresh_universe()` (`intraday/engine.py:2120-2154` pre-fix numbering)
+   did `self._bench = scanner.universe(self.sb)` — an unconditional full
+   replace, every 300s, of the STATIC daily rescore. `live_requalify_
+   universe()` appends admissions to `self._bench` on its OWN, faster 45s
+   timer, but its own `existing = {e.symbol for e in self._bench}` check
+   (used to avoid re-detecting an already-admitted name) is computed
+   fresh each call — so once the 300s rebuild silently evicted an
+   admission, the next 45s pass saw it as new again and re-admitted it
+   from scratch. **Confirmed quantitatively, not just plausibly**: URBANCO
+   was re-logged 69 times across 330 minutes = once every ~287 seconds —
+   matching the 300s cycle to within 5%, not a coincidence.
+2. `refresh_contexts()` (same file) did `self._contexts = built` — the
+   identical full-replace shape, discarding any bench-only context
+   `merge_live_bars()` had tick-built (from the websocket stream alone,
+   zero extra `historical_data` cost) for a name outside the top-40 that
+   `context_symbols()` never covers by design.
+
+Both are the same root defect — "an incremental structure treated as
+disposable" — in two adjacent functions, on the same 300s cadence,
+directly defeating `live_requalify_universe()`'s own stated design intent
+("a newly-admitted name starts ticking within one of THIS timer's cycles,
+not the slow one's").
+
+**Fixed by extracting the merge logic into two pure functions** (this
+project's own standing preference — pure functions are what `tools.verify`
+can test without a broker/database), `_merge_carried_bench()` and
+`_merge_carried_contexts()` (`intraday/engine.py`, module level): carry
+forward any bench entry / context the fresh rebuild didn't reproduce,
+gated on `UniverseEntry.source != "bench"` (a live admission) for the
+bench, and on continued bench membership for contexts — so a name that
+genuinely drops off is still correctly purged, not leaked forever.
+
+**Demonstrated failing before trusting it, per this project's own rule.**
+New module `tests/test_universe_requalify_persistence.py`, 7 checks,
+registered in `tools.verify`. Monkeypatched both functions back to the old
+full-replace behaviour and reran the suite: 3 of 7 — the ones that encode
+the actual bug (survives-a-non-reproducing-rebuild, no-duplicates-across-
+repeated-rebuilds, bench-only-context-survives) — correctly FAILED on old
+behaviour and pass on the fix; the other 4 pass on both, because they
+guard a DIFFERENT failure mode (over-carrying a genuinely-dropped symbol
+forever) that was never broken — not weakened tests, tests of an
+orthogonal invariant. `tools.verify`: 1396 total (7 new), same one
+pre-existing `test_outcome_resolution_gap` failure as every prior entry
+this week, unrelated. `tools.health`: same three pre-existing, unrelated
+problems (`data` stale, `data_quality`, `same_day_discovery`) as the
+entries above this one. `tools.simulate`: clean, no crash, ran correctly
+against the new merge path (outside market hours, so no live admissions
+to observe in this run).
+
+**This ships with the SAME switches already armed — no new
+`system_config` key, no migration.** All four `intraday_live_requalify_*`
+switches were already `true` before this fix; the fix makes the already-
+approved, already-armed behaviour actually work as designed, rather than
+introducing new behaviour behind a new gate. That said, it IS a real,
+material live-behaviour change once deployed — more names will actually
+reach evaluation than before, which was never observed in production —
+and this project's own convention is real elapsed market time before
+trusting a change like this, the same standard Gate D2 itself was always
+waiting on. **Not yet confirmed in a real live session** — market was
+closed for the whole of this diagnosis. Next live session: `"contexts:"`
+should show `(+N carried bench-only)` on at least some 300s ticks, and
+`"live requalify: <SYMBOL>"` should stop repeating for a name that stays
+admitted, both directly checkable, not assumed — the exact follow-up
+`same_day_discovery` (docs/FINDINGS.md, 2026-09-09) never got before
+sitting silent for six-plus sessions.
+
+**Not built, explicit non-goals per the approved plan**: no fifth universe
+population; no touch to the separate PENDING `intraday_min_price`/
+`max_position_pct` proposal; no `system_config` value changed. Two
+standing gaps named but not built (need the operator's own go-ahead, new
+work, not this fix): no durable admission audit trail (only a 30-day log
+line records a `live_requalify` decision today), and no health check
+closes the loop the way `check_same_day_discovery_writing()` does for
+swing — the exact check that would have caught this gap automatically
+instead of a five-day-later manual tape comparison.

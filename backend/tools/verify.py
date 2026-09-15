@@ -124,6 +124,7 @@ MODULES = [
     ("benchmark snapshot",     "tests.test_benchmark"),
     ("screener weight",        "tests.test_screener_weight"),
     ("intraday universe live rerank", "tests.test_universe_rerank"),
+    ("universe requalify survives 300s rebuild", "tests.test_universe_requalify_persistence"),
     ("vwap reclaim refinement", "tests.test_vwap_reclaim"),
     ("bars built from ticks", "tests.test_bar_builder"),
     ("rr weight reduced on tercile evidence", "tests.test_rr_weight"),

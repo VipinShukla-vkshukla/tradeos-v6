@@ -296,6 +296,45 @@ def _fetched_snapshot(bars, vwap, prev_close) -> dict:
     }
 
 
+def _merge_carried_bench(fresh: list, existing: list) -> list:
+    """
+    Pure. `fresh` is this cycle's static rescore (`scanner.universe()`);
+    `existing` is `self._bench` as it stood a moment ago, which may hold
+    live-requalified entries (`source != "bench"`) the static rescore has
+    no way to reproduce. Keep any such entry `fresh` didn't already
+    produce; anything with `source == "bench"` is the OLD static scan and
+    is correctly superseded by `fresh`, not carried.
+
+    15-Sep-2026 — see refresh_universe()'s own docstring for the bug this
+    closes: an unconditional `self._bench = fresh` discarded every live
+    admission on this exact 300s cadence, confirmed live via 2026-09-10's
+    log (URBANCO re-admitted 69 times, ~287s apart).
+    """
+    fresh_symbols = {e.symbol for e in fresh}
+    carried = [e for e in existing if e.symbol not in fresh_symbols and e.source != "bench"]
+    return fresh + carried
+
+
+def _merge_carried_contexts(built: dict, previous: dict, bench_symbols: set) -> dict:
+    """
+    Pure. `built` is this cycle's fresh historical-bar contexts
+    (`context_symbols()` only — positions + the top intraday_max_universe).
+    `previous` is `self._contexts` as it stood a moment ago, which may hold
+    bench-only contexts `merge_live_bars()` built from ticks alone —
+    `built` never covers those, by design (protecting the historical_data
+    rate-limit budget). Carry forward any such entry `built` doesn't
+    already cover, but ONLY while its symbol is still in the current
+    bench — a symbol that has genuinely dropped off must not leak a
+    context forever.
+
+    15-Sep-2026 — see refresh_contexts()'s own docstring for the bug this
+    closes: an unconditional `self._contexts = built` discarded every
+    bench-only tick-built context on the same 300s cadence.
+    """
+    carried = {k: v for k, v in previous.items() if k not in built and k in bench_symbols}
+    return {**carried, **built}
+
+
 class IntradayEngine:
     def __init__(self, sb=None, notifier: Notifier | None = None):
         self.sb = sb or get_supabase()
@@ -875,8 +914,29 @@ class IntradayEngine:
                 ctx.rs_vs_index_pct = round(
                     (ctx.ltp - ctx.prev_close) / ctx.prev_close * 100.0 - idx_chg, 2)
 
-        self._contexts = built
+        # BENCH-ONLY, TICK-BUILT CONTEXTS ARE CARRIED FORWARD, NOT DISCARDED —
+        # 15-Sep-2026. `built` only ever covers context_symbols() (positions
+        # union self._universe, the top intraday_max_universe names) — it
+        # never included a live-requalified, bench-only name, because that
+        # is exactly the API-budget `context_symbols()`'s own docstring says
+        # this split protects. Those names' ONLY context comes from
+        # merge_live_bars()'s separate tick-built path, keyed into
+        # self._contexts directly (see that method). `self._contexts = built`
+        # here unconditionally erased them every 300s — silently, since nothing
+        # about this line failing looks like a bug — leaving a symbol that
+        # had just accumulated enough live bars to be evaluable with nothing
+        # again until merge_live_bars() next ran AND self._bench still held
+        # it (see refresh_universe()'s own fix note, same day, same root
+        # cause: this project's standing shape of "a full replace where an
+        # incremental structure was correct"). Carrying forward only entries
+        # still present in self._bench avoids leaking a context for a name
+        # that has genuinely dropped off the bench.
+        bench_symbols = {e.symbol for e in (self._bench or [])}
+        merged = _merge_carried_contexts(built, self._contexts or {}, bench_symbols)
+        carried_n = len(merged) - len(built)
+        self._contexts = merged
         logger.info(f"  contexts: {len(built)} symbols with bars"
+                    + (f" (+{carried_n} carried bench-only)" if carried_n else "")
                     + (f", index {idx_chg:+.2f}%" if idx_chg is not None else ", no index"))
         return len(built)
 
@@ -2068,6 +2128,27 @@ class IntradayEngine:
         call re-seeds it from the static score whenever the bench itself
         changes (a new date, or the first call of the session) — the correct
         starting point before any live tick has arrived to say otherwise.
+
+        LIVE-REQUALIFIED ADMISSIONS ARE CARRIED FORWARD, NOT DISCARDED —
+        15-Sep-2026. `scanner.universe()` is a STATIC rescore from yesterday's
+        numbers; it has no way to know about a name `live_requalify_universe()`
+        admitted moments ago (that method appends to `self._bench` directly,
+        on its own 45s timer). An unconditional `self._bench = scanner.
+        universe(...)` here silently discarded every such admission the
+        instant this ran — every 300s, the SAME cadence `live_requalify_
+        universe()`'s own docstring says it exists to run FASTER than ("so a
+        newly-admitted name starts ticking within one of THIS timer's
+        cycles, not the slow one's"). Confirmed live: 2026-09-10's log shows
+        URBANCO re-logged as "LIVE REQUALIFIED" 69 times across 5.5 hours —
+        once every ~287s, matching this 300s cycle almost exactly, meaning
+        it was being re-discovered from scratch every cycle rather than
+        staying admitted. A live admission carries `source != "bench"`
+        (scanner.py's `UniverseEntry.source`, default "bench" for the
+        static scan, "population_a/b/c_kite/c_ipo/d" for a requalified one);
+        anything the fresh static scan didn't already reproduce this cycle
+        is kept, not dropped, matching `live_requalify_universe()`'s own
+        stated intent that a mid-session admission lasts the rest of the
+        session.
         """
         if not cfg_bool("intraday_strategies_enabled", True):
             self._universe = []
@@ -2075,7 +2156,8 @@ class IntradayEngine:
             return 0
         try:
             from intraday import scanner
-            self._bench = scanner.universe(self.sb)
+            fresh = scanner.universe(self.sb)
+            self._bench = _merge_carried_bench(fresh, self._bench or [])
             limit = cfg_int("intraday_max_universe", 40)
             self._universe = [e.symbol for e in self._bench[:limit]]
         except Exception as e:
