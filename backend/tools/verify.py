@@ -136,6 +136,7 @@ MODULES = [
     ("gap down bounce engine", "tests.test_gap_down_bounce"),
     ("ingest asm gsm dedup and isolation", "tests.test_ingest_asm_gsm"),
     ("data quality resolved alert", "tests.test_data_quality_resolved_alert"),
+    ("MSL completeness gate is relative to the day's shortlist", "tests.test_msl_completeness_gate"),
     ("partial book quantity sync", "tests.test_partial_book_quantity_sync"),
     ("day position merge (T+1 settlement lag)", "tests.test_day_position_merge"),
     ("same-day reconcile drift check", "tests.test_reconcile_drift_check"),

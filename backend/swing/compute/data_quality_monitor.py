@@ -39,7 +39,7 @@ CHECK CATALOGUE (19 checks):
   C03  vol_ratio_cap              — Auto-cap outliers at 50x (safe auto-correct)
   C04  delivery_pct_bounds        — Delivery % 0–100
   C05  signal_score_range         — signal_log scores in 0–120
-  C06  msl_completeness           — compute_msl wrote ≥70 enriched rows; score jumps
+  C06  msl_completeness           — compute_msl enriched ~all of the day's shortlist; score jumps
   C07  pipeline_completeness      — All 21 steps wrote data for trade_date
   C08  market_intel_validity      — __MARKET_INTEL__ present + parseable for trade_date
   C09  final_picks_validity       — __FINAL_PICKS__ present + portfolio_guidance for trade_date
@@ -75,7 +75,17 @@ VOL_RATIO_CAP      = 50.0
 SCORE_MIN          = 0
 SCORE_MAX          = 150
 MSL_JUMP_WARN      = 20
-MSL_MIN_ENRICHED   = 70     # compute_msl should write ≥70 rows with final_score
+# compute_msl's enrichment floor is RELATIVE to what screen_stocks actually
+# wrote to master_shortlist for td, not a flat historical count. The
+# shortlist's own size legitimately varies with regime (RISK OFF disables
+# the MOM/SEC engines) and the screener's natural-cutoff selector — a flat
+# "≥70 rows" floor halted the whole evening pipeline on 2026-09-15 when a
+# RISK OFF day produced 69 candidates and compute_msl enriched all 69 of
+# them (100% complete, zero skipped). MSL_MIN_ENRICHED_ABS is a sanity floor
+# that still catches the failure this check exists for — step 14 silently
+# using a stale/wrong date, which enriches ~0 rows, not 1 row under a target.
+MSL_MIN_ENRICHED_ABS   = 10     # below this, something is badly wrong regardless of shortlist size
+MSL_MIN_ENRICHED_RATIO = 0.90   # compute_msl should enrich ~all of what screen_stocks wrote
 DELIVERY_MIN       = 0.0
 DELIVERY_MAX       = 100.0
 ENRICH_COVERAGE_WARN = 0.5  # warn if <50% of BUY signals have ai_conviction
@@ -203,11 +213,20 @@ def c05_signal_score_range(sb, td):
 def c06_msl_completeness(sb, td):
     """
     Two sub-checks:
-    1. compute_msl wrote ≥70 rows with non-null final_score for trade_date.
-       (ingest_sheets writes ~31 rows; compute_msl should write 70-100+)
+    1. compute_msl enriched (non-null final_score) essentially every row
+       screen_stocks wrote to master_shortlist for trade_date — relative to
+       the shortlist's actual size, not a flat historical count. See
+       MSL_MIN_ENRICHED_RATIO/_ABS above for why.
     2. Score jumps >20 pts vs msl_history yesterday — flags anomalies.
     """
-    # Sub-check 1: row count + enrichment
+    # Sub-check 1: row count + enrichment, relative to what was actually shortlisted
+    shortlist_count = (
+        sb.table("master_shortlist")
+          .select("symbol", count="exact")
+          .eq("date", td)
+          .limit(1)
+          .execute().count or 0
+    )
     enriched_rows = (
         sb.table("master_shortlist")
           .select("symbol,final_score")
@@ -216,12 +235,18 @@ def c06_msl_completeness(sb, td):
           .execute().data
     )
     enriched_count = len(enriched_rows)
-    enriched_ok    = enriched_count >= MSL_MIN_ENRICHED
+    enriched_ok    = (
+        enriched_count >= MSL_MIN_ENRICHED_ABS
+        and (shortlist_count == 0
+             or enriched_count >= shortlist_count * MSL_MIN_ENRICHED_RATIO)
+    )
 
     if not enriched_ok:
         return _result("C06_msl_completeness", False, "ERROR",
-            f"compute_msl only wrote {enriched_count} enriched rows for {td} "
-            f"(expected ≥{MSL_MIN_ENRICHED}) — step 14 may have used wrong date",
+            f"compute_msl wrote {enriched_count} enriched rows for {td} "
+            f"out of {shortlist_count} shortlisted (expected ≥{MSL_MIN_ENRICHED_ABS} "
+            f"and ≥{int(MSL_MIN_ENRICHED_RATIO * 100)}% of shortlist) — "
+            f"step 14 may have used wrong date",
             value=str(enriched_count))
 
     # Sub-check 2: score jumps (informational — WARN only)
