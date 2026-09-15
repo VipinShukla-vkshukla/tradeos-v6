@@ -30,12 +30,21 @@ downstream n. **So the filter is imported**, along with `family_of`, rather than
 copied. Importing a private helper is deliberate: the alternative is a second
 copy of a filter whose absence changes which trades exist.
 
-`meta["sub_engine"]` is set to `s.strategy` and `meta["family"]` to
-`family_of(eng.name)`, exactly as `evaluate_all` stamps them. This matters more
-than it looks: the live record's `strategy` COLUMN stores the FAMILY, while
-`_setup_is_new` dedups on `symbol:strategy` where `strategy` is the SUB-ENGINE.
-Getting the two the wrong way round desynchs every dedup count from the live
-record's. Both are carried separately on `Detection` for that reason.
+`meta["sub_engine"]` defaults to `s.strategy` (via `setdefault`, not a plain
+assignment) and `meta["family"]` is set to `family_of(eng.name)` — matching
+`evaluate_all`'s OWN `setdefault` since F-39 (20-Aug-2026, registry.py:283).
+This file's own copy used a plain `s.meta["sub_engine"] = s.strategy` until
+15-Sep-2026, which silently overwrote the per-condition value an engine like
+`ShortDistribution` sets itself ("VREJ"/"BRKD"/"TRP") with the class-level
+`s.strategy` ("SDN" for all three) — reproducing, in the replay harness only,
+exactly the bug F-39 had already fixed in production. Every replay feature
+study keyed on `Detection.meta["sub_engine"]` before this fix was silently
+pooling SDN's three conditions into one bucket; `Detection.sub_engine` (the
+dataclass field) is UNCHANGED by this fix and stays `s.strategy` on purpose —
+that is what `_setup_is_new` dedups on live, and mirroring it exactly (not
+"fixing" it to be per-condition) is what keeps the replay's dedup counts
+matching the live record's. The live record's `strategy` COLUMN stores the
+FAMILY; both are carried separately on `Detection` for that reason.
 
 WHAT IS NOT REPRODUCED, DELIBERATELY
 -------------------------------------
@@ -140,7 +149,8 @@ def evaluate_one(ctx: SymbolContext, phase: str) -> list[Setup]:
                 s = None
             if s:
                 s.meta["lifecycle"] = "REPLAY"   # recorded, never used to filter
-                s.meta["sub_engine"] = s.strategy
+                # setdefault, not assignment — see module docstring, F-39.
+                s.meta.setdefault("sub_engine", s.strategy)
                 s.meta["family"] = family_of(eng.name)
                 s.meta["engine"] = eng.name
                 found.append(s)
