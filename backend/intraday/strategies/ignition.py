@@ -125,7 +125,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from config import cfg_float, cfg_int
+from config import cfg_bool, cfg_float, cfg_int
 from intraday.session import PRIME, DRIFT, AFTERNOON
 from intraday.shortability import can_short
 from intraday.strategies.base import Setup, SymbolContext, risk_from_structure
@@ -145,6 +145,42 @@ class IgnitionMomentum:
             return None
         if len(ctx.bars) < cfg_int("ign_min_bars", 8):
             return None
+
+        # THE OPENING HOUR IS WHERE THIS ENGINE'S EDGE ACTUALLY LIVES OR
+        # DIES -- 15-Sep-2026, docs/FINDINGS.md. IGN's own full resolved
+        # history (n=789, cost_verdict=TAKEN, 09-Sep..15-Sep -- its entire
+        # real lifetime, not a cherry-picked slice) splits by
+        # `intraday.session.hour_bucket()` into a large, clean, monotonic
+        # effect: OPEN (09:15-10:00) 34.6% win, mean -0.43%, avg net
+        # -Rs61.62/trade (n=361) against MID+LATE (10:00-15:15) 63.8% win,
+        # avg net +Rs11.65/trade (n=428). Pooled, that is -Rs21.87/trade
+        # overall -- a negative-expectancy engine on the whole population,
+        # but one whose negativity is concentrated almost entirely in the
+        # 46% of its detections that fire in the first 45 minutes it is
+        # allowed to trade. This is not a parameter to nudge (the entry-
+        # threshold change, migration 138, WAS that, and a real single-day
+        # rupee check reverted it, migration 140) -- this is a structural
+        # gate on WHEN the trigger is even allowed to look, matching every
+        # other engine's own session-phase awareness
+        # (intraday/session.py's own docstring: "applying a momentum rule
+        # during the midday drift[or here, the open]... is the single
+        # most common way an intraday system loses money").
+        #
+        # `ign_exclude_open_hour_enabled` ships ARMED (True) -- n=428 for
+        # the redesigned population clears this project's own n=100
+        # sufficiency bar with room to spare, unlike migration 138's n=52.
+        # One config row away from reversible if real trades disagree.
+        if cfg_bool("ign_exclude_open_hour_enabled", True):
+            # ctx.as_of, NOT datetime.now(IST) — this function is called
+            # directly by the replay harness (tools/replay/detect.py), and
+            # as_of is the instant the caller actually means: the real
+            # slow-timer refresh time live, or the exact simulated bar
+            # timestamp in replay. now() would check the wall clock the
+            # process happens to run on instead of the moment being
+            # evaluated, silently wrong in replay specifically.
+            from intraday.session import hour_bucket
+            if ctx.as_of and hour_bucket(ctx.as_of) == "OPEN":
+                return None
 
         chg_pct = (ctx.ltp - ctx.prev_close) / ctx.prev_close * 100.0
         atr = ctx.atr_pct_daily or 2.0

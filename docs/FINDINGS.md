@@ -18562,3 +18562,102 @@ once a genuinely independent second window is reachable (today's
 retention floor moves daily — see the 11-Sep stop-variant entry) or once
 enough real IGN trades accumulate under 138-shaped conditions to check
 directly rather than by replay.
+
+## 15-Sep-2026 — IGN core-thesis reconsideration: the opening hour is the entire negative edge (migration 141)
+
+Direct instruction after two real losses today (INFY, PERSISTENT — both
+clean -1.00R stop-outs, bootstrap slot 10/10 now fully spent): reconsider
+the core thesis, not another parameter, and change the design if the
+evidence supports it.
+
+**IGN's real lifetime, checked in full**: 13 real closed trades,
+5 wins (38.5%), total -5.02R, average -0.386R/trade. `prior_n=375` on
+today's own allocation_decisions rows — IGN's own dedicated prior has
+been active (past the 30-sample floor) for a while, and it is pricing
+IGN's candidates at roughly -0.65 to -0.70 edge against a 0.0 hurdle,
+declining 167 of 211 detections today alone. The allocator has been
+right to be skeptical the whole time; every real trade that has happened
+did so DESPITE that skepticism, forced through the now-exhausted
+bootstrap-override budget.
+
+**What actually differs by hour, checked on the FULL 789-row resolved
+population (cost_verdict=TAKEN, IGN's entire real lifetime, 09-Sep..
+15-Sep — not a slice):**
+
+```
+OPEN  09:15-10:00  n=361  win 34.6%  mean -0.43%  avg net -Rs61.62/trade
+MID   10:00-13:00  n=335  win 60.6%  mean +0.22%  avg net  +Rs2.20/trade
+LATE  13:00-15:15  n= 93  win 75.3%  mean +0.68%  avg net +Rs45.70/trade
+ALL              n=789  win 50.4%  mean -0.02%  avg net -Rs21.87/trade
+MID+LATE only    n=428  win 63.8%                 avg net +Rs11.65/trade
+```
+
+A large, clean, monotonic effect on a sample well past this project's
+own n=100 bar (428, more than 8x migration 138's n=52). IGN's entire
+negative expectancy is concentrated in the 46% of its own detections
+that fire in the first 45 minutes it is allowed to trade — removing that
+slice alone swings the pooled average from -Rs21.87/trade to
++Rs11.65/trade.
+
+**Sanity-checked against the narrower replay window before trusting
+it**: the 31-Aug..11-Sep reachable replay population (n=23, the same one
+every other check this week has used) splits its OPEN bucket to n=9 —
+far too thin to weigh against the 361-sample real signal, and it briefly
+looked contradictory before being recognised as noise at that size. The
+789-row population is the one to trust here specifically because it is
+not limited by which minute bars happen to be fetchable right now; it is
+IGN's own real, live-recorded detection history, resolved by
+`resolve_day()`'s own bar-walk — a different, already-established
+resolution method (not the full exit-ladder `_walk()` this week's other
+replay checks use), stated plainly rather than glossed over.
+
+**Also checked and confirmed absent**: `ignition.py` has never read
+`ctx.rs_vs_index_pct` (relative strength vs the index) at all — a pure
+magnitude+volume trigger with no structural anchor AND no relative-
+strength confirmation, the only engine in this codebase with neither.
+Not built this pass; named as the next thing worth investigating if the
+hour gate alone is not enough.
+
+**Migration 141 — `ign_exclude_open_hour_enabled` (true).** Implemented
+in `ignition.py::evaluate()`, refusing any candidate whose `ctx.as_of`
+falls in `intraday.session.hour_bucket()`'s OPEN bucket, before magnitude
+or volume are even checked. Deliberately reads `ctx.as_of`, NOT
+`datetime.now(IST)` — caught this before shipping: `evaluate()` is called
+directly by the replay harness (`tools/replay/detect.py`), and the wall
+clock would have silently checked whatever real time the replay script
+happens to run at instead of the historical bar being evaluated,
+corrupting every future replay test of IGN. `ctx.as_of` is correct in
+both live (the slow-timer refresh instant) and replay (the exact
+simulated timestamp) — verified by reading `tools/replay/contexts.py`
+directly, not assumed.
+
+Three existing `test_ignition.py` fixtures (5 test failures) used the
+shared `OPEN` fixture constant (09:15 IST) as their default `as_of`,
+written long before this gate existed, purely to represent "a valid
+PRIME-phase moment" — not a deliberate test of hour-of-day. Switched the
+shared `_long_ctx`/`_short_ctx` fixtures' default to `MIDDAY` (already
+defined in `tests/_fixtures.py`) so every existing test keeps checking
+what it was built to check, and added three new tests: the gate refusing
+a genuine setup at `OPEN`, the switch restoring the old behaviour exactly
+when off, and MID/LATE staying unaffected. `tools.verify`: all 28 checks
+in `test_ignition`/`test_ignition_fast_entry` (the two modules this
+change could plausibly touch) pass.
+
+**A separate, real, and unrelated finding surfaced while running the
+full suite**: an untracked file, `tools/replay/sdn_atr_floor_variant_
+check.py`, appeared mid-session (timestamped during this session's own
+verify runs) — not created by this session, no git history, no new
+commits on `origin/main`. Two unrelated test modules
+(`test_replay_harness`, `test_outcome_resolution_gap`) that had been
+passing (bar one already-known failure) all week failed differently
+after its appearance. Read as evidence of another local process or
+session writing into this same working directory concurrently — flagged
+to the operator directly, not touched, not investigated further; this
+entry's own verification relied on the two directly-affected modules run
+in isolation, both clean.
+
+**Also surfaced, unrelated, real**: `tools.health` now additionally
+reports `stock_data_daily`/`signal_output_daily` 5 days stale
+(2026-09-10) — the evening pipeline has not landed fresh data since
+before this week's IGN work began. Flagged to the operator; not this
+entry's concern, not chased here.

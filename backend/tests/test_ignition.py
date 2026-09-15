@@ -26,16 +26,24 @@ from config import cfg_float
 from intraday.session import OPENING, PRIME, DRIFT, AFTERNOON, CLOSING
 from intraday.strategies.base import SymbolContext
 from tests import cfg_ctx
-from tests._fixtures import OPEN, bars as _bars
+from tests._fixtures import MIDDAY, OPEN, bars as _bars
 
 
 def _long_ctx(volume=80_000, avg_volume_20d=3_000_000, upper_circuit=None,
-             lower_circuit=None, atr_pct_daily=2.0):
+             lower_circuit=None, atr_pct_daily=2.0, as_of=MIDDAY):
     """10 bars ramping 100.5 -> 105.7 (tight over the last 3), ltp=106.0,
     prev_close=100.0 -> chg_pct=+6.0%. With the default ign_stop_lookback_
     bars (20) the window covers the whole ramp and the stop is too wide —
     see the module docstring above. Tests that need a takeable setup
-    override the lookback to 3 via cfg_ctx."""
+    override the lookback to 3 via cfg_ctx.
+
+    `as_of` DEFAULTS TO MIDDAY, NOT `OPEN` — 15-Sep-2026. Every test in
+    this file except the ones specifically about the open-hour gate itself
+    is checking something else (the trigger, the stop, the circuit logic)
+    and must not incidentally also exercise `ign_exclude_open_hour_enabled`
+    just because the shared `OPEN` fixture constant happens to sit inside
+    the excluded window. Pass `as_of=OPEN` explicitly for a test that
+    means to."""
     closes = [100.5, 101.5, 102.5, 103.5, 104.3, 105.0, 105.3, 105.5, 105.6, 105.7]
     bs = _bars([(c - 0.2, c + 0.2, c - 0.5, c, volume) for c in closes])
     return SymbolContext(
@@ -44,18 +52,19 @@ def _long_ctx(volume=80_000, avg_volume_20d=3_000_000, upper_circuit=None,
         day_low=min(b.low for b in bs),
         prev_close=100.0, prev_high=100.5, prev_low=99.0,
         atr_pct_daily=atr_pct_daily, avg_volume_20d=avg_volume_20d,
-        value_cr=150.0, sector="IT", rs_vs_index_pct=1.0, as_of=OPEN,
+        value_cr=150.0, sector="IT", rs_vs_index_pct=1.0, as_of=as_of,
         upper_circuit=upper_circuit, lower_circuit=lower_circuit,
     )
 
 
 def _short_ctx(volume=80_000, avg_volume_20d=3_000_000, upper_circuit=None,
-              lower_circuit=None, ltp=95.5, prev_close=100.0):
+              lower_circuit=None, ltp=95.5, prev_close=100.0, as_of=MIDDAY):
     """Mirror of _long_ctx: 10 bars ramping 99.0 -> 95.5 (tight over the
     last 3), ltp defaults to 95.5 (chg_pct -4.5%) — inside can_short()'s
     own -6.0% 'already collapsed' floor, so the light self-check passes.
     A separate test (test_short_refused_by_can_short_already_collapsed)
-    pushes ltp past that floor deliberately."""
+    pushes ltp past that floor deliberately. `as_of` defaults to MIDDAY
+    for the same reason as `_long_ctx` above."""
     closes = [99.0, 98.0, 97.0, 96.3, 95.9, 95.7, 95.6, 95.55, 95.52, 95.5]
     bs = _bars([(c + 0.2, c + 0.5, c - 0.2, c, volume) for c in closes])
     return SymbolContext(
@@ -64,7 +73,7 @@ def _short_ctx(volume=80_000, avg_volume_20d=3_000_000, upper_circuit=None,
         day_low=min(b.low for b in bs),
         prev_close=prev_close, prev_high=100.5, prev_low=94.0,
         atr_pct_daily=2.0, avg_volume_20d=avg_volume_20d,
-        value_cr=150.0, sector="IT", rs_vs_index_pct=-1.0, as_of=OPEN,
+        value_cr=150.0, sector="IT", rs_vs_index_pct=-1.0, as_of=as_of,
         upper_circuit=upper_circuit, lower_circuit=lower_circuit,
     )
 
@@ -265,6 +274,44 @@ def test_active_ign_setup_can_win_best():
         "an ACTIVE IGN setup must be capital-eligible, unlike a SHADOW one")
 
 
+def test_open_hour_refuses_even_a_genuine_ignition_move():
+    """15-Sep-2026, docs/FINDINGS.md — the core-thesis fix. IGN's own full
+    resolved history (n=789) splits 34.6% win / -Rs61.62 avg net in the
+    OPEN bucket (09:15-10:00) against 63.8% win / +Rs11.65 avg net for
+    MID+LATE (n=428, well past this project's own n=100 bar) — a large,
+    clean, monotonic effect, not a parameter to nudge. An otherwise
+    perfectly genuine setup (the SAME context every happy-path test in
+    this file uses, just timestamped inside the excluded window) must be
+    refused outright, not merely scored lower."""
+    from intraday.strategies.ignition import IgnitionMomentum
+    ctx = _long_ctx(as_of=OPEN)
+    with cfg_ctx(_TIGHT_LOOKBACK):
+        s = IgnitionMomentum().evaluate(ctx, PRIME)
+    assert s is None, "a genuine ignition move inside 09:15-10:00 must be refused"
+
+
+def test_open_hour_gate_is_reversible_one_config_row_away():
+    """Same genuine setup, same OPEN timestamp, switch off — must fire
+    exactly as it did before this gate existed."""
+    from intraday.strategies.ignition import IgnitionMomentum
+    ctx = _long_ctx(as_of=OPEN)
+    with cfg_ctx({**_TIGHT_LOOKBACK, "ign_exclude_open_hour_enabled": "false"}):
+        s = IgnitionMomentum().evaluate(ctx, PRIME)
+    assert s is not None and s.strategy == "IGN", (
+        "the switch off must restore the pre-gate behaviour exactly")
+
+
+def test_mid_and_late_hours_are_unaffected_by_the_open_gate():
+    """The gate targets ONLY the 09:15-10:00 window — MIDDAY (the new
+    default for every other test in this file) must fire exactly as
+    every happy-path test already relies on."""
+    from intraday.strategies.ignition import IgnitionMomentum
+    ctx = _long_ctx(as_of=MIDDAY)
+    with cfg_ctx(_TIGHT_LOOKBACK):
+        s = IgnitionMomentum().evaluate(ctx, PRIME)
+    assert s is not None and s.strategy == "IGN"
+
+
 TESTS = [
     ("fires LONG on big move + volume with no circuit data",
      test_fires_long_on_big_move_and_volume_with_no_circuit_data),
@@ -298,6 +345,12 @@ TESTS = [
      test_configured_active_is_honoured),
     ("an ACTIVE IGN setup can win best",
      test_active_ign_setup_can_win_best),
+    ("OPEN hour refuses even a genuine ignition move",
+     test_open_hour_refuses_even_a_genuine_ignition_move),
+    ("OPEN hour gate is reversible one config row away",
+     test_open_hour_gate_is_reversible_one_config_row_away),
+    ("MID and LATE hours are unaffected by the OPEN gate",
+     test_mid_and_late_hours_are_unaffected_by_the_open_gate),
 ]
 
 if __name__ == "__main__":
