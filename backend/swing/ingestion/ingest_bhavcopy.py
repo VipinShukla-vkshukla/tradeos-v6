@@ -429,11 +429,20 @@ def upsert_to_raw_prices(df: pd.DataFrame) -> int:
     sb   = get_supabase()
     rows = df.to_dict(orient="records")
 
-    # Replace NaN with None — Supabase rejects Python float NaN
+    # raw_prices.volume and raw_prices.delivery_qty are bigint. pandas
+    # numeric coercion upstream (_clean_numeric / pd.to_numeric) leaves them
+    # as float64, so to_dict() hands back Python floats like 65325.0 — valid
+    # JSON, but PostgREST casts JSON scalars to the target column type via
+    # its text input function, and bigint's text parser rejects a decimal
+    # point ("invalid input syntax for type bigint: \"65325.0\""). Round-trip
+    # through int for any non-null float value; leave NaN handling below.
+    bigint_cols = ("volume", "delivery_qty")
     for row in rows:
         for k, v in list(row.items()):
             if isinstance(v, float) and pd.isna(v):
                 row[k] = None
+            elif k in bigint_cols and isinstance(v, float):
+                row[k] = int(v)
 
     total      = 0
     batch_size = 500
