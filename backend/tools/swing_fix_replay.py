@@ -704,6 +704,130 @@ def rank_study(since: str, until: str) -> None:
             print(line)
 
 
+def edge_study(since: str, until: str, bar_mode: str = "day") -> None:
+    """
+    Where is the swing edge, if anywhere? Every plan the live entry gate
+    (decide() at the next open, corrected regime labels) would buy, managed four
+    ways on daily bars, net of CNC costs on a Rs 25,000 clip:
+
+        ladder   production evaluate_exit()
+        plan     planned stop and target only, 15-session time stop
+        hold10   planned stop only, exit at the 10th session close
+        hold5    planned stop only, exit at the 5th session close
+
+    Split by window, engine family, signal type and planned risk tercile. A
+    segment is only interesting if it is positive in BOTH windows.
+    """
+    import statistics as st
+    import config
+    from analysis.trade_decision import decide, regime_min_rr
+    from control.position_lifecycle import load_exit_policy
+    from intraday.cost_model import round_trip
+    from allocation.scoring import swing_family
+
+    sb = get_supabase()
+    plans = load_plans(sb, since)
+    rows = load_regime_rows(sb)
+    labels = recompute_regimes(rows, corrected_scores(rows))
+    calendar = [r["date"] for r in rows]
+    policy = load_exit_policy()
+    policy["stall_days_by_family"] = {}
+    end = datetime.now(IST).date().isoformat()
+    live = dict(config.get_system_config())
+    config._sys_config = live
+    kite = None
+    if bar_mode == "15m":
+        from kite.kite_client import get_kite
+        kite = get_kite()
+
+    def net_r(entry, exit_px, stop, qty):
+        risk = entry - stop
+        cost = round_trip(entry, qty, exit_px, product="CNC").total
+        return ((exit_px - entry) * qty - cost) / (risk * qty)
+
+    recs = []
+    for day in sorted(d for d in plans if since <= d <= until):
+        for pl in plans[day]:
+            b = bars_daily(None, pl["symbol"], "2026-06-25", end)
+            ds = sorted(x for x in b if x > day)
+            if len(ds) < 5:
+                continue
+            try:
+                stop, tgt = float(pl["planned_stop"]), float(pl["planned_target"])
+            except (TypeError, ValueError):
+                continue
+            entry = float(b[ds[0]][0])
+            if not stop < entry < tgt:
+                continue
+            reg = labels.get(day) or regime_before(labels, ds[0])
+            d = decide(pl, entry, total_capital=300000, open_positions=[], regime=reg,
+                       min_rr=regime_min_rr(reg), max_chase_pct=pl.get("ai_max_chase_pct") or None)
+            if d.action not in ("BUY_NOW", "CHASE_LIMIT"):
+                continue
+            qty = max(1, int(25000 / entry))
+            out = {}
+            # plan / hold variants
+            for name, tstop, use_tgt in (("plan", 15, True), ("hold10", 10, False), ("hold5", 5, False)):
+                px = None
+                for i, x in enumerate(ds[:tstop]):
+                    o, h, l, c = b[x]
+                    if l <= stop:
+                        px = min(o, stop) if i else stop
+                        break
+                    if use_tgt and h >= tgt:
+                        px = max(o, tgt) if i else tgt
+                        break
+                    px = c
+                out[name] = net_r(entry, px, stop, qty)
+            # production ladder, one evaluation per daily close
+            if bar_mode == "15m":
+                bars = [x for x in bars_15m(kite, pl["symbol"], "2026-06-25", end)
+                        if x.ts.date().isoformat() >= ds[0]]
+            else:
+                bars = [B(IST.localize(datetime.strptime(x + " 15:30", "%Y-%m-%d %H:%M")),
+                          *map(float, b[x])) for x in ds[:40]]
+            t = {"symbol": pl["symbol"], "strategy": pl.get("strategy"), "sector": pl.get("sector"),
+                 "entry_price": entry, "stop": stop, "target": tgt, "entry_date": ds[0],
+                 "realized_pnl": None, "exit_reason": "", "qty": qty}
+            ets = IST.localize(datetime.strptime(ds[0] + " 09:00", "%Y-%m-%d %H:%M"))
+            if not bars:
+                continue
+            o = replay_exit(t, bars, ets, policy, labels, [], {}, qty, calendar)
+            out["ladder"] = net_r(entry, o.exit_price, stop, qty) if o.reason != "OPEN" or len(ds) >= 15 else None
+            recs.append({"window": "holdout" if day < SPLIT else "recent", "day": day,
+                         "family": swing_family(pl.get("strategy")) or "?",
+                         "strategy": (pl.get("strategy") or "?").split("+")[0],
+                         "signal_type": pl.get("signal_type"),
+                         "risk_pct": (entry - stop) / entry * 100, "ladder_reason": o.reason, **out})
+
+    def show(label, rs):
+        if len(rs) < 15:
+            return
+        cells = []
+        for k in ("ladder", "plan", "hold10", "hold5"):
+            v = [r[k] for r in rs if r.get(k) is not None]
+            cells.append(f"{k} {st.fmean(v):+.3f} ({100 * sum(1 for x in v if x > 0) / len(v):.0f}%)")
+        print(f"  {label:34s} n={len(rs):4d}  " + "  ".join(cells))
+
+    for w in ("holdout", "recent"):
+        rs = [r for r in recs if r["window"] == w]
+        print(f"\n{w}: {len(rs)} buyable plans over {len({r['day'] for r in rs})} days  "
+              f"[mean net R per trade (win%)]")
+        show("ALL", rs)
+        for key in ("family", "strategy", "signal_type"):
+            for val in sorted({r[key] for r in rs}, key=str):
+                show(f"{key}={val}", [r for r in rs if r[key] == val])
+        rk = sorted(rs, key=lambda r: r["risk_pct"])
+        n = len(rk)
+        for i, part in enumerate((rk[:n // 3], rk[n // 3:2 * n // 3], rk[2 * n // 3:])):
+            if part:
+                show(f"risk T{i + 1} {part[0]['risk_pct']:.1f}-{part[-1]['risk_pct']:.1f}%", part)
+        from collections import Counter
+        print("  ladder exits:", dict(Counter(r["ladder_reason"] for r in rs).most_common(8)))
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    (RESULTS / f"edge_study_{bar_mode}.json").write_text(json.dumps(recs, default=str))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--label", default="run")
@@ -715,6 +839,8 @@ def main() -> int:
     ap.add_argument("--regime-audit", action="store_true")
     ap.add_argument("--exposure-premise", action="store_true")
     ap.add_argument("--rank-study", action="store_true")
+    ap.add_argument("--edge-study", action="store_true")
+    ap.add_argument("--bars", choices=["day", "15m"], default="day")
     ap.add_argument("--until", default="2026-09-08")
     a = ap.parse_args()
     logger.remove()
@@ -724,6 +850,9 @@ def main() -> int:
         live = dict(config.get_system_config())
         live.update(dict(kv.split("=", 1) for kv in a.set))
         config._sys_config = live
+    if a.edge_study:
+        edge_study("2026-06-25" if a.since == "2026-07-13" else a.since, a.until, a.bars)
+        return 0
     if a.rank_study:
         rank_study("2026-06-25" if a.since == "2026-07-13" else a.since, a.until)
         return 0
