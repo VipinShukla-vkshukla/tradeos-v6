@@ -73,6 +73,7 @@ MODULES = [
     ("regime vocabulary",   "tests.test_regime_vocabulary"),
     ("regime hysteresis: no stuck NEUTRAL or RISK OFF", "tests.test_regime_hysteresis"),
     ("swing market exposure (correction size and pace)", "tests.test_market_exposure"),
+    ("AI position actions scoped to the swing row", "tests.test_ai_position_actions_scope"),
     ("allocator direction", "tests.test_allocator_direction"),
     ("allocator priors",    "tests.test_allocator_priors"),
     ("swing engine attribution", "tests.test_swing_engine_attribution"),

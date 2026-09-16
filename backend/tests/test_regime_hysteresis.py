@@ -80,3 +80,59 @@ TESTS = [
     ("ordinary NEUTRAL tape stays NEUTRAL", test_ordinary_neutral_tape_stays_neutral),
     ("existing <15 fast downgrade still fires", test_existing_fast_downgrade_still_fires),
 ]
+
+
+class _RegimeTable:
+    """market_regime fake that honours the filters load_history() may apply."""
+    def __init__(self, rows):
+        self.rows, self.f = rows, []
+    def select(self, *_):
+        return self
+    def order(self, *_a, **_k):
+        return self
+    def limit(self, n):
+        self.n = n
+        return self
+    def lt(self, col, v):
+        self.f.append(lambda r: r[col] < v)
+        return self
+    def lte(self, col, v):
+        self.f.append(lambda r: r[col] <= v)
+        return self
+    def execute(self):
+        rows = [r for r in self.rows if all(f(r) for f in self.f)]
+        rows = sorted(rows, key=lambda r: r["date"], reverse=True)[:self.n]
+        return type("R", (), {"data": rows})()
+
+
+def test_history_is_point_in_time_on_a_rerun():
+    """25-Jun-2026 was recomputed on 28-Jun after the ML classifier had created an
+    unlabelled 29-Jun row; that row became 'yesterday' and NEUTRAL by default."""
+    from swing.compute.compute_regime import load_history, apply_hysteresis
+    rows = [
+        {"date": "2026-06-23", "computed_regime": "RISK OFF", "regime": "RISK OFF", "regime_score_computed": 29.0},
+        {"date": "2026-06-24", "computed_regime": "RISK OFF", "regime": "RISK OFF", "regime_score_computed": 35.0},
+        {"date": "2026-06-25", "computed_regime": "RISK OFF", "regime": "RISK OFF", "regime_score_computed": 36.0},
+        {"date": "2026-06-29", "computed_regime": None, "regime": None, "regime_score_computed": None},
+    ]
+    sb = type("SB", (), {"table": lambda self, name: _RegimeTable(rows)})()
+    hist = load_history(sb, "2026-06-25")
+    assert [h["date"] for h in hist] == ["2026-06-24", "2026-06-23"], [h["date"] for h in hist]
+    assert apply_hysteresis(36.0, {}, hist, False) == "RISK OFF"
+
+
+def test_history_skips_unlabelled_rows():
+    from swing.compute.compute_regime import load_history
+    rows = [
+        {"date": "2026-09-09", "computed_regime": "RISK OFF", "regime": "RISK OFF", "regime_score_computed": 25.0},
+        {"date": "2026-09-10", "computed_regime": None, "regime": None, "regime_score_computed": None},
+    ]
+    sb = type("SB", (), {"table": lambda self, name: _RegimeTable(rows)})()
+    hist = load_history(sb, "2026-09-11")
+    assert [h["date"] for h in hist] == ["2026-09-09"], [h["date"] for h in hist]
+
+
+TESTS += [
+    ("history is point-in-time on a re-run (25-Jun-2026)", test_history_is_point_in_time_on_a_rerun),
+    ("history skips unlabelled rows", test_history_skips_unlabelled_rows),
+]

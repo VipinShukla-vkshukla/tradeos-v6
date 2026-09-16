@@ -1850,7 +1850,8 @@ def write_position_actions(sb, result: dict, positions: list[dict], trade_date: 
                 "ai_action_confidence":  confidence,
                 "ai_action_urgency":     urgency,
                 "ai_action_updated_at":  now_iso,
-            }).eq("symbol", sym).eq("status", "ACTIVE").execute()
+            }).eq("symbol", sym).eq("status", "ACTIVE") \
+              .eq("framework", "SWING").eq("product", "CNC").execute()   # (symbol, product) key, migration 028
             written += 1
         except Exception as e:
             logger.warning(f"open_positions ai_action update failed for {sym}: {e}")

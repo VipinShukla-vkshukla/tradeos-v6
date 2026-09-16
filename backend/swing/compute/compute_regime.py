@@ -632,6 +632,25 @@ def build_market_snapshot(sb, effective_date: str) -> dict:
     return snap
 
 
+def load_history(sb, effective_date: str) -> list[dict]:
+    """
+    Up to 10 LABELLED sessions strictly before effective_date, newest first.
+
+    Point-in-time on purpose: 25-Jun-2026 was recomputed on 28-Jun after the ML
+    classifier had created an unlabelled 29-Jun row, which sorted first, became
+    "yesterday" and defaulted to NEUTRAL (also 27-Apr, 30-Apr).
+    """
+    history = (sb.table("market_regime")
+                 .select("date,regime,computed_regime,regime_score_computed,nifty_price,"
+                         "above_200dma_pct,avg_sector_breadth,india_vix,nifty_5d_chg_pct,"
+                         "advance_decline_ratio")
+                 .lt("date", effective_date)
+                 .order("date", desc=True)
+                 .limit(20)
+                 .execute().data) or []
+    return [r for r in history if r.get("computed_regime") or r.get("regime")][:10]
+
+
 def load_data(sb, effective_date: str) -> dict:
     """
     Load all inputs. effective_date is pre-resolved — no calendar date usage here.
@@ -646,6 +665,7 @@ def load_data(sb, effective_date: str) -> dict:
     latest = (sb.table("market_regime")
                 .select("*")
                 .not_.is_("nifty_price", "null")
+                .lte("date", effective_date)
                 .order("date", desc=True)
                 .limit(1)
                 .execute().data)
@@ -669,14 +689,7 @@ def load_data(sb, effective_date: str) -> dict:
         vix_source = "market_regime(DB fallback)"
 
     # History (for hysteresis)
-    history = (sb.table("market_regime")
-                 .select("date,regime,computed_regime,regime_score_computed,nifty_price,"
-                         "above_200dma_pct,avg_sector_breadth,india_vix,nifty_5d_chg_pct,"
-                         "advance_decline_ratio")
-                 .order("date", desc=True)
-                 .limit(12)
-                 .execute().data)
-    history = [r for r in history if r.get("date") != effective_date][:10]
+    history = load_history(sb, effective_date)
 
     # FII/DII data — fetch 20 rows (not 5): score_fii()'s net_20d fallback
     # sums whatever's in fii_history when fii_net_20d/fii_net_10d are both
