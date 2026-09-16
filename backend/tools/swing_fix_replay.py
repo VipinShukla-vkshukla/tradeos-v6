@@ -1,0 +1,533 @@
+"""
+Replay the swing trades actually taken, through today's production code. READ-ONLY.
+
+    python -m tools.swing_fix_replay --label baseline
+    python -m tools.swing_fix_replay --label fix1 --compare baseline
+    python -m tools.swing_fix_replay --regime-audit
+
+Entries are the real ones (closed_positions + open_positions, framework SWING).
+Each is walked over 15-minute Kite bars through the real evaluate_exit(), with
+the live 15-second cycle approximated by re-evaluating a bar close up to 60
+times while the ladder keeps moving the stop. Entry-side rules (regime R:R and
+slots via decide(), market exposure, daily cap, re-entry cooldown) are applied
+to that same list by importing whatever the working tree provides.
+
+What it cannot do, stated so a result is not over-read:
+  - a trade removed by an entry rule is not replaced by another plan: the
+    allocator's per-cycle history is not replayable;
+  - sector-decay and participation-decay context is not point-in-time and is
+    left out (multipliers stay 1.0);
+  - the AI TIGHTEN_SL flag is taken from the recorded alert timestamps, so it
+    exists only for positions the live book actually held.
+"""
+
+from __future__ import annotations
+
+import argparse
+import gzip
+import json
+import sys
+from collections import defaultdict
+from dataclasses import dataclass, field, asdict
+from datetime import date as _date, datetime, timedelta
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from loguru import logger
+
+from config import IST, get_supabase
+
+CACHE = Path(__file__).resolve().parent / "replay" / "cache" / "span"
+RESULTS = Path(__file__).resolve().parent / "replay" / "results" / "swing_fix"
+CYCLES_PER_BAR = 60
+SPLIT = "2026-08-14"
+
+
+# ── data ────────────────────────────────────────────────────────────────────
+
+def _page(q):
+    out, off = [], 0
+    while True:
+        rows = q().range(off, off + 999).execute().data or []
+        out += rows
+        if len(rows) < 1000:
+            return out
+        off += 1000
+
+
+def load_trades(sb, since: str) -> list[dict]:
+    cols = ("symbol,strategy,sector,entry_date,entry_price,actual_qty,planned_stop_at_entry,"
+            "planned_target_at_entry,exit_date,exit_price,realized_pnl,charges,r_multiple,"
+            "exit_reason,mode")
+    closed = _page(lambda: sb.table("closed_positions").select(cols)
+                   .eq("framework", "SWING").gte("entry_date", since).order("entry_date"))
+    out = []
+    for r in closed:
+        if r["exit_reason"] == "MULTI_LEG":
+            continue
+        out.append({**r, "open": False, "qty": int(r["actual_qty"] or 0),
+                    "stop": float(r["planned_stop_at_entry"] or 0),
+                    "target": float(r["planned_target_at_entry"] or 0)})
+    opened = (sb.table("open_positions").select(
+        "symbol,strategy,sector,entry_date,entry_price,current_qty,planned_stop,planned_target,mode")
+        .eq("framework", "SWING").eq("status", "ACTIVE").gte("entry_date", since)
+        .execute().data or [])
+    for r in opened:
+        out.append({**r, "open": True, "qty": int(r["current_qty"] or 0),
+                    "stop": float(r["planned_stop"] or 0),
+                    "target": float(r["planned_target"] or 0),
+                    "realized_pnl": None, "exit_reason": "OPEN"})
+    out = [t for t in out if t["qty"] > 0 and t["stop"] and float(t["entry_price"]) > t["stop"]]
+    out.sort(key=lambda t: (str(t["entry_date"])[:10], t["symbol"]))
+    return out
+
+
+def load_alert_times(sb, since: str) -> tuple[dict, dict]:
+    """First ENTRY alert per (symbol, day) and every AI_TIGHTEN alert per symbol."""
+    entry, tighten = {}, defaultdict(list)
+    rows = _page(lambda: sb.table("intraday_alerts").select("ts,symbol,kind,meta")
+                 .gte("ts", since).in_("kind", ["ENTRY", "TRAIL_SL"]).order("ts"))
+    for r in rows:
+        ts = datetime.fromisoformat(r["ts"]).astimezone(IST)
+        if r["kind"] == "ENTRY":
+            entry.setdefault((r["symbol"], ts.date().isoformat()), ts)
+        elif "AI_TIGHTEN" in str(r.get("meta") or ""):
+            tighten[r["symbol"]].append(ts)
+    return entry, tighten
+
+
+def load_plans(sb, since: str) -> dict:
+    rows = _page(lambda: sb.table("signal_output_daily").select("*")
+                 .gte("date", since).order("date"))
+    by_day = defaultdict(list)
+    for r in rows:
+        by_day[r["date"]].append(r)
+    return dict(by_day)
+
+
+def load_regime_rows(sb) -> list[dict]:
+    return _page(lambda: sb.table("market_regime").select(
+        "date,regime,computed_regime,regime_score_computed,nifty_price,above_200dma_pct,"
+        "india_vix,advance_decline_ratio,nifty_5d_chg_pct,avg_sector_breadth").order("date"))
+
+
+@dataclass
+class B:
+    ts: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+
+
+def bars_15m(kite, symbol: str, start: str, end: str) -> list[B]:
+    path = CACHE / "15minute" / f"{symbol.replace('&', '_')}__{start}__{end}.json.gz"
+    if path.exists():
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            raw = json.load(fh)
+    else:
+        if kite is None:
+            return []
+        tok = _token(kite, symbol)
+        if not tok:
+            return []
+        data = kite.historical_data(tok, _date.fromisoformat(start),
+                                    _date.fromisoformat(end), "15minute") or []
+        raw = [{"ts": d["date"].isoformat(), "o": d["open"], "h": d["high"],
+                "l": d["low"], "c": d["close"]} for d in data]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with gzip.open(path, "wt", encoding="utf-8") as fh:
+            json.dump(raw, fh)
+    out = []
+    for r in raw:
+        ts = datetime.fromisoformat(r["ts"])
+        ts = IST.localize(ts) if ts.tzinfo is None else ts.astimezone(IST)
+        out.append(B(ts, float(r["o"]), float(r["h"]), float(r["l"]), float(r["c"])))
+    return out
+
+
+_TOKENS: dict = {}
+
+
+def _token(kite, symbol: str):
+    if not _TOKENS:
+        for i in kite.instruments("NSE"):
+            _TOKENS[i["tradingsymbol"]] = i["instrument_token"]
+    return _TOKENS.get(symbol)
+
+
+# ── regime, recomputed through production code ─────────────────────────────
+
+def recompute_regimes(rows: list[dict]) -> dict[str, str]:
+    """date -> label, re-running compute_regime's own hysteresis over stored scores."""
+    from swing.compute.compute_regime import apply_hysteresis, detect_recovering
+    done: list[dict] = []
+    labels = {}
+    for r in rows:
+        score = r.get("regime_score_computed")
+        history = list(reversed(done[-10:]))
+        if score is None:
+            label = r.get("computed_regime") or r.get("regime") or "NEUTRAL"
+        else:
+            rec = detect_recovering(r, history, float(score))
+            label = apply_hysteresis(float(score), r, history, rec)
+        labels[r["date"]] = label
+        done.append({**r, "computed_regime": label})
+    return labels
+
+
+def regime_before(labels: dict, day: str) -> str:
+    prior = [d for d in labels if d < day]
+    return labels[max(prior)] if prior else "NEUTRAL"
+
+
+# ── exit replay ─────────────────────────────────────────────────────────────
+
+@dataclass
+class Outcome:
+    symbol: str
+    entry_date: str
+    qty: int
+    entry: float
+    stop: float
+    exit_price: float
+    exit_ts: str
+    reason: str
+    r: float
+    gross: float
+    charges: float
+    net: float
+    actual_reason: str
+    actual_net: float | None
+    removed_by: str = ""
+    legs: list = field(default_factory=list)
+
+
+def _charges(entry: float, exit_px: float, qty: int) -> float:
+    from intraday.cost_model import round_trip
+    return round_trip(entry, qty, exit_px, product="CNC").total
+
+
+def replay_exit(t: dict, bars: list[B], entry_ts: datetime | None, policy: dict,
+                labels: dict, tighten_ts: list[datetime], trend_by_day: dict,
+                qty: int, calendar: list[str]) -> Outcome:
+    from control.position_lifecycle import evaluate_exit
+    entry = float(t["entry_price"])
+    stop0 = t["stop"]
+    day0 = str(t["entry_date"])[:10]
+    pos = {"symbol": t["symbol"], "strategy": t.get("strategy"), "sector": t.get("sector"),
+           "entry_price": entry, "planned_stop": stop0, "active_sl": stop0,
+           "planned_target": t["target"], "high_water_mark": entry,
+           "current_qty": qty, "actual_qty": qty, "direction": "LONG"}
+    after = [b for b in bars if b.ts > entry_ts]
+    legs: list[tuple[int, float]] = []
+    remaining = qty
+    reason, exit_px, exit_ts = "OPEN", None, None
+    tstarts = sorted(tighten_ts)
+
+    for b in after:
+        d = b.ts.date().isoformat()
+        # the daemon's own count: market_regime rows strictly after entry and
+        # before today (today's row is written that evening)
+        sessions = sum(1 for x in calendar if day0 < x < d)
+        if any(entry_ts < ts <= b.ts for ts in tstarts):
+            pos["ai_recommended_action"] = "TIGHTEN_SL"
+            pos["ai_action_reason"] = "recorded AI_TIGHTEN_SL alert"
+        pol = dict(policy)
+        pol["_current_regime"] = regime_before(labels, d)
+        ctx = trend_by_day.get(d)
+        pol["_trend_ctx"] = {t["symbol"]: ctx} if ctx else {}
+
+        sl = float(pos["active_sl"])
+        if b.low <= sl:
+            exit_px = min(b.open, sl)
+            reason = "TRAIL_SL_HIT" if pos.get("trail_activated") else "STOP_LOSS_HIT"
+            exit_ts = b.ts
+            break
+        pos["high_water_mark"] = max(float(pos["high_water_mark"]), b.high)
+
+        terminal = False
+        for _ in range(CYCLES_PER_BAR):
+            dec = evaluate_exit(pos, b.close, sessions, pol)
+            act = dec.get("action", "HOLD")
+            if act.startswith("EXIT"):
+                exit_px, reason, exit_ts, terminal = b.close, dec.get("reason", act), b.ts, True
+                break
+            if act == "BOOK_PARTIAL" and dec.get("book_qty"):
+                n = min(int(dec["book_qty"]), remaining - 1)
+                legs.append((n, b.close))
+                remaining -= n
+                pos["current_qty"] = remaining
+                pos["partial_booked_qty"] = n
+                if dec.get("new_sl"):
+                    pos["active_sl"] = max(float(pos["active_sl"]), float(dec["new_sl"]))
+                continue
+            if act in ("TRAIL_SL", "RUN") and dec.get("new_sl"):
+                new = float(dec["new_sl"])
+                if new <= float(pos["active_sl"]) + 1e-9:
+                    break
+                pos["active_sl"] = new
+                if dec.get("reason") == "BREAKEVEN":
+                    pos["breakeven_moved"] = True
+                else:
+                    pos["trail_activated"] = True
+                if new >= b.close:
+                    break
+                continue
+            break
+        if terminal:
+            break
+
+    if exit_px is None:
+        exit_px = after[-1].close if after else entry
+        exit_ts = after[-1].ts if after else None
+    legs.append((remaining, exit_px))
+    gross = sum(n * (px - entry) for n, px in legs)
+    charges = sum(_charges(entry, px, n) for n, px in legs if n > 0)
+    risk = entry - stop0
+    avg_exit = sum(n * px for n, px in legs) / qty
+    actual_net = (float(t["realized_pnl"]) - float(t.get("charges") or 0)
+                  if t.get("realized_pnl") is not None else None)
+    return Outcome(t["symbol"], day0, qty, entry, stop0, round(avg_exit, 2),
+                   exit_ts.isoformat() if exit_ts else "", reason,
+                   round((avg_exit - entry) / risk, 3), round(gross, 2), round(charges, 2),
+                   round(gross - charges, 2), t["exit_reason"], actual_net,
+                   legs=[(n, round(px, 2)) for n, px in legs])
+
+
+# ── entry-side rules, imported when the working tree has them ──────────────
+
+def entry_filter(t: dict, entry_ts, plans_by_day: dict, labels: dict, regime_rows: list[dict],
+                 book: list[dict], taken_today: int, recent_exits: dict,
+                 calendar: list[str]) -> tuple[str, float]:
+    """Returns (refusal reason or '', size multiplier) for one actual entry."""
+    day = str(t["entry_date"])[:10]
+    plan_days = [d for d in plans_by_day if d < day]
+    plan = None
+    if plan_days:
+        plan = next((p for p in plans_by_day[max(plan_days)] if p["symbol"] == t["symbol"]), None)
+    regime = regime_before(labels, day)
+    size_mult = 1.0
+
+    try:
+        from analysis import market_exposure as mx
+        exp = mx.exposure_for_day(regime, [r for r in regime_rows if r["date"] < day])
+        if exp.block_new:
+            return f"exposure {exp.state}", 0.0
+        if exp.max_new is not None and taken_today >= exp.max_new:
+            return f"exposure {exp.state} cap {exp.max_new}", 0.0
+        size_mult = exp.size_mult
+        if plan is not None:
+            field_rows = plans_by_day[max(plan_days)]
+            why = mx.selection_refusal(exp, plan, field_rows, float(t["entry_price"]))
+            if why:
+                return why, 0.0
+    except ImportError:
+        pass
+
+    try:
+        from analysis.swing_pacing import cooldown_refusal
+        why = cooldown_refusal(t["symbol"], day, recent_exits, calendar)
+        if why:
+            return why, 0.0
+    except ImportError:
+        pass
+
+    if plan is not None:
+        from analysis.trade_decision import decide, regime_min_rr
+        from config import capital_for
+
+        def ok(reg: str):
+            d = decide(plan, float(t["entry_price"]), total_capital=capital_for("SWING"),
+                       open_positions=book, regime=reg, min_rr=regime_min_rr(reg),
+                       max_chase_pct=plan.get("ai_max_chase_pct") or None)
+            return d.action in ("BUY_NOW", "CHASE_LIMIT"), d
+
+        # only a refusal the regime label causes counts; a refusal that also
+        # happens under NEUTRAL is replay noise (stale plan, different capital)
+        if regime != "NEUTRAL":
+            passed, d = ok(regime)
+            if not passed and ok("NEUTRAL")[0]:
+                return f"regime {regime}: decide {d.action} {d.reason[:50]}", 0.0
+    return "", size_mult
+
+
+# ── run ─────────────────────────────────────────────────────────────────────
+
+def _summ(rows: list[Outcome]) -> dict:
+    kept = [o for o in rows if not o.removed_by]
+    wins = [o for o in kept if o.net > 0]
+    rs = [o.r for o in kept]
+    eq, peak, dd = 0.0, 0.0, 0.0
+    for o in sorted(kept, key=lambda o: o.exit_ts):
+        eq += o.net
+        peak = max(peak, eq)
+        dd = min(dd, eq - peak)
+    return {"n": len(kept), "removed": len(rows) - len(kept),
+            "win_pct": round(100 * len(wins) / len(kept), 1) if kept else 0.0,
+            "sum_r": round(sum(rs), 2), "avg_r": round(sum(rs) / len(rs), 3) if rs else 0.0,
+            "gross": round(sum(o.gross for o in kept)), "charges": round(sum(o.charges for o in kept)),
+            "net": round(sum(o.net for o in kept)), "max_dd": round(dd)}
+
+
+def run(label: str, since: str, compare: str | None, regime_mode: str = "stored") -> dict:
+    from control.position_lifecycle import load_exit_policy
+    from swing.signals.pace_calibration import build_family_stall_days
+    sb = get_supabase()
+    trades = load_trades(sb, since)
+    entry_alerts, tighten = load_alert_times(sb, since)
+    plans = load_plans(sb, "2026-06-01")
+    regime_rows = load_regime_rows(sb)
+    # "stored" is what the live book saw; "recomputed" runs today's
+    # compute_regime hysteresis over the stored scores
+    labels = (recompute_regimes(regime_rows) if regime_mode == "recomputed" else
+              {r["date"]: (r.get("computed_regime") or r.get("regime") or "NEUTRAL")
+               for r in regime_rows})
+    policy = load_exit_policy()
+    try:
+        policy["stall_days_by_family"] = build_family_stall_days(sb, global_default=policy["stall_days"])
+    except Exception as e:
+        logger.warning(f"stall calibration unavailable: {e}")
+        policy["stall_days_by_family"] = {}
+
+    kite = None
+    try:
+        from kite.kite_client import get_kite
+        kite = get_kite()
+    except Exception as e:
+        logger.warning(f"no broker session — cache only ({e})")
+    end = (datetime.now(IST).date() - timedelta(days=0)).isoformat()
+
+    calendar = [r["date"] for r in regime_rows]
+    prepared = []
+    for t in trades:
+        sym, day = t["symbol"], str(t["entry_date"])[:10]
+        bars = bars_15m(kite, sym, since, end)
+        if not bars:
+            logger.warning(f"{sym}: no bars — skipped")
+            continue
+        entry = float(t["entry_price"])
+        ets = entry_alerts.get((sym, day))
+        b0 = None
+        if ets:
+            b0 = next((b for b in bars if b.ts <= ets < b.ts + timedelta(minutes=15)), None)
+        if b0 is None:
+            day_bars = [b for b in bars if b.ts.date().isoformat() == day]
+            b0 = next((b for b in day_bars if b.low <= entry <= b.high),
+                      day_bars[0] if day_bars else None)
+        if b0 is None:
+            logger.warning(f"{sym} {day}: no bar on entry day — skipped")
+            continue
+        prepared.append((b0.ts, t, bars))
+    prepared.sort(key=lambda x: x[0])
+
+    outcomes: list[Outcome] = []
+    book: list[dict] = []
+    by_day_taken: dict[str, int] = defaultdict(int)
+    recent_exits: dict[str, list[str]] = defaultdict(list)
+    for ets, t, bars in prepared:
+        sym, day = t["symbol"], str(t["entry_date"])[:10]
+        book = [p for p in book if p["_exit"] > ets.isoformat()]
+        why, mult = entry_filter(t, ets, plans, labels, regime_rows, book,
+                                 by_day_taken[day], recent_exits, calendar)
+        trend = {}
+        for d, rows in plans.items():
+            row = next((p for p in rows if p["symbol"] == sym), None)
+            if row:
+                trend[d] = row
+        trend_by_day = {}
+        for b in bars:
+            d = b.ts.date().isoformat()
+            if d not in trend_by_day:
+                prior = [x for x in trend if x < d]
+                trend_by_day[d] = trend[max(prior)] if prior else None
+        qty = max(1, int(t["qty"] * mult)) if mult else t["qty"]
+        o = replay_exit(t, bars, ets, policy, labels, tighten.get(sym, []), trend_by_day,
+                        qty, calendar)
+        if why:
+            o.removed_by = why
+        else:
+            by_day_taken[day] += 1
+            book.append({"symbol": sym, "sector": t.get("sector"), "entry_price": o.entry,
+                         "current_qty": qty, "planned_stop": o.stop, "active_sl": o.stop,
+                         "framework": "SWING", "_exit": o.exit_ts or "9999"})
+            if o.exit_ts:
+                recent_exits[sym].append(o.exit_ts[:10])
+        outcomes.append(o)
+
+    recent = [o for o in outcomes if o.entry_date >= SPLIT]
+    earlier = [o for o in outcomes if o.entry_date < SPLIT]
+    res = {"label": label, "at": datetime.now(IST).isoformat(), "regime_mode": regime_mode,
+           "recent": _summ(recent), "earlier": _summ(earlier), "all": _summ(outcomes),
+           "trades": [asdict(o) for o in outcomes]}
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    (RESULTS / f"{label}.json").write_text(json.dumps(res, indent=1, default=str))
+    _print(res, compare)
+    return res
+
+
+def _print(res: dict, compare: str | None) -> None:
+    prev = None
+    if compare and (RESULTS / f"{compare}.json").exists():
+        prev = json.loads((RESULTS / f"{compare}.json").read_text())
+    print(f"\n=== {res['label']} ===")
+    for w in ("recent", "earlier", "all"):
+        s = res[w]
+        line = (f"{w:8s} n={s['n']:3d} removed={s['removed']:2d} win%={s['win_pct']:5.1f} "
+                f"sumR={s['sum_r']:6.2f} avgR={s['avg_r']:+.3f} gross={s['gross']:8,} "
+                f"charges={s['charges']:6,} net={s['net']:8,} maxDD={s['max_dd']:8,}")
+        if prev:
+            p = prev[w]
+            line += f"  | Δnet {s['net'] - p['net']:+,} ΔsumR {s['sum_r'] - p['sum_r']:+.2f} ΔmaxDD {s['max_dd'] - p['max_dd']:+,}"
+        print(line)
+    print(f"\n{'symbol':11s}{'entry':11s}{'actual':20s}{'act net':>8s} | {'replay':20s}{'R':>6s}{'net':>8s}  removed_by")
+    for o in res["trades"]:
+        an = f"{o['actual_net']:.0f}" if o["actual_net"] is not None else "open"
+        print(f"{o['symbol']:11s}{o['entry_date']:11s}{o['actual_reason']:20s}{an:>8s} | "
+              f"{o['reason']:20s}{o['r']:6.2f}{o['net']:8.0f}  {o['removed_by']}")
+
+
+def regime_audit() -> None:
+    sb = get_supabase()
+    rows = load_regime_rows(sb)
+    labels = recompute_regimes(rows)
+    agree = sum(1 for r in rows if r.get("regime_score_computed") is not None
+                and (r.get("computed_regime") or r.get("regime")) == labels[r["date"]])
+    scored = sum(1 for r in rows if r.get("regime_score_computed") is not None)
+    print(f"recomputed vs stored label: {agree}/{scored} agree")
+    for r in rows:
+        if r.get("regime_score_computed") is None:
+            continue
+        stored = r.get("computed_regime") or r.get("regime")
+        mark = "" if stored == labels[r["date"]] else "  <-- differs"
+        print(f"{r['date']} score {r['regime_score_computed']:5.1f} stored {stored:11s} "
+              f"recomputed {labels[r['date']]:11s}{mark}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--label", default="run")
+    ap.add_argument("--since", default="2026-07-13")
+    ap.add_argument("--compare")
+    ap.add_argument("--regime", choices=["stored", "recomputed"], default="stored")
+    ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                    help="override a system_config key for this run only (never written)")
+    ap.add_argument("--regime-audit", action="store_true")
+    a = ap.parse_args()
+    logger.remove()
+    logger.add(sys.stderr, level="WARNING")
+    if a.set:
+        import config
+        live = dict(config.get_system_config())
+        live.update(dict(kv.split("=", 1) for kv in a.set))
+        config._sys_config = live
+    if a.regime_audit:
+        regime_audit()
+        return 0
+    run(a.label, a.since, a.compare, a.regime)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

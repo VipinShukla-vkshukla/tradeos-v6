@@ -1809,8 +1809,8 @@ def write_position_actions(sb, result: dict, positions: list[dict], trade_date: 
         else silently becomes NO_ACTION (fail safe, not fail loud-and-wrong).
       - confidence clamped to [0, 1]. urgency defaults to LOW if invalid.
 
-    Advisory only — nothing downstream currently executes on these columns
-    automatically. A human (or a future automation) reads them.
+    TIGHTEN_SL is EXECUTED by position_lifecycle.evaluate_exit() when
+    swing_ai_tighten_enabled is on; HOLD/TRIM/EXIT stay advisory.
     """
     actions = result.get("position_actions") or []
     if not actions:

@@ -170,7 +170,54 @@ def test_regime_multiplier_neutral_regime_is_unchanged():
         "unchanged, still fires at session 10")
 
 
+def _run_cycles(pos, ltp, n, policy, flags):
+    from control.position_lifecycle import evaluate_exit
+    pos = dict(pos)
+    with cfg_ctx(flags):
+        for _ in range(n):
+            d = evaluate_exit(pos, ltp, 1, policy)
+            if d["action"] == "TRAIL_SL" and d.get("new_sl"):
+                pos["active_sl"] = d["new_sl"]
+                pos["trail_activated"] = True
+            elif d["action"].startswith("EXIT"):
+                return pos, d
+    return pos, None
+
+
+def test_ai_tighten_does_not_ratchet_onto_price_across_cycles():
+    """The daemon re-evaluates every 15s. Moving sl halfway to price on each
+    call converged the stop onto the price within ~3 minutes and closed all 13
+    AI-tightened swing trades on their first downtick (26-Aug to 16-Sep-2026).
+    Sixty cycles at an unchanged price must leave the stop where one left it."""
+    entry, stop = 1902.90, 1759.40
+    ltp = 1895.0
+    pos = _pos(entry, stop, entry, ai_recommended_action="TIGHTEN_SL",
+               ai_action_reason="geopolitical")
+    flags = {"swing_ai_tighten_enabled": "true", "swing_ai_tighten_fraction": "0.5"}
+    one, _ = _run_cycles(pos, ltp, 1, _policy(), flags)
+    many, exited = _run_cycles(pos, ltp, 60, _policy(), flags)
+    assert exited is None, f"60 cycles at a flat price closed the trade: {exited}"
+    assert many["active_sl"] == one["active_sl"], (
+        f"stop kept moving at an unchanged price: {one['active_sl']} after one "
+        f"cycle, {many['active_sl']} after sixty")
+    gap_r = (ltp - many["active_sl"]) / (entry - stop)
+    assert gap_r >= 0.4, f"stop sits {gap_r:.2f}R under price — a downtick exit, not a tighten"
+
+
+def test_ai_tighten_still_follows_a_rising_price():
+    """Idempotent at one price, but a higher price may still lift the stop."""
+    entry, stop = 100.0, 94.0
+    pos = _pos(entry, stop, 104.0, ai_recommended_action="TIGHTEN_SL")
+    flags = {"swing_ai_tighten_enabled": "true", "swing_ai_tighten_fraction": "0.5"}
+    a, _ = _run_cycles(pos, 101.0, 5, _policy(), flags)
+    b, _ = _run_cycles(a, 103.0, 5, _policy(), flags)
+    assert b["active_sl"] > a["active_sl"] > stop
+
+
 TESTS = [
+    ("ai tighten does not ratchet onto price across 15s cycles",
+     test_ai_tighten_does_not_ratchet_onto_price_across_cycles),
+    ("ai tighten still follows a rising price", test_ai_tighten_still_follows_a_rising_price),
     ("ai tighten shadow-only by default does not change the action",
      test_ai_tighten_shadow_only_by_default_does_not_change_the_action),
     ("ai tighten fires when armed", test_ai_tighten_fires_when_armed),

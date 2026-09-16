@@ -756,7 +756,12 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
     # ranking weight; automating a sale on the same basis would undo that.
     if str(pos.get("ai_recommended_action") or "").upper() == "TIGHTEN_SL":
         frac = cfg_float("swing_ai_tighten_fraction", 0.5)
-        candidate_sl = round(sl + frac * (ltp - sl), 2)
+        # Anchored on the PLANNED stop, not the current one. `sl + frac*(ltp-sl)`
+        # re-runs every 15s and converges on the price: all 13 AI-tightened
+        # swing trades (26-Aug..16-Sep-2026) closed on their first downtick.
+        # Anchored, the same price always yields the same stop.
+        anchor = stop0 if (stop0 and stop0 < entry) else sl
+        candidate_sl = round(anchor + frac * (ltp - anchor), 2)
         if candidate_sl > sl:
             reason_text = str(pos.get("ai_action_reason") or "AI flagged a risk")
             if cfg_bool("swing_ai_tighten_enabled", False):
