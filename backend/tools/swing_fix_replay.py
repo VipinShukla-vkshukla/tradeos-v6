@@ -597,6 +597,72 @@ def exposure_premise(since: str, until: str) -> None:
               f"mean {st.fmean(pr) if pr else 0:+.2f} win {100 * sum(1 for x in pr if x > 0) / max(1, len(pr)):3.0f}%{days}")
 
 
+def _plan_outcomes(since: str, until: str):
+    """(window, day, plan, fwd5 %, planR) for every plan with enough bars after it."""
+    sb = get_supabase()
+    plans = load_plans(sb, since)
+    end = datetime.now(IST).date().isoformat()
+    out = []
+    for day in sorted(d for d in plans if since <= d <= until):
+        for p in plans[day]:
+            b = bars_daily(None, p["symbol"], "2026-06-25", end)
+            ds = sorted(x for x in b if x > day)
+            if day not in b or len(ds) < 5:
+                continue
+            f5 = (b[ds[4]][3] / b[day][3] - 1) * 100
+            pr = None
+            try:
+                stop, tgt, e = float(p["planned_stop"]), float(p["planned_target"]), b[ds[0]][0]
+                if stop < e < tgt:
+                    pr = (b[ds[min(9, len(ds) - 1)]][3] - e) / (e - stop)
+                    for x in ds[:10]:
+                        o, h, l, c = b[x]
+                        if l <= stop:
+                            pr = (min(o, stop) - e) / (e - stop)
+                            break
+                        if h >= tgt:
+                            pr = (max(o, tgt) - e) / (e - stop)
+                            break
+            except (TypeError, ValueError):
+                pass
+            out.append(("holdout" if day < SPLIT else "recent", day, p, f5, pr))
+    return out
+
+
+def rank_study(since: str, until: str) -> None:
+    """Do the entry-ranking tilts found on 14-Aug..08-Sep hold on the earlier window?"""
+    import statistics as st
+    recs = _plan_outcomes(since, until)
+
+    def num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    feats = {"vol_ratio": "vol_ratio", "rsi_daily": "rsi_daily", "rs_vs_nifty": "rs_vs_nifty",
+             "sector_rank": "sector_rank_at_entry", "implied_rr": "implied_rr",
+             "final_score": "final_score", "dist_entry_pct": "dist_entry_pct", "adx": "adx"}
+    for w in ("holdout", "recent"):
+        rows = [r for r in recs if r[0] == w]
+        days = len({r[1] for r in rows})
+        print(f"\n{w}: {len(rows)} plans over {days} days "
+              f"(planR available on {sum(1 for r in rows if r[4] is not None)})")
+        for name, col in feats.items():
+            v = [(num(r[2].get(col)), r[3], r[4]) for r in rows if num(r[2].get(col)) is not None]
+            if len(v) < 30:
+                continue
+            v.sort(key=lambda x: x[0])
+            n = len(v)
+            parts = [v[:n // 3], v[n // 3:2 * n // 3], v[2 * n // 3:]]
+            line = f"  {name:15s}"
+            for i, part in enumerate(parts):
+                prs = [x[2] for x in part if x[2] is not None]
+                line += (f" | T{i + 1} fwd5 {st.median([x[1] for x in part]):+5.2f}%"
+                         f" R {st.fmean(prs) if prs else 0:+.2f}")
+            print(line)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--label", default="run")
@@ -607,6 +673,7 @@ def main() -> int:
                     help="override a system_config key for this run only (never written)")
     ap.add_argument("--regime-audit", action="store_true")
     ap.add_argument("--exposure-premise", action="store_true")
+    ap.add_argument("--rank-study", action="store_true")
     ap.add_argument("--until", default="2026-09-08")
     a = ap.parse_args()
     logger.remove()
@@ -616,6 +683,9 @@ def main() -> int:
         live = dict(config.get_system_config())
         live.update(dict(kv.split("=", 1) for kv in a.set))
         config._sys_config = live
+    if a.rank_study:
+        rank_study("2026-06-25" if a.since == "2026-07-13" else a.since, a.until)
+        return 0
     if a.exposure_premise:
         exposure_premise("2026-06-25" if a.since == "2026-07-13" else a.since, a.until)
         return 0
