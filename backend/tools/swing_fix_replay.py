@@ -107,9 +107,43 @@ def load_plans(sb, since: str) -> dict:
 
 
 def load_regime_rows(sb) -> list[dict]:
-    return _page(lambda: sb.table("market_regime").select(
-        "date,regime,computed_regime,regime_score_computed,nifty_price,above_200dma_pct,"
-        "india_vix,advance_decline_ratio,nifty_5d_chg_pct,avg_sector_breadth").order("date"))
+    return _page(lambda: sb.table("market_regime").select("*").order("date"))
+
+
+def corrected_scores(rows: list[dict]) -> dict[str, float]:
+    """
+    date -> regime score with the frozen index inputs replaced by real history.
+
+    Only the DIFFERENCE is applied (score with corrected inputs minus score with
+    the stored inputs, both under today's pillar code), so pillar-code changes
+    since April do not leak into the comparison.
+    """
+    import swing.compute.compute_regime as cr
+    path = CACHE / "index_closes.json"
+    if path.exists():
+        idx = json.loads(path.read_text())
+    else:
+        idx = {t: cr.fetch_index_closes(t) for t in ("^NSEI", "^NSEBANK")}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(idx))
+    nsei = [tuple(x) for x in idx["^NSEI"]]
+    bank = [tuple(x) for x in idx["^NSEBANK"]]
+    out = {}
+    for r in rows:
+        score = r.get("regime_score_computed")
+        if score is None:
+            continue
+        d = r["date"]
+        n = cr.index_indicators(nsei, float(r["nifty_price"]) if r.get("nifty_price") else None, d)
+        b = cr.index_indicators([x for x in bank if x[0] <= d], None, d)
+        fixed = dict(r, nifty_50dma=n.get("dma50"), nifty_200dma=n.get("dma200"),
+                     nifty_weekly_rsi=n.get("weekly_rsi"), nifty_20d_chg_pct=n.get("ret_20d"),
+                     nifty_5d_chg_pct=n.get("ret_5d"), banknifty_weekly_rsi=b.get("weekly_rsi"),
+                     banknifty_price=b.get("price"))
+        delta = ((cr.score_price_structure(fixed)[0] - cr.score_price_structure(r)[0])
+                 + (cr.score_momentum(fixed)[0] - cr.score_momentum(r)[0]))
+        out[d] = min(max(float(score) + delta, 0.0), 100.0)
+    return out
 
 
 @dataclass
@@ -172,13 +206,14 @@ def _token(kite, symbol: str):
 
 # ── regime, recomputed through production code ─────────────────────────────
 
-def recompute_regimes(rows: list[dict]) -> dict[str, str]:
-    """date -> label, re-running compute_regime's own hysteresis over stored scores."""
+def recompute_regimes(rows: list[dict], scores: dict | None = None) -> dict[str, str]:
+    """date -> label, re-running compute_regime's own hysteresis over stored (or given) scores."""
     from swing.compute.compute_regime import apply_hysteresis, detect_recovering
     done: list[dict] = []
     labels = {}
     for r in rows:
-        score = r.get("regime_score_computed")
+        score = (scores or {}).get(r["date"], r.get("regime_score_computed"))
+        r = dict(r, regime_score_computed=score)
         history = list(reversed(done[-10:]))
         if score is None:
             label = r.get("computed_regime") or r.get("regime") or "NEUTRAL"
@@ -398,9 +433,13 @@ def run(label: str, since: str, compare: str | None, regime_mode: str = "stored"
     regime_rows = load_regime_rows(sb)
     # "stored" is what the live book saw; "recomputed" runs today's
     # compute_regime hysteresis over the stored scores
-    labels = (recompute_regimes(regime_rows) if regime_mode == "recomputed" else
-              {r["date"]: (r.get("computed_regime") or r.get("regime") or "NEUTRAL")
-               for r in regime_rows})
+    if regime_mode == "corrected":
+        labels = recompute_regimes(regime_rows, corrected_scores(regime_rows))
+    elif regime_mode == "recomputed":
+        labels = recompute_regimes(regime_rows)
+    else:
+        labels = {r["date"]: (r.get("computed_regime") or r.get("regime") or "NEUTRAL")
+                  for r in regime_rows}
     policy = load_exit_policy()
     try:
         policy["stall_days_by_family"] = build_family_stall_days(sb, global_default=policy["stall_days"])
@@ -502,10 +541,11 @@ def _print(res: dict, compare: str | None) -> None:
               f"{o['reason']:20s}{o['r']:6.2f}{o['net']:8.0f}  {o['removed_by']}")
 
 
-def regime_audit() -> None:
+def regime_audit(corrected: bool = False) -> None:
     sb = get_supabase()
     rows = load_regime_rows(sb)
-    labels = recompute_regimes(rows)
+    scores = corrected_scores(rows) if corrected else None
+    labels = recompute_regimes(rows, scores)
     agree = sum(1 for r in rows if r.get("regime_score_computed") is not None
                 and (r.get("computed_regime") or r.get("regime")) == labels[r["date"]])
     scored = sum(1 for r in rows if r.get("regime_score_computed") is not None)
@@ -515,7 +555,8 @@ def regime_audit() -> None:
             continue
         stored = r.get("computed_regime") or r.get("regime")
         mark = "" if stored == labels[r["date"]] else "  <-- differs"
-        print(f"{r['date']} score {r['regime_score_computed']:5.1f} stored {stored:11s} "
+        sc = (scores or {}).get(r["date"], r["regime_score_computed"])
+        print(f"{r['date']} score {r['regime_score_computed']:5.1f} -> {sc:5.1f} stored {stored:11s} "
               f"recomputed {labels[r['date']]:11s}{mark}")
 
 
@@ -537,7 +578,7 @@ def bars_daily(kite, symbol: str, start: str, end: str) -> dict[str, tuple]:
     return out
 
 
-def exposure_premise(since: str, until: str) -> None:
+def exposure_premise(since: str, until: str, regime_mode: str = "recomputed") -> None:
     """Plan outcomes by the exposure state the entry path would have seen."""
     import statistics as st
     import config
@@ -545,7 +586,7 @@ def exposure_premise(since: str, until: str) -> None:
     sb = get_supabase()
     plans = load_plans(sb, since)
     rows = load_regime_rows(sb)
-    labels = recompute_regimes(rows)
+    labels = recompute_regimes(rows, corrected_scores(rows) if regime_mode == "corrected" else None)
     try:
         from kite.kite_client import get_kite
         kite = get_kite()
@@ -668,7 +709,7 @@ def main() -> int:
     ap.add_argument("--label", default="run")
     ap.add_argument("--since", default="2026-07-13")
     ap.add_argument("--compare")
-    ap.add_argument("--regime", choices=["stored", "recomputed"], default="stored")
+    ap.add_argument("--regime", choices=["stored", "recomputed", "corrected"], default="stored")
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                     help="override a system_config key for this run only (never written)")
     ap.add_argument("--regime-audit", action="store_true")
@@ -687,10 +728,11 @@ def main() -> int:
         rank_study("2026-06-25" if a.since == "2026-07-13" else a.since, a.until)
         return 0
     if a.exposure_premise:
-        exposure_premise("2026-06-25" if a.since == "2026-07-13" else a.since, a.until)
+        exposure_premise("2026-06-25" if a.since == "2026-07-13" else a.since, a.until,
+                         "corrected" if a.regime == "corrected" else "recomputed")
         return 0
     if a.regime_audit:
-        regime_audit()
+        regime_audit(corrected=a.regime == "corrected")
         return 0
     run(a.label, a.since, a.compare, a.regime)
     return 0

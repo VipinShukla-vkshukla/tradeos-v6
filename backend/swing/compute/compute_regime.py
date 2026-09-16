@@ -224,6 +224,61 @@ def fetch_index_data(ticker: str) -> dict | None:
         return None
 
 
+def fetch_index_closes(ticker: str) -> list[tuple[str, float]]:
+    """
+    Two years of daily closes, oldest first, as (IST date, close), from Yahoo's
+    chart API (the endpoint ingest_global_cues already calls every evening).
+    [] on any failure.
+    """
+    import requests
+    try:
+        r = requests.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}",
+                         params={"range": "2y", "interval": "1d"}, timeout=15,
+                         headers={"User-Agent": "Mozilla/5.0"})
+        res = r.json()["chart"]["result"][0]
+        closes = res["indicators"]["quote"][0]["close"]
+        return [(datetime.fromtimestamp(ts, IST).date().isoformat(), float(c))
+                for ts, c in zip(res["timestamp"], closes) if c]
+    except Exception as e:
+        logger.warning(f"  index history unavailable for {ticker}: {e}")
+        return []
+
+
+def index_indicators(closes: list[tuple[str, float]], price: float | None, as_of: str) -> dict:
+    """
+    DMA50/200, weekly RSI (same method as fetch_index_data) and 1/5/20-session
+    returns as of `as_of`. `price` replaces as_of's own close when given.
+    """
+    hist = [(d, c) for d, c in closes if d < as_of]
+    today = price if price else next((c for d, c in closes if d == as_of), None)
+    series = hist + ([(as_of, float(today))] if today else [])
+    if len(series) < 10:
+        return {}
+    px = [c for _, c in series]
+
+    def ret(n):
+        return round((px[-1] / px[-1 - n] - 1) * 100, 2) if len(px) > n else None
+
+    weekly: dict[str, float] = {}
+    for d, c in series:
+        day = datetime.strptime(d, "%Y-%m-%d").date()
+        weekly[(day + timedelta(days=(4 - day.weekday()) % 7)).isoformat()] = c
+    wk = [weekly[k] for k in sorted(weekly)]
+    rsi = None
+    if len(wk) >= 15:
+        deltas = [b - a for a, b in zip(wk, wk[1:])][-14:]
+        gain = sum(max(x, 0.0) for x in deltas) / 14
+        loss = sum(max(-x, 0.0) for x in deltas) / 14
+        rsi = 100.0 if loss == 0 else round(100 - (100 / (1 + gain / loss)), 2)
+    return {
+        "price": px[-1],
+        "dma50": sum(px[-50:]) / 50 if len(px) >= 50 else None,
+        "dma200": sum(px[-200:]) / 200 if len(px) >= 200 else None,
+        "weekly_rsi": rsi,
+        "ret_1d": ret(1), "ret_5d": ret(5), "ret_20d": ret(20),
+    }
+
+
 def fetch_sp500_direction(sb) -> tuple[float | None, str]:
     """
     S&P 500 5-day return from global_cues.sp500_close (written by step 03).
@@ -263,12 +318,12 @@ def fetch_nifty_from_supabase(sb, effective_date: str) -> tuple[dict | None, str
     Nifty data from Supabase — eliminates yf.Ticker('^NSEI').history(period='2y').
 
     price      → global_cues EVENING row (step 03 stored ^NSEI live price as gift_nifty)
-    dma50/200  → market_regime previous row (carry-forward from last computation)
-    weekly_rsi → market_regime previous row (carry-forward)
-    ret_5d/20d → computed from market_regime.nifty_price history (last 21 rows)
+    dma50/200, weekly_rsi, returns → index_indicators() over ^NSEI daily history
 
-    DMA carry-forward error is ~(today_close - close_N_days_ago) / N per day —
-    negligible for regime scoring. Falls back to yfinance on bootstrap (<21 rows).
+    NOT carried forward from the previous row. That copy never changed: the same
+    50DMA/200DMA/weekly RSI sat on ~94 rows from April to 16-Sep-2026. With no
+    history (Yahoo, then yfinance) the fields stay None and the pillar scores
+    without them.
     """
     try:
         # Today's price: global_cues EVENING row
@@ -286,7 +341,7 @@ def fetch_nifty_from_supabase(sb, effective_date: str) -> tuple[dict | None, str
         # Historical price + DMA/RSI from previous market_regime rows
         regime_rows = (
             sb.table("market_regime")
-              .select("date,nifty_price,nifty_50dma,nifty_200dma,nifty_weekly_rsi")
+              .select("date,nifty_price")
               .not_.is_("nifty_price", "null")
               .lt("date", effective_date)
               .order("date", desc=True)
@@ -296,7 +351,6 @@ def fetch_nifty_from_supabase(sb, effective_date: str) -> tuple[dict | None, str
         if not regime_rows:
             return None, "yfinance:^NSEI"  # bootstrap — no history yet
 
-        prev   = regime_rows[0]
         prices = [float(r["nifty_price"]) for r in regime_rows if r.get("nifty_price")]
 
         current = today_price or (prices[0] if prices else None)
@@ -307,16 +361,26 @@ def fetch_nifty_from_supabase(sb, effective_date: str) -> tuple[dict | None, str
         ret_5d  = round((current - prices[5])  / prices[5]  * 100, 2) if len(prices) >= 6  else None
         ret_20d = round((current - prices[20]) / prices[20] * 100, 2) if len(prices) >= 21 else None
 
+        ind = index_indicators(fetch_index_closes("^NSEI"), current, effective_date)
+        source = "supabase:global_cues+yahoo:^NSEI history"
+        if not ind:
+            yf_data = fetch_index_data("^NSEI")
+            ind = ({k: yf_data.get(k) for k in ("dma50", "dma200", "weekly_rsi")}
+                   if yf_data else {})
+            source = ("supabase:global_cues+yfinance:^NSEI" if ind else
+                      "supabase:global_cues (NO index history: DMAs/RSI empty)")
+            if not ind:
+                logger.warning("  Nifty DMA50/200 and weekly RSI unavailable: left empty, "
+                               "not carried forward")
         result = {
             "price":      current,
-            "dma50":      float(prev["nifty_50dma"])      if prev.get("nifty_50dma")      else None,
-            "dma200":     float(prev["nifty_200dma"])     if prev.get("nifty_200dma")     else None,
-            "weekly_rsi": float(prev["nifty_weekly_rsi"]) if prev.get("nifty_weekly_rsi") else None,
-            "ret_1d":     ret_1d,
-            "ret_5d":     ret_5d,
-            "ret_20d":    ret_20d,
+            "dma50":      ind.get("dma50"),
+            "dma200":     ind.get("dma200"),
+            "weekly_rsi": ind.get("weekly_rsi"),
+            "ret_1d":     ind.get("ret_1d", ret_1d),
+            "ret_5d":     ind.get("ret_5d", ret_5d),
+            "ret_20d":    ind.get("ret_20d", ret_20d),
         }
-        source = "supabase:global_cues+market_regime"
         logger.debug(
             f"  Nifty Supabase hit: price={current} | dma50={result['dma50']} | "
             f"dma200={result['dma200']} | rsi={result['weekly_rsi']} | "
@@ -330,37 +394,29 @@ def fetch_nifty_from_supabase(sb, effective_date: str) -> tuple[dict | None, str
 
 def fetch_banknifty_from_supabase(sb, effective_date: str) -> tuple[dict | None, str]:
     """
-    BankNifty price and weekly_rsi from market_regime previous row.
-    Eliminates yf.Ticker('^NSEBANK').history(period='2y').
-    Only price and weekly_rsi are used by score_price_structure — no DMA needed.
+    BankNifty price and weekly_rsi from ^NSEBANK daily history (index_indicators).
+    Only price and weekly_rsi are used by score_price_structure.
+
+    Was copied from the previous market_regime row, which froze it at
+    55403.6 / RSI 41.7 from April to 16-Sep-2026. None on failure (the caller
+    then tries yfinance), never the previous row.
     """
     try:
-        rows = (
-            sb.table("market_regime")
-              .select("banknifty_price,banknifty_weekly_rsi,date")
-              .not_.is_("banknifty_price", "null")
-              .lt("date", effective_date)
-              .order("date", desc=True)
-              .limit(1)
-              .execute().data
-        )
-        if not rows:
+        closes = [(d, c) for d, c in fetch_index_closes("^NSEBANK") if d <= effective_date]
+        ind = index_indicators(closes, None, effective_date) if closes else {}
+        if not ind:
             return None, "yfinance:^NSEBANK"
-        r = rows[0]
         result = {
-            "price":      float(r["banknifty_price"])      if r.get("banknifty_price")      else None,
+            "price":      ind.get("price"),
             "dma50":      None,
             "dma200":     None,
-            "weekly_rsi": float(r["banknifty_weekly_rsi"]) if r.get("banknifty_weekly_rsi") else None,
+            "weekly_rsi": ind.get("weekly_rsi"),
             "ret_1d":     None,
             "ret_5d":     None,
             "ret_20d":    None,
         }
-        logger.debug(
-            f"  BankNifty Supabase hit: price={result['price']} | "
-            f"weekly_rsi={result['weekly_rsi']} (from {r['date']})"
-        )
-        return result, "supabase:market_regime"
+        logger.debug(f"  BankNifty history: price={result['price']} | weekly_rsi={result['weekly_rsi']}")
+        return result, "yahoo:^NSEBANK history"
     except Exception as e:
         logger.debug(f"  fetch_banknifty_from_supabase failed: {e}")
         return None, "yfinance:^NSEBANK"

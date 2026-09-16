@@ -293,6 +293,40 @@ def check_data_freshness() -> tuple[bool, str]:
     return True, "signal and price data are current"
 
 
+REGIME_INDEX_INPUTS = ("nifty_50dma", "nifty_200dma", "nifty_weekly_rsi", "banknifty_weekly_rsi")
+
+
+def frozen_inputs(rows: list[dict], n: int = 3) -> list[str]:
+    """
+    Regime index inputs that read the SAME non-null value on the latest `n`
+    rows. All four sat unchanged on ~94 rows from April to 16-Sep-2026 because
+    compute_regime copied them from the previous row.
+    """
+    latest = sorted(rows, key=lambda r: r["date"], reverse=True)[:n]
+    if len(latest) < n:
+        return []
+    out = []
+    for col in REGIME_INDEX_INPUTS:
+        vals = [r.get(col) for r in latest]
+        if all(v is not None for v in vals) and len({round(float(v), 6) for v in vals}) == 1:
+            out.append(f"{col}={vals[0]} on {n} sessions")
+    return out
+
+
+def check_regime_inputs_moving() -> tuple[bool, str]:
+    from config import get_supabase
+    try:
+        rows = (get_supabase().table("market_regime")
+                  .select("date," + ",".join(REGIME_INDEX_INPUTS))
+                  .order("date", desc=True).limit(3).execute().data or [])
+    except Exception as e:
+        return False, f"market_regime unreadable: {e}"
+    frozen = frozen_inputs(rows)
+    if frozen:
+        return False, "regime index inputs not moving: " + "; ".join(frozen)
+    return True, "Nifty/BankNifty DMA and RSI inputs change session to session"
+
+
 FRESHNESS_TABLES = ("signal_output_daily", "stock_data_daily", "market_regime")
 
 
@@ -2549,6 +2583,7 @@ CHECKS = [
     ("sort_keys", "a paged read sorts on a column the table does not have, so it returns nothing", check_sort_keys, False),
     ("kite",     "no broker session, or the IP is not allowlisted",              check_kite,     False),
     ("data",     "decisions would run on stale inputs",                          check_data_freshness, False),
+    ("regime_inputs", "the regime scores a frozen index (a DMA/RSI copied forward instead of computed)", check_regime_inputs_moving, False),
     ("data_quality", "the evening pipeline's own 19-check quality gate found an ERROR and nothing surfaced it here", check_data_quality, False),
     ("broker",   "resting orders do not match the positions they protect",       check_broker_consistency, False),
     ("capital",  "TOTAL_CAPITAL drifts from what the broker account actually holds", check_capital, False),

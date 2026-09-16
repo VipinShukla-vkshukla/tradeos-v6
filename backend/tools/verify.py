@@ -72,6 +72,7 @@ MODULES = [
     ("direction spine",     "tests.test_direction_spine"),
     ("regime vocabulary",   "tests.test_regime_vocabulary"),
     ("regime hysteresis: no stuck NEUTRAL or RISK OFF", "tests.test_regime_hysteresis"),
+    ("regime index inputs from real history, never carried forward", "tests.test_regime_index_inputs"),
     ("swing market exposure (correction size and pace)", "tests.test_market_exposure"),
     ("AI position actions scoped to the swing row", "tests.test_ai_position_actions_scope"),
     ("session calendar survives a failed evening pipeline", "tests.test_session_calendar"),
