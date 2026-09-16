@@ -9,7 +9,7 @@ Entries are the real ones (closed_positions + open_positions, framework SWING).
 Each is walked over 15-minute Kite bars through the real evaluate_exit(), with
 the live 15-second cycle approximated by re-evaluating a bar close up to 60
 times while the ladder keeps moving the stop. Entry-side rules (regime R:R and
-slots via decide(), market exposure, daily cap, re-entry cooldown) are applied
+slots via decide(), market exposure, daily cap, one position per symbol) are applied
 to that same list by importing whatever the working tree provides.
 
 What it cannot do, stated so a result is not over-read:
@@ -312,8 +312,7 @@ def replay_exit(t: dict, bars: list[B], entry_ts: datetime | None, policy: dict,
 # ── entry-side rules, imported when the working tree has them ──────────────
 
 def entry_filter(t: dict, entry_ts, plans_by_day: dict, labels: dict, regime_rows: list[dict],
-                 book: list[dict], taken_today: int, recent_exits: dict,
-                 calendar: list[str]) -> tuple[str, float]:
+                 book: list[dict], taken_today: int) -> tuple[str, float]:
     """Returns (refusal reason or '', size multiplier) for one actual entry."""
     day = str(t["entry_date"])[:10]
     plan_days = [d for d in plans_by_day if d < day]
@@ -325,11 +324,14 @@ def entry_filter(t: dict, entry_ts, plans_by_day: dict, labels: dict, regime_row
 
     try:
         from analysis import market_exposure as mx
+        from config import cfg_int
         exp = mx.exposure_for_day(regime, [r for r in regime_rows if r["date"] < day])
         if exp.block_new:
             return f"exposure {exp.state}", 0.0
-        if exp.max_new is not None and taken_today >= exp.max_new:
-            return f"exposure {exp.state} cap {exp.max_new}", 0.0
+        cap = mx.daily_cap(cfg_int("swing_max_new_per_day", 2), exp)
+        if taken_today >= cap:
+            return (f"exposure {exp.state} cap {cap}" if exp.state != "NORMAL"
+                    else f"daily cap {cap}"), 0.0
         size_mult = exp.size_mult
         if size_mult < 1.0:
             # decide()'s own floor: a scaled-down clip under the minimum is refused, not shrunk
@@ -345,13 +347,9 @@ def entry_filter(t: dict, entry_ts, plans_by_day: dict, labels: dict, regime_row
     except ImportError:
         pass
 
-    try:
-        from analysis.swing_pacing import cooldown_refusal
-        why = cooldown_refusal(t["symbol"], day, recent_exits, calendar)
-        if why:
-            return why, 0.0
-    except ImportError:
-        pass
+    if any(p["symbol"] == t["symbol"] for p in book):
+        # the daemon skips a held name; replayed exits can run later than live ones
+        return "already held in the replayed book", 0.0
 
     if plan is not None:
         from analysis.trade_decision import decide, regime_min_rr
@@ -444,12 +442,11 @@ def run(label: str, since: str, compare: str | None, regime_mode: str = "stored"
     outcomes: list[Outcome] = []
     book: list[dict] = []
     by_day_taken: dict[str, int] = defaultdict(int)
-    recent_exits: dict[str, list[str]] = defaultdict(list)
     for ets, t, bars in prepared:
         sym, day = t["symbol"], str(t["entry_date"])[:10]
         book = [p for p in book if p["_exit"] > ets.isoformat()]
         why, mult = entry_filter(t, ets, plans, labels, regime_rows, book,
-                                 by_day_taken[day], recent_exits, calendar)
+                                 by_day_taken[day])
         trend = {}
         for d, rows in plans.items():
             row = next((p for p in rows if p["symbol"] == sym), None)
@@ -471,8 +468,6 @@ def run(label: str, since: str, compare: str | None, regime_mode: str = "stored"
             book.append({"symbol": sym, "sector": t.get("sector"), "entry_price": o.entry,
                          "current_qty": qty, "planned_stop": o.stop, "active_sl": o.stop,
                          "framework": "SWING", "_exit": o.exit_ts or "9999"})
-            if o.exit_ts:
-                recent_exits[sym].append(o.exit_ts[:10])
         outcomes.append(o)
 
     recent = [o for o in outcomes if o.entry_date >= SPLIT]
