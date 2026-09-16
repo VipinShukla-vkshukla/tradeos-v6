@@ -19116,3 +19116,108 @@ line records a `live_requalify` decision today), and no health check
 closes the loop the way `check_same_day_discovery_writing()` does for
 swing — the exact check that would have caught this gap automatically
 instead of a five-day-later manual tape comparison.
+
+## 17-Sep-2026 — Swing book review and six-fix series: two real bugs fixed, two config changes written (migrations 142-143, NOT applied), three proposals measured and dropped
+
+Operator asked why swing lost over the last 3-4 weeks, then asked for the six
+recommended fixes to be applied in order, each re-run against history.
+
+### The review (read-only)
+- 40 swing trades closed 17-Aug..16-Sep: 42% win, avg win +0.34R vs avg loss
+  -0.49R, gross -430, charges 2,374, net -2,804; -9,481 without CGCL (+6,677).
+  9 of 40 were real money; swing is PAPER since 25-Aug.
+- Nifty 24,584 (10-Aug) -> 23,119 (15-Sep). Plans taken did worse than plans
+  not taken from the same lists (5-session median -1.27% vs -0.69%, n=36 deduped).
+- `swing_ai_tighten_enabled` (armed 24-Aug) ratcheted stops onto the price:
+  all 13 TRAIL_SL_HIT exits were AI-tightened positions.
+- `compute_regime.apply_hysteresis` held NEUTRAL at scores 24-34 for 8 sessions.
+- Correction to the review itself: it said the ranker "rewards" the volume-spike
+  / top-sector names the book bought. With `alloc_live_swing` on, `score_plan`
+  only refuses totals below `swing_min_rank_to_enter` (0); the allocator and
+  early-session timing pick the entries.
+
+### Replay tool — `tools/swing_fix_replay.py`
+Walks every swing trade actually taken (since 13-Jul) over 15-minute Kite bars
+through the real `evaluate_exit()`, re-evaluating each bar close up to 60 times
+(the 15s loop). Entry-side rules call `decide()`, `market_exposure`, the daily
+cap and a one-position-per-symbol guard. Fidelity on the 36 recent closes: 86%
+same exit reason, median |replay-actual| Rs94/trade, replay costs ~Rs875 higher.
+Limits: a refused entry is not replaced by another plan (allocator history is not
+replayable); sector/participation-decay context omitted; AI flags come from
+recorded alerts. Also `--regime-audit`, `--exposure-premise`, `--rank-study`.
+
+### Results, one consistent tool run (entered 14-Aug+ / entered 13-Jul..13-Aug)
+
+    stage                          recent n  win%   sumR     net   maxDD | earlier net  sumR
+    baseline (pre-fix code)            33    33.3  -8.16  -6,088  -7,959 |     +223    +2.57
+    1 AI tighten anchored              33    36.4  -9.19  -8,429  -9,615 |     +223    +2.57
+    2 regime hysteresis                26    42.3  -4.53    +895  -6,136 |     -300    +0.36
+    3 market exposure  (mig 142)       26    42.3  -4.53  +1,340  -6,136 |     -300    +0.36
+    4 daily cap 10->3  (mig 143)       19    47.4  -2.27  +4,354  -2,817 |     -300    +0.36
+    5 ranker changes                   not shipped
+    6 give-back retune                 not shipped
+
+Recent window improves by +10,442 and +5.89R with drawdown -7,959 -> -2,817, but
+sumR is still negative: this removes damage, it does not create an edge. The
+earlier window pays -523 / -2.21R (fix 2 refusing four small late-July winners).
+Fixes 2 and 4 were motivated by the recent window, so its gain is in-sample.
+
+### Fix 1 — `evaluate_exit` 2c, AI TIGHTEN_SL (commit 915aacf)
+`sl + frac*(ltp - sl)` re-run every 15s converged on the price (a 7.5% stop to
+0.01% in 12 cycles). Now anchored on the planned stop: one price, one stop.
+Check failed first ("1827.2 after one cycle, 1894.99 after sixty"). The replay
+gets WORSE (-2,341): the bug happened to cut trades that kept falling.
+Fraction 0.5/0.65/0.75/off: -2,341/-3,273/-1,648/-2,924, non-monotonic; 0.5 kept.
+
+### Fix 2 — regime hysteresis (commit a08d21e)
+NEUTRAL -> RISK OFF on a second session below 40; RISK OFF -> NEUTRAL on a third
+session at or above 40. The second half is not cosmetic: replaying the old code
+over stored scores leaves the book RISK OFF from 11-Jun to today (scores up to
+61). Stored history escaped only because something outside this function wrote
+computed_regime NEUTRAL on 25-Jun (no commit or ledger entry explains it). 4 of 8
+new checks failed on the old code using the real Jun and Sep score sequences.
+
+### Fix 3 — `analysis/market_exposure.py` (commit c9400c0, migration 142)
+CORRECTION = 2+ of: Nifty below its 50-session mean, 20-session change <= -3%,
+median A/D over 5 sessions < 0.8 -> max 2 entries/day, size x0.5 via `decide()`
+vol_mult (the 3% minimum still refuses an undersized clip). Wired into the daemon
+and `tools/simulate`. Alone vs fix 1: -8,429 -> -3,053 (pre-guard run).
+Premise check over 56 plan days: weakness signals preceded +0.135R/plan-day in
+the 24..30-Jul pullback and -0.24R in the 01..08-Sep slide; RISK OFF plans won
+72% on the holdout and 23% recently. Opposite signs, so the RISK OFF block and
+the RS / no-chase filters ship OFF; only size and pace are armed. Mutation-tested.
+
+### Fix 4 — daily cap (commit 40adc23, migration 143)
+Cap 2/3/4/5 vs fix 3: +3,970/+3,014/+745/+1,244 recent, -65/0/0/0 earlier.
+3 was proposed before the replay ran. The proposed 5-session re-entry cooldown
+cost -6,350 after any exit (refuses CGCL's same-day re-entry, +7,221) and did
+nothing after losing exits only: dropped.
+
+### Fix 5 — ranker (commit after 40adc23, `--rank-study`), nothing shipped
+Earlier window vs recent: top-sector plans best (+0.19R) vs worst; vol_ratio and
+rs_vs_nifty flat vs separated. Only implied_rr's top tercile was weakest in both.
+Tested through the live floor: plans a 1.5 R:R cap would newly refuse beat the
+ones still admitted in both windows (+0.353R vs +0.118R n=12; +0.022R vs -0.131R
+n=22). Not shipped.
+
+### Fix 6 — give-back guard, nothing shipped
+exit_giveback_pct 30/40/45/50/60/70, recent Δnet: -2,932 (+0.66R)/+628/+481/0/
+-611/-915; earlier all within Rs225. giveback_min_r 0.75/1.0: -2,218/-11,736.
+No consistent shape; 50% stays.
+
+### Pending — the operator must act
+- **Migrations 142 and 143 are written and committed but NOT applied.**
+  `apply_migration` was refused by the session's permission classifier. Until
+  applied, fix 3 is inert (code default off) and fix 4 does not exist.
+- Fixes 1 and 2 are code only and take effect when the server pulls (daemon
+  restart for fix 1; the next evening pipeline for fix 2).
+
+### Found along the way, not fixed
+- `market_regime.nifty_50dma` read 24173.825 unchanged Apr..Sep; the regime's
+  price-structure pillar may be scoring a stale mean.
+- `ai_decision_engine.write_position_actions` updates `open_positions` on
+  `.eq("symbol")` alone (CLAUDE.md's (symbol, product) landmine, update not upsert).
+- `market_regime` has no row for 03-Sep or 11-Sep; session counts and
+  `consecutive_days_*` silently skip those sessions.
+- Pre-existing and unchanged by this series: `verify` "outcome resolution gap"
+  6/19 failing (TypeError); `health` same_day_discovery zero rows.
