@@ -19221,3 +19221,86 @@ No consistent shape; 50% stays.
   `consecutive_days_*` silently skip those sessions.
 - Pre-existing and unchanged by this series: `verify` "outcome resolution gap"
   6/19 failing (TypeError); `health` same_day_discovery zero rows.
+
+## 17-Sep-2026 (2) — Migrations 142/143 applied; four data defects fixed; the "no edge" question measured, not answered by a switch
+
+Operator: (1) apply the migrations, (2) what are we doing about the book still
+being -2.27R after the fixes, (3) fix the four defects the review flagged.
+
+### 1 — Migrations applied (Supabase MCP, operator-approved)
+142 (exposure keys) and 143 (swing_max_new_per_day 10 -> 3) applied at
+~19:41 UTC. Preconditions checked first (no 142 keys present; cap read 10).
+`tools.simulate` then reported `CORRECTION · cap 2/day · size x0.5` with all
+three weakness signals firing.
+
+**Something outside this session then set `swing_max_new_per_day` to 5 at
+19:43:52 UTC** (ms-precision timestamp, unlike the migration's). Not reverted —
+it may be the operator's own call. Flagged in the session summary. Replays below
+pin the cap at 3 with `--set` so they measure one change at a time.
+
+### 3 — Four defects, each with a check that failed first
+**(a) Frozen regime index inputs (18ec5dc).** `fetch_nifty_from_supabase` /
+`fetch_banknifty_from_supabase` copied nifty_50dma, nifty_200dma, nifty
+weekly RSI, banknifty price and weekly RSI from the previous market_regime row,
+so all five read one value on ~94 rows (Apr..16-Sep). Now computed from ^NSEI /
+^NSEBANK daily history (Yahoo chart API, yfinance fallback, else None). Weekly
+RSI cross-checked against the existing pandas implementation. Live 16-Sep: 50DMA
+24103.6 (was 24173.8), 200DMA 24521.6 (25108.5), RSI 44.31 (42.98), BankNifty RSI
+43.25 (41.7). New `health` check `regime_inputs` is RED on the stored rows and
+turns green after the first evening run with this code. Replay with only the
+score difference applied: scores +5.5 pts on average, 22/98 labels change; the
+late-Jun/Jul pullbacks stop reading RISK OFF (holdout RISK OFF plan-days fall
+from ~12 to 3), the September slide reads RISK OFF from 02-Sep instead of
+01-Sep. Swing replay vs fix 4 at cap 3: recent -1,403 / -1.08R, earlier
++460 / +1.88R. A correctness fix, not a performance one.
+
+**(b) 25-Jun RISK OFF -> NEUTRAL explained (0198675).** The row was recomputed
+at 28-Jun 19:43 UTC, 14 minutes after ml_regime_classifier created an
+unlabelled 29-Jun row. `load_data`'s history query had no date bound, so the
+future row sorted first, became "yesterday", and `current` defaulted to NEUTRAL.
+Same shape on 27-Apr and 30-Apr. `load_history()` is now strictly before the
+effective date and skips unlabelled rows; the DB-fallback row is bounded too.
+Stored history is not rewritten.
+
+**(c) AI position actions (0198675).** `write_position_actions` updated
+open_positions on symbol alone; now `framework=SWING, product=CNC`.
+
+**(d) Missing 03-Sep and 11-Sep (78068c1).** The whole evening pipeline failed:
+02/03-Sep on a Google Sheets 503 in fetch_chartink's MIRROR write (before the
+Supabase upsert), 11/14-Sep on the bhavcopy bigint (already fixed, 6880e30).
+14-Sep was an NSE holiday. 03-Sep and 11-Sep were never re-run. Fixes:
+session_dates() fills weekday non-holiday gaps (live calendar now includes 03
+and 11-Sep, excludes 14-Sep; ZYDUSLIFE reads 5 sessions held, was 4, fast-fail
+was already eligible at 4); `health` freshness now requires every session before
+today in signal_output_daily, stock_data_daily and market_regime (the flat
+4-calendar-day tolerance read green on 04-Sep); fetch_chartink writes Supabase
+first and retries the sheet mirror, a final mirror failure no longer raises.
+
+### 2 — "No edge": measured (51f0c0c, `--edge-study --bars 15m`)
+Every plan decide() would buy at the next open, 25-Jun..08-Sep, net of CNC
+costs, R per trade (win%):
+
+    window   n    ladder         plan (stop/tgt)  hold10          hold5
+    holdout  219  -0.057 (59%)   +0.001 (48%)     +0.064 (44%)    +0.021 (48%)
+    recent   423  -0.135 (52%)   -0.372 (26%)     -0.283 (31%)    -0.102 (41%)
+
+- The plan list itself is roughly flat in a mixed tape (+0.06R held 10
+  sessions) and negative under every exit in the September slide.
+- The ladder wins often and small (GAVE_BACK_THE_MOVE is 54%/48% of exits) and
+  takes full losses. A plain 5-session hold beats it on the universe in both
+  windows (+0.08R / +0.03R), but on the 34 trades actually taken the ladder
+  beats hold5 by 6,626 in the recent window (CGCL dominates). UNRESOLVED; no
+  exit change shipped.
+- Only consistent segment: planned risk >= ~7% (top tercile) is the best third
+  in both windows under all four exit policies (ladder +0.059 / -0.009).
+  No engine family or signal type is positive in both windows.
+- The binding constraint is history, not analysis: plans exist from 25-Jun, the
+  screener's indicator history (stock_data_daily) is retained from 01-Sep, and
+  its sma/atr fields are Chartink passthroughs (migration 130), so plans cannot
+  be regenerated for earlier years without recomputing indicators from
+  price_history_yf / Kite. 31 plan-days across one pullback and one slide cannot
+  confirm an edge in either direction.
+
+### State at close
+verify: 1438 checks, the same 6 pre-existing failures. health: `regime_inputs`
+red (expected until tonight's run), `same_day_discovery` red (pre-existing).
