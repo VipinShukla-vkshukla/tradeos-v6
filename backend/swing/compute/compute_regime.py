@@ -1264,6 +1264,15 @@ def apply_hysteresis(raw_score: float, today_row: dict,
         logger.warning(f"  DOWNGRADE: {current} → RISK OFF (score={raw_score:.1f})")
         return "RISK OFF"
 
+    # Below SCORE_NEUTRAL is RISK OFF by this module's own thresholds, but only
+    # the <25 rule above could leave NEUTRAL: 31-Aug..10-Sep-2026 scored 24-34
+    # and read NEUTRAL while Nifty fell ~5%. Two sessions, like the rule above.
+    if (current == "NEUTRAL" and raw_score < SCORE_NEUTRAL
+            and consecutive_days_below(recent_scores, SCORE_NEUTRAL) >= 1):
+        logger.warning(f"  DOWNGRADE: NEUTRAL → RISK OFF (score={raw_score:.1f}, "
+                       f"second session below {SCORE_NEUTRAL})")
+        return "RISK OFF"
+
     if current in ("TRENDING", "RISK ON"):
         if raw_score < SCORE_RISK_ON:
             if consecutive_days_below(recent_scores, SCORE_RISK_ON) >= 1 or raw_score < SCORE_NEUTRAL:
@@ -1278,6 +1287,15 @@ def apply_hysteresis(raw_score: float, today_row: dict,
     if current == "RISK OFF" and is_recovering:
         logger.info(f"  UPGRADE: RISK OFF → RECOVERING (score={raw_score:.1f})")
         return "RECOVERING"
+
+    # RISK OFF's only other exit was RECOVERING, which needs a score of 25-40,
+    # so a market that bounced straight past 40 stayed RISK OFF (11..24-Jun-2026
+    # at 45-51). Three sessions at or above 40, as slow as the other upgrades.
+    if current == "RISK OFF" and raw_score >= SCORE_NEUTRAL:
+        if consecutive_days_above(recent_scores, SCORE_NEUTRAL) >= 2:
+            logger.info(f"  UPGRADE: RISK OFF → NEUTRAL (score={raw_score:.1f})")
+            return "NEUTRAL"
+        return "RISK OFF"
 
     if current == "RECOVERING":
         if raw_score >= SCORE_NEUTRAL:
