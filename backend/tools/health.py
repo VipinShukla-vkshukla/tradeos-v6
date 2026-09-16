@@ -273,25 +273,53 @@ def check_data_freshness() -> tuple[bool, str]:
     from config import get_supabase, today_ist
     sb = get_supabase()
     today = str(today_ist())
-    stale = []
-    for table, col, tol_days in (("signal_output_daily", "date", 4),
-                                 ("stock_data_daily", "date", 4)):
+    latest: dict[str, str | None] = {}
+    errors = []
+    for table in FRESHNESS_TABLES:
         try:
-            r = (sb.table(table).select(col).order(col, desc=True)
+            r = (sb.table(table).select("date").order("date", desc=True)
                    .limit(1).execute().data or [])
-            if not r:
-                stale.append(f"{table}: EMPTY")
-                continue
-            latest = str(r[0][col])[:10]
-            from datetime import date
-            gap = (date.fromisoformat(today) - date.fromisoformat(latest)).days
-            if gap > tol_days:
-                stale.append(f"{table}: {gap}d old ({latest})")
+            latest[table] = str(r[0]["date"])[:10] if r else None
         except Exception as e:
-            stale.append(f"{table}: {str(e)[:50]}")
+            errors.append(f"{table}: {str(e)[:50]}")
+    try:
+        holidays = {str(x["date"])[:10] for x in
+                    (sb.table("nse_holidays").select("date").execute().data or [])}
+    except Exception:
+        holidays = set()
+    stale = errors + freshness_problems(latest, today, holidays)
     if stale:
         return False, "; ".join(stale)
     return True, "signal and price data are current"
+
+
+FRESHNESS_TABLES = ("signal_output_daily", "stock_data_daily", "market_regime")
+
+
+def freshness_problems(latest: dict, today: str, holidays: set) -> list[str]:
+    """
+    Every trading session strictly before `today` must have landed. A flat
+    4-calendar-day tolerance read green on 04-Sep-2026 with 03-Sep's evening
+    pipeline failed and never re-run.
+    """
+    from datetime import date, timedelta
+    d = date.fromisoformat(today) - timedelta(days=1)
+    while d.weekday() >= 5 or d.isoformat() in holidays:
+        d -= timedelta(days=1)
+    last_session = d.isoformat()
+    out = []
+    for table, day in latest.items():
+        if not day:
+            out.append(f"{table}: EMPTY")
+        elif day < last_session:
+            missing, x = [], date.fromisoformat(day) + timedelta(days=1)
+            while x.isoformat() <= last_session:
+                if x.weekday() < 5 and x.isoformat() not in holidays:
+                    missing.append(x.isoformat())
+                x += timedelta(days=1)
+            out.append(f"{table}: latest {day}, missing session(s) {', '.join(missing)} "
+                       f"— re-run the evening pipeline")
+    return out
 
 
 def check_data_quality() -> tuple[bool, str]:

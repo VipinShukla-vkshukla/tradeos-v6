@@ -2172,22 +2172,44 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
 # LIVE MANAGEMENT
 # ─────────────────────────────────────────────────────────────────────────────
 
-def session_dates(sb, since: str) -> list[str]:
+def session_dates(sb, since: str, today: str | None = None) -> list[str]:
     """
     Every trading session on or after `since`, as ISO date strings.
 
     Split out from _sessions_held so the LIVE DAEMON can hold one cached copy
     for the day instead of issuing a database read per position per 15-second
-    cycle. `market_regime` has exactly one row per session, which is what makes
-    it the calendar of record here.
+    cycle. `market_regime` has one row per session the evening pipeline
+    completed, and that is the calendar of record.
+
+    GAPS FILLED — 17-Sep-2026. The pipeline failed on 03-Sep and 11-Sep-2026 and
+    was never re-run, so those sessions vanished from every hold-period clock.
+    Weekdays before today that are not in nse_holidays are now added back, from
+    the first recorded row onward. Today is still counted only once its row
+    exists, so the daemon's morning load behaves exactly as before.
     """
     try:
         rows = (sb.table("market_regime").select("date")
                   .gte("date", str(since)[:10])
                   .order("date").execute().data) or []
-        return [str(r["date"])[:10] for r in rows]
+        recorded = sorted({str(r["date"])[:10] for r in rows})
     except Exception:
         return []
+    if not recorded:
+        return []
+    try:
+        holidays = {str(r["date"])[:10] for r in
+                    (sb.table("nse_holidays").select("date").execute().data or [])}
+    except Exception:
+        return recorded
+    end = date.fromisoformat(today) if today else datetime.now(IST).date()
+    d = date.fromisoformat(recorded[0])
+    filled = set(recorded)
+    while d < end:
+        iso = d.isoformat()
+        if d.weekday() < 5 and iso not in holidays:
+            filled.add(iso)
+        d += timedelta(days=1)
+    return sorted(filled)
 
 
 def sessions_between(dates: list[str], entry_date: str, trade_date: str) -> int:

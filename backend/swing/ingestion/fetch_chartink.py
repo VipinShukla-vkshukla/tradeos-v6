@@ -277,11 +277,36 @@ def main():
         logger.error("No data fetched from Chartink")
         return 0
 
-    service = get_sheets_service()
-    write_to_sheet(service, df) #Writes to comprehensive sheet tab
     upsert_to_supabase(df)
+    _mirror_to_sheet(df)
 
     return len(df)
+
+
+_SHEET_RETRY_SLEEP = 5
+
+
+def _mirror_to_sheet(df: pd.DataFrame) -> bool:
+    """
+    The sheet is a mirror; Supabase (written first) is what the pipeline reads.
+    A Sheets 503 here aborted the whole evening pipeline on 02-Sep and
+    03-Sep-2026, so transient errors are retried and a final failure is logged,
+    not raised.
+    """
+    for attempt in range(1, 4):
+        try:
+            write_to_sheet(get_sheets_service(), df)
+            return True
+        except Exception as e:
+            status = getattr(getattr(e, "resp", None), "status", None)
+            if attempt < 3 and status in (429, 500, 502, 503, 504):
+                logger.warning(f"Sheet mirror HTTP {status}, retry {attempt}/2")
+                time.sleep(_SHEET_RETRY_SLEEP * attempt)
+                continue
+            logger.error(f"Google Sheet mirror '{SHEET_TAB}' NOT updated ({e}); "
+                         f"Chartink data is in Supabase and the pipeline continues")
+            return False
+    return False
 
 
 if __name__ == "__main__":
