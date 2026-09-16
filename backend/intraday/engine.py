@@ -1572,7 +1572,8 @@ class IntradayEngine:
                 d = decide(c, float(ltp), total_capital=capital_for("SWING"),
                            open_positions=self._swing_positions(),
                            min_rr=regime_min_rr(c.get("regime")),
-                           vol_mult=self._overlay_vol_mult)
+                           vol_mult=self._overlay_vol_mult
+                           * (self._swing_exposure().size_mult or 1.0))
             except Exception:
                 continue
             if d.action not in ("BUY_NOW", "CHASE_LIMIT"):
@@ -2840,6 +2841,7 @@ class IntradayEngine:
         except Exception:
             cash = None
 
+        exp_mult = self._swing_exposure().size_mult
         out = []
         # Every decision this cycle, not just the buyable/approaching subset
         # `out` keeps — _allocate_shadow reads this to build the allocator's
@@ -2863,7 +2865,8 @@ class IntradayEngine:
                        open_positions=self._swing_positions(), regime=regime,
                        min_rr=regime_min_rr(regime),
                        max_chase_pct=c.get("ai_max_chase_pct") or None,
-                       available_cash=cash, vol_mult=self._overlay_vol_mult)
+                       available_cash=cash,
+                       vol_mult=self._overlay_vol_mult * (exp_mult or 1.0))
             self._all_swing_decisions.append({"candidate": c, "decision": d})
             if d.action in ("BUY_NOW", "CHASE_LIMIT"):
                 out.append({"candidate": c, "decision": d, "ltp": float(ltp),
@@ -3236,6 +3239,20 @@ class IntradayEngine:
                              f"position row — {e}. It may be re-sold on the next "
                              f"cycle. Reconcile against the broker now.")
 
+    def _swing_exposure(self):
+        """Market-exposure state for swing entries, re-read at most every 300s."""
+        import time
+        from analysis import market_exposure as mx
+        cached = getattr(self, "_exposure_cache", None)
+        if cached and time.monotonic() - cached[0] < 300:
+            return cached[1]
+        exp = mx.load_exposure(self.sb, datetime.now(IST).date().isoformat())
+        if exp.state != "NORMAL" and (not cached or cached[1].state != exp.state):
+            logger.info(f"  swing exposure {exp.state}: cap {exp.max_new}, size "
+                        f"x{exp.size_mult} — {'; '.join(exp.reasons)}")
+        self._exposure_cache = (time.monotonic(), exp)
+        return exp
+
     def _swing_contenders(self) -> dict:
         """
         The only swing names worth interrupting you about today.
@@ -3569,8 +3586,13 @@ class IntradayEngine:
         # covers the restart case, where the counter is empty but the day's
         # entries are not. Neither is sufficient alone, so both are consulted.
         n_today = max(n_today, self._entries_taken)
-        max_new = cfg_int("swing_max_new_per_day", 2)
+        from analysis import market_exposure as mx
+        exp = self._swing_exposure()
+        max_new = mx.daily_cap(cfg_int("swing_max_new_per_day", 2), exp)
         if n_today >= max_new:
+            if exp.state != "NORMAL":
+                logger.info(f"  {sym}: swing exposure {exp.state} — {n_today}/{max_new} "
+                            f"entries used today")
             return
 
         # A RESERVE, NOT A GAP — 11-Aug-2026, replacing the gap-based
@@ -3735,6 +3757,10 @@ class IntradayEngine:
         if refusals:
             for why in refusals:
                 logger.info(f"  {sym}: swing entry refused — {why}")
+            return
+        why = mx.selection_refusal(exp, c, self.candidates, ltp)
+        if why:
+            logger.info(f"  {sym}: swing entry refused — {why}")
             return
 
         rationale = f"rank {here.total:.0f} — {here.why()}" if here else None

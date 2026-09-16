@@ -191,6 +191,14 @@ def simulate_swing_entries(sb) -> dict:
     held = {r["symbol"] for r in open_rows}
     regime = plans[0].get("regime") if plans else "NEUTRAL"
 
+    from datetime import datetime
+    from config import IST
+    from analysis import market_exposure as mxp
+    exp = mxp.load_exposure(sb, datetime.now(IST).date().isoformat())
+    mx = mxp.daily_cap(mx, exp)
+    logger.info(f"  market exposure: {exp.state} · cap {mx}/day · size x{exp.size_mult or 1.0}"
+                + (f" — {'; '.join(exp.reasons)}" if exp.reasons else ""))
+
     # LIVE R:R BEFORE RANKING, NOT AFTER — Track E, Stage E5, 24-Aug-2026.
     # Same gap found and fixed in intraday/engine.py::_maybe_enter_swing
     # the same day, and the same copy-drift shape F-71 §3 already found
@@ -207,7 +215,8 @@ def simulate_swing_entries(sb) -> dict:
             continue
         decisions[sym] = decide(p, None, total_capital=TOTAL_CAPITAL,
                                 open_positions=open_rows, regime=regime,
-                                max_chase_pct=p.get("ai_max_chase_pct") or None)
+                                max_chase_pct=p.get("ai_max_chase_pct") or None,
+                                vol_mult=exp.size_mult or 1.0)
 
     ranked = {r.symbol: r for r in rank(
         [live_ranking_input(p, getattr(decisions.get(p.get("symbol")), "rr_live", None))
@@ -236,6 +245,7 @@ def simulate_swing_entries(sb) -> dict:
         # docstring says it exists to prevent.
         refusals = entry_refusals(p, rr_live=getattr(d, "rr_live", None),
                                   rr_at_zone_low=getattr(d, "rr_at_zone_low", None))
+        refusals = refusals or [r for r in [mxp.selection_refusal(exp, p, plans, d.live_price)] if r]
         if refusals:
             logger.info(f"      {sym:<12} rank {rk.total:>6.1f}  REFUSED — "
                         f"{refusals[0]}")

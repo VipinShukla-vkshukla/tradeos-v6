@@ -132,8 +132,7 @@ def bars_15m(kite, symbol: str, start: str, end: str) -> list[B]:
         tok = _token(kite, symbol)
         if not tok:
             return []
-        data = kite.historical_data(tok, _date.fromisoformat(start),
-                                    _date.fromisoformat(end), "15minute") or []
+        data = _fetch(kite, tok, start, end, "15minute")
         raw = [{"ts": d["date"].isoformat(), "o": d["open"], "h": d["high"],
                 "l": d["low"], "c": d["close"]} for d in data]
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -148,6 +147,20 @@ def bars_15m(kite, symbol: str, start: str, end: str) -> list[B]:
 
 
 _TOKENS: dict = {}
+
+
+def _fetch(kite, tok, start: str, end: str, interval: str) -> list:
+    import time
+    for attempt in range(5):
+        time.sleep(0.4)
+        try:
+            return kite.historical_data(tok, _date.fromisoformat(start),
+                                        _date.fromisoformat(end), interval) or []
+        except Exception as e:
+            if "Too many requests" not in str(e):
+                raise
+            time.sleep(2 * (attempt + 1))
+    raise RuntimeError(f"rate limited fetching {tok}")
 
 
 def _token(kite, symbol: str):
@@ -318,6 +331,12 @@ def entry_filter(t: dict, entry_ts, plans_by_day: dict, labels: dict, regime_row
         if exp.max_new is not None and taken_today >= exp.max_new:
             return f"exposure {exp.state} cap {exp.max_new}", 0.0
         size_mult = exp.size_mult
+        if size_mult < 1.0:
+            # decide()'s own floor: a scaled-down clip under the minimum is refused, not shrunk
+            from config import capital_for, cfg_float
+            floor = capital_for("SWING") * cfg_float("portfolio_min_position_pct", 3.0) / 100
+            if int(t["qty"] * size_mult) * float(t["entry_price"]) < floor:
+                return f"exposure {exp.state}: half size under the Rs{floor:,.0f} minimum", 0.0
         if plan is not None:
             field_rows = plans_by_day[max(plan_days)]
             why = mx.selection_refusal(exp, plan, field_rows, float(t["entry_price"]))
@@ -505,6 +524,84 @@ def regime_audit() -> None:
               f"recomputed {labels[r['date']]:11s}{mark}")
 
 
+def bars_daily(kite, symbol: str, start: str, end: str) -> dict[str, tuple]:
+    path = CACHE / "day" / f"{symbol.replace('&', '_')}__{start}__{end}.json.gz"
+    if path.exists():
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            return {k: tuple(v) for k, v in json.load(fh).items()}
+    if kite is None:
+        return {}
+    tok = _token(kite, symbol)
+    if not tok:
+        return {}
+    data = _fetch(kite, tok, start, end, "day")
+    out = {str(d["date"])[:10]: (d["open"], d["high"], d["low"], d["close"]) for d in data}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(path, "wt", encoding="utf-8") as fh:
+        json.dump(out, fh)
+    return out
+
+
+def exposure_premise(since: str, until: str) -> None:
+    """Plan outcomes by the exposure state the entry path would have seen."""
+    import statistics as st
+    import config
+    from analysis import market_exposure as mx
+    sb = get_supabase()
+    plans = load_plans(sb, since)
+    rows = load_regime_rows(sb)
+    labels = recompute_regimes(rows)
+    try:
+        from kite.kite_client import get_kite
+        kite = get_kite()
+    except Exception:
+        kite = None
+    end = datetime.now(IST).date().isoformat()
+    live = dict(config.get_system_config())
+    live["swing_exposure_enabled"] = "true"
+    config._sys_config = live
+
+    groups: dict = defaultdict(list)
+    for day in sorted(d for d in plans if since <= d <= until):
+        label = labels.get(day) or regime_before(labels, day)
+        exp = mx.exposure_for_day(label, [r for r in rows if r["date"] <= day])
+        window = "holdout" if day < SPLIT else "recent"
+        for p in plans[day]:
+            b = bars_daily(kite, p["symbol"], since, end)
+            ds = sorted(x for x in b if x > day)
+            if day not in b or len(ds) < 5:
+                continue
+            f5 = (b[ds[4]][3] / b[day][3] - 1) * 100
+            pr = None
+            try:
+                stop, tgt, e = float(p["planned_stop"]), float(p["planned_target"]), b[ds[0]][0]
+                if stop < e < tgt:
+                    pr = (b[ds[min(9, len(ds) - 1)]][3] - e) / (e - stop)
+                    for x in ds[:10]:
+                        o, h, l, c = b[x]
+                        if l <= stop:
+                            pr = (min(o, stop) - e) / (e - stop)
+                            break
+                        if h >= tgt:
+                            pr = (max(o, tgt) - e) / (e - stop)
+                            break
+            except (TypeError, ValueError):
+                pass
+            groups[(window, exp.state)].append((f5, pr))
+            if exp.state == "CORRECTION":
+                ok = not mx.selection_refusal(exp, p, plans[day], b[ds[0]][0])
+                groups[(window, "CORRECTION pass" if ok else "CORRECTION refused")].append((f5, pr))
+
+    for k in sorted(groups):
+        v = groups[k]
+        f5 = [a for a, _ in v]
+        pr = [b for _, b in v if b is not None]
+        days = ""
+        print(f"{k[0]:8s} {k[1]:20s} n={len(v):4d} fwd5 med {st.median(f5):+5.2f}% "
+              f"up {100 * sum(1 for x in f5 if x > 0) / len(f5):3.0f}% | planR n={len(pr):4d} "
+              f"mean {st.fmean(pr) if pr else 0:+.2f} win {100 * sum(1 for x in pr if x > 0) / max(1, len(pr)):3.0f}%{days}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--label", default="run")
@@ -514,6 +611,8 @@ def main() -> int:
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                     help="override a system_config key for this run only (never written)")
     ap.add_argument("--regime-audit", action="store_true")
+    ap.add_argument("--exposure-premise", action="store_true")
+    ap.add_argument("--until", default="2026-09-08")
     a = ap.parse_args()
     logger.remove()
     logger.add(sys.stderr, level="WARNING")
@@ -522,6 +621,9 @@ def main() -> int:
         live = dict(config.get_system_config())
         live.update(dict(kv.split("=", 1) for kv in a.set))
         config._sys_config = live
+    if a.exposure_premise:
+        exposure_premise("2026-06-25" if a.since == "2026-07-13" else a.since, a.until)
+        return 0
     if a.regime_audit:
         regime_audit()
         return 0
