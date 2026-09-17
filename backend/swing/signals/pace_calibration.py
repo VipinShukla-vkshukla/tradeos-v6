@@ -92,6 +92,9 @@ def build_family_stall_days(sb, *, min_sample: int | None = None,
         # No `id` column on this table (final_snapshot never wrote one);
         # (symbol, date) is its unique key, same order_by swing_priors()
         # already uses for the identical reason.
+        # Deliberately NOT cut at swing_data_since. From 01-Sep only, 50
+        # CONTINUATION target-hits from one falling tape put the clock at 3
+        # sessions (8 on full history), and this calibration can only tighten.
         from config import fetch_all
         rows = fetch_all(
             lambda: sb.table("signal_output_daily")

@@ -77,6 +77,8 @@ MODULES = [
     ("AI position actions scoped to the swing row", "tests.test_ai_position_actions_scope"),
     ("session calendar survives a failed evening pipeline", "tests.test_session_calendar"),
     ("health freshness catches one missed evening", "tests.test_health_freshness"),
+    ("swing_data_since cutoff reaches the learning readers", "tests.test_swing_data_since"),
+    ("swing paper research mode (verdicts recorded, not enforced)", "tests.test_swing_paper_research_mode"),
     ("chartink sheet mirror cannot abort the pipeline", "tests.test_chartink_sheet_mirror"),
     ("allocator direction", "tests.test_allocator_direction"),
     ("allocator priors",    "tests.test_allocator_priors"),

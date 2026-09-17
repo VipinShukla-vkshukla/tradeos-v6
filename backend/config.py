@@ -399,6 +399,20 @@ def cfg_float(key: str, default: float = 0.0) -> float:
     except ValueError:
         return default
 
+def swing_data_since() -> str:
+    """
+    ISO date before which swing history is excluded from learning and analysis
+    ('' = all of it). Set to 2026-09-01 on 17-Sep-2026: the operator treats the
+    framework as it now runs as starting there. Nothing is deleted; operational
+    readers (reconcile, telegram, backup, order paths) never read this.
+    """
+    return (cfg("swing_data_since", "") or "").strip()
+
+def swing_since(query, column: str = "date"):
+    """`query.gte(column, swing_data_since())`, or the query unchanged when unset."""
+    since = swing_data_since()
+    return query.gte(column, since) if since else query
+
 # ── Strategy config ───────────────────────────────────────────
 _strategy_config: dict | None = None
 

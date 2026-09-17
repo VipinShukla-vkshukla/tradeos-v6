@@ -116,6 +116,12 @@ def selection_refusal(exp: Exposure, plan: dict, field_rows: list[dict],
     return ""
 
 
+def for_entries(exp: Exposure) -> Exposure:
+    """The exposure the entry path obeys: NORMAL in paper research mode, else `exp`."""
+    from execution.gates import swing_research_mode
+    return NORMAL if (exp.state != "NORMAL" and swing_research_mode()) else exp
+
+
 def daily_cap(max_new: int, exp: Exposure) -> int:
     """The day's swing entry cap after the exposure state has had its say."""
     if exp.block_new:

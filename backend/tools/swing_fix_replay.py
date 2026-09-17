@@ -360,7 +360,7 @@ def entry_filter(t: dict, entry_ts, plans_by_day: dict, labels: dict, regime_row
     try:
         from analysis import market_exposure as mx
         from config import cfg_int
-        exp = mx.exposure_for_day(regime, [r for r in regime_rows if r["date"] < day])
+        exp = mx.for_entries(mx.exposure_for_day(regime, [r for r in regime_rows if r["date"] < day]))
         if exp.block_new:
             return f"exposure {exp.state}", 0.0
         cap = mx.daily_cap(cfg_int("swing_max_new_per_day", 2), exp)
@@ -831,7 +831,8 @@ def edge_study(since: str, until: str, bar_mode: str = "day") -> None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--label", default="run")
-    ap.add_argument("--since", default="2026-07-13")
+    ap.add_argument("--since", default=None,
+                    help="default: swing_data_since, else 2026-07-13")
     ap.add_argument("--compare")
     ap.add_argument("--regime", choices=["stored", "recomputed", "corrected"], default="stored")
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
@@ -845,19 +846,24 @@ def main() -> int:
     a = ap.parse_args()
     logger.remove()
     logger.add(sys.stderr, level="WARNING")
+    from config import swing_data_since
+    floor = swing_data_since()
+    plan_since = max("2026-06-25", floor) if floor else "2026-06-25"
+    if a.since is None:
+        a.since = floor or "2026-07-13"
     if a.set:
         import config
         live = dict(config.get_system_config())
         live.update(dict(kv.split("=", 1) for kv in a.set))
         config._sys_config = live
     if a.edge_study:
-        edge_study("2026-06-25" if a.since == "2026-07-13" else a.since, a.until, a.bars)
+        edge_study(plan_since, a.until, a.bars)
         return 0
     if a.rank_study:
-        rank_study("2026-06-25" if a.since == "2026-07-13" else a.since, a.until)
+        rank_study(plan_since, a.until)
         return 0
     if a.exposure_premise:
-        exposure_premise("2026-06-25" if a.since == "2026-07-13" else a.since, a.until,
+        exposure_premise(plan_since, a.until,
                          "corrected" if a.regime == "corrected" else "recomputed")
         return 0
     if a.regime_audit:

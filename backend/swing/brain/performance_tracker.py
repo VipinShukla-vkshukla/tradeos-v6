@@ -81,9 +81,11 @@ def _load_outcomes_for_date_range(sb, signal_date_min: date,
     """
     # PAGED — 3676 signal_log rows in a 90-day window, 1000 returned. This is
     # the denominator of every performance metric the brain reports.
+    from config import swing_data_since
+    lo = max(str(signal_date_min), swing_data_since() or str(signal_date_min))
     rows = fetch_all(lambda: sb.table("signal_log")
               .select("*")
-              .gte("date", str(signal_date_min))
+              .gte("date", lo)
               .lte("date", str(signal_date_max)))
     if not rows:
         return pd.DataFrame()

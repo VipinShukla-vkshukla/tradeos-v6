@@ -56,10 +56,11 @@ def audit(sb=None) -> None:
 
     # SORTED PAGING, (symbol, date) — signal_output_daily has no `id` column,
     # so fetch_all's default order key raises 42703 on it.
-    rows = fetch_all(lambda: sb.table("signal_output_daily")
+    from config import swing_since
+    rows = fetch_all(lambda: swing_since(sb.table("signal_output_daily")
                      .select("strategy,date,outcome_entered,outcome_category,"
                              "symbol")
-                     .eq("outcome_entered", True),
+                     .eq("outcome_entered", True)),
                      page=PAGE, order_by="symbol,date")
 
     if not rows:

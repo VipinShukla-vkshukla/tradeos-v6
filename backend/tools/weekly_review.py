@@ -540,7 +540,9 @@ def review_ranking(sb, days: int = 30) -> None:
     decoration — and that is testable rather than arguable.
     """
     _hdr(f"ENTRY RANKING — do higher-ranked picks do better? ({days}d)")
+    from config import swing_data_since
     since = (today_ist() - timedelta(days=days)).isoformat()
+    since = max(since, swing_data_since() or since)
     rows = (sb.table("closed_positions")
               .select("symbol,entry_rationale,r_multiple,realized_pnl,exit_date")
               .gte("exit_date", since).execute().data or [])
@@ -632,10 +634,11 @@ def review_ai_tier_weight(sb) -> None:
 
     floor = 30   # Prior's own convention: "needs 30 observations to be trusted"
     # SORTED PAGING, (symbol, date) — signal_output_daily has no `id` column.
-    rows = fetch_all(lambda: sb.table("signal_output_daily")
+    from config import swing_since
+    rows = fetch_all(lambda: swing_since(sb.table("signal_output_daily")
                      .select("outcome_return_pct,outcome_entered,"
                              "entry_zone_high,planned_stop,ai_tier,symbol,date")
-                     .not_.is_("outcome_category", "null"),
+                     .not_.is_("outcome_category", "null")),
                      order_by="symbol,date")
 
     by_tier: dict[str, list[float]] = defaultdict(list)
@@ -715,10 +718,11 @@ def review_swing_family_maturity(sb) -> None:
     from allocation.scoring import swing_family
 
     # SORTED PAGING, (symbol, date) — signal_output_daily has no `id` column.
-    rows = fetch_all(lambda: sb.table("signal_output_daily")
+    from config import swing_since
+    rows = fetch_all(lambda: swing_since(sb.table("signal_output_daily")
                      .select("strategy,outcome_entered,outcome_category,"
                              "symbol,date")
-                     .eq("outcome_entered", True),
+                     .eq("outcome_entered", True)),
                      order_by="symbol,date")
 
     if not rows:
@@ -874,11 +878,12 @@ def review_swing_engine_lifecycle(sb) -> list:
     # RVS/TPO's already-thin samples down further, making them
     # permanently unmeasurable rather than just currently thin. Full
     # history, same as the feature-edge study this reuses the floor from.
-    rows = fetch_all(lambda: sb.table("signal_output_daily")
+    from config import swing_since
+    rows = fetch_all(lambda: swing_since(sb.table("signal_output_daily")
                      .select("strategy,outcome_category,outcome_return_pct,"
                              "symbol,date")
                      .eq("outcome_entered", True)
-                     .in_("outcome_category", ["TARGET", "STOP"]),
+                     .in_("outcome_category", ["TARGET", "STOP"])),
                      order_by="symbol,date")
     if not rows:
         logger.info("  no resolved SWING outcomes — nothing to measure")

@@ -67,10 +67,11 @@ def expected_hold_days_by_family(sb) -> dict[str, tuple[float, int]]:
     floor = cfg_int("hold_days_min_sample", 5)
 
     # SORTED PAGING — closed_positions is a live book that only grows.
-    rows = fetch_all(lambda: sb.table("closed_positions")
+    from config import swing_since
+    rows = fetch_all(lambda: swing_since(sb.table("closed_positions")
                      .select("strategy,hold_days,id")
                      .eq("framework", "SWING")
-                     .not_.is_("hold_days", "null"), page=PAGE)
+                     .not_.is_("hold_days", "null"), "entry_date"), page=PAGE)
 
     by_family: dict[str, list[float]] = {}
     for r in rows:

@@ -289,6 +289,10 @@ def _rows(sb, since: str | None) -> list[dict]:
     cols = ("strategy,outcome_category,outcome_return_pct,symbol,date,"
            + ",".join(NUMERIC_FEATURES) + "," + ",".join(CATEGORICAL_FEATURES))
 
+    from config import swing_data_since
+    floor = swing_data_since()
+    since = max(since, floor) if (since and floor) else (since or floor or None)
+
     def build():
         q = (sb.table("signal_output_daily").select(cols)
               .eq("outcome_entered", True)

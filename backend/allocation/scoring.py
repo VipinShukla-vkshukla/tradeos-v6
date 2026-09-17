@@ -927,11 +927,12 @@ def swing_priors(sb) -> dict[str, Prior]:
     # table. `signal_output_daily` HAS NO `id` COLUMN, so fetch_all's default
     # order key raises 42703; (symbol, date) is unique on it — verified
     # 15-Aug-2026, 2430 distinct of 2430 rows.
-    rows = fetch_all(lambda: sb.table("signal_output_daily")
+    from config import swing_since
+    rows = fetch_all(lambda: swing_since(sb.table("signal_output_daily")
                      .select("strategy,outcome_category,outcome_return_pct,"
                              "outcome_entered,entry_zone_high,planned_stop,"
                              "symbol,date")
-                     .not_.is_("outcome_category", "null"),
+                     .not_.is_("outcome_category", "null")),
                      page=PAGE, order_by="symbol,date")
 
     if not rows:
@@ -979,9 +980,13 @@ def expected_hold_days(sb, framework: str) -> tuple[float, int]:
     intraday and ~72 swing closes the intraday figure is weak, and the readiness
     review says to report that uncertainty rather than present a point estimate.
     """
-    rows = (sb.table("closed_positions").select("hold_days")
-              .eq("framework", framework.upper())
-              .not_.is_("hold_days", "null").limit(PAGE).execute().data) or []
+    from config import swing_since
+    q = (sb.table("closed_positions").select("hold_days")
+           .eq("framework", framework.upper())
+           .not_.is_("hold_days", "null"))
+    if framework.upper() == "SWING":
+        q = swing_since(q, "entry_date")
+    rows = q.limit(PAGE).execute().data or []
     days = [max(float(r["hold_days"]), 0.5) for r in rows]   # same-day = half a day
     if not days:
         return 1.0, 0
@@ -1295,9 +1300,10 @@ def _swing_bias_warning(sb) -> None:
     two facts is a warning, not a result.
     """
     try:
-        rows = (sb.table("signal_output_daily")
+        from config import swing_since
+        rows = swing_since(sb.table("signal_output_daily")
                   .select("date,outcome_category,planned_stop")
-                  .not_.is_("outcome_category", "null").limit(PAGE).execute().data) or []
+                  .not_.is_("outcome_category", "null")).limit(PAGE).execute().data or []
         scored = [r for r in rows if r["outcome_category"] in ("TARGET", "STOP")]
         if not scored:
             return
@@ -1344,11 +1350,12 @@ def tercile_report(sb=None) -> int:
     sb = sb or get_supabase()
     # SORTED PAGING, (symbol, date) — see swing_priors() above for why the
     # default `id` key cannot be used on this table.
-    rows = fetch_all(lambda: sb.table("signal_output_daily")
+    from config import swing_since
+    rows = fetch_all(lambda: swing_since(sb.table("signal_output_daily")
                      .select("strategy,outcome_return_pct,outcome_entered,"
                              "entry_zone_high,planned_stop,final_score,ai_tier,"
                              "symbol,date")
-                     .not_.is_("outcome_category", "null"),
+                     .not_.is_("outcome_category", "null")),
                      page=PAGE, order_by="symbol,date")
 
     triples: list[tuple[str, float, float, str]] = []   # (family, final_score, R, ai_tier)
@@ -1448,11 +1455,12 @@ def rr_tercile_report(sb=None) -> int:
     floor = cfg_int("priors_min_sample_swing", 30)
     sb = sb or get_supabase()
     # SORTED PAGING, (symbol, date) — see swing_priors() above.
-    rows = fetch_all(lambda: sb.table("signal_output_daily")
+    from config import swing_since
+    rows = fetch_all(lambda: swing_since(sb.table("signal_output_daily")
                      .select("strategy,outcome_return_pct,outcome_entered,"
                              "entry_zone_high,planned_stop,implied_rr,"
                              "expected_r,ai_tier,symbol,date")
-                     .not_.is_("outcome_category", "null"),
+                     .not_.is_("outcome_category", "null")),
                      page=PAGE, order_by="symbol,date")
 
     def _rr_value(r: dict) -> float | None:

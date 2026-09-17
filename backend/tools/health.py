@@ -293,6 +293,27 @@ def check_data_freshness() -> tuple[bool, str]:
     return True, "signal and price data are current"
 
 
+def research_mode_problem() -> str:
+    """'' unless swing_paper_research_mode is on while swing is LIVE."""
+    from config import cfg_bool
+    from execution.gates import is_paper
+    if cfg_bool("swing_paper_research_mode", False) and not is_paper("SWING"):
+        return ("swing_paper_research_mode is ON while swing is LIVE — it is ignored in "
+                "LIVE, but switch it off so the paper-only intent cannot be misread")
+    return ""
+
+
+def check_research_mode() -> tuple[bool, str]:
+    from config import cfg_bool
+    why = research_mode_problem()
+    if why:
+        return False, why
+    if cfg_bool("swing_paper_research_mode", False):
+        return True, ("swing paper research mode ON — allocator and exposure verdicts "
+                      "recorded, not enforced (paper only)")
+    return True, "swing paper research mode off"
+
+
 REGIME_INDEX_INPUTS = ("nifty_50dma", "nifty_200dma", "nifty_weekly_rsi", "banknifty_weekly_rsi")
 
 
@@ -2584,6 +2605,7 @@ CHECKS = [
     ("kite",     "no broker session, or the IP is not allowlisted",              check_kite,     False),
     ("data",     "decisions would run on stale inputs",                          check_data_freshness, False),
     ("regime_inputs", "the regime scores a frozen index (a DMA/RSI copied forward instead of computed)", check_regime_inputs_moving, False),
+    ("research_mode", "a paper-only switch is left on when swing goes LIVE", check_research_mode, False),
     ("data_quality", "the evening pipeline's own 19-check quality gate found an ERROR and nothing surfaced it here", check_data_quality, False),
     ("broker",   "resting orders do not match the positions they protect",       check_broker_consistency, False),
     ("capital",  "TOTAL_CAPITAL drifts from what the broker account actually holds", check_capital, False),

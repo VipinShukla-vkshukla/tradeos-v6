@@ -83,7 +83,7 @@ def load(sb) -> list[dict]:
 
     BASE = ("symbol,product,framework,mode,strategy,intraday_strategy,direction,"
             "entry_price,exit_price,actual_qty,planned_stop_at_entry,"
-            "realized_pnl,charges,hold_days,exit_date,max_favorable_excursion,"
+            "realized_pnl,charges,hold_days,entry_date,exit_date,max_favorable_excursion,"
             "signal_id,signal_date,source")
     # Migration 031's columns. A tool that reads code-ahead-of-migration must
     # degrade to the older shape rather than crash — otherwise the one command
@@ -102,6 +102,11 @@ def load(sb) -> list[dict]:
     # `cols` is built above and may or may not carry the runner columns; `id`
     # is appended for the sort key rather than assumed present in it.
     rows = fetch_all(lambda: sb.table("closed_positions").select(cols + ",id"))
+    from config import swing_data_since
+    floor = swing_data_since()
+    if floor:
+        rows = [r for r in rows if str(r.get("framework") or "").upper() != "SWING"
+                or str(r.get("entry_date") or "")[:10] >= floor]
 
     out = []
     for r in rows:

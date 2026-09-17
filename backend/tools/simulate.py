@@ -194,10 +194,12 @@ def simulate_swing_entries(sb) -> dict:
     from datetime import datetime
     from config import IST
     from analysis import market_exposure as mxp
-    exp = mxp.load_exposure(sb, datetime.now(IST).date().isoformat())
+    seen = mxp.load_exposure(sb, datetime.now(IST).date().isoformat())
+    exp = mxp.for_entries(seen)
     mx = mxp.daily_cap(mx, exp)
-    logger.info(f"  market exposure: {exp.state} · cap {mx}/day · size x{exp.size_mult or 1.0}"
-                + (f" — {'; '.join(exp.reasons)}" if exp.reasons else ""))
+    logger.info(f"  market exposure: {seen.state} · cap {mx}/day · size x{exp.size_mult or 1.0}"
+                + (f" — {'; '.join(seen.reasons)}" if seen.reasons else "")
+                + (" · PAPER RESEARCH MODE: recorded, not applied" if exp is not seen else ""))
 
     # LIVE R:R BEFORE RANKING, NOT AFTER — Track E, Stage E5, 24-Aug-2026.
     # Same gap found and fixed in intraday/engine.py::_maybe_enter_swing

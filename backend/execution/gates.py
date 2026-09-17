@@ -65,6 +65,15 @@ def is_paper(framework: str = "SWING") -> bool:
     return trading_mode(framework) == PAPER
 
 
+def swing_research_mode() -> bool:
+    """
+    Paper swing as a data collector: allocator and market-exposure verdicts are
+    recorded but do not block entries. False whenever swing is LIVE, whatever
+    swing_paper_research_mode says.
+    """
+    return cfg_bool("swing_paper_research_mode", False) and is_paper("SWING")
+
+
 def autonomy_phase() -> float:
     return cfg_float("intraday_autonomy_phase", 2.0)
 

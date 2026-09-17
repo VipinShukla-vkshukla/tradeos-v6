@@ -97,6 +97,11 @@ def _legacy_rank_gate_blocks(here_total: float, field_totals: list[float],
     return here_total < field_totals[keep - 1]
 
 
+def _research_mode() -> bool:
+    from execution.gates import swing_research_mode
+    return swing_research_mode()
+
+
 def _rank_floor_blocks(here_total: float, floor: float) -> bool:
     """
     True if this plan's own composite score is below the absolute floor.
@@ -3246,11 +3251,14 @@ class IntradayEngine:
         cached = getattr(self, "_exposure_cache", None)
         if cached and time.monotonic() - cached[0] < 300:
             return cached[1]
-        exp = mx.load_exposure(self.sb, datetime.now(IST).date().isoformat())
-        if exp.state != "NORMAL" and (not cached or cached[1].state != exp.state):
-            logger.info(f"  swing exposure {exp.state}: cap {exp.max_new}, size "
-                        f"x{exp.size_mult} — {'; '.join(exp.reasons)}")
-        self._exposure_cache = (time.monotonic(), exp)
+        seen = mx.load_exposure(self.sb, datetime.now(IST).date().isoformat())
+        exp = mx.for_entries(seen)
+        if seen.state != "NORMAL" and (not cached or cached[2] != seen.state):
+            logger.info(f"  swing exposure {seen.state}: cap {seen.max_new}, size "
+                        f"x{seen.size_mult} — {'; '.join(seen.reasons)}"
+                        + (" — paper research mode: recorded, not applied"
+                           if exp is not seen else ""))
+        self._exposure_cache = (time.monotonic(), exp, seen.state)
         return exp
 
     def _swing_contenders(self) -> dict:
@@ -3397,7 +3405,8 @@ class IntradayEngine:
             # self._verdicts is already populated — this read costs nothing
             # new.
             verdict = (self._verdicts.get((sym, "CNC"))
-                       if cfg_bool("swing_alert_reflect_allocator", True) else None)
+                       if cfg_bool("swing_alert_reflect_allocator", True)
+                       and not _research_mode() else None)
             kind, blocked = _swing_alert_kind(verdict, room)
             declined = kind == "ENTRY_DECLINED"
             deferred = kind == "ENTRY_DEFERRED"
@@ -5658,6 +5667,11 @@ class IntradayEngine:
         if not cfg_bool(f"alloc_live_{framework.lower()}", False):
             return True, "allocator not live for this book"
         v = (getattr(self, "_verdicts", None) or {}).get((symbol, product))
+        if framework.upper() == "SWING":
+            from execution.gates import swing_research_mode
+            if swing_research_mode():
+                return True, (f"paper research mode — allocator "
+                              f"{(v or {}).get('verdict', 'no verdict')} recorded, not enforced")
         if v is None:
             return True, "no allocator verdict — failing open"
         if v["verdict"] == "TAKE":
