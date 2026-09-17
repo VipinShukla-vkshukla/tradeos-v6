@@ -19347,3 +19347,62 @@ Replay on the cutoff (tools.swing_fix_replay defaults to 01-Sep): 14 trades,
 **Deploy:** migration 144 applied after the code was pushed. The evening pipeline
 (GitHub Actions) picks up main tonight; the Oracle daemon needs `git pull` +
 restart for research mode, the session calendar and the AI-tighten fix.
+
+## 18-Sep-2026 — Two follow-ups to the cutoff: thin-family prior fallback (migration 145) and a visible reference window
+
+Operator asked what the 01-Sep cutoff actually changed, then approved both fixes
+the measurement suggested.
+
+### What the cutoff changed, measured before touching anything
+Nothing in the past and nothing in trading: no rows deleted, no trade placed under
+it, and paper entries skip the allocator while research mode is on. It changed
+what is LEARNED and what is REPORTED:
+
+    learned avg R per trade   all history        since 01-Sep
+      SWING/ALL               -0.056 (n=1871)    -0.436 (n=208)
+      CONTINUATION            -0.039 (n=1279)    -0.412 (n=150)
+      MOM                     -0.058 (n=542)     -0.420 (n=45)
+      RVS                     -0.451 (n=50)      neutral 0 (n=13, below floor)
+    expected hold days        6.4                3.5
+    edge/day (3215 Sep decisions, re-scored)   median -0.024 -> -0.153, TAKEs 0 -> 0
+    closed swing book         124 trades, -13,283   16 trades, -5,658
+    edge study                642 plans / 31 days   82 plans / 5 days
+
+### Fix 1 — thin-family fallback (020350c, migration 145)
+RVS, the worst family on record, became the TOP-ranked family because its
+post-cutoff sample fell under the floor and it took the neutral prior
+(edge/day -0.0284 vs CONTINUATION -0.1460) — CLAUDE.md's "no opinion and
+measured bad must not give the same answer", in the direction that flatters a
+known-bad engine. A family below the floor now falls back to its own full
+history; a family with genuinely NO history keeps the neutral prior, so a new
+engine still starts from no opinion. Live after arming: RVS -0.451 (n=50),
+ranked last, CONTINUATION/MOM unchanged. No verdict changes today (bar
+~+0.016/day, every edge negative, research mode bypasses the allocator on
+paper); it decides slot priority when swing goes LIVE and what the Sunday brain
+reads as the best family. Self-expiring at 30 resolved RVS plans since the
+cutoff (16 now). Checks failed first: RVS returned mean_r=0.0, below_floor,
+outranking CONTINUATION.
+
+### Fix 2 — the excluded history stays visible
+`swing_fix_replay` splits its windows at the cutoff ("current"/"reference")
+rather than the hardcoded 14-Aug, and the studies always span the full plan range
+so both windows print. `weekly_review` gained a REFERENCE block, explicitly
+excluded from priors, exits and brain proposals. Live:
+
+    before 01-Sep (reference)   CONTINUATION +0.010R (n=1129, win 54.3%)
+                                MOM          -0.025R (n=497)
+                                RVS          -0.338R (n=37)
+                                ALL          -0.008R (n=1663, win 53.7%)
+    since 01-Sep (learning)     ALL          -0.436R (n=208)
+
+Roughly break-even before September against -0.44R since: the difference between
+"the strategy is weak" and "the market was", which the cutoff alone had hidden.
+
+### Confirmed in production tonight
+The 17-Sep evening pipeline ran with the index fix and wrote real values for the
+first time since April — 50DMA 24091.3 (frozen 24173.8), 200DMA 24508.6
+(25108.5), weekly RSI 44.98 (42.98), BankNifty 56055.8/44.8 (55403.6/41.7).
+The regime score read 28 against 15 the day before, mostly because the stale
+200DMA had overstated the distance below trend; the label stays RISK OFF (<40).
+`tools.health` regime_inputs is GREEN. Only same_day_discovery (pre-existing)
+remains red. verify: 1458 checks, the same 6 pre-existing failures.
