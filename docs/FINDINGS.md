@@ -19304,3 +19304,46 @@ costs, R per trade (win%):
 ### State at close
 verify: 1438 checks, the same 6 pre-existing failures. health: `regime_inputs`
 red (expected until tonight's run), `same_day_discovery` red (pre-existing).
+
+## 17-Sep-2026 (3) — swing_data_since = 2026-09-01 and paper research mode (migration 144)
+
+Operator: (a) drop swing history before 01-Sep from analysis — the framework as it
+now runs starts there; (b) the paper book exists to collect trades, so why keep it
+small?
+
+**What actually kept the book small.** Not the exposure caps (live only since
+~19:41 UTC 16-Sep). The allocator: from 09-Sep it returned zero TAKE on 15-30
+swing proposals a day, every one "edge below the bar" (edge median -0.0053 vs
+bar +0.0143), and the paper book made no entries on 10, 11, 15 or 16-Sep.
+
+**(a) Cutoff, not deletion (f8194aa).** Pre-01-Sep: 108 swing closes (91 LIVE
+real-money), 5,371 signal_log, 3,238 signal_output_daily, 5,463 allocation
+decisions. Hard delete is irreversible and would take the real-money record with
+it, so `config.swing_data_since()` filters every reader that LEARNS from swing
+history at the query; operational readers are untouched. Live effect on the
+cutoff: swing priors CONTINUATION -0.038R (n=1267) -> -0.423R (n=148), MOM -0.056R
+(n=525) -> -0.511R (n=41); hold days CONTINUATION 6.5 (n=98) -> 3.3 (n=14).
+**Exception, tested:** pace_calibration keeps full history. On the cutoff its 50
+CONTINUATION target-hits (one falling tape, 75th percentile 3 sessions) would move
+the stall clock from 8 to 3 sessions, and that calibration can only tighten — it
+would shorten every paper trade and distort the data being collected.
+
+**(b) Paper research mode.** While swing is PAPER, allocator_permits() and the
+market-exposure state record their verdicts and do not block
+(execution.gates.swing_research_mode; market_exposure.for_entries used by the
+daemon, simulate and the replay). The swing entry alert no longer reports a
+DECLINE for an entry that happens. Quality gates stay: decide() stop/target/R:R,
+entry_refusals, liquidity, one book per symbol, daily cap (5, as found), slot
+limits. False whenever swing is LIVE; health `research_mode` fails if left on in
+LIVE. Every verdict is still in allocation_decisions, so the allocator can now be
+MEASURED — TAKE vs DECLINE outcomes on trades it no longer vetoes.
+
+Simulate after the switch: `CORRECTION · cap 5/day · size x1.0 · PAPER RESEARCH
+MODE: recorded, not applied`, would take IDFCFIRSTB, RBLBANK.
+
+Replay on the cutoff (tools.swing_fix_replay defaults to 01-Sep): 14 trades,
+35.7% win, -2.54R, net -7,872. That is the entire post-cutoff dataset.
+
+**Deploy:** migration 144 applied after the code was pushed. The evening pipeline
+(GitHub Actions) picks up main tonight; the Oracle daemon needs `git pull` +
+restart for research mode, the session calendar and the AI-tighten fix.
