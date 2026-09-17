@@ -41,7 +41,19 @@ from config import IST, get_supabase
 CACHE = Path(__file__).resolve().parent / "replay" / "cache" / "span"
 RESULTS = Path(__file__).resolve().parent / "replay" / "results" / "swing_fix"
 CYCLES_PER_BAR = 60
-SPLIT = "2026-08-14"
+#: Window boundary. The excluded history is still REPORTED, labelled
+#: "reference", because without it every number describes one falling market.
+_SPLIT_FALLBACK = "2026-08-14"
+
+
+def split_date() -> str:
+    from config import swing_data_since
+    return swing_data_since() or _SPLIT_FALLBACK
+
+
+def window_for(day: str) -> str:
+    """"current" if the day is inside what the system learns from, else "reference"."""
+    return "current" if str(day)[:10] >= split_date() else "reference"
 
 
 # ── data ────────────────────────────────────────────────────────────────────
@@ -509,9 +521,10 @@ def run(label: str, since: str, compare: str | None, regime_mode: str = "stored"
                          "framework": "SWING", "_exit": o.exit_ts or "9999"})
         outcomes.append(o)
 
-    recent = [o for o in outcomes if o.entry_date >= SPLIT]
-    earlier = [o for o in outcomes if o.entry_date < SPLIT]
+    recent = [o for o in outcomes if window_for(o.entry_date) == "current"]
+    earlier = [o for o in outcomes if window_for(o.entry_date) == "reference"]
     res = {"label": label, "at": datetime.now(IST).isoformat(), "regime_mode": regime_mode,
+           "split": split_date(),
            "recent": _summ(recent), "earlier": _summ(earlier), "all": _summ(outcomes),
            "trades": [asdict(o) for o in outcomes]}
     RESULTS.mkdir(parents=True, exist_ok=True)
@@ -524,10 +537,10 @@ def _print(res: dict, compare: str | None) -> None:
     prev = None
     if compare and (RESULTS / f"{compare}.json").exists():
         prev = json.loads((RESULTS / f"{compare}.json").read_text())
-    print(f"\n=== {res['label']} ===")
-    for w in ("recent", "earlier", "all"):
+    print(f"\n=== {res['label']} ===  (learning from {res.get('split', _SPLIT_FALLBACK)} onward)")
+    for w, shown in (("recent", "current"), ("earlier", "reference"), ("all", "both")):
         s = res[w]
-        line = (f"{w:8s} n={s['n']:3d} removed={s['removed']:2d} win%={s['win_pct']:5.1f} "
+        line = (f"{shown:9s} n={s['n']:3d} removed={s['removed']:2d} win%={s['win_pct']:5.1f} "
                 f"sumR={s['sum_r']:6.2f} avgR={s['avg_r']:+.3f} gross={s['gross']:8,} "
                 f"charges={s['charges']:6,} net={s['net']:8,} maxDD={s['max_dd']:8,}")
         if prev:
@@ -601,7 +614,7 @@ def exposure_premise(since: str, until: str, regime_mode: str = "recomputed") ->
     for day in sorted(d for d in plans if since <= d <= until):
         label = labels.get(day) or regime_before(labels, day)
         exp = mx.exposure_for_day(label, [r for r in rows if r["date"] <= day])
-        window = "holdout" if day < SPLIT else "recent"
+        window = window_for(day)
         for p in plans[day]:
             b = bars_daily(kite, p["symbol"], since, end)
             ds = sorted(x for x in b if x > day)
@@ -666,7 +679,7 @@ def _plan_outcomes(since: str, until: str):
                             break
             except (TypeError, ValueError):
                 pass
-            out.append(("holdout" if day < SPLIT else "recent", day, p, f5, pr))
+            out.append((window_for(day), day, p, f5, pr))
     return out
 
 
@@ -684,7 +697,7 @@ def rank_study(since: str, until: str) -> None:
     feats = {"vol_ratio": "vol_ratio", "rsi_daily": "rsi_daily", "rs_vs_nifty": "rs_vs_nifty",
              "sector_rank": "sector_rank_at_entry", "implied_rr": "implied_rr",
              "final_score": "final_score", "dist_entry_pct": "dist_entry_pct", "adx": "adx"}
-    for w in ("holdout", "recent"):
+    for w in ("reference", "current"):
         rows = [r for r in recs if r[0] == w]
         days = len({r[1] for r in rows})
         print(f"\n{w}: {len(rows)} plans over {days} days "
@@ -794,7 +807,7 @@ def edge_study(since: str, until: str, bar_mode: str = "day") -> None:
                 continue
             o = replay_exit(t, bars, ets, policy, labels, [], {}, qty, calendar)
             out["ladder"] = net_r(entry, o.exit_price, stop, qty) if o.reason != "OPEN" or len(ds) >= 15 else None
-            recs.append({"window": "holdout" if day < SPLIT else "recent", "day": day,
+            recs.append({"window": window_for(day), "day": day,
                          "family": swing_family(pl.get("strategy")) or "?",
                          "strategy": (pl.get("strategy") or "?").split("+")[0],
                          "signal_type": pl.get("signal_type"),
@@ -809,7 +822,7 @@ def edge_study(since: str, until: str, bar_mode: str = "day") -> None:
             cells.append(f"{k} {st.fmean(v):+.3f} ({100 * sum(1 for x in v if x > 0) / len(v):.0f}%)")
         print(f"  {label:34s} n={len(rs):4d}  " + "  ".join(cells))
 
-    for w in ("holdout", "recent"):
+    for w in ("reference", "current"):
         rs = [r for r in recs if r["window"] == w]
         print(f"\n{w}: {len(rs)} buyable plans over {len({r['day'] for r in rs})} days  "
               f"[mean net R per trade (win%)]")
@@ -848,9 +861,9 @@ def main() -> int:
     logger.add(sys.stderr, level="WARNING")
     from config import swing_data_since
     floor = swing_data_since()
-    plan_since = max("2026-06-25", floor) if floor else "2026-06-25"
+    plan_since = "2026-06-25"          # studies report BOTH windows; the cutoff labels them
     if a.since is None:
-        a.since = floor or "2026-07-13"
+        a.since = "2026-07-13"
     if a.set:
         import config
         live = dict(config.get_system_config())

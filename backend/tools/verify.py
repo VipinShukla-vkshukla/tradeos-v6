@@ -78,6 +78,8 @@ MODULES = [
     ("session calendar survives a failed evening pipeline", "tests.test_session_calendar"),
     ("health freshness catches one missed evening", "tests.test_health_freshness"),
     ("swing_data_since cutoff reaches the learning readers", "tests.test_swing_data_since"),
+    ("thin swing family keeps its measured history", "tests.test_swing_prior_thin_family"),
+    ("excluded history stays visible as a reference", "tests.test_reference_window"),
     ("swing paper research mode (verdicts recorded, not enforced)", "tests.test_swing_paper_research_mode"),
     ("chartink sheet mirror cannot abort the pipeline", "tests.test_chartink_sheet_mirror"),
     ("allocator direction", "tests.test_allocator_direction"),

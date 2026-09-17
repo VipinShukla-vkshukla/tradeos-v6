@@ -927,49 +927,77 @@ def swing_priors(sb) -> dict[str, Prior]:
     # table. `signal_output_daily` HAS NO `id` COLUMN, so fetch_all's default
     # order key raises 42703; (symbol, date) is unique on it — verified
     # 15-Aug-2026, 2430 distinct of 2430 rows.
-    from config import swing_since
-    rows = fetch_all(lambda: swing_since(sb.table("signal_output_daily")
-                     .select("strategy,outcome_category,outcome_return_pct,"
-                             "outcome_entered,entry_zone_high,planned_stop,"
-                             "symbol,date")
-                     .not_.is_("outcome_category", "null")),
-                     page=PAGE, order_by="symbol,date")
+    from config import swing_data_since
 
-    if not rows:
-        return {}
+    def build(since: str) -> dict[str, Prior]:
+        rows = fetch_all(lambda: _swing_prior_query(sb, since),
+                         page=PAGE, order_by="symbol,date")
 
-    entered = [r for r in rows if r.get("outcome_entered")]
-    trigger = len(entered) / len(rows)
+        if not rows:
+            return {}
 
-    by: dict[str, list[float]] = {}
-    for r in entered:
-        entry, stop = r.get("entry_zone_high"), r.get("planned_stop")
-        ret = r.get("outcome_return_pct")
-        if None in (entry, stop, ret):
-            continue                      # no stop → no R, and none is invented
-        try:
-            entry, stop = float(entry), float(stop)
-            risk_pct = (entry - stop) / entry * 100.0
-            if risk_pct <= 0:
+        entered = [r for r in rows if r.get("outcome_entered")]
+        trigger = len(entered) / len(rows)
+
+        by: dict[str, list[float]] = {}
+        for r in entered:
+            entry, stop = r.get("entry_zone_high"), r.get("planned_stop")
+            ret = r.get("outcome_return_pct")
+            if None in (entry, stop, ret):
+                continue                      # no stop → no R, and none is invented
+            try:
+                entry, stop = float(entry), float(stop)
+                risk_pct = (entry - stop) / entry * 100.0
+                if risk_pct <= 0:
+                    continue
+                by.setdefault(swing_family(r.get("strategy")), []).append(
+                    float(ret) / risk_pct)
+            except (TypeError, ValueError, ZeroDivisionError):
                 continue
-            by.setdefault(swing_family(r.get("strategy")), []).append(
-                float(ret) / risk_pct)
-        except (TypeError, ValueError, ZeroDivisionError):
-            continue
 
-    # PREFIXED, for the same reason as intraday_priors() — see the block there.
-    # `Allocator._prior_for()` looks up "SWING/CONTINUATION"; this dict was
-    # keyed "CONTINUATION", so every swing family prior missed and fell through
-    # to "SWING/ALL". That is the second half of the attribution bug recorded
-    # for 06-Aug in docs/6_IMPLEMENTATION_STATUS.md: the buckets were fixed to
-    # key on engine family instead of the workflow-status `signal_type` column,
-    # but the allocator still could not reach the corrected buckets, so the
-    # knowledge base's "it was previously conditioning on neither" stayed true
-    # of engine identity even after that fix landed.
-    out = {f"SWING/{k}": _dist(f"SWING/{k}", v, floor, trigger) for k, v in by.items()}
-    allr = [x for v in by.values() for x in v]
-    out["SWING/ALL"] = _dist("SWING/ALL", allr, floor, trigger)
+        # PREFIXED, for the same reason as intraday_priors() — see the block there.
+        # `Allocator._prior_for()` looks up "SWING/CONTINUATION"; this dict was
+        # keyed "CONTINUATION", so every swing family prior missed and fell through
+        # to "SWING/ALL". That is the second half of the attribution bug recorded
+        # for 06-Aug in docs/6_IMPLEMENTATION_STATUS.md: the buckets were fixed to
+        # key on engine family instead of the workflow-status `signal_type` column,
+        # but the allocator still could not reach the corrected buckets, so the
+        # knowledge base's "it was previously conditioning on neither" stayed true
+        # of engine identity even after that fix landed.
+        out = {f"SWING/{k}": _dist(f"SWING/{k}", v, floor, trigger) for k, v in by.items()}
+        allr = [x for v in by.values() for x in v]
+        out["SWING/ALL"] = _dist("SWING/ALL", allr, floor, trigger)
+        return out
+
+    since = swing_data_since()
+    out = build(since)
+
+    # THIN AFTER THE CUTOFF IS NOT "NEVER MEASURED" - 18-Sep-2026. With
+    # swing_data_since=2026-09-01 RVS kept 16 of its 31 plans, fell under the
+    # floor, scored as a neutral 0 prior and ranked FIRST of the three families
+    # (edge/day -0.028 vs CONTINUATION -0.146) despite being the worst family on
+    # record (-0.45R, n=50). A family with real history falls back to it; one
+    # with genuinely no history keeps the neutral prior.
+    if since and out and cfg_bool("swing_prior_thin_family_fallback", False):
+        thin = [k for k, pr in out.items() if pr.below_floor]
+        if thin:
+            full = build("")
+            for k in thin:
+                fp = full.get(k)
+                if fp and not fp.below_floor:
+                    out[k] = _dc_replace(fp, note=(
+                        f"{out[k].n} since {since}, below the {floor} floor - using its "
+                        f"full history (n={fp.n}); swing_prior_thin_family_fallback"))
     return out
+
+
+def _swing_prior_query(sb, since: str):
+    q = (sb.table("signal_output_daily")
+           .select("strategy,outcome_category,outcome_return_pct,"
+                   "outcome_entered,entry_zone_high,planned_stop,"
+                   "symbol,date")
+           .not_.is_("outcome_category", "null"))
+    return q.gte("date", since) if since else q
 
 
 def expected_hold_days(sb, framework: str) -> tuple[float, int]:

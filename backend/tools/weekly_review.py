@@ -1010,6 +1010,54 @@ def show_open(sb) -> int:
     return 0
 
 
+def swing_reference_block(sb) -> None:
+    """
+    The swing history EXCLUDED by swing_data_since, printed as a reference and
+    never mixed into the numbers above. Without it every figure in this report
+    describes the market since the cutoff — one falling tape as of 18-Sep-2026 —
+    and a weak strategy cannot be told from a weak market. Nothing here is read
+    by the allocator, the exits or the brain.
+    """
+    from config import swing_data_since
+    from allocation.scoring import swing_family
+    since = swing_data_since()
+    if not since:
+        return
+    _hdr(f"REFERENCE — swing history BEFORE {since} (excluded from learning)")
+    try:
+        rows = fetch_all(lambda: sb.table("signal_output_daily")
+                         .select("strategy,outcome_return_pct,outcome_entered,"
+                                 "entry_zone_high,planned_stop,symbol,date")
+                         .not_.is_("outcome_category", "null")
+                         .lt("date", since),
+                         order_by="symbol,date")
+    except Exception as e:
+        logger.warning(f"  reference block unavailable: {e}")
+        return
+    by: dict[str, list[float]] = {}
+    for r in rows:
+        try:
+            entry, stop = float(r["entry_zone_high"]), float(r["planned_stop"])
+            risk = (entry - stop) / entry * 100.0
+            if not r.get("outcome_entered") or risk <= 0 or r.get("outcome_return_pct") is None:
+                continue
+            by.setdefault(swing_family(r.get("strategy")), []).append(
+                float(r["outcome_return_pct"]) / risk)
+        except (TypeError, ValueError, ZeroDivisionError, KeyError):
+            continue
+    if not by:
+        logger.info("  no resolved plans before the cutoff")
+        return
+    for fam, v in sorted(by.items()):
+        wins = sum(1 for x in v if x > 0)
+        logger.info(f"  {fam:14s} n={len(v):5d}  mean {sum(v) / len(v):+.3f}R  "
+                    f"win {100 * wins / len(v):4.1f}%")
+    allv = [x for v in by.values() for x in v]
+    logger.info(f"  {'ALL':14s} n={len(allv):5d}  mean {sum(allv) / len(allv):+.3f}R  "
+                f"win {100 * sum(1 for x in allv if x > 0) / len(allv):4.1f}%")
+    logger.info("  Reference only — excluded from priors, exits and brain proposals.")
+
+
 def main(show: bool = False) -> int:
     sb = get_supabase()
     logger.info("═" * 72)
@@ -1025,6 +1073,7 @@ def main(show: bool = False) -> int:
     review_swing_family_maturity(sb)
     review_swing_reservation_engagement(sb)
     review_swing_engine_lifecycle(sb)
+    swing_reference_block(sb)
 
     # Refresh the aggregates the dashboard reads. performance_metrics had not
     # been written since 2026-05-12, which is why the Engine Leaderboard said
