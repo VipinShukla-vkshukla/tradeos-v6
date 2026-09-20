@@ -19406,3 +19406,195 @@ The regime score read 28 against 15 the day before, mostly because the stale
 200DMA had overstated the distance below trend; the label stays RISK OFF (<40).
 `tools.health` regime_inputs is GREEN. Only same_day_discovery (pre-existing)
 remains red. verify: 1458 checks, the same 6 pre-existing failures.
+
+---
+
+## 20-Sep-2026 — swing upgrade: two defects fixed, one behaviour change, two proposals refused by their own test
+
+The operator asked two things after the last session's plan: implement
+`setup_quality` rather than record it ("that is the reason I told you to run the
+solution against past data"), and build and test the chasing solution rather
+than defer it. Both were done. **Both came back negative, and the chasing work
+found a live defect instead.** What shipped is not what was proposed.
+
+### How everything below was tested
+
+Every number is a **book simulation through current mechanics**: each session,
+the plans the live gate (`analysis.trade_decision.decide`) would buy, sized by
+the live sizer (`portfolio_constraints.check_new_entry`), at the live caps
+(`swing_max_new_per_day` 5, `paper_max_open_positions` 10), managed bar by bar
+by the real `evaluate_exit` ladder on cached 15-minute bars. Variants differ in
+exactly one thing.
+
+Scores are fitted on data **before 16-Aug only**, and a factor is kept only
+where its effect points the same way in both halves of that window AND in the
+pooled window. 16-Aug..17-Sep is therefore a true holdout. The previous
+session's selection result did not do this, which is the entire reason it looked
+good.
+
+### Defect 1 — the early-invalidation verdict was computed and discarded
+
+`evaluate_exit()` returns `EXIT_INVALIDATED` for a SWING position whose thesis
+breaks before it ever proved itself (rung 2b2). `swing_early_invalidation_enabled`
+and `swing_auto_exit` are both TRUE in live config, so the verdict is being
+produced. The batch path dropped it three times over: the `exit_signal` recorder
+(`:2407`), the order placer (`:2462`) and the `SELLABLE` alert list (`:2558`)
+each carried their own literal tuple and none contained it. Nothing recorded, no
+order, no alert, position left open. Only the daemon's fourth literal knew about
+it, so behaviour depended on which path ran — this is a direct part of the
+answer to "why is my swing still invested after the setup broke".
+
+`tools/health.py::check_exit_actions` could not catch it: it compared three
+parsed literals while **exempting `EXIT_INVALIDATED` as "intraday-only"** — the
+defect sat inside the check's own allowance and the check reported green.
+
+Fixed by making it one tuple in `control/exit_rules.py` (dependency-clean, so
+the daemon can import it without the circular import through the intraday
+package) with four readers. The duplicate `EXIT_DETERIORATION` elif — which
+wrote the same two fields, and which the plan wrongly called a second dropped
+verdict — is gone. The health check now asserts the daemon adds `EXIT_SQUAREOFF`
+and nothing else, and greps both files for a re-declared private literal;
+demonstrated failing against a planted literal (`intraday/engine.py:6012`).
+
+`tests/test_exit_action_whitelists.py`, 4 checks, all four shown red first.
+
+### Defect 2 — an explicit "do not chase" was read as "chase without limit"
+
+`decide()` treats `max_chase_pct=None` as NO LIMIT. All three swing call sites
+resolved the plan's field with `p.get("ai_max_chase_pct") or None`, and `or None`
+is false for `0.0`. So a plan the AI marked **0 — do not chase this one** —
+arrived as None and could be bought at any distance above the zone. Since 01-Aug
+the AI wrote a literal 0 on **306 plans** and NULL on 1,526; only the 229 with a
+positive number were honoured. `tools/simulate.py` — the read-only preview —
+carried the same bug, so it would not have shown the difference.
+
+`analysis.trade_decision.chase_limit()` is now the single resolution and never
+returns None; NULL resolves to `swing_max_chase_pct` (migration 146, 5.0).
+Measured at book level on the holdout: -5.55R -> -5.22R. Small, because the
+taken book contains only seven chased entries in that window. The justification
+is that a written instruction was inverted, not the 0.3R.
+
+Two of the seven checks are **call-site** checks rather than definition checks,
+because a correct `chase_limit()` proves nothing about what three callers pass —
+the SHORT landmine again. Both demonstrated failing against a planted `or None`
+and a planted bypass.
+
+### Refused 1 — `setup_quality` as a selection input
+
+    16-Aug..17-Sep holdout     n     win      sumR        net
+    production ranker         55    38.2%   -5.55R     -48,426
+    setup_quality             47    40.4%   -9.28R     -46,346
+
+In-sample the same score read **+7.89R against the ranker's +2.40R at 67.6%
+win**. That gap is the signature of a fitted score, not an edge. It is written
+every evening (migration 148) and read by nobody; a verify check asserts it
+stays out of every decision path, because "nothing reads it" is the only reason
+a score that failed its holdout is allowed to exist at all.
+
+Two factors were removed on principle rather than on outcome:
+`sector_avg_ret_6m` (halves -0.25%/-0.57%, pooled +0.00% — a direction that
+flips inside its own window is not a direction), and `market_cap`/`low_52w`,
+which survived the statistics and are rupee levels, not properties of a setup.
+
+What the surviving eleven say is itself worth recording: **broad but not hot.**
+Hot sectors score badly (`avg_ret_1m`, `avg_rs_vs_nifty`, `avg_rsi_weekly` all
+negative, and `sector_rank_at_entry` POSITIVE — plans from *lower-ranked*
+sectors did better), while broad ones score well (`breadth_score`,
+`composite_score`). The largest single effect is `days_to_trigger_est`
+(+3.25% pooled, +4.11%/+3.80% in the halves): plans that still need days to
+reach their trigger outperform. It is measured from the signal date on every
+plan, entered or not, so it says something about what the screener should
+prefer and nothing about what the book would have captured — the exact
+difference between a signal-level statistic and a book-level result.
+
+### Refused 2 — banning or re-levelling chased entries
+
+Re-deriving stop and target at the chased price tested neutral-to-worse
+(-5.55R -> -5.64R), and the premise was wrong anyway: `decide()` already
+computes risk, R:R and size from the ACTUAL price
+(`trade_decision.py:202-206`), so nothing was mispriced. The "stale levels"
+argument in the plan was mine and it was incorrect.
+
+Banning chasing looked strong (-2.27R) until the trades were listed. Only
+**seven** chased entries exist in the holdout; the rest of the difference came
+from slot cascades — in-zone trades that changed only because a slot freed
+earlier. Caps of 1%, 2%, 3% and 5% are indistinguishable from unlimited. Chasing
+stays, now behind an explicit switch, and gets instrumented.
+
+### Shipped — cut losers faster (migration 147)
+
+`exit_fastfail_days` 4->3, `exit_fastfail_gain_r` -0.5->-0.35,
+`exit_stall_days` 10->6. On the book's own 51 real trades:
+
+    window                    current                      faster
+    earlier (n=16)   62.5% win  +2.48R    +169      56.2% win  +2.81R    +238
+    recent  (n=34)   38.2% win  -9.03R  -9,664      32.4% win  -7.87R  -8,586
+
+maxDD improves in both (-350 -> -234, -11,161 -> -9,203). **The outlier gate
+passes the right way round**: dropping the two trades contributing most to the
+improvement makes it LARGER, +1,078 -> +3,401, because CARTRADE (-1,408) and
+MAHABANK (-915) both work against it. At book level the same settings improve R
+per trade -0.243 -> -0.101 and maxDD -56,876 -> -52,779 while rupees stay flat,
+because freeing capital sooner buys more trades (41 -> 55). Less bleed per trade
+and a smaller hole; not a proven rupee gain. Win rate falls ~6 points in both
+windows — that is the agreed objective, and it will be visible on screen.
+
+### Measured, no change — the invalidation thresholds
+
+With the dropped verdict fixed, the rung's bar was swept on the 52 real trades.
+Under live settings (`exit_runner_broken_score` 0.30, `exit_runner_min_checks`
+3) it fires **zero times**, and in the recent window it never fires under any
+setting tested:
+
+    live (broken<0.30, >=3 checks)   fired 0   earlier +2.46R  +103
+    rung OFF                         fired 0   earlier +2.46R  +103
+    broken<0.45                      fired 2   earlier +1.92R   -31
+    broken<0.55 (FADING exits too)   fired 3   earlier +2.51R   +41
+    >=2 checks                       fired 0   earlier +2.46R  +103
+
+Loosening the bar costs money in the only window where it fires. No config
+change. Fixing the dropped verdict was correctness, and it changes nothing
+today — which is exactly what was predicted before the measurement, and the
+reason the fix went in before the threshold question was asked.
+
+### Found while wiring the study — every replay study mode was silently blind
+
+The bars cache is keyed `symbol__start__end`. Study modes ask for a window
+ending today, so the moment the Kite token expired every lookup missed a cache
+full of usable data and the tool reported "no data" without saying it had
+missed. `--rank-study`, `--exposure-premise` and the new `--quality-study` were
+all affected. `_cached_cover()` now falls back to the cached file with the
+widest overlap of the requested window, ranked by days actually covered (ranking
+by end date alone picks the newest file, which is usually the narrowest).
+
+`--quality-study` makes the comparison permanent rather than a scratch script.
+On 2026-06-25..09-10: reference window +1.11% quintile spread, current window
++0.29%, and on plan-R the current window is **inverted** (top quintile -0.50R
+against the bottom's -0.40R).
+
+### Also recorded
+
+`signal_outcomes` probed live (4,887 rows, id 1-40125, all non-null and
+distinct) and registered in `_FETCH_ALL_SORT_KEY`; the static-analysis check
+caught both of the new weekly-review paged reads sorting on unverified keys.
+
+Migrations 146 (swing_max_chase_pct), 147 (faster exits), 148 (setup_quality
+columns) applied, preconditions verified first and values read back through
+`cfg()` and `load_exit_policy()` afterwards.
+
+verify: 1,479 checks, the same 6 pre-existing outcome-resolution failures.
+health: exits, books, regime_inputs, research_mode green; `setup_qual` green
+with "nothing to check until the next evening pipeline" and demonstrated failing
+when its cutoff is moved back. simulate: clean, nothing written.
+
+### Still open
+
+- The swing allocator recorded **zero** decisions on 17 and 18-Sep while
+  intraday recorded 527 and 462. The `setup_quality` comparison and the
+  allocator studies both depend on those rows.
+- `stock_data_daily` (86 columns) and `chartink_raw_data` are retention-trimmed
+  to ~10 days, so the richest per-stock features still cannot be studied
+  historically.
+- `swing_max_new_per_day` is 5 live, while migration 143 set it to 3 — already
+  noted on 17-Sep as changed outside a session. Every simulation above uses the
+  live 5.
