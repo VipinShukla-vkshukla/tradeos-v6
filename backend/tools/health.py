@@ -1284,53 +1284,63 @@ def check_exit_actions() -> tuple[bool, str]:
     Every exit action that can SELL must be able to sell from either caller,
     and must be able to alert.
 
-    Three lists decide what an exit action does, in three files:
+    Four readers decide what an exit action does:
+      · position_lifecycle.manage_open_positions  records exit_signal
       · position_lifecycle.manage_open_positions  places the order (pipeline)
       · intraday.engine._auto_exit                places the order (daemon)
       · position_lifecycle.send_action_alerts     tells the operator
 
-    They are independent literals, so adding a rule to one and forgetting the
-    others is a silent, one-line mistake — and it happened: EXIT_GIVEBACK and
-    EXIT_STALL were added to the pipeline's list only, so the daemon would not
-    act on them and nothing would have alerted. Worst case that is a position
-    sold with no notification; best case a loss-cutting rule that never fires.
+    They were four independent literals, and they drifted twice. First
+    EXIT_GIVEBACK/EXIT_STALL reached the pipeline only. Then EXIT_INVALIDATED —
+    returned by evaluate_exit() for a SWING position whose thesis breaks early —
+    reached the daemon only, so the 30-minute and end-of-day paths computed the
+    verdict and discarded it: no record, no order, no alert, position left open.
 
-    This compares the three sets by parsing the source, so it fails the moment
-    they drift rather than the next time money moves.
+    THIS CHECK COULD NOT SEE THAT. It exempted EXIT_INVALIDATED as
+    "intraday-only" while the swing ladder was emitting it, so the defect sat
+    inside the check's own allowance. An exemption list is where a check goes to
+    stop working.
+
+    The four readers now share one tuple (control/exit_rules.py), so drift is no
+    longer possible by construction. What remains checkable, and is checked
+    here, is that nobody has reintroduced a private literal, and that the one
+    action the daemon legitimately adds is the only one it adds.
     """
     import re
     from pathlib import Path
     root = Path(__file__).resolve().parent.parent
 
-    def literal_after(path: Path, anchor: str) -> set:
-        src = path.read_text(encoding="utf-8")
-        i = src.find(anchor)
-        if i < 0:
-            return set()
-        seg = src[i:i + 700]
-        return set(re.findall(r'"(EXIT_[A-Z_]+|BOOK_PARTIAL)"', seg))
+    try:
+        from control.exit_rules import EXIT_ACTIONS_FULL, EXIT_ACTIONS_SELL
+        from intraday.engine import DAEMON_EXIT_ACTIONS
+    except Exception as e:
+        return False, f"could not import the shared exit-action vocabulary — {type(e).__name__}: {e}"
 
-    pipe  = literal_after(root / "control/position_lifecycle.py",
-                          'if act in ("EXIT_STOP", "EXIT_TARGET", "EXIT_TIME",\n'
-                          '                   "EXIT_DETERIORATION"')
-    alert = literal_after(root / "control/position_lifecycle.py", "SELLABLE = (")
-    daemn = literal_after(root / "intraday/engine.py", "if action not in (\"EXIT_STOP\"")
+    extra = set(DAEMON_EXIT_ACTIONS) - set(EXIT_ACTIONS_SELL)
+    missing = set(EXIT_ACTIONS_SELL) - set(DAEMON_EXIT_ACTIONS)
+    if extra != {"EXIT_SQUAREOFF"} or missing:
+        return False, (f"daemon whitelist disagrees with the shared set — "
+                       f"daemon-only {sorted(extra)}, unreachable from the daemon "
+                       f"{sorted(missing)}")
 
-    if not (pipe and alert and daemn):
-        return False, ("could not locate one of the three exit-action lists — "
-                       "the check itself is broken, fix it before trusting it")
+    if "EXIT_INVALIDATED" not in EXIT_ACTIONS_FULL:
+        return False, ("EXIT_INVALIDATED is returned by the swing ladder but is not a "
+                       "full-exit action — it would be recorded nowhere")
 
-    # The daemon carries two intraday-only actions the swing pipeline never
-    # emits. Everything else must match exactly.
-    intraday_only = {"EXIT_INVALIDATED", "EXIT_SQUAREOFF"}
-    d = daemn - intraday_only
-    if d == pipe == alert:
-        return True, f"{len(d)} sell-capable actions agree across pipeline, daemon and alerts"
+    # The regression that actually matters: a reader writing its own tuple again.
+    private = []
+    for rel in ("control/position_lifecycle.py", "intraday/engine.py"):
+        text = (root / rel).read_text(encoding="utf-8")
+        pat = r'[(]\s*"EXIT_[A-Z_]+"(?:\s*,\s*"(?:EXIT_[A-Z_]+|BOOK_PARTIAL)")+\s*,?\s*[)]'
+        for m in re.finditer(pat, text):
+            if len(re.findall(r'"(?:EXIT_[A-Z_]+|BOOK_PARTIAL)"', m.group(0))) >= 3:
+                private.append(f"{rel}:{text[:m.start()].count(chr(10)) + 1}")
+    if private:
+        return False, ("a reader re-declared its own exit-action list instead of using "
+                       f"EXIT_ACTIONS_FULL/EXIT_ACTIONS_SELL: {private}")
 
-    return False, (f"exit-action lists disagree — pipeline={sorted(pipe)} "
-                   f"daemon={sorted(d)} alerts={sorted(alert)}; "
-                   f"missing from daemon: {sorted(pipe - d) or 'none'}, "
-                   f"missing from alerts: {sorted(pipe - alert) or 'none'}")
+    return True, (f"{len(EXIT_ACTIONS_SELL)} sell-capable actions, one definition, "
+                  f"four readers; daemon adds EXIT_SQUAREOFF only")
 
 
 def storage_snapshot() -> dict:

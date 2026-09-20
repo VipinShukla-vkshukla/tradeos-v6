@@ -52,6 +52,33 @@ from loguru import logger
 from config import cfg_bool, cfg_float, cfg_int, get_supabase  # noqa: F401
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# WHAT AN EXIT ACTION IS — ONE DEFINITION, FOUR READERS
+# ─────────────────────────────────────────────────────────────────────────────
+# The exit_signal recorder, the order placer and the SELLABLE alert list each
+# carried their own literal tuple, and the daemon in intraday/engine.py carried
+# a fourth. EXIT_INVALIDATED — which evaluate_exit() returns for a SWING
+# position whose thesis breaks before it ever proved itself (rung 2b2, live
+# since swing_early_invalidation_enabled was armed) — was in the daemon's list
+# and in none of the other three. The batch path computed the verdict and
+# discarded it: nothing recorded, no order placed, no alert sent, position left
+# open. That is the whole of "why is my swing still invested after the setup
+# broke" on the 30-minute and end-of-day paths.
+#
+# tools/health.py's check could not catch it: it exempted EXIT_INVALIDATED as
+# "intraday-only" while the swing ladder was emitting it. A check whose
+# exemption list contains the defect cannot fail.
+#
+# Actions that CLOSE a position — each writes exit_signal and must alert.
+EXIT_ACTIONS_FULL = ("EXIT_STOP", "EXIT_TARGET", "EXIT_TIME", "EXIT_INVALIDATED",
+                     "EXIT_DETERIORATION", "EXIT_GIVEBACK", "EXIT_STALL",
+                     "EXIT_FASTFAIL")
+# Everything that can SELL. BOOK_PARTIAL sells part of a position and must place
+# an order and alert, but it leaves the position open, so it writes no
+# exit_signal and is not in EXIT_ACTIONS_FULL.
+EXIT_ACTIONS_SELL = EXIT_ACTIONS_FULL + ("BOOK_PARTIAL",)
+
+
 @dataclass
 class TrendQuality:
     """Evidence about whether a position is still worth holding."""

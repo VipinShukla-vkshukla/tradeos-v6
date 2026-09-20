@@ -27,6 +27,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
+
+# The daemon and the batch path in control/position_lifecycle.py are two callers
+# of one decision function; two hand-maintained whitelists is how they drifted.
+# EXIT_SQUAREOFF is the only action genuinely intraday-only — the 15:15 forced
+# flat has no swing equivalent.
+from control.exit_rules import EXIT_ACTIONS_SELL
+
+DAEMON_EXIT_ACTIONS = EXIT_ACTIONS_SELL + ("EXIT_SQUAREOFF",)
 from config import (IST, get_supabase, cfg, cfg_bool, cfg_int, cfg_float,
                     today_ist, fetch_all)
 from intraday.config import (is_market_open, gtt_enabled, orders_enabled,
@@ -3083,11 +3091,7 @@ class IntradayEngine:
         # rule exists to prevent; a whitelist that disagrees with the other
         # caller's whitelist reintroduces it by the back door.
         action = (d.get("action") or "").upper()
-        if action not in ("EXIT_STOP", "EXIT_TARGET", "EXIT_TIME",
-                          "EXIT_INVALIDATED", "EXIT_SQUAREOFF",
-                          "EXIT_DETERIORATION", "EXIT_GIVEBACK", "EXIT_STALL",
-                          "EXIT_FASTFAIL",
-                          "BOOK_PARTIAL"):
+        if action not in DAEMON_EXIT_ACTIONS:
             return
 
         qty = int(d.get("book_qty") or 0) or int(p.get("current_qty") or p.get("actual_qty") or 0)

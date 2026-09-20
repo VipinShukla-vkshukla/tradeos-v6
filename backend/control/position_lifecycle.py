@@ -77,6 +77,13 @@ from config import (
 )
 
 
+# The exit-action vocabulary lives in control/exit_rules.py — engine.py needs
+# it too and cannot import this module at load time (it imports the intraday
+# package, so a top-level import here would be circular). Re-exported so
+# existing readers of position_lifecycle are unaffected.
+from control.exit_rules import EXIT_ACTIONS_FULL, EXIT_ACTIONS_SELL  # noqa: E402
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # EXIT POLICY
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2404,8 +2411,7 @@ def manage_open_positions(sb, trade_date: str, require_live: bool = False) -> di
             if decision.get(k) is not None:
                 update[k] = decision[k]
 
-        if act in ("EXIT_STOP", "EXIT_TARGET", "EXIT_TIME", "EXIT_GIVEBACK",
-                   "EXIT_STALL", "EXIT_FASTFAIL"):
+        if act in EXIT_ACTIONS_FULL:
             # RECORD ONLY. This module never places orders — it raises the
             # alert and waits for the sale to appear in Kite, at which point
             # reconcile_with_broker writes the closed_positions row.
@@ -2430,9 +2436,6 @@ def manage_open_positions(sb, trade_date: str, require_live: bool = False) -> di
                 update["active_sl"] = decision["new_sl"]
                 update["trail_activated"] = True
             update["action_required"] = f"RUNNER — {decision['detail']}"
-        elif act == "EXIT_DETERIORATION":
-            update["exit_signal"] = decision["reason"]
-            update["action_required"] = f"EXIT — {decision['detail']}"
         elif act == "BOOK_PARTIAL":
             update["action_required"] = f"BOOK {decision['book_qty']} — {decision['detail']}"
             if decision["new_sl"]:
@@ -2459,9 +2462,7 @@ def manage_open_positions(sb, trade_date: str, require_live: bool = False) -> di
         # Gated per framework via execution/gates — being comfortable
         # automating intraday exits says nothing about swing ones, so one
         # switch would force a decision there is no reason to make.
-        if act in ("EXIT_STOP", "EXIT_TARGET", "EXIT_TIME",
-                   "EXIT_DETERIORATION", "EXIT_GIVEBACK", "EXIT_STALL",
-                   "EXIT_FASTFAIL", "BOOK_PARTIAL"):
+        if act in EXIT_ACTIONS_SELL:
             try:
                 from execution.gates import auto_exit_enabled
                 fw = (pos.get("framework") or "SWING").upper()
@@ -2553,11 +2554,9 @@ def send_action_alerts(actions: list[dict], sb=None):
     # but not to this list, so auto-exit would have sold the position and sent
     # nothing — the operator's first notice would have been the tradebook. That
     # asymmetry is worse than either extreme: an exit you did not authorise and
-    # were not told about. This list and the order-placing list are the same set
-    # for that reason, and adding a rule to one without the other is the bug.
-    SELLABLE = ("EXIT_STOP", "EXIT_TARGET", "EXIT_TIME", "EXIT_DETERIORATION",
-                "EXIT_GIVEBACK", "EXIT_STALL", "EXIT_FASTFAIL", "BOOK_PARTIAL")
-    urgent = [a for a in actions if a["action"] in SELLABLE]
+    # were not told about. Keeping the two lists "the same set" by hand failed
+    # again with EXIT_INVALIDATED, so they are now literally one tuple.
+    urgent = [a for a in actions if a["action"] in EXIT_ACTIONS_SELL]
     # TRAIL_SL/RUN place no order — manage_open_positions() persists the new
     # stop unconditionally, whatever swing_auto_exit is set to — but a moved
     # stop or a target converted to a runner is exactly the kind of material
@@ -2607,7 +2606,7 @@ def send_action_alerts(actions: list[dict], sb=None):
             headline=a["detail"] or a["action"].replace("_", " ").title(),
             detail=f"reason: {a['reason']}"
                    + (" · execute in Kite — positions reconcile automatically "
-                      "on the next run." if a["action"] in SELLABLE else ""),
+                      "on the next run." if a["action"] in EXIT_ACTIONS_SELL else ""),
             ltp=a.get("ltp"), r_multiple=a.get("r"),
             urgency="CRITICAL" if a["action"].startswith("EXIT") else "NORMAL",
             framework="SWING",
