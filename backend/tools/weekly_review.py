@@ -1058,6 +1058,77 @@ def swing_reference_block(sb) -> None:
     logger.info("  Reference only — excluded from priors, exits and brain proposals.")
 
 
+def setup_quality_block(sb) -> None:
+    """
+    What the setup_quality measurement says this week — and nothing more.
+
+    The score lost to the production ranker on the window it was not fitted on
+    (analysis/setup_quality.py has the numbers), so it is recorded and not
+    traded. This block exists so the case for changing that can be made, or
+    refused, on data the score has never seen: it reports the quintile
+    separation against forward 5-day returns on rows written since the columns
+    landed, never on the rows it was fitted from.
+
+    Reports "not yet" honestly rather than printing a separation computed from
+    three plans.
+    """
+    from analysis.setup_quality import FACTORS
+    LIVE_FROM = "2026-09-20"          # migration 148
+    _hdr(f"SETUP QUALITY — measurement only, plans written since {LIVE_FROM}")
+    try:
+        rows = fetch_all(lambda: sb.table("signal_output_daily")
+                         .select("date,symbol,setup_quality")
+                         .gte("date", LIVE_FROM)
+                         .not_.is_("setup_quality", "null"),
+                         order_by="symbol,date")
+    except Exception as e:
+        logger.warning(f"  setup_quality block unavailable: {e}")
+        return
+    if not rows:
+        logger.info(f"  no scored plans yet — {len(FACTORS)} factors, first scores "
+                    f"land with the next evening pipeline")
+        return
+
+    days = sorted({r["date"] for r in rows})
+    vals = sorted(float(r["setup_quality"]) for r in rows)
+    logger.info(f"  {len(rows)} scored plans over {len(days)} sessions "
+                f"({days[0]} to {days[-1]}), {vals[0]:+.2f} to {vals[-1]:+.2f}, "
+                f"median {vals[len(vals) // 2]:+.2f}")
+
+    # Forward outcomes, joined by (date, symbol). signal_outcomes is the
+    # mechanics-free measure — no exit policy in it — which is what the score
+    # was fitted against, so it is what the comparison must use.
+    try:
+        out = fetch_all(lambda: sb.table("signal_outcomes")
+                        .select("signal_date,symbol,ret_fwd_5d")
+                        .gte("signal_date", LIVE_FROM)
+                        .not_.is_("ret_fwd_5d", "null"),
+                        order_by="id")
+    except Exception as e:
+        logger.warning(f"  forward outcomes unavailable: {e}")
+        return
+    fwd = {(r["signal_date"], r["symbol"]): float(r["ret_fwd_5d"]) for r in out}
+    paired = [(float(r["setup_quality"]), fwd[(r["date"], r["symbol"])])
+              for r in rows if (r["date"], r["symbol"]) in fwd]
+    if len(paired) < 100:
+        logger.info(f"  {len(paired)} of them have a 5-day forward return so far — "
+                    f"too few to separate quintiles (need 100+); the score stays "
+                    f"instrumentation until this window can answer on its own")
+        return
+
+    paired.sort()
+    n = len(paired)
+    lo = paired[:n // 5]
+    hi = paired[4 * n // 5:]
+    m_lo = sum(y for _s, y in lo) / len(lo)
+    m_hi = sum(y for _s, y in hi) / len(hi)
+    logger.info(f"  bottom quintile {m_lo:+.2f}%  vs  top quintile {m_hi:+.2f}%  "
+                f"(spread {m_hi - m_lo:+.2f}%, n={n})")
+    logger.info("  a positive spread here is necessary but NOT sufficient — the gate "
+                "is beating entry_ranking.score_plan() at the live caps in a book "
+                "simulation, not separating signals")
+
+
 def main(show: bool = False) -> int:
     sb = get_supabase()
     logger.info("═" * 72)
@@ -1074,6 +1145,7 @@ def main(show: bool = False) -> int:
     review_swing_reservation_engagement(sb)
     review_swing_engine_lifecycle(sb)
     swing_reference_block(sb)
+    setup_quality_block(sb)
 
     # Refresh the aggregates the dashboard reads. performance_metrics had not
     # been written since 2026-05-12, which is why the Engine Leaderboard said

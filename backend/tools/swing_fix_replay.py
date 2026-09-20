@@ -167,11 +167,54 @@ class B:
     close: float
 
 
+def _cached_cover(kind: str, symbol: str, start: str, end: str) -> Path | None:
+    """
+    The widest cached file for this symbol that OVERLAPS the asked-for window.
+
+    The cache is keyed on symbol__start__end, so asking for a window that ends
+    today never matches a file fetched yesterday — and with no broker session
+    every study mode then silently reports "no data" while a perfectly good
+    cache sits on disk. That is how --rank-study, --exposure-premise and
+    --quality-study all returned zero rows the moment the Kite token expired:
+    not one of them said the cache had been missed.
+
+    Returns the covering file with the most days in it, or None. The caller
+    says out loud when the coverage is short of what was asked.
+    """
+    d = CACHE / kind
+    if not d.exists():
+        return None
+    pref = symbol.replace("&", "_") + "__"
+    best, best_days = None, -1
+    for f in d.glob(pref + "*.json.gz"):
+        try:
+            _sym, c_start, c_end = f.name[:-len(".json.gz")].split("__")
+        except ValueError:
+            continue
+        if c_start > end or c_end < start:          # no overlap at all
+            continue
+        # Rank by how much of the ASKED-FOR window the file actually covers.
+        # Ranking by end date alone picks the most recent file, which is
+        # usually the narrowest one.
+        try:
+            lo = _date.fromisoformat(max(c_start, start))
+            hi = _date.fromisoformat(min(c_end, end))
+        except ValueError:
+            continue
+        days = (hi - lo).days
+        if days > best_days:
+            best, best_days = f, days
+    return best
+
+
 def bars_15m(kite, symbol: str, start: str, end: str) -> list[B]:
     path = CACHE / "15minute" / f"{symbol.replace('&', '_')}__{start}__{end}.json.gz"
-    if path.exists():
-        with gzip.open(path, "rt", encoding="utf-8") as fh:
+    alt = None if path.exists() else _cached_cover("15minute", symbol, start, end)
+    if path.exists() or alt:
+        with gzip.open(alt or path, "rt", encoding="utf-8") as fh:
             raw = json.load(fh)
+        if alt:
+            raw = [r for r in raw if start <= r["ts"][:10] <= end]
     else:
         if kite is None:
             return []
@@ -575,9 +618,11 @@ def regime_audit(corrected: bool = False) -> None:
 
 def bars_daily(kite, symbol: str, start: str, end: str) -> dict[str, tuple]:
     path = CACHE / "day" / f"{symbol.replace('&', '_')}__{start}__{end}.json.gz"
-    if path.exists():
-        with gzip.open(path, "rt", encoding="utf-8") as fh:
-            return {k: tuple(v) for k, v in json.load(fh).items()}
+    alt = None if path.exists() else _cached_cover("day", symbol, start, end)
+    if path.exists() or alt:
+        with gzip.open(alt or path, "rt", encoding="utf-8") as fh:
+            rows = {k: tuple(v) for k, v in json.load(fh).items()}
+        return {k: v for k, v in rows.items() if start <= k <= end} if alt else rows
     if kite is None:
         return {}
     tok = _token(kite, symbol)
@@ -841,6 +886,73 @@ def edge_study(since: str, until: str, bar_mode: str = "day") -> None:
     (RESULTS / f"edge_study_{bar_mode}.json").write_text(json.dumps(recs, default=str))
 
 
+def quality_study(since: str, until: str) -> None:
+    """
+    setup_quality against forward outcomes, on whatever window is asked for.
+
+    This is the permanent home of the comparison that decided setup_quality
+    stays instrumentation (see analysis/setup_quality.py). It exists as a tool
+    rather than as a scratch script because the decision has to be re-taken
+    later on data the score has never seen, and a study that dies with the
+    session gets rewritten from memory — badly.
+
+    Scores are computed ON THE FLY from sector_strength/industry_strength as of
+    each plan's own date, so the window can predate migration 148's stored
+    column.
+    """
+    import statistics as st
+    from analysis.setup_quality import FACTORS, features_from, merge_plan_rows, score
+    sb = get_supabase()
+    # signal_output_daily carries neither dist_vwap_20d_pct, ret_12m nor
+    # base_score — see merge_plan_rows(). Without these two tables the study
+    # scores too few factors and reports nothing.
+    slog = {(r["date"], r["symbol"]): r for r in
+            _page(lambda: sb.table("signal_log").select("*").gte("date", since))}
+    msl = {(r["date"], r["symbol"]): r for r in
+           _page(lambda: sb.table("master_shortlist").select("*").gte("date", since))}
+    sec = {(r["date"], r.get("sector")): r
+           for r in _page(lambda: sb.table("sector_strength").select("*").gte("date", since))}
+    ind = {(r["date"], r.get("industry")): r
+           for r in _page(lambda: sb.table("industry_strength").select("*").gte("date", since))}
+    recs = _plan_outcomes(since, until)
+    rows = []
+    for w, day, plan, f5, pr in recs:
+        key = (day, plan.get("symbol"))
+        merged = merge_plan_rows(slog.get(key) or plan, msl.get(key))
+        q = score(features_from(merged,
+                                sec.get((day, merged.get("sector"))),
+                                ind.get((day, merged.get("industry")))))
+        if q.total is not None:
+            rows.append((w, q.total, f5, pr, plan.get("symbol"), day, q.n_used))
+    print(f"\n=== setup_quality vs forward outcomes, {since}..{until} "
+          f"({len(FACTORS)} factors) ===")
+    if not rows:
+        print("  no plans could be scored — sector_strength/industry_strength missing "
+              "for this window")
+        return
+    used = st.median([r[6] for r in rows])
+    print(f"  {len(rows)} plans scored (median {used:.0f} of {len(FACTORS)} factors present)")
+    for w in ("reference", "current"):
+        g = sorted([r for r in rows if r[0] == w], key=lambda r: r[1])
+        if len(g) < 50:
+            print(f"  {w:10s} n={len(g)} — too few to split into quintiles")
+            continue
+        n = len(g)
+        lo, hi = g[:n // 5], g[4 * n // 5:]
+        prs = [r[3] for r in g if r[3] is not None]
+        hi_pr = [r[3] for r in hi if r[3] is not None]
+        lo_pr = [r[3] for r in lo if r[3] is not None]
+        print(f"  {w:10s} n={n:4d}  fwd5 bottom {st.fmean([r[2] for r in lo]):+6.2f}%  "
+              f"top {st.fmean([r[2] for r in hi]):+6.2f}%  "
+              f"spread {st.fmean([r[2] for r in hi]) - st.fmean([r[2] for r in lo]):+6.2f}%")
+        if len(hi_pr) >= 10 and len(lo_pr) >= 10:
+            print(f"  {'':10s}       planR bottom {st.fmean(lo_pr):+6.2f}R  "
+                  f"top {st.fmean(hi_pr):+6.2f}R  (all plans {st.fmean(prs):+.2f}R)")
+    print("  REMINDER: separation here is necessary, not sufficient. The score already "
+          "separated signals and still LOST to entry_ranking at the live caps, because "
+          "the book takes five plans a day, not a quintile.")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--label", default="run")
@@ -853,6 +965,7 @@ def main() -> int:
     ap.add_argument("--regime-audit", action="store_true")
     ap.add_argument("--exposure-premise", action="store_true")
     ap.add_argument("--rank-study", action="store_true")
+    ap.add_argument("--quality-study", action="store_true")
     ap.add_argument("--edge-study", action="store_true")
     ap.add_argument("--bars", choices=["day", "15m"], default="day")
     ap.add_argument("--until", default="2026-09-08")
@@ -874,6 +987,9 @@ def main() -> int:
         return 0
     if a.rank_study:
         rank_study(plan_since, a.until)
+        return 0
+    if a.quality_study:
+        quality_study(plan_since, a.until)
         return 0
     if a.exposure_premise:
         exposure_premise(plan_since, a.until,

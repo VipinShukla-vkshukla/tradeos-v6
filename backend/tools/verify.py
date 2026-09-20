@@ -82,6 +82,7 @@ MODULES = [
     ("excluded history stays visible as a reference", "tests.test_reference_window"),
     ("exit action whitelists (one definition, four readers)", "tests.test_exit_action_whitelists"),
     ("swing chase allowance (an explicit 0 must mean 0)", "tests.test_chase_allowance"),
+    ("setup quality scoring (measurement only, never a gate)", "tests.test_setup_quality"),
     ("swing paper research mode (verdicts recorded, not enforced)", "tests.test_swing_paper_research_mode"),
     ("chartink sheet mirror cannot abort the pipeline", "tests.test_chartink_sheet_mirror"),
     ("allocator direction", "tests.test_allocator_direction"),

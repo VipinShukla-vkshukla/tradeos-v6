@@ -314,6 +314,55 @@ def check_research_mode() -> tuple[bool, str]:
     return True, "swing paper research mode off"
 
 
+SETUP_QUALITY_LIVE_FROM = "2026-09-20"       # migration 148, when the columns landed
+
+
+def check_setup_quality() -> tuple[bool, str]:
+    """
+    Is the setup_quality measurement actually being taken?
+
+    A column nobody writes is this repo's dominant failure mode, and an
+    instrumentation column is the easiest of all to leave empty — nothing
+    downstream breaks when it is NULL, which is exactly why it needs a check of
+    its own rather than being noticed a month later when the study is run.
+
+    The check only speaks for snapshots written AFTER the columns landed.
+    Backfilling was deliberately not done: the stored value means "what the
+    scorer said on the evening this plan was written", and a backfill would
+    quietly mean something else.
+    """
+    from config import get_supabase
+    try:
+        sb = get_supabase()
+        last = (sb.table("signal_output_daily").select("date")
+                .order("date", desc=True).limit(1).execute().data)
+        if not last:
+            return False, "signal_output_daily is empty — no plans at all"
+        day = last[0]["date"]
+        if day < SETUP_QUALITY_LIVE_FROM:
+            return True, (f"latest snapshot {day} predates the setup_quality columns "
+                          f"({SETUP_QUALITY_LIVE_FROM}) — nothing to check until the "
+                          f"next evening pipeline runs")
+        rows = (sb.table("signal_output_daily").select("symbol,setup_quality")
+                .eq("date", day).execute().data)
+        if not rows:
+            return False, f"no plan rows on {day}"
+        scored = [r for r in rows if r.get("setup_quality") is not None]
+        pct = 100.0 * len(scored) / len(rows)
+        if pct < 80.0:
+            empty = [r["symbol"] for r in rows if r.get("setup_quality") is None][:6]
+            return False, (f"{day}: only {len(scored)}/{len(rows)} plans carry a "
+                           f"setup_quality ({pct:.0f}%) — sector_strength or "
+                           f"industry_strength probably had no row for that date. "
+                           f"Unscored: {empty}")
+        vals = sorted(float(r["setup_quality"]) for r in scored)
+        return True, (f"{day}: {len(scored)}/{len(rows)} plans scored, "
+                      f"{vals[0]:+.2f} to {vals[-1]:+.2f} "
+                      f"(median {vals[len(vals) // 2]:+.2f}) — recorded, not traded on")
+    except Exception as e:
+        return False, f"setup_quality check failed: {type(e).__name__}: {e}"
+
+
 REGIME_INDEX_INPUTS = ("nifty_50dma", "nifty_200dma", "nifty_weekly_rsi", "banknifty_weekly_rsi")
 
 
@@ -2616,6 +2665,7 @@ CHECKS = [
     ("data",     "decisions would run on stale inputs",                          check_data_freshness, False),
     ("regime_inputs", "the regime scores a frozen index (a DMA/RSI copied forward instead of computed)", check_regime_inputs_moving, False),
     ("research_mode", "a paper-only switch is left on when swing goes LIVE", check_research_mode, False),
+    ("setup_qual", "the setup_quality measurement stops being written", check_setup_quality, False),
     ("data_quality", "the evening pipeline's own 19-check quality gate found an ERROR and nothing surfaced it here", check_data_quality, False),
     ("broker",   "resting orders do not match the positions they protect",       check_broker_consistency, False),
     ("capital",  "TOTAL_CAPITAL drifts from what the broker account actually holds", check_capital, False),

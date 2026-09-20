@@ -247,6 +247,9 @@ _FETCH_ALL_SORT_KEY = {
     "allocation_decisions": "id",
     "intraday_setups":      "id",
     "signal_log":           "id",
+    # Probed 20-Sep-2026 on the live table: 4,887 rows, id 1-40125, all
+    # non-null and all distinct.
+    "signal_outcomes":      "id",
     # Probed 22-Aug-2026: 103 rows, id 135-237(ish), all distinct.
     "brain_proposals":      "id",
     # 55,963 rows and no `id` column. (symbol, date) is the table's natural key.

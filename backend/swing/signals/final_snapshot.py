@@ -109,6 +109,24 @@ def _resolve_implied_rr(sl: dict, msl: dict) -> float | None:
     return round((target_f - cp_f) / risk, 3)
 
 
+def _setup_quality_row(sl: dict, msl: dict, sector: dict | None,
+                       industry: dict | None) -> dict:
+    """
+    The two setup_quality columns for one plan.
+
+    Never fatal. This is instrumentation on the evening pipeline's last step,
+    and step 20.5 is fatal — a measurement that cannot be taken must not stop
+    the day's plans from being written. A NULL score says "not measured", which
+    is exactly what happened.
+    """
+    try:
+        from analysis.setup_quality import features_from, merge_plan_rows, score
+        return score(features_from(merge_plan_rows(sl, msl), sector, industry)).as_row()
+    except Exception as e:
+        logger.warning(f"  setup_quality unavailable for {sl.get('symbol')}: {e}")
+        return {"setup_quality": None, "setup_quality_components": None}
+
+
 def main(force: bool = False):
     if is_kill_switch_active():
         return {}
@@ -267,13 +285,17 @@ def main(force: bool = False):
     # Used when signal_log.sector_rank_at_entry is NULL because sector_strength
     # had no data for today when generate_signals ran.
     sector_rank_map: dict[str, int] = {}
+    sector_row_map: dict[str, dict] = {}
     try:
-        sec_rows = sb.table("sector_strength").select("sector,rank").eq("date", today).execute().data
+        sec_rows = sb.table("sector_strength").select("*").eq("date", today).execute().data
         if not sec_rows:
             _ls = sb.table("sector_strength").select("date").order("date", desc=True).limit(1).execute().data
             if _ls:
-                sec_rows = sb.table("sector_strength").select("sector,rank").eq("date", _ls[0]["date"]).execute().data
+                sec_rows = sb.table("sector_strength").select("*").eq("date", _ls[0]["date"]).execute().data
         sector_rank_map = {r["sector"]: r["rank"] for r in sec_rows if r.get("rank")}
+        # The whole row, not just the rank: analysis/setup_quality reads breadth,
+        # composite, avg_ret_1m, avg_rsi_weekly and avg_rs_vs_nifty from it.
+        sector_row_map = {r["sector"]: r for r in sec_rows if r.get("sector")}
         logger.info(f"  sector_rank_map: {len(sector_rank_map)} sectors")
     except Exception as e:
         logger.warning(f"  sector_rank fallback load failed (non-fatal): {e}")
@@ -281,13 +303,15 @@ def main(force: bool = False):
     # ── Source 8: industry_strength fallback ─────────────────────────────────
     # industry_state removed — rank only is sufficient alongside sector_rank.
     industry_rank_map: dict[str, int] = {}
+    industry_row_map: dict[str, dict] = {}
     try:
-        ind_rows = sb.table("industry_strength").select("industry,rank").eq("date", today).execute().data
+        ind_rows = sb.table("industry_strength").select("*").eq("date", today).execute().data
         if not ind_rows:
             _li = sb.table("industry_strength").select("date").order("date", desc=True).limit(1).execute().data
             if _li:
-                ind_rows = sb.table("industry_strength").select("industry,rank").eq("date", _li[0]["date"]).execute().data
+                ind_rows = sb.table("industry_strength").select("*").eq("date", _li[0]["date"]).execute().data
         industry_rank_map = {r["industry"]: r["rank"] for r in ind_rows if r.get("rank")}
+        industry_row_map = {r["industry"]: r for r in ind_rows if r.get("industry")}
         logger.info(f"  industry_rank_map: {len(industry_rank_map)} industries")
     except Exception as e:
         logger.warning(f"  industry_rank fallback load failed (non-fatal): {e}")
@@ -544,6 +568,13 @@ def main(force: bool = False):
             "sector_rank_at_entry": sl.get("sector_rank_at_entry") or sector_rank_map.get(_sector),
             "industry_rank":        sl.get("industry_rank") or industry_rank_map.get(_ind),
             "asm_flag":             sl.get("asm_flag"),
+
+            # Setup quality — RECORDED, READ BY NOBODY. analysis/setup_quality
+            # explains why: as a selection input it lost to the production
+            # ranker on a window it was not fitted on. Written every evening so
+            # the comparison can be re-run on data it has never seen.
+            **_setup_quality_row(sl, msl, sector_row_map.get(_sector),
+                                 industry_row_map.get(_ind)),
 
             # Provenance
             "data_sources":      data_sources,
