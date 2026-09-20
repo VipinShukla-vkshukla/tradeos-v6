@@ -130,6 +130,45 @@ def regime_min_rr(regime: str | None) -> float:
     return cfg_float(f"min_rr_to_enter_{key}", base)
 
 
+def chase_limit(plan: dict) -> float:
+    """
+    How far above the entry zone this plan may be bought, in percent.
+
+    decide() reads max_chase_pct=None as NO LIMIT. Every swing call site used
+    to resolve the plan's own field with
+
+        p.get("ai_max_chase_pct") or None
+
+    and `or None` is false for 0.0, so a plan the AI marked 0 — "do not chase
+    this one" — arrived as None and was bought at any distance above the zone.
+    Since 01-Aug the AI wrote a literal 0 on 306 plans and NULL on 1,526; only
+    the 229 carrying a positive number survived the laundering.
+
+    NULL is not unlimited either. "The AI had no opinion" and "chase as far as
+    you like" are different statements, and a silent default that widens a gate
+    is the failure mode this repo keeps paying for. NULL resolves to the
+    explicit swing_max_chase_pct policy.
+
+    Measured, book-level, 16-Aug..17-Sep holdout (see FINDINGS): honouring the
+    field is worth about +0.3R over the session — small, because the taken book
+    only contains seven chased entries in that window. The justification is
+    that an instruction the system wrote down is currently inverted, not the
+    0.3R.
+
+    Returns a number, never None. A caller wanting genuinely unlimited chasing
+    must say so by passing None itself.
+    """
+    from config import cfg_float
+    v = plan.get("ai_max_chase_pct")
+    if v is not None:
+        try:
+            return max(0.0, float(v))
+        except (TypeError, ValueError):
+            logger.warning(f"  ai_max_chase_pct is not a number ({v!r}) — "
+                           f"falling back to the configured policy")
+    return cfg_float("swing_max_chase_pct", 5.0)
+
+
 def decide(
     row: dict,
     live_price: float | None,

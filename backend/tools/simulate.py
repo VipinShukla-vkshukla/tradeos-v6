@@ -42,7 +42,7 @@ def simulate_swing(sb) -> dict:
                                             evaluate_scale_in)
     from control.exit_rules import load_signal_context, assess_trend
     from execution.gates import trading_mode, auto_exit_enabled
-    from analysis.trade_decision import decide
+    from analysis.trade_decision import chase_limit, decide
 
     mode = trading_mode("SWING")
     logger.info(f"  mode={mode}  auto-exit={'ON' if auto_exit_enabled('SWING') else 'off'}")
@@ -163,7 +163,7 @@ def simulate_swing_entries(sb) -> dict:
     indistinguishable from one that was never considered.
     """
     _hdr("SWING AUTO-ENTRY (dry run)")
-    from analysis.trade_decision import decide
+    from analysis.trade_decision import chase_limit, decide
     from analysis.entry_ranking import rank, live_ranking_input, entry_refusals
     from execution.gates import trading_mode
     from execution import paper_broker
@@ -217,7 +217,7 @@ def simulate_swing_entries(sb) -> dict:
             continue
         decisions[sym] = decide(p, None, total_capital=TOTAL_CAPITAL,
                                 open_positions=open_rows, regime=regime,
-                                max_chase_pct=p.get("ai_max_chase_pct") or None,
+                                max_chase_pct=chase_limit(p),
                                 vol_mult=exp.size_mult or 1.0)
 
     ranked = {r.symbol: r for r in rank(

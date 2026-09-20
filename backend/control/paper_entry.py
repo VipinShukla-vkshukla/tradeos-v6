@@ -88,7 +88,7 @@ def run(sb=None, notifier=None) -> dict:
             "prices, not by this evening pass. Nothing to do here.")
         return {**result, "status": "live_entry_handled_by_daemon"}
 
-    from analysis.trade_decision import decide
+    from analysis.trade_decision import chase_limit, decide
     from execution import paper_broker
 
     latest = (sb.table("signal_output_daily").select("date")
@@ -131,7 +131,7 @@ def run(sb=None, notifier=None) -> dict:
 
         d = decide(p, None, total_capital=capital_for("SWING"),
                    open_positions=open_rows, regime=regime,
-                   max_chase_pct=p.get("ai_max_chase_pct") or None)
+                   max_chase_pct=chase_limit(p))
         if d.action not in ("BUY_NOW", "CHASE_LIMIT"):
             result["skipped"] += 1
             result["reasons"][d.action] = result["reasons"].get(d.action, 0) + 1

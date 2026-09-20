@@ -2873,11 +2873,11 @@ class IntradayEngine:
             # every regime at the same bar; the evening pipeline's own gate
             # was already regime-aware (min_rr_to_enter_<REGIME>) and this
             # simply never read it. See trade_decision.regime_min_rr().
-            from analysis.trade_decision import regime_min_rr
+            from analysis.trade_decision import chase_limit, regime_min_rr
             d = decide(c, float(ltp), total_capital=capital_for("SWING"),
                        open_positions=self._swing_positions(), regime=regime,
                        min_rr=regime_min_rr(regime),
-                       max_chase_pct=c.get("ai_max_chase_pct") or None,
+                       max_chase_pct=chase_limit(c),
                        available_cash=cash,
                        vol_mult=self._overlay_vol_mult * (exp_mult or 1.0))
             self._all_swing_decisions.append({"candidate": c, "decision": d})

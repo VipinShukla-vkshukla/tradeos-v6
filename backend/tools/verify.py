@@ -81,6 +81,7 @@ MODULES = [
     ("thin swing family keeps its measured history", "tests.test_swing_prior_thin_family"),
     ("excluded history stays visible as a reference", "tests.test_reference_window"),
     ("exit action whitelists (one definition, four readers)", "tests.test_exit_action_whitelists"),
+    ("swing chase allowance (an explicit 0 must mean 0)", "tests.test_chase_allowance"),
     ("swing paper research mode (verdicts recorded, not enforced)", "tests.test_swing_paper_research_mode"),
     ("chartink sheet mirror cannot abort the pipeline", "tests.test_chartink_sheet_mirror"),
     ("allocator direction", "tests.test_allocator_direction"),
