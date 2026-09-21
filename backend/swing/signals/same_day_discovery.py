@@ -83,9 +83,22 @@ def _build_live_stock(ctx, daily_row: dict) -> dict:
     module docstring — delivery_pct as a same-day proxy) with today's live
     price and volume from the ticker-fed SymbolContext.
 
-    `ctx.volume_ratio` is intraday/strategies/base.py's own existing
-    property — "today's volume so far against the 20-day average,
-    time-adjusted" — reused unmodified rather than re-derived here.
+    `ctx.volume_ratio()` is intraday/strategies/base.py's own "today's
+    volume so far against the 20-day average, time-adjusted", reused
+    unmodified rather than re-derived here.
+
+    IT IS A METHOD, NOT A PROPERTY — and until 21-Sep-2026 this docstring
+    said otherwise. The value stored was the bound method itself, so every
+    screener trigger died on float(<method>) for every symbol on every
+    cycle, and the module never wrote a single row. Every test fake was a
+    SimpleNamespace with a numeric volume_ratio, built from this docstring's
+    claim rather than from the object, so none of them could see it. The
+    callable check below accepts either shape so a fake and the real object
+    take the same path.
+
+    When there are no bars yet (volume_ratio() returns None), the daily
+    row's own vol_ratio stays — yesterday's figure as a named proxy, the
+    same treatment delivery_pct already gets — rather than None over it.
     """
     s = dict(daily_row)
     if ctx is not None and getattr(ctx, "ltp", None):
@@ -95,8 +108,10 @@ def _build_live_stock(ctx, daily_row: dict) -> dict:
         if prev_close:
             s["pct_change"] = round((ctx.ltp - float(prev_close)) / float(prev_close) * 100, 2)
         vr = getattr(ctx, "volume_ratio", None)
+        if callable(vr):
+            vr = vr()
         if vr is not None:
-            s["vol_ratio"] = vr
+            s["vol_ratio"] = float(vr)
     return s
 
 
@@ -162,12 +177,24 @@ def scan(symbols: list[str], contexts: dict, sb, trade_date: str) -> list[dict]:
     if not symbols:
         return []
 
+    # The plans IN FORCE today, not tonight's. The same bug class the 09-Sep
+    # fix below names for market_regime and sector_strength, on the one read
+    # it missed: signal_output_daily for trade_date is written by THIS
+    # evening's pipeline, so during the session `.eq("date", trade_date)`
+    # found nothing and this filter never excluded anything. Names the book
+    # already had a plan for were "discovered" again — contaminating the very
+    # shadow evidence that decides whether Stage 2 should ever be armed.
     try:
-        existing = {r["symbol"] for r in
-                    sb.table("signal_output_daily").select("symbol")
-                      .eq("date", trade_date).execute().data or []}
+        latest = (sb.table("signal_output_daily").select("date")
+                    .lte("date", trade_date)
+                    .order("date", desc=True).limit(1).execute().data or [])
+        in_force = latest[0].get("date") if latest else None
+        existing = ({r["symbol"] for r in
+                     sb.table("signal_output_daily").select("symbol")
+                       .eq("date", in_force).execute().data or []}
+                    if in_force else set())
     except Exception as e:
-        logger.warning(f"  same_day_discovery: could not read today's evening list — {e}")
+        logger.warning(f"  same_day_discovery: could not read the evening list in force — {e}")
         return []
 
     to_check = [s for s in symbols if s not in existing]
@@ -225,6 +252,7 @@ def scan(symbols: list[str], contexts: dict, sb, trade_date: str) -> list[dict]:
     from swing.compute.compute_msl import compute_entry_zones, compute_trade_plan
 
     discovered = []
+    evaluated, trigger_errors = 0, []
     for sym in to_check:
         daily_row = daily_rows.get(sym)
         ctx = contexts.get(sym)
@@ -241,10 +269,12 @@ def scan(symbols: list[str], contexts: dict, sb, trade_date: str) -> list[dict]:
         # other watched symbol this cycle, silently, since run.py's own
         # caller wraps the whole scan() call in one bare except. Matches
         # the sibling calls' own shape now.
+        evaluated += 1
         try:
             triggered_by = _trigger(s, sector_rank)
         except Exception as e:
             logger.debug(f"  same_day_discovery: {sym} trigger check failed — {e}")
+            trigger_errors.append((sym, f"{type(e).__name__}: {e}"))
             continue
         if not triggered_by:
             continue
@@ -276,6 +306,14 @@ def scan(symbols: list[str], contexts: dict, sb, trade_date: str) -> list[dict]:
             "live_price_at_discovery": s.get("close"),
             "discovered_at": datetime.now(IST).isoformat(),
         })
+
+    # One symbol with a bad row is noise. Most of them failing is the module
+    # not working, and it said so only at DEBUG for four weeks while writing
+    # nothing — indistinguishable, from the outside, from a quiet market.
+    if trigger_errors and len(trigger_errors) * 2 >= evaluated:
+        first_sym, first_err = trigger_errors[0]
+        logger.warning(f"  same_day_discovery: {len(trigger_errors)} of {evaluated} symbols "
+                       f"failed the trigger check — first: {first_sym} {first_err}")
 
     if discovered:
         try:

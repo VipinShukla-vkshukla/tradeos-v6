@@ -163,7 +163,7 @@ def test_scan_skips_symbols_already_in_todays_evening_list():
     duplicates the evening pipeline's own coverage."""
     from swing.signals import same_day_discovery as sdd
     sb = FakeSB({
-        "signal_output_daily": [{"symbol": "X"}],
+        "signal_output_daily": [{"symbol": "X", "date": "2026-08-25"}],
         "swing_same_day_candidates": [],
         "market_regime": [], "sector_strength": [],
         "stock_data_daily": [{"symbol": "X", "date": "2026-08-25", **_vbd_qualifying_stock()}],
@@ -318,7 +318,146 @@ def test_scan_is_a_noop_when_shadow_switch_is_off():
     assert out == []
 
 
+
+# ── THE REAL SymbolContext, 21-Sep-2026 ─────────────────────────────────────
+#
+# Every fake above is `SimpleNamespace(volume_ratio=3.0)` — a NUMBER — shaped
+# after this module's own docstring, which called ctx.volume_ratio "an existing
+# property". It is a METHOD (intraday/strategies/base.py), and all seven
+# intraday engines call it as ctx.volume_ratio(). _build_live_stock() stored
+# the bound method itself as vol_ratio; run_vbd/run_sbs/run_rsb then died on
+# float(<method>) for every symbol, every 300s cycle, and the per-symbol
+# handler logged it at DEBUG. Replayed against the live daemon universe on
+# 21-Sep: 67 of 67 symbols raised the same TypeError. That is why
+# swing_same_day_candidates never received a row. The fakes could not see it,
+# because they were built from the claim rather than from the object.
+
+
+def _real_ctx(sym="X", ltp=105.0, prev_close=100.0, vol_mult=3.0, avg=1_000_000.0):
+    """
+    The object the daemon actually passes: a real SymbolContext with two hours
+    of 5-minute bars from 09:15, volume sized so volume_ratio() == vol_mult.
+    """
+    from datetime import datetime, timedelta
+    from config import IST
+    from intraday.strategies.base import Bar, SymbolContext
+    start = IST.localize(datetime(2026, 8, 26, 9, 15))
+    n = 24                                   # 24 x 5 min = 120 minutes
+    minutes = 5 * (n - 1)                    # volume_ratio() measures to the LAST bar's ts
+    per_bar = avg * vol_mult * (minutes / 375.0) / n
+    bars = [Bar(ts=start + timedelta(minutes=5 * i), open=ltp, high=ltp, low=ltp,
+                close=ltp, volume=per_bar) for i in range(n)]
+    return SymbolContext(symbol=sym, ltp=ltp, bars=bars, prev_close=prev_close,
+                         avg_volume_20d=avg)
+
+
+def test_the_real_context_exposes_volume_ratio_as_a_method():
+    """Pin the shape everything below depends on, so a later change to
+    SymbolContext cannot silently re-open this."""
+    ctx = _real_ctx()
+    assert callable(ctx.volume_ratio), "SymbolContext.volume_ratio changed shape"
+    assert abs(ctx.volume_ratio() - 3.0) < 0.05, ctx.volume_ratio()
+
+
+def test_build_live_stock_stores_a_number_from_the_real_context():
+    from swing.signals import same_day_discovery as sdd
+    s = sdd._build_live_stock(_real_ctx(), _vbd_qualifying_stock())
+    vr = s.get("vol_ratio")
+    assert not callable(vr), f"vol_ratio is the bound method itself: {vr!r}"
+    assert isinstance(vr, float) and abs(vr - 3.0) < 0.05, vr
+
+
+def test_build_live_stock_keeps_yesterdays_ratio_when_today_has_no_bars():
+    """No bars yet (09:15) means volume_ratio() is None — keep the daily row's
+    own vol_ratio as the named proxy rather than writing None over it."""
+    from swing.signals import same_day_discovery as sdd
+    from intraday.strategies.base import SymbolContext
+    daily = _vbd_qualifying_stock()
+    ctx = SymbolContext(symbol="X", ltp=105.0, bars=[], prev_close=100.0)
+    s = sdd._build_live_stock(ctx, daily)
+    assert s.get("vol_ratio") == daily.get("vol_ratio"), s.get("vol_ratio")
+
+
+def test_scan_writes_a_genuine_new_trigger_from_the_real_context():
+    """The end-to-end case every existing test covered only with a fake."""
+    from swing.signals import same_day_discovery as sdd
+    daily = _vbd_qualifying_stock()
+    daily.update({"date": "2026-08-25", "symbol": "X", "sma_50": 90.0, "atr_14": 3.0})
+    sb = FakeSB({
+        "signal_output_daily": [],
+        "swing_same_day_candidates": [],
+        "market_regime": [{"regime": "NEUTRAL", "date": "2026-08-25"}],
+        "sector_strength": [{"sector": "test", "rank": 1, "date": "2026-08-25"}],
+        "stock_data_daily": [daily],
+    })
+    with cfg_ctx({"swing_same_day_discovery_shadow": "true"}):
+        out = sdd.scan(["X"], {"X": _real_ctx()}, sb, "2026-08-26")
+    assert len(out) == 1, f"real SymbolContext produced {out}"
+    assert out[0]["strategy"] == "VBD"
+    assert sb._tables["swing_same_day_candidates"], "must actually write the row"
+
+
+def test_a_scan_where_every_trigger_raises_is_loud():
+    """
+    One symbol failing is noise; EVERY symbol failing is the module not working,
+    and it must say so at WARNING, not at DEBUG where it hid for four weeks.
+    """
+    from loguru import logger
+    from swing.signals import same_day_discovery as sdd
+    daily = _vbd_qualifying_stock()
+    daily.update({"date": "2026-08-25", "symbol": "X", "vol_ratio": "not-a-number"})
+    sb = FakeSB({
+        "signal_output_daily": [], "swing_same_day_candidates": [],
+        "market_regime": [], "sector_strength": [{"sector": "test", "rank": 1,
+                                                   "date": "2026-08-25"}],
+        "stock_data_daily": [daily],
+    })
+    from intraday.strategies.base import SymbolContext
+    ctx = SymbolContext(symbol="X", ltp=105.0, bars=[], prev_close=100.0)
+    seen = []
+    hid = logger.add(lambda m: seen.append(m.record), level="WARNING")
+    try:
+        with cfg_ctx({"swing_same_day_discovery_shadow": "true"}):
+            sdd.scan(["X"], {"X": ctx}, sb, "2026-08-26")
+    finally:
+        logger.remove(hid)
+    loud = [r for r in seen if "trigger check" in r["message"]]
+    assert loud, "every symbol failed the trigger check and nothing above DEBUG said so"
+
+
+def test_evening_list_exclusion_reads_the_list_in_force_not_tonights():
+    """
+    The same bug class the 09-Sep fix named for regime and sector, on the one
+    read it missed. During the session on D, the plans in force are the
+    evening list dated D-1; D's own list does not exist until tonight. Reading
+    `.eq("date", D)` found nothing, so the "not already listed" filter never
+    excluded anything — names the book already had a plan for were
+    "discovered" again, contaminating the very evidence that decides whether
+    Stage 2 should be armed.
+    """
+    from swing.signals import same_day_discovery as sdd
+    daily = _vbd_qualifying_stock()
+    daily.update({"date": "2026-08-25", "symbol": "X", "sma_50": 90.0, "atr_14": 3.0})
+    sb = FakeSB({
+        "signal_output_daily": [{"symbol": "X", "date": "2026-08-25"}],
+        "swing_same_day_candidates": [],
+        "market_regime": [{"regime": "NEUTRAL", "date": "2026-08-25"}],
+        "sector_strength": [{"sector": "test", "rank": 1, "date": "2026-08-25"}],
+        "stock_data_daily": [daily],
+    })
+    with cfg_ctx({"swing_same_day_discovery_shadow": "true"}):
+        out = sdd.scan(["X"], {"X": _real_ctx()}, sb, "2026-08-26")
+    assert out == [], f"X is on the plan list in force today and was re-discovered: {out}"
+
+
+
 TESTS = [
+    ("the real context exposes volume_ratio as a method", test_the_real_context_exposes_volume_ratio_as_a_method),
+    ("build_live_stock stores a number from the real context", test_build_live_stock_stores_a_number_from_the_real_context),
+    ("build_live_stock keeps yesterday's ratio with no bars", test_build_live_stock_keeps_yesterdays_ratio_when_today_has_no_bars),
+    ("scan writes a real trigger from the real context", test_scan_writes_a_genuine_new_trigger_from_the_real_context),
+    ("a scan where every trigger raises is loud", test_a_scan_where_every_trigger_raises_is_loud),
+    ("evening-list exclusion reads the list in force", test_evening_list_exclusion_reads_the_list_in_force_not_tonights),
     ("simple regime ctx maps labels correctly", test_simple_regime_ctx_maps_labels_correctly),
     ("build_live_stock overlays live price/volume onto yesterday's row",
      test_build_live_stock_overlays_live_price_and_volume_onto_yesterdays_row),
