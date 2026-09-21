@@ -220,7 +220,38 @@ class _Done:
         return self
 
 
-def _setups(n, day="2026-08-14", resolved=False, strategy="ORB"):
+def _past_session(k: int) -> str:
+    """
+    The k-th weekday before today, as an ISO date.
+
+    THIS FILE USED TO HARD-CODE 12/13/14-Aug-2026. The functions under test read
+    a window relative to TODAY — unresolved_days() and engine_scorecard() look
+    back 30 days, review_engines() takes days=30 — so the fixtures were inside
+    the window when the file was written and fell out of it on 13-Sep. From then
+    on six checks failed and one passed vacuously: the "silent on a fully
+    scored book" test saw no rows at all, so it could not have alerted whatever
+    the code did. A test that depends on the wall clock is a test with an expiry
+    date. These dates move with the clock and always land inside the window.
+    """
+    from datetime import timedelta
+    from config import today_ist
+    d = today_ist()
+    seen = 0
+    while True:
+        d -= timedelta(days=1)
+        if d.weekday() < 5:
+            seen += 1
+            if seen == k:
+                return d.isoformat()
+
+
+# The three sessions the scenarios below were written around. D14 plays the role
+# 14-Aug played on 15-Aug-2026 (the day with 2,289 unresolved rows), D13 and D12
+# the sessions before it.
+D14, D13, D12 = _past_session(3), _past_session(4), _past_session(5)
+
+
+def _setups(n, day=None, resolved=False, strategy="ORB"):
     """n detections on one day, all LONG, geometry 100 / 99 / 102.
 
     Symbols are UNIQUE per row. A fixture that reuses 40 names would let the
@@ -228,6 +259,7 @@ def _setups(n, day="2026-08-14", resolved=False, strategy="ORB"):
     cover all 40 keys — so the fixture itself has to be able to express the
     loss.
     """
+    day = day or D14
     return [{
         "id": 10_000 + i,
         "symbol": f"{day[-2:]}SYM{i}",
@@ -249,7 +281,8 @@ def _setups(n, day="2026-08-14", resolved=False, strategy="ORB"):
 class _FakeKite:
     """One flat bar series that never touches stop or target -> TIMEOUT."""
 
-    def __init__(self, day="2026-08-14"):
+    def __init__(self, day=None):
+        day = day or D14
         self.day = day
         self.fetches = 0
 
@@ -331,7 +364,7 @@ def test_resolve_day_resolves_every_row_not_the_first_thousand():
     from intraday import outcomes
     sb = _CappedSB(_setups(2289))
     with cfg_ctx({}), patch("kite.kite_client.get_kite", return_value=_FakeKite()):
-        res = outcomes.resolve_day("2026-08-14", sb=sb)
+        res = outcomes.resolve_day(D14, sb=sb)
     assert res["resolved"] == 2289, (
         f"resolved {res['resolved']} of 2289 — the work queue is still capped")
     assert len(sb.updates) == 2289, len(sb.updates)
@@ -343,7 +376,7 @@ def test_resolve_day_reports_what_it_could_not_finish():
     from intraday import outcomes
     sb = _CappedSB(_setups(2289))
     with cfg_ctx({}), patch("kite.kite_client.get_kite", return_value=_FakeKite()):
-        res = outcomes.resolve_day("2026-08-14", sb=sb)
+        res = outcomes.resolve_day(D14, sb=sb)
     assert "remaining" in res, f"no `remaining` in {sorted(res)}"
     assert res["remaining"] == 0, res["remaining"]
     assert res.get("complete") is True, res
@@ -355,7 +388,7 @@ def test_no_broker_session_is_not_recorded_as_a_finished_day():
     from intraday import outcomes
     sb = _CappedSB(_setups(300))
     with cfg_ctx({}), patch("kite.kite_client.get_kite", return_value=None):
-        res = outcomes.resolve_day("2026-08-14", sb=sb)
+        res = outcomes.resolve_day(D14, sb=sb)
     assert res["resolved"] == 0
     assert res.get("complete") is False, res
     assert res.get("remaining") == 300, res
@@ -368,8 +401,8 @@ def test_resolve_day_names_the_date_it_scored_not_a_direction():
     from intraday import outcomes
     sb = _CappedSB(_setups(20))
     with cfg_ctx({}), patch("kite.kite_client.get_kite", return_value=_FakeKite()):
-        res = outcomes.resolve_day("2026-08-14", sb=sb)
-    assert res.get("date") == "2026-08-14", (
+        res = outcomes.resolve_day(D14, sb=sb)
+    assert res.get("date") == D14, (
         f"resolve_day reported date={res.get('date')!r} — the date variable is "
         f"still being overwritten by the direction")
 
@@ -381,7 +414,7 @@ def test_unresolved_days_counts_past_the_cap():
     sb = _CappedSB(_setups(1289))
     with cfg_ctx({}):
         got = dict(outcomes.unresolved_days(sb))
-    assert got.get("2026-08-14") == 1289, (
+    assert got.get(D14) == 1289, (
         f"reported {got} — the health check's number is still the row cap")
 
 
@@ -390,13 +423,13 @@ def test_unresolved_days_cannot_hide_a_date_behind_the_cap():
     every OTHER unscored date becomes invisible — including to backfill(),
     which iterates this exact list."""
     from intraday import outcomes
-    rows = _setups(1200, day="2026-08-14") + _setups(50, day="2026-08-13")
+    rows = _setups(1200, day=D14) + _setups(50, day=D13)
     sb = _CappedSB(rows)
     with cfg_ctx({}):
         got = dict(outcomes.unresolved_days(sb))
-    assert "2026-08-13" in got, (
-        f"13-Aug vanished behind 14-Aug's 1200 rows — got {got}")
-    assert got["2026-08-14"] == 1200 and got["2026-08-13"] == 50, got
+    assert D13 in got, (
+        f"{D13} vanished behind {D14}'s 1200 rows — got {got}")
+    assert got[D14] == 1200 and got[D13] == 50, got
 
 
 def test_unresolved_days_still_excludes_today():
@@ -416,8 +449,8 @@ def test_weekly_review_reads_every_resolved_row():
     """review_engines read 1000 of 8324 and the truncation favoured the
     OLDEST sessions, so engines were judged on late-July evidence."""
     from tools import weekly_review
-    rows = (_setups(1500, day="2026-08-12", resolved=True)
-            + _setups(900, day="2026-08-13", resolved=True))
+    rows = (_setups(1500, day=D12, resolved=True)
+            + _setups(900, day=D13, resolved=True))
     sb = _CappedSB(rows)
     seen = {}
 
@@ -463,7 +496,7 @@ def test_restart_dedup_map_reads_every_row_of_today():
 
 def test_alert_unscored_is_silent_when_every_past_session_is_scored():
     from intraday import outcomes
-    sb = _CappedSB(_setups(500, day="2026-08-14", resolved=True))
+    sb = _CappedSB(_setups(500, day=D14, resolved=True))
     with cfg_ctx({}), patch("intraday.notifier.Notifier.send") as send:
         sent = outcomes.alert_unscored(sb=sb)
     assert sent is False
@@ -472,7 +505,7 @@ def test_alert_unscored_is_silent_when_every_past_session_is_scored():
 
 def test_alert_unscored_fires_when_a_past_session_is_unscored():
     from intraday import outcomes
-    sb = _CappedSB(_setups(1289, day="2026-08-14"))
+    sb = _CappedSB(_setups(1289, day=D14))
     with cfg_ctx({}), patch("intraday.notifier.Notifier.send",
                             return_value=True) as send:
         sent = outcomes.alert_unscored(sb=sb)
@@ -486,15 +519,15 @@ def test_the_alert_carries_the_true_count_and_the_dates():
     """The operator must be able to act on the message alone — which day,
     how many, and the command that fixes it."""
     from intraday import outcomes
-    rows = _setups(1289, day="2026-08-14") + _setups(40, day="2026-08-13")
+    rows = _setups(1289, day=D14) + _setups(40, day=D13)
     sb = _CappedSB(rows)
     with cfg_ctx({}), patch("intraday.notifier.Notifier.send",
                             return_value=True) as send:
         outcomes.alert_unscored(sb=sb)
     a = send.call_args[0][0]
     text = f"{a.headline} {a.detail}"
-    assert "2026-08-14" in text, text
-    assert "2026-08-13" in text, text
+    assert D14 in text, text
+    assert D13 in text, text
     assert "1329" in text or "1,329" in text, (
         f"the alert must carry the TRUE total (1329), not the row cap — {text}")
     assert "backfill" in text, text
@@ -504,7 +537,7 @@ def test_alert_unscored_never_raises():
     """An alert that fails to send must not take down whatever called it —
     the same contract alert_if_stale() carries."""
     from intraday import outcomes
-    sb = _CappedSB(_setups(200, day="2026-08-14"))
+    sb = _CappedSB(_setups(200, day=D14))
     with cfg_ctx({}), patch("intraday.notifier.Notifier.send",
                             side_effect=RuntimeError("telegram down")):
         assert outcomes.alert_unscored(sb=sb) is False
