@@ -19598,3 +19598,88 @@ when its cutoff is moved back. simulate: clean, nothing written.
 - `swing_max_new_per_day` is 5 live, while migration 143 set it to 3 — already
   noted on 17-Sep as changed outside a session. Every simulation above uses the
   live 5.
+
+---
+
+## 21-Sep-2026 — the two standing reds: one expired test, one module that never worked
+
+The operator asked for the two items carried as "pre-existing reds" to be
+addressed, and for same-day discovery to go live if it was not already.
+
+### The six verify failures were a test with an expiry date
+
+`test_outcome_resolution_gap.py` hard-coded 12/13/14-Aug-2026 fixtures while
+`unresolved_days()`, `engine_scorecard()` and `review_engines()` read a window
+relative to TODAY (30 days). Correct when written; outside the window from
+13-Sep; every read then returned nothing and six checks failed. Nothing in the
+code was wrong, and "the 6 pre-existing failures" had been carried in every
+verify summary since as if that were a stable fact.
+
+The worse finding was the check that kept passing:
+`test_alert_unscored_is_silent_when_every_past_session_is_scored` saw no rows at
+all once they aged out, so it was silent whatever the code did — green for the
+wrong reason. Fixtures now use `_past_session(k)`, the k-th weekday before
+today. Demonstrated failing against the defect the file exists for: with
+`unresolved_days()` temporarily un-paged, the checks report exactly 1000 — the
+PostgREST cap — and name the date hidden behind it.
+
+**verify is fully green for the first time since mid-September: 1,485 checks,
+168 modules, zero failures.**
+
+### Same-day discovery had never written a row — `volume_ratio` is a method
+
+`swing_same_day_candidates` received zero rows between shipping on 26-Aug and
+today, and `tools.health` said so the entire time. The logs said nothing: not
+one line mentioning same-day discovery across full trading days.
+
+Replaying the trigger logic on real sessions showed it fires — 2 to 10 names a
+session on the daemon's own universe, 1 to 6 of them not already planned — so
+the loss was upstream. Calling the REAL `scan()` the way `intraday/run.py` does,
+with real `SymbolContext` objects and real database reads, found it: **67 of 67
+symbols raised the same TypeError**. `_build_live_stock()` read
+`getattr(ctx, "volume_ratio", None)`, and `SymbolContext.volume_ratio` is a
+method — all seven intraday engines call it as `ctx.volume_ratio()`. The
+module's docstring called it "an existing property". The stored value was the
+bound method, `run_vbd/run_sbs/run_rsb` died on `float(<method>)`, and the
+per-symbol handler logged it at DEBUG.
+
+Every test fake was `SimpleNamespace(volume_ratio=3.0)` — a number, built from
+the docstring's claim rather than from the object — so the suite could not see
+it. Same lesson as the verify-code-not-comments rule, arrived at from the other
+side: a fake built from documentation tests the documentation.
+
+A second defect surfaced only once the first was fixed: the "not already on the
+evening list" filter read `signal_output_daily` with `.eq("date", trade_date)`,
+tonight's list, which does not exist during the session. It never excluded
+anything. The 09-Sep fix named exactly this bug class for `market_regime` and
+`sector_strength` and missed this third read. The evening-list test passed
+vacuously before fix 1 (the trigger died before the filter mattered) and went
+red the moment fix 1 landed — predicted before it ran.
+
+Same live universe and data, before and after: **0 candidates -> 7** (BHEL,
+CGPOWER, ETERNAL on RSB; EMMVEE, INDHOTEL, JSWINFRA, MANKIND on SBS), with 2
+names correctly excluded as already planned. Through the real entry gates in
+RISK OFF: six WAIT on the regime's R:R requirement, and JSWINFRA reaches
+BUY_NOW at rank +0.4, clearing the 0.0 floor. Stage 2 is therefore not a gate
+that cannot pass.
+
+**`swing_same_day_discovery_enabled` was already `true`.** Stage 2 has been
+live all along with nothing to act on. No switch changed; the fix is what makes
+it live, effective when the daemon next starts. Paper only:
+`is_paper("SWING")` true, `swing_live_auto_entry` false.
+
+Two limitations, named rather than hidden. A discovered row ranks almost
+entirely on R:R (screener score defaults to a neutral 50, and it carries none of
+an evening plan's other fields), so it clears the 0.0 floor only when R:R does
+the work. And the structural exit rungs read trend context from the evening
+plan, so a discovered name gets price-and-time exits only until it appears on
+an evening list.
+
+### Confirmed in production tonight
+
+The 21-Sep evening pipeline ran with the `setup_quality` writer: health
+`setup_qual` reads **12/12 plans scored, +0.20 to +0.52, median +0.41**. First
+production confirmation of migration 148 and the writer.
+
+`same_day_discovery` stays red until the fixed daemon writes its first row — red
+for the right reason, which it has been since 26-Aug.
