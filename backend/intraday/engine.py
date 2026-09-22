@@ -3422,6 +3422,26 @@ class IntradayEngine:
             declined = kind == "ENTRY_DECLINED"
             deferred = kind == "ENTRY_DEFERRED"
 
+            # THE ALERT MUST MATCH THE LIVE GATE, PART 2 — 23-Sep-2026,
+            # AUROPHARMA. Same principle as the DECLINE/DEFER check above,
+            # for a DIFFERENT gate `_maybe_enter_swing()` places an order
+            # behind: liquidity. Checked only when not already DECLINED/
+            # DEFERRED (that already names a real reason nothing is
+            # happening; this would only muddy it), and only once decide()
+            # has actually sized the trade (`d.qty` — a SLOT_FULL swap
+            # candidate reaches here with qty 0, unsized, exactly like
+            # _maybe_enter_swing's own qty<=0 guard skips this check for
+            # it too). Confirmed live: AUROPHARMA said "BUY — in zone"/
+            # "CHASE OK" dozens of times across one session while its
+            # traded value (₹147.7 Cr) sat under the ₹200 Cr SWING floor —
+            # a standing refusal, not a transient one, since the same name
+            # was below that floor on 7 of its last 8 sessions.
+            illiquid, illiq_why = False, ""
+            if not (declined or deferred) and getattr(d, "qty", 0):
+                liq_ok, illiq_why = self._swing_liquidity_check(sym, d.qty, ltp)
+                if not liq_ok:
+                    kind, blocked, illiquid = "ENTRY_ILLIQUID", True, True
+
             self.notifier.send(Action(
                 symbol=c["symbol"],
                 kind=kind,
@@ -3429,6 +3449,7 @@ class IntradayEngine:
                           if declined
                           else f"Not yet — {verdict.get('reason') or 'a slot is held for a stronger candidate'}"
                           if deferred
+                          else illiq_why if illiquid
                           else d.headline if room
                           else f"Better than what you hold — {d.headline}"),
                 detail=(f"{d.reason}\n"
@@ -3445,7 +3466,8 @@ class IntradayEngine:
                 meta={"tier": c.get("ai_tier"), "action": d.action,
                       "rank": rk.total, "rank_pos": pos, "swap": swap,
                       "allocator_verdict": verdict.get("verdict") if verdict else None,
-                      "allocator_edge": verdict.get("edge") if verdict else None},
+                      "allocator_edge": verdict.get("edge") if verdict else None,
+                      "illiquid": illiquid},
                 framework="SWING",       # from signal_output_daily, a swing plan
                 # A DECLINE/DEFER is not a trade event — nothing was bought,
                 # sold, or changed. Recorded on the dashboard like every other
@@ -3481,6 +3503,33 @@ class IntradayEngine:
                 rearm=False,
             ))
             self._maybe_enter_swing(c, d, ltp)
+
+    def _swing_liquidity_check(self, sym: str, qty: int, ltp: float) -> tuple[bool, str]:
+        """
+        Same liquidity/circuit-band gate `_maybe_enter_swing()` places an
+        order behind — factored out 23-Sep-2026 so `act_on_candidates()` can
+        ask the SAME question before building the alert, rather than send a
+        plain "BUY" for a name that will refuse on this floor every single
+        cycle. AUROPHARMA, 22-Sep: alerted "BUY — in zone" and "CHASE OK"
+        dozens of times across a session while `stock_data_daily.value_cr`
+        sat at ₹147.7 Cr against the ₹200 Cr SWING floor (`liquidity_ok()`'s
+        own threshold) — a thin-name refusal, not a transient one: the same
+        symbol's traded value has been below that floor on 7 of its last 8
+        sessions, so this alert would read "BUY" every day indefinitely
+        without ever once being buyable. Same fallback order as the live
+        gate: a built SymbolContext first, `_stock_row()` (the previous
+        session's `stock_data_daily` row) if none exists yet this cycle —
+        see that gate's own comment on why a missing context must not read
+        as unknown liquidity for a name that has real data on file.
+        """
+        sctx = self._contexts.get(sym)
+        from analysis.overlays import liquidity_ok
+        vcr = sctx.value_cr if sctx else None
+        if not vcr:
+            vcr = (self._stock_row(sym) or {}).get("value_cr")
+        return liquidity_ok(
+            {"value_cr": vcr, "atr_pct": sctx.atr_pct_daily if sctx else None},
+            planned_value=qty * ltp, framework="SWING")
 
     def _maybe_enter_swing(self, c: dict, d, ltp: float) -> None:
         """
@@ -3735,43 +3784,14 @@ class IntradayEngine:
             return
 
         # LIQUIDITY / CIRCUIT-BAND GATE — can this be got OUT of at plan?
-        # Same overlay intraday uses (analysis.overlays.liquidity_ok), on the
-        # same rationale: a CNC stop is still a plan for a continuous price,
-        # and a swing position is held for 1-3 weeks of chances to gap through
-        # it. Reuses the SymbolContext refresh_contexts() already built for
-        # this symbol (swing candidates are in context_symbols()) rather than
-        # a fresh query — a context that never built (too few bars, or a name
-        # refresh_contexts() has not reached yet) reads as unknown liquidity,
-        # which liquidity_ok() already refuses by default.
-        sctx = self._contexts.get(sym)
-        from analysis.overlays import liquidity_ok
-        # FALL BACK TO THE DAILY ROW WHEN NO CONTEXT BUILT.
-        #
-        # A SymbolContext only exists for names refresh_contexts() reached this
-        # cycle — 42 of ~96 watched on 2026-08-06, because the bar fetch is
-        # rate-limited and its token lookup was timing out. Treating a missing
-        # context as unknown liquidity refused TECHM and ASHOKLEY, whose traded
-        # value was sitting in stock_data_daily the whole time (₹352 cr and
-        # ₹523 cr) — large caps blocked as possibly-illiquid by a data gap.
-        #
-        # _stock_row() is the right source anyway: it is loaded once per day for
-        # the entire universe (no extra query here), and it picks its date by
-        # whether value_cr is actually populated. It is also what the gate
-        # documents itself as wanting — the PREVIOUS session's traded value.
-        # An unavailable row still yields None, so genuinely unknown liquidity
-        # is still refused; only the false unknown is repaired.
-        vcr = sctx.value_cr if sctx else None
-        if not vcr:
-            vcr = (self._stock_row(sym) or {}).get("value_cr")
-        liq_ok, liq_why = liquidity_ok(
-            {"value_cr": vcr,
-             "atr_pct": sctx.atr_pct_daily if sctx else None},
-            planned_value=qty * ltp,
-            # Names the swing floor is meant to keep out clear the
-            # share-of-turnover test easily on a 2-share position — see
-            # liquidity_ok(). The framework is what selects the second floor.
-            framework="SWING",
-        )
+        # Same rationale intraday's own liquidity_ok() call documents: a CNC
+        # stop is still a plan for a continuous price, and a swing position
+        # is held for 1-3 weeks of chances to gap through it. Factored into
+        # _swing_liquidity_check() (23-Sep-2026) so act_on_candidates() can
+        # ask this SAME question before building the alert — see that
+        # method's own docstring for why: a name below this floor refuses
+        # here every cycle, and the alert was saying "BUY" regardless.
+        liq_ok, liq_why = self._swing_liquidity_check(sym, qty, ltp)
         if not liq_ok:
             logger.info(f"  {sym}: swing entry blocked — {liq_why}")
             return

@@ -57,6 +57,7 @@ MODULES = [
     ("ai json parsing",     "tests.test_ai_json_parsing"),
     ("swing alert reflects allocator verdict", "tests.test_swing_alert_allocator_verdict"),
     ("notifier push flag (silent-but-recorded alerts)", "tests.test_notifier_push_flag"),
+    ("swing illiquid-name alert (below the SWING liquidity floor)", "tests.test_swing_illiquid_alert"),
     ("setup alert reflects the actual open result", "tests.test_setup_alert_reflects_open_result"),
     ("telegram approval routes through order_manager", "tests.test_telegram_fill_slot_accounting"),
     ("candidate monitor lease-gated fallback", "tests.test_candidate_monitor_lease_fallback"),

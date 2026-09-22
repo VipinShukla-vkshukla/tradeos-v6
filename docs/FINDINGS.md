@@ -19859,3 +19859,69 @@ way a static replay cannot see, or the daemon's live `decide()` inputs
 (regime, most likely) differ from what this session reconstructed. Grep
 the daemon's own log for "AUROPHARMA" around 12:36 and 14:00 IST on
 22-Sep to settle it directly.
+
+## 2026-09-23 — follow-up, resolved — AUROPHARMA never bought because it is genuinely too thin for the SWING liquidity floor; the alert just never said so
+
+**The question that reopened this:** operator asked directly to keep
+digging after the entry above closed with an open question. This closes it.
+
+**What broke the last reconstruction, found and fixed first:** the earlier
+probe queried `signal_output_daily` where `date='2026-09-22'` — the row
+published BY the evening pipeline run that STARTED on 22-Sep, at 16:30 UTC
+(22:00 IST), for TOMORROW's (23-Sep) session, confirmed via `gh run list
+--workflow=pipeline_evening.yml` (one run only per date, no re-run,
+ruling out a mid-day overwrite of an "immutable" row as the explanation).
+The row actually LIVE during the 22-Sep trading session — published by the
+21-Sep evening run — is the one dated `'2026-09-21'`
+(`entry_zone_low/high` 1671.59/1725.94, not 1601.27/1652.06). Re-running
+`decide()` against the CORRECT row reproduced the live alert's headline
+CHARACTER-FOR-CHARACTER ("AUROPHARMA: BUY — in zone at 1690.00, R:R
+1.51 · 17 sh ≈ ₹28,730, risk ₹1,248") once `vol_mult=0.4` was supplied —
+found by bisection, matching a VIX/exposure-driven size-down active that
+session. `signal_output_daily.date` = publish date, not the date the plan
+governs — worth remembering the next time a live alert is reconstructed
+from this table.
+
+**With the correct row and inputs, the real answer:**
+`analysis.overlays.liquidity_ok()` (framework="SWING") refuses AUROPHARMA
+— `stock_data_daily.value_cr` = ₹147.7 Cr against the ₹200 Cr SWING floor.
+Confirmed not transient: the same name's traded value was below that floor
+on 7 of its last 8 sessions (72.99–155.41 Cr; one session, 18-Sep, briefly
+cleared it at 205.31). Every other gate — `entry_refusals()`, rank
+(9.05, positive), paper capacity (2/10, ₹242k free), the allocator/
+exposure daily cap (both correctly neutralized by `swing_paper_research_
+mode`) — clears exactly as the prior entry found. This is a working risk
+control doing its job, not a bug: a swing position held 1-3 weeks needs to
+be exitable, and a thin name gaps through stops.
+
+**The actual defect: the alert didn't know about it.** `act_on_candidates()`
+builds the "BUY"/"CHASE OK" alert BEFORE `_maybe_enter_swing()` ever checks
+liquidity, so a name below this floor alerted as fully actionable every
+cycle, indefinitely — the same "the alert doesn't match the live gate"
+shape as the 26-Aug (allocator DECLINE) and 08-Sep (DEFER) fixes, this time
+for liquidity instead of the allocator.
+
+**Fixed:** factored the liquidity check out of `_maybe_enter_swing()` into
+`_swing_liquidity_check()` (identical logic, now called from both sites —
+decision reuse, not a second implementation that could drift). `act_on_
+candidates()` now asks it before building the alert (skipped when already
+DECLINED/DEFERRED — that already names a real reason) and labels a refusal
+`ENTRY_ILLIQUID`, with the real `liquidity_ok()` message as the headline
+instead of a fabricated "BUY". Inherits `push=False`/`rearm=False` from the
+same blocked-kind handling DECLINED/DEFERRED already use — recorded on the
+dashboard, never pushed, never repeated once said.
+
+**Tests:** new `tests/test_swing_illiquid_alert.py` (4 checks): an illiquid
+name gets `ENTRY_ILLIQUID` with the real refusal reason as its headline and
+does not push; a liquid name is unaffected (control case); a DECLINE
+verdict is not overwritten by illiquidity (allocator's own reason wins).
+Demonstrated failing against the pre-fix source first (2/4). Registered in
+`tools.verify`. 1,494/1,494 offline checks green. `tools.health`/`tools.
+simulate` re-run clean.
+
+**Gate:** PASS — root cause found with certainty this time (reproduced the
+exact live headline, not just "every gate I can check clears"), fix
+reuses the existing gate rather than duplicating its logic, matches the
+established DECLINE/DEFER alert-fidelity pattern exactly, no schema
+migration. NEEDS FOLLOW-UP: none — this closes the open question from the
+entry above.
