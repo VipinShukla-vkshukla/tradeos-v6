@@ -3786,11 +3786,32 @@ class IntradayEngine:
                 return
             f = paper_broker.simulate_fill(sym, "BUY", qty, "LIMIT", ltp, ltp,
                                            product=paper_broker.product_for("SWING"))
-            if f.ok and paper_broker.open_position(
-                    sym, qty, f.fill_price,
-                    {"stop": d.stop, "target": d.target,
+            setup = {"stop": d.stop, "target": d.target,
                      "strategy": c.get("strategy"), "entry_rationale": rationale,
-                     "sector": c.get("sector")},
+                     "sector": c.get("sector")}
+            # Attribution back to signal_log — ONLY for a candidate drawn from
+            # the evening pipeline's own immutable list (self.candidates). A
+            # same-day-discovered candidate (working_candidates' "extra", from
+            # _refresh_same_day_candidates) has no signal_log row by
+            # construction — migration 122 keeps it out of signal_log
+            # specifically so its outcome cannot land on an unrelated WATCH
+            # signal that happens to share the symbol and poison the evening
+            # pipeline's learning loop. Resolving one here regardless of
+            # source would reintroduce exactly that. The two LIVE branches
+            # below and control/paper_entry.py already draw this same
+            # boundary; this PAPER branch was the one call site that never
+            # did, so every paper swing entry — evening-sourced or not — lost
+            # attribution.
+            if any(ec.get("symbol") == sym for ec in self.candidates):
+                from control.position_lifecycle import find_originating_signal
+                try:
+                    _s = find_originating_signal(self.sb, sym, today_ist().isoformat()) or {}
+                    setup["signal_id"] = _s.get("id")
+                    setup["signal_date"] = _s.get("date") or c.get("date")
+                except Exception:
+                    pass
+            if f.ok and paper_broker.open_position(
+                    sym, qty, f.fill_price, setup,
                     "SWING", self.sb, charges=f.charges):
                 self._entries_taken += 1
                 self.load_state()

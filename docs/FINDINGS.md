@@ -19683,3 +19683,84 @@ production confirmation of migration 148 and the writer.
 
 `same_day_discovery` stays red until the fixed daemon writes its first row — red
 for the right reason, which it has been since 26-Aug.
+
+## 2026-09-22 — F-90, bug fix — `/control` health showed "Swing positions
+linked to a signal 0/1", operator asked for it to self-correct; the position
+itself was correctly unattributed, the REAL gap was one call site that never
+resolved attribution for ANY paper swing entry
+
+**Ran:** live query against `open_positions`/`signal_log`/
+`swing_same_day_candidates` (Supabase MCP, read-only), then `tools.verify`
+before and after (1485/1485 baseline incl. the two standing reds from the
+21-Sep entry above; 1488/1488 after, same two reds, 3 new checks added and
+demonstrated failing against the pre-fix source first).
+
+### 1 — the flagged position was not a defect
+
+The one SWING row (`BHEL`, CNC, entry 2026-09-22, strategy `SBS`,
+`entry_rationale` "screener 50" — same-day discovery's own neutral default)
+had `signal_id` NULL. `find_originating_signal()`'s 10-day lookback on
+`signal_log` for BHEL found nothing inside the window (latest row there is
+12-Sep, three days short) — and would not have been the right answer even if
+it had, since that row is strategy `CTL`, not `SBS`. Migration 122's own
+comment says why same-day discovery never writes to `signal_log`: doing so
+risks an outcome landing on an unrelated evening WATCH signal for the same
+symbol, poisoning the evening pipeline's learning loop — the identical shape
+as the documented `signal_log`-vs-`intraday_setups` landmine. Backfilling a
+signal_id here, the "self correct" the request asked for, would have
+recreated exactly that.
+
+### 2 — the real bug: one call site out of four
+
+`paper_broker.open_position()`'s own comment already says signal_id was
+"never populated before this" fix — but the fix only landed at three of
+the four places that call it: the two LIVE branches of
+`intraday/engine.py::_maybe_enter_swing` (resting ladder, marketable chase)
+and `control/paper_entry.py` (the after-close swing paper cron) all resolve
+`find_originating_signal()` before writing the position. `_maybe_enter_swing`'s
+own PAPER branch (`if not live:`, a few dozen lines above the two LIVE ones)
+never did. That branch is what the LIVE DAEMON itself uses for every swing
+paper entry taken during market hours — evening-pipeline-sourced ones
+included, not only same-day discoveries — so every one of those has been
+losing attribution silently since the column was added.
+
+### 3 — fix
+
+`intraday/engine.py::_maybe_enter_swing`'s PAPER branch now resolves
+`signal_id`/`signal_date` the same way its LIVE siblings do, gated to
+candidates present in `self.candidates` (the evening pipeline's own
+immutable list) only — a same-day-only candidate is never run through
+`find_originating_signal()` at all, so BHEL's own outcome stays correctly
+unattributed rather than gaining a wrong signal_id. New module
+`tests/test_swing_paper_signal_attribution.py` (3 checks, registered in
+`tools.verify::MODULES`), source-inspection style — same rationale
+`test_swing_slot_full_swap.py` already documented for this exact function:
+no live Kite session or real Supabase read available to execute it
+end-to-end. Demonstrated failing against the pre-fix source (0/3) before
+trusting it to pass (3/3).
+
+`frontend/app/api/health/route.ts`'s `pos_attrib` check gained the matching
+carve-out: a SWING position with no `signal_id` is no longer flagged if
+`swing_same_day_candidates` carries the same (symbol, entry_date) — that
+table IS its plan, the same way `pos_attrib_intraday` already treats
+`intraday_setups` as the attribution source for INTRADAY rather than
+`signal_log`. BHEL's own row confirmed present there under today's date, so
+the panel reads 1/1 once deployed, for the correct reason — not because
+anything was backfilled.
+
+**Explicitly not built:** a generic "signal_id missing → find and attach
+one" self-healer. That is exactly the auto-apply-on-the-learning-loop shape
+this file already has two landmines about (wrong dict-key lookup, wrong
+bucket-as-its-own-evidence) — this project's own rule is propose, never
+auto-apply, and money/attribution both move only behind something a human
+reads. The two fixes above are ordinary bug fixes to code paths that already
+existed and already had three of four call sites doing this correctly; nothing
+here re-tunes itself.
+
+**Not run:** `tools.health` / `tools.simulate` — no `.env` / broker
+credentials in this session's sandbox, so neither could reach the live
+book. The Supabase read above (via the separate MCP connection, not this
+Python process) is what verified the BHEL row and the
+`swing_same_day_candidates` match; the frontend route itself was not
+exercised against a running Next.js server. Both are gaps the next session
+with live credentials should close before trusting this beyond `tools.verify`.

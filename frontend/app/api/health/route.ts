@@ -176,7 +176,7 @@ export async function GET() {
     // via edge_logs on 29-Aug-2026 (this route runs the full check every 60s
     // whenever Preflight is left open, with no cache).
     const { data: pos } = await sb.from('open_positions')
-      .select('symbol,framework,planned_stop,signal_id').eq('status', 'ACTIVE');
+      .select('symbol,framework,planned_stop,signal_id,entry_date').eq('status', 'ACTIVE');
     const P = pos ?? [];
     add({ id: 'pos_count', group: 'Positions', label: 'Open positions', severity: 'INFO',
           value: `${P.length}`, expected: 'informational' });
@@ -197,7 +197,23 @@ export async function GET() {
     // you to scroll past the panel, which is when it stops protecting anything.
     // Intraday attribution is real, it just lives elsewhere; it is checked below.
     const SW = P.filter((p) => (p.framework ?? 'SWING').toUpperCase() === 'SWING');
-    const noSignal = SW.filter((p) => !p.signal_id);
+    const swNoSignal = SW.filter((p) => !p.signal_id);
+    // Same-day discovery (migration 122) deliberately never writes to
+    // signal_log — attributing its outcome there risks landing on whatever
+    // unrelated evening WATCH signal happens to share the symbol, poisoning
+    // the evening pipeline's learning loop (the same landmine documented for
+    // intraday outcomes vs signal_log in CLAUDE.md). A position missing
+    // signal_id is still correctly attributed if swing_same_day_candidates
+    // carries the same (symbol, entry_date) — that table IS its plan.
+    let sameDay = new Set<string>();
+    if (swNoSignal.length) {
+      const { data: sdc } = await sb.from('swing_same_day_candidates')
+        .select('symbol,date').in('symbol', swNoSignal.map((p) => p.symbol as string));
+      sameDay = new Set((sdc ?? [])
+        .filter((r) => swNoSignal.some((p) => p.symbol === r.symbol && p.entry_date === r.date))
+        .map((r) => r.symbol as string));
+    }
+    const noSignal = swNoSignal.filter((p) => !sameDay.has(p.symbol as string));
     add({ id: 'pos_attrib', group: 'Positions', label: 'Swing positions linked to a signal',
           severity: SW.length === 0 ? 'INFO' : noSignal.length === 0 ? 'OK' : 'WARN',
           value: `${SW.length - noSignal.length}/${SW.length}`, expected: 'all',

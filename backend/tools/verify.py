@@ -88,6 +88,7 @@ MODULES = [
     ("allocator direction", "tests.test_allocator_direction"),
     ("allocator priors",    "tests.test_allocator_priors"),
     ("swing engine attribution", "tests.test_swing_engine_attribution"),
+    ("swing paper entry signal attribution", "tests.test_swing_paper_signal_attribution"),
     ("hurdle percentile",   "tests.test_hurdle_percentile"),
     ("apply live quotes",   "tests.test_apply_live_quotes"),
     ("track excursion pnl", "tests.test_track_excursion"),
