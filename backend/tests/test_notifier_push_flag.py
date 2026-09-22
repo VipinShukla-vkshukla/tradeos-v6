@@ -30,6 +30,21 @@ times between 10:45 and 15:28 IST on one unbroken "CHASE OK". `Action.
 restate_on_change=False` (default True) makes the "different material"
 branch behave exactly like "same material" — governed by the long rearm
 window regardless of what the numbers say.
+
+WHY rearm EXISTS (23-Sep-2026, AUROPHARMA)
+--------------------------------------------
+restate_on_change=False closed the every-5-minutes case but left the
+ordinary 45-minute rearm window running underneath it — a candidate that
+spends a whole session "still approaching" now interrupts on a slower
+timer instead of a fast one, but still on a timer, with no new information
+at each tick. Confirmed live: AUROPHARMA's ENTRY_APPROACHING fired nine
+times in one session, exactly 45 minutes apart, for a buy limit it never
+durably crossed; its ENTRY ("BUY — in zone") alert fired twice, 84 minutes
+apart, and never once resulted in a position. `Action.rearm=False`
+(default True) means: once sent, this (symbol, kind) never sends again
+today, full stop — no rearm at all, identical headline or not. A genuine
+change still interrupts immediately, because it is a DIFFERENT kind with
+no prior entry in `_last`.
 """
 
 from __future__ import annotations
@@ -158,6 +173,44 @@ def test_restate_on_change_true_still_restates_a_genuine_difference():
     assert sent_again is True
 
 
+def test_rearm_false_never_resends_even_after_the_rearm_window_passes():
+    """THE BUG, reproduced and closed. AUROPHARMA-shaped case: an IDENTICAL
+    headline (nothing rounds differently — restate_on_change is not even
+    in play here), but sent again after the ordinary rearm window would
+    have elapsed. With rearm=False it must stay silent regardless."""
+    from intraday.notifier import Action
+    sb = _FakeSB()
+    with cfg_ctx({"intraday_rearm_minutes": 0}), \
+         patch("intraday.notifier.Notifier._deliver", return_value=True) as deliver_mock:
+        notifier = _notifier(sb)
+        notifier.send(Action(symbol="AUROPHARMA", kind="ENTRY_APPROACHING",
+                             headline="#2 today · 0.9% above the buy limit ₹1690.29",
+                             rearm=False))
+        sent_again = notifier.send(Action(symbol="AUROPHARMA", kind="ENTRY_APPROACHING",
+                                          headline="#2 today · 0.9% above the buy limit ₹1690.29",
+                                          rearm=False))
+    assert deliver_mock.call_count == 1, (
+        f"expected exactly 1 delivery for the whole day, got {deliver_mock.call_count} — "
+        f"rearm=False must not rearm even once the window has elapsed")
+    assert sent_again is False
+
+
+def test_rearm_true_default_still_rearms_after_the_window():
+    """Must not regress exit alerts — a persisting condition (a stop still
+    breached) legitimately needs to keep reminding the operator."""
+    from intraday.notifier import Action
+    sb = _FakeSB()
+    with cfg_ctx({"intraday_rearm_minutes": 0}), \
+         patch("intraday.notifier.Notifier._deliver", return_value=True) as deliver_mock:
+        notifier = _notifier(sb)
+        notifier.send(Action(symbol="SBIN", kind="EXIT_STOP",
+                             headline="Stop breached @ 795.00", urgency="CRITICAL"))
+        sent_again = notifier.send(Action(symbol="SBIN", kind="EXIT_STOP",
+                                          headline="Stop breached @ 795.00", urgency="CRITICAL"))
+    assert deliver_mock.call_count == 2, "an unresolved stop breach must still rearm and repeat"
+    assert sent_again is True
+
+
 TESTS = [
     ("push=True delivers and returns the delivery result",
      test_push_true_delivers_and_returns_the_delivery_result),
@@ -169,6 +222,10 @@ TESTS = [
      test_restate_on_change_false_holds_a_differently_worded_repeat),
     ("restate_on_change=True (default) still restates a genuine difference",
      test_restate_on_change_true_still_restates_a_genuine_difference),
+    ("rearm=False never resends even after the rearm window passes",
+     test_rearm_false_never_resends_even_after_the_rearm_window_passes),
+    ("rearm=True (default) still rearms after the window",
+     test_rearm_true_default_still_rearms_after_the_window),
 ]
 
 if __name__ == "__main__":

@@ -94,6 +94,29 @@ class Action:
     # alerts' existing behaviour, where the exact number IS the decision —
     # a stop that moved from ₹190 to ₹200 deserves the faster restate.
     restate_on_change: bool = True
+    # False means: once sent, this exact (symbol, kind) never sends again
+    # today, full stop — no 45-minute rearm either. 23-Sep-2026. The 09-Sep
+    # fix above closed the every-5-minutes case but left the ORDINARY rearm
+    # window running underneath it, so a candidate that spends a whole
+    # session "still approaching" or "still chaseable" now interrupts on a
+    # 45-minute clock instead of a 5-minute one — quieter, but still a timer
+    # firing on no new information, which is the exact complaint restate_on_
+    # change was built to close. Confirmed live: AUROPHARMA's ENTRY_
+    # APPROACHING fired at 09:16, 10:01, 10:46, 11:31, 12:17, 13:02, 13:47,
+    # 14:32, 15:17 IST — nine times, EXACTLY 45 minutes apart, all day, for a
+    # buy limit it never actually crossed durably. Its ENTRY ("BUY — in
+    # zone") alert fired twice, 84 minutes apart, and never once resulted in
+    # a position (confirmed against open_positions/closed_positions) — a
+    # rearmed "BUY" that never buys is no more informative than a rearmed
+    # "approaching" that never arrives. A genuine change still interrupts
+    # immediately: it is a DIFFERENT kind (ENTRY -> ENTRY_DECLINED, or the
+    # candidate simply drops out of contention), which is a fresh
+    # state_key() with no prior entry, sent unconditionally regardless of
+    # this flag. Default True preserves every exit alert's existing
+    # behaviour — a stop that is STILL breached an hour later needs to keep
+    # saying so, because real risk is still sitting there; a candidate that
+    # is still merely a candidate does not.
+    rearm: bool = True
 
     def state_key(self) -> str:
         """What counts as 'the same alert' for de-duplication purposes."""
@@ -149,6 +172,13 @@ class Notifier:
         if prev is None:
             return True
         prev_headline, prev_at = prev
+
+        # NEVER REARM THIS KIND. Checked before the material comparison
+        # below on purpose — a candidate-watch alert that is still merely a
+        # candidate does not get a periodic reminder at all, identical
+        # headline or not. See Action.rearm's own docstring.
+        if not a.rearm:
+            return False
 
         # Same action AND same substance -> nothing has changed. Re-arm only
         # after a timeout so a stop that has been breached for an hour says so

@@ -3369,6 +3369,13 @@ class IntradayEngine:
                     # crossing into buyable (a different KIND, ENTRY) is. See
                     # restate_on_change's own docstring, 09-Sep-2026.
                     restate_on_change=False,
+                    # NOR IS IT NEWS THE TENTH TIME, 45 MINUTES LATER —
+                    # 23-Sep-2026. AUROPHARMA fired this exact alert 9 times
+                    # in one session, every 45 minutes on the dot, never
+                    # durably crossing the limit it kept naming. One heads-up
+                    # per day is the whole message; see Action.rearm's own
+                    # docstring.
+                    rearm=False,
                 ))
                 continue
 
@@ -3459,6 +3466,19 @@ class IntradayEngine:
                 # one unbroken recommendation. See Action.restate_on_change's
                 # own docstring.
                 restate_on_change=False,
+                # NOR IS A REPEAT "BUY" NEWS IF IT NEVER ACTUALLY BUYS —
+                # 23-Sep-2026. AUROPHARMA's ENTRY alert fired twice, 84
+                # minutes apart (2x the ordinary rearm), and never once
+                # resulted in a position (open_positions/closed_positions
+                # both empty for it that day) — a rearmed "BUY" that keeps
+                # not buying tells the operator nothing a single one did
+                # not. The normal case needs no second alert either way:
+                # a SUCCESSFUL entry removes the symbol from `entries` on
+                # the next cycle (it is now held, not a candidate), so
+                # nothing here re-fires. Applies to DECLINED/DEFERRED too,
+                # for the same one-per-day reasoning restate_on_change
+                # already applies to their wording.
+                rearm=False,
             ))
             self._maybe_enter_swing(c, d, ltp)
 

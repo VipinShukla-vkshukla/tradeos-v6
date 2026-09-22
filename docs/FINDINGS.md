@@ -19764,3 +19764,98 @@ Python process) is what verified the BHEL row and the
 `swing_same_day_candidates` match; the frontend route itself was not
 exercised against a running Next.js server. Both are gaps the next session
 with live credentials should close before trusting this beyond `tools.verify`.
+
+## 2026-09-23 — bug fix, alert fidelity, intraday/notifier.py + intraday/engine.py — the 09-Sep restate fix was necessary but not sufficient: a candidate-watch alert still rearmed every 45 minutes all session
+
+**The report that found this:** operator forwarded a full day's swing
+alerts (2026-09-22) and asked directly — "why am I still receiving the
+alerts when the Swing framework is not making any buy/sell or material
+changes... I thought we fixed this issue right?"
+
+**What the data showed.** AUROPHARMA's `ENTRY_APPROACHING` fired at 09:16,
+10:01, 10:46, 11:31, 12:17, 13:02, 13:47, 14:32, 15:17 IST — nine times,
+**exactly 45 minutes apart**, all session, for a buy limit (₹1690.29) it
+spent the whole day 0.2–1.0% above without durably crossing. MEDANTA,
+APOLLOHOSP and EMCURE did the same on the identical 45-minute clock.
+AUROPHARMA's `ENTRY` ("BUY — in zone") fired twice, 84 minutes apart
+(12:36, 14:00), and — checked against `open_positions`/`closed_positions`
+— never once resulted in an actual position either time.
+
+**Why 09-Sep's fix didn't close this.** `restate_on_change=False` (09-Sep)
+correctly stopped a DIFFERENTLY-ROUNDED headline from restating on the
+5-minute `intraday_restate_minutes` window — that was the JSWSTEEL
+complaint, and it is confirmed fixed (nothing in today's data restates
+faster than 45 minutes). But it left the ORDINARY `intraday_rearm_minutes`
+(45) window running underneath: once `_material()` reads two headlines as
+"the same," the code re-sends anyway after the rearm timeout, on the
+premise that a persisting condition should eventually repeat. That premise
+is correct for an exit alert (a stop still breached needs to keep saying
+so — real risk is sitting there) and wrong for a candidate-watch alert
+(nothing is sitting anywhere; "still approaching" and "still not bought"
+carry zero new information no matter how many 45-minute periods pass).
+
+**Investigated whether AUROPHARMA's non-execution was itself a bug**,
+since a "BUY" that never buys deserved an answer beyond "the alert
+shouldn't repeat." Reconstructed the decision and walked every rail
+`_maybe_enter_swing()` checks against live data: `swing_paper_research_
+mode=true` neutralizes both the allocator veto and the exposure-based
+daily cap (confirmed via `execution/gates.py::swing_research_mode()` and
+`analysis/market_exposure.py::for_entries()`, both read from source, not
+inferred); `entry_refusals()` called directly against AUROPHARMA's real
+signal row returned empty (AI-avoid, filter_reason, R:R retention, and the
+now-armed broken-trend check — `entry_refuse_broken_trend=true` — all
+clear, trend verdict came back STRONG); `stock_data_daily.value_cr` (the
+correct liquidity source `_stock_row()` reads, NOT `signal_output_daily`,
+which was this session's own first, wrong probe and gave a false
+liquidity-block reading) shows ₹147.7 Cr, comfortably liquid; paper
+capacity 2/10 positions, ₹242k of ₹300k free; daily cap 2/5 with exposure
+neutralized. Every gate checked clears. **Could not identify the actual
+blocking mechanism** — reconstructing `decide()` locally produced
+CHASE_LIMIT/44-share sizing against the live alert's BUY_NOW/17-share
+sizing, meaning some input to the live decision (very likely the day's
+regime, which was not reconstructed) differs from this offline replay, so
+the replay cannot be trusted to reproduce the exact live moment. This
+needs the daemon's own console log for that symbol/timestamp to close —
+not obtainable from this session.
+
+**Fixed regardless of that open question:** a repeat that repeats nothing
+new is the same defect whether or not the underlying non-execution is
+itself explained. New `Action.rearm` field (default `True`, every existing
+alert class unaffected): `False` means this exact (symbol, kind) sends
+once and never again that day, no 45-minute rearm either — a genuine
+change still interrupts immediately because it lands under a different
+`state_key()` with no prior entry. Applied to the swing candidate-watch
+family: `ENTRY_APPROACHING`, and the `ENTRY`/`ENTRY_DECLINED`/
+`ENTRY_DEFERRED`/`SWAP_CANDIDATE` alert built from `_swing_alert_kind()`.
+Exit-side alerts (`EXIT_STOP`, `BOOK_PARTIAL`, `TRAIL_SL`, …) keep the
+default and continue to rearm.
+
+**Tests:** `tests/test_notifier_push_flag.py` — two new checks:
+`rearm=False` never resends even after the rearm window elapses (AUROPHARMA
+shape — identical headline, zero-minute rearm window, still one delivery);
+`rearm=True` (default) still rearms an unresolved EXIT_STOP, guarding
+against regressing the case this project depends on. Demonstrated the new
+test failing first (temporarily disabled the `not a.rearm` branch, watched
+it go 2 deliveries instead of 1, restored). 1,487/1,487 offline checks
+green (up from 1,361 two weeks ago — other sessions' work in the interim:
+IGN, market_exposure/`swing_paper_research_mode`, registry sync).
+`tools.health` now fully clean (the `same_day_discovery` red from two
+weeks ago was fixed by another session on 21/22-Sep, per this ledger's own
+entries in between). `tools.simulate` re-run clean.
+
+**Process note:** checked `git status`/`git log` before AND after this
+edit given the 10-Sep collision recorded above — no concurrent session
+touched these files this time; clean single-author commit.
+
+**Gate:** PASS on the repetition fix — root cause identified precisely
+(rearm window, not restate window), reproduced against real alert
+timestamps, fixed with a one-line-per-callsite opt-in matching the
+existing `push`/`restate_on_change` pattern rather than a new mechanism,
+regression-tested both directions. NEEDS FOLLOW-UP (flagged, not fixed):
+why AUROPHARMA's `_maybe_enter_swing()` never placed the order on either
+of its two ENTRY-alert cycles — every code-level gate checked clears
+against live data, so either the block is transient/timing-dependent in a
+way a static replay cannot see, or the daemon's live `decide()` inputs
+(regime, most likely) differ from what this session reconstructed. Grep
+the daemon's own log for "AUROPHARMA" around 12:36 and 14:00 IST on
+22-Sep to settle it directly.
