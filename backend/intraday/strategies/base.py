@@ -274,6 +274,9 @@ class SymbolContext:
     # None = no panel yet / fetch failed; ["ok"] False = failed an integrity check.
     # A consumer must ABSTAIN on either; neither measures a bad trend.
     daily_feats: dict | None = None
+    # The completed daily bars behind daily_feats (shared, read-only), so IGN can
+    # recompute the panel with today's forming candle. None = not loaded yet.
+    daily_bars: list | None = None
 
     # ── Provenance, so no decision runs on data of unknown age ──────────────
     #

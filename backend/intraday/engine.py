@@ -729,6 +729,12 @@ class IntradayEngine:
         dh = getattr(self, "_daily_history", None)
         return dh.features(sym) if dh is not None else None
 
+    def _daily_bars(self, sym: str):
+        """Completed daily bars behind the panel, or None. Same contract as
+        _daily_feats: a dict lookup, tolerant of engines built via __new__."""
+        dh = getattr(self, "_daily_history", None)
+        return dh.bars(sym) if dh is not None else None
+
     def _start_daily_history(self, kite, symbols, today) -> None:
         """Queue Kite daily history for every symbol not yet loaded today. Non-
         blocking (a background thread does the fetching) and never raises: a
@@ -935,6 +941,7 @@ class IntradayEngine:
                                   if p.get("dist_sma50") is not None else None),
                 vol_ratio_daily=float(p.get("vol_ratio") or 0) or None,
                 daily_feats=self._daily_feats(sym),
+                daily_bars=self._daily_bars(sym),
                 # Stamped so every consumer can ask how old this is. Contexts
                 # are rebuilt on the 300 s timer and read on the 15 s one.
                 as_of=datetime.now(IST),
@@ -1266,6 +1273,8 @@ class IntradayEngine:
                 # landed would carry None until the NEXT rebuild.
                 if ctx.daily_feats is None:
                     ctx.daily_feats = self._daily_feats(sym)
+                if ctx.daily_bars is None:
+                    ctx.daily_bars = self._daily_bars(sym)
                 existing_ts = {b.ts for b in ctx.bars}
                 new = [b for b in live if b.ts not in existing_ts]
                 if new:
@@ -1319,6 +1328,7 @@ class IntradayEngine:
                 upper_circuit=(float(cq.get("upper_circuit") or 0) or None),
                 lower_circuit=(float(cq.get("lower_circuit") or 0) or None),
                 daily_feats=self._daily_feats(sym),
+                daily_bars=self._daily_bars(sym),
                 as_of=datetime.now(IST),
                 live_fields=("bars",),
                 fetched=_fetched_snapshot(
@@ -5638,10 +5648,13 @@ class IntradayEngine:
         from it in between. This function returns the verdict list and stops;
         assigning self._verdicts is _allocate_shadow()'s job alone.
 
-        Pure arithmetic plus one call into Allocator.select() (itself
-        in-memory, microseconds, no I/O beyond the prior cache — see that
-        method's own docstring) — no network, no database write. Safe to
-        call from a 2-second loop for exactly that reason.
+        Pure arithmetic plus one call into Allocator.select() (in-memory,
+        microseconds, no I/O beyond the prior cache) — no synchronous network
+        or database write, so it is safe on a 2-second loop. select() DOES
+        buffer every verdict it returns (TAKE and DECLINE alike); the slow-
+        timer flush() writes them, so a verdict scored here reaches
+        allocation_decisions like any other. See tests/
+        test_fast_entry_audit_trail.py.
         """
         from allocation.allocator import Allocator
         from intraday.session import session_state

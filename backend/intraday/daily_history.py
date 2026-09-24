@@ -109,6 +109,7 @@ class DailyHistory:
         self._sleep = sleep
         self._clock = clock
         self._panels: dict[str, dict] = {}
+        self._bars: dict[str, list[DailyBar]] = {}
         self._failed: dict[str, float] = {}
         self._tokens: dict[str, int] = {}
         self._queue: deque[str] = deque()
@@ -120,6 +121,12 @@ class DailyHistory:
     def features(self, symbol: str) -> dict | None:
         with self._lock:
             return self._panels.get(symbol)
+
+    def bars(self, symbol: str) -> list[DailyBar] | None:
+        """Completed daily bars behind `features(symbol)`, for the forming-candle
+        panel. Shared reference — treat as read-only."""
+        with self._lock:
+            return self._bars.get(symbol)
 
     def stats(self) -> dict:
         with self._lock:
@@ -138,6 +145,7 @@ class DailyHistory:
         with self._lock:
             if self._day != today:
                 self._panels.clear()
+                self._bars.clear()
                 self._failed.clear()
                 self._queue.clear()
                 self._queued.clear()
@@ -205,6 +213,7 @@ class DailyHistory:
                     try:
                         raw = fetch_daily(kite, tok, start, end,
                                           spacing_s=spacing, sleep=self._sleep)
+                        bars = to_daily_bars(raw, today)
                         panel = build_panel(raw, today, refs.get(sym))
                     except Exception as e:
                         logger.debug(f"  daily_history: {sym} failed — {e}")
@@ -214,6 +223,7 @@ class DailyHistory:
                     with self._lock:
                         if self._day == today:
                             self._panels[sym] = panel
+                            self._bars[sym] = bars
                             self._failed.pop(sym, None)
                     done += 1
         except Exception as e:

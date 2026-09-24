@@ -151,9 +151,9 @@ def test_take_verdict_opens_a_paper_position():
     assert eng.opened[0]["pick_label"] == "TOP_PICK", (
         "pick_label must come from the local verdict, not engine._verdicts")
     assert eng.opened[0]["entry_path"] == "fast_organic", (
-        "a genuine single-candidate TAKE (never touches allocation_decisions) "
-        "must be tagged 'fast_organic' so it is not confused with an ordinary "
-        "competitive-pass approval")
+        "a genuine single-candidate TAKE must be tagged 'fast_organic' so it is "
+        "not confused with an ordinary competitive-pass approval on the position "
+        "record (its verdict row is buffered by select() and flushed as usual)")
     assert not eng.recorded, "a TAKE must not also record an ALLOCATOR_DECLINED row"
 
 

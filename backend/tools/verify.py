@@ -277,6 +277,10 @@ MODULES = [
      "tests.test_ign_feature_stats"),
     ("IGN feature study glue — statuses, lookahead guard, holdout preflight, resume",
      "tests.test_ign_feature_study"),
+    ("IGN trend modes — short gate, confidence score into the bands, forming-candle panel",
+     "tests.test_ign_trend_modes"),
+    ("IGN fast-entry verdicts reach allocation_decisions — buffered by select(), flushed on the slow timer",
+     "tests.test_fast_entry_audit_trail"),
     ("IGN trend-panel health check — fails on unwritten, leaked, stale, low coverage",
      "tests.test_ign_trend_health"),
 ]

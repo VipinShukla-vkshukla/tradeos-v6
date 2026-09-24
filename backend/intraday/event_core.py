@@ -208,10 +208,12 @@ def check(engine, feed) -> int:
                 "confidence":  best.confidence,
                 "rationale":   best.rationale,
                 "detected_at": detected_at.isoformat(),
-                # `trend` (IGN's daily panel, ~330 B) lives in intraday_setups only:
-                # this table takes a row per detection per cycle (~2.7k/day for IGN).
+                # IGN's trend / trend_live records (~330 B + ~200 B) live in
+                # intraday_setups only: this table takes a row per detection per
+                # cycle (~2.7k/day for IGN).
                 "meta": json.loads(json.dumps(
-                    {k: v for k, v in (best.meta or {}).items() if k != "trend"},
+                    {k: v for k, v in (best.meta or {}).items()
+                     if k not in ("trend", "trend_live")},
                     default=str)),
             }).execute()
             logged += 1
@@ -316,13 +318,13 @@ def _try_ign_fast_entry(engine, sym: str, ctx, best, phase: str) -> None:
             engine._consume_ign_bootstrap_slot()
         return
 
-    # A genuine single-candidate TAKE — the allocator approved this ONE
-    # setup scored alone, via _score_proposals(), which never writes to
-    # allocation_decisions (see that function's own docstring: "no
-    # database write... safe to call from a 2-second loop"). Without this
-    # tag a trade opened here is indistinguishable from an ordinary
-    # competitive-pass approval, or from a bootstrap-forced one, purely
-    # from the position record — migration 139, docs/FINDINGS.md 12-Sep-2026.
+    # A genuine single-candidate TAKE — the allocator approved this ONE setup
+    # scored alone. _score_proposals() -> Allocator.select() buffers that verdict
+    # in memory (no synchronous write) and the slow-timer flush() writes it to
+    # allocation_decisions, so the approval IS on the audit trail
+    # (tests/test_fast_entry_audit_trail.py pins this). The entry_path tag below
+    # is what tells this apart from an ordinary competitive-pass approval or a
+    # bootstrap-forced one on the position record — migration 139.
     engine._maybe_open_paper(
         result["setup"], result["qty"], result["market"],
         phase=result["phase"], cost_pct=result["cost_pct"],

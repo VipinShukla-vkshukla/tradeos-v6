@@ -155,6 +155,24 @@ def max_close_jump(bars: Sequence[DailyBar]) -> float | None:
     return worst
 
 
+def forming_panel(bars: Sequence[DailyBar], *, date, open: float, high: float,
+                  low: float, close: float, volume: float, **kw) -> dict:
+    """feature_panel over completed `bars` PLUS today's still-forming candle.
+
+    A different, unvalidated signal from the as-of-prior-close panel: a +5% spike
+    sits above its own SuperTrend by construction. Used record-only unless
+    ign_trend_use_forming is on. prev_vol_ratio is None: partial-day volume against
+    a full-day baseline is not comparable (IGN's own volume gate covers today's).
+    """
+    blank = feature_panel([])
+    if not bars or not close or close <= 0 or high < low or bars[-1].date >= date:
+        return dict(blank, forming=True)
+    p = feature_panel(list(bars) + [DailyBar(date, open, high, low, close, volume)], **kw)
+    p["prev_vol_ratio"] = None
+    p["forming"] = True
+    return p
+
+
 def feature_panel(bars: Sequence[DailyBar], *, st_period: int = 10,
                   st_mult: float = 3.0, dmi_n: int = 14,
                   rsi_n: int = 14) -> dict:

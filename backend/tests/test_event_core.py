@@ -150,17 +150,20 @@ def test_the_shadow_row_omits_the_trend_record_but_the_setup_keeps_it():
     from unittest.mock import patch
 
     setup = _fake_setup(strategy="IGN")
-    setup.meta.update({"chg_pct": 4.2, "trend": {"available": True, "adx": 25.0}})
+    setup.meta.update({"chg_pct": 4.2, "trend": {"available": True, "adx": 25.0},
+                       "trend_live": {"above_st": True}})
     engine = _FakeEngine(contexts={"TEST": _FakeCtx()})
     feed = _FakeFeed(dirty={"TEST"}, prices={"TEST": 101.0})
     with cfg_ctx({"intraday_event_core_enabled": "true"}), \
          patch("intraday.strategies.registry.evaluate_all", return_value=(setup, [])):
         check(engine, feed)
     _, row = engine.sb.writes[0]
-    assert "trend" not in row["meta"], "the panel must not be copied into the shadow table"
+    assert "trend" not in row["meta"] and "trend_live" not in row["meta"], (
+        "neither panel may be copied into the shadow table")
     assert row["meta"]["chg_pct"] == 4.2 and row["meta"]["sub_engine"] == "IGN", (
         "every other meta key must still be logged")
-    assert setup.meta["trend"]["adx"] == 25.0, "the live setup must keep its trend record"
+    assert setup.meta["trend"]["adx"] == 25.0 and "trend_live" in setup.meta, (
+        "the live setup must keep both records")
 
 
 def test_check_refreshes_live_quotes_and_bars_before_evaluating():

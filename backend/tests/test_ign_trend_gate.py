@@ -33,7 +33,7 @@ def _core(s):
 
 
 def test_verdict_no_panel_or_failed_integrity_abstains():
-    from intraday.strategies.ignition import trend_verdict
+    from intraday.ign_trend import trend_verdict
     on = dict(require_above_st=True, min_adx=20.0)
     assert trend_verdict(None, **on) == ("abstain", 0, 0)
     assert trend_verdict({}, **on) == ("abstain", 0, 0)
@@ -42,12 +42,12 @@ def test_verdict_no_panel_or_failed_integrity_abstains():
 
 
 def test_verdict_no_enabled_check_abstains():
-    from intraday.strategies.ignition import trend_verdict
+    from intraday.ign_trend import trend_verdict
     assert trend_verdict(BAD) == ("abstain", 0, 0), "every check off -> nothing to judge"
 
 
 def test_verdict_all_must_pass_by_default():
-    from intraday.strategies.ignition import trend_verdict
+    from intraday.ign_trend import trend_verdict
     on = dict(require_above_st=True, min_adx=20.0, max_di_minus=20.0)
     assert trend_verdict(GOOD, **on) == ("pass", 3, 3)
     assert trend_verdict(dict(GOOD, adx=15.0), **on) == ("refuse", 2, 3), (
@@ -55,14 +55,14 @@ def test_verdict_all_must_pass_by_default():
 
 
 def test_verdict_majority_rule():
-    from intraday.strategies.ignition import trend_verdict
+    from intraday.ign_trend import trend_verdict
     on = dict(require_above_st=True, min_adx=20.0, max_di_minus=20.0, min_agree=2)
     assert trend_verdict(dict(GOOD, adx=15.0), **on)[0] == "pass", "2 of 3 is enough"
     assert trend_verdict(dict(GOOD, adx=15.0, di_minus=25.0), **on) == ("refuse", 1, 3)
 
 
 def test_verdict_thresholds_are_directional():
-    from intraday.strategies.ignition import trend_verdict
+    from intraday.ign_trend import trend_verdict
     assert trend_verdict(dict(GOOD, adx=20.0), min_adx=20.0)[0] == "pass", ">= is inclusive"
     assert trend_verdict(dict(GOOD, di_minus=20.0), max_di_minus=20.0)[0] == "pass"
     assert trend_verdict(dict(GOOD, di_minus=20.1), max_di_minus=20.0)[0] == "refuse", (
@@ -71,7 +71,7 @@ def test_verdict_thresholds_are_directional():
 
 
 def test_verdict_a_missing_field_does_not_make_a_majority_impossible():
-    from intraday.strategies.ignition import trend_verdict
+    from intraday.ign_trend import trend_verdict
     on = dict(require_above_st=True, min_adx=20.0)
     assert trend_verdict(dict(GOOD, adx=None), **on) == ("pass", 1, 1), (
         "only above_st was readable and it passed — the missing ADX is no opinion")
@@ -140,8 +140,8 @@ def test_short_leg_is_untouched_by_the_armed_gate():
     s = _fire(sh, armed)
     assert plain is not None and s is not None, "the short fixture must fire"
     assert s.direction == "SHORT" and _core(s) == _core(plain), (
-        "every signal here was hypothesised for longs; a SHORT must be untouched")
-    assert s.meta["trend"]["gate"] == "not_applicable_short"
+        "the LONG gate's switches must not touch a SHORT; it has its own gate")
+    assert s.meta["trend"]["gate"] == "off", "the short gate is off unless ITS switch is on"
     assert s.meta["trend"]["above_st"] is False, "the panel is still recorded for shorts"
 
 
@@ -164,6 +164,9 @@ class _StubHistory:
 
     def features(self, sym):
         return self.panels.get(sym)
+
+    def bars(self, sym):
+        return self.panels.get(sym, {}).get("_bars")
 
 
 def _mk_engine():
@@ -202,7 +205,7 @@ def test_engine_reads_the_panel_from_the_history_cache():
 
 def test_a_bench_only_context_is_built_with_the_panel():
     eng = _mk_engine()
-    eng._daily_history = _StubHistory({"NEWNAME": dict(GOOD)})
+    eng._daily_history = _StubHistory({"NEWNAME": dict(GOOD, _bars=["bar"])})
     eng._bench = [_entry("NEWNAME")]
     eng._daily_ref = {"NEWNAME": {"close": 95.0, "high": 96.0, "low": 94.0,
                                   "atr_pct": 2.5, "volume": 200_000.0,
@@ -213,6 +216,7 @@ def test_a_bench_only_context_is_built_with_the_panel():
                   "intraday_min_live_bars_for_context": "5"}):
         eng.merge_live_bars(_FakeFeed({"NEWNAME": bars}))
     assert eng._contexts["NEWNAME"].daily_feats["above_st"] is True
+    assert eng._contexts["NEWNAME"].daily_bars == ["bar"], "the bars ride along for the forming panel"
 
 
 def test_a_context_built_before_the_worker_finished_picks_the_panel_up_later():
@@ -227,8 +231,9 @@ def test_a_context_built_before_the_worker_finished_picks_the_panel_up_later():
     with cfg_ctx({"intraday_live_bars_enabled": "true"}):
         eng.merge_live_bars(feed)
         assert eng._contexts["AAA"].daily_feats is None, "worker not done yet"
-        eng._daily_history = _StubHistory({"AAA": dict(GOOD)})
+        eng._daily_history = _StubHistory({"AAA": dict(GOOD, _bars=["bar"])})
         eng.merge_live_bars(feed)
+    assert eng._contexts["AAA"].daily_bars == ["bar"], "bars attach late too"
     assert eng._contexts["AAA"].daily_feats["adx"] == 32.0, (
         "the next 15s merge must attach the panel, not wait for the 300s rebuild")
 

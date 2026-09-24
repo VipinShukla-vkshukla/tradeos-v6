@@ -170,6 +170,10 @@ def test_worker_loads_panels_from_completed_sessions_only():
             "the request itself must end yesterday, not only be filtered afterwards")
         assert (TODAY - start).days == 420, start
     assert dh.features("ZZZ") is None, "an unknown symbol has no panel — never a default"
+    bars = dh.bars("AAA")
+    assert bars is not None and len(bars) == 259 and bars[-1].date == TODAY - timedelta(days=1), (
+        "the bars behind the panel exclude today's forming candle, like the panel itself")
+    assert dh.bars("ZZZ") is None and dh.bars("BBB") is not None
 
 
 def test_failures_yield_no_panel_and_are_retried_later_not_hammered():
@@ -202,6 +206,7 @@ def test_a_new_trading_day_discards_yesterdays_panels():
         tomorrow = TODAY + timedelta(days=1)
         assert dh.ensure(kite, ["AAA"], tomorrow) == 1, (
             "yesterday's panel must be gone, so AAA is queued afresh")
+        assert dh.bars("AAA") is None or dh.stats()["day"] == tomorrow
         _wait(dh)
         assert dh.stats()["day"] == tomorrow
 
