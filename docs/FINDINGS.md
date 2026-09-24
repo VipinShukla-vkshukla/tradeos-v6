@@ -20078,3 +20078,66 @@ should keep running on paper as an experiment given the net-negative replay.
 
 **Gate:** PASS on study integrity (pre-registered, one unit, holdout preserved, fidelity
 94%); the result is a NULL, not an arming. NEEDS FOLLOW-UP: the two decisions above.
+
+## 2026-09-24 — the four deferred IGN items built (all disarmed); short and forming-candle studies both NULL; and a correction: the fast-entry "audit-trail gap" was not real
+
+**Correction first (item 4).** I told the operator that IGN's fast-entry approvals never reach
+`allocation_decisions`. That came from a comment in `event_core.py` ("`_score_proposals()` never
+writes"), not from the code path. The code: `Allocator.select()` ends with
+`for v in out: self._write_or_collapse(v)` (buffered in memory) and `run.py:528` flushes the buffer
+on the slow timer, so a fast-path TAKE is written like any other verdict. There were zero IGN TAKE
+rows because no IGN TAKE was ever scored: since 09-15 the 14 IGN entries are 13 `ordinary`, 1
+`fast_bootstrap`, **0 `fast_organic`**, and each has allocator rows, all DECLINE (paper entries pass
+through `allocator_permits`' documented floor-only waiver, or the bootstrap override). An earlier
+inference that MEESHO "went through the fast TAKE path" was also wrong — its `entry_path` is
+`ordinary`. Fixed the false comments (`event_core.py`, `_score_proposals` docstring) and pinned the
+real behaviour: `tests/test_fast_entry_audit_trail.py` (a single-proposal TAKE is buffered with its
+full record, flush persists it, `_score_proposals` still goes through `select()`, `run.py` still
+flushes). Nothing to fix in the write path.
+
+*Side finding, not acted on:* IGN is 57.4% of INTRADAY allocator rows since 09-09 (4,155 rows over
+62 symbol-days = 67 rows per symbol-day), mean edge -1.049, 100% negative. Every engine's edges are
+100% negative in this window (means -0.4 to -1.1), so the hurdle percentile is negative and
+`alloc_edge_absolute_floor` is what binds. The arrival population is the repeated-row shape again.
+
+**Built, all switched off (migration 150, 9 keys; `intraday/ign_trend.py`).**
+- *Short-side gate* (`ign_trend_short_gate_enabled`): the mirror of the long gate, own parameters —
+  price below the SuperTrend, -DI at or above a floor, SMA50 below SMA200. Independent of the long
+  gate (tested both ways). `direction` is a required argument everywhere it matters; an unknown
+  direction raises rather than scoring as LONG.
+- *Confidence score* (`ign_trend_confidence_weight`, 0): a -1..+1 score over five fixed
+  pre-registered checks, mirrored per direction, that moves IGN's confidence (clamped 0.05..0.85). Confidence
+  is what `alloc_intraday_confidence_bands` classifies a proposal by; tested through
+  `Allocator._prior_for` itself that a score moves a proposal into a different band's prior.
+  ADX and "yesterday was not a blow-off" are direction-agnostic, so a perfect short panel scores
+  -0.2 for a long, not -1.
+- *Forming-candle panel* (`ign_trend_use_forming`): the panel recomputed with today's still-forming
+  candle, recorded compactly as `Setup.meta['trend_live']` on every detection; the gates and score read
+  it only when the switch is on, and abstain (never fall back) if it cannot be built. `DailyHistory` now
+  keeps the completed bars and `SymbolContext.daily_bars` carries them. Neither record is copied to
+  `intraday_event_shadow`.
+With every switch off IGN's setups are byte-identical to before (tested).
+
+**Study results (both pre-registered and committed before any data, `0319fcd`; holdouts sealed).**
+- *Forming candle, LONG* (same 1,931 detections, no new fetches, 0 rebuild mismatches): train n=1,385,
+  six two-sided hypotheses, all |rho| <= 0.032, all Holm p = 1.0. No candidate.
+- *SHORT side* (2,919 candidate symbol-days -> 520 in the live population over 117 sessions, 241
+  symbols): train n=366, seven hypotheses, all |rho| <= 0.098, best Holm p = 0.455 (prev_vol_ratio).
+  No candidate. **IGN's shorts are net-negative too:** gross +0.028R, cost 0.22R, net **-0.195R per
+  trade (95% CI -0.256..-0.133)**, win 58.5%.
+The one that mattered most to build correctly is the live/study parity: the study's offline forming
+rebuild is tested equal, field by field, to `ign_trend.forming_feats` on a replay-built context.
+
+**Verification.** 1,623 offline checks (was 1,594 before this work), `tools.health` 37/37,
+`tools.simulate` ran the real context-building path end to end and wrote nothing. New logic
+mutation-tested (about 90 mutations; the misses were real test gaps except two equivalent mutants —
+the panel never reads a candle's open, and the forming panel forces `prev_vol_ratio` to None). The
+harness itself needed two fixes (module-attribute imports; dependents that bind a module at import).
+
+**Not verified / limits.** None of it has run in the live daemon (not restarted on the new code).
+Short replay uses bar-close entries and a superset universe like the long study; a short also needs
+Rs 50 Cr of prior-day turnover, twice the long floor, so the replay's turnover proxy matters more.
+
+**Gate:** PASS — machinery in, nothing armed, correction recorded. NEEDS FOLLOW-UP: the operator's
+open decisions (set `daily_history_enabled=false` before deploy; keep IGN on paper; the
+uncommitted graduated-giveback in `exit_policy.py`).
