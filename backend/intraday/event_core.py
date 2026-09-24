@@ -208,7 +208,11 @@ def check(engine, feed) -> int:
                 "confidence":  best.confidence,
                 "rationale":   best.rationale,
                 "detected_at": detected_at.isoformat(),
-                "meta": json.loads(json.dumps(best.meta or {}, default=str)),
+                # `trend` (IGN's daily panel, ~330 B) lives in intraday_setups only:
+                # this table takes a row per detection per cycle (~2.7k/day for IGN).
+                "meta": json.loads(json.dumps(
+                    {k: v for k, v in (best.meta or {}).items() if k != "trend"},
+                    default=str)),
             }).execute()
             logged += 1
         except Exception as e:

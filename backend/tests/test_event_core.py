@@ -141,6 +141,28 @@ def test_check_writes_only_to_intraday_event_shadow():
     assert row["strategy"] == "ORB"
 
 
+def test_the_shadow_row_omits_the_trend_record_but_the_setup_keeps_it():
+    """IGN's daily panel is stored once, in intraday_setups. This table takes a
+    row per detection per cycle, so copying it here would ~triple the storage
+    cost. The setup object itself must NOT be mutated: the fast-entry and
+    recording paths read the same meta afterwards."""
+    from intraday.event_core import check
+    from unittest.mock import patch
+
+    setup = _fake_setup(strategy="IGN")
+    setup.meta.update({"chg_pct": 4.2, "trend": {"available": True, "adx": 25.0}})
+    engine = _FakeEngine(contexts={"TEST": _FakeCtx()})
+    feed = _FakeFeed(dirty={"TEST"}, prices={"TEST": 101.0})
+    with cfg_ctx({"intraday_event_core_enabled": "true"}), \
+         patch("intraday.strategies.registry.evaluate_all", return_value=(setup, [])):
+        check(engine, feed)
+    _, row = engine.sb.writes[0]
+    assert "trend" not in row["meta"], "the panel must not be copied into the shadow table"
+    assert row["meta"]["chg_pct"] == 4.2 and row["meta"]["sub_engine"] == "IGN", (
+        "every other meta key must still be logged")
+    assert setup.meta["trend"]["adx"] == 25.0, "the live setup must keep its trend record"
+
+
 def test_check_refreshes_live_quotes_and_bars_before_evaluating():
     """Reused, not reimplemented -- the same two calls the polling cycle
     already makes every 15s, so a dirty symbol's context reflects the
@@ -216,6 +238,7 @@ TESTS = [
     ("check is a no-op when nothing is dirty", test_check_is_a_noop_when_nothing_is_dirty),
     ("check skips a dirty symbol with no context", test_check_skips_a_dirty_symbol_with_no_context),
     ("check writes only to intraday_event_shadow", test_check_writes_only_to_intraday_event_shadow),
+    ("the shadow row omits the trend record but the setup keeps it", test_the_shadow_row_omits_the_trend_record_but_the_setup_keeps_it),
     ("check refreshes live quotes and bars before evaluating", test_check_refreshes_live_quotes_and_bars_before_evaluating),
     ("check updates context ltp from the live feed", test_check_updates_context_ltp_from_the_live_feed),
     ("check logs nothing when no setup is found", test_check_logs_nothing_when_no_setup_is_found),
