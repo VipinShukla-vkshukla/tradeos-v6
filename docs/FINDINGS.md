@@ -20013,3 +20013,68 @@ code, so no end-to-end live observation of `daily_feats` yet.
 result and append it as its own entry; after the daemon restarts, confirm
 `intraday_setups.meta->'trend'` is populated and `daily_history` logs its
 coverage line.
+
+## 2026-09-24 — IGN daily-trend study RESULT: none of the seven pre-registered signals separates IGN's entries, and IGN is net-negative across 1,936 independent symbol-days
+
+**What ran.** `tools/replay/ign_feature_study.py` over 2026-03-02..2026-09-23: IGN's live
+rules (unmodified) on real Kite minute bars, live exit ladder, first LONG detection per
+(symbol, day) at/after 10:00. 5,451 candidate symbol-days -> **1,936 in the live
+population across 134 sessions** (was 35 in the earlier analysis). Coverage 98.6%: 74
+symbol-days lost to `no_instrument_token` (delisted/renamed), 1 `no_prev`, 5 panels
+failed the close-jump guard. Pre-registration committed before any of it existed
+(`7c28c89`); the holdout was not touched.
+
+**Fidelity to live.** On 15-Sep..23-Sep the replay reproduced 46 of 49 live IGN LONG
+symbol-days (93.9%); the 3 misses were candidates with no bar-close detection. First
+detection time replay-minus-live: median -0.1 min, 65% within +/-5 min. Entry price:
+median 0.06% apart, p90 0.82%.
+
+**Train stage (n=1,385, Holm across 7 tests, alpha 0.10): NO candidates.**
+
+```
+feature           expected   rho      p_holm      (earlier row-level claim)
+above_st             +      -0.037     1.000       (+0.282)
+adx                  +      +0.007     1.000       (+0.228)
+di_minus             -      +0.012     1.000       (-0.263)
+prev_vol_ratio       -      +0.054     0.313       (-0.275, as vol_ratio)
+sma50_gt_200        +/-     +0.010     1.000       (-0.216)
+dist_sma50          +/-     -0.018     1.000       (+0.218)
+rsi14               +/-     -0.004     1.000       (+0.180)
+exploratory: di_plus -0.021, above_sma50 -0.010, ret_1m -0.034
+```
+
+SE of rho at this n is ~0.027, so a real |rho| above ~0.08 would very likely have shown;
+the earlier 0.2-0.3 is ruled out, not merely unconfirmed. Excluding the 74 rows with any
+adjacent-close jump >= 1.2x in their window changes nothing (still no candidate, largest
+|rho| 0.05). With no candidate there is nothing to confirm, so the 548-symbol-day holdout
+(2026-07-20..09-23) stays UNREVEALED and is reserved for the next pre-registered study.
+**Nothing armed; `ign_trend_gate_enabled` stays false.**
+
+**The larger finding: IGN has no net edge in this replay.** Gross mean +0.068R (median
++0.327R, win 66.7%; the ladder banks many small winners and takes some full -1R stops).
+Transaction cost via `cost_model.round_trip(product="MIS")`: median 0.173R, mean 0.194R per
+trade (median risk 1.19% of entry). **Net mean -0.125R per trade, 95% CI [-0.158, -0.093],
+win 60.4%.** Caveats: bar-close entries not ticks, the universe is every liquid mover (a
+superset of live's top-40/bench), and the cost model's own slippage assumption. Entry-side
+filters were the wrong lever for an engine whose gross edge is below its cost.
+
+**Hour effect (checks the armed open-hour gate, migration 141).** Gross R by first
+detection: OPEN +0.081R (n=696), MID +0.052R (n=1,046), LATE +0.052R (n=261). OPEN minus
+later = -0.029R, 95% CI [-0.100, +0.033]. The premise that OPEN is worse does not replicate in
+gross R; the replay does not model open-hour spread/slippage, which is the plausible
+reason live looked worse. Both buckets are net-negative, so the gate changes little
+economically. Left as is.
+
+**Kite daily data.** Not adjusted for Siemens' April-2025 demerger (a 1.33x close-to-close
+step; yfinance is smooth there). The close-jump guard's 1.4x limit misses actions between
+~1.25x and 1.4x; ABFRL (2.27x) and VEDL (1.49x) were correctly caught. 1 unadjusted case in
+471 symbols over ~19 months. Kite daily closes equalled `stock_data_daily`'s raw closes to
+0.0% over the last 8 sessions for RELIANCE/INFY/TCS via the real worker path.
+
+**Open for the operator.** (1) With the panel shown to carry no signal, whether to set
+`daily_history_enabled=false` before the daemon is restarted on the new code (saves ~130
+Kite calls/day and ~0.3 MB/day; delivery_pct is still recorded either way). (2) Whether IGN
+should keep running on paper as an experiment given the net-negative replay.
+
+**Gate:** PASS on study integrity (pre-registered, one unit, holdout preserved, fidelity
+94%); the result is a NULL, not an arming. NEEDS FOLLOW-UP: the two decisions above.
