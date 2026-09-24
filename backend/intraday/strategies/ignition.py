@@ -292,12 +292,9 @@ class IgnitionMomentum:
         stop, risk = frame.stop, frame.risk
         target = ctx.ltp + risk * cfg_float("ign_target_r", 1.5)
 
-        # DAILY TREND-HEALTH GATE — 24-Sep-2026, LONG ONLY, SHIPS DISARMED. The
-        # study that decides what (if anything) to arm is
-        # tools/replay/ign_feature_study.py; until it passes, this only
-        # RECORDS. The SHORT leg is deliberately untouched: every sign in this
-        # panel was hypothesised for longs, and IGN's short sample is too small
-        # to say anything about the mirror image.
+        # Daily trend-health gate (24-Sep-2026): LONG only, ships DISARMED; see
+        # tools/replay/ign_feature_study.py for what may arm. SHORT is untouched:
+        # every signal was hypothesised for longs.
         gate = "off"
         if cfg_bool("ign_trend_gate_enabled", False):
             gate, _, _ = trend_verdict(ctx.daily_feats, **_trend_gate_cfg())

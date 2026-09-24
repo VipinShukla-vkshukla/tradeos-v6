@@ -1,40 +1,21 @@
 """
-Kite-sourced daily history and the trend-feature panel derived from it —
-24-Sep-2026, for IGN's entry-quality study and (disarmed) gate.
+Kite daily history and the trend-feature panel built from it (FINDINGS 2026-09-24).
 
-THE RULE THIS IMPLEMENTS
-------------------------
-Every input to a buy/sell decision comes from Kite, not from a mix of Kite and
-our own tables. `stock_data_daily` cannot supply 200 days anyway (8-day
-retention, migration 130) and its sma/supertrend/DI columns are Chartink
-pass-throughs. `delivery_pct` is the ONE named exception: it is an NSE
-post-settlement figure that does not exist at Kite, so it keeps being read from
-`stock_data_daily` (already on `SymbolContext.delivery_pct_daily`).
+Operator rule: buy/sell inputs come from Kite. delivery_pct is the one exception (NSE
+post-settlement, not at Kite) and is still read from stock_data_daily.
 
-ONLY COMPLETED SESSIONS. The request ends yesterday and any bar dated today or
-later is dropped a second time in `to_daily_bars` — the forming candle must
-never reach the indicators. Features are therefore as-of the last completed
-close: the same quantity the replay study measures.
+Completed sessions only: the request ends yesterday and any bar dated today or later is
+dropped again in to_daily_bars, so a forming candle never reaches the indicators.
 
-COST. One `historical_data` call per symbol per trading day plus one `ltp` call
-per 200 symbols for tokens, on a background thread spaced by
-`daily_history_spacing_s`. The 15 s loop never waits on it and never does I/O
-for it: it only does a dict lookup. Spacing is deliberately slower than the
-retry pattern in tools/swing_fix_replay.py (0.4 s): Kite allows ~3 requests/s
-and `refresh_contexts()` skips a symbol's bars for the whole cycle when one of
-ITS calls is rate-limited, so this thread must leave headroom rather than race.
+Cost: one historical_data call per symbol per day plus one ltp call per 200 symbols, on a
+background thread spaced by daily_history_spacing_s (0.7s: Kite allows ~3/s and
+refresh_contexts() skips a symbol's bars for the cycle when ITS call is rate-limited). The
+15s loop only does a dict lookup.
 
-NO OPINION IS NOT A VERDICT. A symbol with no panel yet, a failed fetch, or a
-history that fails an integrity check yields `None` / `ok=False`; the gate reads
-that as "abstain". It never reads it as a bad trend, and the reason is kept on
-the panel so the shadow record says WHY.
-
-INTEGRITY, AND WHAT IS NOT YET KNOWN. Whether Kite's daily candles are adjusted
-for splits/bonuses is unverified. Two guards run regardless: an adjacent-close
-jump over `_JUMP_LIMIT` (an unadjusted 2:1 shows as 2.0) and a comparison of the
-last few closes against `stock_data_daily`'s raw close. A failed cross-check
-marks the symbol unreliable; an unavailable one does not (cannot-verify is not
-measured-bad) but is recorded as `xcheck_max_diff_pct = None`.
+No panel, a failed fetch, or a failed integrity check yields None / ok=False, which the gate
+reads as "abstain", never as a bad trend. Integrity guards: adjacent-close jump > 1.4x and a
+raw-close cross-check against stock_data_daily. Whether Kite's daily candles are
+split-adjusted is unverified.
 """
 
 from __future__ import annotations

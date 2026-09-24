@@ -1,19 +1,9 @@
 """
-Kite daily history (24-Sep-2026) — intraday/daily_history.py.
-
-WHAT THIS CATCHES
------------------
-The feature panel is only the quantity the replay study measured if it is built
-from COMPLETED sessions. The Kite daily endpoint returns today's still-forming
-candle when asked mid-session, so the worst silent failure here is a forming bar
-reaching the indicators: a +5% spike would drag price above its own SuperTrend
-by construction and the gate would read "healthy trend" on exactly the moves it
-exists to judge. The first tests pin that down.
-
-The rest pin the integrity guards (an unadjusted split, a raw-close mismatch),
-that "cannot verify" is not "measured bad", that a failed fetch yields no panel
-rather than a default, and the worker's queue/rollover behaviour with a fake
-Kite object — no network.
+Kite daily history — intraday/daily_history.py. The worst silent failure here is today's
+forming candle reaching the indicators (a +5% spike would sit above its own SuperTrend by
+construction), so those tests come first; then the integrity guards, "cannot verify is not
+measured bad", failed fetches yielding no panel, and the worker's queue and day rollover
+against a fake Kite object.
 """
 
 from __future__ import annotations

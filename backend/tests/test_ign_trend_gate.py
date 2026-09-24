@@ -1,15 +1,8 @@
 """
-IGN daily trend-health gate + Kite panel wiring (24-Sep-2026).
-
-WHAT THIS PINS
---------------
-The gate ships DISARMED because the evidence for its candidate signals did not
-survive being redone at the independent symbol-day unit. So the tests that
-matter most are the ones about doing NOTHING: with the gate off, a terrible
-panel must change no trade, and the panel must still be recorded so evidence
-accrues. Then the arithmetic of the armed gate, the three "no opinion" cases
-that must ABSTAIN rather than refuse, that the SHORT leg is untouched, and the
-engine wiring that carries a panel from the background worker onto a context.
+IGN daily trend gate and Kite panel wiring. The gate ships DISARMED, so the tests that matter
+most are about doing nothing: gate off, a terrible panel changes no trade and is still recorded.
+Then the armed arithmetic, the "no opinion" cases that must abstain, the untouched SHORT leg,
+and the engine wiring that carries a panel onto a context.
 """
 
 from __future__ import annotations

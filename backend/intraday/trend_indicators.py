@@ -1,35 +1,13 @@
 """
-Daily trend indicators — pure, no I/O. Built for IGN's entry-quality study and
-gate (docs/FINDINGS.md, 24-Sep-2026).
+Daily trend indicators — pure, no I/O. For IGN's entry filter (FINDINGS 2026-09-24).
 
-WHY THIS EXISTS
----------------
-`sma_50/sma_200/supertrend/adx_minus_di` in `stock_data_daily` are Chartink
-pass-throughs and the table now keeps only 8 days (migration 130), so nothing in
-this repo could compute SuperTrend or Wilder DI/ADX, and nothing could compute a
-200-day average from history. The operator's rule is that every input to a
-buy/sell decision comes from Kite, so these are computed here from Kite daily
-bars (intraday/daily_history.py fetches them).
+Computed from Kite daily bars because stock_data_daily keeps 8 sessions (migration 130) and
+its sma/supertrend/DI columns are Chartink pass-throughs.
 
-EVERY FEATURE IS AS-OF THE LAST BAR PASSED IN. The caller decides which bar
-that is; `daily_history.py` passes only COMPLETED sessions, never today's
-forming candle. That is the quantity the replay study measures — a feature
-recomputed with today's forming bar is a different, unvalidated signal (a +5%
-spike drags price above its own SuperTrend by construction).
-
-DEFINITIONS (ours, not Chartink's — parity with Chartink is informational)
---------------------------------------------------------------------------
-  TR          max(high-low, |high-prev_close|, |low-prev_close|)
-  ATR(n)      Wilder: mean of the first n TRs, then (prev*(n-1)+TR)/n
-  SuperTrend  the standard final-band construction, ATR period 10, mult 3.0.
-              STATEFUL — the bands only tighten while the trend holds, and a
-              trend flips only when close crosses the opposing band. The seed
-              washes out over a long history; callers pass 250+ bars.
-  DI/ADX(n)   Wilder: sums of TR/+DM/-DM seeded with the first n, then
-              s - s/n + x; ADX seeded with the mean of the first n DX values.
-  RSI(n)      Wilder.
-
-Every function returns None where the history is too short. It never guesses.
+Every feature is as-of the LAST BAR PASSED IN, and daily_history passes only completed
+sessions: a feature recomputed with today's forming bar is a different, unvalidated signal.
+Definitions are ours (Wilder ATR/DMI/RSI; SuperTrend period 10, mult 3.0, stateful band
+flip), not Chartink's. Every function returns None when history is too short.
 """
 
 from __future__ import annotations

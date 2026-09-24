@@ -1,26 +1,15 @@
 """
-IGN feature study — the statistics and the pre-registration. PURE: no I/O.
+IGN feature study — statistics and pre-registration. Pure, no I/O.
 
-WHY THIS EXISTS — 24-Sep-2026
------------------------------
-The five "vetted" entry signals behind the first IGN filter proposal were
-measured on 3,824 rows that were really 54 independent symbol-days (each
-detection re-recorded ~73 times). Redone at the independent unit (n=35 LONG)
-none cleared p<0.05 and two changed sign. This module is what a real answer
-needs: ONE observation per (symbol, day), a hypothesis list and decision rule
-fixed BEFORE any replay result exists, a permutation p-value (no distributional
-assumption, valid with ties and booleans), a Holm correction across the
-pre-registered list, and a time-ordered holdout that is looked at once.
+The five signals behind the first IGN filter proposal were measured on 3,824 rows that were
+54 independent symbol-days; at the independent unit (n=35 LONG) none was significant and two
+changed sign. This module fixes ONE row per (symbol, day), the hypotheses and decision rule
+BEFORE any replay result, a permutation p with a Holm correction, and a time-ordered holdout
+looked at once.
 
-EVERYTHING BELOW THE LINE MARKED "PRE-REGISTERED" IS COMMITTED BEFORE THE
-REPLAY RUNS. Changing any of it after seeing a result invalidates the study; the
-holdout runner refuses to reveal results for a file version that is not the
-committed one, and refuses to reveal them twice.
-
-WHAT "R" IS. Gross R from the live IGN exit ladder walked over real Kite minute
-bars from the detection instant (tools/replay/ladder_variant_check._walk), the
-same convention every replay tool here uses. It excludes costs, which are
-~0.2R on MIS — a signal that improves gross R by less than that is not a trade.
+Everything between the PRE-REGISTERED markers below was committed before the replay ran;
+changing it after seeing a result invalidates the study. R is gross R from the live IGN exit
+ladder over real Kite minute bars; costs (~0.2R on MIS) are excluded.
 """
 
 from __future__ import annotations

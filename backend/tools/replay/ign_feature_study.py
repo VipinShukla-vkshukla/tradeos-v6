@@ -1,39 +1,22 @@
 """
-IGN feature study — does any daily trend signal separate IGN's good entries from
-its bad ones, measured on far more than 35 independent observations?
+IGN feature study — does any daily trend signal separate IGN's good entries from bad?
 
     python -m tools.replay.ign_feature_study collect --start 2026-03-02 --end 2026-09-23
     python -m tools.replay.ign_feature_study analyze                    # TRAIN only
     python -m tools.replay.ign_feature_study analyze --reveal-holdout   # one look
 
-Pre-registration, decision rule and every statistic live in
-tools/replay/ign_feature_stats.py. That file and this one must be COMMITTED and
-unchanged before `--reveal-holdout` will run, and it will not run twice for the
-same pair of file versions (same mechanism as tools/replay/holdout.py, applied to
-this study's own code because its "parameters" are the hypotheses themselves).
+Pre-registration and statistics: ign_feature_stats.py. Both files must be committed and
+unchanged before --reveal-holdout runs, and it runs once per pair of file versions.
 
-WHAT IS REPLAYED
-----------------
-IGN's real rules (`IgnitionMomentum.evaluate`, unmodified live code) over real
-Kite minute bars, through the existing harness (`replay_symbol_day`), for every
-(symbol, day) that a LOOSE prefilter says could have fired. The exit ladder is
-the live IGN policy. Gross R per first detection of a symbol-day.
+Replays IGN's live rules (unmodified) over real Kite minute bars via the existing harness for
+every liquid (symbol, day) a loose prefilter says could have fired, with the live IGN exit
+ladder; gross R per first detection. `prev` and the feature panel are built from Kite daily bars
+strictly before the day (stock_data_daily keeps 8 sessions); price_history_yf only selects which
+days to fetch. The universe is every liquid mover, a superset of live's top-40/bench.
+delivery_pct has no history, so the live shadow records it prospectively instead.
 
-  * `prev` (prior close/high/low, ATR%, prior-day volume) is built from Kite
-    DAILY bars strictly before the day — the operator's Kite-only rule, and the
-    only option: stock_data_daily keeps 8 sessions (migration 130).
-  * The feature panel is `daily_history.build_panel` on those same bars, as-of
-    the prior completed session. The same function the live daemon runs.
-  * `price_history_yf` is used ONLY to decide which symbol-days are worth
-    fetching minute bars for. It is dividend-adjusted, so it never supplies a
-    decision input.
-  * The universe is every liquid name that moved, not the live top-40/bench —
-    a SUPERSET of what live could trade. `delivery_pct` cannot be replayed (no
-    history) and is recorded prospectively by the live shadow instead.
-
-Two populations per symbol-day, from ONE un-deduplicated replay pass:
-  live     first LONG at/after 10:00 — what the armed open-hour gate lets through
-  ungated  first LONG at any time    — used only to test the hour effect itself
+Two populations from one un-deduplicated pass: "live" (first LONG at/after 10:00, what the
+armed open-hour gate lets through) and "ungated" (first LONG any time, for the hour effect).
 """
 
 from __future__ import annotations

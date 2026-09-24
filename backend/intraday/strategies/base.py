@@ -269,15 +269,10 @@ class SymbolContext:
     # of that day's volume to its trailing average, the exact column
     # discover_engines.py's "prior volume > 1.5x"/"< 0.8x" features read.
     vol_ratio_daily: float | None = None
-    # 24-Sep-2026, IGN's entry-quality study. Feature panel computed from KITE
-    # daily bars (intraday/daily_history.py -> trend_indicators.feature_panel),
-    # as-of the last COMPLETED session — never today's forming candle. Unlike
-    # the *_daily fields above, none of this comes from stock_data_daily or
-    # Chartink: the operator's rule is that buy/sell inputs are Kite-sourced.
-    # None means "no panel yet / fetch failed" and a consumer must ABSTAIN on it;
-    # `daily_feats["ok"]` False means the history failed an integrity check
-    # (unadjusted split, raw-close mismatch, too short) and must abstain too.
-    # Neither is a measurement of a bad trend.
+    # Kite-sourced daily feature panel (intraday/daily_history.py), as-of the last
+    # COMPLETED session — unlike the *_daily fields above, not from stock_data_daily.
+    # None = no panel yet / fetch failed; ["ok"] False = failed an integrity check.
+    # A consumer must ABSTAIN on either; neither measures a bad trend.
     daily_feats: dict | None = None
 
     # ── Provenance, so no decision runs on data of unknown age ──────────────
