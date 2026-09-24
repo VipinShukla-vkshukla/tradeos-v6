@@ -267,6 +267,14 @@ MODULES = [
      "tests.test_intraday_per_engine_policy"),
     ("intraday ARBITRATED_AWAY recording — a losing ACTIVE engine is not discarded",
      "tests.test_intraday_arbitrated_away_recording"),
+    ("daily trend indicators — SuperTrend, Wilder DMI/ATR/RSI, feature panel",
+     "tests.test_trend_indicators"),
+    ("Kite daily history — completed sessions only, integrity guards, worker",
+     "tests.test_daily_history"),
+    ("IGN daily trend gate — disarmed by default, records the panel, abstains on no data",
+     "tests.test_ign_trend_gate"),
+    ("IGN feature study statistics — independent unit, pre-registration, holdout",
+     "tests.test_ign_feature_stats"),
 ]
 
 

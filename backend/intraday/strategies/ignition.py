@@ -129,6 +129,80 @@ from config import cfg_bool, cfg_float, cfg_int
 from intraday.session import PRIME, DRIFT, AFTERNOON
 from intraday.shortability import can_short
 from intraday.strategies.base import Setup, SymbolContext, risk_from_structure
+from intraday.trend_indicators import PANEL_KEYS
+
+
+def trend_verdict(feats: dict | None, *, require_above_st: bool = False,
+                  min_adx: float = 0.0, max_di_minus: float = 0.0,
+                  max_prev_vol_ratio: float = 0.0,
+                  require_sma50_gt_200: bool = False,
+                  min_agree: int = 0) -> tuple[str, int, int]:
+    """
+    PURE. (verdict, passes, evaluable) for IGN's daily trend-health gate.
+
+    verdict is "abstain" | "pass" | "refuse". Only checks switched ON take part
+    (a threshold <= 0, or a false require_* flag, is off). "Abstain" — allow the
+    setup, no opinion — covers: no panel, a panel that failed its integrity
+    check, and no enabled check having a value to read. That is deliberately not
+    "refuse": an absent measurement is not a measured bad trend
+    (CLAUDE.md: "No opinion" and "measured bad" must not give the same answer).
+
+    `min_agree` 0 means every enabled check must pass; otherwise that many. It is
+    capped at the number of checks that COULD be evaluated, so one missing field
+    does not turn a majority rule into an impossible one.
+    """
+    if not feats or not feats.get("ok"):
+        return "abstain", 0, 0
+    checks: list[bool | None] = []
+
+    def add(value, passed):
+        checks.append(None if value is None else bool(passed(value)))
+
+    if require_above_st:
+        add(feats.get("above_st"), lambda v: v is True)
+    if min_adx > 0:
+        add(feats.get("adx"), lambda v: v >= min_adx)
+    if max_di_minus > 0:
+        add(feats.get("di_minus"), lambda v: v <= max_di_minus)
+    if max_prev_vol_ratio > 0:
+        add(feats.get("prev_vol_ratio"), lambda v: v <= max_prev_vol_ratio)
+    if require_sma50_gt_200:
+        add(feats.get("sma50_gt_200"), lambda v: v is True)
+
+    evaluable = [c for c in checks if c is not None]
+    if not evaluable:
+        return "abstain", 0, 0
+    required = min_agree if min_agree > 0 else len(checks)
+    required = min(required, len(evaluable))
+    passes = sum(evaluable)
+    return ("pass" if passes >= required else "refuse"), passes, len(evaluable)
+
+
+def _trend_gate_cfg() -> dict:
+    return dict(
+        require_above_st=cfg_bool("ign_trend_require_above_st", False),
+        min_adx=cfg_float("ign_trend_min_adx", 0.0),
+        max_di_minus=cfg_float("ign_trend_max_di_minus", 0.0),
+        max_prev_vol_ratio=cfg_float("ign_trend_max_prev_vol_ratio", 0.0),
+        require_sma50_gt_200=cfg_bool("ign_trend_require_sma50_gt_200", False),
+        min_agree=cfg_int("ign_trend_min_agree", 0),
+    )
+
+
+def _trend_record(ctx: SymbolContext, gate: str) -> dict:
+    """What goes into Setup.meta['trend'] on EVERY IGN detection, gate armed or
+    not: the Kite-sourced panel as it stood, plus delivery_pct (the one named
+    non-Kite exception — an NSE post-settlement figure). This is the shadow
+    evidence: thresholds are applied offline against intraday_setups, so a
+    detection the gate would later refuse is still on file."""
+    f = ctx.daily_feats
+    rec: dict = {"available": bool(f), "gate": gate,
+                 "delivery_pct_daily": ctx.delivery_pct_daily}
+    if f:
+        rec.update({k: f.get(k) for k in PANEL_KEYS})
+        rec.update({"ok": f.get("ok"), "reason": f.get("reason"),
+                    "as_of": f.get("as_of"), "n_bars": f.get("n_bars")})
+    return rec
 
 
 class IgnitionMomentum:
@@ -218,6 +292,18 @@ class IgnitionMomentum:
         stop, risk = frame.stop, frame.risk
         target = ctx.ltp + risk * cfg_float("ign_target_r", 1.5)
 
+        # DAILY TREND-HEALTH GATE — 24-Sep-2026, LONG ONLY, SHIPS DISARMED. The
+        # study that decides what (if anything) to arm is
+        # tools/replay/ign_feature_study.py; until it passes, this only
+        # RECORDS. The SHORT leg is deliberately untouched: every sign in this
+        # panel was hypothesised for longs, and IGN's short sample is too small
+        # to say anything about the mirror image.
+        gate = "off"
+        if cfg_bool("ign_trend_gate_enabled", False):
+            gate, _, _ = trend_verdict(ctx.daily_feats, **_trend_gate_cfg())
+            if gate == "refuse":
+                return None
+
         return Setup(
             symbol=ctx.symbol, strategy=self.name, direction="LONG",
             entry=round(ctx.ltp, 2), stop=round(stop, 2), target=round(target, 2),
@@ -227,7 +313,8 @@ class IgnitionMomentum:
             invalidation=f"a close back below {swing_low:.2f} — the base under this move",
             valid_phases=self.phases,
             meta={**frame.meta(), "chg_pct": round(chg_pct, 2), "volume_ratio": vr,
-                  "swing_low": round(swing_low, 2)},
+                  "swing_low": round(swing_low, 2),
+                  "trend": _trend_record(ctx, gate)},
         )
 
     def _short(self, ctx, chg_pct, atr, vr, min_move, min_vr) -> Setup | None:
@@ -263,7 +350,8 @@ class IgnitionMomentum:
             invalidation=f"reclaims {swing_high:.2f} — the level this breakdown left behind",
             valid_phases=self.phases,
             meta={**frame.meta(), "chg_pct": round(chg_pct, 2), "volume_ratio": vr,
-                  "swing_high": round(swing_high, 2), "shortability_notes": notes},
+                  "swing_high": round(swing_high, 2), "shortability_notes": notes,
+                  "trend": _trend_record(ctx, "not_applicable_short")},
         )
 
     def _confidence(self, ctx, direction, chg_pct, vr, min_move, min_vr) -> float:

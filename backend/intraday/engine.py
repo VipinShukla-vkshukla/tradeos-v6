@@ -378,6 +378,10 @@ class IntradayEngine:
         # tick-only, bench-only context its prev_close/prev_high/prev_low/
         # atr_pct/avg_volume_20d without spending a historical_data call.
         self._daily_ref: dict = {}
+        # Kite-sourced daily history / trend-feature panels — 24-Sep-2026, built
+        # lazily by _start_daily_history() on a background thread. Read only
+        # through _daily_feats(): a dict lookup, no I/O on the 15s loop.
+        self._daily_history = None
         # symbol -> {"upper_circuit", "lower_circuit", ...} — 08-Sep-2026,
         # built for IGN (intraday/strategies/ignition.py). Refreshed
         # alongside self._daily_ref in refresh_contexts(), on the SAME 300s
@@ -718,6 +722,49 @@ class IntradayEngine:
                 logger.info(f"  engine: participation decayed vs. entry day "
                            f"— {decayed}")
 
+    def _daily_feats(self, sym: str):
+        """Kite-sourced feature panel for `sym`, or None. A dict lookup — the
+        15s loop must never do I/O for this. getattr because several tests
+        build an IntradayEngine via __new__ and set only what they need."""
+        dh = getattr(self, "_daily_history", None)
+        return dh.features(sym) if dh is not None else None
+
+    def _start_daily_history(self, kite, symbols, today) -> None:
+        """Queue Kite daily history for every symbol not yet loaded today. Non-
+        blocking (a background thread does the fetching) and never raises: a
+        failure here must not take down context building."""
+        try:
+            if getattr(self, "_daily_history", None) is None:
+                from intraday.daily_history import DailyHistory
+                self._daily_history = DailyHistory()
+            self._daily_history.ensure(kite, symbols, today, self._raw_closes)
+        except Exception as e:
+            logger.warning(f"  contexts: daily history unavailable — {e}")
+
+    def _raw_closes(self, symbols) -> dict:
+        """symbol -> {date: raw close} for the last ~2 weeks from
+        stock_data_daily, used ONLY to cross-check Kite's daily candles (an
+        integrity guard, not a decision input). Chunked because PostgREST
+        silently caps a response at 1000 rows."""
+        from datetime import date as _date
+        out: dict = {}
+        since = (today_ist() - timedelta(days=16)).isoformat()
+        syms = list(symbols)
+        for i in range(0, len(syms), 50):
+            # The chunk size of 50 is what bounds this read — not an assumption
+            # about the table: 50 symbols x ~12 sessions is at most ~600 rows.
+            # paging-exempt: 50-symbol chunk x 16 calendar days, <= ~600 rows
+            rows = (self.sb.table("stock_data_daily").select("symbol,date,close")
+                    .in_("symbol", syms[i:i + 50]).gte("date", since)
+                    .execute().data or [])
+            for r in rows:
+                try:
+                    out.setdefault(r["symbol"], {})[
+                        _date.fromisoformat(str(r["date"])[:10])] = float(r["close"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+        return out
+
     def refresh_contexts(self) -> int:
         """
         Assemble today's bars and reference levels for every watched symbol,
@@ -815,6 +862,7 @@ class IntradayEngine:
         except Exception as e:
             logger.debug(f"  contexts: prev-day levels unavailable — {e}")
         self._daily_ref = prev
+        self._start_daily_history(kite, ref_symbols, today)
 
         for key, meta in (tokens or {}).items():
             sym = key.split(":", 1)[1]
@@ -886,6 +934,7 @@ class IntradayEngine:
                 dist_sma50_daily=(float(p["dist_sma50"])
                                   if p.get("dist_sma50") is not None else None),
                 vol_ratio_daily=float(p.get("vol_ratio") or 0) or None,
+                daily_feats=self._daily_feats(sym),
                 # Stamped so every consumer can ask how old this is. Contexts
                 # are rebuilt on the 300 s timer and read on the 15 s one.
                 as_of=datetime.now(IST),
@@ -1212,6 +1261,11 @@ class IntradayEngine:
 
             ctx = self._contexts.get(sym)
             if ctx is not None:
+                # The daily-history worker finishes minutes after the first
+                # 300s context build; without this a context built before it
+                # landed would carry None until the NEXT rebuild.
+                if ctx.daily_feats is None:
+                    ctx.daily_feats = self._daily_feats(sym)
                 existing_ts = {b.ts for b in ctx.bars}
                 new = [b for b in live if b.ts not in existing_ts]
                 if new:
@@ -1264,6 +1318,7 @@ class IntradayEngine:
                 # tick-built context either.
                 upper_circuit=(float(cq.get("upper_circuit") or 0) or None),
                 lower_circuit=(float(cq.get("lower_circuit") or 0) or None),
+                daily_feats=self._daily_feats(sym),
                 as_of=datetime.now(IST),
                 live_fields=("bars",),
                 fetched=_fetched_snapshot(

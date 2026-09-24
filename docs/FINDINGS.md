@@ -19925,3 +19925,91 @@ reuses the existing gate rather than duplicating its logic, matches the
 established DECLINE/DEFER alert-fidelity pattern exactly, no schema
 migration. NEEDS FOLLOW-UP: none — this closes the open question from the
 entry above.
+
+## 2026-09-24 — IGN entry-quality filter: the supporting evidence was pseudo-replicated; the machinery ships DISARMED and a pre-registered study decides what arms
+
+**What prompted it.** IGN's exit ladder was tested exhaustively against real
+bars (target R:R, giveback, graduated giveback) and no variant beat the live
+baseline without cutting real winners (JSWINFRA, COHANCE both shook out deep
+before running 1.7-2.1R). The remaining lever is entry quality. IGN checks
+only move %, volume ratio and a structural stop; it reads none of the ~88
+`stock_data_daily` columns. A correlation sweep proposed five daily signals.
+
+**A mistake in my own analysis, stated plainly.** That sweep ran on 3,824
+`intraday_setups` rows and I called it "properly vetted". Those rows are **54
+independent symbol-days over 10 sessions** (35 usable LONG): `intraday_setups`
+re-records the same symbol-day ~73 times. Redone with one row per symbol-day
+(first LONG detection, joined to the prior session):
+
+```
+                 rows (n=3,824)   symbol-days (n=35)
+above_st            +0.282           +0.142
+vol_ratio           -0.275           -0.266
+di_minus            -0.263           -0.291
+sma50_gt_200        -0.216           +0.132   sign flipped
+delivery_pct        -0.209           +0.201   sign flipped
+adx                 +0.228           +0.288
+```
+
+At n=35 one pre-chosen test needs |r| > ~0.33; none clears it, ~39 fields were
+swept, and two changed sign. **None of the five is established. Arming any of
+them would have been acting on noise.** Also: the validated fields are all
+as-of the PRIOR COMPLETED daily bar, so my "live vol_ratio = today's session
+volume" was a different quantity (and IGN already gates on today's volume).
+
+**Same defect, already live.** Migration 141's armed open-hour gate cites
+"n=789". At symbol-day unit (<= 15-Sep): OPEN n=9 mean -1.20% (11% win), MID
+n=11 +0.03%, LATE n=6 -0.08%. The DIRECTION holds (OPEN is worst, ~2.6 SE below
+zero); the reported MID +0.22% / LATE +0.68% magnitudes do not. Gate left as is —
+there is no evidence against it — and the hour effect is re-tested in the study.
+
+**Operator decisions.** (1) Build everything, not phased. (2) Every buy/sell
+input is Kite-sourced, not a mix. (3) `delivery_pct` is the one named exception
+(NSE post-settlement; does not exist at Kite) and stays on `stock_data_daily`.
+
+**Shipped, all DISARMED (migration 149, applied live, 10 keys):**
+- `intraday/trend_indicators.py` — pure SMA, Wilder ATR/DMI/RSI, SuperTrend(10,3),
+  `feature_panel()`. None where history is too short; never a default.
+- `intraday/daily_history.py` — Kite daily bars, one call/symbol/day on a
+  background thread (0.7 s spacing, retry on rate-limit), completed sessions only
+  (request ends yesterday AND any bar dated >= today is dropped), integrity guards
+  (adjacent-close jump > 1.4x, raw-close cross-check vs `stock_data_daily`).
+- `SymbolContext.daily_feats`, wired in `refresh_contexts`, `merge_live_bars`
+  (bench-only build AND late attach of a panel that finished after the context).
+- IGN: `Setup.meta['trend']` is written on EVERY detection (panel + delivery_pct),
+  so evidence accrues prospectively; the gate (`ign_trend_gate_enabled`, default
+  false, LONG only, abstains on no-panel / failed-integrity) is built and inert.
+- `tools/replay/ign_feature_stats.py` + `ign_feature_study.py` — see below.
+
+**The study (pre-registered in `ign_feature_stats.py`, committed BEFORE any replay
+result existed).** IGN's real rules over real Kite minute bars for every liquid
+symbol-day that moved (~5.4k candidates, 2026-03-02..09-23), first LONG
+detection per symbol-day, live exit ladder, gross R. 7 hypotheses with fixed
+signs, permutation p + Holm on the older two-thirds, newest third held out and
+revealed once (`--reveal-holdout` refuses uncommitted code and refuses twice).
+Arms only a signal whose holdout sign agrees and CI excludes zero, and only if the
+composite beats the dropped group by >= 0.10R with a CI above zero while keeping
+>= 40% of trades. Thresholds are round numbers fixed in advance (ADX 20, -DI 20,
+prev vol ratio 2.0). Limits stated: universe is a superset of live's top-40/bench;
+`delivery_pct` has no history so it is prospective only.
+
+**Verification.** 1,558/1,558 offline checks (was 1,494), `tools.health` 36/36.
+Every new check was mutation-tested (49 mutations across the 4 new test modules,
+all caught in the end). That process found three defects in my own tests: a
+"stateful SuperTrend" test that could not fail, an ADX/volume fixture too
+uniform to expose a wrong seed, and a single-seed noise assertion that was a coin
+flip (measured false-confirmation rate 3.3% vs ~2.5% expected, so now asserted as
+a rate). It also found a bug in my mutation harness (`from pkg import mod`
+resolves through the package attribute, not `sys.modules`, so it reported every
+mutation as missed until fixed).
+
+**NOT verified.** Whether Kite's daily candles are split/bonus-adjusted — the
+guards exist but no real corporate action has been observed through them. That
+Kite's daily close equals the bhavcopy close to within 0.5% (cross-check is wired;
+its first live reading is unread). The live daemon has not been restarted with this
+code, so no end-to-end live observation of `daily_feats` yet.
+
+**Gate:** PENDING — machinery in, nothing armed. NEEDS FOLLOW-UP: read the study
+result and append it as its own entry; after the daemon restarts, confirm
+`intraday_setups.meta->'trend'` is populated and `daily_history` logs its
+coverage line.
