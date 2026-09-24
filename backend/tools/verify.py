@@ -277,6 +277,8 @@ MODULES = [
      "tests.test_ign_feature_stats"),
     ("IGN feature study glue — statuses, lookahead guard, holdout preflight, resume",
      "tests.test_ign_feature_study"),
+    ("IGN short-side and forming-candle studies — guard, arming sign rule, live/study quantity parity",
+     "tests.test_ign_new_studies"),
     ("IGN trend modes — short gate, confidence score into the bands, forming-candle panel",
      "tests.test_ign_trend_modes"),
     ("IGN fast-entry verdicts reach allocation_decisions — buffered by select(), flushed on the slow timer",
