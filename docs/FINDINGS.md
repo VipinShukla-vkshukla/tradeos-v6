@@ -20128,9 +20128,9 @@ With every switch off IGN's setups are byte-identical to before (tested).
 The one that mattered most to build correctly is the live/study parity: the study's offline forming
 rebuild is tested equal, field by field, to `ign_trend.forming_feats` on a replay-built context.
 
-**Verification.** 1,623 offline checks (was 1,594 before this work), `tools.health` 37/37,
+**Verification.** 1,623 offline checks (was 1,581 before this batch), `tools.health` 37/37,
 `tools.simulate` ran the real context-building path end to end and wrote nothing. New logic
-mutation-tested (about 90 mutations; the misses were real test gaps except two equivalent mutants —
+mutation-tested (52 mutations plus 2 source-level simulations; the misses were real test gaps except two equivalent mutants —
 the panel never reads a candle's open, and the forming panel forces `prev_vol_ratio` to None). The
 harness itself needed two fixes (module-attribute imports; dependents that bind a module at import).
 
