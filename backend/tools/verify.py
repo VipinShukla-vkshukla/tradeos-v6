@@ -275,6 +275,8 @@ MODULES = [
      "tests.test_ign_trend_gate"),
     ("IGN feature study statistics — independent unit, pre-registration, holdout",
      "tests.test_ign_feature_stats"),
+    ("IGN trend-panel health check — fails on unwritten, leaked, stale, low coverage",
+     "tests.test_ign_trend_health"),
 ]
 
 

@@ -913,6 +913,101 @@ def check_same_day_discovery_writing() -> tuple[bool, str]:
                   f"session(s) — the module is landing rows")
 
 
+# IGN's Kite-sourced trend panel shipped 24-Sep-2026 (migration 149). A committed
+# constant rather than system_config.updated_at, which moves whenever anyone
+# edits a value and would silently re-arm or disarm this check.
+_IGN_TREND_SHIPPED = "2026-09-24"
+_IGN_TREND_GRACE_DAYS = 3
+_IGN_TREND_MIN_COVERAGE = 0.80
+_IGN_TREND_MIN_SAMPLE = 10
+
+
+def ign_trend_verdict(rows: list[dict]) -> tuple[bool, str]:
+    """
+    PURE. `rows` are IGN detections ({trade_date, meta}) from intraday_setups.
+
+    Three ways this can FAIL, each a way the panel could be silently useless:
+      * the code shipped but the daemon is not writing it (no detection after
+        the grace period carries a `trend` record) — "shipped" is not "live";
+      * a panel whose as_of is on or after the detection's own trade date — a
+        FORMING bar reached the indicators, so every feature is a different,
+        unvalidated quantity;
+      * a panel older than 5 days (a stale cache), or coverage under 80% once
+        there are enough records to judge (the worker is failing).
+    Before the grace period ends, no record at all is not a fault.
+    """
+    import json
+    from datetime import date, timedelta
+    due = (date.fromisoformat(_IGN_TREND_SHIPPED)
+           + timedelta(days=_IGN_TREND_GRACE_DAYS)).isoformat()
+    with_trend: list[tuple[str, dict]] = []
+    due_rows = due_missing = 0
+    for r in rows:
+        td = str(r.get("trade_date"))[:10]
+        meta = r.get("meta")
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except ValueError:
+                meta = None
+        trend = meta.get("trend") if isinstance(meta, dict) else None
+        if isinstance(trend, dict):
+            with_trend.append((td, trend))
+        if td > due:
+            due_rows += 1
+            if not isinstance(trend, dict):
+                due_missing += 1
+    if not rows:
+        return True, "no IGN detections in the window — nothing to check"
+    if due_rows and due_missing == due_rows:
+        return False, (f"{due_rows} IGN detection(s) after {due} carry no `trend` record — "
+                       f"the panel shipped {_IGN_TREND_SHIPPED} but the daemon is not writing "
+                       f"it. Was it restarted on the new code, and is daily_history_enabled on?")
+    if not with_trend:
+        return True, (f"no `trend` record yet — grace period runs to {due} "
+                      f"(shipped {_IGN_TREND_SHIPPED}); restart the daemon on the new code")
+    leaks = stale = 0
+    for td, t in with_trend:
+        as_of = t.get("as_of")
+        if not as_of:
+            continue
+        as_of = str(as_of)[:10]
+        if as_of >= td:
+            leaks += 1
+        elif (date.fromisoformat(td) - date.fromisoformat(as_of)).days > 5:
+            stale += 1
+    if leaks:
+        return False, (f"{leaks} of {len(with_trend)} panel(s) have as_of on or after the "
+                       f"detection's own trade date — a FORMING daily bar reached the "
+                       f"indicators. Check intraday/daily_history.to_daily_bars.")
+    if stale:
+        return False, f"{stale} of {len(with_trend)} panel(s) are more than 5 days old"
+    good = sum(1 for _, t in with_trend if t.get("available") and t.get("ok"))
+    cov = good / len(with_trend)
+    if len(with_trend) >= _IGN_TREND_MIN_SAMPLE and cov < _IGN_TREND_MIN_COVERAGE:
+        reasons: dict[str, int] = {}
+        for _, t in with_trend:
+            if not (t.get("available") and t.get("ok")):
+                k = str(t.get("reason") or ("no panel" if not t.get("available") else "?"))
+                k = k.split(":")[0]
+                reasons[k] = reasons.get(k, 0) + 1
+        top = ", ".join(f"{k}={v}" for k, v in sorted(reasons.items(), key=lambda kv: -kv[1])[:4])
+        return False, (f"only {good}/{len(with_trend)} ({cov:.0%}) IGN detections carry a usable "
+                       f"panel (need {_IGN_TREND_MIN_COVERAGE:.0%}): {top}")
+    return True, (f"{good}/{len(with_trend)} IGN detection(s) carry a usable panel "
+                  f"({cov:.0%}); none leaks a forming bar")
+
+
+def check_ign_trend_panel() -> tuple[bool, str]:
+    from config import fetch_all, get_supabase, today_ist
+    from datetime import timedelta
+    sb = get_supabase()
+    since = (today_ist() - timedelta(days=7)).isoformat()
+    rows = fetch_all(lambda: sb.table("intraday_setups").select("id,trade_date,meta")
+                     .eq("strategy", "IGN").gte("trade_date", since))
+    return ign_trend_verdict(rows)
+
+
 def check_pending_fill_duplicates() -> tuple[bool, str]:
     """
     Did a SWING symbol get bought twice within minutes — the F-67
@@ -2675,6 +2770,7 @@ CHECKS = [
     ("pending",  "an entry order that never filled is being tracked as a real position", check_pending_fills, False),
     ("pending_entries", "a resting swing entry (Phase 3b) is stuck past its own ladder", check_pending_entries, False),
     ("same_day_discovery", "same-day setup discovery (Phase 4) is silently producing nothing", check_same_day_discovery_writing, False),
+    ("ign_trend", "IGN's Kite trend panel is not being written, is stale, or leaks today's forming bar", check_ign_trend_panel, False),
     ("pending_dup", "a SWING symbol was bought twice within minutes — the F-67 shape", check_pending_fill_duplicates, False),
     ("pending_scale_in", "a Stage E7 add-on order never filled and nobody would otherwise notice", check_pending_scale_ins, False),
     ("sector_risk", "a majority of the open SWING book sits in sectors rotating away from it", check_sector_concentration_risk, False),
