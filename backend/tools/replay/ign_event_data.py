@@ -34,7 +34,9 @@ import argparse
 import json
 import random
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date as _date, timedelta
 from pathlib import Path
 
@@ -47,7 +49,7 @@ from kite.kite_client import get_kite
 from tools.replay import bars as _bars_mod
 from tools.replay import ign_feature_stats as S
 from tools.replay import ign_feature_study as X
-from tools.replay.bars import BarSource
+from tools.replay.bars import Bar, BarSource
 
 PERIOD_START = "2025-01-02"
 UP_PCT = 3.0            # primary tier: the design region for IGN (live trigger is 3.5%)
@@ -100,22 +102,124 @@ def freeze_lists(end: str | None = None) -> dict:
     return lists
 
 
-def _fetch_minute(src: BarSource, sym: str, day: str) -> int:
-    """One symbol-day with rate-limit resilience: the source halts after 5 consecutive
-    failures, which over a multi-hour run is a transient blip, not a stop."""
-    if src._consecutive_failures >= 5:
-        logger.warning("  event data: pausing 60s after consecutive fetch failures")
-        time.sleep(60)
-        src._consecutive_failures = 0
-    return len(src.get(sym, day))
+MAX_SPAN_DAYS = 58          # Kite allows 60 calendar days of minute bars per request
+MIN_DAYS_FOR_RANGE = 2      # a lone day is cheaper as a one-day request than a 58-day one
 
 
-def collect(min_interval: float, only: str | None = None, loose: bool = False) -> None:
+def plan_windows(days: list[str], max_span: int = MAX_SPAN_DAYS) -> list[list[str]]:
+    """Group sorted ISO dates into windows each spanning <= max_span calendar days, so one
+    request can cover every needed day inside it. Pure, so it can be tested offline."""
+    out: list[list[str]] = []
+    for d in sorted(set(days)):
+        if out and (_date.fromisoformat(d) - _date.fromisoformat(out[-1][0])).days <= max_span:
+            out[-1].append(d)
+        else:
+            out.append([d])
+    return out
+
+
+def split_by_day(raw: list[dict], wanted: set[str]) -> dict[str, list[Bar]]:
+    """Kite's multi-day response -> {day: [Bar]} for the wanted days only, in the exact shape
+    BarSource.get stores for a one-day request."""
+    from config import IST
+    out: dict[str, list[Bar]] = {}
+    for b in raw:
+        ts = b["date"]
+        if ts.tzinfo is None:
+            ts = IST.localize(ts)
+        day = ts.date().isoformat()
+        if day not in wanted:
+            continue
+        out.setdefault(day, []).append(Bar(
+            ts=ts, open=float(b["open"]), high=float(b["high"]), low=float(b["low"]),
+            close=float(b["close"]), volume=float(b.get("volume") or 0)))
+    return out
+
+
+class _Limiter:
+    """One shared request clock, so N worker threads together stay under Kite's ~3 req/s."""
+
+    def __init__(self, min_interval: float):
+        self.min_interval, self._last, self._lock = min_interval, 0.0, threading.Lock()
+
+    def wait(self) -> None:
+        with self._lock:
+            gap = self.min_interval - (time.monotonic() - self._last)
+            if gap > 0:
+                time.sleep(gap)
+            self._last = time.monotonic()
+
+
+def _missing(symbol: str, days) -> list[str]:
+    return sorted(d for d in set(days) if not _bars_mod._cache_path(symbol, d, "minute").exists())
+
+
+def _fetch_window(kite, limiter: _Limiter, token: int, symbol: str, window: list[str]) -> tuple[int, int]:
+    """One range request for a window; stores each needed day. Returns (stored, missed)."""
+    lo, hi = _date.fromisoformat(window[0]), _date.fromisoformat(window[-1])
+    raw = None
+    for attempt in range(5):
+        limiter.wait()
+        try:
+            raw = kite.historical_data(token, lo, hi, "minute") or []
+            break
+        except Exception as e:
+            if "Too many" in str(e) or "429" in str(e) or "timed out" in str(e).lower():
+                time.sleep(3 * (attempt + 1))
+                continue
+            logger.warning(f"  {symbol} {window[0]}..{window[-1]}: {type(e).__name__}: {str(e)[:80]}")
+            break
+    if raw is None:
+        return 0, len(window)
+    got = split_by_day(raw, set(window))
+    stored = 0
+    for day, bars in got.items():
+        _bars_mod._store(symbol, day, "minute", bars)
+        _bars_mod._write_manifest({"symbol": symbol, "date": day, "interval": "minute",
+                                   "rows": len(bars), "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                                   "status": "OK"})
+        stored += 1
+    return stored, len(window) - stored
+
+
+def fetch_minute_days(kite, tokens: dict[str, int], wanted: dict[str, list[str]],
+                      min_interval: float = 0.4, workers: int = 3, label: str = "minute") -> None:
+    """Fill the minute-bar cache for {symbol: [days]}, windowed and threaded, resumable."""
+    jobs: list[tuple[str, list[str]]] = []
+    for sym, days in wanted.items():
+        need = _missing(sym, days)
+        if not need or sym not in tokens:
+            continue
+        for w in plan_windows(need):
+            jobs.append((sym, w))
+    total_days = sum(len(w) for _, w in jobs)
+    print(f"  {label}: {len(jobs)} requests for {total_days} uncached symbol-days", flush=True)
+    limiter, lock = _Limiter(min_interval), threading.Lock()
+    prog = {"jobs": 0, "stored": 0, "missed": 0}
+    t0 = time.time()
+
+    def run(job):
+        sym, w = job
+        st, ms = _fetch_window(kite, limiter, tokens[sym], sym, w)
+        with lock:
+            prog["jobs"] += 1
+            prog["stored"] += st
+            prog["missed"] += ms
+            if prog["jobs"] % 100 == 0 or prog["jobs"] == len(jobs):
+                el = time.time() - t0
+                print(f"  {label} {prog['jobs']}/{len(jobs)} requests, {prog['stored']} days stored, "
+                      f"{prog['missed']} missing, {el / 60:.1f} min, ~{el / prog['jobs'] * (len(jobs) - prog['jobs']) / 60:.0f} min left",
+                      flush=True)
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        list(ex.map(run, jobs))
+
+
+def collect(min_interval: float, only: str | None = None, loose: bool = False, workers: int = 3) -> None:
     lists = freeze_lists()
     kite = get_kite()
     if kite is None:
         raise SystemExit("no Kite session")
-    _bars_mod._MIN_INTERVAL_S = min_interval
     src = BarSource(kite=kite)
     src._tokens.update(INDICES)
     events = [tuple(e) for e in lists["events"]]
@@ -125,7 +229,8 @@ def collect(min_interval: float, only: str | None = None, loose: bool = False) -
                      | {s for s, _ in loose_events})
     print(f"events {len(events)}, controls {len(controls)}, symbols {len(symbols)}, "
           f"sessions {len(lists['sessions'])}", flush=True)
-    src.resolve_tokens(symbols)
+    tokens = dict(src.resolve_tokens(symbols))
+    tokens.update(INDICES)
 
     if only in (None, "daily"):
         need_start = _date.fromisoformat(lists["start"]) - timedelta(days=DAILY_LOOKBACK_DAYS)
@@ -133,38 +238,26 @@ def collect(min_interval: float, only: str | None = None, loose: bool = False) -
         t0 = time.time()
         for i, sym in enumerate(symbols, 1):
             try:
-                X.daily_raw(kite, src, sym, need_start, need_end, min_interval)
+                X.daily_raw(kite, src, sym, need_start, need_end, max(min_interval, 0.5))
             except Exception as e:
                 logger.warning(f"  daily fetch failed for {sym}: {e}")
             if i % 100 == 0:
                 print(f"  daily {i}/{len(symbols)}  {time.time() - t0:.0f}s", flush=True)
         for name, tok in INDICES.items():
             try:
-                _daily_index(kite, name, tok, need_start, need_end, min_interval)
+                _daily_index(kite, name, tok, need_start, need_end, max(min_interval, 0.5))
             except Exception as e:
                 logger.warning(f"  index daily failed for {name}: {e}")
 
     if only in (None, "context"):
-        t0 = time.time()
-        done = 0
-        for day in lists["sessions"]:
-            for name in INDICES:
-                _fetch_minute(src, name, day)
-            done += 1
-            if done % 50 == 0:
-                print(f"  context {done}/{len(lists['sessions'])} sessions  {time.time() - t0:.0f}s  "
-                      f"{src.coverage.line()}", flush=True)
+        fetch_minute_days(kite, tokens, {n: lists["sessions"] for n in INDICES},
+                          min_interval, workers, "context")
 
     if only in (None, "minute"):
-        todo = ([("control", s, d) for s, d in controls] + [("event", s, d) for s, d in events]
-                + [("loose", s, d) for s, d in loose_events])
-        t0 = time.time()
-        for i, (kind, sym, day) in enumerate(todo, 1):
-            _fetch_minute(src, sym, day)
-            if i % 500 == 0 or i == len(todo):
-                el = time.time() - t0
-                print(f"  minute {i}/{len(todo)}  {el / 60:.1f} min, ~{el / i * (len(todo) - i) / 60:.0f} "
-                      f"min left — {src.coverage.line()}", flush=True)
+        wanted: dict[str, list[str]] = {}
+        for sym, day in controls + events + loose_events:
+            wanted.setdefault(sym, []).append(day)
+        fetch_minute_days(kite, tokens, wanted, min_interval, workers, "minute")
     print("done", flush=True)
 
 
@@ -197,7 +290,9 @@ def main() -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("lists")
     c = sub.add_parser("collect")
-    c.add_argument("--min-interval", type=float, default=0.5)
+    c.add_argument("--min-interval", type=float, default=0.4,
+                   help="seconds between request STARTS across all workers (3 req/s is Kite's cap)")
+    c.add_argument("--workers", type=int, default=3)
     c.add_argument("--only", choices=("daily", "context", "minute"), default=None)
     c.add_argument("--loose", action="store_true", help="also fetch the 2.5-3.0%% tier")
     args = p.parse_args()
@@ -207,7 +302,7 @@ def main() -> int:
               f"(of which also events: {lists['controls_also_events']})  eligible {lists['n_eligible']}  "
               f"sessions {len(lists['sessions'])}  {lists['start']}..{lists['end']}")
         return 0
-    collect(args.min_interval, args.only, args.loose)
+    collect(args.min_interval, args.only, args.loose, args.workers)
     return 0
 
 
