@@ -84,6 +84,12 @@ def load_intraday_policy(engine: str | None = None) -> dict:
     # engine-resolved partial_book_r, so _f's override check below has the
     # right value to fall back to either way.
     breakeven_default = cfg_float("intraday_breakeven_at_r", partial_book_r)
+    # Same reasoning, resolved FIRST for the same reason: giveback_pct_at_arm
+    # and giveback_scale_full_r's own fallbacks (below) need to cascade
+    # through an engine's OWN giveback_pct/giveback_min_r override, not
+    # silently drop back to the pooled value regardless of engine.
+    giveback_pct = _f("giveback_pct", cfg_float("intraday_giveback_pct", 0.0))
+    giveback_min_r = _f("giveback_min_r", cfg_float("intraday_giveback_min_r", 0.5))
 
     return {
         "use_setup_target":   cfg_bool("intraday_use_setup_target", True),
@@ -103,7 +109,7 @@ def load_intraday_policy(engine: str | None = None) -> dict:
         "breakeven_at_r":     _f("breakeven_at_r", breakeven_default),
         "cost_buffer_pct":    cfg_float("intraday_breakeven_cost_pct", 0.21),
         # Give-back guard. OFF by default — see the note in evaluate_intraday_exit.
-        "giveback_pct":       _f("giveback_pct", cfg_float("intraday_giveback_pct", 0.0)),
+        "giveback_pct":       giveback_pct,
         # Runway-aware tightening for OPEN shorts. OFF by default, same
         # reasoning as giveback_pct just above: never measured against this
         # book's own outcomes yet, so it ships inert until an operator arms
@@ -134,7 +140,15 @@ def load_intraday_policy(engine: str | None = None) -> dict:
         # `python -m tools.exit_ladder_replay --min-r <x>` as the sample
         # grows — n=27 is real but still thin; treat this as the data's
         # current best answer, not a settled one.
-        "giveback_min_r":     _f("giveback_min_r", cfg_float("intraday_giveback_min_r", 0.5)),
+        "giveback_min_r":     giveback_min_r,
+        # Graduated tolerance -- see evaluate_intraday_exit's own note.
+        # Unset (mirrors giveback_pct/giveback_min_r, both already
+        # engine-resolved above) means a flat ramp, i.e. today's exact
+        # rule, for every engine that has not opted in.
+        "giveback_pct_at_arm":   _f("giveback_pct_at_arm",
+                                    cfg_float("intraday_giveback_pct_at_arm", giveback_pct)),
+        "giveback_scale_full_r": _f("giveback_scale_full_r",
+                                    cfg_float("intraday_giveback_scale_full_r", giveback_min_r)),
 
         # VOLUME DECAY — a LEADING signal ahead of the time stop, off by
         # default for the same reason giveback_pct shipped off: this exact
@@ -500,17 +514,46 @@ def evaluate_intraday_exit(pos: dict, ltp: float, policy: dict,
     # high_water_mark holds the MOST FAVOURABLE price seen, which for a short is
     # the session low. The column keeps its name; its meaning is direction-
     # dependent and is defined in intraday/direction.py rather than here.
+    # GRADUATED TOLERANCE — 23-Sep-2026. Tested flat, tighter-armed
+    # giveback settings against IGN's own real trades (docs/FINDINGS.md):
+    # arming earlier (lower giveback_min_r) saves the trades that peak low
+    # and never recover, but ALSO cuts real winners short on ordinary
+    # early chop -- JSWINFRA and COHANCE both hit their real 1.5R target
+    # live, and both would have been sliced to +0.10R/+0.23R by a flat,
+    # low arm point. No single flat percentage tested beat today's
+    # baseline once "don't gut the real winners" was a hard requirement.
+    #
+    # `giveback_pct_at_arm` (loose) and `giveback_pct` (tight, the same
+    # field the flat rule already used) are now the two ends of a linear
+    # ramp: tolerant right at `giveback_min_r` — an early, small peak
+    # giving back the same PERCENTAGE is far more likely to be noise than
+    # a real reversal — tightening to the existing `giveback_pct` by
+    # `giveback_scale_full_r`, where a trade has proven enough to be
+    # worth defending tightly. A genuine full reversal still exceeds even
+    # the loose end eventually; it is the permanent losers this protects
+    # against, not the ones that dip and continue.
+    #
+    # DEGRADES TO THE FLAT RULE EXACTLY when `giveback_pct_at_arm` is
+    # unset — same value as `giveback_pct`, so the ramp is flat and this
+    # is a no-op for every engine that has not opted in.
     hwm_px = float(pos.get("high_water_mark") or 0)
     if policy["giveback_pct"] > 0 and hwm_px and D.is_better_price(hwm_px, entry, d):
         peak_r = D.gain_r(entry, hwm_px, risk, d)
         if peak_r >= policy["giveback_min_r"]:
             kept = gain_r / peak_r if peak_r > 0 else 1.0
-            if kept < (1.0 - policy["giveback_pct"] / 100.0):
+            pct_at_arm = policy.get("giveback_pct_at_arm", policy["giveback_pct"])
+            full_r = policy.get("giveback_scale_full_r", policy["giveback_min_r"])
+            span = full_r - policy["giveback_min_r"]
+            frac = ((peak_r - policy["giveback_min_r"]) / span) if span > 0 else 1.0
+            frac = max(0.0, min(1.0, frac))
+            effective_pct = pct_at_arm + (policy["giveback_pct"] - pct_at_arm) * frac
+            if kept < (1.0 - effective_pct / 100.0):
                 return {
                     "action": "EXIT_GIVEBACK", "reason": "GAVE_BACK_THE_MOVE",
                     "detail": (f"peaked at {peak_r:.2f}R and is back to {gain_r:+.2f}R "
                                f"({gain_pct:+.2f}%) — {1 - kept:.0%} of the move handed "
-                               f"back, and intraday there is no tomorrow to recover it"),
+                               f"back against a {effective_pct:.0f}% tolerance at this "
+                               f"peak, and intraday there is no tomorrow to recover it"),
                     "new_sl": None, "book_qty": 0,
                 }
 
