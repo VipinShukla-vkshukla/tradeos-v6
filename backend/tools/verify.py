@@ -283,6 +283,8 @@ MODULES = [
      "tests.test_ign_event_data"),
     ("IGN event study simulator — hand-worked trades, fast vs reference agreement, no look-ahead",
      "tests.test_ign_event_sim"),
+    ("IGN event table builder — cells, no look-ahead into features, skip reasons, sealed holdout",
+     "tests.test_ign_event_table"),
     ("IGN short-side and forming-candle studies — guard, arming sign rule, live/study quantity parity",
      "tests.test_ign_new_studies"),
     ("IGN trend modes — short gate, confidence score into the bands, forming-candle panel",
