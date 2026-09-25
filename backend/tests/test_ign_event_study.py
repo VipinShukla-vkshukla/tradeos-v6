@@ -207,6 +207,25 @@ def test_pair_filters_use_two_different_features():
     assert all(c["filters"][0].feature != c["filters"][1].feature for c in pairs)
 
 
+def test_feature_scan_ranks_the_related_feature_first_and_reports_fifths():
+    rng = np.random.default_rng(12)
+    n = 2000
+    f1 = rng.normal(0, 1, n)
+    df = pd.DataFrame({"day": ["d"] * n, "cell": "A", "move_pct": f1, "vr_ign": rng.normal(0, 1, n),
+                       "adx": np.full(n, 3.0), "rsi14": np.where(rng.random(n) < 0.3, np.nan, rng.normal(0, 1, n))})
+    x = 0.5 * f1 + rng.normal(0, 1, n)
+    out = E.feature_scan(E.prepare_table(df), x)
+    assert out[0]["feature"] == "move_pct" and out[0]["rho"] > 0.3
+    assert "adx" not in {r["feature"] for r in out}, "a constant feature has nothing to say"
+    q = out[0]["quintile_means"]
+    assert q[0] < q[2] < q[4] and out[0]["spread"] == q[4] - q[0], q
+    rsi = [r for r in out if r["feature"] == "rsi14"][0]
+    assert rsi["n"] < 1600, "rows missing the feature are left out of its scan"
+    xs = x.copy()
+    xs[:1950] = np.nan                                             # no trades on most rows
+    assert E.feature_scan(E.prepare_table(df), xs) == [], "under 100 trades there is nothing to scan"
+
+
 TESTS = [
     ("net R is gross less cost over risk; no trade stays no trade",
      test_net_r_is_gross_less_cost_over_risk_and_no_trade_stays_no_trade),
@@ -230,4 +249,6 @@ TESTS = [
     ("search never returns a config below the minimum trade count",
      test_search_never_returns_a_config_below_the_minimum_trade_count),
     ("pair filters use two different features", test_pair_filters_use_two_different_features),
+    ("feature scan ranks the related feature first and reports fifths",
+     test_feature_scan_ranks_the_related_feature_first_and_reports_fifths),
 ]

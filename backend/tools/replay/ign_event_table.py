@@ -144,11 +144,19 @@ class Ctx:
         self.profile = profile
         self.idx_daily = {n: _load_index_daily(n) for n in INDICES}
         self._raw: dict[str, list | None] = {}
+        self._idx_bars: dict[tuple, F.DayBars | None] = {}
 
     def raw(self, sym: str):
         if sym not in self._raw:
             self._raw[sym] = _load_daily(sym)
         return self._raw[sym]
+
+    def index_bars(self, name: str, day: str):
+        """An index's minute bars for one day, kept: every symbol-day on that day reads them."""
+        key = (name, day)
+        if key not in self._idx_bars:
+            self._idx_bars[key] = day_bars(name, day)
+        return self._idx_bars[key]
 
 
 def row_features(ctx: Ctx, sym: str, day: str, d: F.DayBars, i: int, daily_bars: list,
@@ -191,7 +199,7 @@ def symbol_day_rows(ctx: Ctx, sym: str, day: str, kind: str, rng) -> tuple[list[
     gap = (float(d.o[0]) / prev_close - 1.0) * 100.0
     if abs(gap) > MAX_GAP_PCT:
         return "corporate_action_gap"
-    idx_bars = {n: day_bars(n, day) for n in INDICES}
+    idx_bars = {n: ctx.index_bars(n, day) for n in INDICES}
     idx_prev = {n: F.index_daily_features(ctx.idx_daily[n], day) for n in INDICES}
     atr = dfeat.get("atr14_pct") or 2.0
 

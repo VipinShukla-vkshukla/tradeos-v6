@@ -451,6 +451,57 @@ def print_audit(a: dict) -> None:
         print("\n  LIVE cell vs the earlier IGN study (same window):", a["live_parity"])
 
 
+# ── descriptive exploration (train only; selects nothing) ───────────────────
+
+def feature_scan(df, x: np.ndarray, features: Sequence[str] = NUMERIC_FEATURES + BOOLEAN_FEATURES,
+                 min_n: int = 100) -> list[dict]:
+    """What each datapoint says about the outcome `x` (net R per row, NaN = no trade): Spearman
+    rho and the mean outcome in each fifth of the feature. Descriptive: dozens of features are
+    scanned, so a single p-value here proves nothing; the walk-forward is what does."""
+    from scipy.stats import spearmanr
+    out = []
+    for f in features:
+        if f not in df.columns:
+            continue
+        v = df[f].to_numpy(dtype=float)
+        ok = ~np.isnan(v) & ~np.isnan(x)
+        if ok.sum() < min_n or np.ptp(v[ok]) == 0:
+            continue
+        rho, p = spearmanr(v[ok], x[ok])
+        edges = np.quantile(v[ok], QUANTILES)
+        b = np.digitize(v[ok], edges, right=False)
+        q = [float(x[ok][b == k].mean()) if (b == k).any() else float("nan") for k in range(5)]
+        out.append({"feature": f, "n": int(ok.sum()), "rho": float(rho), "p": float(p), "quintile_means": q,
+                    "spread": (q[4] - q[0]) if q[0] == q[0] and q[4] == q[4] else float("nan")})
+    out.sort(key=lambda d: -abs(d["rho"]))
+    return out
+
+
+def explore(cell: str, policy: str, loader=None, top: int = 25) -> None:
+    from tools.replay.ign_event_table import load_train
+    df, res, names = (loader or load_train)()
+    df = prepare_table(df)
+    R = net_r(res["gross"], res["risk"], COST_PCT, RISK_BAND, _struct_cols(names))
+    m = (df["cell"].to_numpy() == cell)
+    sub = df[m].reset_index(drop=True)
+    print(f"cell {cell}: {len(sub)} rows, {sub.groupby(['symbol', 'day']).ngroups} symbol-days\n")
+    print(f"  every exit policy for this cell (net R at cost {COST_PCT}%, day-clustered SE), by win rate")
+    print(f"  {'policy':26s}{'trades':>7s}{'win%':>7s}{'gross%':>8s}{'netR':>8s}{'se':>7s}")
+    rows = []
+    for j, nm in enumerate(names):
+        s_ = _summ(R[m, j], sub["day"].to_numpy())
+        if s_["n"] >= 30:
+            g = res["gross"][m, j].astype(float)
+            rows.append((s_["win"], nm, s_, float(np.nanmean(g))))
+    for win, nm, s_, g in sorted(rows, key=lambda r: -r[0])[:top]:
+        print(f"  {nm:26s}{s_['n']:7d}{100 * win:7.1f}{_fmt(g, 8)}{_fmt(s_['mean'], 8)}{_fmt(s_['se'], 7)}")
+    j = names.index(policy)
+    print(f"\n  datapoints vs net R for {policy}  (Spearman rho; mean net R in each fifth of the feature, low to high)")
+    print(f"  {'feature':22s}{'n':>6s}{'rho':>8s}{'p':>9s}   Q1      Q2      Q3      Q4      Q5")
+    for r in feature_scan(sub, R[m, j])[:top]:
+        print(f"  {r['feature']:22s}{r['n']:6d}{r['rho']:8.3f}{r['p']:9.4f}   " + " ".join(_fmt(q, 7, 3) for q in r["quintile_means"]))
+
+
 # ── freezing the design ─────────────────────────────────────────────────────
 
 def _filter_dict(f: Filter) -> dict:
@@ -600,9 +651,13 @@ def run_reveal(spec_path: Path | None = None) -> dict:
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("stage", choices=("audit", "select", "reveal"))
+    p.add_argument("stage", choices=("audit", "select", "reveal", "explore"))
+    p.add_argument("--cell", default="LIVE")
+    p.add_argument("--policy", default="L|nx|s20|t1.5|m-|b-")
     args = p.parse_args()
-    if args.stage == "audit":
+    if args.stage == "explore":
+        explore(args.cell, args.policy)
+    elif args.stage == "audit":
         print_audit(audit())
     elif args.stage == "select":
         print_select(run_select())
