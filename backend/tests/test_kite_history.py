@@ -30,20 +30,23 @@ SAT = datetime(2026, 9, 26, 13, 0, tzinfo=IST)           # a Saturday: the marke
 
 # ── the fake broker ─────────────────────────────────────────────────────────
 
-def _candle_rows(token: int, day: date, interval: str, with_oi: bool) -> list[dict]:
-    """Deterministic candles for one trading day, so any stored value can be recomputed independently."""
+def _candle_rows(token: int, day: date, interval: str, with_oi: bool, factor: float = 1.0) -> list[dict]:
+    """Deterministic candles for one trading day, so any stored value can be recomputed independently. `factor` is a
+    retroactive corporate-action adjustment: prices scaled by it, volume by its inverse."""
     if interval == "day":
         base = 100.0 + token % 7 + day.toordinal() * 0.001
-        r = {"date": datetime(day.year, day.month, day.day, tzinfo=IST), "open": round(base, 2),
-             "high": round(base + 1, 2), "low": round(base - 1, 2), "close": round(base + 0.5, 2), "volume": 1000 + token}
+        r = {"date": datetime(day.year, day.month, day.day, tzinfo=IST), "open": round(base * factor, 2),
+             "high": round((base + 1) * factor, 2), "low": round((base - 1) * factor, 2),
+             "close": round((base + 0.5) * factor, 2), "volume": int((1000 + token) / factor)}
         if with_oi:
             r["oi"] = 5000 + token
         return [r]
     rows = []
     for i in range(375):
-        o = round(100.0 + token % 7 + day.toordinal() * 0.001 + i * 0.01, 2)
-        r = {"date": datetime(day.year, day.month, day.day, 9, 15, tzinfo=IST) + timedelta(minutes=i), "open": o,
-             "high": round(o + 0.1, 2), "low": round(o - 0.1, 2), "close": round(o + 0.05, 2), "volume": 100 + i}
+        o = 100.0 + token % 7 + day.toordinal() * 0.001 + i * 0.01
+        r = {"date": datetime(day.year, day.month, day.day, 9, 15, tzinfo=IST) + timedelta(minutes=i),
+             "open": round(o * factor, 2), "high": round((o + 0.1) * factor, 2), "low": round((o - 0.1) * factor, 2),
+             "close": round((o + 0.05) * factor, 2), "volume": int((100 + i) / factor)}
         if with_oi:
             r["oi"] = 5000 + i
         rows.append(r)
@@ -54,8 +57,10 @@ class FakeKite:
     LIMIT = {"minute": 60, "day": 2000}
 
     def __init__(self, series: dict, data_end: date = date(2026, 9, 25), token_dies_after: int | None = None,
-                 faults: dict | None = None, always_fail: dict | None = None, refuse: dict | None = None):
+                 faults: dict | None = None, always_fail: dict | None = None, refuse: dict | None = None,
+                 adjustments: dict | None = None):
         self.series, self.data_end = series, data_end
+        self.adjustments = dict(adjustments or {})      # token -> (ex-date, factor): every day BEFORE the ex-date is rescaled
         self.token_dies_after, self.faults = token_dies_after, dict(faults or {})
         self.always_fail, self.refuse = dict(always_fail or {}), dict(refuse or {})
         self.calls: list[tuple] = []
@@ -76,11 +81,12 @@ class FakeKite:
         if (to_date - from_date).days + 1 > self.LIMIT[interval]:
             raise InputException(f"interval exceeds max limit: {self.LIMIT[interval]} days")
         first, last = self.series[token]
+        adj = self.adjustments.get(token)
         out = []
         d = from_date
         while d <= to_date:
             if d.weekday() < 5 and first <= d <= (last or self.data_end) and d <= self.data_end:
-                out += _candle_rows(token, d, interval, oi)
+                out += _candle_rows(token, d, interval, oi, adj[1] if adj and d < adj[0] else 1.0)
             d += timedelta(days=1)
         return out
 
@@ -456,6 +462,7 @@ def test_an_update_appends_only_what_is_new_and_duplicates_nothing():
         res = D.run(later, root, [_target()], "minute", mode="update", workers=1, min_interval=0.0, now_fn=clk2.now,
                     sleep=clk2.sleep, clock=clk2.monotonic, log=lambda m: None)
         assert res.counts == {"done": 1} and len(later.calls) == 1, f"one small window, not a full walk: {len(later.calls)}"
+        assert res.adjusted == 0, "consistent overlap: nothing was re-downloaded"
         back = store.read(root, "minute", "NSE", "AAA")
         assert back["ts"].is_unique and back["ts"].iloc[-1].date() == date(2026, 9, 25)
         assert len(back) == 375 * len(_weekdays(date(2026, 8, 3), date(2026, 9, 25)))
@@ -616,6 +623,149 @@ def test_the_heartbeat_reports_rate_and_retries():
     assert retries >= 1 and errs.get("NetworkException", 0) >= 1 and r >= 3
 
 
+# ── Kite re-adjusts its history ─────────────────────────────────────────────
+
+SAT_19 = datetime(2026, 9, 19, 13, 0, tzinfo=IST)
+
+
+def _full(kite, token, start, end, interval="minute"):
+    """What a from-scratch download of [start, end] would give, in Kite's request windows."""
+    frames = [store.frame_from_candles(kite.historical_data(token, s, e, interval, False, False)) for s, e in D.forward_windows(start, end, 58)]
+    return store.combine([f for f in frames if not f.empty])
+
+
+def _same(a: pd.DataFrame, b: pd.DataFrame) -> bool:
+    return (a["ts"].to_list() == b["ts"].to_list()
+            and all((a[c].to_numpy() == b[c].to_numpy()).all() for c in ("open", "high", "low", "close", "volume")))
+
+
+def _update_at(kite, root, now, targets=None):
+    clk = _Clock(now)
+    return D.run(kite, root, targets or [_target()], "minute", mode="update", workers=1, min_interval=0.0, now_fn=clk.now,
+                 sleep=clk.sleep, clock=clk.monotonic, log=lambda m: None, heartbeat_s=0)
+
+
+def _backfill_at(kite, root, now, targets=None):
+    clk = _Clock(now)
+    return D.run(kite, root, targets or [_target()], "minute", workers=1, min_interval=0.0, now_fn=clk.now,
+                 sleep=clk.sleep, clock=clk.monotonic, log=lambda m: None, heartbeat_s=0)
+
+
+def test_the_overlap_check_flags_a_rescaling_and_ignores_noise():
+    days = _weekdays(date(2026, 9, 21), date(2026, 9, 25))
+    old = _frame(days)
+
+    def scaled(f):
+        n = old.copy()
+        for c in ("open", "high", "low", "close"):
+            n[c] = n[c] * f
+        return n
+    n, fac = D.overlap_check(old, scaled(0.5))
+    assert n == len(old) and abs(fac - 0.5) < 1e-9, "a 1:1 bonus halves every earlier price"
+    assert D.overlap_check(old, scaled(1.0005))[1] is None, "0.05% is inside the tolerance"
+    assert abs(D.overlap_check(old, scaled(1.01))[1] - 1.01) < 1e-9, "a 1% rescale (a small rights adjustment) is caught"
+    odd = old.copy()
+    odd.loc[:10, "close"] *= 2
+    assert D.overlap_check(old, odd)[1] is None, "a handful of odd bars is not a re-adjustment"
+    assert D.overlap_check(old, _frame([date(2026, 9, 28)])) == (0, None), "no shared minutes: nothing to compare"
+    assert D.overlap_check(old.iloc[0:0], old) == (0, None) and D.overlap_check(old, old.iloc[0:0]) == (0, None)
+    zero = old.copy()
+    zero["close"] = 0.0
+    assert D.overlap_check(zero, old) == (0, None), "a zero old close is skipped, not divided by"
+
+
+def test_replace_frame_overwrites_and_removes_stale_years():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        store.write_frame(root, "minute", "NSE", "AAA", _frame([date(2025, 12, 30), date(2026, 1, 2)]))
+        assert [p.name for p in store.files_for(root, "minute", "NSE", "AAA")] == ["2025.parquet", "2026.parquet"]
+        new = _frame([date(2026, 1, 2)], token=2)
+        paths = store.replace_frame(root, "minute", "NSE", "AAA", new)
+        assert [p.name for p in paths] == ["2026.parquet"]
+        assert [p.name for p in store.files_for(root, "minute", "NSE", "AAA")] == ["2026.parquet"], "the year it no longer covers is gone"
+        assert _same(store.read(root, "minute", "NSE", "AAA"), new), "replaced, not merged with the old 2026 rows"
+        try:
+            store.replace_frame(root, "minute", "NSE", "AAA", new.iloc[0:0])
+        except ValueError:
+            assert len(store.read(root, "minute", "NSE", "AAA")) == 375, "and a refused replace leaves the data alone"
+        else:
+            raise AssertionError("replacing a history with nothing must be refused")
+
+
+def test_a_retroactive_adjustment_replaces_the_whole_history_with_no_mixed_scales():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        series = {1: (FIRST, None)}
+        _backfill_at(FakeKite(series, data_end=date(2026, 9, 18)), root, SAT_19)
+        bogus = store.frame_from_candles([{"date": datetime(2025, 6, 1, 9, 15, tzinfo=IST), "open": 1.0, "high": 1.0, "low": 1.0,
+                                           "close": 1.0, "volume": 1}])          # a candle Kite has since dropped (a Sunday)
+        store.write_frame(root, "minute", "NSE", "AAA", bogus)
+        before = store.read(root, "minute", "NSE", "AAA")
+        assert len(before) == 375 * len(_weekdays(FIRST, date(2026, 9, 18))) + 1
+        later = FakeKite(series, data_end=date(2026, 9, 25), adjustments={1: (date(2026, 9, 22), 0.5)})   # 1:1 bonus, ex-date 22 Sep
+        res = _update_at(later, root, SAT)
+        assert res.counts == {"done": 1} and res.adjusted == 1 and res.requests > 10, "a full re-walk, not one window"
+        after = store.read(root, "minute", "NSE", "AAA")
+        want = _full(later, 1, FIRST, date(2026, 9, 25))
+        assert _same(after, want), "every stored candle is on the new scale, and the candle Kite dropped is gone: replaced, not merged"
+        assert after["ts"].is_unique and len(after) == 375 * len(_weekdays(FIRST, date(2026, 9, 25)))
+        assert abs(after["close"].iloc[0] - before["close"].iloc[0] * 0.5) < 0.011
+        prog = state.Progress(root / "_state" / "progress.db")
+        rec = prog.get("minute", "NSE", "AAA")
+        assert rec["status"] == state.DONE and rec["note"].startswith("re-downloaded") and "0.5000" in rec["note"]
+        prog.close()
+        assert "re-downloaded after Kite re-adjusted" in res.line()
+        again = _update_at(later, root, SAT)
+        assert again.adjusted == 0 and again.requests == 1, "once replaced, the next update is a normal one-window update"
+        assert _same(store.read(root, "minute", "NSE", "AAA"), want)
+
+
+def test_a_redownload_that_cannot_reach_back_keeps_the_old_history_and_is_retried():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        series = {1: (FIRST, None)}
+        _backfill_at(FakeKite(series, data_end=date(2026, 9, 18)), root, SAT_19)
+        before = store.read(root, "minute", "NSE", "AAA")
+        adj = {1: (date(2026, 9, 22), 0.5)}
+        short = FakeKite({1: (FIRST + timedelta(days=120), None)}, data_end=date(2026, 9, 25), adjustments=adj)
+        res = _update_at(short, root, SAT)
+        assert res.counts == {"error": 1} and res.adjusted == 0
+        assert _same(store.read(root, "minute", "NSE", "AAA"), before), "the old files were not touched"
+        prog = state.Progress(root / "_state" / "progress.db")
+        rec = prog.get("minute", "NSE", "AAA")
+        assert rec["status"] == state.ERROR and rec["note"].startswith(D.ADJ_PENDING) and rec["rows"] == len(before)
+        prog.close()
+        healthy = FakeKite(series, data_end=date(2026, 9, 25), adjustments=adj)
+        res2 = _update_at(healthy, root, SAT)
+        assert res2.counts == {"done": 1} and res2.adjusted == 1
+        assert _same(store.read(root, "minute", "NSE", "AAA"), _full(healthy, 1, FIRST, date(2026, 9, 25)))
+
+
+def test_a_pending_adjustment_is_finished_by_a_plain_backfill_too():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        series = {1: (FIRST, None)}
+        _backfill_at(FakeKite(series, data_end=date(2026, 9, 18)), root, SAT_19)
+        adj = {1: (date(2026, 9, 22), 0.5)}
+        _update_at(FakeKite({1: (FIRST + timedelta(days=120), None)}, data_end=date(2026, 9, 25), adjustments=adj), root, SAT)
+        healthy = FakeKite(series, data_end=date(2026, 9, 25), adjustments=adj)
+        res = _backfill_at(healthy, root, SAT)                                   # not `update`
+        assert res.adjusted == 1 and res.counts == {"done": 1}
+        assert _same(store.read(root, "minute", "NSE", "AAA"), _full(healthy, 1, FIRST, date(2026, 9, 25))), (
+            "a backfill must never MERGE into a symbol that is waiting for its re-adjusted history")
+
+
+def test_a_symbol_whose_only_shared_day_is_its_last_stored_day_is_still_checked():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        series = {1: (date(2026, 9, 18), None)}
+        _backfill_at(FakeKite(series, data_end=date(2026, 9, 18)), root, SAT_19)
+        later = FakeKite(series, data_end=date(2026, 9, 25), adjustments={1: (date(2026, 9, 22), 0.5)})
+        res = _update_at(later, root, SAT)
+        assert res.adjusted == 1, "the last stored day is always inside the re-fetched window, so it is always compared"
+        assert _same(store.read(root, "minute", "NSE", "AAA"), _full(later, 1, date(2026, 9, 18), date(2026, 9, 25)))
+
+
 # ── verify ──────────────────────────────────────────────────────────────────
 
 def test_verify_passes_a_clean_series_and_flags_each_defect():
@@ -698,4 +848,10 @@ TESTS = [
     ("the fast client asks for the raw endpoint and passes everything else through", test_the_fast_client_asks_for_the_raw_endpoint_and_passes_everything_else_through),
     ("a backfill through the fast client stores exactly what the dict path stores", test_a_backfill_through_the_fast_client_stores_exactly_what_the_dict_path_stores),
     ("the heartbeat reports rate and retries", test_the_heartbeat_reports_rate_and_retries),
+    ("the overlap check flags a rescaling and ignores noise", test_the_overlap_check_flags_a_rescaling_and_ignores_noise),
+    ("replace_frame overwrites and removes stale years", test_replace_frame_overwrites_and_removes_stale_years),
+    ("a retroactive adjustment replaces the whole history with no mixed scales", test_a_retroactive_adjustment_replaces_the_whole_history_with_no_mixed_scales),
+    ("a redownload that cannot reach back keeps the old history and is retried", test_a_redownload_that_cannot_reach_back_keeps_the_old_history_and_is_retried),
+    ("a pending adjustment is finished by a plain backfill too", test_a_pending_adjustment_is_finished_by_a_plain_backfill_too),
+    ("a symbol whose only shared day is its last stored day is still checked", test_a_symbol_whose_only_shared_day_is_its_last_stored_day_is_still_checked),
 ]

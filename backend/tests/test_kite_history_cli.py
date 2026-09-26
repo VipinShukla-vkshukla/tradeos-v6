@@ -77,8 +77,20 @@ def test_without_a_valid_token_the_cli_refuses_and_says_how_to_fix_it():
 
 def test_the_readme_written_into_the_folder_names_every_limit():
     text = CLI.README.format(root="D:\\kite_history")
-    for phrase in ("NOT adjusted", "no tick", "Expired futures", "START of the candle", "read(r\"D:\\kite_history\""):
+    for phrase in ("BACK-ADJUSTS", "retroactive", "that symbol's whole history again", "no tick",
+                   "Individual expired futures", "START of the candle", "read(r\"D:\\kite_history\""):
         assert phrase.lower() in text.lower(), phrase
+    assert "NOT adjusted" not in text, "the README must not claim what is not true: splits and bonuses ARE adjusted by Kite"
+
+
+def test_report_command_prints_coverage_and_handles_an_empty_folder():
+    with tempfile.TemporaryDirectory() as tmp:
+        rc, out = _capture(CLI.cmd_report, Namespace(root=tmp, interval="minute", integrity=False))
+        assert rc == 0 and "nothing downloaded yet" in out
+        root = Path(tmp)
+        _run(FakeKite({1: (date(2026, 9, 1), None), 2: (date(2027, 1, 1), None)}), root, [_target("AAA", 1), _target("BBB", 2)])
+        rc, out = _capture(CLI.cmd_report, Namespace(root=str(root), interval="minute", integrity=True))
+        assert rc == 0 and "NSE: 1/2 done" in out and "integrity: 1 symbols checked, 0 with hard errors" in out
 
 
 TESTS = [
@@ -87,4 +99,5 @@ TESTS = [
     ("verify exits zero on clean data and one on a corrupt file", test_verify_exits_zero_on_clean_data_and_one_on_a_corrupt_file),
     ("without a valid token the CLI refuses and says how to fix it", test_without_a_valid_token_the_cli_refuses_and_says_how_to_fix_it),
     ("the README written into the folder names every limit", test_the_readme_written_into_the_folder_names_every_limit),
+    ("report command prints coverage and handles an empty folder", test_report_command_prints_coverage_and_handles_an_empty_folder),
 ]

@@ -14,8 +14,9 @@ Code: `backend/tools/kite_history/` (`store.py` layout, `download.py` the run, `
 | Finest resolution | 1-minute candles: open, high, low, close, volume (+ open interest for derivatives). |
 | Not available | Ticks, market depth, order book, bid/ask, delivery %, corporate actions, news. |
 | Reach | Minute candles: at most 60 days per request; how far back is decided per instrument by Kite (measured by `probe` and by the first backfill). |
-| Expired contracts / options | Not served: history exists only for instruments still in the instrument master. Options (100,000+) are not in the default set. |
-| Adjustment | Prices are as-traded. Splits, bonuses and demergers are NOT adjusted; `verify` lists the >25% one-day jumps. |
+| Expired contracts / options | Individual expired contracts are not served (only instruments still in the instrument master). A rolled `continuous` daily futures series exists but is not downloaded. Options (100,000+) are not in the default set. |
+| Adjustment | Kite BACK-ADJUSTS splits and bonuses as of the download date (RELIANCE's 2015 prices are on today's post-bonus scale, volumes scaled to match). Demergers and some other events are not adjusted, and a few bars are bad (zero prices, one-day spikes): `verify` lists >25% one-day jumps and zero-price bars. |
+| Re-adjustment | The adjustment is retroactive, so downloads either side of a corporate action are on different scales. `update` detects this from the overlap and replaces the symbol's whole history (`overlap_check`, `replace_frame`). |
 
 Other intervals (3/5/10/15/30/60 minute) are built from the minutes, not stored.
 
@@ -29,6 +30,7 @@ python -m tools.kite_history backfill --interval minute   # the big one, most li
 python -m tools.kite_history update --interval minute     # bring finished symbols forward
 python -m tools.kite_history status                       # coverage, rows, size, errors
 python -m tools.kite_history verify                       # integrity report (exit 1 on hard errors)
+python -m tools.kite_history report [--integrity]         # coverage, history depth, size; --integrity adds a full pass
 ```
 
 `backfill` and `update` are safe to interrupt and rerun: finished symbols are skipped, a half-walked symbol

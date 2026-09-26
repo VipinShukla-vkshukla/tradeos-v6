@@ -8,8 +8,13 @@ HARD errors (exit code 1 from the CLI): duplicate or out-of-order timestamps, hi
 INFORMATION (not errors): candles outside 09:15-15:29 (special sessions such as the Diwali muhurat evening),
 weekdays with no candles inside the symbol's own span (an illiquid stock that did not trade, or a holiday the
 reference calendar lacks), and day-to-day close jumps over 25% (a corporate action Kite did not adjust for, or a
-real limit move). Prices are stored exactly as Kite returns them, so those jump dates are the ones to adjust or
-exclude before training on a series.
+real limit move). Kite back-adjusts splits and bonuses itself (RELIANCE's 2015 prices are on today's scale) but not
+everything, and a few bars are bad, so the jumps that remain are the ones to adjust or exclude before training on a
+series.
+
+`bars_mode` / `days_off_mode`: the usual number of candles per day and how many days differ from it. The usual number
+is not constant across history (NSE equities went from 375 candles a day, 09:15-15:29, to 360, ending 15:14, on
+2026-08-03, while indices still run to 15:29), so anything keyed to minute-of-day needs to know which regime it is in.
 """
 
 from __future__ import annotations

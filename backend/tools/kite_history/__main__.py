@@ -37,13 +37,20 @@ or straight with pandas / DuckDB: `pd.read_parquet(r"{root}\\minute\\NSE\\RELIAN
 
 ## Read before training on it
 
-* Prices are exactly as Kite returned them: NOT adjusted for splits, bonuses or demergers. `verify` lists the
-  dates where a close moves more than 25% in a day; adjust or exclude those before using a long series.
+* Kite BACK-ADJUSTS its history for splits and bonuses as of the day you download (RELIANCE's 2015 prices are
+  on today's post-bonus scale, and volumes are scaled to match), so a stored price is not what traded that day.
+  It does not adjust for everything: demergers and some other events remain as jumps, and a few bars are bad
+  (zero prices, one-day spikes). `verify` lists >25% one-day close moves and zero-price bars; exclude or fix
+  those before using a long series.
+* The adjustment is retroactive, so two downloads made either side of a corporate action are on different
+  scales. `update` compares the days it re-fetches with what is stored and, if Kite has re-adjusted, downloads
+  that symbol's whole history again and replaces it (the old files are kept until the new history has arrived
+  and reaches back as far). Never append candles from a different download date by hand.
 * Kite serves candles only. There is no tick, market-depth or order-book history, so one minute is the
   finest resolution that exists. Other intervals (5, 15, 60 minute) can be built from these minutes.
 * A stock that did not trade in a minute has no candle for it: gaps are real, not missing data.
-* Expired futures and all options contracts are not available (Kite only serves history for instruments that
-  are still in its instrument master).
+* Individual expired futures contracts and options are not available (Kite only serves history for instruments
+  still in its instrument master). A rolled "continuous" daily futures series does exist; it is not downloaded here.
 * `python -m tools.kite_history update` brings it forward; `verify` checks integrity; `status` shows coverage.
 """
 
@@ -152,6 +159,16 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_report(args) -> int:
+    from tools.kite_history import report
+    root = Path(args.root)
+    if not (root / "_state" / "progress.db").exists():
+        print(f"nothing downloaded yet under {root}")
+        return 0
+    report.print_report(report.build(root, args.interval, args.integrity))
+    return 0
+
+
 def cmd_verify(args) -> int:
     root = Path(args.root)
     segs = [s.strip() for s in args.segments.split(",") if s.strip()]
@@ -188,11 +205,13 @@ def main() -> int:
         sp.add_argument("--redo", action="store_true", help="refetch symbols already finished")
         sp.add_argument("--allow-market-hours", action="store_true")
     sub.add_parser("status")
+    sp = sub.add_parser("report"); common(sp, targets=False)
+    sp.add_argument("--integrity", action="store_true", help="also run the full integrity pass over every stored symbol (slow)")
     sp = sub.add_parser("verify"); common(sp, targets=False)
     sp.add_argument("--segments", default=",".join(universe.DEFAULT_SEGMENTS)); sp.add_argument("--sample", type=int, default=None)
 
     args = p.parse_args()
-    return {"universe": cmd_universe, "probe": cmd_probe, "status": cmd_status, "verify": cmd_verify,
+    return {"universe": cmd_universe, "probe": cmd_probe, "status": cmd_status, "verify": cmd_verify, "report": cmd_report,
             "backfill": lambda a: _run(a, "backfill"), "update": lambda a: _run(a, "update")}[args.cmd](args)
 
 

@@ -12,6 +12,13 @@ limit (minute: 60 days), until Kite stops returning candles. A run of empty wind
 history has ended; a long run of empty windows before any data means the instrument has none. A symbol is
 written and marked `done` only when its walk completes, so a crash re-does at most one symbol.
 
+WHEN KITE RE-ADJUSTS. Kite back-adjusts its history for splits and bonuses as of the day it is asked, so candles
+stored before a corporate action are on the old scale and candles fetched after it are on the new one. `update`
+re-fetches a few days it already has and compares them; if the closes differ (more than 0.1% on more than half the
+minutes) it downloads the whole symbol again and replaces the files (store.replace_frame), keeping the old ones until
+the new history has arrived and reaches back as far. A symbol that could not be re-downloaded is marked "adjustment
+pending" and the next run retries it; nothing is ever merged across two scales.
+
 WHAT IT WILL NOT DO
   * run while the market is open (Mon-Fri 08:50-15:45 IST) unless told to: the live daemon shares Kite's
     3 requests/second historical limit, and this run must never make it late.
@@ -233,6 +240,7 @@ class Outcome(NamedTuple):
     status: str
     rows: int = 0          # candles fetched by this call
     requests: int = 0
+    adjusted: bool = False  # Kite had re-adjusted this symbol's history and it was downloaded again in full
 
 
 @dataclass
@@ -249,27 +257,100 @@ class Ctx:
     sleep: Callable[[float], None] = time.sleep
 
 
-def backfill_symbol(ctx: Ctx, t: Target) -> Outcome:
-    """Walk one instrument's history backward, store it, record the outcome."""
+ADJUST_TOL = 0.001          # a minute's close moving by more than 0.1% between two downloads of it ...
+ADJUST_SHARE = 0.5          # ... on more than half of the minutes both downloads have: Kite re-adjusted the history
+ADJ_PENDING = "adjustment pending"
+REACH_TOL_DAYS = 7          # a redownload must reach back to within this many days of what is already stored
+
+
+def overlap_check(old: pd.DataFrame, new: pd.DataFrame) -> tuple[int, float | None]:
+    """Compare the candles two downloads share. Returns (how many timestamps both have, the median close ratio
+    new/old if more than ADJUST_SHARE of them differ by more than ADJUST_TOL else None). A split or bonus makes
+    every earlier price differ by the same factor, so it shows up here; a few odd bars do not."""
+    if old.empty or new.empty:
+        return 0, None
+    m = old[["ts", "close"]].merge(new[["ts", "close"]], on="ts", suffixes=("_old", "_new"))
+    m = m[m["close_old"] > 0]
+    if m.empty:
+        return 0, None
+    ratio = m["close_new"] / m["close_old"]
+    if float(((ratio - 1.0).abs() > ADJUST_TOL).mean()) > ADJUST_SHARE:
+        return len(m), float(ratio.median())
+    return len(m), None
+
+
+def _walk_back(ctx: Ctx, t: Target) -> tuple[list[pd.DataFrame], int]:
+    """One instrument's history as one frame per window, newest first, and the requests it took. Raises what
+    fetch_window raises."""
     span = MAX_SPAN_DAYS.get(ctx.interval, 58)
     end_windows = _windows_needed(END_GAP_DAYS, span)
     lead_windows = _windows_needed(NO_DATA_DAYS, span)
     frames: list[pd.DataFrame] = []          # one compact frame per window: a full history as dicts would need ~1 GB
     requests = empty_streak = 0
+    for start, end in backward_windows(ctx.end, span, ctx.floor):
+        got = fetch_window(ctx.kite, ctx.limiter, t.token, start, end, ctx.interval, t.with_oi, ctx.stop,
+                           gate=ctx.gate, sleep=ctx.sleep)
+        requests += 1
+        if not got.empty:
+            frames.append(got)
+            empty_streak = 0
+            continue
+        empty_streak += 1
+        if frames and empty_streak >= end_windows:
+            break
+        if not frames and empty_streak >= lead_windows:
+            break
+    return frames, requests
+
+
+def _redownload(ctx: Ctx, t: Target, prev: dict, factor: float | None, spent: int) -> Outcome:
+    """Kite has re-adjusted this symbol's history since it was stored: fetch all of it again and REPLACE what is
+    on disk. The old files are only touched once the new history has arrived and reaches back as far as the
+    old one did; otherwise they stay as they were and the symbol is marked so the next run tries again."""
+    why = f"close ratio {factor:.4f}" if factor else "found earlier"
     try:
-        for start, end in backward_windows(ctx.end, span, ctx.floor):
-            got = fetch_window(ctx.kite, ctx.limiter, t.token, start, end, ctx.interval, t.with_oi, ctx.stop,
-                               gate=ctx.gate, sleep=ctx.sleep)
-            requests += 1
-            if not got.empty:
-                frames.append(got)
-                empty_streak = 0
-                continue
-            empty_streak += 1
-            if frames and empty_streak >= end_windows:
-                break
-            if not frames and empty_streak >= lead_windows:
-                break
+        frames, requests = _walk_back(ctx, t)
+    except (TokenExpired, Stopped):
+        raise
+    except InstrumentRefused as e:
+        ctx.progress.record(ctx.interval, t.segment, t.symbol, state.ERROR, token=t.token, first_ts=prev["first_ts"],
+                            last_ts=prev["last_ts"], rows=prev["rows"], requests=spent,
+                            note=f"{ADJ_PENDING}: refused ({str(e)[:100]})")
+        return Outcome(state.ERROR, 0, spent)
+    except FetchFailed as e:
+        ctx.progress.record(ctx.interval, t.segment, t.symbol, state.ERROR, token=t.token, first_ts=prev["first_ts"],
+                            last_ts=prev["last_ts"], rows=prev["rows"], requests=spent,
+                            note=f"{ADJ_PENDING}: {str(e)[:120]}")
+        return Outcome(state.ERROR, 0, spent)
+    requests += spent
+    df = store.combine(frames) if frames else None
+    old_first = pd.Timestamp(prev["first_ts"]) if prev.get("first_ts") else None
+    if df is None or (old_first is not None and df["ts"].min() > old_first + timedelta(days=REACH_TOL_DAYS)):
+        got = "nothing" if df is None else f"only back to {df['ts'].min().date()}"
+        ctx.progress.record(ctx.interval, t.segment, t.symbol, state.ERROR, token=t.token, first_ts=prev["first_ts"],
+                            last_ts=prev["last_ts"], rows=prev["rows"], requests=requests,
+                            note=f"{ADJ_PENDING}: {why}, but the new download returned {got} against {old_first.date() if old_first is not None else '?'} stored; old files kept")
+        return Outcome(state.ERROR, 0, requests)
+    replaced = int(prev["rows"] or 0)
+    store.replace_frame(ctx.root, ctx.interval, t.segment, t.symbol, df, t.with_oi)
+    ctx.progress.record(ctx.interval, t.segment, t.symbol, state.DONE, token=t.token, first_ts=df["ts"].min(),
+                        last_ts=df["ts"].max(), rows=len(df), requests=requests,
+                        note=f"re-downloaded {datetime.now().date()}: Kite re-adjusted the history ({why}); {replaced:,} candles replaced by {len(df):,}")
+    return Outcome(state.DONE, len(df), requests, adjusted=True)
+
+
+def _pending(prev: dict | None) -> bool:
+    return bool(prev and prev["status"] == state.ERROR and (prev.get("note") or "").startswith(ADJ_PENDING))
+
+
+def backfill_symbol(ctx: Ctx, t: Target) -> Outcome:
+    """Walk one instrument's history backward, store it, record the outcome."""
+    prev = ctx.progress.get(ctx.interval, t.segment, t.symbol)
+    if _pending(prev):
+        return _redownload(ctx, t, prev, None, 0)
+    requests = 0
+    try:
+        frames, requests = _walk_back(ctx, t)
     except (TokenExpired, Stopped):
         raise
     except InstrumentRefused as e:
@@ -289,8 +370,13 @@ def backfill_symbol(ctx: Ctx, t: Target) -> Outcome:
 
 
 def update_symbol(ctx: Ctx, t: Target, overlap_days: int = 3) -> Outcome:
-    """Fetch what is new since the last stored candle (a few days of overlap, deduplicated on write)."""
+    """Fetch what is new since the last stored candle (a few days of overlap, deduplicated on write). The overlap
+    is also the check that Kite has not re-adjusted the history since it was stored: if it has, the whole symbol
+    is downloaded again and replaced, because appending new-scale candles to old-scale ones would put a fake
+    jump (a bonus looks like a -50% day) into the series."""
     prev = ctx.progress.get(ctx.interval, t.segment, t.symbol)
+    if _pending(prev):
+        return _redownload(ctx, t, prev, None, 0)
     if not prev or prev["status"] != state.DONE or not prev["last_ts"]:
         return backfill_symbol(ctx, t)
     last = pd.Timestamp(prev["last_ts"]).date()
@@ -317,6 +403,9 @@ def update_symbol(ctx: Ctx, t: Target, overlap_days: int = 3) -> Outcome:
     new_rows = 0
     if frames:
         df = store.combine(frames)
+        _, factor = overlap_check(store.read(ctx.root, ctx.interval, t.segment, t.symbol, start=pd.Timestamp(start, tz=store.TZ)), df)
+        if factor is not None:
+            return _redownload(ctx, t, prev, factor, requests)
         new_rows = len(df)
         store.write_frame(ctx.root, ctx.interval, t.segment, t.symbol, df, t.with_oi)
     span_now = store.stored_span(ctx.root, ctx.interval, t.segment, t.symbol)
@@ -337,11 +426,13 @@ class RunResult:
     token_expired: bool = False
     interrupted: bool = False
     skipped_already_done: int = 0
+    adjusted: int = 0
 
     def line(self) -> str:
         c = ", ".join(f"{k} {v}" for k, v in sorted(self.counts.items())) or "nothing to do"
         flag = "  TOKEN EXPIRED - refresh it and rerun" if self.token_expired else ("  INTERRUPTED" if self.interrupted else "")
-        return f"{c}; {self.skipped_already_done} already done; {self.requests} requests in {self.seconds / 60:.1f} min{flag}"
+        adj = f"; {self.adjusted} re-downloaded after Kite re-adjusted their history" if self.adjusted else ""
+        return f"{c}{adj}; {self.skipped_already_done} already done; {self.requests} requests in {self.seconds / 60:.1f} min{flag}"
 
 
 def run(kite, root: Path, targets: Sequence[Target], interval: str, *, mode: str = "backfill", workers: int = 3,
@@ -392,6 +483,7 @@ def run(kite, root: Path, targets: Sequence[Target], interval: str, *, mode: str
             return
         with lock:
             res.counts[out.status] = res.counts.get(out.status, 0) + 1
+            res.adjusted += int(out.adjusted)
             res.rows += out.rows
             res.requests += out.requests
             finished[0] += 1

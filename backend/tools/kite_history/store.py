@@ -9,8 +9,12 @@ The on-disk layout of the Kite history folder, and nothing else: paths, schema, 
       _state/progress.db, download.log          bookkeeping; safe to delete only with the data
 
 Columns: ts (timestamp, seconds, Asia/Kolkata), open, high, low, close (float64), volume (int64), and oi
-(int64) for derivatives only. Prices are exactly what Kite returned: NOT adjusted for splits, bonuses or
-demergers. The candle timestamp is the START of the candle (09:15 is the first minute of the session).
+(int64) for derivatives only. Prices and volumes are exactly what Kite returned, and Kite's history is
+BACK-ADJUSTED for splits and bonuses as of the day it is downloaded (RELIANCE's 2015 prices are shown on
+today's post-bonus scale). It is not adjusted for everything (demergers, some listings), and because the
+adjustment is retroactive, two downloads made on either side of a corporate action are on different scales:
+download.update_symbol detects that and replaces the symbol's whole history (see `replace_frame`).
+The candle timestamp is the START of the candle (09:15 is the first minute of the session).
 
 Kite's own limits shape this: minute candles reach at most ~60 days per request and history is served
 per instrument; there is no tick, depth or order-book history, so a candle is the finest thing that exists.
@@ -162,6 +166,30 @@ def write_frame(root: Path, interval: str, segment: str, symbol: str, df: pd.Dat
         merged = _clean(pd.concat([read_file(p), df], ignore_index=True)) if p.exists() else df
         _write_atomic(merged, p, with_oi)
         written.append(p)
+    return written
+
+
+def replace_frame(root: Path, interval: str, segment: str, symbol: str, df: pd.DataFrame,
+                  with_oi: bool = False) -> list[Path]:
+    """Store `df` as the symbol's ENTIRE history: files for the years it covers are overwritten, never merged
+    with what was there, and files for years it does not cover are removed once the new ones are in place.
+    For a history Kite has re-adjusted, where merging would leave old-scale and new-scale rows side by side."""
+    if df.empty:
+        raise ValueError("refusing to replace a history with nothing")
+    df = _clean(df)
+    old = set(files_for(root, interval, segment, symbol))
+    written: list[Path] = []
+    if interval in _PER_YEAR:
+        for year, part in df.groupby(df["ts"].dt.year):
+            p = path_for(root, interval, segment, symbol, int(year))
+            _write_atomic(part.reset_index(drop=True), p, with_oi)
+            written.append(p)
+    else:
+        p = path_for(root, interval, segment, symbol)
+        _write_atomic(df, p, with_oi)
+        written.append(p)
+    for stale in old - set(written):
+        stale.unlink()
     return written
 
 
