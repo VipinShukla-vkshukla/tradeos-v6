@@ -20141,3 +20141,100 @@ Rs 50 Cr of prior-day turnover, twice the long floor, so the replay's turnover p
 **Gate:** PASS — machinery in, nothing armed, correction recorded. NEEDS FOLLOW-UP: the operator's
 open decisions (set `daily_history_enabled=false` before deploy; keep IGN on paper; the
 uncommitted graduated-giveback in `exit_policy.py`).
+
+
+## 2026-09-26 — IGN event study on 22,096 Kite symbol-days: no exit, filter or model turns the ignition family net-positive; every "80% win rate" design loses; holdout left sealed
+
+**Why this was run.** The operator asked to stop reasoning from IGN's ~1.4k live-detected trades, use Kite
+history broadly, find the datapoints and benchmarks that identify a genuine ignition, and redesign IGN
+so it wins ~80% of the time. Win rate is not edge (a 4:1 stop-to-target trade wins 80% and still loses
+after costs), so the objective was NET expectancy after the production MIS cost model, with the
+win-rate/expectancy frontier reported.
+
+**Data (all Kite; nothing else feeds a buy/sell input).** Frozen lists in `tools/replay/cache/
+ign_event_lists.json`: 25,119 symbol-days whose high reached +3% over the prior close (prior-day
+turnover >= Rs 25 Cr, price >= Rs 50, **no day-volume filter** — total volume is only known at the close, so
+conditioning on it would have removed the ignitions that faded), plus 3,000 seeded uniformly random
+liquid symbol-days as controls; Nifty 50, Nifty 500 and India VIX minute bars for every session. 494 symbols,
+432 sessions (2025-01-02..2026-09-24). Collected with 58-day windowed requests (3,848 requests instead of ~22,000,
+53 minutes): 24,859 of 25,119 events and 2,976 of 3,000 controls cached (the ~1% remainder was not returned by Kite
+in the window requests; not investigated further). 4 of the 432 sessions have no index bars at all (2026-01-15, 05-01, 05-28, 06-26 —
+dates `price_history_yf` lists but Kite has nothing for; consistent with exchange holidays, not verified). Table: 170,434 train rows = 22,096 symbol-days across 17 trigger
+cells (4 move thresholds x 4 volume ratios + `LIVE`, the live rule) plus `CTRL`; 16,300 rows after 2026-07-17 are in a
+separate SEALED file that no exploration code opens. **Parity with the live engine:** of the earlier IGN study's
+detections in the same window, 1,438 are in the `LIVE` cell, 1 is not, and 90% (1,299) trigger in the same minute
+(205 table-only rows are the superset the earlier study's candidate list never contained).
+
+**Cost, stated correctly.** 0.2063% round trip = the production MIS model at a Rs 10-66k order: 0.1063% statutory charges
+plus 5 bps per leg of slippage. (An earlier chat summary said the replay "excluded slippage"; it included it.)
+
+**Benchmarks — what a set-up must beat.** Train, L|nx|s20|t1.5 (IGN's structural stop, 1.5R target, no ladder), day-clustered:
+| population | trades | win | gross % | net R |
+|---|---|---|---|---|
+| CTRL (random liquid stock, random bar) | 2,586 | 39.3% | +0.001 | -0.318 |
+| LIVE (the live rule) | 4,917 | 41.7% | +0.058 | -0.135 |
+| every T x V cell (3..5%, ratio 0..3) | 929-10,110 | 40-44% | -0.02..+0.04 | -0.10..-0.16 |
+Ignition beats random entries by ~0.18R, all of it cost (random entries pay the same charges on nothing); no cell is
+positive and the sign is the same in each of five chronological blocks. Gross drift after the trigger (entry next open):
+-0.03..+0.07% at 15/30/60/120 minutes and to the close for every cell (day-clustered se 0.01-0.06), against a 0.206% cost.
+
+**The 80% question, measured.** LIVE events, fixed-percent stop, tight target (5,132 trades; "hit" = closed above entry before charges):
+| stop | target | hit % | net-of-cost win % | gross % | net R (0.106% / 0.206% / 0.306% cost) |
+|---|---|---|---|---|---|
+| 1.0% | 0.2R (0.2%) | 80.8 | 1.3 | -0.012 | -0.118 / -0.218 / -0.318 |
+| 1.0% | 0.5R | 65.5 | 64.1 | +0.007 | -0.099 / -0.199 / -0.299 |
+| 1.0% | 1.5R | 44.3 | 40.9 | +0.034 | -0.072 / -0.172 / -0.272 |
+| 2.0% | 1.5R (3.0%) | 47.2 | 42.2 | +0.063 | -0.021 / -0.071 / -0.121 |
+An 80% hit rate is trivially available (target 0.2R): the "wins" are 0.2% moves that the 0.2% cost turns into losses (1.3% of
+them survive costs). Every one of 36 stop/target designs is negative at every cost level, including statutory charges alone.
+
+**Datapoints.** ~60 features (intraday shape/volume/VWAP/opening range, stock's prior-session trend and extension,
+Nifty/Nifty 500/VIX state, day of week). Against the gross 60-minute return of LIVE events the strongest are |rho| <= 0.06
+and lean toward mean reversion, not continuation (relative strength vs Nifty 500 rho -0.06; distance from 52-week low
+-0.05; prior-60-day run -0.045): the fifths of a feature differ by ~0.1-0.2%, no more than the cost. `explore` prints them.
+
+**Selection procedures, both pre-registered (search space, cost, split and accept rules committed first; holdout sealed throughout).**
+1. *Filter search* (17 cells x 92 exits x up to two filters, walk-forward). Version 1 ranked by a lower bound: pooled
+   out-of-sample **-0.359R** (154 trades), no candidate. A POWER CHECK then planted a known edge into the real table
+   (+0.30R on 16% of rows, and +0.5R on 5%) and the procedure did not find it: with ~10^6 combinations, narrow
+   conjunctions and day-level regime filters (index/VIX values are identical for every stock that day) won by luck.
+   *A procedure that cannot find a planted edge cannot certify that none exists*, so amendment 1 (in the module docstring,
+   holdout still sealed): rank by the DAY-CLUSTERED t-ratio, require 40 distinct days. Version 2: pooled OOS **+0.007R**
+   (p 0.47, 162 trades) — no candidate. In-sample the best configs look strong (+0.3..+0.45R, t ~4, n ~300) and fail
+   the next block; that is the multiple-comparison winner's curse, measured. **Limit, not hidden:** even v2 does not find
+   planted edges of +0.45R on 16% or +0.8R on 5% of rows (it is weak for conjunction-only effects), so this search
+   rules out large simple edges only.
+2. *Model stage* (`ign_event_model.py`, committed before it ran): gradient boosting over every datapoint, threshold set on a block
+   the model never fitted, cell T4_V1, IGN's own stop, hold to 15:14. An exploratory look (disclosed in the docstring) had
+   suggested a top-decile gross of +0.5% hold-to-close; the pre-registered version gave pooled OOS **+0.012% net** (268
+   trades, p 0.47, gross +0.218% vs 0.206% cost), beating the unpicked events by +0.12% (p 0.22). No candidate. The exploratory
+   number was optimistic exactly as flagged (cell and exit chosen from that look; no stop, all rows).
+
+**Beyond the intraday close (descriptive, train, daily Kite bars; not a hypothesis test).** From the close of an ignition day:
+close >= +5% with a top-fifth close (n 2,200): next day +0.31% (se 0.12), 5 days +0.60% (se 0.34), against a baseline of all
+liquid symbol-days at +0.03% / +0.15%; by block the 5-day mean swings -0.7..+2.1. The excess (~0.3-0.45%) is about the size of a
+delivery round trip (~0.35-1%), and the sign is regime-dependent. A lead for the swing book, not evidence of an edge.
+
+**What is established.** Across 22,096 independent symbol-days, ignition-like events carry no post-cost edge with any of 92 exits,
+any threshold cell, the ~60 datapoints (mined or modelled) or, for holds to the close, a walk-forward model. An 80%-win
+design exists and loses ~0.2R per trade. **Not established:** that no small conjunction-only subset exists (the filter search
+lacks the power to say), anything about news/catalyst data (not Kite), sector-relative strength (needs a sector map), or
+`delivery_pct` (`stock_data_daily` only holds it from 2026-09-16, so it cannot be studied historically).
+
+**Verification.** 1,738 offline checks (was 1,623 before this study). Every new module has offline tests and mutation testing
+(about 120 mutations: features 24, collector 8, simulator 24 with the fast version agreeing with a bar-by-bar reference on 1,200
+random paths, table 17, selection 17, freeze/holdout 14, model 19; every survivor was either a real test gap, now closed, or an
+equivalent mutant, removed and named). The mutation runs found two checks that could not fail (a redundant guard; a
+fixture whose base case was already infeasible). The two procedure defects above were found by planting a known edge, not by
+reading. No live code changed; the daemon is untouched. `.gitignore` now un-ignores the two spec files (a blanket `*.json`
+rule would have made a frozen spec impossible to commit, and `preflight` refuses uncommitted files).
+
+**Holdout.** `tools/replay/cache/ign_event_table_holdout.jsonl` (2026-07-20..09-24, 16,300 rows) has never been read by any analysis;
+`reveal` refuses unless the spec is a candidate and the files are committed and unmodified. Both specs are `no_candidate`,
+so it is intact for the next design.
+
+**Gate:** PASS — infrastructure built and verified, questions answered with the limits stated. NEEDS FOLLOW-UP (operator
+decisions, nothing changed): (a) IGN's expected value is negative at every exit tested (about -0.13R per trade at the live-like
+exit, -0.02R to -0.30R across the frontier); keep it disarmed/paper or switch it off in `strategy_config`; (b) `daily_history_enabled` (panel carries no signal); (c) whether to spend effort on a different
+hypothesis with this harness — the binding constraint for ANY intraday engine is the 0.2% round trip, so a candidate needs a
+gross edge above ~0.3% per trade before filters and exits matter.

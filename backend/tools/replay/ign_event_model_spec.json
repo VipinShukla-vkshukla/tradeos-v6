@@ -1,0 +1,143 @@
+{
+ "created": "2026-09-26T12:27:29",
+ "cell": "T4_V1",
+ "policy": "L|nx|s20|t-|m-|b-",
+ "cost_pct": 0.2063,
+ "walk_forward": {
+  "folds": [
+   {
+    "block": 3,
+    "tau": 0.3654531282974404,
+    "n_fit": 4323,
+    "picked": {
+     "n": 109,
+     "mean": -0.12493322174262014,
+     "se": 0.16173481556622973,
+     "p": 0.7800781546484566
+    },
+    "not_picked": {
+     "n": 593,
+     "mean": -0.1394948631380262,
+     "se": 0.10035886087540519,
+     "p": 0.91772958002404
+    }
+   },
+   {
+    "block": 4,
+    "tau": 0.4391412506619678,
+    "n_fit": 5586,
+    "picked": {
+     "n": 159,
+     "mean": 0.105544207621736,
+     "se": 0.20569875256862058,
+     "p": 0.30394038367051507
+    },
+    "not_picked": {
+     "n": 1057,
+     "mean": -0.09081608425193945,
+     "se": 0.07066749049891666,
+     "p": 0.9006245237137783
+    }
+   }
+  ],
+  "picked": {
+   "n": 268,
+   "mean": 0.011805253141456827,
+   "se": 0.1435339622310253,
+   "p": 0.46722510719213967,
+   "gross_mean": 0.2181052531414568
+  },
+  "not_picked": {
+   "n": 1650,
+   "mean": -0.10831094236069666,
+   "se": 0.05850357141214933,
+   "p": 0.9679408280893322
+  },
+  "diff": {
+   "mean": 0.1201161955021535,
+   "se": 0.1549989231630783,
+   "p": 0.219185022023542
+  }
+ },
+ "train_days": [
+  "2025-01-03",
+  "2026-07-17"
+ ],
+ "params": {
+  "max_depth": 3,
+  "learning_rate": 0.05,
+  "max_iter": 150,
+  "min_samples_leaf": 200,
+  "l2_regularization": 5.0,
+  "random_state": 0
+ },
+ "top_q": 0.9,
+ "features": [
+  "idx",
+  "move_pct",
+  "gap_pct",
+  "move_from_open_pct",
+  "from_high_pct",
+  "pos_in_range",
+  "vwap_dev_pct",
+  "pct_bars_above_vwap",
+  "orh_dist_pct",
+  "bars_since_1pct",
+  "path_eff_30",
+  "ret_30_pct",
+  "ret_5_pct",
+  "pre_range10_pct",
+  "trig_bar_range_x",
+  "trig_bar_vol_x",
+  "vol_last5_x",
+  "vr_ign",
+  "rvol_profile",
+  "value_so_far_cr",
+  "nifty_move_pct",
+  "nifty_ret_30_pct",
+  "nifty_from_open_pct",
+  "n500_move_pct",
+  "vix",
+  "vix_move_pct",
+  "rs_nifty",
+  "rs_n500",
+  "n500_minus_nifty",
+  "nifty_dist_sma20",
+  "nifty_ret_5d",
+  "nifty_ret_20d",
+  "n500_dist_sma20",
+  "n500_ret_5d",
+  "n500_ret_20d",
+  "adx",
+  "di_plus",
+  "di_minus",
+  "rsi14",
+  "dist_sma50",
+  "ret_1m",
+  "atr14_pct",
+  "dist_sma20",
+  "ret_5d",
+  "ret_20d",
+  "ret_60d",
+  "hi52_dist",
+  "lo52_dist",
+  "prev_range_pct",
+  "prev_clv",
+  "prev_ret1",
+  "range_ratio",
+  "avg20_turnover_cr",
+  "price_level",
+  "n_ign_20d",
+  "up_streak",
+  "prev_vol_ratio",
+  "weekday",
+  "above_orh",
+  "above_st",
+  "above_sma50",
+  "sma50_gt_200",
+  "nr7",
+  "prev_day_ign"
+ ],
+ "decision": "no_candidate",
+ "why": "walk-forward picked 268 trades, mean net +0.012% (p 0.47), beating the unpicked by +0.120% (p 0.22); the gate needs >= 100 trades, a positive mean and both p < 0.1"
+}
