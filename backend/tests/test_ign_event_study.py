@@ -178,7 +178,7 @@ def test_search_prefers_the_better_established_of_two_equal_means():
                        "above_orh": big.astype(float), "nr7": small.astype(float)})
     noise = np.where(np.arange(n) % 2 == 0, 0.8, -0.8)         # every group's sample mean is exactly its level
     R = (np.where(big | small, 0.3, -0.5) + noise)[:, None]
-    out = E.search(df, R, ["p"], "A", min_n=100)
+    out = E.search(df, R, ["p"], "A", min_n=100, min_days=5)
     top = [c for c in out if len(c["filters"]) == 1][0]
     assert top["filters"] == (E.Filter("above_orh", "is", 1.0),), (
         "similar means, five times the trades: the larger group has the higher lower bound", top)
@@ -193,7 +193,7 @@ def test_search_never_returns_a_config_below_the_minimum_trade_count():
                        "nr7": lucky, "above_orh": (rng.random(n) < 0.5).astype(float)})
     R = rng.normal(-0.2, 1.0, (n, 1))
     R[:20, 0] = 8.0                                                      # a huge mean on 20 trades
-    out = E.search(df, R, ["p"], "A", min_n=150)
+    out = E.search(df, R, ["p"], "A", min_n=150, min_days=5)
     assert out and all(c["n"] >= 150 for c in out), "20 lucky trades must not be able to win the search"
     assert all(not any(f.feature == "nr7" and f.thr == 1.0 for f in c["filters"]) for c in out)
 
@@ -226,6 +226,42 @@ def test_feature_scan_ranks_the_related_feature_first_and_reports_fifths():
     assert E.feature_scan(E.prepare_table(df), xs) == [], "under 100 trades there is nothing to scan"
 
 
+def test_a_day_level_regime_filter_cannot_win_on_days_that_moved_together():
+    rng = np.random.default_rng(7)
+    n_days, per = 120, 30
+    day = np.repeat([f"2025-{1 + d // 28:02d}-{1 + d % 28:02d}" for d in range(n_days)], per)
+    regime = np.repeat(rng.normal(0, 1, n_days), per)             # the same value for every stock that day
+    shock = np.repeat(rng.normal(0, 0.5, n_days), per)             # the day's market moves every stock
+    df = E.prepare_table(pd.DataFrame({"day": day, "cell": "A", "nifty_ret_20d": regime,
+                                       "move_pct": rng.normal(0, 1, n_days * per)}))
+    R = (shock + rng.normal(0, 1.0, n_days * per) - 0.1)[:, None]
+    ind = []
+    for q in (0.6, 0.8):                                           # what an independent-rows t would have said
+        x = R[regime >= np.quantile(regime, q), 0]
+        ind.append(x.mean() / (x.std(ddof=1) / np.sqrt(len(x))))
+    assert max(abs(v) for v in ind) > 2.5, "the fixture must contain the trap (a big independent-rows t)"
+    out = E.search(df, R, ["p"], "A", min_n=100, min_days=20)
+    assert out and max(c["t"] for c in out) < 3.0, (
+        "days that moved together are ~120 observations, not 3,600: no false discovery", out[0])
+
+
+def test_a_config_touching_too_few_days_is_never_returned():
+    rng = np.random.default_rng(8)
+    n_days, per = 120, 30
+    day = np.repeat([f"2025-{1 + d // 28:02d}-{1 + d % 28:02d}" for d in range(n_days)], per)
+    hot = np.repeat(np.arange(n_days) < 10, per).astype(float)     # a flag that is only ever true on 10 days
+    df = E.prepare_table(pd.DataFrame({"day": day, "cell": "A", "nr7": hot,
+                                       "above_orh": (rng.random(n_days * per) < 0.5).astype(float)}))
+    R = rng.normal(-0.2, 1.0, (n_days * per, 1))
+    R[hot == 1.0, 0] = 5.0 + rng.normal(0, 1.0, int(hot.sum()))
+    out = E.search(df, R, ["p"], "A", min_n=100, min_days=40)
+    assert out and all(c["n_days"] >= 40 for c in out)
+    assert all(not any(f.feature == "nr7" and f.thr == 1.0 for f in c["filters"]) for c in out)
+    lenient = E.search(df, R, ["p"], "A", min_n=100, min_days=5)
+    assert any(f.feature == "nr7" and f.thr == 1.0 for c in lenient for f in c["filters"]), (
+        "with the day floor lowered the same config is found, so the floor is what refused it")
+
+
 TESTS = [
     ("net R is gross less cost over risk; no trade stays no trade",
      test_net_r_is_gross_less_cost_over_risk_and_no_trade_stays_no_trade),
@@ -251,4 +287,7 @@ TESTS = [
     ("pair filters use two different features", test_pair_filters_use_two_different_features),
     ("feature scan ranks the related feature first and reports fifths",
      test_feature_scan_ranks_the_related_feature_first_and_reports_fifths),
+    ("a day-level regime filter cannot win on days that moved together",
+     test_a_day_level_regime_filter_cannot_win_on_days_that_moved_together),
+    ("a config touching too few days is never returned", test_a_config_touching_too_few_days_is_never_returned),
 ]

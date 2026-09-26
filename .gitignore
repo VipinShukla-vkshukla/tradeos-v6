@@ -19,6 +19,8 @@ credentials/
 *.json
 !package.json
 !tsconfig.json
+!backend/tools/replay/ign_event_spec.json
+!backend/tools/replay/ign_event_model_spec.json
 
 # Data and models
 backend/data/

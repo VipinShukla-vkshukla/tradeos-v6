@@ -29,9 +29,9 @@ threshold a 20/40/60/80th percentile of the selection window's own rows; a row m
 feature is not selected by that filter. Pairs are searched only among each (cell, policy)'s
 PAIR_TOP best single filters.
 
-SELECTION. Rank by lower confidence bound of mean net R (mean - Z_SEARCH x SE, rows treated as
-independent) to shortlist SHORTLIST configs, then re-rank by the DAY-CLUSTERED lower bound (rows on
-one day share the market and are not independent). Minimum MIN_N trades. The winner must also have
+SELECTION. Rank by the t-ratio of mean net R (mean / SE, rows treated as independent) to shortlist
+SHORTLIST configs, then re-rank by the DAY-CLUSTERED t-ratio (rows on one day share the market and
+are not independent). (See AMENDMENT 1: the first version ranked by a lower confidence bound.) Minimum MIN_N trades. The winner must also have
 a positive mean in at least MIN_POS_BLOCKS of the K_BLOCKS chronological blocks of train.
 
 VALIDATING THE PROCEDURE ITSELF. Walk-forward: for each block k >= FIRST_TEST_BLOCK, run the whole
@@ -43,6 +43,20 @@ WF_MIN_OOS_MEAN on at least WF_MIN_OOS_N trades with day-clustered one-sided p <
 records "no_candidate", the holdout stays sealed and the study concludes that this procedure finds
 no edge in the IGN family. (A bare positive mean is not enough: on pure noise it happens half the
 time.)
+
+AMENDMENT 1 (26-Sep-2026, made with the holdout still sealed and before any holdout number existed).
+The first version ranked by mean - 1.0 x SE. Its first run returned "no_candidate" (walk-forward OOS
+-0.359R on 154 trades). Before believing that, a POWER CHECK planted a known edge into the real
+table — +0.30R on the ~16% of rows with vr_ign above its 70th percentile and rsi14 above its median —
+and the procedure did NOT find it (OOS -0.10R): among ~10^6 (cell, exit, filter) combinations, narrow
+conjunctions with 100-350 trades win a lower-bound ranking by luck (in-sample +0.6R, t 3.8) and outrank a
+real broad effect (+0.17R net over ~1,500 trades, t 5.7). A procedure that cannot find a planted
+edge cannot certify that none exists, so the ranking statistic is now the t-ratio (evidence, not
+luck-friendly bounds). The v1 result stays in the ledger.
+A second power check (same planted edge, t ranking) failed too, and showed why: the search still
+treated rows as independent, so day-level filters (index / VIX moves are identical for every stock on a
+day) selecting ~3 days of a rally scored an enormous t. The search now uses the DAY-CLUSTERED standard
+error for every config (singles and pairs) and requires MIN_DAYS distinct days. Nothing else changed.
 
 HOLDOUT. Sessions after TRAIN_END (tools.replay.ign_event_table). The frozen spec (written by
 `select`, committed) is scored once by `reveal`, which refuses unless every study file is committed
@@ -76,6 +90,7 @@ Z_FINAL = 1.645
 SHORTLIST = 60
 MIN_N = 150
 MIN_N_WALK = 80
+MIN_DAYS = 40                     # a config that touches fewer distinct days is a regime pick, not a set-up
 MIN_POS_BLOCKS = 3
 ACCEPT_MIN_N = 100
 ACCEPT_P = 0.05
@@ -218,63 +233,91 @@ def apply_filters(df, filters: Sequence[Filter]) -> np.ndarray:
 
 # ── the search, within ONE cell's rows ──────────────────────────────────────
 
-def _stats(N: np.ndarray, S1: np.ndarray, S2: np.ndarray):
-    with np.errstate(invalid="ignore", divide="ignore"):
-        mean = S1 / N
-        var = (S2 - N * mean ** 2) / np.maximum(N - 1, 1)
-        se = np.sqrt(np.maximum(var, 0) / N)
-    return mean, se
+def _cluster_stats(x: np.ndarray, mask: np.ndarray, day_idx: np.ndarray, n_days: int, min_n: int, min_days: int):
+    """(n, mean, day-clustered se, distinct days) for the trades of `x` selected by `mask`, or None
+    when there are too few trades or days. `day_idx` numbers each row's day 0..n_days-1."""
+    ok = mask & ~np.isnan(x)
+    n = int(ok.sum())
+    if n < min_n:
+        return None
+    xv, d = x[ok], day_idx[ok]
+    mean = float(xv.mean())
+    per_day = np.bincount(d, minlength=n_days)
+    if np.count_nonzero(per_day) < min_days:
+        return None
+    cs = np.bincount(d, weights=xv - mean, minlength=n_days)
+    return n, mean, float(np.sqrt((cs ** 2).sum()) / n), int(np.count_nonzero(per_day))
 
 
 def search(df, R: np.ndarray, policy_names: Sequence[str], cell: str, *, min_n: int = MIN_N,
-           z: float = Z_SEARCH, pair_top: int = PAIR_TOP, shortlist: int = SHORTLIST) -> list[dict]:
-    """Best (policy, filters) configs for one cell by lower confidence bound, using this window's
-    rows only (thresholds included). Rows are treated as independent here; `refine` corrects that."""
+           z: float = Z_SEARCH, pair_top: int = PAIR_TOP, shortlist: int = SHORTLIST,
+           min_days: int = MIN_DAYS) -> list[dict]:
+    """Best (policy, filters) configs for one cell by DAY-CLUSTERED t-ratio (mean / SE), using this
+    window's rows only (thresholds included). Rows on one day share the market, so a hundred rows from
+    three days are not a hundred observations; a config must also touch `min_days` distinct days.
+    The lower bound is reported (`lcb`) but not ranked on: see AMENDMENT 1 in the module docstring."""
     n, P = R.shape
     if n < min_n:
         return []
+    order = np.argsort(df["day"].to_numpy(), kind="stable")
+    df, R = df.iloc[order], R[order]
+    days = df["day"].to_numpy()
+    uniq, first_idx, day_idx = np.unique(days, return_index=True, return_inverse=True)
+    n_days = len(uniq)
     filters = enumerate_filters(df)
     M = np.column_stack([np.ones(n, dtype=bool)] + [apply_filter(df, f) for f in filters]).astype(np.float32)
     valid = (~np.isnan(R)).astype(np.float32)
     Rz = np.nan_to_num(R).astype(np.float32)
-    N, S1, S2 = M.T @ valid, M.T @ Rz, M.T @ (Rz * Rz)
-    mean, se = _stats(N.astype(float), S1.astype(float), S2.astype(float))
-    lcb = np.where(N >= min_n, mean - z * se, -np.inf)
-    lcb = np.where(np.isnan(lcb), -np.inf, lcb)
+    F1 = M.shape[1]
+    N = np.zeros((F1, P))
+    mean = np.full((F1, P), np.nan)
+    se = np.full((F1, P), np.nan)
+    ndays = np.zeros((F1, P))
+    for fi in range(F1):
+        mf = M[:, fi:fi + 1]
+        Sd = np.add.reduceat(mf * Rz, first_idx, axis=0).astype(np.float64)       # day x policy
+        Nd = np.add.reduceat(mf * valid, first_idx, axis=0).astype(np.float64)
+        Nf = Nd.sum(0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            m = Sd.sum(0) / Nf
+            resid = Sd - m[None, :] * Nd
+            s_ = np.sqrt((resid ** 2).sum(0)) / Nf
+        N[fi], mean[fi], se[fi], ndays[fi] = Nf, m, s_, (Nd > 0).sum(0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        t = np.where((N >= min_n) & (ndays >= min_days) & (se > 0), mean / se, -np.inf)
+    t = np.where(np.isnan(t), -np.inf, t)
     out: list[dict] = []
 
-    def add(fi_tuple, p, m_, se_, n_, lcb_):
+    def add(fi_tuple, p, n_, m_, se_, nd_):
         out.append({"cell": cell, "policy": policy_names[p], "filters": fi_tuple, "n": int(n_),
-                    "mean": float(m_), "se": float(se_), "lcb": float(lcb_)})
+                    "mean": float(m_), "se": float(se_), "lcb": float(m_ - z * se_),
+                    "t": float(m_ / se_) if se_ > 0 else float("-inf"), "n_days": int(nd_)})
 
-    flat = np.argsort(-lcb, axis=None)[: shortlist * 3]
+    flat = np.argsort(-t, axis=None)[: shortlist * 3]
     for idx in flat:
         fi, p = divmod(int(idx), P)
-        if lcb[fi, p] == -np.inf:
+        if t[fi, p] == -np.inf:
             break
-        add(() if fi == 0 else (filters[fi - 1],), p, mean[fi, p], se[fi, p], N[fi, p], lcb[fi, p])
+        add(() if fi == 0 else (filters[fi - 1],), p, N[fi, p], mean[fi, p], se[fi, p], ndays[fi, p])
     # pairs, only among each policy's best singles
     for p in range(P):
-        best = np.argsort(-lcb[1:, p])[:pair_top] + 1
-        best = [b for b in best if lcb[b, p] > -np.inf]
+        best = np.argsort(-t[1:, p])[:pair_top] + 1
+        best = [b for b in best if t[b, p] > -np.inf]
         for a in range(len(best)):
             for b in range(a + 1, len(best)):
                 fa, fb = filters[best[a] - 1], filters[best[b] - 1]
                 if fa.feature == fb.feature:
                     continue
-                m2 = (M[:, best[a]] * M[:, best[b]]).astype(bool)
-                x = R[m2, p]
-                x = x[~np.isnan(x)]
-                if len(x) < min_n:
-                    continue
-                se_ = x.std(ddof=1) / np.sqrt(len(x))
-                add((fa, fb), p, x.mean(), se_, len(x), x.mean() - z * se_)
-    out.sort(key=lambda d: -d["lcb"])
+                st = _cluster_stats(R[:, p], (M[:, best[a]] * M[:, best[b]]).astype(bool), day_idx, n_days,
+                                    min_n, min_days)
+                if st is not None and st[2] > 0:
+                    add((fa, fb), p, *st)
+    out.sort(key=lambda d: -d["t"])
     return out[:shortlist]
 
 
 def refine(df, R: np.ndarray, policy_names: Sequence[str], cands: list[dict], *, z: float = Z_FINAL,
-           blocks: np.ndarray | None = None, min_pos_blocks: int = 0) -> list[dict]:
+           blocks: np.ndarray | None = None, min_pos_blocks: int = 0, min_days: int = MIN_DAYS) -> list[dict]:
     """Re-score shortlisted configs with day-clustered standard errors and, when `blocks` is
     given, require a positive mean in at least `min_pos_blocks` of them."""
     pidx = {n: i for i, n in enumerate(policy_names)}
@@ -286,7 +329,11 @@ def refine(df, R: np.ndarray, policy_names: Sequence[str], cands: list[dict], *,
         mean, se, n = clustered_mean_se(x, days[m])
         if n < 2 or not (se == se):
             continue
-        rec = dict(c, mean=mean, se=se, n=n, lcb=mean - z * se, win=float((x[~np.isnan(x)] > 0).mean()))
+        nd = int(len(np.unique(days[m][~np.isnan(x)])))
+        if nd < min_days:
+            continue
+        rec = dict(c, mean=mean, se=se, n=n, n_days=nd, lcb=mean - z * se, t=(mean / se) if se > 0 else float("-inf"),
+                   win=float((x[~np.isnan(x)] > 0).mean()))
         if blocks is not None:
             bm = []
             for b in np.unique(blocks):
@@ -298,22 +345,22 @@ def refine(df, R: np.ndarray, policy_names: Sequence[str], cands: list[dict], *,
             if rec["pos_blocks"] < min_pos_blocks:
                 continue
         out.append(rec)
-    out.sort(key=lambda d: -d["lcb"])
+    out.sort(key=lambda d: -d["t"])
     return out
 
 
 def select_ranked(df, R_by_cell: dict[str, np.ndarray], cell_rows: dict[str, np.ndarray], policy_names,
                   *, min_n: int = MIN_N, blocks_all: np.ndarray | None = None,
-                  min_pos_blocks: int = 0) -> list[dict]:
+                  min_pos_blocks: int = 0, min_days: int = MIN_DAYS) -> list[dict]:
     """The whole procedure on one window: search every cell, refine, best first."""
     best: list[dict] = []
     for cell, rows in cell_rows.items():
         sub = df.iloc[rows]
         R = R_by_cell[cell]
-        cands = search(sub, R, policy_names, cell, min_n=min_n)
+        cands = search(sub, R, policy_names, cell, min_n=min_n, min_days=min_days)
         blk = blocks_all[rows] if blocks_all is not None else None
-        best += refine(sub, R, policy_names, cands, blocks=blk, min_pos_blocks=min_pos_blocks)
-    best.sort(key=lambda d: -d["lcb"])
+        best += refine(sub, R, policy_names, cands, blocks=blk, min_pos_blocks=min_pos_blocks, min_days=min_days)
+    best.sort(key=lambda d: -d["t"])
     return best
 
 
@@ -544,7 +591,7 @@ def run_select(train_loader=None, write: bool = True, spec_path: Path | None = N
                   "walk_forward": {"oos_n": wf["oos_n"], "oos_mean": wf["oos_mean"], "oos_se": wf["oos_se"],
                                    "oos_p": wf["oos_p"], "picks": wf["picks"]}}
     spec["top"] = [{"cell": c["cell"], "policy": c["policy"], "filters": [f.label() for f in c["filters"]],
-                    "n": c["n"], "mean": c["mean"], "se": c["se"], "lcb": c["lcb"], "win": c["win"],
+                    "n": c["n"], "mean": c["mean"], "se": c["se"], "lcb": c["lcb"], "t": c["t"], "win": c["win"],
                     "pos_blocks": c.get("pos_blocks")} for c in ranked[:15]]
     earned = (wf["oos_n"] >= WF_MIN_OOS_N and wf["oos_mean"] == wf["oos_mean"] and wf["oos_mean"] > WF_MIN_OOS_MEAN
               and wf["oos_p"] < WF_MAX_P)
@@ -578,7 +625,7 @@ def print_select(spec: dict) -> None:
             print(f"   block {p['block']}: nothing passed")
     print("\nTOP CONFIGS ON ALL OF TRAIN (day-clustered lower bound, in-sample; read with the walk-forward line above):")
     for t in spec["top"][:10]:
-        print(f"   {t['cell']:8s} {t['policy']:24s} n {t['n']:5d}  net R {t['mean']:+.3f} (se {t['se']:.3f}, lcb {t['lcb']:+.3f})  "
+        print(f"   {t['cell']:8s} {t['policy']:24s} n {t['n']:5d}  net R {t['mean']:+.3f} (se {t['se']:.3f}, t {t['t']:+.1f}, lcb {t['lcb']:+.3f})  "
               f"win {100 * t['win']:.0f}%  pos blocks {t['pos_blocks']}  {t['filters']}")
     print(f"\nDECISION: {spec['decision']}" + (f" — {spec['why']}" if spec.get("why") else ""))
     if spec.get("frontier"):

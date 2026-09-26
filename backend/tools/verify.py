@@ -289,6 +289,8 @@ MODULES = [
      "tests.test_ign_event_study"),
     ("IGN event study freeze and holdout — noise refused, thresholds frozen, holdout sealed until earned",
      "tests.test_ign_event_freeze"),
+    ("IGN event study model stage — planted signal found, no-skill drift refused, no outcome leaks into a fold",
+     "tests.test_ign_event_model"),
     ("IGN short-side and forming-candle studies — guard, arming sign rule, live/study quantity parity",
      "tests.test_ign_new_studies"),
     ("IGN trend modes — short gate, confidence score into the bands, forming-candle panel",
