@@ -174,9 +174,12 @@ def cmd_verify(args) -> int:
     segs = [s.strip() for s in args.segments.split(",") if s.strip()]
     res = verify.verify_all(root, args.interval, segs, args.sample)
     hard = {k: v for k, v in res.items() if verify.has_hard_errors(v)}
-    print(f"checked {len(res)} symbols; {len(hard)} with hard errors")
+    print(f"checked {len(res)} symbols; {len(hard)} with hard errors (duplicate or out-of-order candles)")
     for (seg, sym), r in list(hard.items())[:20]:
         print("  ", seg, sym, {k: r[k] for k in verify.HARD if r[k]})
+    src = [(seg, sym, verify.source_defects(r)) for (seg, sym), r in res.items() if verify.source_defects(r)]
+    print(f"{len(src)} symbols contain bad bars exactly as Kite delivered them (zero prices, open/close outside the "
+          f"high-low range, negative volume); drop them before training")
     info = [(seg, sym, r) for (seg, sym), r in res.items() if r["big_day_jumps"]]
     print(f"{len(info)} symbols have a >25% one-day close jump (unadjusted corporate action or a real limit move); "
           f"first few: " + "; ".join(f"{s} {r['big_day_jumps'][:3]}" for _, s, r in info[:5]))

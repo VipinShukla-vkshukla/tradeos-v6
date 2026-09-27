@@ -55,7 +55,14 @@ def integrity(root: Path, interval: str, segments: Sequence[str]) -> dict:
     res = verify.verify_all(Path(root), interval, segments)
     hard = {k: v for k, v in res.items() if verify.has_hard_errors(v)}
     modes = pd.Series([v["bars_mode"] for v in res.values() if v["rows"]]).value_counts().to_dict()
+    source = {k: {"symbols": sum(1 for v in res.values() if v[k]), "candles": int(sum(v[k] for v in res.values()))}
+              for k in verify.SOURCE}
+    jumps_by_year: dict[str, int] = {}
+    for v in res.values():
+        for d in v["big_day_jumps"]:
+            jumps_by_year[d[:4]] = jumps_by_year.get(d[:4], 0) + 1
     return {"checked": len(res), "hard_errors": {f"{s}/{n}": {k: r[k] for k in verify.HARD if r[k]} for (s, n), r in hard.items()},
+            "source_defects": source, "jump_days_by_year": dict(sorted(jumps_by_year.items())),
             "symbols_with_big_jumps": sum(1 for v in res.values() if v["big_day_jumps"]),
             "usual_candles_per_day": {int(k): int(v) for k, v in modes.items()},
             "total_rows": int(sum(v["rows"] for v in res.values()))}
@@ -71,8 +78,14 @@ def print_report(rep: dict) -> None:
             print(f"    not stored: {s['not_done']}")
     if "integrity" in rep:
         i = rep["integrity"]
-        print(f"\n  integrity: {i['checked']} symbols checked, {len(i['hard_errors'])} with hard errors, "
-              f"{i['symbols_with_big_jumps']} with a >25% one-day close jump; usual candles per day {i['usual_candles_per_day']}")
+        print(f"\n  integrity: {i['checked']} symbols checked, {len(i['hard_errors'])} with hard errors "
+              f"(duplicate or out-of-order candles), {i['symbols_with_big_jumps']} with a >25% one-day close jump; "
+              f"usual candles per day {i['usual_candles_per_day']}")
+        for k, v in i["source_defects"].items():
+            if v["candles"]:
+                print(f"    bad source bars, {k}: {v['candles']:,} candles in {v['symbols']} symbols")
+        if i["jump_days_by_year"]:
+            print(f"    >25% one-day jumps by year: {i['jump_days_by_year']}")
         for k, v in list(i["hard_errors"].items())[:15]:
             print(f"    {k}: {v}")
 

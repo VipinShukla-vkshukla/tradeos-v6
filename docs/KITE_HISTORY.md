@@ -36,7 +36,9 @@ python -m tools.kite_history report [--integrity]         # coverage, history de
 `backfill` and `update` are safe to interrupt and rerun: finished symbols are skipped, a half-walked symbol
 writes nothing, and files are replaced atomically. They refuse to run Mon-Fri 08:50-15:45 IST (the live daemon
 shares Kite's 3 requests/second historical limit; `--allow-market-hours` overrides), pace at one request per
-0.4 s across all workers, and stop cleanly when the access token expires (07:30 IST daily). To resume:
+0.4 s across all workers, and stop cleanly when Kite rejects the access token. Do not plan around the 07:30 IST
+boundary that `kite.token_manager` assumes: on 27-Sep-2026 Kite rejected a token at about 04:29 IST, three hours
+earlier, while `token_manager --status` still reported it valid (that check is time-based; it never asks Kite). To resume:
 refresh the token (`python -m kite.token_manager --login-url`, then `--exchange <request_token>`) and rerun the
 same command.
 

@@ -10,7 +10,7 @@ from datetime import date
 from pathlib import Path
 
 from tests.test_kite_history import FakeKite, _run, _target, _weekdays
-from tools.kite_history import report, store
+from tools.kite_history import report, state, store
 
 
 def _download(root: Path):
@@ -49,6 +49,54 @@ def test_the_integrity_pass_is_clean_on_a_clean_download_and_names_a_corrupt_sym
         assert i2["hard_errors"]["NSE/BBB"] == {"duplicate_ts": 5, "unsorted": 1}, "five repeated candles appended out of order"
 
 
+def test_source_defects_are_counted_by_category_and_are_not_errors():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _download(root)
+        clean = report.build(root, "minute", with_integrity=True)["integrity"]
+        assert all(v == {"symbols": 0, "candles": 0} for v in clean["source_defects"].values())
+        p = store.files_for(root, "minute", "NSE", "BBB")[0]
+        df = store.read_file(p)
+        df.loc[3:9, ["open", "high", "low", "close"]] = 0.0
+        df.loc[3:9, "volume"] = 0
+        df.loc[20, "volume"] = -5
+        store._write_atomic(df, p, False)
+        i = report.build(root, "minute", with_integrity=True)["integrity"]
+        assert i["hard_errors"] == {}, "a bad bar from Kite is not a defect in the archive"
+        assert i["source_defects"]["nonpositive_price"] == {"symbols": 1, "candles": 7}
+        assert i["source_defects"]["negative_volume"] == {"symbols": 1, "candles": 1}
+        assert i["source_defects"]["ohlc_outside_range"] == {"symbols": 0, "candles": 0}
+        assert i["jump_days_by_year"] == {}
+
+
+def test_jumps_are_tallied_by_year():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _download(root)
+        f25, f26 = store.files_for(root, "minute", "NSE", "AAA")
+        for p, day in ((f25, date(2025, 6, 4)), (f26, date(2026, 9, 10))):     # one spike day each: up on the day, down the day after
+            df = store.read_file(p)
+            df.loc[df["ts"].dt.date == day, ["open", "high", "low", "close"]] *= 3.0
+            store._write_atomic(df, p, False)
+        i = report.build(root, "minute", with_integrity=True)["integrity"]
+        assert i["jump_days_by_year"] == {"2025": 2, "2026": 2}, "each spike is two jump days (in and out), tallied per year"
+        assert i["symbols_with_big_jumps"] == 1
+
+
+def test_a_symbol_waiting_for_its_re_adjusted_history_does_not_count_as_stored_rows():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _download(root)
+        before = report.build(root, "minute")["segments"]["NSE"]
+        prog = state.Progress(root / "_state" / "progress.db")
+        prog.record("minute", "NSE", "ZZZ", state.ERROR, rows=999_999, first_ts="2025-01-01 09:15:00+05:30",
+                    last_ts="2026-09-25 15:29:00+05:30", note="adjustment pending: waiting")
+        prog.close()
+        after = report.build(root, "minute")["segments"]["NSE"]
+        assert after["rows"] == before["rows"], "only finished symbols count toward the stored total"
+        assert after["instruments"] == before["instruments"] + 1 and after["not_done"] == {"empty": 1, "error": 1}
+
+
 def test_the_printed_report_carries_the_headline_numbers():
     import contextlib
     import io
@@ -66,5 +114,8 @@ def test_the_printed_report_carries_the_headline_numbers():
 TESTS = [
     ("coverage counts rows, years and what was not stored", test_coverage_counts_rows_years_and_what_was_not_stored),
     ("the integrity pass is clean on a clean download and names a corrupt symbol", test_the_integrity_pass_is_clean_on_a_clean_download_and_names_a_corrupt_symbol),
+    ("source defects are counted by category and are not errors", test_source_defects_are_counted_by_category_and_are_not_errors),
+    ("jumps are tallied by year", test_jumps_are_tallied_by_year),
+    ("a symbol waiting for its re-adjusted history does not count as stored rows", test_a_symbol_waiting_for_its_re_adjusted_history_does_not_count_as_stored_rows),
     ("the printed report carries the headline numbers", test_the_printed_report_carries_the_headline_numbers),
 ]

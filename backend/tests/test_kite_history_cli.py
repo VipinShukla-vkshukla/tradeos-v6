@@ -59,6 +59,20 @@ def test_verify_exits_zero_on_clean_data_and_one_on_a_corrupt_file():
         assert rc == 1 and "1 with hard errors" in out and "duplicate_ts" in out
 
 
+def test_a_bad_bar_from_kite_is_reported_but_does_not_fail_verify():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        days = _weekdays(date(2026, 9, 21), date(2026, 9, 25))
+        store.write_frame(root, "minute", "INDICES", "NIFTY 50", _frame(days, 9))
+        df = _frame(days, 1)
+        df.loc[10:20, ["open", "high", "low", "close"]] = 0.0            # an all-zero placeholder stretch, as Kite sent
+        df.loc[10:20, "volume"] = 0
+        store.write_frame(root, "minute", "NSE", "AAA", df)
+        rc, out = _capture(CLI.cmd_verify, Namespace(root=str(root), interval="minute", segments="INDICES,NSE", sample=None))
+        assert rc == 0, "bad source bars are not a defect in the archive"
+        assert "0 with hard errors" in out and "1 symbols contain bad bars exactly as Kite delivered them" in out
+
+
 def test_without_a_valid_token_the_cli_refuses_and_says_how_to_fix_it():
     import kite.kite_client as kc
     old = kc.get_kite
@@ -100,4 +114,5 @@ TESTS = [
     ("without a valid token the CLI refuses and says how to fix it", test_without_a_valid_token_the_cli_refuses_and_says_how_to_fix_it),
     ("the README written into the folder names every limit", test_the_readme_written_into_the_folder_names_every_limit),
     ("report command prints coverage and handles an empty folder", test_report_command_prints_coverage_and_handles_an_empty_folder),
+    ("a bad bar from Kite is reported but does not fail verify", test_a_bad_bar_from_kite_is_reported_but_does_not_fail_verify),
 ]

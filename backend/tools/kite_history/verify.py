@@ -2,8 +2,13 @@
 Integrity checks on what is stored: does each symbol's history look like a real, ordered, gap-explained
 series? Nothing is repaired here; this only reports.
 
-HARD errors (exit code 1 from the CLI): duplicate or out-of-order timestamps, high < low, open or close outside
-[low, high], non-positive price, negative volume. Something is wrong with the file or with how it was built.
+HARD errors (exit code 1 from the CLI): duplicate or out-of-order timestamps. Something is wrong with the file or
+with how it was built. A full pass over the first complete archive (1.52 billion candles, 3,455 symbols) found none.
+
+SOURCE defects (reported, never an error): bad bars exactly as Kite delivered them, which a loader must drop before
+training: non-positive prices (all-zero placeholder candles, mostly 2015 illiquid names and ETFs, and some index
+histories), high < low, open or close outside [low, high] (353 stocks share one at 09:15 on 2024-06-25; India VIX has
+2,547 in Dec 2018-Jan 2019), and negative volume.
 
 INFORMATION (not errors): candles outside 09:15-15:29 (special sessions such as the Diwali muhurat evening),
 weekdays with no candles inside the symbol's own span (an illiquid stock that did not trade, or a holiday the
@@ -28,13 +33,14 @@ import pandas as pd
 
 from tools.kite_history import store
 
-HARD = ("duplicate_ts", "unsorted", "high_lt_low", "ohlc_outside_range", "nonpositive_price", "negative_volume")
+HARD = ("duplicate_ts", "unsorted")
+SOURCE = ("high_lt_low", "ohlc_outside_range", "nonpositive_price", "negative_volume")
 JUMP = 0.25
 
 
 def verify_frame(df: pd.DataFrame, interval: str = "minute", calendar: set | None = None) -> dict:
     """Counts of each problem in one symbol's history. `calendar` = the set of dates the exchange traded."""
-    out = {k: 0 for k in HARD}
+    out = {k: 0 for k in HARD + SOURCE}
     out.update({"rows": len(df), "days": 0, "outside_session": 0, "missing_days": 0, "big_day_jumps": [],
                 "first": None, "last": None, "bars_mode": 0, "days_off_mode": 0})
     if df.empty:
@@ -79,6 +85,11 @@ def verify_symbol(root: Path, interval: str, segment: str, symbol: str, calendar
 
 def has_hard_errors(report: dict) -> bool:
     return any(report[k] for k in HARD)
+
+
+def source_defects(report: dict) -> dict:
+    """The bad source bars a report contains, by category (empty if none)."""
+    return {k: report[k] for k in SOURCE if report[k]}
 
 
 def verify_all(root: Path, interval: str, segments: Sequence[str], sample: int | None = None,

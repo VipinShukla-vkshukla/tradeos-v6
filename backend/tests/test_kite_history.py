@@ -112,6 +112,30 @@ class _Clock:
         return self.start + timedelta(seconds=self.t)
 
 
+def _bounded_sleep(limit: int = 2000):
+    """A sleep that does nothing but fails loudly if a run sleeps far more than a healthy one ever does. A frozen
+    clock with a no-op sleep would otherwise turn a market-hours pause that never ends into an infinite loop."""
+    n = [0]
+
+    def sleep(seconds):
+        n[0] += 1
+        if n[0] > limit:
+            raise AssertionError("the run kept sleeping: a pause that never ends")
+    return sleep
+
+
+def test_a_pause_that_never_ends_fails_instead_of_hanging():
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            D.run(FakeKite({1: (FIRST, None)}), Path(tmp), [_target()], "minute", workers=1, min_interval=0.0,
+                  sleep=_bounded_sleep(50), now_fn=lambda: datetime(2026, 9, 28, 11, 0, tzinfo=IST), log=lambda m: None,
+                  heartbeat_s=0)               # Monday 11:00 and the clock never moves: the quiet window never closes
+        except AssertionError as e:
+            assert "kept sleeping" in str(e)
+        else:
+            raise AssertionError("a run stuck in market hours must not report success")
+
+
 def _target(sym="AAA", token=1, segment="NSE", oi=False):
     return Target(segment, sym, token, sym, "NSE", "EQ", oi)
 
@@ -423,6 +447,7 @@ def test_a_refused_instrument_is_skipped_once_and_not_retried_forever():
         assert res.counts == {"skipped": 1} and len(kite.calls) == 1
         prog = state.Progress(root / "_state" / "progress.db")
         assert "no such instrument" in prog.get("minute", "NSE", "AAA")["note"]
+        assert prog.status_of("minute", "NSE", "AAA") == state.SKIPPED, "the database says skipped, not done"
         prog.close()
         n = len(kite.calls)
         _run(kite, root, [_target()])
@@ -500,8 +525,8 @@ def test_several_workers_store_exactly_what_one_worker_does():
     out = {}
     for w in (1, 3):
         with tempfile.TemporaryDirectory() as tmp:
-            D.run(FakeKite(series), Path(tmp), targets, "minute", workers=w, min_interval=0.0, sleep=lambda s: None,
-                  now_fn=lambda: SAT, log=lambda m: None)
+            D.run(FakeKite(series), Path(tmp), targets, "minute", workers=w, min_interval=0.0, sleep=_bounded_sleep(),
+                  now_fn=lambda: SAT, log=lambda m: None, heartbeat_s=0)
             out[w] = {t.symbol: store.read(Path(tmp), "minute", "NSE", t.symbol)["close"].sum() for t in targets}
     assert out[1] == out[3] and len(out[1]) == 6
 
@@ -768,6 +793,29 @@ def test_a_symbol_whose_only_shared_day_is_its_last_stored_day_is_still_checked(
 
 # ── verify ──────────────────────────────────────────────────────────────────
 
+def test_hard_errors_and_source_defects_are_classified_apart():
+    zero = {k: 0 for k in verify.HARD + verify.SOURCE}
+    assert not verify.has_hard_errors(zero) and verify.source_defects(zero) == {}
+    for k in verify.HARD:
+        r = dict(zero, **{k: 2})
+        assert verify.has_hard_errors(r) and verify.source_defects(r) == {}, f"{k} is a defect in the file"
+    for k in verify.SOURCE:
+        r = dict(zero, **{k: 2})
+        assert not verify.has_hard_errors(r) and verify.source_defects(r) == {k: 2}, f"{k} is a bad bar from Kite, not an error"
+    assert set(verify.HARD) == {"duplicate_ts", "unsorted"}
+
+
+def test_combined_windows_are_sorted_and_de_duplicated_with_the_later_frame_winning():
+    a = _frame([date(2026, 9, 24), date(2026, 9, 25)])
+    b = _frame([date(2026, 9, 25), date(2026, 9, 28)])
+    b.loc[b["ts"].dt.date == date(2026, 9, 25), "close"] = 999.0
+    out = store.combine([b, a][::-1])
+    assert out["ts"].is_unique and out["ts"].is_monotonic_increasing and len(out) == 3 * 375
+    assert (out.loc[out["ts"].dt.date == date(2026, 9, 25), "close"] == 999.0).all(), "the later frame wins a shared minute"
+    scrambled = store.combine([_frame([date(2026, 9, 25)]), _frame([date(2026, 9, 24)])])
+    assert scrambled["ts"].is_monotonic_increasing, "windows arrive newest first; the stored history is oldest first"
+
+
 def test_verify_passes_a_clean_series_and_flags_each_defect():
     days = _weekdays(date(2026, 9, 21), date(2026, 9, 25))
     clean = _frame(days)
@@ -780,21 +828,26 @@ def test_verify_passes_a_clean_series_and_flags_each_defect():
     assert rs["bars_mode"] == 375 and rs["days_off_mode"] == 1, "a day with 360 candles is counted as off the usual 375"
 
     dup = pd.concat([clean, clean.iloc[:3]], ignore_index=True)
-    assert verify.verify_frame(dup)["duplicate_ts"] == 3
+    assert verify.verify_frame(dup)["duplicate_ts"] == 3 and verify.has_hard_errors(verify.verify_frame(dup))
     unsorted = clean.iloc[::-1].reset_index(drop=True)
-    assert verify.verify_frame(unsorted)["unsorted"] > 0
+    assert verify.verify_frame(unsorted)["unsorted"] > 0 and verify.has_hard_errors(verify.verify_frame(unsorted))
     bad = clean.copy()
     bad.loc[5, "high"] = bad.loc[5, "low"] - 1
-    assert verify.verify_frame(bad)["high_lt_low"] == 1
+    r5 = verify.verify_frame(bad)
+    assert r5["high_lt_low"] == 1 and "high_lt_low" in verify.source_defects(r5) and not verify.has_hard_errors(r5)
     bad = clean.copy()
     bad.loc[7, "open"] = bad.loc[7, "high"] + 5
-    assert verify.verify_frame(bad)["ohlc_outside_range"] == 1
+    r7 = verify.verify_frame(bad)
+    assert r7["ohlc_outside_range"] == 1 and "ohlc_outside_range" in verify.source_defects(r7) and not verify.has_hard_errors(r7)
     bad = clean.copy()
     bad.loc[9, "close"] = 0.0
-    assert verify.verify_frame(bad)["nonpositive_price"] >= 1
+    r9 = verify.verify_frame(bad)
+    assert r9["nonpositive_price"] >= 1 and "nonpositive_price" in verify.source_defects(r9) and not verify.has_hard_errors(r9)
     bad = clean.copy()
     bad.loc[11, "volume"] = -1
-    assert verify.verify_frame(bad)["negative_volume"] == 1
+    r11 = verify.verify_frame(bad)
+    assert r11["negative_volume"] == 1 and "negative_volume" in verify.source_defects(r11) and not verify.has_hard_errors(r11), (
+        "a bad bar Kite delivered is reported, but it is not a defect in the file")
 
     late = clean.copy()
     late.loc[0, "ts"] = pd.Timestamp("2026-09-21 18:15", tz="Asia/Kolkata")
@@ -804,6 +857,11 @@ def test_verify_passes_a_clean_series_and_flags_each_defect():
     jumpy = clean.copy()
     jumpy.loc[jumpy["ts"].dt.date >= date(2026, 9, 24), ["open", "high", "low", "close"]] *= 2.0
     assert verify.verify_frame(jumpy)["big_day_jumps"] == ["2026-09-24"]
+
+    # the usual candle count is the MODE, not the maximum: four 360-candle days and one 375-candle day
+    mixed = pd.concat([_frame([d]).iloc[:360] for d in days[:4]] + [_frame(days[4:])], ignore_index=True)
+    rm = verify.verify_frame(mixed)
+    assert rm["bars_mode"] == 360 and rm["days_off_mode"] == 1, rm["bars_mode"]
 
     holes = clean[clean["ts"].dt.date != date(2026, 9, 23)]
     assert verify.verify_frame(holes, "minute", cal)["missing_days"] == 1
@@ -842,6 +900,9 @@ TESTS = [
     ("daily history uses long windows and the daily layout", test_daily_history_uses_long_windows_and_the_daily_layout),
     ("several workers store exactly what one worker does", test_several_workers_store_exactly_what_one_worker_does),
     ("the progress summary counts rows and requests", test_the_progress_summary_counts_rows_and_requests),
+    ("a pause that never ends fails instead of hanging", test_a_pause_that_never_ends_fails_instead_of_hanging),
+    ("hard errors and source defects are classified apart", test_hard_errors_and_source_defects_are_classified_apart),
+    ("combined windows are sorted and de-duplicated with the later frame winning", test_combined_windows_are_sorted_and_de_duplicated_with_the_later_frame_winning),
     ("verify passes a clean series and flags each defect", test_verify_passes_a_clean_series_and_flags_each_defect),
     ("raw rows parse to exactly what the dict path gives", test_raw_rows_parse_to_exactly_what_the_dict_path_gives),
     ("raw rows are parsed in bulk, not one candle at a time", test_raw_rows_are_parsed_in_bulk_not_one_candle_at_a_time),

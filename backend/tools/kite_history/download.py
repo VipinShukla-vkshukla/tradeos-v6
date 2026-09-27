@@ -518,7 +518,7 @@ def run(kite, root: Path, targets: Sequence[Target], interval: str, *, mode: str
         res.interrupted = True
     finally:
         beat_stop.set()
+        if progress is None:
+            prog.close()                     # also when a worker raised: never leave the database open
     res.seconds = clock() - t0
-    if progress is None:
-        prog.close()
     return res
