@@ -43,7 +43,7 @@ CACHE = HERE / "cache"
 TRAIN_TABLE = CACHE / "ign_event_table_train.jsonl"
 HOLDOUT_TABLE = CACHE / "ign_event_table_holdout.jsonl"
 
-TRAIN_END = "2026-07-17"           # holdout = every session after this
+TRAIN_END = "2024-12-31"           # holdout = every session after this (2025-01..now, ~21 months, sealed)
 CELL_T = (3.0, 3.5, 4.0, 5.0)
 CELL_V = (0.0, 1.0, 2.0, 3.0)
 MIN_IDX = F.MIN_BARS - 1
