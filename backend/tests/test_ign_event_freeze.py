@@ -174,7 +174,7 @@ def test_load_holdout_refuses_a_table_holding_a_train_day():
     old = T.HOLDOUT_TABLE
     with tempfile.TemporaryDirectory() as tmp:
         T.HOLDOUT_TABLE = Path(tmp) / "h.jsonl"
-        T.HOLDOUT_TABLE.write_text(json.dumps({"symbol": "A", "day": "2026-01-05", "cell": "LIVE"}) + "\n")
+        T.HOLDOUT_TABLE.write_text(json.dumps({"symbol": "A", "day": T.TRAIN_END, "cell": "LIVE"}) + "\n")      # the last TRAIN day
         z = {"gross": np.zeros((1, 2)), "risk": np.ones((1, 2)), "bars": np.zeros((1, 2)),
              "reason": np.zeros((1, 2)), "names": np.array(["a", "b"])}
         np.savez(T.HOLDOUT_TABLE.with_suffix(".policies.npz"), **z)

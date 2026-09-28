@@ -176,7 +176,7 @@ def test_the_split_boundary_is_the_last_train_day():
     assert T.split_of(T.TRAIN_END) == "train"
     nxt = (date.fromisoformat(T.TRAIN_END) + timedelta(days=1)).isoformat()
     assert T.split_of(nxt) == "holdout"
-    assert T.split_of("2025-01-02") == "train"
+    assert T.split_of((date.fromisoformat(T.TRAIN_END) - timedelta(days=30)).isoformat()) == "train"
 
 
 def test_policy_names_are_unique_and_span_both_sides():
@@ -256,13 +256,15 @@ def test_the_volume_profile_comes_from_train_controls_only():
     front = np.zeros(n)
     front[0] = 1_000_000.0
     loaded = F.DayBars(*(np.full(n, 100.0) for _ in range(4)), front)
-    lists = {"controls": [[f"T{k}", "2026-01-05"] for k in range(250)]
-                         + [[f"H{k}", "2026-09-01"] for k in range(400)]}
+    tr_day = (date.fromisoformat(T.TRAIN_END) - timedelta(days=30)).isoformat()          # follows the constant, never a fixed date
+    ho_day = (date.fromisoformat(T.TRAIN_END) + timedelta(days=30)).isoformat()
+    lists = {"controls": [[f"T{k}", tr_day] for k in range(250)]
+                         + [[f"H{k}", ho_day] for k in range(400)]}
     days = {(s, dd): (flat if s.startswith("T") else loaded) for s, dd in lists["controls"]}
     with _World(days):
         prof = T._control_profile(lists)
     assert np.allclose(prof, F.volume_profile([flat]) ), "the 400 holdout sessions must not move the profile"
-    too_few = {"controls": [[f"T{k}", "2026-01-05"] for k in range(50)]}
+    too_few = {"controls": [[f"T{k}", tr_day] for k in range(50)]}
     with _World({(s, dd): flat for s, dd in too_few["controls"]}):
         try:
             T._control_profile(too_few)
@@ -276,7 +278,7 @@ def test_load_train_refuses_a_policy_matrix_out_of_step_with_the_table():
     old = T.TRAIN_TABLE
     with tempfile.TemporaryDirectory() as tmp:
         T.TRAIN_TABLE = Path(tmp) / "t.jsonl"
-        T.TRAIN_TABLE.write_text(json.dumps({"symbol": "A", "day": "2026-01-05", "cell": "LIVE"}) + "\n")
+        T.TRAIN_TABLE.write_text(json.dumps({"symbol": "A", "day": T.TRAIN_END, "cell": "LIVE"}) + "\n")
         z = {"gross": np.zeros((2, 2)), "risk": np.ones((2, 2)), "bars": np.zeros((2, 2)),
              "reason": np.zeros((2, 2)), "names": np.array(["a", "b"])}
         np.savez(T.TRAIN_TABLE.with_suffix(".policies.npz"), **z)

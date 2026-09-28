@@ -20309,3 +20309,62 @@ An early version of `verify` lumped Kite's bad bars with pipeline defects and re
 
 **Gate:** PASS for the minute archive. NEEDS FOLLOW-UP: refresh the token and finish the daily run (`D:\kite_history\_state\run_all.cmd`); decide on the BSE-index minute candles; the
 `token_manager` validity check that never asks Kite; a cleaning loader before any training.
+
+
+## 2026-09-28 — IGN redesign from scratch on the 9-year Kite archive: the long-side ignition engine is net-negative in every year, one short-fade lead failed its pre-registered holdout (+0.048R, p 0.065), no improved engine exists, nothing armed
+
+**What and why.** The operator asked for IGN to be rebuilt from scratch on the full local archive (`D:\kite_history`) and made "the strongest engine"
+that decides entries and exits like an intraday trader. The earlier study (entry 2026-09-26) had 22,096 symbol-days from 20 months and could not
+rule out a conditional effect or a regime dependence. This one is 9 training years and every NSE stock the archive holds.
+
+**What was built.** `backend/tools/replay/ign_archive_events.py` scans each of 2,673 NSE stocks' whole minute history (2016-01 to 2026-09) in one
+vectorised pass: the same trigger, features, outcomes and 92 exit policies as the earlier study (`ign_event_features`, `ign_event_sim`, the same cost
+model: 0.2063% round trip = 0.1063% charges + 5 bps/leg slippage), but detection over every day instead of a fetched candidate list. Same liquidity
+floor as the earlier study (prior close >= Rs 50, prior-day turnover >= Rs 25 Cr) and the same opening-gap and session-length rules.
+1,137,310 rows: 819,274 train (2016-01-04..2024-12-31) and 318,036 holdout (2025-01-01..2026-09-25); 1,111,827 events and 25,483 random-bar controls.
+183 minutes to build; 166 symbols skipped for under 30 daily bars, 5 symbol-days for a bar-count mismatch. `TRAIN_END` in `ign_event_table.py` moved from
+2026-07-17 to 2024-12-31.
+
+**Results.**
+1. *The long-side ignition engine loses, in every year.* The LIVE-rule cell (what the daemon actually does), exit `L|nx|s20|t1.5`: 20,855 trades, win 40.1%,
+   gross +0.025%, **net -0.153R** (day-clustered se 0.010), against -0.412R for random entry bars with the same exit. Every one of the 17 cells is negative
+   under that exit (-0.07R to -0.19R), in each of five time blocks spanning 2016-2024. The earlier study's -0.135R on 2025-26 is therefore not a recent-regime
+   artefact: it replicates across COVID, 2018, the 2021 boom and 2022. The unfiltered fade (short the spike) is also negative in every cell and block (-0.14R to -0.22R across the cells).
+2. *The pre-registered selection found one candidate.* Walk-forward (procedure run on earlier blocks, scored on the next) pooled out-of-sample **+0.110R on 8,615
+   trades** (se 0.016), positive in all three test blocks (+0.144, +0.102, +0.102). The chosen design: cell T3.5_V0 (a close >= 3.5% above the prior close, from bar 8),
+   **SHORT** at the next bar's open, only if daily +DI >= 34.69 and the stock first crossed +1% within the last 30 bars, stop 1.5% above entry, target 2R, else flat by 15:14
+   (`ign_event_spec.json`, committed as 80ac5fd before any holdout access). In sample: 8,765 trades, +0.138R (se 0.016), win 44.4%, exits 47% stop / 34% target / 19% EOD, gross +0.414%/trade,
+   positive in all nine years (+0.06R to +0.27R), unchanged when capped to the first K=1..4 candidates a day (+0.16R), +0.120R without the ten most profitable symbols.
+3. *Train-only stress found the margin thin.* Extra round-trip cost of +0.05% / +0.10% / +0.20% takes it to +0.105R / +0.072R / +0.005R. 503 trades (5.7%) finished the day pinned at a +5/+10/+20% circuit
+   price, where a short cannot be covered; the simulator books them at -0.44R, but if each had really lost -3R the edge is -0.009R (-1.14R: +0.098R). 97% of the stops sit above +5% of the prior close, so in a stock with a 5% band the stop
+   can never trigger. Dropping every trade that could be in a 5%-band stock (prior-40-session maximum excursion under 5.3%: 451 trades, which were the *better* ones at +0.403R) leaves +0.124R.
+4. **The sealed holdout (2025-01-01..2026-09-25, one look, `reveal`): 2,677 trades, net +0.048R (se 0.032, one-sided p 0.065) at the production cost. NOT ACCEPTED** (the rule needs p < 0.05 and a positive mean above the
+   control's -0.061R). At charges-only cost +0.115R (p 0.0002); at +10 bps/leg slippage -0.018R (p 0.72). Win 42.5%, gross +0.279%/trade (0.414% in training). The effect kept its sign but lost about two thirds of its size and is not
+   distinguishable from zero at a realistic cost.
+5. *Model stage (walk-forward gradient boosting on the long design, `ign_event_model`):* `no_candidate`. Pooled out-of-sample the top decile picked 756 trades at -0.015% net (p 0.57), better than the unpicked -0.140% by
+   +0.125% (p 0.077); the gate needs a positive mean and both p < 0.1.
+
+**Reading.** On 9 years the long ignition idea has no edge after costs, at any threshold, exit or filter the search could reach. The best thing the data offered is a short fade of already-extended stocks, which was real in
+training and did not survive the holdout at the size that would matter: its gross edge (0.28%) is only about 0.07% above the cost it must clear. That is inside plausible execution error on shorted spikes in the first hour.
+It is a lead, not an engine. No live or paper behaviour was changed; nothing was armed.
+
+**Verification.** The scanner equals the tested reference `first_trigger` day by day: 6,442 of 6,442 (day, bar, cell) triggers identical on 40 random symbols across every training day
+(`python -m tools.replay.ign_archive_checks parity`). `tests/test_ign_archive_events.py` (10 checks: a hand-worked day, exact-boundary inclusivity, a hand-worked LIVE grind, liquidity, gap and session rules,
+ATR look-ahead, and equality with the reference on seven random histories). Mutation test: ten deliberate bugs in the scanner; the first version of the tests caught only 5, the gaps (the three `>=` boundaries, the ATR lag,
+LIVE's pre-filter) were closed, and all ten are now caught. Whole offline suite: 1,806 checks pass (1,796 before). `python -m tools.replay.ign_archive_checks stress` reproduces every training-side number above.
+Two existing test modules had 2026 dates hard-coded against the old `TRAIN_END`; they now derive their dates from the constant.
+
+**Mistakes made and corrected.** (1) The first scanner had no liquidity floor and produced ~5x the earlier study's event rate (penny stocks); found by comparing rates, fixed before any outcome was analysed. (2) The first full
+build crashed after 48 minutes on an unguarded per-event error (a day whose bar count disagreed with the scan); per-event and per-symbol guards and a checkpoint every 300 symbols were added, then a 183-minute rebuild. (3) My first
+stress tables called `dropna()` on the whole frame and silently used 2,502 of the 8,765 trades, and one "circuit" split conditioned on the outcome; both were caught from the counts not summing and rewritten before anything was concluded.
+(4) I deleted the earlier study's cache files when rebuilding, including its sealed holdout table (2026-07-20..09-24); that window lies inside the new holdout, which has now been read once, so the earlier seal is spent.
+
+**Not verified / limits.**
+- The 5 bps/leg slippage is an assumption; fills are at the next bar's open; no measurement of fills on shorted spikes exists. The result is more sensitive to this than to anything else.
+- Which stocks Zerodha allows to short intraday, and each stock's circuit band on each day, are not in the archive; the band was inferred from prior excursions.
+- Survivorship (Kite lists only today's instruments); prices are back-adjusted as of 26/27-Sep-2026; NSE equities went from 375 to 360 candles a day on 2026-08-03 (the scanner keeps 375 in the volume-ratio denominator for parity with the live engine; about eight weeks of the holdout are 360-bar days).
+- The holdout is not virgin data in the strict sense: it contains 2025-01..2026-07-17, which the earlier study searched (same feature families, no candidate found there). The candidate was selected on 2016-2024 alone, before the holdout was read.
+- The walk-forward and the model test only what they were built to test; a real effect confined to a narrow conjunction the search cannot express would still be missed.
+
+**Gate: FAIL to confirm** (the pre-registered candidate did not pass). No engine change. Open: run the same harness on the six other intraday engines (GAP, PDL, VCE, PBK, VWR, RNG), each needing its own offline trigger replay;
+decide whether the short-fade lead is worth a disarmed paper path (a 1.7-year holdout of 2,677 trades could not resolve a +0.05R effect, so a forward paper test would need years, not months).

@@ -291,6 +291,8 @@ MODULES = [
      "tests.test_ign_event_freeze"),
     ("IGN event study model stage — planted signal found, no-skill drift refused, no outcome leaks into a fold",
      "tests.test_ign_event_model"),
+    ("IGN archive scanner — hand-worked day, liquidity and gap rules, equals the tested reference on random histories",
+     "tests.test_ign_archive_events"),
     ("Kite history downloader — complete and exact, resumable, token-safe, market-hours-safe",
      "tests.test_kite_history"),
     ("Kite history CLI — status, verify exit codes, token refusal, README limits",
