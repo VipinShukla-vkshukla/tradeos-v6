@@ -49,8 +49,13 @@ HOLDOUT_TABLE = CACHE / "discover_table_holdout.jsonl"
 
 STUDY_START = "2016-01-01"
 TRAIN_END = "2025-09-30"            # a FRESH holdout: 2025-10-01..now was never opened for the IGN study
-GAP_MIN_PCT = 1.5
-BREAK_BUFFER = 0.001                # 0.1%: a break must clear the level, not tie it
+GAP_MIN_PCT = 2.0
+BREAK_BUFFER = 0.0015               # 0.15%: a break must clear the level, not tie it
+PDHL_BUFFER = 0.002                 # 0.2%: the prior-day level, a further break, needs a clearer margin
+VWAP_STRETCH_PCT = 1.5              # tighter than the ~1.0% touched routinely, closer to a real dislocation
+ORB_MIN_VR = 1.0                    # IGN's own volume ratio (already computed by _minute_frame): a breakout on
+                                     # dead volume is not the same event as one with real participation
+RSI2_LOW, RSI2_HIGH = 10.0, 90.0    # Connors' own "under 5-10 / over 90-95" extreme, not merely oversold
 CTRL_PER_SYMBOL_PER_YEAR = 2
 CTRL_IDX_RANGE = (15, 330)
 CTRL_SEED = 20261229
@@ -136,15 +141,16 @@ def scan_archetypes(mdf: pd.DataFrame, daily: list, eligible: set, rsi2_prior: n
         for r in _first_per_day(df, mask).itertuples():
             record(r.date, r.idx, name)
 
+    have_vol = df["vr"] >= ORB_MIN_VR
     for k in (5, 15):
         h, l = df[f"or{k}_h"], df[f"or{k}_l"]
-        base = (df["idx"] >= k) & h.notna() & l.notna()
-        emit(f"ORB{k}_LONG", base & (df["close"] > h))
-        emit(f"ORB{k}_SHORT", base & (df["close"] < l))
+        base = (df["idx"] >= k) & h.notna() & l.notna() & have_vol
+        emit(f"ORB{k}_LONG", base & (df["close"] > h * (1 + BREAK_BUFFER)))
+        emit(f"ORB{k}_SHORT", base & (df["close"] < l * (1 - BREAK_BUFFER)))
 
     vbase = df["idx"] >= MIN_IDX
-    emit("VWAP_REV_LONG", vbase & (df["vwap_dev_pct"] <= -1.0))
-    emit("VWAP_REV_SHORT", vbase & (df["vwap_dev_pct"] >= 1.0))
+    emit("VWAP_REV_LONG", vbase & (df["vwap_dev_pct"] <= -VWAP_STRETCH_PCT))
+    emit("VWAP_REV_SHORT", vbase & (df["vwap_dev_pct"] >= VWAP_STRETCH_PCT))
 
     gbase = df["idx"] >= 3
     up, down = df["gap_pct"] >= GAP_MIN_PCT, df["gap_pct"] <= -GAP_MIN_PCT
@@ -156,15 +162,32 @@ def scan_archetypes(mdf: pd.DataFrame, daily: list, eligible: set, rsi2_prior: n
     emit("GAP_UP_FADE", gbase & up & fade_up)
     emit("GAP_DOWN_FADE", gbase & down & fade_down)
 
-    pbase = (df["idx"] >= MIN_IDX) & df["prior_high"].notna() & df["prior_low"].notna()
-    emit("PDHL_BREAK_LONG", pbase & (df["close"] > df["prior_high"] * (1 + BREAK_BUFFER)))
-    emit("PDHL_BREAK_SHORT", pbase & (df["close"] < df["prior_low"] * (1 - BREAK_BUFFER)))
+    pbase = (df["idx"] >= MIN_IDX) & df["prior_high"].notna() & df["prior_low"].notna() & have_vol
+    emit("PDHL_BREAK_LONG", pbase & (df["close"] > df["prior_high"] * (1 + PDHL_BUFFER)))
+    emit("PDHL_BREAK_SHORT", pbase & (df["close"] < df["prior_low"] * (1 - PDHL_BUFFER)))
 
-    rsi_long = {daily[p].date for p in range(len(daily)) if np.isfinite(rsi2_prior[p]) and rsi2_prior[p] <= 15}
-    rsi_short = {daily[p].date for p in range(len(daily)) if np.isfinite(rsi2_prior[p]) and rsi2_prior[p] >= 85}
+    rsi_long = {daily[p].date for p in range(len(daily)) if np.isfinite(rsi2_prior[p]) and rsi2_prior[p] <= RSI2_LOW}
+    rsi_short = {daily[p].date for p in range(len(daily)) if np.isfinite(rsi2_prior[p]) and rsi2_prior[p] >= RSI2_HIGH}
     emit("RSI2_LONG", (df["idx"] == 0) & df["date"].isin(rsi_long))
     emit("RSI2_SHORT", (df["idx"] == 0) & df["date"].isin(rsi_short))
     return triggers
+
+
+def rank_by_recent_turnover(root, symbols: list[str], lookback_days: int = 60) -> list[str]:
+    """Symbols ordered by their own most recent `lookback_days` average daily turnover (price x volume),
+    richest first. A quick daily-only pass (small files) so `--top` can bound the minute-level scan to the
+    names that actually matter, instead of spending most of the run's time on the long illiquid tail."""
+    scored = []
+    for sym in symbols:
+        d = KH.read(root, "day", "NSE", sym, start="2020-01-01")
+        if d.empty:
+            continue
+        tail = d.tail(lookback_days)
+        turnover_cr = float((tail["close"] * tail["volume"]).mean()) / 1e7
+        if turnover_cr > 0:
+            scored.append((sym, turnover_cr))
+    scored.sort(key=lambda t: -t[1])
+    return [s for s, _ in scored]
 
 
 def sample_controls(mdf: pd.DataFrame, eligible: set, rng, n: int) -> dict:
@@ -199,9 +222,13 @@ def _checkpoint(rows: dict, pol: dict, names: list, limit: int | None) -> None:
             tmp_npz.replace(path.with_suffix(".policies.npz"))
 
 
-def build(limit: int | None = None) -> None:
+def build(limit: int | None = None, top: int | None = None) -> None:
     root = ROOT
     symbols = KH.list_symbols(root, "minute", "NSE")
+    if top:
+        t0r = time.time()
+        symbols = rank_by_recent_turnover(root, symbols)[:top]
+        print(f"ranked by recent turnover, top {top} kept ({(time.time() - t0r) / 60:.1f} min)", flush=True)
     if limit:
         symbols = symbols[:limit]
     print(f"{len(symbols)} NSE symbols, study window {STUDY_START}..latest, train_end {TRAIN_END} (fresh holdout)", flush=True)
@@ -210,8 +237,14 @@ def build(limit: int | None = None) -> None:
     profile = A.build_profile(root, symbols, rng)
     print(f"  profile built ({(time.time() - t0) / 60:.1f} min)", flush=True)
     idx_days, idx_daily = A.load_indices(root)
-    pols = core_policies()
+    # a coarse screen, not the deep-dive: plain next-open entries only, no pullback/time-stop/breakeven
+    # variants — about a third of the full 92-policy grid. If an archetype survives this, ITS rows alone
+    # (a small subset) get the full grid re-run for the actual filter search; scanning all 2,673 symbols'
+    # whole history with all 92 policies on every one of ~2.6M candidate events does not fit a session.
+    full_pols = core_policies()
+    pols = {n: p for n, p in full_pols.items() if "|nx|" in n and n.endswith("|m-|b-")}
     names = list(pols)
+    print(f"  coarse policy grid: {len(names)} of {len(full_pols)}", flush=True)
     print(f"  setup done ({(time.time() - t0) / 60:.1f} min) — starting the per-symbol scan", flush=True)
 
     rows: dict[str, list] = {"train": [], "holdout": []}
@@ -245,6 +278,7 @@ def build(limit: int | None = None) -> None:
             mdf2 = mdf.copy()
             mdf2["date"] = mdf2["ts"].dt.date
             mdf_by_date = {d: g for d, g in mdf2.groupby("date", sort=False)}
+            dfeat_cache: dict = {}          # daily_features(pos) is identical for every idx that fires on the same day
             for day, by_idx in triggers.items():
                 p = pos.get(day)
                 if p is None or p < 25:
@@ -259,7 +293,7 @@ def build(limit: int | None = None) -> None:
                     continue
                 for i, cell_names in by_idx.items():
                     try:
-                        got = A.row_features(sym, day, d, i, daily, p, idx_days, idx_daily, profile)
+                        got = A.row_features(sym, day, d, i, daily, p, idx_days, idx_daily, profile, dfeat_cache)
                     except Exception as e:
                         skipped["feature_error"] = skipped.get("feature_error", 0) + 1
                         log.warning(f"  {sym} {day} idx={i}: {type(e).__name__}: {e}")
@@ -268,21 +302,24 @@ def build(limit: int | None = None) -> None:
                         continue
                     base_row, _ = got
                     split = "train" if day.isoformat() <= TRAIN_END else "holdout"
+                    # simulate() depends only on (d, i, policy), never on which archetype labelled this bar —
+                    # compute the 92-policy grid ONCE per bar and reuse it for every cell sharing that bar
+                    # (about 1 in 4 bars here has 2+ labels: two ORB windows, or a gap that is also a VWAP stretch)
+                    g_arr = np.full(len(names), np.nan, dtype=np.float32)
+                    k_arr = np.full(len(names), np.nan, dtype=np.float32)
+                    b_arr = np.full(len(names), -1, dtype=np.int16)
+                    c_arr = np.zeros(len(names), dtype=np.int8)
+                    for j, nm in enumerate(names):
+                        try:
+                            res = SIM.simulate(d, i, pols[nm])
+                        except Exception:
+                            res = None
+                        if res is not None:
+                            g_arr[j], k_arr[j] = res["gross_pct"], res["risk_pct"]
+                            b_arr[j], c_arr[j] = res["bars"], REASON_CODE[res["reason"]]
                     for name in cell_names:
                         r = dict(base_row, cell=name, kind=("control" if name == "CTRL" else "event"))
                         rows[split].append(r)
-                        g_arr = np.full(len(names), np.nan, dtype=np.float32)
-                        k_arr = np.full(len(names), np.nan, dtype=np.float32)
-                        b_arr = np.full(len(names), -1, dtype=np.int16)
-                        c_arr = np.zeros(len(names), dtype=np.int8)
-                        for j, nm in enumerate(names):
-                            try:
-                                res = SIM.simulate(d, i, pols[nm])
-                            except Exception:
-                                res = None
-                            if res is not None:
-                                g_arr[j], k_arr[j] = res["gross_pct"], res["risk_pct"]
-                                b_arr[j], c_arr[j] = res["bars"], REASON_CODE[res["reason"]]
                         pol[split].append((g_arr, k_arr, b_arr, c_arr))
                         n_events += (name != "CTRL")
                         n_ctrl += (name == "CTRL")
@@ -308,9 +345,10 @@ def main() -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build")
     b.add_argument("--limit", type=int, default=None)
+    b.add_argument("--top", type=int, default=None, help="keep only the N symbols with the highest recent turnover")
     args = p.parse_args()
     if args.cmd == "build":
-        build(args.limit)
+        build(args.limit, args.top)
     return 0
 
 

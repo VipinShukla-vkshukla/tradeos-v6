@@ -161,13 +161,23 @@ def sample_controls(mdf: pd.DataFrame, eligible: set, rng, n: int) -> dict:
 
 
 def row_features(sym: str, day, d: F.DayBars, i: int, daily: list[DailyBar], pos: int,
-                 idx_days: dict, idx_daily_rows: dict, profile: np.ndarray) -> tuple[dict, dict] | None:
+                 idx_days: dict, idx_daily_rows: dict, profile: np.ndarray,
+                 dfeat_cache: dict | None = None) -> tuple[dict, dict] | None:
     """One event's full feature row + its forward-outcome dict, or None if there isn't enough prior daily
-    history yet. Mirrors ign_event_table.row_features/symbol_day_rows, sourced from the local archive."""
+    history yet. Mirrors ign_event_table.row_features/symbol_day_rows, sourced from the local archive.
+    `daily_features(bars[:pos])` depends only on `pos`, never on the intraday trigger bar `i`; when a caller
+    passes `dfeat_cache` (keyed by `pos`, one per symbol's scan), two events on the same day share the one
+    computation instead of each re-walking the whole prior daily history from scratch — pure memoisation of
+    an already-deterministic call, so it changes nothing about what is returned."""
     bars = daily[:pos]
     if len(bars) < 25:
         return None
-    dfeat = F.daily_features(bars)
+    if dfeat_cache is not None and pos in dfeat_cache:
+        dfeat = dfeat_cache[pos]
+    else:
+        dfeat = F.daily_features(bars)
+        if dfeat_cache is not None:
+            dfeat_cache[pos] = dfeat
     if not dfeat:
         return None
     prev_close, prev_vol = float(bars[-1].close), float(bars[-1].volume)

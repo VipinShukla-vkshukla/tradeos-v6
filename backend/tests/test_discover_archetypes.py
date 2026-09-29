@@ -55,7 +55,7 @@ def test_opening_range_breakout_fires_at_the_first_bar_past_the_window_and_not_b
     daily = _daily(days, high=200.0, low=50.0)          # wide enough that this break can never also read as a PDHL break
     closes = _flat()
     closes[15] = 103.0          # first bar past the 15-min window: breaks both the 5- and 15-minute range
-    trig = _scan(_frame(days[-1], closes, np.full(N, 5000.0)), daily)
+    trig = _scan(_frame(days[-1], closes, np.full(N, 15000.0)), daily)
     orb_at15 = {c for d, i, c in trig if d == days[-1] and i == 15 and c.startswith("ORB")}
     assert orb_at15 == {"ORB5_LONG", "ORB15_LONG"}, orb_at15
     assert not any(i < 15 for d, i, c in trig if d == days[-1] and c.startswith("ORB")), "no break before the window closes"
@@ -74,21 +74,47 @@ def test_opening_range_breakout_needs_to_clear_the_range_not_just_touch_it():
     daily = _daily(days, high=200.0, low=50.0)
     tie = _flat()
     tie[15] = 100.0                                    # bars 0-14 are all exactly 100: the OR15 high IS 100.0
-    trig = _scan(_degenerate_frame(days[-1], tie, np.full(N, 5000.0)), daily)
+    trig = _scan(_degenerate_frame(days[-1], tie, np.full(N, 15000.0)), daily)
     assert not any(i == 15 and c.startswith("ORB") for _, i, c in trig), "an exact tie with the range high is not a break"
 
     cleared = _flat()
-    cleared[15] = 100.05                               # now genuinely above the 100.0 range high
-    trig2 = _scan(_degenerate_frame(days[-1], cleared, np.full(N, 5000.0)), daily)
+    cleared[15] = 100.25                                # clears the 100.0 range high by more than the break buffer
+    trig2 = _scan(_degenerate_frame(days[-1], cleared, np.full(N, 15000.0)), daily)
     assert any(i == 15 and c == "ORB5_LONG" for _, i, c in trig2)
+
+    at_the_buffer = _flat()
+    at_the_buffer[15] = 100.0 * (1 + D.BREAK_BUFFER)    # exactly the comparison threshold itself: still not a clear
+    trig3 = _scan(_degenerate_frame(days[-1], at_the_buffer, np.full(N, 15000.0)), daily)
+    assert not any(i == 15 and c.startswith("ORB") for _, i, c in trig3), "a tie with the buffered threshold is not a break either"
 
 
 def test_opening_range_breakout_short_uses_the_low_not_the_high():
     days = _days(40)
     closes = _flat()
     closes[5] = 97.0             # breaks the 5-minute low at the first eligible bar; the 15-minute window is not over yet
-    trig = _scan(_frame(days[-1], closes, np.full(N, 5000.0)), _daily(days))
+    trig = _scan(_frame(days[-1], closes, np.full(N, 15000.0)), _daily(days))
     assert {c for d, i, c in trig if d == days[-1] and i == 5} == {"ORB5_SHORT"}
+
+
+def test_opening_range_breakout_short_stays_silent_inside_a_wide_range():
+    """The first 5 bars swing between 90 and 110 (a wide range); a bar 5 close of 100 sits INSIDE that range —
+    below the high, above the low — and must not read as a break of the low."""
+    days = _days(40)
+    closes = _flat()
+    closes[0], closes[1] = 90.0, 110.0                  # sets OR5's low and high
+    closes[5] = 100.0
+    trig = _scan(_frame(days[-1], closes, np.full(N, 15000.0)), _daily(days))
+    assert not any(i == 5 and c.startswith("ORB5") for _, i, c in trig), trig
+
+
+def test_opening_range_breakout_needs_real_volume_not_just_a_price_move():
+    days = _days(40)
+    closes = _flat()
+    closes[15] = 103.0
+    quiet = _scan(_frame(days[-1], closes, np.full(N, 50.0)), _daily(days))          # far below IGN's own volume floor
+    assert not any(c.startswith("ORB") for _, _, c in quiet), quiet
+    loud = _scan(_frame(days[-1], closes, np.full(N, 15000.0)), _daily(days))
+    assert any(i == 15 and c == "ORB15_LONG" for _, i, c in loud), "the same break, with real volume, must fire"
 
 
 def _vwap_ref(o, h, l, c, v):
@@ -109,7 +135,7 @@ def test_vwap_reversion_matches_an_independently_computed_running_vwap():
     closes = 100.0 - 0.25 * np.arange(N)              # a steady one-way drift away from the session's own average
     f = _frame(days[-1], closes, np.full(N, 1000.0))
     ref = _vwap_ref(f["open"].to_numpy(), f["high"].to_numpy(), f["low"].to_numpy(), f["close"].to_numpy(), f["volume"].to_numpy())
-    want = next(i for i in range(D.MIN_IDX, N) if ref[i] <= -1.0)
+    want = next(i for i in range(D.MIN_IDX, N) if ref[i] <= -D.VWAP_STRETCH_PCT)
     trig = _scan(f, _daily(days))
     got = sorted(i for d, i, c in trig if d == days[-1] and c == "VWAP_REV_LONG")
     assert got == [want], (got, want)
@@ -144,7 +170,7 @@ def test_prior_day_break_respects_the_minimum_bar_floor():
     closes = _flat()
     closes[D.MIN_IDX - 1] = 106.0                                # a real break, but one bar too early
     closes[D.MIN_IDX] = 106.0                                    # the same break, now at the first allowed bar
-    trig = _scan(_frame(days[-1], closes, np.full(N, 5000.0)), daily)
+    trig = _scan(_frame(days[-1], closes, np.full(N, 15000.0)), daily)
     got = sorted(i for d, i, c in trig if d == days[-1] and c == "PDHL_BREAK_LONG")
     assert got == [D.MIN_IDX], got
 
@@ -154,7 +180,7 @@ def test_a_break_that_does_not_clear_the_buffer_does_not_trigger():
     daily = _daily(days, close=100.0, high=105.0, low=95.0)
     closes = _flat()
     closes[20] = 105.02                                          # inside the 0.1% buffer above 105 (may still read as
-    trig = _scan(_frame(days[-1], closes, np.full(N, 5000.0)), daily)          # an ORB/VWAP move — that is correct;
+    trig = _scan(_frame(days[-1], closes, np.full(N, 15000.0)), daily)          # an ORB/VWAP move — that is correct;
     assert not any(c.startswith("PDHL_BREAK") for _, _, c in trig), trig        # only PDHL must stay silent)
 
 
@@ -215,6 +241,8 @@ TESTS = [
     ("opening-range breakout fires at the first bar past the window and not before", test_opening_range_breakout_fires_at_the_first_bar_past_the_window_and_not_before),
     ("opening-range breakout needs to clear the range, not just touch it", test_opening_range_breakout_needs_to_clear_the_range_not_just_touch_it),
     ("opening-range short uses the low, not the high", test_opening_range_breakout_short_uses_the_low_not_the_high),
+    ("opening-range short stays silent inside a wide range", test_opening_range_breakout_short_stays_silent_inside_a_wide_range),
+    ("opening-range breakout needs real volume, not just a price move", test_opening_range_breakout_needs_real_volume_not_just_a_price_move),
     ("VWAP reversion matches an independently computed running VWAP", test_vwap_reversion_matches_an_independently_computed_running_vwap),
     ("gap continue and fade are mutually exclusive on the same gap", test_gap_continue_and_fade_are_mutually_exclusive_on_the_same_gap),
     ("a small gap never triggers either gap archetype", test_a_small_gap_never_triggers_either_gap_archetype),

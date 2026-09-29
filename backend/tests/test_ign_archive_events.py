@@ -172,6 +172,40 @@ def test_atr_is_lagged_one_session_so_a_day_never_sees_its_own_range():
     assert abs(A._atr_pct_prior(bars2)[35] - atr[35]) < 1e-12, "day 35's own range must not reach day 35's ATR"
 
 
+def test_row_features_cache_gives_the_identical_answer_as_no_cache_at_all():
+    """dfeat_cache is pure memoisation of daily_features(pos), which does not depend on the intraday trigger
+    bar: two events on the same day must get the identical daily-context fields whether or not a cache is
+    used, and a cache HIT must not leak into a DIFFERENT day's fields."""
+    days = _days(40)
+    daily = _daily(days)
+    closes = _flat()
+    closes[20], closes[100] = 103.0, 96.0             # two distinct trigger bars on the same day
+    g = _frame(days[-1], closes, np.full(N, 5000.0))
+    d = A.F.DayBars(g["open"].to_numpy(float), g["high"].to_numpy(float), g["low"].to_numpy(float),
+                    g["close"].to_numpy(float), g["volume"].to_numpy(float))
+    pos = len(daily) - 1
+    profile = np.full(A.F.SESSION_MIN, 1.0 / A.F.SESSION_MIN)
+    no_cache_20, _ = A.row_features("X", days[-1], d, 20, daily, pos, {}, {}, profile)
+    no_cache_100, _ = A.row_features("X", days[-1], d, 100, daily, pos, {}, {}, profile)
+    cache: dict = {}
+    cached_20, _ = A.row_features("X", days[-1], d, 20, daily, pos, {}, {}, profile, cache)
+    cached_100, _ = A.row_features("X", days[-1], d, 100, daily, pos, {}, {}, profile, cache)
+    assert len(cache) == 1, "one day, one cached computation, however many bars trigger on it"
+    daily_fields = ("atr14_pct", "dist_sma20", "adx", "di_plus", "rsi14", "avg20_volume", "up_streak")
+    for f in daily_fields:
+        assert cached_20[f] == no_cache_20[f] == cached_100[f] == no_cache_100[f], f
+    assert cached_20["move_pct"] != cached_100["move_pct"], "the intraday-dependent fields must still differ"
+
+    # a genuinely different day's shape (not just a different price level, which normalises out of a % ATR):
+    # a sharp trend instead of a flat tape. A DIFFERENT position in the SAME cache dict must not collide.
+    trending = _daily(days, close=100.0)
+    trending = [A.DailyBar(b.date, b.open + k * 0.7, b.high + k * 0.7, b.low + k * 0.7, b.close + k * 0.7, b.volume)
+               for k, b in enumerate(trending)]
+    other_row, _ = A.row_features("X", days[-1], d, 20, trending, pos - 5, {}, {}, profile, cache)
+    assert (pos - 5) in cache and pos in cache and cache[pos - 5] is not cache[pos]
+    assert other_row["atr14_pct"] != cached_20["atr14_pct"], "a different position must get its own computation"
+
+
 def test_scanner_equals_the_tested_reference_on_random_histories():
     """Seven random 70-day histories with spike days; every (day, bar, cell) must agree with the slow reference, LIVE included."""
     total = 0
@@ -211,5 +245,6 @@ TESTS = [
     ("every threshold is inclusive at exactly the boundary", test_every_threshold_is_inclusive_at_exactly_the_boundary),
     ("LIVE fires on a slow feasible grind and not before", test_live_fires_on_a_slow_feasible_grind_and_not_before),
     ("ATR is lagged one session so a day never sees its own range", test_atr_is_lagged_one_session_so_a_day_never_sees_its_own_range),
+    ("row_features cache gives the identical answer as no cache at all", test_row_features_cache_gives_the_identical_answer_as_no_cache_at_all),
     ("scanner equals the tested reference on random histories", test_scanner_equals_the_tested_reference_on_random_histories),
 ]
