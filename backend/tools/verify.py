@@ -293,6 +293,8 @@ MODULES = [
      "tests.test_ign_event_model"),
     ("IGN archive scanner — hand-worked day, liquidity and gap rules, equals the tested reference on random histories",
      "tests.test_ign_archive_events"),
+    ("Discovery archetype scanner — ORB, VWAP reversion, gap, prior-day break, RSI2, each against a hand-worked or independent reference",
+     "tests.test_discover_archetypes"),
     ("Kite history downloader — complete and exact, resumable, token-safe, market-hours-safe",
      "tests.test_kite_history"),
     ("Kite history CLI — status, verify exit codes, token refusal, README limits",
