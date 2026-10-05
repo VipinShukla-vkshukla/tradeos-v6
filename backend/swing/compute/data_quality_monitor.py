@@ -133,6 +133,38 @@ def _result(check_name, ok, severity_if_fail, message, value="", affected=None):
     }
 
 
+def signal_run_marker(sb, td):
+    """
+    The __SIGNAL_RUN__ row generate_signals leaves in ai_context for `td`, as a
+    dict, or None when step 20 left no evidence of running.
+
+    This is what lets C07/C09/C19 tell "ran and legitimately found nothing"
+    (a RISK OFF day under the score floor) from "never ran". Both used to be
+    the same absence in signal_log, so every quiet day paged as a failure.
+    """
+    try:
+        rows = (sb.table("ai_context").select("conviction_reason")
+                  .eq("date", td).eq("symbol", "__SIGNAL_RUN__")
+                  .limit(1).execute().data)
+        if rows and rows[0].get("conviction_reason"):
+            return json.loads(rows[0]["conviction_reason"])
+    except Exception:
+        pass
+    return None
+
+
+def ran_with_no_signals(sb, td) -> bool:
+    """True only on POSITIVE evidence: marker present and it says 0 signals."""
+    m = signal_run_marker(sb, td)
+    return bool(m) and int(m.get("signals", -1)) == 0
+
+
+def _empty_run_note(m: dict) -> str:
+    return (f"step 20 ran and wrote 0 signals ({m.get('msl_rows')} shortlist rows, "
+            f"{m.get('below_floor')} under the {m.get('min_score')} floor, top score "
+            f"{m.get('top_score')}, regime {m.get('regime')})")
+
+
 # ── C01: Chartink Row Count ───────────────────────────────────────────────────
 
 def c01_chartink_row_count(sb, td):
@@ -364,6 +396,8 @@ def c07_pipeline_completeness(sb, td):
             else:
                 cnt = sb.table(table).select("*", count="exact").eq(date_col, td).limit(1).execute().count or 0
 
+            if cnt == 0 and label == "20_signals" and ran_with_no_signals(sb, td):
+                continue   # ran, found nothing: evidence of execution, not absence
             if cnt == 0:
                 missing.append({"step": label, "table": table, "severity": sev})
         except Exception as e:
@@ -436,8 +470,13 @@ def c09_final_picks_validity(sb, td):
           .execute().data
     )
     if not rows:
+        if ran_with_no_signals(sb, td):
+            return _result("C09_final_picks_validity", True, "ERROR",
+                f"No __FINAL_PICKS__ for {td} — step 19 had nothing to rank: "
+                f"{_empty_run_note(signal_run_marker(sb, td))}")
         return _result("C09_final_picks_validity", False, "ERROR",
-            f"No __FINAL_PICKS__ in ai_context for {td} — step 19 failed or used wrong date")
+            f"No __FINAL_PICKS__ in ai_context for {td} — step 19 failed or used wrong date "
+            f"(and step 20 left no zero-signal run marker)")
 
     row = rows[0]
     try:
@@ -811,6 +850,11 @@ def c19_signal_date_alignment(sb, td):
             "No signal_log rows — step 15 may not have run")
 
     sig_date = str(sig_row[0].get("date", ""))[:10]
+    if sig_date != td and ran_with_no_signals(sb, td):
+        return _result("C19_signal_date_alignment", True, "ERROR",
+            f"signal_log latest is {sig_date}, nothing written for {td} — "
+            f"{_empty_run_note(signal_run_marker(sb, td))}",
+            value=f"sig={sig_date} sdd={td} empty-run")
     ok       = sig_date == td
     msg      = (
         f"signal_log latest date: {sig_date} | stock_data_daily date: {td}"

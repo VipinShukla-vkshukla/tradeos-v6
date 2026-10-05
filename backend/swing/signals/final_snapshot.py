@@ -208,6 +208,7 @@ def main(force: bool = False):
               .eq("date", today)
               .neq("symbol", "__FINAL_PICKS__")
               .neq("symbol", "__MARKET_INTEL__")
+              .neq("symbol", "__SIGNAL_RUN__")
               .execute().data
         )
         sym_ai_map = {r["symbol"]: r for r in ai_rows}

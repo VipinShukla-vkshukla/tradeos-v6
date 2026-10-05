@@ -524,6 +524,55 @@ def get_eap_action(symbol, sector, events, cfg_eap):
 # OPEN POSITION SIGNAL (v4 logic, thresholds now from T dict)
 # ─────────────────────────────────────────────────────────────────────────────
 
+SIGNAL_RUN_MARKER = "__SIGNAL_RUN__"
+
+
+def passes_score_floor(score: float, min_score: float, in_position: bool) -> bool:
+    """
+    `min_score_to_show` is a gate on NEW entries, never on a position we hold.
+
+    The floor used to be applied to every shortlist row before classification,
+    so a held name whose score slid under it was skipped silently and
+    classify_open_position_signal never ran. On 05-Oct-2026 DRREDDY carried
+    holding_score 25.8 (exit threshold 30) and final_score 35.8 (floor 50): the
+    run logged "Held positions weakening" and then emitted EXIT:0. A held
+    position must always reach the exit rules — a weakening market is exactly
+    when the floor rises past everything, so exits are the signal that must not
+    depend on it.
+    """
+    return in_position or score >= min_score
+
+
+def record_signal_run(sb, run_date_str: str, regime: str, msl_rows: int,
+                      min_score: float, top_score: float, below_floor: int,
+                      signals: list) -> None:
+    """
+    Leave evidence that step 20 RAN, including when it legitimately wrote no
+    signals. Without it "ran and found nothing" and "never ran" are the same
+    absence in signal_log, so the output audit (C07/C09/C19) could only treat
+    every quiet RISK OFF day as a broken pipeline. Never fatal.
+    """
+    from collections import Counter
+    try:
+        payload = {
+            "signals":     len(signals),
+            "by_type":     dict(Counter(s["signal_type"] for s in signals)),
+            "msl_rows":    msl_rows,
+            "below_floor": below_floor,
+            "min_score":   min_score,
+            "top_score":   round(top_score, 1),
+            "regime":      regime,
+        }
+        sb.table("ai_context").upsert({
+            "date":              run_date_str,
+            "symbol":            SIGNAL_RUN_MARKER,
+            "conviction_reason": json.dumps(payload),
+            "provider":          "generate_signals",
+        }, on_conflict="date,symbol").execute()
+    except Exception as e:
+        logger.warning(f"  signal-run marker not written (non-fatal): {e}")
+
+
 def classify_open_position_signal(msl_row: dict, pos: dict, T: dict) -> tuple:
     holding_score  = float(msl_row.get("holding_score") or 0)
     lifecycle      = (msl_row.get("lifecycle")      or "").upper()
@@ -1202,6 +1251,7 @@ def generate(run_date: date | None = None) -> list:
     show_watch    = cfg_bool("show_watching_stocks", True)
 
     signals = []
+    top_score, below_floor = 0.0, 0
 
     for msl_row in msl:
         sym       = msl_row.get("symbol")
@@ -1224,7 +1274,9 @@ def generate(run_date: date | None = None) -> list:
             if ind_top5:              score += T["industry_bonus_top5"]
             if ind_state == "STRONG": score += T["industry_bonus_strong"]
 
-        if score < min_score:
+        top_score = max(top_score, score)
+        if not passes_score_floor(score, min_score, in_pos):
+            below_floor += 1
             continue
 
         if sym in tpo_set:   strat_tag = "TPO"
@@ -1470,6 +1522,9 @@ def generate(run_date: date | None = None) -> list:
         }
         signals.append(sig)
 
+    if not DRY_RUN:
+        record_signal_run(sb, run_date_str, regime_name, len(msl),
+                          min_score, top_score, below_floor, signals)
     return signals
 
 

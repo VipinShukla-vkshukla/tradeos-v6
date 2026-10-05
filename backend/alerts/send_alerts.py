@@ -147,7 +147,7 @@ import json
 import re
 import time
 import smtplib
-from datetime import timedelta
+from datetime import date, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
@@ -770,6 +770,27 @@ def partial_booking_summary(partial_bookings, orig_qty, curr_qty) -> str:
 
 # ── Data loader ────────────────────────────────────────────────────────────
 
+def suppress_stale_plan(data: dict, today: str, is_session: bool) -> dict:
+    """
+    On a trading day, a plan dated EARLIER than today is not today's plan.
+
+    load_data walks back to the latest signal_output_daily when today has none.
+    That is right for a weekend or holiday run, but on a session day it means
+    step 20 produced nothing and the email presented the previous plan (a Tier-1
+    entry from 30-Sep) as current on a RISK OFF evening. Entries and ranked
+    picks from another date are dropped; positions, regime and market context
+    stay, since those are live. The date it fell back to is recorded.
+    """
+    if is_session and data.get("signal_date") != today:
+        data["stale_signal_date"] = data.get("signal_date")
+        data["signals"]     = []
+        data["final_picks"] = None
+        logger.warning(
+            f"Plan on file is dated {data['stale_signal_date']}, not {today} — "
+            f"not presenting it as today's (no new signals today)")
+    return data
+
+
 def load_data(sb, today: str) -> dict:
     """
     v6: Primary source is signal_output_daily (step 20.5 immutable snapshot).
@@ -1114,7 +1135,9 @@ def load_data(sb, today: str) -> dict:
             "partial_done":      partial_done,
         }
 
-    return {
+    _is_session = (date.fromisoformat(today).weekday() < 5
+                   and today not in holidays)
+    return suppress_stale_plan({
         "signal_date":       signal_date,
         "display_date":      today,
         "final_picks":       final_picks_data,
@@ -1131,7 +1154,7 @@ def load_data(sb, today: str) -> dict:
         "lessons_rb":        lessons_rb,
         "anomalies":         anomalies,
         "portfolio_summary": portfolio_summary,
-    }
+    }, today, _is_session)
 
 def _format_event_warning(msl: dict) -> str:
     """
