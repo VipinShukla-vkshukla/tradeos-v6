@@ -173,6 +173,20 @@ def scan_archetypes(mdf: pd.DataFrame, daily: list, eligible: set, rsi2_prior: n
     return triggers
 
 
+def read_minute_since(root, symbol: str, since: str) -> pd.DataFrame:
+    """Minute candles from `since` onward, reading only the year-files that can hold them. `store.read`
+    globs every year-file for the symbol and filters in memory afterward — fine for the full archive, but
+    for a short recent window it means touching 10+ years of disk on D: to keep the last 2. This narrows
+    the glob itself before any file is opened."""
+    year0 = pd.Timestamp(since).year
+    d = KH.symbol_dir(root, "minute", "NSE", symbol)
+    paths = [p for p in sorted(d.glob("*.parquet")) if int(p.stem) >= year0]      # a missing directory globs to nothing
+    if not paths:
+        return KH._empty(False)
+    df = KH._clean(pd.concat([KH.read_file(p) for p in paths], ignore_index=True))
+    return df[df["ts"] >= KH._ts(since)].reset_index(drop=True)
+
+
 def rank_by_recent_turnover(root, symbols: list[str], lookback_days: int = 60) -> list[str]:
     """Symbols ordered by their own most recent `lookback_days` average daily turnover (price x volume),
     richest first. A quick daily-only pass (small files) so `--top` can bound the minute-level scan to the
@@ -222,8 +236,9 @@ def _checkpoint(rows: dict, pol: dict, names: list, limit: int | None) -> None:
             tmp_npz.replace(path.with_suffix(".policies.npz"))
 
 
-def build(limit: int | None = None, top: int | None = None) -> None:
+def build(limit: int | None = None, top: int | None = None, since: str | None = None) -> None:
     root = ROOT
+    start = since or STUDY_START
     symbols = KH.list_symbols(root, "minute", "NSE")
     if top:
         t0r = time.time()
@@ -231,7 +246,7 @@ def build(limit: int | None = None, top: int | None = None) -> None:
         print(f"ranked by recent turnover, top {top} kept ({(time.time() - t0r) / 60:.1f} min)", flush=True)
     if limit:
         symbols = symbols[:limit]
-    print(f"{len(symbols)} NSE symbols, study window {STUDY_START}..latest, train_end {TRAIN_END} (fresh holdout)", flush=True)
+    print(f"{len(symbols)} NSE symbols, study window {start}..latest, train_end {TRAIN_END} (fresh holdout)", flush=True)
     rng = np.random.default_rng(CTRL_SEED)
     t0 = time.time()
     profile = A.build_profile(root, symbols, rng)
@@ -253,7 +268,7 @@ def build(limit: int | None = None, top: int | None = None) -> None:
     n_events = n_ctrl = 0
     for n, sym in enumerate(symbols, 1):
         try:
-            mdf = KH.read(root, "minute", "NSE", sym, start=STUDY_START)
+            mdf = read_minute_since(root, sym, start) if since else KH.read(root, "minute", "NSE", sym, start=start)
             ddf = KH.read(root, "day", "NSE", sym, start="2014-01-01")
             if mdf.empty or ddf.empty:
                 skipped["no_data"] = skipped.get("no_data", 0) + 1
@@ -340,15 +355,36 @@ def build(limit: int | None = None, top: int | None = None) -> None:
           f"({(time.time() - t0) / 60:.1f} min)", flush=True)
 
 
+def load_train():
+    """Train rows and their (coarse, 30-policy) matrix. The holdout file is never opened here."""
+    import pandas as pd
+    df = pd.read_json(TRAIN_TABLE, lines=True)
+    z = np.load(TRAIN_TABLE.with_suffix(".policies.npz"))
+    assert len(df) == len(z["gross"]), "table and policy matrix are out of step"
+    assert df["day"].max() <= TRAIN_END, "a holdout day leaked into the train table"
+    return df, {k: z[k] for k in ("gross", "risk", "bars", "reason")}, [str(x) for x in z["names"]]
+
+
+def load_holdout():
+    """The sealed table. Only a reveal step should call this, and only after preflight."""
+    import pandas as pd
+    df = pd.read_json(HOLDOUT_TABLE, lines=True)
+    z = np.load(HOLDOUT_TABLE.with_suffix(".policies.npz"))
+    assert len(df) == len(z["gross"]), "table and policy matrix are out of step"
+    assert df["day"].min() > TRAIN_END, "a train day leaked into the holdout table"
+    return df, {k: z[k] for k in ("gross", "risk", "bars", "reason")}, [str(x) for x in z["names"]]
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build")
     b.add_argument("--limit", type=int, default=None)
     b.add_argument("--top", type=int, default=None, help="keep only the N symbols with the highest recent turnover")
+    b.add_argument("--since", default=None, help="scan only from this date (also narrows which year-files are read from disk)")
     args = p.parse_args()
     if args.cmd == "build":
-        build(args.limit, args.top)
+        build(args.limit, args.top, args.since)
     return 0
 
 

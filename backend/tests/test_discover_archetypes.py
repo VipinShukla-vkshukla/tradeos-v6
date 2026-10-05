@@ -229,6 +229,43 @@ def test_a_cheap_or_illiquid_stock_never_triggers_any_archetype():
     assert _scan(mdf, _daily(days, volume=1_000_000.0)) == set(), "10 Cr turnover is under the 25 Cr floor"
 
 
+def _multi_year_store(tmp):
+    from datetime import date
+    from pathlib import Path
+    from tests.test_kite_history import _frame
+    from tools.kite_history import store
+    root = Path(tmp)
+    days = [date(2022, 3, 7), date(2023, 6, 5), date(2024, 8, 5), date(2024, 11, 4), date(2025, 2, 3), date(2025, 9, 1)]
+    store.write_frame(root, "minute", "NSE", "AAA", _frame(days, 1))
+    return root, store
+
+
+def test_the_recent_window_reader_equals_the_full_reader_and_opens_only_the_years_it_needs():
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        root, store = _multi_year_store(tmp)
+        want = store.read(root, "minute", "NSE", "AAA", start="2024-10-01")
+        opened = []
+        real = store.read_file
+        store.read_file = lambda p: (opened.append(p.stem), real(p))[1]
+        try:
+            got = D.read_minute_since(root, "AAA", "2024-10-01")
+        finally:
+            store.read_file = real
+        assert got.equals(want) and len(got) > 0
+        assert sorted(opened) == ["2024", "2025"], f"must not touch 2022/2023 on disk, opened {opened}"
+        assert got["ts"].min() >= store._ts("2024-10-01") and (got["ts"].dt.date.astype(str) >= "2024-10-01").all()
+        assert not (got["ts"].dt.date.astype(str) == "2024-08-05").any(), "2024's file holds Aug too: rows before `since` are dropped"
+
+
+def test_the_recent_window_reader_handles_a_missing_symbol_and_a_window_past_the_data():
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        root, store = _multi_year_store(tmp)
+        assert D.read_minute_since(root, "NOPE", "2024-10-01").empty
+        assert D.read_minute_since(root, "AAA", "2031-01-01").empty
+
+
 def test_a_short_session_never_triggers_any_archetype():
     days = _days(40)
     closes = _flat(200)
@@ -252,5 +289,7 @@ TESTS = [
     ("RSI2 extreme fires only at the open of the day after", test_rsi2_extreme_fires_only_at_the_open_of_the_day_after),
     ("RSI2 extreme is a real threshold, not just a direction", test_rsi2_extreme_is_a_real_threshold_not_just_a_direction),
     ("a cheap or illiquid stock never triggers any archetype", test_a_cheap_or_illiquid_stock_never_triggers_any_archetype),
+    ("the recent-window reader equals the full reader and opens only the years it needs", test_the_recent_window_reader_equals_the_full_reader_and_opens_only_the_years_it_needs),
+    ("the recent-window reader handles a missing symbol and a window past the data", test_the_recent_window_reader_handles_a_missing_symbol_and_a_window_past_the_data),
     ("a short session never triggers any archetype", test_a_short_session_never_triggers_any_archetype),
 ]

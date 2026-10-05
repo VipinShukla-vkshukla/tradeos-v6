@@ -20368,3 +20368,49 @@ stress tables called `dropna()` on the whole frame and silently used 2,502 of th
 
 **Gate: FAIL to confirm** (the pre-registered candidate did not pass). No engine change. Open: run the same harness on the six other intraday engines (GAP, PDL, VCE, PBK, VWR, RNG), each needing its own offline trigger replay;
 decide whether the short-fade lead is worth a disarmed paper path (a 1.7-year holdout of 2,677 trades could not resolve a +0.05R effect, so a forward paper test would need years, not months).
+
+
+## 2026-10-06 — Discovery screen: six established intraday setups (14 trigger cells) on two years of Kite data. None beats its own random-entry control; walk-forward -0.172R; no candidate; holdout unopened
+
+**What and why.** After the IGN study (entry 2026-09-28) found no edge in ignition momentum, the operator asked to stop refining existing engines and to find
+NEW ones from the Kite archive. Rather than data-mine unnamed patterns, six decades-old, widely documented concepts were turned into objective rules and run through
+the same harness, cost model (0.2063% round trip = 0.1063% charges + 5 bps/leg slippage), liquidity floor (prior close >= Rs 50, prior-day turnover >= Rs 25 Cr),
+exit simulator and day-clustered search + walk-forward as IGN: opening-range breakout (5 and 15 minute), running-VWAP stretch reversion, overnight-gap continuation and fade,
+prior-day high/low break, and Connors' RSI(2) extreme with an intraday entry. 14 cells, long and short where the concept is two-sided
+(`backend/tools/replay/discover_archetypes.py`, 17 offline checks, all deliberate scanner mutations caught). The operator also asked to stop reading the whole archive from D:,
+so the final run covers 2024-10-01..2026-09-25 only and a new reader (`read_minute_since`) opens only the year-files that window needs (a test proves it opens 2024/2025 and not 2022/2023).
+
+**Data.** 2,673 NSE symbols (166 skipped for under 30 daily bars, 4 symbol-days for a bar-count mismatch), 66.5 minutes. 713,761 events + 21,227 random-bar controls.
+Train 2024-10-01..2025-09-30: 368,435 rows, 104,335 symbol-days. Holdout 2025-10-01..2026-09-25: 366,553 rows, **never opened** (no candidate, so `reveal` refuses).
+
+**Results.**
+1. *Descriptive audit* (net R per trade, day-clustered se, fixed reference exits on each cell's intended side, 5 time blocks): **every one of the 14 cells is net-negative under every
+   reference exit except three noise-level positives in the gap cells**: GAP_DOWN_CONTINUE long p1.5/t2 +0.049R (se 0.096), GAP_DOWN_FADE long s20/t1.5 +0.045R (se 0.121) and p1.5/t2 +0.125R (se 0.119),
+   each about one standard error from zero and negative in 3 of 5 blocks. The big families: opening-range, prior-day-break, VWAP and RSI(2) long cells -0.15R to -0.39R; short cells -0.03R to -0.19R.
+2. *Against the control, nothing is an edge.* Random-entry controls lose -0.185R (long) and -0.077R (short) at the p1.5/t2 exit; the window itself favoured shorts. Every large archetype sits within about +/-0.07R of the
+   control on its own side (ORB5_SHORT -0.047, PDHL_BREAK_SHORT -0.034, RSI2_SHORT -0.066, ORB5_LONG -0.170, VWAP_REV_LONG -0.186), against clustered se of 0.02-0.06. The binding constraint is the cost wall:
+   gross edge per trade is about 0.0% to +0.16% (best large family: PDHL_BREAK_SHORT, +0.156%) against 0.2063%.
+3. *Pre-registered selection* (day-clustered search over 14 cells x 30 exits x filters, then walk-forward): `no_candidate`. Pooled out-of-sample **-0.172R (se 0.116, one-sided p 0.93) on 104 trades.** The three walk-forward picks all reversed:
+   GAP_UP_FADE short +0.426R in sample (n 131) -> -0.165R out (n 76); GAP_DOWN_FADE long +0.360R (n 420) -> -0.069R (n 21); GAP_DOWN_CONTINUE long +0.630R (n 177) -> -0.562R (n 7).
+   The in-sample "top configs" on all of train (+0.34R to +0.66R, t about 5, two-filter conjunctions such as `ret_1m >= 5.8 and n500_dist_sma20 <= 0.62`) are what a search over thousands of filter combinations returns from noise.
+   They were not tested out of sample and **must not be traded**.
+
+**Reading.** On this window none of the six concepts has a measurable post-cost edge, long or short, plain or filtered. This does NOT say they never work: the training window is one year (five blocks of about 2.4 months, the first selection made on
+about five months), so the screen rules out large, simple edges and is blind to small or conditional ones. No live or paper behaviour was changed; nothing armed.
+
+**Verification.** `python -m tools.verify`: 1,824 checks pass across 191 modules. Scanner: 11 hand-worked/independent-reference checks plus equality of the VWAP and RSI(2) vectorisations with a plain loop and the tested scalar `rsi`; mutation test of the scanner (11 deliberate bugs) and of the recent-window reader (3 of 4 caught, the 4th an equivalent mutant: a redundant existence guard, since removed).
+The recent-window reader returns frames identical to the full reader on RELIANCE, TCS and 20MICRONS (5-45x faster, and 2 year-files instead of up to 11).
+
+**Mistakes made and corrected.** (1) The first full-universe projection was ~10 hours; I first blamed the 92-policy exit grid, a profile showed the cost was `daily_features` re-walking each symbol's whole indicator history per event, fixed by memoising per day
+(byte-identical output, tested; commit 4161604). (2) A full 9.75-year discovery scan (221 minutes, 2,300,835 events) was built but **never analysed**: loading its 5 GB table was repeatedly interrupted, and its cache files were then overwritten by the 2-year build,
+so that table no longer exists (rebuildable from the archive in about 3.7 hours). (3) My first analysis script called `run_select(write=True, spec_path=None)`, which with `spec_path=None` writes to the IGN spec file and would have silently overwritten the committed IGN pre-registration;
+it never completed and the replacement passes an explicit path. **Flagged, not fixed:** `ign_event_study.run_select` should refuse `write=True` with a custom loader and no `spec_path`; it is not changed here because the IGN holdout's one-look guard keys on that file's content hash.
+
+**Not verified / limits.**
+- Power: one training year. The 9.75-year table would be the high-power version of this screen; it is not analysed.
+- Coarse grid: 30 plain next-open exits (no pullback, time-stop or breakeven variants); a survivor would have had the full 92-policy grid re-run, none survived.
+- Slippage is the assumed 5 bps/leg; fills are the next bar's open; shorting availability and circuit bands per stock are not in the archive; Kite lists only today's instruments (survivorship).
+- Not built: relative strength vs Nifty, failed-breakout/stop-run reversal, flag/pullback continuation.
+- The operator's D: drive concern: free space is 713 GB of 931 GB and no corruption was found from this side; SMART health could not be read without elevated tools. Nothing here proves or rules out a disk problem.
+
+**Gate: no candidate; no engine change.** Open: analyse the 9.75-year discovery table if the high-power version is wanted (needs a lower-memory loader and a rebuild); the three unbuilt archetypes; the `run_select` write-path hazard above.
