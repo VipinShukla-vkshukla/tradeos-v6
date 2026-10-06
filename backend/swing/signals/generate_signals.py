@@ -65,6 +65,7 @@ from config import (
     buy_candidate_threshold, get_max_positions, DRY_RUN,
     is_kill_switch_active,
 )
+from swing.signals.score_floor import passes_score_floor, floor_state, describe_all_below
 
 def _num(d: dict, key: str) -> float | None:
     """
@@ -1202,6 +1203,7 @@ def generate(run_date: date | None = None) -> list:
     show_watch    = cfg_bool("show_watching_stocks", True)
 
     signals = []
+    floor_scores: list[float] = []
 
     for msl_row in msl:
         sym       = msl_row.get("symbol")
@@ -1224,7 +1226,8 @@ def generate(run_date: date | None = None) -> list:
             if ind_top5:              score += T["industry_bonus_top5"]
             if ind_state == "STRONG": score += T["industry_bonus_strong"]
 
-        if score < min_score:
+        floor_scores.append(score)
+        if not passes_score_floor(score, min_score, in_pos):
             continue
 
         if sym in tpo_set:   strat_tag = "TPO"
@@ -1469,6 +1472,17 @@ def generate(run_date: date | None = None) -> list:
             **_build_event_context(sym, event_map),
         }
         signals.append(sig)
+
+    _fs = floor_state(floor_scores, min_score)
+    if _fs["all_below"]:
+        # Held names still get a row, so a non-empty `signals` here means only
+        # holdings were emitted - say that nothing was a candidate.
+        logger.warning(
+            f"  Score floor: {describe_all_below(_fs)}"
+            + (f" ({len(signals)} held-position signal(s) emitted regardless)" if signals else "")
+        )
+    elif _fs["below"]:
+        logger.info(f"  Score floor: {_fs['below']}/{_fs['total']} rows below min_score_to_show={min_score:g}")
 
     return signals
 

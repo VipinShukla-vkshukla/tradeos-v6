@@ -125,6 +125,7 @@ MODULES = [
     ("swing family maturity review", "tests.test_swing_family_maturity_review"),
     ("quote parity verdicts",  "tests.test_quote_parity"),
     ("allocator edge floor",   "tests.test_edge_floor"),
+    ("signal score floor: held names + all-below day", "tests.test_score_floor"),
     ("gated intraday priors",  "tests.test_gated_priors"),
     ("setup dedup rehydration", "tests.test_setup_rehydration"),
     ("break confirmation",      "tests.test_break_confirmation"),

@@ -64,8 +64,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config import (
     get_supabase, today_ist, IST,
     is_kill_switch_active, logger,
-    get_trade_date, fetch_all,
+    get_trade_date, fetch_all, cfg_float,
 )
+from swing.signals.score_floor import floor_state, describe_all_below
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
 
@@ -794,10 +795,33 @@ def c18_tier_distribution(sb, td):
 
 # ── C19: Signal Date Alignment ────────────────────────────────────────────────
 
+def c19_evaluate(sig_date, td, state):
+    """
+    Pure core of C19. `state` is score_floor.floor_state() for td's shortlist.
+
+    A lagging signal_log has two causes that need opposite responses. Real
+    staleness (the date resolver or step 20 broke) is an ERROR. An empty day
+    because no shortlist row cleared min_score_to_show is not a fault in the
+    pipeline - re-running reproduces it - so it is a WARN that says so. The
+    explanation applies only when the shortlist for td is non-empty and wholly
+    below the floor; an empty or missing shortlist stays an ERROR.
+    """
+    if sig_date == td:
+        return True, "OK", f"signal_log latest date: {sig_date} | stock_data_daily date: {td} ✅ aligned"
+    base = f"signal_log latest date: {sig_date} | stock_data_daily date: {td}"
+    if state and state["all_below"]:
+        return False, "WARN", f"{base} — no signals for {td}: {describe_all_below(state)}"
+    return False, "ERROR", (
+        f"{base} ⚠️ MISMATCH — step 20 (signals) wrote to {sig_date} instead of {td}. "
+        f"Check resolve_last_trading_day() and the step 20 log."
+    )
+
+
 def c19_signal_date_alignment(sb, td):
     """
     Verify signal_log was written for the same trade_date as stock_data_daily.
-    Mismatch = step 15 used wrong date (the master_shortlist probe bug).
+    Mismatch = step 20 used the wrong date, OR the shortlist was entirely below
+    min_score_to_show (reported as WARN, see c19_evaluate).
     """
     sig_row = (
         sb.table("signal_log")
@@ -811,15 +835,18 @@ def c19_signal_date_alignment(sb, td):
             "No signal_log rows — step 15 may not have run")
 
     sig_date = str(sig_row[0].get("date", ""))[:10]
-    ok       = sig_date == td
-    msg      = (
-        f"signal_log latest date: {sig_date} | stock_data_daily date: {td}"
-        + (" ✅ aligned" if ok else
-           f" ⚠️ MISMATCH — step 15 wrote to {sig_date} instead of {td}. "
-           f"Likely master_shortlist probe bug — check resolve_last_trading_day()")
-    )
-    return _result("C19_signal_date_alignment", ok,
-        "ERROR" if not ok else "OK", msg,
+    state = None
+    if sig_date != td:
+        rows = (
+            sb.table("master_shortlist").select("final_score")
+              .eq("date", td).execute().data
+        )
+        state = floor_state(
+            [float(r["final_score"] or 0) for r in rows],
+            cfg_float("min_score_to_show", 50),
+        )
+    ok, sev, msg = c19_evaluate(sig_date, td, state)
+    return _result("C19_signal_date_alignment", ok, sev, msg,
         value=f"sig={sig_date} sdd={td}")
 
 

@@ -71,6 +71,26 @@ export async function GET() {
       .lte('date', todayIST);
     const sessionsBehind = (sessionRows ?? []).length;
 
+    // Mirrors backend/swing/signals/score_floor.py::floor_state. A signal table
+    // that lags because EVERY shortlist row sits under min_score_to_show is not a
+    // pipeline fault, and "run python run_pipeline.py" reproduces the same empty
+    // day. Only a non-empty shortlist that is wholly below the floor qualifies;
+    // an empty one stays a stale-data BLOCK.
+    let floorMsg: string | null = null;
+    if (tradeDate) {
+      const [{ data: mslScores }, { data: floorCfg }] = await Promise.all([
+        sb.from('master_shortlist').select('final_score').eq('date', tradeDate),
+        sb.from('system_config').select('value').eq('key', 'min_score_to_show').limit(1),
+      ]);
+      const floorVal = Number(floorCfg?.[0]?.value ?? 50);
+      const scores = (mslScores ?? []).map((r) => Number(r.final_score ?? 0));
+      const top = scores.length ? Math.max(...scores) : null;
+      if (top !== null && top < floorVal) {
+        floorMsg = `No signals: all ${scores.length} shortlist rows are below min_score_to_show `
+          + `(max ${top.toFixed(1)} < ${floorVal}). Re-running the pipeline will not change this.`;
+      }
+    }
+
     // ═══ GROUP: DATA FRESHNESS ══════════════════════════════════════════════
     const tables: Array<[string, string, string, number]> = [
       // table, dateCol, label, blockIfStaleSessions
@@ -100,15 +120,21 @@ export async function GET() {
         }
         const { count } = await sb.from(tbl).select(col, { count: 'exact', head: true }).eq(col, d);
         const behind = tradeDate ? dayDiff(d, tradeDate) : 0;
-        const sev: Sev = behind <= 0 ? 'OK' : behind >= blockAt ? 'BLOCK' : 'WARN';
+        // Only the two tables written FROM the signal step can be explained by an
+        // all-below-floor day; every other table lagging is still real staleness.
+        const floorExplains = floorMsg !== null && behind > 0
+          && (tbl === 'signal_log' || tbl === 'signal_output_daily');
+        const sev: Sev = behind <= 0 ? 'OK'
+          : floorExplains ? 'WARN'
+          : behind >= blockAt ? 'BLOCK' : 'WARN';
         add({
           id: `fresh_${tbl}`, group: 'Data freshness', label, severity: sev,
           value: `${d} (${count ?? 0} rows)`,
           expected: tradeDate ?? '—',
           detail: behind > 0 ? `${behind} day(s) behind the stock universe` : 'current',
-          fix: behind > 0
-            ? `Stale vs stock_data_daily. This is the failure mode that froze sector_strength for 22 days. Run: python run_pipeline.py`
-            : undefined,
+          fix: behind <= 0 ? undefined
+            : floorExplains ? floorMsg!
+            : `Stale vs stock_data_daily. This is the failure mode that froze sector_strength for 22 days. Run: python run_pipeline.py`,
         });
       } catch (e) {
         add({ id: `fresh_${tbl}`, group: 'Data freshness', label, severity: 'WARN',
@@ -133,9 +159,11 @@ export async function GET() {
       const orphans = S.filter((r) => !mslSet.has(r.symbol as string));
 
       add({ id: 'sig_count', group: 'Signal integrity', label: 'Signals produced',
-            severity: S.length === 0 ? 'BLOCK' : 'OK',
+            severity: S.length === 0 ? (floorMsg ? 'WARN' : 'BLOCK') : 'OK',
             value: `${S.length} (${entries.length} actionable)`, expected: '> 0',
-            fix: S.length === 0 ? 'No signals. Check steps 17-20 in the pipeline log.' : undefined });
+            fix: S.length === 0
+              ? (floorMsg ?? 'No signals. Check steps 17-20 in the pipeline log.')
+              : undefined });
 
       add({ id: 'sig_orphans', group: 'Signal integrity', label: 'Orphan signal rows',
             severity: orphans.length === 0 ? 'OK' : 'WARN',
@@ -152,10 +180,15 @@ export async function GET() {
             fix: withStop / Math.max(S.length,1) < 0.8
               ? 'Signals without a stop cannot be sized or managed. Check compute_msl step 18.' : undefined });
 
-      const inEngine = S.filter((r) => r.in_rule_engine).length;
+      // Held-position rows (EXIT/REDUCE/HOLD/ADD) are classified on holding_score,
+      // not by the CTL/SBS/TPO engines, so they must not count toward - or against -
+      // "engines contributing". A held-only day has no candidates to judge.
+      const POSITION = new Set(['EXIT','REDUCE','HOLD','ADD']);
+      const cands = S.filter((r) => !POSITION.has(r.signal_type as string));
+      const inEngine = cands.filter((r) => r.in_rule_engine).length;
       add({ id: 'sig_engines', group: 'Signal integrity', label: 'Rule engines contributing',
-            severity: S.length === 0 ? 'INFO' : inEngine === 0 ? 'BLOCK' : 'OK',
-            value: `${inEngine}/${S.length}`, expected: '> 0',
+            severity: cands.length === 0 ? 'INFO' : inEngine === 0 ? 'BLOCK' : 'OK',
+            value: `${inEngine}/${cands.length}`, expected: '> 0',
             detail: inEngine === 0 ? 'CTL/SBS/TPO produced nothing' : 'engines active',
             fix: inEngine === 0
               ? 'in_rule_engine 0 means sector_rank was empty - the exact symptom of stale sector_strength. Run step 13.'
