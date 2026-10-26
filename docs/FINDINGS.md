@@ -20238,3 +20238,74 @@ decisions, nothing changed): (a) IGN's expected value is negative at every exit 
 exit, -0.02R to -0.30R across the frontier); keep it disarmed/paper or switch it off in `strategy_config`; (b) `daily_history_enabled` (panel carries no signal); (c) whether to spend effort on a different
 hypothesis with this harness — the binding constraint for ANY intraday engine is the 0.2% round trip, so a candidate needs a
 gross edge above ~0.3% per trade before filters and exits matter.
+
+
+## 2026-09-27 — Kite history archive: 1.52 billion 1-minute candles for 3,455 instruments on D:, no defects in the pipeline, known bad bars in Kite's own data, and four things learned about Kite
+
+**What and why.** The operator asked for every Kite historical data point, at the finest interval, in a dedicated
+local folder, to test each engine on the full record instead of on whichever days a one-off study fetched.
+`backend/tools/kite_history/` (PR 1) downloads it resumably into `D:\kite_history` (C: had 37 GB free, D: 725 GB).
+
+**What Kite serves (probed against the live API, not assumed).** The historical endpoint returns seven fields per
+candle: timestamp, open, high, low, close, volume and, for derivatives only, open interest (equities return 0).
+Intervals: minute, 3/5/10/15/30/60 minute, day, week; `second` and `tick` are rejected. Minute history reaches back to
+about January 2015, daily to at least 2005. Depth (5 levels), buy/sell quantity, circuit limits, average price, OI
+day high/low and indicative close exist only in live quotes and cannot be back-filled; the only way to have them is to
+record the feed going forward (no engine reads them, so not built). A rolled `continuous` daily futures series with OI
+reaches years back (1,174 candles from 2022 against 62 for the contract itself); individual expired contracts and
+options history are not served. Not downloaded: the continuous series, options, BSE-only equities, MCX/currency futures.
+
+**Downloaded (minute).**
+| segment | instruments | candles | on disk | history |
+|---|---|---|---|---|
+| NSE equities and ETFs | 2,673 of 2,673 | 1,451,734,214 | 11.75 GB | median 7.8 years, longest 11.6; 1,068 go back to 2015 |
+| NSE indices (the 136 in the first universe) | 136 of 136 | 62,147,318 | 0.58 GB | longest 11.7 years (2015-01-09) |
+| futures with open interest (current contracts) | 646 of 647 | 9,570,212 | 0.05 GB | since 2026-07-01 |
+128,770 requests in 802 minutes (2.7 requests/s; 71 transient retries, 70 of them Kite `DataException` and 1 read timeout, all recovered; 0 failed symbols), finished 03:47 on 27-Sep. The one missing
+future (FINNIFTY26NOVFUT) has no candles yet. Daily candles: 1,952 of 3,556 instruments (88 MB) when Kite rejected the
+token, see below; the rest and 100 BSE indices' minute candles are not yet downloaded.
+
+**Integrity (full pass, 3,455 symbols, 1,523,451,744 candles).**
+- Defects in the archive itself (duplicate or out-of-order candles, unreadable files): **none.** Stored candles equal what Kite sent.
+- Bad bars exactly as Kite delivered them (a loader must drop these before training):
+| bad bar | extent |
+|---|---|
+| zero-price placeholder candles (all four prices 0, volume 0) | 1,143,950 NSE candles (0.08%) in 861 stocks; 227 stocks have over 1,000, all beginning in 2015; 5 indices (9,331 candles) |
+| open or close outside the high-low range | 353 stocks have exactly one, all at 09:15 on 2024-06-25; INDIA VIX has 2,547 (Dec 2018 - Jan 2019) |
+| negative volume | 159 candles in 83 stocks |
+| one-day close move over 25% | 2,162 days in 368 symbols, **1,475 of them in 2015** (e.g. INFY +303% then -77%); about 690 in 2016-2026, a mix of real events and bad bars |
+Reading: 2015 is much dirtier than later years, so any training should start in 2016 unless a test says otherwise.
+Candles per day are not constant: NSE equities went from 375 (09:15-15:29) to **360 (ending 15:14) on 2026-08-03** while indices still run to
+15:29; futures run 385 (to 15:39); illiquid stocks print only the minutes they trade.
+
+**Four things learned about Kite.**
+1. *Throughput.* pykiteconnect parses every candle's timestamp with dateutil (~80 microseconds each, ~1.2 s of GIL-bound CPU per 58-day request),
+   which capped the first launch at ~0.7 requests/s whatever the thread count (average latency 14 s per request with 12 workers, 0.4 s after the fix).
+   `FastKite` reads the raw rows and parses them in one vectorised call: identical output on real data, 2.6-2.7 requests/s, just under Kite's 3/s.
+2. *Adjustment.* Kite back-adjusts splits and bonuses as of the day it is asked (RELIANCE is continuous through its 2017 and 2024 bonuses; its 2015 prices
+   are shown at 216, not ~900) but not everything (demergers and some events remain as jumps). The adjustment is retroactive, so an `update` after a corporate
+   action would append new-scale candles to old-scale ones and plant a fake jump. `update` now compares the days it re-fetches with what is stored and, if
+   Kite has re-adjusted, replaces the symbol's whole history (old files kept until the new history has arrived and reaches back as far). An earlier version
+   of the README, docs and PR said prices were NOT adjusted; that was wrong for splits and bonuses and is corrected.
+3. *Token expiry.* Kite rejected the token at about 04:29 IST on 27-Sep, three hours before the 07:30 that `kite/token_manager.py` assumes, while
+   `token_manager --status` still reported it valid: that check is time-based and never asks Kite (`_probe_token` exists but is not used by `is_token_valid`).
+   Not changed here; flagged. A long unattended run should plan for an earlier cutoff.
+4. *Session length changed.* See the 375-to-360 change above; it also bears on anything that assumes 375 minutes (the intraday volume-ratio denominators).
+
+**Verification.** 1,796 offline checks pass (1,623 before the IGN study; 57 of them are this feature). The downloader is tested against a fake Kite that enforces the real constraints (60-day cap, token expiry mid-run,
+rate-limit errors, listing dates, futures with open interest, retroactive adjustments): complete and exact history, resume without refetching, token expiry
+keeps everything written, retries with backoff, adjustment replaces with no mixed scales, a re-download that cannot reach back keeps the old history, several
+workers equal one, the fast path equals the slow path. Mutation testing: about 93 deliberate bugs across the five modules, all caught after closing the gaps it found
+(a refused instrument recorded as done in the database, an unsorted/duplicated combine, the wrong "usual candles per day", an integrity category ignored, two
+report tallies). Two real defects found on the way and fixed: `run()` left the progress database open when a worker raised; and the mutation run itself hung for
+12 hours because one test used a frozen clock with a no-op sleep (an infinite market-hours pause), so that test is bounded and the runner now gives each mutation
+its own process and a 10-minute timeout. Real-data checks: a 3-instrument run before the full run, `update` on RELIANCE and Nifty 50 (no false re-adjustment).
+An early version of `verify` lumped Kite's bad bars with pipeline defects and reported "1,090 symbols with hard errors"; it now separates the two.
+
+**Not verified / limits.**
+- Daily candles and the BSE indices' minute candles are not finished (token). Survivorship: Kite lists only instruments that exist today, so delisted stocks are absent.
+- Prices are back-adjusted as of 26/27-Sep-2026; absolute price levels are not what traded. No cleaning layer exists yet (drop zero-price, malformed and negative-volume bars,
+  handle 25% jump days, respect the 375-to-360 change). No engine has been tested on this archive; that is the next stage and needs its own pre-registered plan.
+
+**Gate:** PASS for the minute archive. NEEDS FOLLOW-UP: refresh the token and finish the daily run (`D:\kite_history\_state\run_all.cmd`); decide on the BSE-index minute candles; the
+`token_manager` validity check that never asks Kite; a cleaning loader before any training.
