@@ -529,7 +529,7 @@ def is_kill_switch_active() -> bool:
 
 def get_max_positions(regime: str = "NEUTRAL") -> int:
     mapping = {
-        "TRENDING": cfg_int("max_positions_trending", 8),
+        "TRENDING": cfg_int("max_positions_trending", 10),
         "RISK ON":  cfg_int("max_positions_risk_on", 8),
         "NEUTRAL":  cfg_int("max_positions_neutral", 7),
         "RISK OFF": cfg_int("max_positions_risk_off", 6),
