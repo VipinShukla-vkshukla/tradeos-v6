@@ -1104,6 +1104,17 @@ def _call_provider(provider_name: str, keys: dict, prompt: str) -> str:
         log_usage("post_trade_analysis", "copilot", AZURE_DEPLOYMENT, resp)
         return resp.choices[0].message.content.strip()
 
+    elif provider_name == "openrouter":
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
+        resp = client.chat.completions.create(
+            model="deepseek/deepseek-chat", max_tokens=800,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        from ai.usage_tracker import log_usage
+        log_usage("post_trade_analysis", "openrouter", "deepseek/deepseek-chat", resp)
+        return resp.choices[0].message.content.strip()
+
     return ""
 
 
@@ -1497,7 +1508,7 @@ def main():
     active_prov   = cfg("ai_provider", "disabled").lower()
     cost_per_call = PROVIDER_COST_INR.get(active_prov, 0.30)
     est_spend     = ai_count * cost_per_call
-    provider_eff  = "disabled" if (est_spend >= daily_budget or ai_count >= max_stocks) else None
+    provider_eff  = None  # let analyze_trade() use cfg("ai_provider") from Supabase
 
     # ── Process trades ────────────────────────────────────────────────────────
     analyzed_count      = 0
