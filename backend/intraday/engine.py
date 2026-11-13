@@ -37,6 +37,10 @@ from control.exit_rules import EXIT_ACTIONS_SELL
 DAEMON_EXIT_ACTIONS = EXIT_ACTIONS_SELL + ("EXIT_SQUAREOFF",)
 from config import (IST, get_supabase, cfg, cfg_bool, cfg_int, cfg_float,
                     today_ist, fetch_all)
+from swing.compute.swap_recommendations import (generate_swap_proposals,
+                                                SwapProposalStore)
+from swing.compute.portfolio_reoptimizer import reoptimize_portfolio
+from swing.compute.swap_execution import execute_pending_swaps
 from intraday.config import (is_market_open, gtt_enabled, orders_enabled,
                              autonomy_phase)
 from intraday.notifier import Notifier, Action
@@ -366,6 +370,12 @@ class IntradayEngine:
         # cadence and merged into self._policy["_trend_ctx"] on every refresh.
         self._trend_ctx: dict = {}
         self._last_state: dict[str, str] = {}
+        # Swap proposal store — holds PROPOSED/APPROVED/REJECTED swap
+        # recommendations in memory for this session. Persistence (Supabase
+        # table) is left to the operator; this module only holds proposals
+        # during a cycle. Execution of any approved swap remains manual via
+        # Telegram → execution_engine.place_order() / place_exit_order().
+        self.swap_store = SwapProposalStore()
         # Bar history per symbol, assembled once per cycle and shared by all
         # seven engines — seven engines each fetching their own history would
         # multiply API calls sevenfold for identical data, and would let two
@@ -3396,7 +3406,177 @@ class IntradayEngine:
                           f"points better than the weakest thing you hold")
         return False, ""
 
-    def act_on_candidates(self, entries: list[dict]) -> None:
+    # ── Swap recommendation & portfolio re-optimization ─────────────────────
+    # Surface upgrade opportunities when the book is full or near-full.
+    # These are ALERTS ONLY — no order placement happens here.
+
+    def _surface_swap_proposals(self, regime: str) -> list:
+        """
+        Generate swap proposals from ALL held positions vs ALL candidates
+        and push the best ones as alerts. Called when the book is full or
+        when a SLOT_FULL candidate arrives.
+
+        If swap_auto_execute is enabled, also attempts one-tap execution
+        (auto-sell weak → auto-buy strong) after alerting.
+
+        Returns the list of SwapProposal objects (may be empty).
+        """
+        margin = cfg_float("swing_replace_margin", 20.0)
+        max_prop = cfg_int("swap_max_proposals_per_cycle", 5)
+
+        analysis = generate_swap_proposals(
+            self.positions, self.candidates,
+            regime=regime, margin=margin, max_proposals=max_prop,
+        )
+
+        # Attach full position/candidate dicts so the execution layer has
+        # qty, entry price, sector, etc. without re-lookup.
+        pos_by_sym = {
+            str(p.get("symbol", "")).upper(): p for p in self.positions
+        }
+        cand_by_sym = {
+            str(c.get("symbol", "")).upper(): c for c in self.candidates
+        }
+        enriched_proposals = []
+        for p in analysis.proposals:
+            sell_pos = pos_by_sym.get(p.sell_symbol.upper(), {})
+            buy_cand = cand_by_sym.get(p.buy_symbol.upper(), {})
+            # Attach as extra fields on the dataclass (harmless if unused)
+            p.sell_position = sell_pos   # type: ignore[attr-defined]
+            p.buy_candidate = buy_cand   # type: ignore[attr-defined]
+            enriched_proposals.append(p)
+
+        # Persist to the in-memory store so the operator can review/approve
+        for p in enriched_proposals:
+            self.swap_store.add(p)
+
+        # ── Auto-execution (opt-in, all gates default OFF) ────────────────
+        if cfg_bool("swap_auto_execute", True):
+            exec_results = execute_pending_swaps(
+                enriched_proposals, sb=self.sb, atr_pct=2.0,
+            )
+            for r in exec_results:
+                if r.status == "EXECUTED":
+                    logger.success(
+                        f"AUTO-SWAP EXECUTED: {r.proposal_key} "
+                        f"sell_order={r.sell_result.get('order_id') if r.sell_result else None} "
+                        f"buy_order={r.buy_result.get('order_id') if r.buy_result else None}"
+                    )
+                elif r.status == "PARTIAL":
+                    logger.warning(
+                        f"AUTO-SWAP PARTIAL: {r.proposal_key} "
+                        f"sell done, buy failed: {r.blocked_reason}"
+                    )
+                elif r.status == "BLOCKED":
+                    logger.info(
+                        f"AUTO-SWAP BLOCKED: {r.proposal_key} — {r.blocked_reason}"
+                    )
+
+        # Push the single best proposal as a CRITICAL alert
+        if enriched_proposals:
+            best = enriched_proposals[0]
+            auto_exec_line = ""
+            if cfg_bool("swap_auto_execute", True):
+                auto_exec_line = (
+                    f"\nAuto-execute: {'ON' if cfg_bool('swap_auto_execute', True) else 'OFF'} "
+                    f"(one-tap swap will attempt sell→buy if all gates pass)"
+                )
+            self.notifier.send(Action(
+                symbol=best.buy_symbol,
+                kind="SWAP_RECOMMENDED",
+                headline=(
+                    f"SWAP: sell {best.sell_symbol} (rank {best.sell_rank:.0f}) "
+                    f"→ buy {best.buy_symbol} (rank {best.buy_rank:.0f})"
+                ),
+                detail=(
+                    f"{best.reason}\n"
+                    f"Margin: {best.margin:.0f} points above the {cfg_float('swing_replace_margin', 20.0)}pt "
+                    f"threshold · Regime: {regime}\n"
+                    f"Manual: sell {best.sell_symbol}, then buy {best.buy_symbol} "
+                    f"via Telegram approval (execution_engine.place_order / place_exit_order).\n"
+                    f"Proposal stored as PROPOSED — approve/reject via swap store."
+                    f"{auto_exec_line}"
+                ),
+                urgency="CRITICAL",
+                meta={
+                    "sell_symbol": best.sell_symbol,
+                    "buy_symbol": best.buy_symbol,
+                    "sell_rank": best.sell_rank,
+                    "buy_rank": best.buy_rank,
+                    "margin": best.margin,
+                    "regime": regime,
+                    "swap_proposal": best.to_dict(),
+                    "auto_execute_enabled": cfg_bool("swap_auto_execute", True),
+                },
+                framework="SWING",
+                push=True,
+                restate_on_change=False,
+                rearm=False,
+            ))
+            logger.info(
+                f"SWAP PROPOSAL: {best.sell_symbol} → {best.buy_symbol} "
+                f"(+{best.margin:.0f} pts, regime={regime})"
+            )
+
+        return enriched_proposals
+
+    def _surface_portfolio_plan(self, regime: str, capital: float | None = None) -> dict:
+        """
+        Generate a full portfolio re-optimization plan and push it as an INFO
+        alert. Shows what the optimal book would look like under the current
+        regime's position cap: KEEP / SELL / BUY / HOLD_AND_WATCH.
+
+        Returns the plan dict (may be empty if no changes needed).
+        """
+        max_positions = cfg_int(
+            f"max_positions_{regime.replace(' ', '_').lower()}",
+            cfg_int("max_positions_neutral", 7),
+        )
+        margin = cfg_float("swing_replace_margin", 20.0)
+
+        plan = reoptimize_portfolio(
+            self.positions, self.candidates,
+            regime=regime, max_positions=max_positions,
+            margin=margin, capital=capital,
+        )
+
+        sells = plan.sells()
+        buys = plan.buys()
+
+        if sells or buys:
+            detail_lines = [plan.note]
+            for a in sells:
+                detail_lines.append(f"  SELL {a.symbol}: {a.reason}")
+            for a in buys:
+                detail_lines.append(f"  BUY  {a.symbol}: {a.reason}")
+            for a in plan.keeps():
+                detail_lines.append(f"  KEEP {a.symbol}: {a.reason}")
+
+            self.notifier.send(Action(
+                symbol="PORTFOLIO",
+                kind="REBALANCE_PLAN",
+                headline=f"Rebalance plan ({regime}): {len(sells)} sell, {len(buys)} buy",
+                detail="\n".join(detail_lines),
+                urgency="INFO",
+                meta={
+                    "regime": regime,
+                    "max_positions": max_positions,
+                    "current_positions": plan.current_positions,
+                    "cash_freed": plan.cash_freed_by_sells,
+                    "plan": plan.to_dict(),
+                },
+                framework="SWING",
+                push=True,
+                restate_on_change=True,
+                rearm=False,
+            ))
+            logger.info(
+                f"REBALANCE PLAN: {regime} — {len(sells)} sells, {len(buys)} buys "
+                f"(cash freed: ₹{plan.cash_freed_by_sells:,.0f})"
+            )
+
+        return plan.to_dict()
+
         contenders = self._swing_contenders()
         for e in entries:
             c, d, ltp = e["candidate"], e["decision"], e["ltp"]
@@ -3568,6 +3748,28 @@ class IntradayEngine:
                 rearm=False,
             ))
             self._maybe_enter_swing(c, d, ltp)
+
+        # ── End of entries loop: surface swap & rebalance opportunities ──
+        # When the book is full or near-full, tell the operator what better
+        # candidates exist and which weak positions they could replace.
+        # These are alerts only — no order placement happens here.
+        regime = "NEUTRAL"
+        try:
+            regime = (self._policy or {}).get("_current_regime") or "NEUTRAL"
+        except AttributeError:
+            pass
+        if regime == "NEUTRAL" and self.candidates:
+            regime = self.candidates[0].get("regime") or "NEUTRAL"
+
+        held = sum(1 for p in self.positions if (p.get("status") or "ACTIVE").upper() == "ACTIVE")
+        max_pos = cfg_int(
+            f"max_positions_{regime.replace(' ', '_').lower()}",
+            cfg_int("max_positions_neutral", 7),
+        )
+
+        if held >= max_pos or any(e.get("state") == "SLOT_FULL" for e in entries):
+            self._surface_swap_proposals(regime)
+            self._surface_portfolio_plan(regime)
 
     def _swing_liquidity_check(self, sym: str, qty: int, ltp: float) -> tuple[bool, str]:
         """

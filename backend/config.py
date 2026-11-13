@@ -386,7 +386,10 @@ def cfg(key: str, default: str = "") -> str:
     return get_system_config().get(key, default)
 
 def cfg_bool(key: str, default: bool = False) -> bool:
-    return cfg(key, str(default)).lower() in ("true", "1", "yes")
+    v = cfg(key, str(default))
+    if isinstance(v, bool):
+        return v
+    return str(v).lower() in ("true", "1", "yes")
 
 def cfg_int(key: str, default: int = 0) -> int:
     try:

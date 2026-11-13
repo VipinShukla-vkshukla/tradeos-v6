@@ -95,15 +95,18 @@ TIER1_MIN          = 1
 TIER1_MAX          = 10
 
 REGIME_MAX_POSITIONS = {
-    "TRENDING": 8, "NEUTRAL": 7, "CAUTION": 5, "RISK OFF": 3,
+    "TRENDING": 8, "RISK ON": 8, "NEUTRAL": 7, "CAUTION": 5, "RISK OFF": 6,
 }
-REGIME_TIER = {"TRENDING": 0, "NEUTRAL": 1, "CAUTION": 2, "RISK OFF": 3}
+REGIME_TIER = {"TRENDING": 0, "RISK ON": 1, "NEUTRAL": 2, "CAUTION": 3, "RISK OFF": 4}
 REGIME_ML_TIER_ERROR = 2
 
 SIZING_REGIME_COMPAT = {
     # (regime, sizing) pairs that are allowed
     ("TRENDING",  "FULL"),
     ("TRENDING",  "REDUCED_25PCT"),
+    ("RISK ON",   "FULL"),
+    ("RISK ON",   "REDUCED_25PCT"),
+    ("RISK ON",   "HALF"),
     ("NEUTRAL",   "FULL"),
     ("NEUTRAL",   "REDUCED_25PCT"),
     ("NEUTRAL",   "HALF"),
