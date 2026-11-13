@@ -52,6 +52,7 @@ jobs:
           GEMINI_API_KEY:         ${{ secrets.GEMINI_API_KEY }}
           DEEPSEEK_API_KEY:       ${{ secrets.DEEPSEEK_API_KEY }}
           GROK_API_KEY:           ${{ secrets.GROK_API_KEY }}
+          OPENROUTER_API_KEY:     ${{ secrets.OPENROUTER_API_KEY }}
           AZURE_OPENAI_API_KEY:   ${{ secrets.AZURE_OPENAI_API_KEY }}
           AZURE_OPENAI_ENDPOINT:  ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
