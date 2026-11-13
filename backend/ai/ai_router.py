@@ -18,39 +18,64 @@ def _get_provider(name: str):
     from ai.providers.deepseek_provider import DeepSeekProvider
     from ai.providers.grok_provider     import GrokProvider
     from ai.providers.copilot_provider  import CopilotProvider
+    from ai.providers.openrouter_provider import OpenRouterProvider
     from ai.providers.ml_provider       import MLProvider
 
     providers = {
-        "claude":   lambda: ClaudeProvider(AI_KEYS["claude"]),
-        "openai":   lambda: OpenAIProvider(AI_KEYS["openai"]),
-        "gemini":   lambda: GeminiProvider(AI_KEYS["gemini"]),
-        "deepseek": lambda: DeepSeekProvider(AI_KEYS["deepseek"]),
-        "grok":     lambda: GrokProvider(AI_KEYS["grok"]),
-        "copilot":  lambda: CopilotProvider(AI_KEYS["copilot"], AZURE_ENDPOINT, AZURE_DEPLOYMENT),
-        "ml":       lambda: MLProvider(),
+        "claude":    lambda: ClaudeProvider(AI_KEYS["claude"]),
+        "openai":    lambda: OpenAIProvider(AI_KEYS["openai"]),
+        "gemini":    lambda: GeminiProvider(AI_KEYS["gemini"]),
+        "deepseek":  lambda: DeepSeekProvider(AI_KEYS["deepseek"]),
+        "grok":      lambda: GrokProvider(AI_KEYS["grok"]),
+        "copilot":   lambda: CopilotProvider(AI_KEYS["copilot"], AZURE_ENDPOINT, AZURE_DEPLOYMENT),
+        "openrouter":lambda: OpenRouterProvider(AI_KEYS["openrouter"]),
+        "ml":        lambda: MLProvider(),
     }
     factory = providers.get(name)
     return factory() if factory else None
 
 
+def _provider_chain() -> list[str]:
+    """
+    Ordered LLM provider chain: primary provider (from system_config.ai_provider)
+    followed by ordered fallbacks (from system_config.ai_provider_fallback,
+    comma-separated, defaults to "openrouter"). ML and disabled are skipped
+    here — ML is handled as a separate fallback after all LLM providers fail.
+    """
+    primary = cfg("ai_provider", "disabled").lower()
+    fallback_raw = cfg("ai_provider_fallback", "openrouter")
+    fallback = [x.strip() for x in fallback_raw.split(",") if x.strip()]
+    chain = []
+    if primary != "disabled":
+        chain.append(primary)
+    chain.extend(p for p in fallback if p not in chain)
+    return chain
+
+
 def analyze(stock_data: dict, context: dict) -> ConvictionResult:
     """
-    Route to configured provider. Falls back to ML → scraping → UNKNOWN.
-    Provider set in system_config.ai_provider.
+    Route to configured provider with an ordered LLM fallback chain, then
+    ML → scraping → UNKNOWN. Provider set in system_config.ai_provider;
+    fallbacks set in system_config.ai_provider_fallback.
     """
     provider_name = cfg("ai_provider", "disabled").lower()
 
     if provider_name == "disabled":
         return UNKNOWN_RESULT
 
-    # Try primary provider
-    if provider_name != "ml":
-        provider = _get_provider(provider_name)
+    # Try LLM providers in order (primary → fallbacks). Auto-switches on error
+    # or UNKNOWN so a single exhausted/dead provider never kills the pipeline.
+    for name in _provider_chain():
+        if name == "ml":
+            continue
+        provider = _get_provider(name)
         if provider and provider.is_available():
             result = provider.analyze_signal(stock_data, context)
             if result.conviction != "UNKNOWN":
+                model_tag = getattr(result, "model", name)
+                result.provider = f"{name}:{model_tag}"
                 return result
-            logger.warning(f"Primary provider {provider_name} returned UNKNOWN — trying fallback")
+            logger.warning(f"LLM provider {name} returned UNKNOWN — trying next")
 
     # ML fallback
     if cfg("ai_fallback_ml", "true").lower() == "true":
@@ -102,6 +127,10 @@ def raw_completion(prompt: str, max_tokens: int = 1500,
     caller should pass its own name; a caller that doesn't gets logged as
     "unknown" rather than crashing, since this is observability, not a
     contract.
+
+    Tries LLM providers in the configured chain (primary → fallbacks) and
+    returns the first successful completion. Auto-switches to the next
+    provider if one errors out.
     """
     provider_name = cfg("ai_provider", "disabled").lower()
     if provider_name in ("disabled", "ml"):
@@ -110,14 +139,34 @@ def raw_completion(prompt: str, max_tokens: int = 1500,
             "(ai_provider is 'disabled' or 'ml')"
         )
 
-    provider = _get_provider(provider_name)
-    if not provider or not provider.is_available():
+    last_error = None
+    for name in _provider_chain():
+        if name == "ml":
+            continue
+        provider = _get_provider(name)
+        if not provider or not provider.is_available():
+            continue
+        try:
+            return _raw_completion_for(name, provider, prompt, max_tokens,
+                                       call_site, framework)
+        except Exception as e:
+            last_error = e
+            logger.warning(f"raw_completion provider {name} failed — trying next: {e}")
+
+    if last_error:
         raise RuntimeError(
-            f"Provider '{provider_name}' is not available — check API key in .env"
+            f"All LLM providers in chain failed — last error: {last_error}"
         )
+    raise RuntimeError("No LLM provider available in chain")
+
+
+def _raw_completion_for(name: str, provider, prompt: str, max_tokens: int,
+                        call_site: str, framework: str | None) -> str:
+    """Single-attempt completion for one OpenAI/Anthropic/Google provider."""
+    from ai.usage_tracker import log_usage
 
     # ── Claude ────────────────────────────────────────────────────────────
-    if provider_name == "claude":
+    if name == "claude":
         import anthropic
         client = anthropic.Anthropic(api_key=provider.api_key)
         msg = client.messages.create(
@@ -125,65 +174,45 @@ def raw_completion(prompt: str, max_tokens: int = 1500,
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
-        from ai.usage_tracker import log_usage
         log_usage(call_site, "claude", "claude-sonnet-4-20250514", msg, framework)
         return msg.content[0].text.strip()
 
     # ── Gemini ────────────────────────────────────────────────────────────
-    if provider_name == "gemini":
+    if name == "gemini":
         import google.generativeai as genai
         genai.configure(api_key=provider.api_key)
         model_name = getattr(provider, "model", None) or "gemini-2.0-flash"
         model_obj = genai.GenerativeModel(model_name)
         resp = model_obj.generate_content(prompt)
-        from ai.usage_tracker import log_usage
         log_usage(call_site, "gemini", model_name, resp, framework)
         return resp.text.strip()
 
-    # ── OpenAI-compatible: openai / deepseek / grok / copilot ────────────
+    # ── OpenAI-compatible: openai / deepseek / grok / copilot / openrouter ─
     # DeepSeek and Grok use the OpenAI SDK but point to different base URLs.
     # Copilot sets base_url via its constructor from AZURE_ENDPOINT.
     # OpenAI uses base_url=None which defaults to api.openai.com.
-    if provider_name in ("openai", "deepseek", "grok", "copilot"):
+    # OpenRouter uses base_url https://openrouter.ai/api/v1.
+    if name in ("openai", "deepseek", "grok", "copilot", "openrouter"):
         import openai
         _base_urls = {
-            "deepseek": "https://api.deepseek.com",
-            "grok":     "https://api.x.ai/v1",
+            "deepseek":  "https://api.deepseek.com",
+            "grok":      "https://api.x.ai/v1",
+            "openrouter":"https://openrouter.ai/api/v1",
         }
         _models = {
             "openai":   "gpt-4o-mini",
             "deepseek": "deepseek-v4-flash",
             "grok":     "grok-2-latest",
             "copilot":  "gpt-4o",
+            "openrouter": "deepseek/deepseek-chat",
         }
         client = openai.OpenAI(
             api_key=provider.api_key,
-            base_url=getattr(provider, "base_url", None) or _base_urls.get(provider_name),
+            base_url=getattr(provider, "base_url", None) or _base_urls.get(name),
         )
-        model = getattr(provider, "model", None) or _models.get(provider_name, "gpt-4o-mini")
-        # THINKING OFF BY DEFAULT, and this is the fix for every truncation.
-        #
-        # deepseek-v4-flash is a REASONING model: max_tokens budgets reasoning
-        # AND output together, and the reasoning is spent first. Measured on
-        # 2026-08-01, a step-19 batch of five candidates burned all 20,000
-        # tokens and emitted 2,900 characters of JSON — roughly 19,250 tokens
-        # of thinking, then truncation mid-object. Step 18 died the same way at
-        # 8,000. Batching helped less than it should have, because each call
-        # pays its own reasoning floor and more calls means more floors.
-        #
-        # That reasoning is DISCARDED. Nothing reads reasoning_content; the
-        # only consumed output is the JSON. So the budget was being spent on a
-        # artefact we throw away, and the answer we keep is what got cut.
-        #
-        # The reasoning we actually want is already in the schema — thesis,
-        # risks, chase_rationale, invalidation are fields the model must fill
-        # and we do read. Those survive; only the hidden scratchpad goes.
-        #
-        # Switchable because it is a real trade-off, not a free win: set
-        # ai_thinking_enabled true to restore it, and raise the budgets to
-        # match if you do.
+        model = getattr(provider, "model", None) or _models.get(name, "gpt-4o-mini")
         extra: dict = {}
-        if provider_name == "deepseek" and not cfg_bool("ai_thinking_enabled", False):
+        if name == "deepseek" and not cfg_bool("ai_thinking_enabled", False):
             extra["extra_body"] = {"thinking": {"type": "disabled"}}
 
         resp = client.chat.completions.create(
@@ -192,18 +221,12 @@ def raw_completion(prompt: str, max_tokens: int = 1500,
             messages=[{"role": "user", "content": prompt}],
             **extra,
         )
-        # finish_reason IS the answer to "was this truncated", and it was being
-        # thrown away — so callers guessed by looking for a closing brace, which
-        # cannot distinguish "the model stopped early" from "the model wrote
-        # invalid JSON". Step 19 spent two calls and eight minutes on 2026-07-31
-        # inferring what one field states outright.
-        from ai.usage_tracker import log_usage
-        log_usage(call_site, provider_name, model, resp, framework)
+        log_usage(call_site, name, model, resp, framework)
         choice = resp.choices[0]
         if getattr(choice, "finish_reason", None) == "length":
             used = getattr(getattr(resp, "usage", None), "completion_tokens", "?")
             logger.warning(
-                f"  {provider_name}/{model} stopped at the token limit "
+                f"  {name}/{model} stopped at the token limit "
                 f"(finish_reason=length, completion_tokens={used}, "
                 f"max_tokens={max_tokens}) — the response is incomplete. "
                 f"Raising max_tokens only helps if the model honours it; "
@@ -211,7 +234,7 @@ def raw_completion(prompt: str, max_tokens: int = 1500,
             )
         return (choice.message.content or "").strip()
 
-    raise RuntimeError(f"raw_completion not implemented for provider: {provider_name}")
+    raise RuntimeError(f"raw_completion not implemented for provider: {name}")
 
 
 def is_ai_available() -> bool:

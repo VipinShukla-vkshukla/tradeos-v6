@@ -349,9 +349,10 @@ AI_KEYS = {
     "claude":   os.getenv("ANTHROPIC_API_KEY", ""),
     "openai":   os.getenv("OPENAI_API_KEY", ""),
     "gemini":   os.getenv("GEMINI_API_KEY", ""),
-    "deepseek": os.getenv("DEEPSEEK_API_KEY", ""),
-    "grok":     os.getenv("GROK_API_KEY", ""),
-    "copilot":  os.getenv("AZURE_OPENAI_API_KEY", ""),
+    "deepseek":  os.getenv("DEEPSEEK_API_KEY", ""),
+    "grok":      os.getenv("GROK_API_KEY", ""),
+    "copilot":   os.getenv("AZURE_OPENAI_API_KEY", ""),
+    "openrouter":os.getenv("OPENROUTER_API_KEY", ""),
 }
 AZURE_ENDPOINT    = os.getenv("AZURE_OPENAI_ENDPOINT", "")
 AZURE_DEPLOYMENT  = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")

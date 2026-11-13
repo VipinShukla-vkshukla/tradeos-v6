@@ -153,6 +153,27 @@ async function callOpenAI(apiKey: string, system: string, user: string, model = 
   return data.choices?.[0]?.message?.content ?? '{}';
 }
 
+async function callOpenRouter(apiKey: string, system: string, user: string, model: string): Promise<string> {
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+      'HTTP-Referer': 'https://localhost',
+      'X-Title': 'TradeOS',
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+      max_tokens: 1000,
+      temperature: 0.3,
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  const data = await res.json() as { choices?: Array<{ message: { content: string } }> };
+  return data.choices?.[0]?.message?.content ?? '{}';
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body: AnalyzeRequest = await req.json();
@@ -168,7 +189,7 @@ export async function POST(req: NextRequest) {
       .in('key', ['ai_provider', 'ai_active_provider']) as { data: Array<{ key: string; value: string }> | null };
 
     const cfgMap = Object.fromEntries((cfg ?? []).map((r) => [r.key, r.value]));
-    const provider = cfgMap['ai_active_provider'] ?? cfgMap['ai_provider'] ?? 'deepseek';
+    const provider = cfgMap['ai_active_provider'] ?? cfgMap['ai_provider'] ?? 'openrouter';
     const apiKey = getApiKey(provider);
 
     if (!apiKey) {
@@ -180,9 +201,24 @@ export async function POST(req: NextRequest) {
     const systemPrompt = buildSystemPrompt(body.table);
     const userMessage = buildUserMessage(body);
 
+    // Ordered free/cheap models to auto-switch through on OpenRouter.
+    const OPENROUTER_MODELS = [
+      'deepseek/deepseek-chat',
+      'deepseek/deepseek-coder',
+      'meta-llama/llama-3.1-8b-instruct:free',
+    ];
+
     let raw = '';
     if (provider === 'anthropic') raw = await callAnthropic(apiKey, systemPrompt, userMessage);
     else if (provider === 'openai') raw = await callOpenAI(apiKey, systemPrompt, userMessage);
+    else if (provider === 'openrouter') {
+      let lastErr: any;
+      for (const model of OPENROUTER_MODELS) {
+        try { raw = await callOpenRouter(apiKey, systemPrompt, userMessage, model); break; }
+        catch (e) { lastErr = e; }
+      }
+      if (!raw) throw lastErr ?? new Error('OpenRouter: all models failed');
+    }
     else raw = await callDeepSeek(apiKey, systemPrompt, userMessage);  // default deepseek
 
     const clean = raw.replace(/```json|```/g, '').trim();

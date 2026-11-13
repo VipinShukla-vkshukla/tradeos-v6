@@ -233,7 +233,7 @@ function validateAndRepair(
 
 // ── AI provider dispatch ───────────────────────────────────────────────────
 async function callAI(prompt: string, cfg: Record<string, string>): Promise<string> {
-  const provider = (cfg['ai_active_provider'] || cfg['ai_provider'] || 'anthropic').toLowerCase();
+  const provider = (cfg['ai_active_provider'] || cfg['ai_provider'] || 'openrouter').toLowerCase();
 
   if (provider === 'anthropic') {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -254,6 +254,33 @@ async function callAI(prompt: string, cfg: Record<string, string>): Promise<stri
     return data.content?.[0]?.text ?? '';
   }
 
+  // ── OpenRouter (auto-switches across models) ──────────────────────────
+  const OPENROUTER_MODELS = [
+    'deepseek/deepseek-chat',
+    'deepseek/deepseek-coder',
+    'meta-llama/llama-3.1-8b-instruct:free',
+  ];
+
+  async function callOpenRouter(apiKey: string, system: string, user: string, model: string): Promise<string> {
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'HTTP-Referer': 'https://localhost',
+        'X-Title': 'TradeOS',
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 4096,
+        messages: [{ role: 'user', content: user }],
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content ?? '';
+  }
+
   if (provider === 'deepseek') {
     const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
       method: 'POST',
@@ -270,6 +297,17 @@ async function callAI(prompt: string, cfg: Record<string, string>): Promise<stri
     });
     const data = await res.json();
     return data.choices?.[0]?.message?.content ?? '';
+  }
+
+  if (provider === 'openrouter') {
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) throw new Error('OPENROUTER_API_KEY not set');
+    let lastErr: any;
+    for (const model of OPENROUTER_MODELS) {
+      try { return await callOpenRouter(apiKey, '', prompt, model); }
+      catch (e) { lastErr = e; }
+    }
+    throw lastErr ?? new Error('OpenRouter: all models failed');
   }
 
   if (provider === 'openai') {

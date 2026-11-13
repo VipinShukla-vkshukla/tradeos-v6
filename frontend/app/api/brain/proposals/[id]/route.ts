@@ -26,7 +26,7 @@ async function getAIConfig(): Promise<Record<string, string>> {
 
 // ── AI provider dispatch ───────────────────────────────────────────────────
 async function callAI(prompt: string, cfg: Record<string, string>): Promise<string> {
-  const provider = (cfg['ai_active_provider'] || cfg['ai_provider'] || 'anthropic').toLowerCase();
+  const provider = (cfg['ai_active_provider'] || cfg['ai_provider'] || 'openrouter').toLowerCase();
 
   if (provider === 'anthropic') {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -47,22 +47,37 @@ async function callAI(prompt: string, cfg: Record<string, string>): Promise<stri
     return data.content?.[0]?.text ?? '';
   }
 
-  if (provider === 'deepseek') {
-    const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'deepseek-chat',
-        max_tokens: 4096,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-      signal: AbortSignal.timeout(30_000),
-    });
-    const data = await res.json();
-    return data.choices?.[0]?.message?.content ?? '';
+  if (provider === 'openrouter') {
+    const OPENROUTER_MODELS = [
+      'deepseek/deepseek-chat',
+      'deepseek/deepseek-coder',
+      'meta-llama/llama-3.1-8b-instruct:free',
+    ];
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) throw new Error('OPENROUTER_API_KEY not set');
+    let lastErr: any;
+    for (const model of OPENROUTER_MODELS) {
+      try {
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+            'HTTP-Referer': 'https://localhost',
+            'X-Title': 'TradeOS',
+          },
+          body: JSON.stringify({
+            model,
+            max_tokens: 4096,
+            messages: [{ role: 'user', content: prompt }],
+          }),
+          signal: AbortSignal.timeout(30_000),
+        });
+        const data = await res.json();
+        return data.choices?.[0]?.message?.content ?? '';
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr ?? new Error('OpenRouter: all models failed');
   }
 
   if (provider === 'openai') {
