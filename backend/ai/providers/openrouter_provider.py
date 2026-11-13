@@ -46,7 +46,6 @@ class OpenRouterProvider(BaseProvider):
                 data = json.loads(m.group())
                 return ConvictionResult(
                     provider="openrouter",
-                    model=model,
                     **{k: data.get(k, "") for k in
                        ["conviction", "conviction_reason", "catalyst", "suggested_action",
                         "strategy_validation", "conflicts", "ai_note"]},
