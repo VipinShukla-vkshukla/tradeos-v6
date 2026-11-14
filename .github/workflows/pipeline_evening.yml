@@ -34,6 +34,7 @@ jobs:
         run: sudo apt-get install -y xvfb
       
       - name: Run pipeline
+        working-directory: backend
         run: python run_pipeline.py
         env:
           SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
