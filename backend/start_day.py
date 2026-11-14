@@ -118,22 +118,35 @@ def step_regime_gate() -> bool:
     sb = get_supabase()
 
     try:
-        # Read latest market_regime
+        # Read latest FII flag from fii_dii_flow table (not market_regime)
+        fii_rows = (
+            sb.table("fii_dii_flow")
+              .select("fii_flag")
+              .order("date", desc=True)
+              .limit(1)
+              .execute().data
+        )
+        if not fii_rows:
+            logger.warning("  No fii_dii_flow data — gate cannot evaluate FII, allowing entries")
+            return True
+
+        fii_flag = fii_rows[0].get("fii_flag", "NEUTRAL")
+        # Also read latest market regime for regime_label (independent of FII)
         regime_rows = (
             sb.table("market_regime")
-              .select("regime,india_vix,above_200dma_pct,nifty_5d_chg_pct,fii_flag")
+              .select("regime,india_vix,above_200dma_pct,nifty_5d_chg_pct")
               .order("date", desc=True)
               .limit(1)
               .execute().data
         )
         if not regime_rows:
-            logger.warning("  No market_regime data — gate cannot evaluate, allowing entries")
-            return True
-
-        regime = regime_rows[0]
-        regime_label = regime.get("regime", "NEUTRAL")
-        vix = float(regime.get("india_vix") or 0)
-        fii_flag = regime.get("fii_flag", "NEUTRAL")
+            logger.warning("  No market_regime data — regime will be NEUTRAL")
+            regime_label = "NEUTRAL"
+            vix = 0
+        else:
+            regime = regime_rows[0]
+            regime_label = regime.get("regime", "NEUTRAL")
+            vix = float(regime.get("india_vix") or 0)
 
         # Also try to get VIX from macro_indicators if not in market_regime
         if not vix:
