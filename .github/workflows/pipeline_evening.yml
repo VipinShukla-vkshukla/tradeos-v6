@@ -4,6 +4,7 @@ on:
   #schedule:
   #  - cron: '30 12 * * 1-5'   # fallback only — 6:00 PM IST (12:30 UTC)
   workflow_dispatch:
+    types: [evening_pipeline_dispatch]
   repository_dispatch:
     types: [evening_pipeline_dispatch]
 
@@ -13,7 +14,6 @@ jobs:
     timeout-minutes: 45
     env:                                          # ← ADD THIS
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # ← ADD THIS
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,11 +33,6 @@ jobs:
       - name: Install Xvfb
         run: sudo apt-get install -y xvfb
       
-      - name: Create credentials file
-        run: |
-          mkdir -p backend/credentials
-          echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > backend/credentials/service_account.json
-
       - name: Run pipeline
         env:
           SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
@@ -45,7 +40,6 @@ jobs:
           CHARTINK_EMAIL:         ${{ secrets.CHARTINK_EMAIL }}
           CHARTINK_PASSWORD:      ${{ secrets.CHARTINK_PASSWORD }}
           GOOGLE_SHEET_ID:        ${{ secrets.GOOGLE_SHEET_ID }}
-          GOOGLE_CREDENTIALS_JSON: credentials/service_account.json
           TOTAL_CAPITAL:          ${{ secrets.TOTAL_CAPITAL }}
           KITE_API_KEY:           ${{ secrets.KITE_API_KEY }}
           KITE_API_SECRET:        ${{ secrets.KITE_API_SECRET }}
@@ -58,29 +52,4 @@ jobs:
           AZURE_OPENAI_API_KEY:   ${{ secrets.AZURE_OPENAI_API_KEY }}
           AZURE_OPENAI_ENDPOINT:  ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
-          TZ: Asia/Kolkata
-          DISPLAY: ':99'
-        run: |
-          Xvfb :99 -screen 0 1400x900x24 &
-          sleep 1
-          cd backend
-          python run_pipeline.py
-
-      - name: Upload logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pipeline-logs-${{ github.run_id }}
-          path: backend/logs/
-          retention-days: 7
-
-      - name: Upload debug screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: chartink-debug-${{ github.run_id }}
-          path: |
-            backend/chartink_hover_debug.png
-            backend/chartink_debug.png
-          retention-days: 3
+          # Google Sheets credentials removed — system uses NSE API and Supabase only

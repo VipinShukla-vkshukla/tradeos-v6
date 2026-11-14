@@ -20,6 +20,7 @@ on:
   #schedule:
   #  - cron: '30 3 * * 1-5'    # fallback only
   workflow_dispatch:
+    types: [morning_alert_dispatch]
   repository_dispatch:
     types: [morning_alert_dispatch]
 
@@ -40,14 +41,7 @@ jobs:
         working-directory: backend
         run: pip install -r requirements.txt
 
-      - name: Create credentials file
-        env:
-          GOOGLE_CREDS: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-        run: |
-          mkdir -p backend/credentials
-          echo "$GOOGLE_CREDS" > backend/credentials/service_account.json
-
-      - name: Fetch morning global cues (MORNING session)
+      - name: Run pipeline
         working-directory: backend
         env:
           SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}

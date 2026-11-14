@@ -342,7 +342,7 @@ def fetch_all(build_query, page: int = _PAGE, cap: int = 500_000,
 
 # ── Google Sheets ─────────────────────────────────────────────
 GOOGLE_SHEET_ID       = os.getenv("GOOGLE_SHEET_ID", "")
-GOOGLE_CREDENTIALS    = os.getenv("GOOGLE_CREDENTIALS_JSON", str(BASE_DIR / "credentials" / "service_account.json"))
+GOOGLE_CREDENTIALS    = os.getenv("GOOGLE_CREDENTIALS_JSON", "")
 
 # ── AI Providers ─────────────────────────────────────────────
 AI_KEYS = {
