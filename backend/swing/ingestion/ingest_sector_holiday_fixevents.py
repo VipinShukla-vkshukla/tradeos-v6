@@ -181,6 +181,13 @@ def log_capital_status(sb=None) -> dict:
     return st
 
 
+def main() -> dict:
+    """Run the capital status check — idempotent, safe to import from pipeline."""
+    from config import get_supabase
+    sb = get_supabase()
+    return capital_status(sb, persist=True)
+
+
 if __name__ == "__main__":
     import pprint
-    pprint.pprint(capital_status())
+    pprint.pprint(main())
