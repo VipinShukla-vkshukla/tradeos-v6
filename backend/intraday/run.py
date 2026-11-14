@@ -55,10 +55,24 @@ def _banner() -> None:
     logger.info(f"TradeOS Intraday | phase {phase} | "
                 f"GTT {'ON' if gtt_enabled() else 'off'} | "
                 f"orders {'ON' if orders_enabled() else 'off'}")
+
+    # Read both intraday and swing caps from Supabase
+    sb = get_supabase()
+    ic_rows = sb.table("system_config").select("key,value").in_("key", [
+        "intraday_max_order_value", "intraday_max_orders_per_day", "intraday_max_notional_per_day"
+    ]).execute().data
+    iq = {r["key"]: float(r["value"]) for r in ic_rows}
+
+    sw_rows = sb.table("system_config").select("key,value").in_("key", [
+        "swing_max_order_value", "swing_max_orders_per_day", "swing_max_notional_per_day"
+    ]).execute().data
+    sq = {r["key"]: float(r["value"]) for r in sw_rows}
+
+    intraday_caps = f"₹{iq.get('intraday_max_order_value', 0):,.0f}/order, {int(iq.get('intraday_max_orders_per_day', 0))}/day, ₹{iq.get('intraday_max_notional_per_day', 0):,.0f}/day notional"
+    swing_caps = f"₹{sq.get('swing_max_order_value', 0):,.0f}/order, {int(sq.get('swing_max_orders_per_day', 0))}/day, ₹{sq.get('swing_max_notional_per_day', 0):,.0f}/day notional"
+
     if orders_enabled():
-        from intraday.config import max_order_value, max_orders_per_day, max_notional_per_day
-        logger.warning(f"  ORDERS ARE LIVE — caps: ₹{max_order_value():,.0f}/order, "
-                       f"{max_orders_per_day()}/day, ₹{max_notional_per_day():,.0f}/day notional")
+        logger.warning(f"  ORDERS ARE LIVE — intraday: {intraday_caps} | swing: {swing_caps}")
     logger.info("=" * 70)
 
 
@@ -268,6 +282,11 @@ def main(once: bool = False, dry: bool = False) -> None:
     swing_entries_blocked = False
     swing_entries_restricted = False
     swing_block_sizing_override = None
+
+    # Default regime label in case market_regime read fails
+    regime_label = "NEUTRAL"
+    vix_value = None
+    fii_flag = None
     try:
         blk = sb.table("system_config").select("value").eq("key", "swing_entries_blocked").execute().data
         swing_entries_blocked = blk and blk[0]["value"] == "true"
