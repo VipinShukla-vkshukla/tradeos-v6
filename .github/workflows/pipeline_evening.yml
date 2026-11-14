@@ -33,6 +33,11 @@ jobs:
       - name: Install Xvfb
         run: sudo apt-get install -y xvfb
       
+      - name: Start Xvfb
+        run: |
+          Xvfb :99 -screen 0 1400x900x24 &
+          sleep 2
+      
       - name: Run pipeline
         working-directory: backend
         run: python run_pipeline.py
