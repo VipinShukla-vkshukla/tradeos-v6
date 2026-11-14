@@ -2930,6 +2930,81 @@ class IntradayEngine:
             cash = None
 
         exp_mult = self._swing_exposure().size_mult
+
+        # ── PRE-MARKET REGIME GATE — block/restrict new swing entries ──
+        # Written by start_day.py step_regime_gate() into system_config.
+        # Existing positions can still exit/trim; only new entries are affected.
+        min_rr_override = None
+        try:
+            sb = get_supabase()
+            blocked_row = (
+                sb.table("system_config")
+                  .select("value")
+                  .eq("key", "swing_entries_blocked")
+                  .execute().data
+            )
+            if blocked_row and blocked_row[0]["value"] == "true":
+                reason_row = (
+                    sb.table("system_config")
+                      .select("value")
+                      .eq("key", "swing_block_reason")
+                      .execute().data
+                )
+                reason = reason_row[0]["value"] if reason_row else "unknown"
+                logger.info(
+                    f"  Swing entries blocked by pre-market gate: {reason} — "
+                    f"skipping all new entries"
+                )
+                return []
+
+            # Restricted mode: VIX > 25 — only structural-edge setups, higher min_rr
+            restricted_row = (
+                sb.table("system_config")
+                  .select("value")
+                  .eq("key", "swing_entries_restricted")
+                  .execute().data
+            )
+            restricted = (
+                restricted_row
+                and restricted_row[0]["value"] == "true"
+            )
+            struct_edge_only = False
+            if restricted:
+                min_rr_row = (
+                    sb.table("system_config")
+                      .select("value")
+                      .eq("key", "swing_block_min_rr_override")
+                      .execute().data
+                )
+                if min_rr_row and min_rr_row[0]["value"]:
+                    try:
+                        min_rr_override = float(min_rr_row[0]["value"])
+                    except (ValueError, TypeError):
+                        pass
+                se_row = (
+                    sb.table("system_config")
+                      .select("value")
+                      .eq("key", "swing_block_struct_edge_only")
+                      .execute().data
+                )
+                struct_edge_only = (
+                    se_row and se_row[0]["value"] == "true"
+                )
+
+            if struct_edge_only:
+                before = len(working_candidates)
+                working_candidates = [
+                    c for c in working_candidates
+                    if c.get("struct_edge") == "YES"
+                ]
+                logger.info(
+                    f"  Restricted mode (VIX>25): {before} -> "
+                    f"{len(working_candidates)} struct_edge=YES candidates"
+                )
+
+        except Exception as e:
+            logger.debug(f"  regime gate read failed, allowing entries: {e}")
+
         out = []
         # Every decision this cycle, not just the buyable/approaching subset
         # `out` keeps — _allocate_shadow reads this to build the allocator's
@@ -2951,7 +3026,7 @@ class IntradayEngine:
             from analysis.trade_decision import chase_limit, regime_min_rr
             d = decide(c, float(ltp), total_capital=capital_for("SWING"),
                        open_positions=self._swing_positions(), regime=regime,
-                       min_rr=regime_min_rr(regime),
+                       min_rr=min_rr_override or regime_min_rr(regime),
                        max_chase_pct=chase_limit(c),
                        available_cash=cash,
                        vol_mult=self._overlay_vol_mult * (exp_mult or 1.0))

@@ -41,6 +41,12 @@ from intraday.engine import IntradayEngine
 from intraday.notifier import Notifier
 from intraday.price_feed import PriceFeed
 from intraday import lease
+from logs.intraday_formatter import (
+    log_session_start,
+    log_cycle_summary,
+    log_session_end,
+    log_immediate_gaps,
+)
 
 
 def _banner() -> None:
@@ -242,6 +248,55 @@ def main(once: bool = False, dry: bool = False) -> None:
     # at 13:00) can alert again.
     token_alert_sent = False
 
+    # ── Intraday log polish state tracking ──────────────────────────────────
+    cycle_count = 0
+    session_start_time = time.time()
+    last_cycle_log = 0
+    total_exits = 0
+    total_stops_trailed = 0
+    total_failed_entries = 0
+    unscored_outcomes_count = 0
+    allocator_total_candidates = 0
+    allocator_declined_count = 0
+    slippage_exceed_count = 0
+    same_setup_rejected_days = 0
+    gaps_summary = []
+    improvements_summary = []
+
+    # Read regime gate state from system_config (written by start_day.py
+    # step_regime_gate()). Defaults to NOT blocked/restricted if missing.
+    swing_entries_blocked = False
+    swing_entries_restricted = False
+    swing_block_sizing_override = None
+    try:
+        blk = sb.table("system_config").select("value").eq("key", "swing_entries_blocked").execute().data
+        swing_entries_blocked = blk and blk[0]["value"] == "true"
+        rstr = sb.table("system_config").select("value").eq("key", "swing_entries_restricted").execute().data
+        swing_entries_restricted = rstr and rstr[0]["value"] == "true"
+        sz = sb.table("system_config").select("value").eq("key", "swing_block_sizing_override").execute().data
+        swing_block_sizing_override = sz[0]["value"] if sz else None
+        # Read current regime/VIX/FII from market_regime table
+        regime_rows = sb.table("market_regime").select("regime,india_vix,fii_flag").order("date", desc=True).limit(1).execute().data
+        regime_label = regime_rows[0]["regime"] if regime_rows else "NEUTRAL"
+        vix_value = regime_rows[0]["india_vix"] if regime_rows else None
+        fii_flag = regime_rows[0]["fii_flag"] if regime_rows else None
+    except Exception as e:
+        logger.debug(f"Regime gate read from system_config failed: {e}")
+
+    # Log session start banner (regime, VIX, FII, entry gate status)
+    log_session_start(
+        phase=autonomy_phase(),
+        gtt=gtt_enabled(),
+        orders=orders_enabled(),
+        dry_run=dry,
+        regime=regime_label,
+        vix=vix_value,
+        fii_flag=fii_flag,
+        entries_blocked=swing_entries_blocked,
+        entries_restricted=swing_entries_restricted,
+        sizing_override=swing_block_sizing_override,
+    )
+
     try:
         while True:
             now = time.time()
@@ -308,6 +363,33 @@ def main(once: bool = False, dry: bool = False) -> None:
                         last_gtt = now
                     if result["position_actions"] or result["entry_signals"]:
                         logger.info(f"  cycle: {result}")
+
+                    # ── Intraday log polish: immediate gap detection ──────────
+                    cycle_count += 1
+                    total_exits += sum(1 for a in (result.get("position_actions") or [])
+                                       if a["decision"]["action"].startswith("EXIT"))
+                    total_stops_trailed += sum(1 for a in (result.get("position_actions") or [])
+                                               if a["decision"]["action"] == "TRAIL_SL")
+
+                    log_immediate_gaps(
+                        cycle_count=cycle_count,
+                        websocket_connected=feed.connected,
+                        prices_available=bool(prices),
+                        regime_gate_blocked=swing_entries_blocked,
+                        entries_taken=engine._entries_taken,
+                        entry_cap=cfg_int("swing_max_new_per_day", 2),
+                        unscored_intraday=unscored_outcomes_count,
+                        stale_contexts=len(engine.stale_contexts()),
+                        failed_entries=total_failed_entries,
+                        same_day_discoveries=len(engine._same_day_candidates),
+                        allocator_declined_all=allocator_declined_all,
+                        allocator_total_candidates=allocator_total_candidates,
+                        allocator_declined_count=allocator_declined_count,
+                        slippage_exceed_count=slippage_exceed_count,
+                        kill_switch_active=is_kill_switch_active(),
+                        same_setup_rejected_days=same_setup_rejected_days,
+                        sb=sb,
+                    )
                 else:
                     # An ACTIVE instance that cannot see prices is not merely
                     # idle — it is BLOCKING. The lease grants authority on
@@ -637,6 +719,21 @@ def main(once: bool = False, dry: bool = False) -> None:
 
         lease.release(sb)
         logger.info("Intraday daemon stopped")
+
+        # ── Session end summary ──────────────────────────────────────────
+        log_session_end(
+            total_cycles=cycle_count,
+            total_duration=time.time() - session_start_time,
+            entries_taken=engine._entries_taken,
+            entry_cap=cfg_int("swing_max_new_per_day", 2),
+            exits_executed=total_exits,
+            stops_trailed=total_stops_trailed,
+            positions_at_close=len(engine.positions),
+            unfilled_entries=len(engine._pending_fills) + len(engine._pending_entries),
+            unscored_outcomes=unscored_outcomes_count,
+            gaps=gaps_summary,
+            improvements=improvements_summary,
+        )
 
 
 if __name__ == "__main__":

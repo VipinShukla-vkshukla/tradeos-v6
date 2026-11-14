@@ -879,26 +879,41 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
                 "new_sl": be, "book_qty": 0,
             }
 
-    # ── 4. Trailing — DELAYED until trail_after_r ────────────────────────────
-    # Trailing from entry is what produced the -0.40% average on 37 TRAIL SL HIT
-    # exits: an ordinary retracement takes out the stop before the 1-3 week
-    # thesis resolves.
+    # ── 4. Trailing — progressive profit lock ─────────────────────────────────
+    # Trailing from entry produced -0.40% average on 37 TRAIL SL HIT exits —
+    # ordinary retracement takes out the stop before the 1-3 week thesis resolves.
+    # P3: progressive trail ratchets up as the winner extends:
+    #   ≥ 5R: trail at 2R below HWM   ≥ 3R: trail at 1.5R below HWM
+    #   ≥ 2R: trail at 1R below HWM   < 2R: no trail yet
+    # Quality setups (Grade A/B) get wider trails — they stay invested longer.
     if gain_r >= policy["trail_after_r"]:
-        hwm      = max(float(pos.get("high_water_mark") or entry), ltp)
-        # Trail a fixed number of R below the high-water mark, NOT a percentage
-        # (see load_exit_policy for why percentage trailing never bound).
-        trail_sl = hwm - policy["trail_r"] * risk
-        # Never let the trail loosen an existing stop.
-        if trail_sl > sl:
-            locked_r = (trail_sl - entry) / risk
-            return {
-                "action": "TRAIL_SL",
-                "reason": "TRAIL_UPDATE",
-                "detail": (f"{gain_r:.2f}R >= {policy['trail_after_r']}R — "
-                           f"sl {sl:.2f} -> {trail_sl:.2f} "
-                           f"(hwm {hwm:.2f}, locks {locked_r:+.2f}R)"),
-                "new_sl": round(trail_sl, 2), "book_qty": 0,
-            }
+        hwm = max(float(pos.get("high_water_mark") or entry), ltp)
+        sig_ctx = (policy.get("_trend_ctx") or {}).get(pos.get("symbol")) or {}
+        quality = is_quality_setup(sig_ctx)
+        # Quality setups use a wider trail (one tier higher) to stay invested
+        if quality and gain_r >= 2.0:
+            trail_r = max(1.0, policy["trail_r"] - 0.5)
+        else:
+            trail_r = policy["trail_r"]
+        new_sl = progressive_trail_levels(gain_r, entry, hwm, stop0, sl)
+        # Apply the computed tier-based stop, then clamp to policy minimum
+        if new_sl is not None:
+            # policy minimum trail: never trail below trail_after_r R below HWM
+            floor_sl = hwm - policy["trail_r"] * risk
+            if new_sl < floor_sl:
+                new_sl = floor_sl
+            if new_sl > sl:
+                locked_r = (new_sl - entry) / risk
+                return {
+                    "action": "TRAIL_SL",
+                    "reason": "PROGRESSIVE_TRAIL" if quality else "TRAIL_UPDATE",
+                    "detail": (f"{gain_r:.2f}R >= {policy['trail_after_r']}R — "
+                               f"sl {sl:.2f} -> {new_sl:.2f} "
+                               f"(hwm {hwm:.2f}, locks {locked_r:+.2f}R"
+                               + (" | quality setup, wider trail" if quality else "")
+                               + ")"),
+                    "new_sl": round(new_sl, 2), "book_qty": 0,
+                }
 
     # NOTE — a "maximum stop lag" rule was added here on 31 Jul and REMOVED
     # the same day. It tightened the stop whenever it sat more than 8% below
@@ -1059,7 +1074,20 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
         }
 
     # ── 5. Time stop — only on positions that are NOT working ────────────────
-    if (sessions_held >= policy["time_stop_days"]
+    # P3: quality setups (Grade A/B) are exempt from time stop — they exit on
+    # structural breakdown only. Non-quality setups (C/D/F) still face the
+    # fixed session clock.
+    sig_ctx = (policy.get("_trend_ctx") or {}).get(pos.get("symbol")) or {}
+    quality_setup = is_quality_setup(sig_ctx)
+
+    if quality_setup:
+        # Quality setup: structural exit only — no time stop
+        struct_exit = structural_exit_check(sig_ctx, ltp, entry)
+        if struct_exit:
+            struct_exit["detail"] = (f"quality setup, {sessions_held} sessions, "
+                                     f"{struct_exit['detail']}")
+            return struct_exit
+    elif (sessions_held >= policy["time_stop_days"]
             and gain_r < policy["time_stop_min_r"]):
         return {
             "action": "EXIT_TIME",

@@ -32,6 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from loguru import logger
 from config import today_ist, is_kill_switch_active, cfg, cfg_bool
+from logs.pipeline_formatter import print_summary
 
 
 def run_step(name: str, fn, fatal: bool = True) -> dict:
@@ -50,20 +51,6 @@ def run_step(name: str, fn, fatal: bool = True) -> dict:
         if fatal:
             raise
         return {"ok": False, "error": str(e), "elapsed": elapsed}
-
-
-def print_summary(results: dict, total: float):
-    ok  = sum(1 for r in results.values() if r["ok"])
-    err = sum(1 for r in results.values() if not r["ok"])
-    logger.info(f"\n{'═'*60}")
-    logger.info(f"  TradeOS v7 Pipeline — {today_ist()} IST")
-    logger.info(f"{'═'*60}")
-    for name, r in results.items():
-        status = "✅ OK" if r["ok"] else "❌ FAIL"
-        logger.info(f"  {status}  {name:<35} {r['elapsed']:.1f}s")
-    logger.info(f"{'─'*60}")
-    logger.info(f"  Total: {total:.1f}s | ✅ {ok} OK | ❌ {err} Failed")
-    logger.info(f"{'═'*60}\n")
 
 
 def main():

@@ -32,6 +32,7 @@ import subprocess
 import sys
 import time
 import webbrowser
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -89,6 +90,142 @@ def step_preflight() -> bool:
     if orders_enabled() and sw == "LIVE":
         logger.warning("    SWING IS LIVE — exits and partial books will place real orders")
     return ok
+
+
+def step_regime_gate() -> bool:
+    """
+    Pre-market go/no-go gate for swing entries.
+
+    Reads market_regime and india_vix, decides whether new swing entries
+    are allowed today. Writes the decision to system_config so the intraday
+    daemon can enforce it.
+
+    Blocking rules:
+      - regime == RISK OFF: block all new entries
+      - india_vix > 25: block all new entries, sizing = MINIMAL
+
+    Sizing rules:
+      - regime == RISK OFF: MINIMAL
+      - india_vix 20-25: HALF sizing, max 1 entry
+      - else: NORMAL
+
+    Returns True always — this gate does not stop the daemon. Existing
+    positions can still exit/trim; only new entries are blocked.
+    """
+    logger.info("─" * 66)
+    logger.info("1b · PRE-MARKET REGIME GATE")
+
+    sb = get_supabase()
+
+    try:
+        # Read latest market_regime
+        regime_rows = (
+            sb.table("market_regime")
+              .select("regime,india_vix,above_200dma_pct,nifty_5d_chg_pct,fii_flag")
+              .order("date", desc=True)
+              .limit(1)
+              .execute().data
+        )
+        if not regime_rows:
+            logger.warning("  No market_regime data — gate cannot evaluate, allowing entries")
+            return True
+
+        regime = regime_rows[0]
+        regime_label = regime.get("regime", "NEUTRAL")
+        vix = float(regime.get("india_vix") or 0)
+        fii_flag = regime.get("fii_flag", "NEUTRAL")
+
+        # Also try to get VIX from macro_indicators if not in market_regime
+        if not vix:
+            vix_rows = (
+                sb.table("macro_indicators")
+                  .select("indicator_value")
+                  .eq("indicator_name", "India VIX")
+                  .order("indicator_date", desc=True)
+                  .limit(1)
+                  .execute().data
+            )
+            if vix_rows:
+                vix = float(vix_rows[0].get("indicator_value") or 0)
+
+        blocked = False
+        restricted = False
+        block_reasons = []
+        sizing = "NORMAL"
+        max_entries = None  # None = use default (swing_max_new_per_day)
+        min_rr_override = None  # None = use regime default
+        size_mult = 1.0
+
+        # Rule 1: RISK OFF regime blocks new entries (hard block)
+        if regime_label == "RISK OFF":
+            blocked = True
+            block_reasons.append(f"regime={regime_label}")
+            sizing = "MINIMAL"
+
+        # Rule 2: VIX > 25 → restricted mode (max 1 entry, struct_edge only, min_rr=2.0, size=50%)
+        elif vix > 25:
+            restricted = True
+            block_reasons.append(f"VIX={vix:.1f} > 25 (restricted)")
+            sizing = "HALF"
+            max_entries = 1
+            min_rr_override = 2.0
+            size_mult = 0.5
+
+        # Rule 3: VIX 20–25 → HALF sizing, max 1 entry
+        elif vix >= 20:
+            sizing = "HALF"
+            max_entries = 1
+
+        # Write to system_config
+        gate_payload = {
+            "swing_entries_blocked": "true" if blocked else "false",
+            "swing_entries_restricted": "true" if restricted else "false",
+            "swing_block_reason": "; ".join(block_reasons) if block_reasons else "clear",
+            "swing_block_sizing_override": sizing,
+            "swing_block_max_entries": str(max_entries) if max_entries is not None else "",
+            "swing_block_min_rr_override": str(min_rr_override) if min_rr_override is not None else "",
+            "swing_block_size_mult": str(size_mult),
+            "swing_block_struct_edge_only": "true" if restricted else "false",
+            "swing_block_regime": regime_label,
+            "swing_block_vix": str(round(vix, 2)) if vix else "",
+            "swing_block_fii_flag": fii_flag or "",
+            "swing_block_updated_at": datetime.now(IST).isoformat(),
+        }
+
+        for key, value in gate_payload.items():
+            existing = sb.table("system_config").select("key").eq("key", key).execute().data
+            if existing:
+                sb.table("system_config").update({"value": value}).eq("key", key).execute()
+            else:
+                sb.table("system_config").insert({
+                    "key": key, "value": value,
+                    "description": "Pre-market regime gate — written by start_day.py step_regime_gate",
+                }).execute()
+
+        # Log the decision
+        if blocked:
+            _fail(f"SWING ENTRIES BLOCKED — {' | '.join(block_reasons)}")
+            logger.warning(f"  Allowed: EXIT/TRIM on existing positions only")
+            logger.warning(f"  Sizing: {sizing}")
+        elif restricted:
+            entry_info = f" | max new entries: {max_entries}"
+            entry_info += f" | min_rr: {min_rr_override} | size_mult: {size_mult}"
+            entry_info += " | struct_edge=YES only"
+            _ok(f"SWING ENTRIES RESTRICTED — {' | '.join(block_reasons)}{entry_info}")
+            logger.warning(f"  Only structural-edge setups will be considered")
+        else:
+            entry_info = ""
+            if max_entries:
+                entry_info = f" | max new entries: {max_entries}"
+            if sizing != "NORMAL":
+                entry_info += f" | sizing: {sizing}"
+            _ok(f"SWING ENTRIES ALLOWED — regime={regime_label}, VIX={vix:.1f}{entry_info}")
+
+        return True
+
+    except Exception as e:
+        logger.warning(f"  regime gate evaluation failed — {e}. Allowing entries by default.")
+        return True
 
 
 def step_public_ip() -> bool:
@@ -358,6 +495,7 @@ def main(check_only: bool = False, only: str = "both") -> int:
     if not step_preflight():
         logger.error("Preflight failed — stopping before anything is started.")
         return 1
+    step_regime_gate()
     step_public_ip()
     if check_only:
         # --check cannot log in, so the session may legitimately be absent. Run

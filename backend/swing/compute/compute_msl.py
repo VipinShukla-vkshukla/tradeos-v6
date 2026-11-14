@@ -786,7 +786,9 @@ def build_regime_context(regime: dict, global_cues: dict, macro_data: dict,
     """
     manual    = regime.get("regime", "NEUTRAL")
     predicted = regime.get("predicted_regime")
+    pred_conf = regime.get("regime_confidence")
     pred_at   = regime.get("regime_predicted_at")
+    ML_CONFIDENCE_THRESHOLD = 0.65  # ML must be >=65% confident to override manual
 
     active_regime = manual
     if predicted and pred_at:
@@ -796,10 +798,26 @@ def build_regime_context(regime: dict, global_cues: dict, macro_data: dict,
             )
             if pred_dt.tzinfo is None:
                 pred_dt = pred_dt.replace(tzinfo=timezone.utc)
-            if (datetime.now(timezone.utc) - pred_dt).total_seconds() < 86400:
-                active_regime = predicted
+            is_fresh = (datetime.now(timezone.utc) - pred_dt).total_seconds() < 86400
         except Exception:
-            pass
+            is_fresh = False
+
+        if is_fresh:
+            conf = float(pred_conf) if pred_conf is not None else 0.0
+            if conf >= ML_CONFIDENCE_THRESHOLD:
+                if predicted != manual:
+                    logger.warning(
+                        f"  Regime override: ML={predicted} ({conf:.0%}) "
+                        f"replaces manual={manual}"
+                    )
+                active_regime = predicted
+            else:
+                if predicted != manual:
+                    logger.warning(
+                        f"  Regime disagreement: ML={predicted} ({conf:.0%}) vs "
+                        f"manual={manual} — ML confidence below "
+                        f"{ML_CONFIDENCE_THRESHOLD:.0%}, keeping manual={manual}"
+                    )
 
     vix     = float(regime.get("india_vix") or 0)
     breadth = float(regime.get("above_200dma_pct") or 50)

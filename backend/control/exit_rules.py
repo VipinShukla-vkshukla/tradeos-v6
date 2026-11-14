@@ -473,9 +473,11 @@ def load_signal_context(sb, symbols: list[str]) -> dict[str, dict]:
     for table, cols in (
         ("signal_output_daily",
          "symbol,date,dist_sma50,rsi_daily,adx,vol_ratio,rs_vs_nifty,"
-         "momentum_state,weekly_structure,sector_rank_at_entry"),
+         "momentum_state,weekly_structure,sector_rank_at_entry,"
+         "struct_edge,signal_subtype,score_adjusted,risk_score"),
         ("stock_data_daily",
-         "symbol,date,dist_sma50,rsi_daily,adx,vol_ratio,rs_vs_nifty"),
+         "symbol,date,dist_sma50,rsi_daily,adx,vol_ratio,rs_vs_nifty,"
+         "struct_edge,signal_subtype,score_adjusted,risk_score"),
     ):
         missing = [s for s in symbols if s not in out]
         if not missing:
@@ -495,3 +497,125 @@ def load_signal_context(sb, symbols: list[str]) -> dict[str, dict]:
             ctx["_structure_highs"] = b["h"]
             ctx["_structure_lows"] = b["l"]
     return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# QUALITY SETUP DETECTION — P3 profit protection
+# ─────────────────────────────────────────────────────────────────────────────
+
+def is_quality_setup(sig: dict) -> bool:
+    """
+    True if this position was a quality setup at entry (Grade A/B).
+
+    Grade A: PRIME_SETUP, score_adjusted ≥ 75, struct_edge=YES, low risk
+    Grade B: BREAKOUT/REENTRY_SETUP, struct_edge=YES, moderate score
+
+    Quality setups earn time-stop exemption — they exit on structural
+    breakdown only, not on a fixed session clock. This is the core of P3:
+    remain invested in quality setups, cut non-quality setups on time.
+    """
+    signal_subtype = (sig.get("signal_subtype") or "").upper()
+    struct_edge = (sig.get("struct_edge") or "").upper()
+    score_adjusted = float(sig.get("score_adjusted") or 0)
+    risk_score = float(sig.get("risk_score") or 100)
+
+    # Grade A: PRIME_SETUP with structural edge and strong score
+    if (signal_subtype == "PRIME_SETUP"
+            and struct_edge == "YES"
+            and score_adjusted >= 75
+            and risk_score < 50):
+        return True
+
+    # Grade B: BREAKOUT/REENTRY_SETUP with structural edge and decent score
+    if (signal_subtype in ("BREAKOUT_SETUP", "REENTRY_SETUP")
+            and struct_edge == "YES"
+            and score_adjusted >= 65
+            and risk_score < 60):
+        return True
+
+    return False
+
+
+def progressive_trail_levels(gain_r: float, entry: float, hwm: float,
+                             planned_stop: float, active_sl: float) -> float | None:
+    """
+    Progressive trailing stop based on R-multiple achieved.
+
+    As a winner extends, the stop ratchets up to lock in more profit:
+      ≥ 5R:  trail at 2R below high-water mark
+      ≥ 3R:  trail at 1.5R below high-water mark
+      ≥ 2R:  trail at 1R below high-water mark
+      < 2R:  no trail yet (let it run)
+
+    Never loosens an existing stop — only ratchets up.
+    """
+    risk = entry - planned_stop if planned_stop and planned_stop < entry else entry * 0.05
+    if risk <= 0:
+        return None
+
+    if gain_r >= 5.0:
+        trail_r = 2.0
+    elif gain_r >= 3.0:
+        trail_r = 1.5
+    elif gain_r >= 2.0:
+        trail_r = 1.0
+    else:
+        return None
+
+    new_sl = hwm - trail_r * risk
+    cur_sl = active_sl or 0
+    return round(max(new_sl, cur_sl), 2) if new_sl > cur_sl else None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STRUCTURAL EXIT CHECK — P3 quality setup protection
+# ─────────────────────────────────────────────────────────────────────────────
+
+def structural_exit_check(sig: dict, ltp: float, entry: float,
+                          reason: str = "STRUCTURAL_BREAKDOWN") -> dict | None:
+    """
+    Exit a quality setup on structural breakdown only.
+
+    Checks:
+      - Price below 50 SMA (trend broken)
+      - BB position near lower band (< 20%)
+      - PSAR flip (price below PSAR)
+
+    Returns an exit dict if any condition fires, None otherwise.
+    """
+    dist_sma50 = sig.get("dist_sma50")
+    if dist_sma50 is not None:
+        try:
+            if float(dist_sma50) < 0:
+                return {
+                    "action": "EXIT", "reason": reason,
+                    "detail": f"price below 50 DMA ({float(dist_sma50):+.2f}%) — "
+                              f"structural trend broken",
+                    "new_sl": None, "book_qty": 0,
+                }
+        except (TypeError, ValueError):
+            pass
+
+    bb_pos = sig.get("bb_position_pct")
+    if bb_pos is not None:
+        try:
+            if float(bb_pos) < 20:
+                return {
+                    "action": "EXIT", "reason": reason,
+                    "detail": f"BB position {float(bb_pos):.1f}% — near lower band, "
+                              f"structural weakness",
+                    "new_sl": None, "book_qty": 0,
+                }
+        except (TypeError, ValueError):
+            pass
+
+    psar_above = sig.get("psar_above")
+    if psar_above is not None:
+        if not psar_above:
+            return {
+                "action": "EXIT", "reason": reason,
+                "detail": "price below PSAR — trend flip",
+                "new_sl": None, "book_qty": 0,
+            }
+
+    return None

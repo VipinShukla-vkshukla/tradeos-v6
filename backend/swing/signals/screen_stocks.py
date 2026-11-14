@@ -324,7 +324,10 @@ def resolve_regime(regime: dict) -> str:
     from datetime import datetime, timezone
     manual    = regime.get("regime", "NEUTRAL")
     predicted = regime.get("predicted_regime")
+    pred_conf = regime.get("regime_confidence")
     pred_at   = regime.get("regime_predicted_at")
+    ML_CONFIDENCE_THRESHOLD = 0.65  # ML must be >=65% confident to override manual
+
     if predicted and pred_at:
         try:
             if isinstance(pred_at, str):
@@ -333,10 +336,26 @@ def resolve_regime(regime: dict) -> str:
                 pred_dt = pred_at
             if pred_dt.tzinfo is None:
                 pred_dt = pred_dt.replace(tzinfo=timezone.utc)
-            if (datetime.now(timezone.utc) - pred_dt).total_seconds() < 86400:
-                return predicted
+            is_fresh = (datetime.now(timezone.utc) - pred_dt).total_seconds() < 86400
         except Exception:
-            pass
+            is_fresh = False
+
+        if is_fresh:
+            conf = float(pred_conf) if pred_conf is not None else 0.0
+            if conf >= ML_CONFIDENCE_THRESHOLD:
+                if predicted != manual:
+                    logger.warning(
+                        f"  Regime override: ML={predicted} ({conf:.0%}) "
+                        f"replaces manual={manual}"
+                    )
+                return predicted
+            else:
+                if predicted != manual:
+                    logger.warning(
+                        f"  Regime disagreement: ML={predicted} ({conf:.0%}) vs "
+                        f"manual={manual} — ML confidence below "
+                        f"{ML_CONFIDENCE_THRESHOLD:.0%}, keeping manual={manual}"
+                    )
     return manual
 
 
@@ -1687,7 +1706,27 @@ def export_screener_excel(final, all_qualified, today):
 def validate_master_shortlist_completeness(sb, today):
     """
     Checks if rows written to master_shortlist have NULL gaps
+
+    INTENTIONALLY_NULL_COLUMNS: fields that are deliberately NULL on every
+    row by design, not by a bug. These are excluded from the "never populated"
+    ERROR so they don't false-alarm every evening:
+
+      ai_conviction     — removed by step 19 on 29-Aug-2026; self-rated
+                          conviction was measured inversely predictive
+                          (see ai/ai_decision_engine.py module docstring)
+      ai_shortlist_rank — never written by any step; Google Sheets-era field,
+                          preserved in compute_msl.PRESERVE_FIELDS but not
+                          populated by any current script
+      ai_fallback_used  — never written to signal_log/master_shortlist;
+                          step 19 writes fallback_used to ai_context, not
+                          to master_shortlist
     """
+    INTENTIONALLY_NULL_COLUMNS = frozenset({
+        "ai_conviction",
+        "ai_shortlist_rank",
+        "ai_fallback_used",
+    })
+
     logger.info("Checking master_shortlist completeness...")
 
     rows = (
@@ -1723,11 +1762,16 @@ def validate_master_shortlist_completeness(sb, today):
 
     for col, cnt in gap_report.items():
         pct = round(cnt / total_rows * 100, 1)
-        logger.warning(f"{col:<25} NULL in {cnt}/{total_rows} rows ({pct}%)")
+        intentional = " (intentional by design)" if col in INTENTIONALLY_NULL_COLUMNS else ""
+        logger.warning(f"{col:<25} NULL in {cnt}/{total_rows} rows ({pct}%){intentional}")
 
     logger.info("=" * 70)
 
-    fully_blank = [c for c, v in gap_report.items() if v == total_rows]
+    # Only flag as ERROR columns that are fully blank AND not intentionally null
+    fully_blank = [
+        c for c, v in gap_report.items()
+        if v == total_rows and c not in INTENTIONALLY_NULL_COLUMNS
+    ]
 
     if fully_blank:
         logger.error("Columns never populated by script:")
