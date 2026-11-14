@@ -46,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from datetime import datetime
 from loguru import logger
-from config import get_supabase, swing_total_capital, intraday_total_capital
+from config import get_supabase
 from config import CAPITAL_IS_FALLBACK, IST
 
 SNAPSHOT_KEY = "capital_snapshot_v2"  # v2: per-framework snapshot
