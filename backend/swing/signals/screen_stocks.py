@@ -293,19 +293,10 @@ def load_data(sb, today: str) -> dict:
     #msl_rows = sb.table("master_shortlist").select("symbol,force_include,notes").eq("date", today).execute().data
     #force_include = {r["symbol"] for r in (msl_rows or []) if r.get("force_include")}
 
-    #(Temp for time being until ingest sheet dependency is fully removed)
     msl_rows = sb.table("master_shortlist")\
         .select("symbol,force_include,compute_source")\
         .eq("date", today).execute().data
     force_include = {r["symbol"] for r in (msl_rows or []) if r.get("force_include")}
-
-    # ── INGEST_SHEETS MERGE (remove this block when ingest_sheets is retired) ──
-    _sheet_syms = {r["symbol"] for r in (msl_rows or []) if r.get("compute_source") == "ingest_sheets"}
-    if _sheet_syms:
-        force_include |= _sheet_syms
-        logger.info(f"  ingest_sheets symbols merged into force_include: {len(_sheet_syms)}")
-    # ── END INGEST_SHEETS MERGE ─────────────────────────────────────────────────
-    #(Temp for time being until ingest sheet dependency is fully removed)
 
     # open_positions (don't re-add already-held stocks as new entries)
     open_rows = sb.table("open_positions").select("symbol").eq("status", "ACTIVE").execute().data
@@ -1152,11 +1143,6 @@ def aggregate_and_rank(
     all_syms: dict = defaultdict(lambda: {"engines": [], "scores": [],
                                           "shadow_engines": [], "raw": 0})
     for engine, results in engine_results.items():
-        # ── INGEST_SHEETS MERGE (remove this block when ingest_sheets is retired) ──
-        for sym in force_include:
-            if sym not in all_syms and sym in stock_map:
-                all_syms[sym]  # defaultdict seeds empty engines/scores; composite=0, force_include sorts first
-        # ── END INGEST_SHEETS MERGE ─────────────────────────────────────────────────
         engine_weight = weights.get(engine, 1.0)
         is_shadow     = engine in shadow_engines
         for sym, score in results.items():
