@@ -3,12 +3,24 @@ TradeOS v7 — AI Router
 Routes to configured provider with automatic fallback chain.
 Switch provider from frontend Settings — no code changes needed.
 """
-import sys
+import sys, time, re
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
 from config import cfg, cfg_bool, AI_KEYS, AZURE_ENDPOINT, AZURE_DEPLOYMENT
 from ai.providers.base_provider import ConvictionResult, UNKNOWN_RESULT
+
+# ── OpenRouter per-process circuit breaker ─────────────────────────────
+# The :free tier shares a 50-request/day cap across ALL free models
+# (openrouter_free_tier_daily). Once exhausted, without this each lesson
+# re-burned two 429s (~2-6s each) before reaching a working model — the
+# "re-evaluating what it already evaluated" problem.
+#   dead_until[model]  — epoch seconds until which this model is skipped
+#   last_good          — the model that answered last; tried first next call
+# State is per-process on purpose: the cap resets at midnight IST and a
+# suppression would be wrong to persist across runs. dead_until carries the
+# reset timestamp OpenRouter hands us, so mid-day restarts still honour it.
+_OR_STATE: dict = {"dead_until": {}, "last_good": None}
 
 
 def _openrouter_models() -> list[str]:
@@ -34,6 +46,52 @@ def _openrouter_models() -> list[str]:
     raw = cfg("openrouter_models", "deepseek/deepseek-chat")
     models = [m.strip() for m in raw.split(",") if m.strip()]
     return models or ["deepseek/deepseek-chat"]
+
+
+def _daily_quota_reset(e: Exception) -> float | None:
+    """
+    If `e` is OpenRouter's daily free-quota exhaustion (429) or a billing
+    block (402), return the epoch second until which this model should be
+    skipped. Otherwise None (transient errors stay retryable).
+    """
+    low = f"{e}".lower()
+    if "free-models-per-day" in low or "free_tier_daily" in low or ("429" in low and "rate limit" in low):
+        m = re.search(r"x-ratelimit-reset['\"]?\s*:\s*['\"]?(\d{13})", low)
+        if m:
+            return int(m.group(1)) / 1000
+        return time.time() + 6 * 3600   # no reset timestamp in the error — assume it lasts hours
+    if "402" in low and ("payment" in low or "credit" in low or "insufficient" in low):
+        return time.time() + 24 * 3600  # billing block — effectively for the day
+    return None
+
+
+def _openrouter_attempt_order(configured: list[str]) -> list[str]:
+    """
+    Reorder `configured` for this process: last model that worked first,
+    then the configured order, skipping models whose daily quota is
+    already known to be exhausted this run. Returns [] when everything is
+    exhausted so the caller can fail loudly instead of silently retrying
+    a dead pool.
+    """
+    now = time.time()
+    ordered: list[str] = []
+    seen: set[str] = set()
+    sticky = _OR_STATE["last_good"]
+    if sticky and _OR_STATE["dead_until"].get(sticky, 0.0) <= now:
+        ordered.append(sticky)
+        seen.add(sticky)
+    skipped: list[str] = []
+    for m in configured:
+        if m in seen:
+            continue
+        seen.add(m)
+        if _OR_STATE["dead_until"].get(m, 0.0) > now:
+            skipped.append(m)
+            continue
+        ordered.append(m)
+    if skipped:
+        logger.info(f"  openrouter: skipping models exhausted this run: {', '.join(skipped)}")
+    return ordered
 
 
 def _openai_compat_once(client, model: str, prompt: str, max_tokens: int,
@@ -279,7 +337,12 @@ def _raw_completion_for(name: str, provider, prompt: str, max_tokens: int,
         # Every other provider gets its historical single attempt — their
         # failures are handled by raw_completion's outer provider chain.
         if name == "openrouter" and not configured_model:
-            models = _openrouter_models()
+            models = _openrouter_attempt_order(_openrouter_models())
+            if not models:
+                raise RuntimeError(
+                    "openrouter: every configured model is exhausted for "
+                    "today's free quota (429/402) — nothing to try until "
+                    "the daily reset or credits are added")
         else:
             models = [default_model]
 
@@ -288,15 +351,27 @@ def _raw_completion_for(name: str, provider, prompt: str, max_tokens: int,
             if name == "deepseek" and not cfg_bool("ai_thinking_enabled", False):
                 extra["extra_body"] = {"thinking": {"type": "disabled"}}
             try:
-                return _openai_compat_once(
+                text = _openai_compat_once(
                     client, model, prompt, max_tokens, extra,
                     name=name, call_site=call_site, framework=framework,
                 )
+                if name == "openrouter":
+                    _OR_STATE["last_good"] = model
+                return text
             except Exception as e:
-                if name == "openrouter" and i < len(models) - 1:
-                    logger.warning(
-                        f"  openrouter model {model} failed — trying next: {e}")
-                    continue
+                if name == "openrouter":
+                    until = _daily_quota_reset(e)
+                    if until is not None:
+                        _OR_STATE["dead_until"][model] = until
+                        logger.warning(
+                            f"  openrouter model {model} quota exhausted — "
+                            f"skipping for the rest of this run (until "
+                            f"{time.strftime('%H:%M', time.localtime(until))})")
+                    if i < len(models) - 1:
+                        logger.warning(
+                            f"  openrouter model {model} failed — trying next: {e}")
+                        continue
+                    raise
                 raise
         # Unreachable (the last iteration either returns or raises), but kept
         # so the control flow is obvious to readers and linters.
