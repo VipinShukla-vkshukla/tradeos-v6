@@ -1016,9 +1016,10 @@ def _format_existing_lessons_summary(lessons: list[dict]) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AI PROVIDER CALL (unchanged from v1 — single responsibility)
-# ─────────────────────────────────────────────────────────────────────────────
-
+# AI PROVIDER CALL (legacy — superseded 2026-11-15)
+# DEPRECATED for production use: analyze_trade() now routes through
+# ai_router.raw_completion(). This function is kept because the test suite
+# exercises its provider branches directly; do not call it from new code.
 def _call_provider(provider_name: str, keys: dict, prompt: str) -> str:
     api_key = (keys or {}).get(provider_name, "")
     if not api_key:
@@ -1252,7 +1253,17 @@ def analyze_trade(trade: dict, sb,
         )
 
         try:
-            raw = _call_provider(active_provider, AI_KEYS, prompt)
+            # Routed through ai_router.raw_completion (2026-11-15): same
+            # provider chain as every other AI step, and OpenRouter now tries
+            # its ordered model list on rate-limit/credit errors instead of
+            # this module hardcoding deepseek/deepseek-chat. _call_provider's
+            # direct branches are retained for the test suite only.
+            try:
+                from ai.ai_router import raw_completion
+            except ImportError:
+                from ai_router import raw_completion
+            raw = raw_completion(prompt, max_tokens=800,
+                                 call_site="post_trade_analysis")
             if raw:
                 parsed = _safe_parse_ai_json(raw)
                 if parsed:

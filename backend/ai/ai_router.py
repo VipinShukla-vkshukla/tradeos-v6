@@ -11,6 +11,65 @@ from config import cfg, cfg_bool, AI_KEYS, AZURE_ENDPOINT, AZURE_DEPLOYMENT
 from ai.providers.base_provider import ConvictionResult, UNKNOWN_RESULT
 
 
+def _openrouter_models() -> list[str]:
+    """
+    Ordered list of OpenRouter models, tried in sequence inside one
+    raw_completion() call — when the head model's rate limit / credits /
+    availability fail, the next one is attempted transparently.
+
+    Configured via system_config key `openrouter_models` (comma-separated).
+    If unset: ["deepseek/deepseek-chat"] — unchanged historical behaviour.
+
+    Suggested value (verified against the live OpenRouter catalog on
+    2026-11-15; there is NO free deepseek or free gemini on OpenRouter):
+
+      nvidia/nemotron-3-ultra-550b-a55b:free,nvidia/nemotron-3.5-super-vl:free,openrouter/free,google/gemini-3-flash-preview,deepseek/deepseek-v4.1-flash
+
+    That is: two strong free models, the meta free router, Gemini 3 Flash
+    (budget paid, ~$0.5/$3 per 1M tokens), and near-free deepseek v4.1 flash.
+    Free `:free` endpoints carry OpenRouter's shared free-pool limits, so
+    ordering all zero-cost models first means paid models only get touched
+    when the free pool is exhausted.
+    """
+    raw = cfg("openrouter_models", "deepseek/deepseek-chat")
+    models = [m.strip() for m in raw.split(",") if m.strip()]
+    return models or ["deepseek/deepseek-chat"]
+
+
+def _openai_compat_once(client, model: str, prompt: str, max_tokens: int,
+                        extra: dict, *, name: str, call_site: str,
+                        framework: str | None) -> str:
+    """One OpenAI-compatible chat completion, with usage logging.
+
+    Raises on API error, unparseable response or empty content so the
+    caller can decide whether to try the next model (openrouter) or the
+    next provider (every other name, via raw_completion's outer loop).
+    """
+    from ai.usage_tracker import log_usage
+
+    resp = client.chat.completions.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}],
+        **extra,
+    )
+    log_usage(call_site, name, model, resp, framework)
+    choice = resp.choices[0]
+    if getattr(choice, "finish_reason", None) == "length":
+        used = getattr(getattr(resp, "usage", None), "completion_tokens", "?")
+        logger.warning(
+            f"  {name}/{model} stopped at the token limit "
+            f"(finish_reason=length, completion_tokens={used}, "
+            f"max_tokens={max_tokens}) — the response is incomplete. "
+            f"Raising max_tokens only helps if the model honours it; "
+            f"otherwise the request has to be split."
+        )
+    text = (choice.message.content or "").strip()
+    if not text:
+        raise RuntimeError(f"{name}/{model} returned empty content")
+    return text
+
+
 def _get_provider(name: str):
     from ai.providers.claude_provider   import ClaudeProvider
     from ai.providers.openai_provider   import OpenAIProvider
@@ -212,29 +271,36 @@ def _raw_completion_for(name: str, provider, prompt: str, max_tokens: int,
             api_key=provider.api_key,
             base_url=getattr(provider, "base_url", None) or _base_urls.get(name),
         )
-        model = getattr(provider, "model", None) or _models.get(name, "gpt-4o-mini")
-        extra: dict = {}
-        if name == "deepseek" and not cfg_bool("ai_thinking_enabled", False):
-            extra["extra_body"] = {"thinking": {"type": "disabled"}}
+        configured_model = getattr(provider, "model", None)
+        default_model = configured_model or _models.get(name, "gpt-4o-mini")
+        # OpenRouter gets an ordered list of models (see _openrouter_models):
+        # if the head model is rate-limited / out of credits / unavailable,
+        # the next is tried automatically so the caller never notices.
+        # Every other provider gets its historical single attempt — their
+        # failures are handled by raw_completion's outer provider chain.
+        if name == "openrouter" and not configured_model:
+            models = _openrouter_models()
+        else:
+            models = [default_model]
 
-        resp = client.chat.completions.create(
-            model=model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-            **extra,
-        )
-        log_usage(call_site, name, model, resp, framework)
-        choice = resp.choices[0]
-        if getattr(choice, "finish_reason", None) == "length":
-            used = getattr(getattr(resp, "usage", None), "completion_tokens", "?")
-            logger.warning(
-                f"  {name}/{model} stopped at the token limit "
-                f"(finish_reason=length, completion_tokens={used}, "
-                f"max_tokens={max_tokens}) — the response is incomplete. "
-                f"Raising max_tokens only helps if the model honours it; "
-                f"otherwise the request has to be split."
-            )
-        return (choice.message.content or "").strip()
+        for i, model in enumerate(models):
+            extra: dict = {}
+            if name == "deepseek" and not cfg_bool("ai_thinking_enabled", False):
+                extra["extra_body"] = {"thinking": {"type": "disabled"}}
+            try:
+                return _openai_compat_once(
+                    client, model, prompt, max_tokens, extra,
+                    name=name, call_site=call_site, framework=framework,
+                )
+            except Exception as e:
+                if name == "openrouter" and i < len(models) - 1:
+                    logger.warning(
+                        f"  openrouter model {model} failed — trying next: {e}")
+                    continue
+                raise
+        # Unreachable (the last iteration either returns or raises), but kept
+        # so the control flow is obvious to readers and linters.
+        raise RuntimeError("raw_completion: no OpenRouter model succeeded")
 
     raise RuntimeError(f"raw_completion not implemented for provider: {name}")
 
