@@ -19,6 +19,7 @@ def _get_provider(name: str):
     from ai.providers.grok_provider     import GrokProvider
     from ai.providers.copilot_provider  import CopilotProvider
     from ai.providers.openrouter_provider import OpenRouterProvider
+    from ai.providers.ollama_provider   import OllamaProvider
     from ai.providers.ml_provider       import MLProvider
 
     providers = {
@@ -29,6 +30,7 @@ def _get_provider(name: str):
         "grok":      lambda: GrokProvider(AI_KEYS["grok"]),
         "copilot":   lambda: CopilotProvider(AI_KEYS["copilot"], AZURE_ENDPOINT, AZURE_DEPLOYMENT),
         "openrouter":lambda: OpenRouterProvider(AI_KEYS["openrouter"]),
+        "ollama":    lambda: OllamaProvider(),
         "ml":        lambda: MLProvider(),
     }
     factory = providers.get(name)
