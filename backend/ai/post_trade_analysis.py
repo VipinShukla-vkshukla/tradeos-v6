@@ -1137,21 +1137,41 @@ def _safe_parse_ai_json(raw: str) -> dict | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MAIN TRADE ANALYSER
+# BATCHED AI LESSONS (option 5A, 15-Nov-2026)
+#
+# post_trade was the evening pipeline's biggest AI-call driver: one
+# raw_completion per closed trade, each paying the full provider-chain retry
+# tax (two dead :free models + an empty-content reasoning attempt before a
+# working model answered). Batching N trades into ONE call cuts requests
+# ~N×, mirrors ai_decision_engine's own call_ai_batched() design
+# (ai_decision_batch_size), and leaves every downstream behaviour — dedup,
+# times_applied++, confidence loop, entry_grade persist, signal_log
+# enrichment — exactly where it is.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def analyze_trade(trade: dict, sb,
-                   provider_override: str | None = None) -> dict | None:
-    """
-    Full analysis pipeline for a single closed trade.
+BATCH_ANALYSIS_PROMPT_V1 = """You are an expert Indian swing trader reviewing {n} completed trade(s). Each TRADE block below carries the full signal intelligence context for one trade and shows the exact lesson schema that trade's output object must follow.
 
-    1. Load signal_log context at signal_date (full 80-field row)
-    2. Load msl_history trajectory entry → exit
-    3. Grade the trade entry quality (A-F)
-    4. Run rule-based lesson generation (v2: 20+ rules with signal context)
-    5. Optionally enrich with AI (v2: richer prompt with all context)
-    6. v3: Update existing lesson confidence via the lesson loop
-    7. Return complete lesson dict ready for lessons table insert
+Produce ONE JSON array of {n} lesson objects — one per TRADE block, in the same order. Every object must contain exactly these keys: symbol (copied from its block), scenario_type, trigger_event, what_expected, what_happened, what_failed, root_cause, corrective_rule, confidence_note. The corrective rule must be highly SPECIFIC and actionable — reference exact fields, thresholds, and conditions from that block's context.
+
+Output ONLY the JSON array — no prose before or after it.
+
+{blocks}"""
+
+# The per-trade body of ANALYSIS_PROMPT_V2 without its trailing
+# "Generate a structured lesson..." instruction — the batch envelope owns
+# the output instruction (an array, not one object), so the per-block
+# instruction would contradict it.
+_ANALYSIS_PROMPT_BODY = ANALYSIS_PROMPT_V2.partition(
+    "Generate a structured lesson.")[0].rstrip()
+
+
+def _prepare_lesson_context(sb, trade: dict, active_provider: str) -> dict:
+    """
+    Steps 1-4 of the single-trade pipeline, shared verbatim by
+    analyze_trade() and the batched path: signal context, trajectory, entry
+    grade, rule-based lesson. The rule-based lesson is ALSO the batch path's
+    per-item fallback — an unusable array item lands here, never in a
+    half-empty lesson row.
     """
     sym         = trade.get("symbol", "")
     signal_date = str(trade.get("signal_date") or trade.get("entry_date", ""))
@@ -1159,8 +1179,6 @@ def analyze_trade(trade: dict, sb,
     exit_date   = str(trade.get("exit_date", ""))
     pnl_pct     = float(trade.get("pnl_pct", 0) or 0)
     is_win      = pnl_pct > 0
-
-    active_provider = provider_override if provider_override else cfg("ai_provider", "disabled").lower()
 
     # ── Step 1: pull signal context at entry ─────────────────────────────────
     signal_ctx = load_signal_context(sb, sym, signal_date)
@@ -1176,113 +1194,268 @@ def analyze_trade(trade: dict, sb,
 
     # ── Step 4: rule-based lesson ─────────────────────────────────────────────
     lesson_data = generate_rule_based_lesson(trade, signal_ctx, traj, trade_grade)
-    source      = "RULE_BASED"
 
-    # ── Step 5: AI enrichment (v2 prompt) ────────────────────────────────────
-    if active_provider not in ("disabled", "ml"):
-        # Load supporting context for AI prompt
-        entry_ctx    = load_regime_at_entry(sb, entry_date)
-        events_entry = load_events_at_entry(sb, sym, entry_date)
-        existing_lsn = load_existing_lessons(
-            sb,
-            trade.get("strategy", ""),
-            trade.get("sector", ""),
-            lesson_data.get("scenario_type", ""),
-        )
-        existing_summary = _format_existing_lessons_summary(existing_lsn)
+    return {
+        "sym": sym, "signal_date": signal_date, "entry_date": entry_date,
+        "exit_date": exit_date, "pnl_pct": pnl_pct, "is_win": is_win,
+        "active_provider": active_provider, "signal_ctx": signal_ctx,
+        "traj": traj, "trade_grade": trade_grade,
+        "lesson_data": lesson_data, "source": "RULE_BASED", "sb": sb,
+    }
 
-        prompt = ANALYSIS_PROMPT_V2.format(
-            symbol                = sym,
-            company_name          = trade.get("company_name", ""),
-            sector                = trade.get("sector", ""),
-            strategy              = trade.get("strategy", ""),
-            entry_date            = entry_date,
-            entry_price           = trade.get("entry_price", 0),
-            exit_date             = exit_date,
-            exit_price            = trade.get("exit_price", 0),
-            actual_qty            = trade.get("actual_qty", 0),
-            invested_value        = float(trade.get("invested_value", 0) or 0),
-            realized_pnl          = float(trade.get("realized_pnl", 0) or 0),
-            pnl_pct               = pnl_pct,
-            exit_reason           = trade.get("exit_reason", "Unknown"),
-            lifecycle_at_entry    = trade.get("lifecycle_at_entry", "Unknown"),
-            expected_r            = trade.get("expected_r_at_entry", "N/A"),
-            high_water_mark       = trade.get("high_water_mark", 0),
-            mfe                   = trade.get("max_favorable_excursion", "N/A"),
-            entry_timing_type     = signal_ctx.get("entry_timing_type", "N/A"),
-            reentry_mode          = signal_ctx.get("reentry_mode", "N/A"),
-            # Signal quality fields
-            signal_subtype        = signal_ctx.get("signal_type", "N/A"),
-            score_adjusted        = signal_ctx.get("score_adjusted", "N/A"),
-            trade_grade           = trade_grade,
-            struct_edge           = signal_ctx.get("struct_edge", "N/A"),
-            risk_score            = signal_ctx.get("risk_score", "N/A"),
-            momentum_state        = signal_ctx.get("momentum_state", "N/A"),
-            velocity_state        = signal_ctx.get("velocity_state", "N/A"),
-            momentum_phase        = signal_ctx.get("momentum_phase", "N/A"),
-            trend_maturity        = signal_ctx.get("trend_maturity", "N/A"),
-            breakout_readiness    = signal_ctx.get("breakout_readiness", "N/A"),
-            bb_squeeze            = signal_ctx.get("bb_squeeze", "N/A"),
-            holding_score         = signal_ctx.get("holding_score", "N/A"),
-            institutional_score   = signal_ctx.get("institutional_score", "N/A"),
-            rsi_daily             = signal_ctx.get("rsi_daily", "N/A"),
-            vol_ratio             = signal_ctx.get("vol_ratio", "N/A"),
-            delivery_pct          = signal_ctx.get("delivery_pct", "N/A"),
-            vwap_alignment        = signal_ctx.get("vwap_alignment", "N/A"),
-            weekly_structure      = signal_ctx.get("weekly_structure", "N/A"),
-            psar_dual_confirmed   = signal_ctx.get("psar_dual_confirmed", "N/A"),
-            macd_direction        = signal_ctx.get("macd_direction", "N/A"),
-            # Market context at entry
-            regime                = entry_ctx.get("regime", signal_ctx.get("regime", "N/A")),
-            india_vix             = entry_ctx.get("india_vix", signal_ctx.get("india_vix", "N/A")),
-            nifty_5d_chg_pct      = entry_ctx.get("nifty_5d_chg_pct", signal_ctx.get("nifty_5d_chg_pct", "N/A")),
-            above_200dma_pct      = entry_ctx.get("above_200dma_pct", signal_ctx.get("above_200dma_pct", "N/A")),
-            fii_flag              = signal_ctx.get("fii_flag", "N/A"),
-            fii_net_20d_ctx       = signal_ctx.get("fii_net_20d_ctx", "N/A"),
-            sector_rank_at_entry  = signal_ctx.get("sector_rank_at_entry", "N/A"),
-            industry_state        = signal_ctx.get("industry_state", "N/A"),
-            # Trajectory
-            days_held             = traj.get("days_held", 0),
-            lifecycle_sequence    = traj.get("lifecycle_sequence", "N/A"),
-            velocity_sequence     = traj.get("velocity_sequence", "N/A"),
-            holding_score_min     = traj.get("holding_score_min", "N/A"),
-            trend_maturity_end    = traj.get("trend_maturity_end", "N/A"),
-            trajectory_warning    = traj.get("trajectory_warning", "NONE"),
-            events_at_entry       = events_entry,
-            existing_lessons_summary = existing_summary,
-        )
 
+def _format_lesson_block(sb, trade: dict, prep: dict,
+                         body_only: bool = False) -> str:
+    """
+    Step 5's context assembly + prompt for ONE trade, shared verbatim by
+    the single-trade and batched paths so the two can never drift. With
+    body_only=True the trailing "Generate a structured lesson..." block of
+    ANALYSIS_PROMPT_V2 is stripped — the batch envelope owns the output
+    instruction there (an array of objects, not one object).
+    """
+    sym         = prep["sym"]
+    entry_date  = prep["entry_date"]
+    signal_ctx  = prep["signal_ctx"]
+    trade_grade = prep["trade_grade"]
+    traj        = prep["traj"]
+    lesson_data = prep["lesson_data"]
+
+    # Load supporting context for AI prompt
+    entry_ctx    = load_regime_at_entry(sb, entry_date)
+    events_entry = load_events_at_entry(sb, sym, entry_date)
+    existing_lsn = load_existing_lessons(
+        sb,
+        trade.get("strategy", ""),
+        trade.get("sector", ""),
+        lesson_data.get("scenario_type", ""),
+    )
+    existing_summary = _format_existing_lessons_summary(existing_lsn)
+
+    template = _ANALYSIS_PROMPT_BODY if body_only else ANALYSIS_PROMPT_V2
+    return template.format(
+        symbol                = sym,
+        company_name          = trade.get("company_name", ""),
+        sector                = trade.get("sector", ""),
+        strategy              = trade.get("strategy", ""),
+        entry_date            = entry_date,
+        entry_price           = trade.get("entry_price", 0),
+        exit_date             = prep["exit_date"],
+        exit_price            = trade.get("exit_price", 0),
+        actual_qty            = trade.get("actual_qty", 0),
+        invested_value        = float(trade.get("invested_value", 0) or 0),
+        realized_pnl          = float(trade.get("realized_pnl", 0) or 0),
+        pnl_pct               = prep["pnl_pct"],
+        exit_reason           = trade.get("exit_reason", "Unknown"),
+        lifecycle_at_entry    = trade.get("lifecycle_at_entry", "Unknown"),
+        expected_r            = trade.get("expected_r_at_entry", "N/A"),
+        high_water_mark       = trade.get("high_water_mark", 0),
+        mfe                   = trade.get("max_favorable_excursion", "N/A"),
+        entry_timing_type     = signal_ctx.get("entry_timing_type", "N/A"),
+        reentry_mode          = signal_ctx.get("reentry_mode", "N/A"),
+        # Signal quality fields
+        signal_subtype        = signal_ctx.get("signal_type", "N/A"),
+        score_adjusted        = signal_ctx.get("score_adjusted", "N/A"),
+        trade_grade           = trade_grade,
+        struct_edge           = signal_ctx.get("struct_edge", "N/A"),
+        risk_score            = signal_ctx.get("risk_score", "N/A"),
+        momentum_state        = signal_ctx.get("momentum_state", "N/A"),
+        velocity_state        = signal_ctx.get("velocity_state", "N/A"),
+        momentum_phase        = signal_ctx.get("momentum_phase", "N/A"),
+        trend_maturity        = signal_ctx.get("trend_maturity", "N/A"),
+        breakout_readiness    = signal_ctx.get("breakout_readiness", "N/A"),
+        bb_squeeze            = signal_ctx.get("bb_squeeze", "N/A"),
+        holding_score         = signal_ctx.get("holding_score", "N/A"),
+        institutional_score   = signal_ctx.get("institutional_score", "N/A"),
+        rsi_daily             = signal_ctx.get("rsi_daily", "N/A"),
+        vol_ratio             = signal_ctx.get("vol_ratio", "N/A"),
+        delivery_pct          = signal_ctx.get("delivery_pct", "N/A"),
+        vwap_alignment        = signal_ctx.get("vwap_alignment", "N/A"),
+        weekly_structure      = signal_ctx.get("weekly_structure", "N/A"),
+        psar_dual_confirmed   = signal_ctx.get("psar_dual_confirmed", "N/A"),
+        macd_direction        = signal_ctx.get("macd_direction", "N/A"),
+        # Market context at entry
+        regime                = entry_ctx.get("regime", signal_ctx.get("regime", "N/A")),
+        india_vix             = entry_ctx.get("india_vix", signal_ctx.get("india_vix", "N/A")),
+        nifty_5d_chg_pct      = entry_ctx.get("nifty_5d_chg_pct", signal_ctx.get("nifty_5d_chg_pct", "N/A")),
+        above_200dma_pct      = entry_ctx.get("above_200dma_pct", signal_ctx.get("above_200dma_pct", "N/A")),
+        fii_flag              = signal_ctx.get("fii_flag", "N/A"),
+        fii_net_20d_ctx       = signal_ctx.get("fii_net_20d_ctx", "N/A"),
+        sector_rank_at_entry  = signal_ctx.get("sector_rank_at_entry", "N/A"),
+        industry_state        = signal_ctx.get("industry_state", "N/A"),
+        # Trajectory
+        days_held             = traj.get("days_held", 0),
+        lifecycle_sequence    = traj.get("lifecycle_sequence", "N/A"),
+        velocity_sequence     = traj.get("velocity_sequence", "N/A"),
+        holding_score_min     = traj.get("holding_score_min", "N/A"),
+        trend_maturity_end    = traj.get("trend_maturity_end", "N/A"),
+        trajectory_warning    = traj.get("trajectory_warning", "NONE"),
+        events_at_entry       = events_entry,
+        existing_lessons_summary = existing_summary,
+    )
+
+
+def _parse_batch_ai_json(raw: str, trades: list[dict]) -> list[dict | None] | None:
+    """
+    Parse the batched response: a JSON array of lesson objects mapped back
+    onto the input trades by symbol (positional fallback for items whose
+    symbol is missing or unrecognised). Returns a list aligned to `trades`
+    (None where no object could be attributed), or None if the response is
+    not an array at all — the caller then falls back to per-trade lessons.
+    """
+    arr = re.search(r"\[.*\]", raw, re.DOTALL)
+    if not arr:
+        return None
+    s = re.sub(r"[\x00-\x1f\x7f]", " ", arr.group())
+    try:
+        items = json.loads(s)
+    except json.JSONDecodeError:
         try:
-            # Routed through ai_router.raw_completion (2026-11-15): same
-            # provider chain as every other AI step, and OpenRouter now tries
-            # its ordered model list on rate-limit/credit errors instead of
-            # this module hardcoding deepseek/deepseek-chat. _call_provider's
-            # direct branches are retained for the test suite only.
+            s = re.sub(r",\s*}", "}", s)
+            s = re.sub(r",\s*]", "]", s)
+            items = json.loads(s)
+        except Exception:
+            return None
+    if not isinstance(items, list):
+        return None
+
+    result: list[dict | None] = [None] * len(trades)
+    used  = [False] * len(trades)
+    orphan: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        placed = False
+        sym = str(item.get("symbol", "")).strip().upper()
+        if sym:
+            for i, t in enumerate(trades):
+                if (not used[i]
+                        and str(t.get("symbol", "")).strip().upper() == sym):
+                    result[i] = item
+                    used[i]   = True
+                    placed    = True
+                    break
+        if not placed:
+            orphan.append(item)
+    # Positional fallback for orphans, in order of appearance
+    k = 0
+    for item in orphan:
+        while k < len(result) and result[k] is not None:
+            k += 1
+        if k >= len(result):
+            break
+        result[k] = item
+        used[k]   = True
+    return result
+
+
+def _analyze_one_batch(trades: list[dict], sb, active_provider: str) -> list[dict]:
+    """ONE batch: ONE raw_completion call for the list, one lesson per trade."""
+    n     = len(trades)
+    preps = [_prepare_lesson_context(sb, t, active_provider) for t in trades]
+
+    items: list[dict | None] = [None] * n
+    if active_provider not in ("disabled", "ml") and trades:
+        blocks = [
+            f"=== TRADE {i + 1} OF {n} ===\n"
+            + _format_lesson_block(sb, t, p, body_only=True)
+            for i, (t, p) in enumerate(zip(trades, preps))
+        ]
+        batch_prompt = BATCH_ANALYSIS_PROMPT_V1.format(
+            n=n, blocks="\n\n".join(blocks))
+        max_tokens = (cfg_int("post_trade_batch_max_tokens", 400) * n + 500)
+        logger.info(f"  Batched AI lesson call: {n} trade(s), "
+                    f"max_tokens={max_tokens}")
+        try:
             try:
                 from ai.ai_router import raw_completion
             except ImportError:
                 from ai_router import raw_completion
-            raw = raw_completion(prompt, max_tokens=800,
+            raw = raw_completion(batch_prompt, max_tokens=max_tokens,
                                  call_site="post_trade_analysis")
             if raw:
-                parsed = _safe_parse_ai_json(raw)
-                if parsed:
-                    lesson_data = parsed
-                    source = f"AI:{active_provider}"
+                parsed = _parse_batch_ai_json(raw, trades)
+                if parsed is not None:
+                    items = parsed
+                else:
+                    logger.warning(
+                        "  batched AI response was not a parsable JSON "
+                        "array — falling back to rule-based for this batch")
         except Exception as e:
-            logger.warning(f"AI enrichment skipped for {sym} — using rule-based: {e}")
+            logger.warning(
+                f"  batched AI call failed for {n} trade(s) — falling "
+                f"back to rule-based: {e}")
 
-    # ── Confidence calibration ────────────────────────────────────────────────
+    results: list[dict] = []
+    for trade, prep, item in zip(trades, preps, items):
+        lesson_data = prep["lesson_data"]
+        source      = "RULE_BASED"
+        if isinstance(item, dict) and (item.get("scenario_type")
+                                       or item.get("corrective_rule")):
+            lesson_data = item
+            source      = f"AI:{active_provider}"
+        elif item is not None:
+            logger.warning(
+                f"  batched AI item for {prep['sym']} missing "
+                f"scenario_type/corrective_rule — rule-based lesson")
+        results.append(_finalize_lesson(trade, prep, lesson_data, source))
+    return results
+
+
+def analyze_trades_batch(trades: list[dict], sb,
+                         provider_override: str | None = None) -> list[dict]:
+    """
+    Batched equivalent of analyze_trade() for the whole pending list: ONE
+    raw_completion call per `post_trade_batch_size` (default 10). Returns a
+    list aligned with `trades`; every element is a complete lesson dict
+    (rule-based wherever the batch failed or the AI item was unusable), so
+    the caller's store path never sees a hole.
+    """
+    active_provider = (provider_override if provider_override
+                       else cfg("ai_provider", "disabled").lower())
+    batch_size = max(1, cfg_int("post_trade_batch_size", 10))
+    results: list[dict] = []
+    for start in range(0, len(trades), batch_size):
+        chunk = trades[start:start + batch_size]
+        try:
+            results.extend(_analyze_one_batch(chunk, sb, active_provider))
+        except Exception as e:
+            # Last-resort safety net: today's per-trade behaviour for this batch
+            logger.warning(
+                f"  Batched analysis failed for {len(chunk)} trade(s) — "
+                f"falling back to the per-trade path: {e}")
+            results.extend(
+                analyze_trade(t, sb, provider_override=active_provider)
+                for t in chunk)
+    return results
+
+
+def _finalize_lesson(trade: dict, prep: dict, lesson_data: dict,
+                     source: str) -> dict:
+    """
+    Epilogue shared by the single-trade and batched paths: confidence
+    calibration, lesson loop, linked-event classification, scenario context
+    and the lesson dict. Everything after step 5 lives here exactly once.
+    """
+    sym         = prep["sym"]
+    exit_date   = prep["exit_date"]
+    pnl_pct     = prep["pnl_pct"]
+    is_win      = prep["is_win"]
+    signal_ctx  = prep["signal_ctx"]
+    traj        = prep["traj"]
+    trade_grade = prep["trade_grade"]
+    sb          = prep.get("sb")
+
+    # ── Confidence calibration ──────────────────────────────────────────────
     confidence = compute_lesson_confidence(trade_grade, is_win, source, traj)
 
-    # ── v3: Update existing lesson confidence via outcomes ────────────────────
-    if cfg("lesson_loop_enabled", "true").lower() == "true":
+    # ── v3: Update existing lesson confidence via the lesson loop ────────────
+    if sb is not None and cfg("lesson_loop_enabled", "true").lower() == "true":
         try:
             applicable = _find_applicable_lessons(sb, trade, signal_ctx, lesson_data)
             if applicable:
                 _update_lesson_outcomes(sb, applicable, trade, signal_ctx, traj)
         except Exception as _le:
-            logger.debug(f"Lesson loop non-fatal: {_le}")
+            logger.debug(f"Lesson loop (dedup path) non-fatal: {_le}")
 
     # ── Classify linked_event_type ────────────────────────────────────────────
     trigger = str(lesson_data.get("trigger_event", ""))
@@ -1328,6 +1501,60 @@ def analyze_trade(trade: dict, sb,
         "_signal_ctx":       signal_ctx,            # ephemeral, stripped before insert
         "_traj":             traj,                  # ephemeral, stripped before insert
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN TRADE ANALYSER
+# ─────────────────────────────────────────────────────────────────────────────
+
+def analyze_trade(trade: dict, sb,
+                   provider_override: str | None = None) -> dict | None:
+    """
+    Full analysis pipeline for a single closed trade.
+
+    1. Load signal_log context at signal_date (full 80-field row)
+    2. Load msl_history trajectory entry → exit
+    3. Grade the trade entry quality (A-F)
+    4. Run rule-based lesson generation (v2: 20+ rules with signal context)
+    5. Optionally enrich with AI (v2: richer prompt with all context)
+    6. v3: Update existing lesson confidence via the lesson loop
+    7. Return complete lesson dict ready for lessons table insert
+    """
+    active_provider = (provider_override if provider_override
+                       else cfg("ai_provider", "disabled").lower())
+    prep        = _prepare_lesson_context(sb, trade, active_provider)
+    signal_ctx  = prep["signal_ctx"]
+    traj        = prep["traj"]
+    trade_grade = prep["trade_grade"]
+    lesson_data = prep["lesson_data"]
+    source      = "RULE_BASED"
+
+    # ── Step 5: AI enrichment (v2 prompt) ────────────────────────────────────
+    if active_provider not in ("disabled", "ml"):
+        prompt = _format_lesson_block(sb, trade, prep)
+
+        try:
+            # Routed through ai_router.raw_completion (2026-11-15): same
+            # provider chain as every other AI step, and OpenRouter now tries
+            # its ordered model list on rate-limit/credit errors instead of
+            # this module hardcoding deepseek/deepseek-chat. _call_provider's
+            # direct branches are retained for the test suite only.
+            try:
+                from ai.ai_router import raw_completion
+            except ImportError:
+                from ai_router import raw_completion
+            raw = raw_completion(prompt, max_tokens=800,
+                                 call_site="post_trade_analysis")
+            if raw:
+                parsed = _safe_parse_ai_json(raw)
+                if parsed:
+                    lesson_data = parsed
+                    source = f"AI:{active_provider}"
+        except Exception as e:
+            logger.warning(f"AI enrichment skipped for {prep['sym']} — using rule-based: {e}")
+
+    # ── Epilogue shared with the batched path ───────────────────────────────
+    return _finalize_lesson(trade, prep, lesson_data, source)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1484,6 +1711,22 @@ def enrich_signal_log(sb, trade: dict, lesson: dict):
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 
+def post_trade_ai_enabled() -> bool:
+    """
+    One-click switch for post-trade AI enrichment — system_config key
+    `post_trade_ai_enabled`, DEFAULT OFF.
+
+    Why off by default (15-Nov-2026): post_trade was the evening pipeline's
+    biggest AI-call driver (one call per closed trade), and on a 50/day free
+    quota it starved the two decision-critical steps that run AFTER it
+    (23_ai_market_intel, 24_ai_decision_engine). With the flag off, post-trade
+    writes rule-based lessons — deterministic, instant, zero AI calls — and
+    the free quota is reserved for the steps that feed actual decisions.
+    Flip it on (Supabase system_config) when the quota allows.
+    """
+    return cfg_bool("post_trade_ai_enabled", False)
+
+
 def main():
     if is_kill_switch_active():
         logger.warning("⛔ Kill switch active — post_trade_analysis skipped")
@@ -1520,6 +1763,12 @@ def main():
     cost_per_call = PROVIDER_COST_INR.get(active_prov, 0.30)
     est_spend     = ai_count * cost_per_call
     provider_eff  = None  # let analyze_trade() use cfg("ai_provider") from Supabase
+    if not post_trade_ai_enabled():
+        # One-click AI kill switch (default off): rule-based lessons, zero AI
+        # calls, zero model stalls — the free quota stays with steps 23/24.
+        provider_eff = "disabled"
+        logger.info("  post_trade AI disabled by config "
+                    "(post_trade_ai_enabled=false) — rule-based lessons")
 
     # ── Process trades ────────────────────────────────────────────────────────
     analyzed_count      = 0
@@ -1528,16 +1777,27 @@ def main():
     grade_dist          = {"A": 0, "B": 0, "C": 0, "D": 0, "F": 0}
     ai_count_this_run   = 0
 
+    # ── Pending trades (identical per-trade dedup window skip as before) ──────
+    pending: list[dict] = []
     for trade in trades:
         sym = trade.get("symbol", "")
-
-        # Skip already-analyzed (by scenario_context prefix)
         ctx_prefix = f"{sym} {trade.get('strategy')}"[:20]
         if ctx_prefix in analyzed_prefixes:
             logger.debug(f"Skipping {sym} — lesson already exists this window")
             continue
+        pending.append(trade)
 
-        lesson = analyze_trade(trade, sb, provider_override=provider_eff)
+    # ── Batched analysis: ONE AI call per post_trade_batch_size trades ──
+    # Order-of-work preserved: every pending trade analysed exactly once,
+    # stored in original order below. A batch-level failure falls back to the
+    # per-trade path for that batch only (today's behaviour); a single
+    # unusable AI item falls back to rule-based for that trade only.
+    lessons_all = analyze_trades_batch(pending, sb,
+                                       provider_override=provider_eff)
+    analyzed_pairs = list(zip(pending, lessons_all))
+
+    for trade, lesson in analyzed_pairs:
+        sym = trade.get("symbol", "")
         if not lesson:
             continue
 

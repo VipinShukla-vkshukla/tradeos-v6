@@ -231,6 +231,8 @@ MODULES = [
      "tests.test_ai_usage_tracker"),
     ("ai_decision_batch_size raised 5->15",
      "tests.test_ai_decision_batch_size"),
+    ("post_trade batched AI lessons (option 5A)",
+     "tests.test_post_trade_batch"),
     ("AI candidate cache — reuse unchanged prior-day verdicts",
      "tests.test_ai_candidate_cache"),
     ("ai_tier/ai_conviction removed from evening AI output",
