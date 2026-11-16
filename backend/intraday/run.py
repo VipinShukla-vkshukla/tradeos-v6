@@ -401,7 +401,6 @@ def main(once: bool = False, dry: bool = False) -> None:
                         stale_contexts=len(engine.stale_contexts()),
                         failed_entries=total_failed_entries,
                         same_day_discoveries=len(engine._same_day_candidates),
-                        allocator_declined_all=allocator_declined_all,
                         allocator_total_candidates=allocator_total_candidates,
                         allocator_declined_count=allocator_declined_count,
                         slippage_exceed_count=slippage_exceed_count,
