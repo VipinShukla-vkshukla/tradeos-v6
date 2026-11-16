@@ -251,13 +251,11 @@ def raw_completion(prompt: str, max_tokens: int = 1500,
     returns the first successful completion. Auto-switches to the next
     provider if one errors out.
     """
-    provider_name = cfg("ai_provider", "disabled").lower()
-    if provider_name in ("disabled", "ml"):
-        raise RuntimeError(
-            "No LLM provider available for raw_completion "
-            "(ai_provider is 'disabled' or 'ml')"
-        )
-
+    # No early bail here: `_provider_chain()` already resolves the primary
+    # and its fallbacks, so a primary that is "disabled"/"ml" (or simply not
+    # configured) must fall through to the next provider in the chain rather
+    # than failing before the chain is even built — that early raise used to
+    # leave `_call_ai()` unable to reach a live LLM through the fallback list.
     last_error = None
     for name in _provider_chain():
         if name == "ml":

@@ -31,7 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import IST, cfg_bool, cfg_float
+from config import IST, cfg_bool, cfg_float, cfg_int
 from intraday.bar_builder import BarBuilder
 
 
@@ -132,6 +132,44 @@ class PriceFeed:
         with self._lock:
             at = self._at.get(symbol)
         return (datetime.now(IST) - at).total_seconds() if at else None
+
+    def is_price_stale(self, symbol: str, max_age_seconds: int | None = None) -> bool:
+        """
+        True when this symbol's last price is older than `max_age_seconds`.
+
+        Default threshold comes from `intraday_price_stale_seconds` (120s).
+        A symbol never priced at all is stale. Used by the entry path to block
+        new entries on stale prices during a websocket outage while still
+        allowing exit/stops to be evaluated on the last known price.
+        """
+        threshold = max_age_seconds if max_age_seconds is not None else cfg_int(
+            "intraday_price_stale_seconds", 120)
+        with self._lock:
+            at = self._at.get(symbol)
+        if at is None:
+            return True
+        return (datetime.now(IST) - at).total_seconds() > threshold
+
+    def stale_symbols(self, max_age_seconds: int | None = None) -> set[str]:
+        """
+        All symbols whose last price is older than `max_age_seconds`.
+
+        Includes symbols that have never been priced. Returns an empty set
+        when the websocket is live and all prices are fresh — callers can
+        check `feed.connected` first to avoid the computation entirely.
+        """
+        threshold = max_age_seconds if max_age_seconds is not None else cfg_int(
+            "intraday_price_stale_seconds", 120)
+        now = datetime.now(IST)
+        stale: set[str] = set()
+        with self._lock:
+            for sym, at in self._at.items():
+                if (now - at).total_seconds() > threshold:
+                    stale.add(sym)
+        for sym in self.symbols:
+            if sym not in self._at:
+                stale.add(sym)
+        return stale
 
     def _set(self, symbol: str, price: float) -> None:
         with self._lock:

@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
 
-from config import cfg_bool, cfg_float
+from config import cfg_bool, cfg_float, today_ist
 
 # _TIER_POINTS removed, 29-Aug-2026, along with the scoring block below that
 # used it — see that block's own historical note for why the weights sat at
@@ -333,8 +333,17 @@ def entry_refusals(p: dict, rr_live: float | None = None,
     # honoured, a recommendation is not — this veto can block a trade but
     # never promote one, the same "annotation, never promotion" shape the
     # since-removed AI conviction layer used to follow too.
+    # If the config flag is enabled, only honour eap_action that originates
+    # from today's signal run.  Plans from prior sessions are treated as
+    # stale and ignored so that a missing or failed live AI review does not
+    # block entries based on yesterday's data.
     if cfg_bool("entry_rank_respect_ai_avoid", False):
-        if str(p.get("eap_action") or "").strip().upper() == "AVOID_ENTRY":
+        plan_date = str(p.get("date") or "").strip()
+        today_str = today_ist().date().isoformat()
+        if plan_date and plan_date != today_str:
+            # stale eap_action — ignore it (treat as no opinion)
+            pass
+        elif str(p.get("eap_action") or "").strip().upper() == "AVOID_ENTRY":
             note = str(p.get("ai_note") or p.get("ai_risks") or "").strip()
             out.append("AI review returned AVOID_ENTRY"
                        + (f" — {note[:110]}" if note else ""))
@@ -363,7 +372,15 @@ def entry_refusals(p: dict, rr_live: float | None = None,
         if fr.startswith(("blocked", "rejected", "veto")):
             out.append(f"the evening pipeline refused this plan: {fr}")
 
-    # ── R:R RETENTION — Track E, Stage E5 piece 2 (shadow), 24-Aug-2026 ──────
+    # ── LIGHTWEIGHT RULE-BASED REFUSAL: event calendar within 2 days ────────
+    # Refuse only if there are imminent events (0 < days <= 2) that could
+    # invalidate the entry. This is a hard refusal only when the AI is
+    # unavailable or when the flag is enabled (though default off keeps the
+    # original behaviour).
+    if cfg_bool("entry_rank_respect_ai_avoid", False):
+        days = _f(p.get("upcoming_event_days"), 99)
+        if 0 < days <= 2:
+            out.append(f"event in {days:.0f}d — refusing on event risk")
     # F-74's own finding: HAL's reward:risk collapsed from 7.63-14.09 (at the
     # zone low, stop/target fixed) to 1.17 at the actual fill — not because
     # the raw price drifted far (0.94%), but because the stop/target never

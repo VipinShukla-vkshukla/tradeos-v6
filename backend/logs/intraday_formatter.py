@@ -236,6 +236,13 @@ def format_session_end(
                  f"{'⚠️' if unfilled_entries > 0 else '✅'}   │")
     lines.append("│                                                                         │")
 
+    # Zero entries today — only at session end, not every cycle.
+    if entries_taken == 0 and entry_cap > 0:
+        lines.append("│                                                                         │")
+        lines.append("│ 💡 Zero entries today — review entry criteria, regime gate, or          │")
+        lines.append("│    max_new_per_day. See refusal histogram below for why.                │")
+        lines.append("│                                                                         │")
+
     # ── Gaps & loopholes ───────────────────────────────────────────────────
     if gaps:
         lines.append("├─────────────────────────────────────────────────────────────────────────┤")
@@ -252,6 +259,19 @@ def format_session_end(
         lines.append("├─────────────────────────────────────────────────────────────────────────┤")
         for imp in improvements[:8]:
             lines.append(f"│  • {imp:<69}│")
+        lines.append("│                                                                         │")
+
+    # ── Refusal histogram (why entries were refused) ─────────────────────
+    hist = refusal_histogram()
+    if hist:
+        total_refusals = sum(c for _, c in hist)
+        lines.append("├─────────────────────────────────────────────────────────────────────────┤")
+        lines.append("│ 🔍 REFUSAL HISTOGRAM (why entries were refused)                       │")
+        lines.append("├─────────────────────────────────────────────────────────────────────────┤")
+        lines.append(f"│  Total refusals: {total_refusals}                                               │")
+        for reason, count in hist[:8]:
+            pct = (count / total_refusals * 100) if total_refusals else 0
+            lines.append(f"│  • {reason:<25}: {count:>4} ({pct:.0f}%)                                      │")
         lines.append("│                                                                         │")
 
     lines.append("└─────────────────────────────────────────────────────────────────────────┘")
@@ -272,6 +292,54 @@ def format_session_end(
 # and reappears, or every IMMEDIATE_GAP_REPEAT_CYCLES cycles while active.
 _IMMEDIATE_GAP_REPEAT_CYCLES = 60  # ~15 minutes at 15s eval interval
 _immediate_gap_state: Dict[str, dict] = {}
+
+# Per-symbol refusal dedup — same symbol/refusal reason logs once per
+# REFUSAL_REPEAT_CYCLES instead of every cycle. First occurrence always logs.
+_REFUSAL_REPEAT_CYCLES = 240  # ~1 hour at 15s eval interval
+_refusal_state: Dict[str, int] = {}
+# Refusal reason histogram — counted for the session-end summary.
+_refusal_histogram: Dict[str, int] = {}
+
+
+def log_refusal(symbol: str, reason_key: str) -> bool:
+    """
+    True when a refusal should be logged now, False when suppressed.
+
+    Same (symbol, reason_key) pair logs once on first occurrence, then again
+    only after REFUSAL_REPEAT_CYCLES cycles. This keeps the log readable
+    while still surfacing the refusal reason periodically.
+
+    The cycle counter is set by log_immediate_gaps() each cycle via
+    _refusal_cycle_count[0]; when called outside that context the counter
+    reads 0 and dedup still works (just less precisely).
+    """
+    key = f"{symbol}|{reason_key}"
+    now = _refusal_cycle_count[0]
+    last = _refusal_state.get(key)
+    if last is None or now - last >= _REFUSAL_REPEAT_CYCLES:
+        _refusal_state[key] = now
+        return True
+    return False
+
+
+# Module-level cycle counter, set by log_immediate_gaps() each cycle.
+_refusal_cycle_count: list[int] = [0]
+
+
+def record_refusal(reason_key: str) -> None:
+    """
+    Count a refusal reason for the session-end histogram.
+
+    Call this at every refusal site (liquidity block, edge floor, AI avoid,
+    regime gate, etc.) so the end-of-session banner shows the breakdown.
+    """
+    _refusal_histogram[reason_key] = _refusal_histogram.get(reason_key, 0) + 1
+
+
+def refusal_histogram() -> list[tuple[str, int]]:
+    """Return refusal reasons sorted by count, descending."""
+    return sorted(_refusal_histogram.items(), key=lambda x: -x[1])
+
 
 # Cross-day state for tracking rejections and entry cap trends.
 # Persisted in system_config so it survives daemon restarts.
@@ -463,9 +531,7 @@ def detect_immediate_gaps(
         _mark_resolved("failed_entries")
 
     # ── Immediate improvements (fire once per cycle block) ─────────────────
-
-    if entries_taken == 0 and entry_cap > 0:
-        improvements.append("💡 Zero entries today — review entry criteria, regime gate, or max_new_per_day")
+    # "Zero entries today" moved to session-end banner — no per-cycle spam.
 
     if entries_taken >= entry_cap and entry_cap > 0:
         improvements.append("💡 Entry cap fully consumed — consider raising swing_max_new_per_day")
@@ -547,6 +613,10 @@ def log_immediate_gaps(
     Gaps are logged as WARNING immediately. Improvements as INFO.
     Uses dedup so the same gap doesn't spam every cycle.
     """
+    # Set the cycle counter so refusal dedup (log_refusal()) knows which
+    # cycle we are in.
+    _refusal_cycle_count[0] = cycle_count
+
     gaps, improvements = detect_immediate_gaps(
         cycle_count=cycle_count,
         websocket_connected=websocket_connected,

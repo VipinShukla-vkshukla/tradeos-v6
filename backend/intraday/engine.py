@@ -45,6 +45,7 @@ from intraday.config import (is_market_open, gtt_enabled, orders_enabled,
                              autonomy_phase)
 from intraday.notifier import Notifier, Action
 from intraday import direction as D
+from logs.intraday_formatter import log_refusal, record_refusal
 
 
 def _intraday_may_join_swing_holding(other: dict | None, direction: str) -> bool:
@@ -432,6 +433,11 @@ class IntradayEngine:
         # mirroring self._allocator's own lazy-init pattern immediately
         # above.
         self._ign_bootstrap_used: int | None = None
+        # WARM-START GUARD — first cycle after a restart rebuilds contexts
+        # immediately instead of waiting up to one 300s refresh interval.
+        # The daemon is "blind" between restart and first context refresh;
+        # this flag makes that window one cycle instead of five minutes.
+        self._warm_started: bool = False
         # The intraday universe, selected on its OWN criteria. Until this
         # existed the engines only saw swing shortlist names — stocks chosen for
         # a one-to-three-week thesis, which predicts almost nothing about
@@ -2898,10 +2904,21 @@ class IntradayEngine:
             return
         self._same_day_candidates = {r["symbol"]: r for r in rows if r.get("symbol")}
 
-    def evaluate_candidates(self, prices: dict[str, float]) -> list[dict]:
-        """Run the shared entry decision against live prices."""
+    def evaluate_candidates(self, prices: dict[str, float],
+                            stale_symbols: set[str] | None = None
+                            ) -> list[dict]:
+        """Run the shared entry decision against live prices.
+
+        New entries are blocked on symbols whose prices are stale (e.g.
+        during a websocket outage). Exits/stops are handled by
+        evaluate_positions() which is not gated on staleness — a stale price
+        is a bad reason to enter, but never a reason to stop protecting an
+        open position.
+        """
         from analysis.trade_decision import decide, ACT_SKIP
         from config import capital_for
+
+        stale_symbols = stale_symbols or set()
 
         # Phase 4, 26-Aug-2026 — Stage 2. self.candidates (the evening
         # pipeline's own immutable list) is never mutated; a same-day
@@ -3015,6 +3032,11 @@ class IntradayEngine:
             sym = c.get("symbol")
             ltp = prices.get(sym)
             if not sym or not ltp:
+                continue
+            # Block new entries on stale prices — exits still work via
+            # evaluate_positions() which is not gated on staleness.
+            if sym in stale_symbols:
+                logger.debug(f"  {sym}: swing entry skipped — price stale")
                 continue
             if any(p.get("symbol") == sym for p in self.positions):
                 continue  # already held
@@ -3863,14 +3885,41 @@ class IntradayEngine:
         session's `stock_data_daily` row) if none exists yet this cycle —
         see that gate's own comment on why a missing context must not read
         as unknown liquidity for a name that has real data on file.
+
+        BLENDED LIQUIDITY — 17-Nov-2026. `value_cr` from `stock_data_daily`
+        is previous-day EOD data, so today's momentum names (BELRISE,
+        TVSSCS, V2RETAIL) can be blocked on yesterday's quiet session while
+        thin names that were liquid yesterday but are dead today slip
+        through. Where the websocket carries live session volume
+        (`intraday_quote_mode_range` on), blend the two: take the max of
+        EOD value and live turnover × 1.5 (partial-day run-rate
+        extrapolation). Live data rescues today's breakout names; EOD is the
+        conservative fallback when the socket hasn't delivered yet.
         """
         sctx = self._contexts.get(sym)
         from analysis.overlays import liquidity_ok
+
+        # Previous-day EOD traded value (baseline — yesterday's bhavcopy).
         vcr = sctx.value_cr if sctx else None
         if not vcr:
             vcr = (self._stock_row(sym) or {}).get("value_cr")
+
+        # Live intraday turnover from websocket: cumulative session volume
+        # × current price, in crores. Only when the flag is on and the
+        # socket is delivering ticks; otherwise vcr stays EOD.
+        live_value_cr = None
+        if sctx and sctx.session_volume and sctx.session_volume > 0 and ltp > 0:
+            live_value_cr = (sctx.session_volume * ltp) / 1e7
+
+        # Blended: max of EOD and live run-rate. Live rescues momentum
+        # names blocked by yesterday's quiet session; EOD is the safe
+        # fallback when live data hasn't arrived yet.
+        effective = vcr or 0
+        if live_value_cr is not None and live_value_cr > effective:
+            effective = live_value_cr * 1.5
+
         return liquidity_ok(
-            {"value_cr": vcr, "atr_pct": sctx.atr_pct_daily if sctx else None},
+            {"value_cr": effective, "atr_pct": sctx.atr_pct_daily if sctx else None},
             planned_value=qty * ltp, framework="SWING")
 
     def _maybe_enter_swing(self, c: dict, d, ltp: float) -> None:
@@ -4151,11 +4200,25 @@ class IntradayEngine:
                                   rr_at_zone_low=getattr(d, "rr_at_zone_low", None))
         if refusals:
             for why in refusals:
-                logger.info(f"  {sym}: swing entry refused — {why}")
+                rkey = "entry_refusal"
+                wl = why.lower()
+                if "avoid_entry" in wl:
+                    rkey = "ai_avoid"
+                elif "filter_reason" in wl:
+                    rkey = "filter_reason"
+                elif "retention" in wl:
+                    rkey = "rr_retention"
+                elif "broken" in wl:
+                    rkey = "broken_trend"
+                record_refusal(rkey)
+                if log_refusal(sym, rkey):
+                    logger.info(f"  {sym}: swing entry refused — {why}")
             return
         why = mx.selection_refusal(exp, c, self.candidates, ltp)
         if why:
-            logger.info(f"  {sym}: swing entry refused — {why}")
+            record_refusal("selection_refusal")
+            if log_refusal(sym, "selection_refusal"):
+                logger.info(f"  {sym}: swing entry refused — {why}")
             return
 
         rationale = f"rank {here.total:.0f} — {here.why()}" if here else None
@@ -4766,9 +4829,17 @@ class IntradayEngine:
                        f"{qty} @ ~{limit} (order {res.order_id})")
 
     # ── intraday strategy engines ───────────────────────────────────────────
-    def evaluate_intraday_setups(self, prices: dict[str, float]) -> list:
+    def evaluate_intraday_setups(self, prices: dict[str, float],
+                                 stale_symbols: set[str] | None = None
+                                 ) -> list:
         """
         Run the dedicated intraday engines over the watch list.
+
+        New entries are blocked on symbols whose prices are stale (e.g.
+        during a websocket outage). Exits/stops are handled by
+        evaluate_positions() which is not gated on staleness — a stale price
+        is a bad reason to enter, but never a reason to stop protecting an
+        open position.
 
         Gated on THREE things before a single engine runs, in this order:
         session phase, index context, then per-setup cost. Order matters — the
@@ -4811,6 +4882,8 @@ class IntradayEngine:
                 self._last_state["_market"] = mc.state
             return []
 
+        stale_symbols = stale_symbols or set()
+
         # STALENESS GUARD — no entry is decided on data of unknown age.
         #
         # Contexts are rebuilt on the 300-second timer. If that refresh fails —
@@ -4846,6 +4919,11 @@ class IntradayEngine:
             if self._held_by_framework(sym, "INTRADAY"):
                 continue
             if sym in stale:
+                continue
+            # Block new entries on stale prices — exits still work via
+            # evaluate_positions() which is not gated on staleness.
+            if sym in stale_symbols:
+                logger.debug(f"  {sym}: intraday entry skipped — price stale")
                 continue
             ltp = prices.get(sym)
             if not ltp:
@@ -5216,7 +5294,9 @@ class IntradayEngine:
         if not liq_ok:
             self._record_setup(best, st.phase, 0.0, "BLOCKED_LIQUIDITY", 0,
                                mc_state=(mc.state if mc else None), advice=advice)
-            logger.info(f"      {sym}: {best.strategy} — {liq_why}")
+            record_refusal("liquidity_floor")
+            if log_refusal(sym, "liquidity_floor"):
+                logger.info(f"      {sym}: {best.strategy} — {liq_why}")
             return None
 
         # EXECUTION-QUALITY DEPTH GATE — Stage D4, 24-Aug-2026. Same shape
@@ -5919,15 +5999,17 @@ class IntradayEngine:
         for fw, i in bars.items():
             if (i or {}).get("absolute_floor_applied") and not any(
                     x["verdict"] == "TAKE" and x["proposal"].framework == fw for x in v):
-                logger.warning(
-                    f"  {fw}: every proposal this cycle was refused by the ABSOLUTE "
-                    f"EDGE FLOOR, not by a market judgement. The measured "
-                    f"{fw.lower()} population is currently negative "
-                    f"(unclamped bar {(i or {}).get('base')}), so every candidate's "
-                    f"expected R is below its own round trip. Standing down is the "
-                    f"correct answer to that — but if this persists for a full "
-                    f"session, the prior is the thing to investigate "
-                    f"(tools/expectancy_ledger.py), not the bar.")
+                record_refusal("edge_floor")
+                if log_refusal(fw, "edge_floor"):
+                    logger.warning(
+                        f"  {fw}: every proposal this cycle was refused by the ABSOLUTE "
+                        f"EDGE FLOOR, not by a market judgement. The measured "
+                        f"{fw.lower()} population is currently negative "
+                        f"(unclamped bar {(i or {}).get('base')}), so every candidate's "
+                        f"expected R is below its own round trip. Standing down is the "
+                        f"correct answer to that — but if this persists for a full "
+                        f"session, the prior is the thing to investigate "
+                        f"(tools/expectancy_ledger.py), not the bar.")
         return v
 
     def _score_proposals(self, props: list, minutes_left: int | None = None) -> list[dict]:
@@ -6327,13 +6409,23 @@ class IntradayEngine:
         return actions
 
     def cycle(self, prices: dict[str, float], sync_gtt: bool = False,
-              feed=None) -> dict:
+              feed=None, stale_symbols: set[str] | None = None) -> dict:
         # Cleared FIRST, unconditionally — every _today_totals_cached() call
         # below this point in THIS cycle reuses one fetch; the next cycle()
         # invocation gets a fresh one. Same "cleared first so nothing stale
         # survives an early return" discipline _allocate_shadow() already
         # uses for self._verdicts.
         self._today_totals_cache = {}
+
+        # ── WARM-START — first cycle after a restart ────────────────────────
+        # Contexts are normally built on the 300s slow timer. On the first
+        # cycle after a restart they are empty, so the daemon is blind for up
+        # to five minutes. Build them now instead: one extra context refresh
+        # on the first cycle, zero overhead every cycle after.
+        if not self._warm_started:
+            self._warm_started = True
+            self.refresh_contexts()
+            logger.info("  warm-start: contexts rebuilt on first cycle after restart")
 
         # Live day range, volume and VWAP onto the contexts BEFORE anything
         # reads them. Cheap — a dict lookup per symbol over data the websocket
@@ -6375,13 +6467,15 @@ class IntradayEngine:
 
         entries = []
         if cfg_bool("intraday_watch_candidates", True):
-            entries = self.evaluate_candidates(prices)
+            entries = self.evaluate_candidates(prices,
+                                               stale_symbols=stale_symbols)
 
         # Dedicated intraday engines — separate from the swing candidate watch
         # above, which evaluates swing plans against live prices.
         setups = []
         try:
-            setups = self.evaluate_intraday_setups(prices)
+            setups = self.evaluate_intraday_setups(prices,
+                                                   stale_symbols=stale_symbols)
         except Exception as e:
             logger.warning(f"  intraday strategies failed: {e}")
 

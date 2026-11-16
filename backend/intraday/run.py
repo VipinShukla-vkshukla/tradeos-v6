@@ -377,11 +377,42 @@ def main(once: bool = False, dry: bool = False) -> None:
                     blind_cycles = 0
                     token_alert_sent = False
                     sync = (now - last_gtt >= gtt_sync_interval_s())
-                    result = engine.cycle(prices, sync_gtt=sync, feed=feed)
+                    # During a websocket outage, prices from the cache are
+                    # stale. New entries must be blocked on stale prices while
+                    # exits/stops still evaluate on the last known price.
+                    stale_symbols = (
+                        feed.stale_symbols() if not feed.connected else set())
+                    result = engine.cycle(prices, sync_gtt=sync, feed=feed,
+                                          stale_symbols=stale_symbols)
                     if sync:
                         last_gtt = now
-                    if result["position_actions"] or result["entry_signals"]:
-                        logger.info(f"  cycle: {result}")
+
+                    # ── Per-cycle heartbeat — always logged, even with zero actions.
+                    #    This is the operator's "is the daemon alive?" signal.
+                    #    Before this, nothing was logged when all entries were
+                    #    refused, making a silent stand-down indistinguishable
+                    #    from a dead process.
+                    buyable = sum(1 for e in (result.get("entry_signals") or [])
+                                  if e.get("state") == "BUYABLE")
+                    regime = (engine.candidates[0].get("regime") or "NEUTRAL"
+                              if engine.candidates else "NEUTRAL")
+                    log_cycle_summary(
+                        cycle_count=cycle_count,
+                        positions_held=len(engine.positions),
+                        candidates_watched=len(engine.candidates),
+                        buyable=buyable,
+                        entries_taken=engine._entries_taken,
+                        entry_cap=cfg_int("swing_max_new_per_day", 2),
+                        exits_executed=total_exits,
+                        stops_trailed=total_stops_trailed,
+                        regime=regime,
+                        vix=vix_value or 0.0,
+                        block_reason=("swing_entries_blocked"
+                                      if swing_entries_blocked else None),
+                        restricted=swing_entries_restricted,
+                        same_day_discoveries=len(engine._same_day_candidates),
+                        live_requalify_admitted=0,
+                    )
 
                     # ── Intraday log polish: immediate gap detection ──────────
                     cycle_count += 1
