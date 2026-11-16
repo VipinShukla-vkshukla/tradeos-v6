@@ -5302,6 +5302,31 @@ class IntradayEngine:
         self._alerted_conf.append(st.confidence)
         self._alerted_conf = sorted(self._alerted_conf, reverse=True)[:n]
 
+    def act_on_candidates(self, entries: list[dict]) -> None:
+        for e in entries:
+            state = e.get("state")
+            c = e.get("candidate")
+            d = e.get("decision")
+            ltp = e.get("ltp")
+            slot_full = e.get("state") == "SLOT_FULL"
+
+            # BUYABLE: take the candidate through the same rails every swing
+            # entry uses (_maybe_enter_swing: allocator veto, one book per
+            # name, pacing cap, preflight). Nothing else decides here.
+            if state == "BUYABLE" and not slot_full:
+                self._maybe_enter_swing(c, d, ltp)
+                continue
+
+            # SLOT_FULL: decide() refused only on the regime-scaled slot cap,
+            # not on price/R:R — the book has no room for this candidate right
+            # now, so nothing is ordered. Log and skip rather than invent a
+            # second, untested decision path.
+            if slot_full:
+                logger.info(
+                    f"  {c.get('symbol') if c else '?'}: slot full — no room "
+                    f"({d.get('reason') if d else ''})"
+                )
+
     def act_on_setups(self, setups: list) -> None:
         for s in setups:
             st, qty, mc = s["setup"], s["qty"], s["market"]
