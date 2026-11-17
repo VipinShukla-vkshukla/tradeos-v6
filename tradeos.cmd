@@ -35,6 +35,10 @@ REM    tradeos ip         this machine's public IP for the Kite allowlist
 REM    tradeos server     validate the daemon server (run this ON the server)
 REM    tradeos vcn        live logs from the Oracle daemon
 REM    tradeos vcn fix    pull latest code there and restart it
+REM    tradeos vcn deploy full publish: pull + rebuild dashboard + pm2 restart
+REM                       + restart the daemon (typed form, no prompt)
+REM    tradeos vcn push-model  scp this laptop's backend\models\*.pkl there —
+REM                       git pull can never carry them (gitignored)
 REM    tradeos vcn env    push THIS laptop's .env there, backing the old one up
 REM    tradeos vcn stop   stop the Oracle daemon
 REM    tradeos vcn status is it running, and on which commit
@@ -130,11 +134,12 @@ REM read, which is exactly how the LEARN options came to look absent when they
 REM were present all along. Sized to 52 rather than 45: adding the Verify entry
 REM took the menu to exactly 50, one line short once the "Choice [1]:" prompt
 REM is counted, and a menu whose header has just scrolled away is how this was
-REM missed the first time. Adding Regression and Benchmark took it to 52 —
-REM bump this again if another line is ever added, by the same margin.
+REM missed the first time. Adding Regression and Benchmark took it to 52, and
+REM Deploy and Push model take it to 54 — bump this again if another line is ever
+REM added, by the same margin.
 REM Redirected because a console that cannot be resized (a terminal tab, ssh)
 REM should not print an error.
-mode con: cols=100 lines=52 >nul 2>&1
+mode con: cols=100 lines=54 >nul 2>&1
 cls
 echo.
 echo  ===========================================================
@@ -168,6 +173,8 @@ echo     R   Rollback status        what Phase 4 has switched on, and its defaul
 echo     Q   Quote parity           does the live feed agree with the historical one
 echo.
 echo   ORACLE SERVER
+echo     W   Deploy                 pull + rebuild dashboard + restart pm2 and daemon
+echo     Y   Push model             scp this laptop's backend\models\*.pkl there
 echo     8   Logs                   what the server is doing right now
 echo     9   Update                 git pull + restart there
 echo     0   Push .env              copy THIS laptop's .env there (backs up first)
@@ -221,6 +228,8 @@ if "%PICK%"=="0" set "VCNACT=envc"
 if /i "%PICK%"=="N" set "VCNACT=status"
 if /i "%PICK%"=="X" set "VCNACT=stopc"
 if /i "%PICK%"=="G" set "VCNACT=savelog"
+if /i "%PICK%"=="W" set "VCNACT=deployc"
+if /i "%PICK%"=="Y" set "VCNACT=pushmodel"
 REM The four server options SET an action rather than jumping, so they all enter
 REM through :VCN — the only place the ssh key and host are resolved. Without this
 REM line they set the variable and fall through to "not one of the choices",
@@ -263,11 +272,15 @@ if /i "%~2"=="stop"       goto VCNSTOP
 if /i "%~2"=="status"     goto VCNSTAT
 if /i "%~2"=="env"        goto VCNENV
 if /i "%~2"=="savelog"    goto VCNSAVELOG
+if /i "%~2"=="deploy"     goto VCNDEPLOY
+if /i "%~2"=="push-model" goto VCNPUSHMODEL
 if /i "%VCNACT%"=="fixc"   goto VCNFIXC
 if /i "%VCNACT%"=="stopc"  goto VCNSTOPC
 if /i "%VCNACT%"=="envc"   goto VCNENVC
 if /i "%VCNACT%"=="status" goto VCNSTAT
 if /i "%VCNACT%"=="savelog" goto VCNSAVELOG
+if /i "%VCNACT%"=="deployc" goto VCNDEPLOYC
+if /i "%VCNACT%"=="pushmodel" goto VCNPUSHMODEL
 echo Streaming the Oracle daemon log — Ctrl+C to stop.
 echo   server %SRV%
 echo.
@@ -342,7 +355,65 @@ goto END
 
 :VCNFIX
 echo Pulling latest code on %SRV% and restarting the daemon...
-ssh -i "%KEY%" ubuntu@%SRV% "cd ~/tradeos-v6 && git pull --ff-only && sudo systemctl restart tradeos-intraday && sleep 8 && systemctl is-active tradeos-intraday && journalctl -u tradeos-intraday -n 25 --no-pager"
+REM git checkout on next-env.d.ts first: Next.js REGENERATES this file on every
+REM build, and once it diverges the next pull aborts with "local changes would be
+REM overwritten" and nothing ships until it is restored by hand. It carries no
+REM hand-written content, so restoring it is always safe.
+ssh -i "%KEY%" ubuntu@%SRV% "cd ~/tradeos-v6 && git checkout -- frontend/next-env.d.ts && git pull --ff-only && sudo systemctl restart tradeos-intraday && sleep 8 && systemctl is-active tradeos-intraday && journalctl -u tradeos-intraday -n 25 --no-pager"
+goto END
+
+:VCNDEPLOYC
+REM Menu form of `tradeos vcn deploy` — confirmed, same reason as VCNFIXC:
+REM a mistyped digit must not restart a mid-session daemon.
+echo.
+echo   This does the FULL server publish:
+echo     1. git pull --ff-only on %SRV%
+REM     (auto-generated file restored before the pull — see :VCNFIX)
+echo     2. npm run build for the dashboard (takes ~2 minutes)
+echo     3. restart the pm2 dashboard (tradeos-dashboard)
+echo     4. restart the intraday daemon (tradeos-intraday)
+echo   Broker-side GTT stops are unaffected.
+echo.
+set "OK="
+set /p "OK=Type y to proceed: "
+if /i not "%OK%"=="y" goto VCNCANCEL
+goto VCNDEPLOY
+
+:VCNDEPLOY
+REM One command for the whole "change shipped" sequence — replaces the manual
+REM pull / build / pm2 / daemon steps. Fails fast: if the pull or the build
+REM fails, nothing is restarted.
+echo Deploying to %SRV% — pull, frontend build, pm2 restart, daemon restart.
+echo This takes about two minutes (npm run build)...
+ssh -i "%KEY%" ubuntu@%SRV% "cd ~/tradeos-v6 && git checkout -- frontend/next-env.d.ts && git log --oneline -1 && git pull --ff-only && cd frontend && npm run build && cd .. && sudo pm2 restart tradeos-dashboard && sudo systemctl restart tradeos-intraday && sleep 8 && echo '--- daemon ---' && systemctl is-active tradeos-intraday && echo '--- dashboard ---' && curl -s -o /dev/null -w 'http %%{http_code}\n' http://127.0.0.1:3000"
+if errorlevel 1 (
+  echo.
+  echo   DEPLOY FAILED at some step above — the daemon and dashboard were NOT
+  echo   left running a half-applied build. Read the error, fix, then re-run.
+)
+goto END
+
+:VCNPUSHMODEL
+REM backend/models\*.pkl is gitignored, so `git pull` can never deliver a freshly
+REM trained model — this is the gap option 9 cannot close. Pushes ALL local
+REM .pkl files, backing up each one already on the server first. No confirm
+REM gate: pushing a newer local model is additive and the backup is kept.
+for /f %%T in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set "STAMP=%%T"
+set "PUSHED="
+for %%F in ("%~dp0backend\models\*.pkl") do (
+  echo   Backing up + pushing %%~nxF ...
+  ssh -i "%KEY%" ubuntu@%SRV% "mkdir -p ~/tradeos-v6/backend/models && cd ~/tradeos-v6/backend/models && if [ -f '%%~nxF' ]; then cp '%%~nxF' '%%~nxF.bak.%STAMP%'; fi"
+  scp -i "%KEY%" "%%F" ubuntu@%SRV%:~/tradeos-v6/backend/models/
+  if errorlevel 1 (echo   FAILED to push %%~nxF & goto END)
+  set "PUSHED=1"
+)
+if not defined PUSHED (
+  echo   No .pkl files found in "%~dp0backend\models\" — nothing to push.
+  goto END
+)
+echo.
+echo   Done. The daemon loads the model on its next start — run
+echo   `tradeos vcn deploy` (or `tradeos vcn fix`) to pick it up now.
 goto END
 
 :VCNENVC
