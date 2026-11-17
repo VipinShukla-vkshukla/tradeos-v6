@@ -367,8 +367,7 @@ REM Menu form of `tradeos vcn deploy` — confirmed, same reason as VCNFIXC:
 REM a mistyped digit must not restart a mid-session daemon.
 echo.
 echo   This does the FULL server publish:
-echo     1. git pull --ff-only on %SRV%
-REM     (auto-generated file restored before the pull — see :VCNFIX)
+echo     1. git pull --ff-only on %SRV%  (next-env.d.ts restored, .next re-owned)
 echo     2. npm run build for the dashboard (takes ~2 minutes)
 echo     3. restart the pm2 dashboard (tradeos-dashboard)
 echo     4. restart the intraday daemon (tradeos-intraday)
@@ -383,9 +382,13 @@ goto VCNDEPLOY
 REM One command for the whole "change shipped" sequence — replaces the manual
 REM pull / build / pm2 / daemon steps. Fails fast: if the pull or the build
 REM fails, nothing is restarted.
+REM The chown step is NOT optional: pm2 runs the dashboard as ROOT, so the live
+REM server drops root-owned cache files into frontend/.next at runtime, and the
+REM next ubuntu-run build dies with "EACCES: permission denied, unlink". Re-own
+REM .next to ubuntu before building. Skipped on a fresh clone (no .next yet).
 echo Deploying to %SRV% — pull, frontend build, pm2 restart, daemon restart.
 echo This takes about two minutes (npm run build)...
-ssh -i "%KEY%" ubuntu@%SRV% "cd ~/tradeos-v6 && git checkout -- frontend/next-env.d.ts && git log --oneline -1 && git pull --ff-only && cd frontend && npm run build && cd .. && sudo pm2 restart tradeos-dashboard && sudo systemctl restart tradeos-intraday && sleep 8 && echo '--- daemon ---' && systemctl is-active tradeos-intraday && echo '--- dashboard ---' && curl -s -o /dev/null -w 'http %%{http_code}\n' http://127.0.0.1:3000"
+ssh -i "%KEY%" ubuntu@%SRV% "cd ~/tradeos-v6 && git checkout -- frontend/next-env.d.ts && git log --oneline -1 && git pull --ff-only && cd frontend && if [ -d .next ]; then sudo chown -R ubuntu:ubuntu .next; fi && npm run build && cd .. && sudo pm2 restart tradeos-dashboard && sudo systemctl restart tradeos-intraday && sleep 8 && echo '--- daemon ---' && systemctl is-active tradeos-intraday && echo '--- dashboard ---' && curl -s -o /dev/null -w 'http_%{http_code}' http://127.0.0.1:3000"
 if errorlevel 1 (
   echo.
   echo   DEPLOY FAILED at some step above — the daemon and dashboard were NOT
