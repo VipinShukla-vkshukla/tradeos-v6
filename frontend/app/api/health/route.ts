@@ -344,7 +344,8 @@ export async function GET() {
     // Only the keys read below, not all 600+ rows - see the POSITIONS comment
     // above for why this matters.
     const { data: cfgRows } = await sb.from('system_config').select('key,value,updated_at')
-      .in('key', ['master_kill_switch', 'quality_gate_enabled', 'msl_final_score_weights', 'capital_snapshot']);
+      .in('key', ['master_kill_switch', 'quality_gate_enabled', 'msl_final_score_weights', 'capital_snapshot',
+                  'swing_trading_mode', 'intraday_trading_mode']);
     const C = Object.fromEntries((cfgRows ?? []).map((r) => [r.key, r.value]));
 
     // Capital reconciliation — configured TOTAL_CAPITAL vs the actual account.
@@ -382,7 +383,14 @@ export async function GET() {
         // as WARN — that is the same bucket a measured capital gap uses, and
         // folding them together is exactly the "no opinion vs measured bad"
         // trap this project has paid for before (see CLAUDE.md).
-        const severity: Sev = stale ? 'WARN' : s.severity === 'UNKNOWN' ? 'INFO' : s.severity;
+        const bothPaper =
+          String(C['swing_trading_mode'] ?? 'PAPER').toUpperCase() === 'PAPER' &&
+          String(C['intraday_trading_mode'] ?? 'PAPER').toUpperCase() === 'PAPER';
+        const severity: Sev = bothPaper
+          ? 'INFO'
+          : stale
+            ? 'WARN'
+            : s.severity === 'UNKNOWN' ? 'INFO' : s.severity;
         add({
           id: 'cap_reconcile', group: 'Capital', label: 'Sizing capital vs broker',
           severity,
@@ -390,12 +398,14 @@ export async function GET() {
             ? `configured ${inr(s.configured)}, broker unknown`
             : `configured ${inr(s.configured)} vs broker ${inr(s.broker_total)}`
               + (s.gap_pct != null ? ` (${s.gap_pct > 0 ? '+' : ''}${s.gap_pct.toFixed(0)}%)` : ''),
-          expected: 'within 10% of the account',
-          detail: stale
-            ? `Snapshot is from ${String(snapAt).slice(0, 10)} (${ageMin < Infinity ? `${ageMin.toFixed(0)}m old` : 'age unknown'}) — position_lifecycle has not refreshed it. Run \`python -m tools.health\` for a live read. Last known: ${s.message}`
-            : s.message + (s.broker_total != null
-                ? ` Cash ${inr(s.broker_cash)} + holdings ${inr(s.broker_invested)}.` : ''),
-          fix: (s.gap ?? 0) < 0
+          expected: 'within 10% of the account (actionable in LIVE mode only)',
+          detail: bothPaper
+            ? `Both frameworks are in PAPER mode — sizing mismatches cannot produce rejected orders there, so this is informational. Last known: ${s.message}`
+            : stale
+              ? `Snapshot is from ${String(snapAt).slice(0, 10)} (${ageMin < Infinity ? `${ageMin.toFixed(0)}m old` : 'age unknown'}) — position_lifecycle has not refreshed it. Run \`python -m tools.health\` for a live read. Last known: ${s.message}`
+              : s.message + (s.broker_total != null
+                  ? ` Cash ${inr(s.broker_cash)} + holdings ${inr(s.broker_invested)}.` : ''),
+          fix: bothPaper ? undefined : (s.gap ?? 0) < 0
             ? 'Set TOTAL_CAPITAL in backend/.env (and the GitHub secret) to the real figure, or fund the account.'
             : stale ? 'python -m tools.health   (refreshes this snapshot live)' : undefined,
         });
