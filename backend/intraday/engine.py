@@ -5404,7 +5404,7 @@ class IntradayEngine:
             if slot_full:
                 logger.info(
                     f"  {c.get('symbol') if c else '?'}: slot full — no room "
-                    f"({d.get('reason') if d else ''})"
+                    f"({d.reason if d else ''})"
                 )
 
     def act_on_setups(self, setups: list) -> None:
