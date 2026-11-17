@@ -1722,7 +1722,7 @@ class IntradayEngine:
                 logger.debug(f"  swing heartbeat write failed — {e}")
 
         if ready and left:
-            logger.success(f"     ready to enter: {', '.join(ready)}")
+            logger.success(f"     [SWING] ready to enter: {', '.join(ready)}")
         elif buyable and not ready and left:
             # The single most useful line, and it was invisible: plans ARE
             # buyable, they are simply not the ones the ranking prefers.
