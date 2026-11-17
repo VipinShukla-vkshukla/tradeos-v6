@@ -39,6 +39,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from loguru import logger
 from config import IST, DRY_RUN, get_supabase, is_kill_switch_active
+from control_panel import (get_kite_login_mode, get_kite_login_server_url,
+                           KITE_LOGIN_MODE_LOCAL, KITE_LOGIN_MODE_SERVER,
+                           KITE_LOGIN_MODE_KEY)
 
 BASE = Path(__file__).parent
 FRONTEND = BASE.parent / "frontend"
@@ -353,6 +356,60 @@ def step_kite(wait_seconds: int = 240) -> bool:
     return False
 
 
+def step_kite_server() -> bool:
+    """
+    Kite session step when kite_login_mode is 'server'.
+
+    The dashboard and callback live on the Oracle server, so this machine does
+    NOT start a local Next.js dev server, does NOT open a browser, and does NOT
+    wait for a local callback. The user opens the server dashboard URL from
+    their own device (phone or laptop), completes the Zerodha login there, and
+    the token lands in Supabase where the server daemon picks it up.
+
+    We still report whether a valid token already exists (from a prior login)
+    so the operator knows if they need to act this morning.
+    """
+    logger.info("─" * 66)
+    logger.info("4 · KITE SESSION  (server mode)")
+    from kite.token_manager import get_access_token, get_login_url
+
+    if get_access_token():
+        _ok("today's session is already valid — server daemon will use it")
+        return True
+
+    server_url = get_kite_login_server_url()
+    if not server_url:
+        _fail("kite_login_mode is 'server' but kite_login_server_url is not set.")
+        logger.error("  Run:  python control_panel.py --kite-server-url http://<server-ip>:3000")
+        return False
+
+    login_url = get_login_url()
+    logger.warning("  No valid session yet. Complete the login on your own device:")
+    logger.info(f"    1. Open:   {server_url}")
+    logger.info(f"    2. Click Connect → log in at Zerodha → token is stored in Supabase")
+    logger.info(f"    3. Or paste the Zerodha redirect URL into the dashboard's manual field")
+    logger.info("")
+    logger.info(f"    Zerodha login URL (if needed): {login_url}")
+    logger.info("")
+    logger.info("  The server daemon reads the token from Supabase automatically once stored.")
+
+    # Poll briefly (60s) in case the user already completed login — don't fail
+    # the whole startup if it hasn't appeared yet; the server daemon will pick
+    # it up when it lands.
+    import time
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        time.sleep(5)
+        if get_access_token():
+            _ok("session established via server login")
+            return True
+        logger.info(f"    waiting for server login… {int(deadline - time.time())}s left")
+
+    logger.warning("  Session not yet established — complete the login at the server URL above.")
+    logger.warning("  The daemon will use it as soon as it lands in Supabase.")
+    return True   # not fatal: server daemon will pick up the token when it arrives
+
+
 def step_dashboard() -> bool:
     logger.info("─" * 66)
     logger.info("3 · DASHBOARD")
@@ -452,7 +509,12 @@ def summary() -> None:
     logger.info(f"  phase {autonomy_phase()} · GTT {'on' if gtt_enabled() else 'off'} · "
                 f"orders {'ON' if orders_enabled() else 'off'}")
     logger.info(f"  swing={trading_mode('SWING')} · intraday={trading_mode('INTRADAY')}")
-    logger.info(f"  dashboard {DASHBOARD_URL}")
+    if get_kite_login_mode() == KITE_LOGIN_MODE_SERVER:
+        server_url = get_kite_login_server_url()
+        logger.info(f"  dashboard (server): {server_url or 'URL not set — run: python control_panel.py --kite-server-url <URL>'}")
+        logger.info(f"  kite login: complete daily Zerodha login at the server URL above")
+    else:
+        logger.info(f"  dashboard {DASHBOARD_URL}")
     logger.info("")
     logger.info("  Your part today:")
     logger.info("    · review Today's Trade Plans and place any entries yourself")
@@ -510,6 +572,29 @@ def main(check_only: bool = False, only: str = "both") -> int:
         return 1
     step_regime_gate()
     step_public_ip()
+
+    # ── Plain-language guard: server mode active ──────────────────────────
+    if get_kite_login_mode() == KITE_LOGIN_MODE_SERVER:
+        server_url = get_kite_login_server_url() or "(not set)"
+        logger.info("")
+        logger.info("═" * 66)
+        logger.info("  KITE LOGIN MODE = SERVER")
+        logger.info("═" * 66)
+        logger.info(f"  Dashboard URL : {server_url}")
+        logger.info("")
+        logger.info("  What this means:")
+        logger.info("    · The Oracle server dashboard handles the daily Zerodha login.")
+        logger.info("    · This laptop will NOT open a local dashboard or browser.")
+        logger.info("    · This laptop will NOT start a local daemon — the server daemon runs.")
+        logger.info("")
+        logger.info("  What you must do each morning from your phone or laptop browser:")
+        logger.info(f"    1. Open: {server_url}")
+        logger.info("    2. Click Connect → log in at Zerodha → token is stored in Supabase")
+        logger.info("")
+        logger.info("  To switch back to laptop login:  tradeos kite-login local")
+        logger.info("═" * 66)
+        logger.info("")
+
     if check_only:
         # --check cannot log in, so the session may legitimately be absent. Run
         # health anyway: config, selects, data and daemon are all still worth
@@ -521,36 +606,56 @@ def main(check_only: bool = False, only: str = "both") -> int:
     if only != "both":
         apply_selection(only)
 
-    # DASHBOARD BEFORE KITE, and the order is not cosmetic.
+    # ── Branch on Kite login mode ──────────────────────────────────────────
     #
-    # step_kite() opens the Zerodha login and then waits for the DASHBOARD
-    # callback (/api/kite/callback) to exchange the request_token and store the
-    # session. Starting the dashboard afterwards meant that on any cold start —
-    # laptop rebooted, dev server not already running — the login redirected to
-    # a port with nothing listening. The browser showed connection-refused, the
-    # token was never stored, and the launcher sat waiting the full 240s for a
-    # callback that could not arrive.
-    #
-    # The module docstring listed Kite as step 2 and the dashboard as step 3,
-    # and said "a failed step stops the sequence rather than letting later steps
-    # run on a broken foundation" — while the earlier step depended on the later
-    # one. This is that dependency put back in the right order.
-    step_dashboard()
-    if not step_kite():
-        return 1
+    # 'local'  (default): laptop dashboard + local browser opens Zerodha,
+    #                     local daemon runs. Existing behavior, unchanged.
+    # 'server': Oracle dashboard + user's own device completes login,
+    #           no local dashboard, no local daemon — server daemon runs it.
+    login_mode = get_kite_login_mode()
 
-    # The daemon starts for EVERY selection, including swing only.
-    #
-    # Its name is misleading: it is the live price feed and exit monitor for
-    # BOTH books. It holds the websocket, and evaluate_positions() routes each
-    # position to its own framework's policy. Skipping it for "swing only" would
-    # leave swing positions with no real-time stop management at all — the
-    # opposite of what choosing swing is asking for.
-    #
-    # What the selection actually turns off is the intraday ENGINES, and that is
-    # done in the database by apply_selection(), which the daemon reads. So the
-    # monitor runs, and finds no intraday setups to act on.
-    step_intraday()
+    if login_mode == KITE_LOGIN_MODE_SERVER:
+        logger.info("")
+        logger.info("  Kite login mode = server — skipping local dashboard, local browser, "
+                    "and local daemon.")
+        logger.info(f"  Complete the daily Zerodha login at: {get_kite_login_server_url()}")
+        # Dashboard is on the server — do not start a local Next.js dev server.
+        # Kite login happens on the user's device via the server dashboard —
+        # step_kite_server() prints instructions, does not block.
+        step_kite_server()
+        # Daemon runs on the Oracle server — do not start a second local one.
+        # Two daemons competing for the singleton lease would double positions.
+    else:
+        # DASHBOARD BEFORE KITE, and the order is not cosmetic.
+        #
+        # step_kite() opens the Zerodha login and then waits for the DASHBOARD
+        # callback (/api/kite/callback) to exchange the request_token and store the
+        # session. Starting the dashboard afterwards meant that on any cold start —
+        # laptop rebooted, dev server not already running — the login redirected to
+        # a port with nothing listening. The browser showed connection-refused, the
+        # token was never stored, and the launcher sat waiting the full 240s for a
+        # callback that could not arrive.
+        #
+        # The module docstring listed Kite as step 2 and the dashboard as step 3,
+        # and said "a failed step stops the sequence rather than letting later steps
+        # run on a broken foundation" — while the earlier step depended on the later
+        # one. This is that dependency put back in the right order.
+        step_dashboard()
+        if not step_kite():
+            return 1
+
+        # The daemon starts for EVERY selection, including swing only.
+        #
+        # Its name is misleading: it is the live price feed and exit monitor for
+        # BOTH books. It holds the websocket, and evaluate_positions() routes each
+        # position to its own framework's policy. Skipping it for "swing only" would
+        # leave swing positions with no real-time stop management at all — the
+        # opposite of what choosing swing is asking for.
+        #
+        # What the selection actually turns off is the intraday ENGINES, and that is
+        # done in the database by apply_selection(), which the daemon reads. So the
+        # monitor runs, and finds no intraday setups to act on.
+        step_intraday()
 
     # HEALTH RUNS LAST, after the login AND after the monitor starts.
     #

@@ -49,6 +49,11 @@ _SWITCHES = {
     },
 }
 
+KITE_LOGIN_MODE_KEY = "kite_login_mode"
+KITE_LOGIN_SERVER_URL_KEY = "kite_login_server_url"
+KITE_LOGIN_MODE_LOCAL = "local"
+KITE_LOGIN_MODE_SERVER = "server"
+
 
 def _set(sb, key: str, value: str) -> None:
     existing = sb.table("system_config").select("key").eq("key", key).execute().data
@@ -58,6 +63,34 @@ def _set(sb, key: str, value: str) -> None:
         sb.table("system_config").insert(
             {"key": key, "value": value,
              "description": "set from control_panel.py"}).execute()
+
+
+def _set_kite_login_mode(sb, mode: str) -> None:
+    """Persist the Kite login mode: 'local' (laptop dashboard) or 'server' (Oracle dashboard)."""
+    if mode not in (KITE_LOGIN_MODE_LOCAL, KITE_LOGIN_MODE_SERVER):
+        raise SystemExit(f"unknown kite-login mode {mode!r}; use 'local' or 'server'")
+    _set(sb, KITE_LOGIN_MODE_KEY, mode)
+    logger.success(f"  Kite login mode set to {mode}")
+
+
+def get_kite_login_mode(sb=None) -> str:
+    """Return the current Kite login mode, defaulting to 'local'."""
+    sb = sb or get_supabase()
+    try:
+        rows = sb.table("system_config").select("value").eq("key", KITE_LOGIN_MODE_KEY).execute().data
+        return (rows[0]["value"] if rows else KITE_LOGIN_MODE_LOCAL)
+    except Exception:
+        return KITE_LOGIN_MODE_LOCAL
+
+
+def get_kite_login_server_url(sb=None) -> str | None:
+    """Return the configured Oracle server dashboard URL, if any."""
+    sb = sb or get_supabase()
+    try:
+        rows = sb.table("system_config").select("value").eq("key", KITE_LOGIN_SERVER_URL_KEY).execute().data
+        return (rows[0]["value"] if rows else None)
+    except Exception:
+        return None
 
 
 def apply(framework: str, action: str, sb=None) -> None:
@@ -97,6 +130,13 @@ def show(sb=None) -> None:
                 f"· GTT {'on' if gtt_enabled() else 'off'} · DRY_RUN={DRY_RUN}")
     if is_kill_switch_active():
         logger.error("  KILL SWITCH ACTIVE — nothing will trade")
+
+    # Where the daily Kite login happens: 'local' (this laptop's dashboard) or
+    # 'server' (Oracle dashboard). Determines what start_day.py does each morning.
+    kite_mode = get_kite_login_mode(sb)
+    server_url = get_kite_login_server_url(sb)
+    url_txt = f" → {server_url}" if server_url else " (server URL not set — run: python control_panel.py --kite-server-url <URL>)"
+    logger.info(f"  kite login mode: {kite_mode}{url_txt}")
     logger.info("")
 
     for fw in ("SWING", "INTRADAY"):
@@ -195,6 +235,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Enable, disable, or switch paper/live")
     ap.add_argument("--intraday", choices=["paper", "live", "off"])
     ap.add_argument("--swing", choices=["paper", "live", "off"])
+    ap.add_argument("--kite-login", choices=["local", "server"],
+                    help="Set Kite login mode: 'local' (laptop dashboard, default) or 'server' (Oracle dashboard)")
+    ap.add_argument("--kite-server-url", metavar="URL",
+                    help="Oracle server dashboard URL, e.g. http://<server-ip>:3000 (only used with --kite-login server)")
     ap.add_argument("--ip", action="store_true",
                     help="show this machine's public IP for the Kite allowlist")
     a = ap.parse_args()
@@ -210,6 +254,13 @@ def main() -> int:
         changed = True
     if a.swing:
         apply("SWING", a.swing, sb)
+        changed = True
+    if a.kite_login:
+        _set_kite_login_mode(sb, a.kite_login)
+        changed = True
+    if a.kite_server_url:
+        _set(sb, KITE_LOGIN_SERVER_URL_KEY, a.kite_server_url)
+        logger.success(f"  Kite login server URL set to {a.kite_server_url}")
         changed = True
 
     if changed:

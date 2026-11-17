@@ -117,6 +117,8 @@ if /i "%~1"=="intraday" goto INTRADAY
 if /i "%~1"=="swing"    goto SWING
 if /i "%~1"=="both"     goto BOTH
 if /i "%~1"=="server"   goto SERVER
+if /i "%~1"=="kite-login" goto KITELOGIN
+if /i "%~1"=="kite-server-url" goto KITESERVERURL
 if /i "%~1"=="vcn"      goto VCN
 if "%~1"==""            goto MENU
 goto START
@@ -173,6 +175,11 @@ echo     N   Status                 running? on which commit?
 echo     X   Stop                   hand the book to this laptop
 echo     G   Save log               pull today's Oracle log into backend\logs
 echo.
+echo   KITE LOGIN (server mode)
+echo     J   kite-login local       daily Zerodha login on THIS laptop (default)
+echo     H   kite-login server      daily Zerodha login on the Oracle server dashboard
+echo     U   kite-server-url        set the Oracle dashboard URL (e.g. http://140.245.218.229:3000)
+echo.
 echo   OTHER
 echo     E   Evening pipeline       run the swing pipeline by hand
 echo     K   KILL SWITCH            stop all trading, both frameworks
@@ -205,6 +212,9 @@ if /i "%PICK%"=="R" goto ROLLBACK
 if /i "%PICK%"=="Q" goto QUOTEPARITY
 if /i "%PICK%"=="E" goto EVENING
 if /i "%PICK%"=="K" goto STOP
+if /i "%PICK%"=="J" goto KITELOGIN_LOCAL
+if /i "%PICK%"=="H" goto KITELOGIN_SERVER
+if /i "%PICK%"=="U" goto KITESERVERURL_PROMPT
 if "%PICK%"=="8" set "VCNACT=logs"
 if "%PICK%"=="9" set "VCNACT=fixc"
 if "%PICK%"=="0" set "VCNACT=envc"
@@ -565,6 +575,29 @@ goto END
 
 :SWING
 python control_panel.py --swing %~2
+goto END
+
+:KITELOGIN
+python control_panel.py --kite-login %~2
+goto END
+
+:KITESERVERURL
+python control_panel.py --kite-server-url %~2
+goto END
+
+:KITELOGIN_LOCAL
+python control_panel.py --kite-login local
+goto END
+
+:KITELOGIN_SERVER
+python control_panel.py --kite-login server
+goto END
+
+:KITESERVERURL_PROMPT
+set "URL="
+set /p "URL=Enter Oracle dashboard URL (e.g. http://140.245.218.229:3000): "
+if not defined URL goto END
+python control_panel.py --kite-server-url "%URL%"
 goto END
 
 :STOP
