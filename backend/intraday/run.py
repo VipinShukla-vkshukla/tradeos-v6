@@ -392,8 +392,7 @@ def main(once: bool = False, dry: bool = False) -> None:
                     #    Before this, nothing was logged when all entries were
                     #    refused, making a silent stand-down indistinguishable
                     #    from a dead process.
-                    buyable = sum(1 for e in (result.get("entry_signals") or [])
-                                  if e.get("state") == "BUYABLE")
+                    buyable = result.get("buyable", 0)
                     regime = (engine.candidates[0].get("regime") or "NEUTRAL"
                               if engine.candidates else "NEUTRAL")
                     log_cycle_summary(
@@ -403,8 +402,8 @@ def main(once: bool = False, dry: bool = False) -> None:
                         buyable=buyable,
                         entries_taken=engine._entries_taken,
                         entry_cap=cfg_int("swing_max_new_per_day", 2),
-                        exits_executed=total_exits,
-                        stops_trailed=total_stops_trailed,
+                        exits_executed=result.get("exit_count", 0),
+                        stops_trailed=result.get("trail_count", 0),
                         regime=regime,
                         vix=vix_value or 0.0,
                         block_reason=("swing_entries_blocked"
@@ -416,10 +415,8 @@ def main(once: bool = False, dry: bool = False) -> None:
 
                     # ── Intraday log polish: immediate gap detection ──────────
                     cycle_count += 1
-                    total_exits += sum(1 for a in (result.get("position_actions") or [])
-                                       if a["decision"]["action"].startswith("EXIT"))
-                    total_stops_trailed += sum(1 for a in (result.get("position_actions") or [])
-                                               if a["decision"]["action"] == "TRAIL_SL")
+                    total_exits += result.get("exit_count", 0)
+                    total_stops_trailed += result.get("trail_count", 0)
 
                     log_immediate_gaps(
                         cycle_count=cycle_count,

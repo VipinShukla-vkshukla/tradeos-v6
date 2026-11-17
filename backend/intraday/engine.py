@@ -6422,10 +6422,15 @@ class IntradayEngine:
         # cycle after a restart they are empty, so the daemon is blind for up
         # to five minutes. Build them now instead: one extra context refresh
         # on the first cycle, zero overhead every cycle after.
+        # Only mark warm-start done if contexts were actually rebuilt — if the
+        # broker is down, we retry on the next cycle instead of staying blind.
         if not self._warm_started:
-            self._warm_started = True
-            self.refresh_contexts()
-            logger.info("  warm-start: contexts rebuilt on first cycle after restart")
+            built = self.refresh_contexts()
+            if built > 0:
+                self._warm_started = True
+                logger.info(f"  warm-start: {built} context(s) rebuilt on first cycle after restart")
+            else:
+                logger.debug("  warm-start: contexts not yet available, will retry next cycle")
 
         # Live day range, volume and VWAP onto the contexts BEFORE anything
         # reads them. Cheap — a dict lookup per symbol over data the websocket
@@ -6464,6 +6469,9 @@ class IntradayEngine:
 
         pos_actions = self.evaluate_positions(prices)
         self.act_on_positions(pos_actions)
+
+        exit_count = sum(1 for a in pos_actions if a["decision"]["action"].startswith("EXIT"))
+        trail_count = sum(1 for a in pos_actions if a["decision"]["action"] == "TRAIL_SL")
 
         entries = []
         if cfg_bool("intraday_watch_candidates", True):
@@ -6528,7 +6536,10 @@ class IntradayEngine:
             "positions": len(self.positions),
             "candidates": len(self.candidates),
             "position_actions": len(pos_actions),
+            "exit_count": exit_count,
+            "trail_count": trail_count,
             "entry_signals": len(entries),
+            "buyable": sum(1 for e in entries if e.get("state") == "BUYABLE"),
             "intraday_setups": len(setups),
             "gtt": gtt_result,
             "phase": autonomy_phase(),
