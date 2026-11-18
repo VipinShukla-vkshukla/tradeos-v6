@@ -14,7 +14,7 @@ Environment=PYTHONUNBUFFERED=1
 #   LOG_VIEWER_PASSWORD  basic auth password — SET THIS if exposing publicly
 Environment=LOG_VIEWER_PORT=8765
 Environment=LOG_VIEWER_BASE_PATH=/logs
-Environment=LOG_VIEWER_PASSWORD=changeme
+Environment=LOG_VIEWER_PASSWORD=Khiara
 ExecStart=/home/ubuntu/tradeos-v6/.venv/bin/python -m tools.log_viewer
 Restart=on-failure
 RestartSec=10
