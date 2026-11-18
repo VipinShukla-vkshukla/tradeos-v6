@@ -339,7 +339,7 @@ def entry_refusals(p: dict, rr_live: float | None = None,
     # block entries based on yesterday's data.
     if cfg_bool("entry_rank_respect_ai_avoid", False):
         plan_date = str(p.get("date") or "").strip()
-        today_str = today_ist().date().isoformat()
+        today_str = today_ist().isoformat()
         if plan_date and plan_date != today_str:
             # stale eap_action — ignore it (treat as no opinion)
             pass
