@@ -1,0 +1,23 @@
+[Unit]
+Description=TradeOS daemon log viewer (HTTP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/tradeos-v6/backend
+Environment=PYTHONUNBUFFERED=1
+# Change these to suit your access needs:
+#   LOG_VIEWER_PORT      port to listen on (default 8765)
+#   LOG_VIEWER_BASE_PATH URL path prefix, e.g. /logs  (default "")
+#   LOG_VIEWER_PASSWORD  basic auth password — SET THIS if exposing publicly
+Environment=LOG_VIEWER_PORT=8765
+Environment=LOG_VIEWER_BASE_PATH=/logs
+Environment=LOG_VIEWER_PASSWORD=changeme
+ExecStart=/home/ubuntu/tradeos-v6/.venv/bin/python -m tools.log_viewer
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
