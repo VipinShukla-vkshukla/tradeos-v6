@@ -588,7 +588,7 @@ def c12_positions_vs_regime_cap(sb, td):
     max_pos = REGIME_MAX_POSITIONS.get(regime, 7)
     current = sb.table("open_positions").select("symbol", count="exact").eq("status","ACTIVE").execute().count or 0
     ok      = current <= max_pos
-    return _result("C12_positions_vs_regime_cap", ok, "WARN",
+    return _result("C12_positions_vs_regime_cap", ok, "INFO",
         f"Open positions: {current}/{max_pos} for {regime} regime"
         + (" — new entries blocked" if not ok else " ✅"),
         value=f"{current}/{max_pos}")
