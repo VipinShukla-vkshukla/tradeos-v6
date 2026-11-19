@@ -1589,7 +1589,37 @@ def log_screener_outcomes(sb, today: str, hold_days_list: list = None):
         return
 
     if not today_prices:
-        logger.info("  Outcomes: no price data for today — skipping")
+        # Bhavcopy may not have loaded yet when the evening pipeline runs.
+        # Fall back to the most recent available price date instead of
+        # skipping entirely — otherwise screener_performance stays stale.
+        try:
+            latest = (
+                sb.table("stock_data_daily")
+                .select("date")
+                .order("date", { ascending: false })
+                .limit(1)
+                .execute()
+                .data
+            )
+            if not latest:
+                logger.info("  Outcomes: no price data at all — skipping")
+                return
+            price_date = latest[0]["date"]
+            price_rows = (
+                sb.table("stock_data_daily")
+                .select("symbol,close")
+                .eq("date", price_date)
+                .execute()
+                .data
+            )
+            today_prices = {r["symbol"]: float(r["close"] or 0) for r in price_rows}
+            logger.info(f"  Outcomes: no prices for {today}, using {price_date}")
+        except Exception as e:
+            logger.warning(f"  Outcomes: fallback price load failed: {e}")
+            return
+
+    if not today_prices:
+        logger.info(f"  Outcomes: no price data for {today} — skipping")
         return
 
     all_outcomes = []
@@ -1653,7 +1683,8 @@ def log_screener_outcomes(sb, today: str, hold_days_list: list = None):
             f"[DRY RUN] Would log {len(all_outcomes)} outcomes | "
             f"{len(winners)} positive ({len(winners)/len(all_outcomes)*100:.0f}% hit rate)"
         )
-        return
+        # DRY_RUN blocks order placement — screener outcome logging is
+        # validation, not trading, so it still writes below.
 
     for i in range(0, len(all_outcomes), 50):
         try:
