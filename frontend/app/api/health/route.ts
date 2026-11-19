@@ -513,12 +513,14 @@ export async function GET() {
       .from('closed_positions').select('id').not('signal_date', 'is', null);
     const attributed = (attrRows ?? []).length;
 
+    const trained = lastTrain ? 'OK' : 'WARN';
     add({ id: 'ml_conviction', group: 'AI / ML', label: 'ML conviction model',
-          severity: attributed >= 30 ? 'WARN' : 'INFO',
+          severity: attributed < 30 ? 'INFO' : trained,
           value: lastTrain ? `last trained ${String(lastTrain.trained_at).slice(0, 10)}` : 'never trained',
           expected: 'input width matching the code',
-          detail: `${attributed} signal-attributed closed trades available for training.`,
-          fix: attributed >= 30
+          detail: `${attributed} signal-attributed closed trades available for training.` +
+            (lastTrain ? ' Model has been trained.' : ' No training log found.'),
+          fix: attributed >= 30 && !lastTrain
             ? 'Enough attributed trades now exist — retrain: python -c "from ai.providers.ml_provider import train_model; train_model()"'
             : undefined });
 
