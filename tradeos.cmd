@@ -181,6 +181,7 @@ echo     0   Push .env              copy THIS laptop's .env there (backs up firs
 echo     N   Status                 running? on which commit?
 echo     X   Stop                   hand the book to this laptop
 echo     G   Save log               pull today's Oracle log into backend\logs
+echo     C   Clear old logs         delete daemon logs before a date (YYYY-MM-DD)
 echo.
 echo   KITE LOGIN (server mode)
 echo     J   kite-login local       daily Zerodha login on THIS laptop (default)
@@ -228,6 +229,7 @@ if "%PICK%"=="0" set "VCNACT=envc"
 if /i "%PICK%"=="N" set "VCNACT=status"
 if /i "%PICK%"=="X" set "VCNACT=stopc"
 if /i "%PICK%"=="G" set "VCNACT=savelog"
+if /i "%PICK%"=="C" set "VCNACT=clearlogs"
 if /i "%PICK%"=="W" set "VCNACT=deployc"
 if /i "%PICK%"=="Y" set "VCNACT=pushmodel"
 REM The four server options SET an action rather than jumping, so they all enter
@@ -272,6 +274,7 @@ if /i "%~2"=="stop"       goto VCNSTOP
 if /i "%~2"=="status"     goto VCNSTAT
 if /i "%~2"=="env"        goto VCNENV
 if /i "%~2"=="savelog"    goto VCNSAVELOG
+if /i "%~2"=="clearlogs"  goto VCNCLEARLOGS
 if /i "%~2"=="deploy"     goto VCNDEPLOY
 if /i "%~2"=="push-model" goto VCNPUSHMODEL
 if /i "%VCNACT%"=="fixc"   goto VCNFIXC
@@ -279,6 +282,7 @@ if /i "%VCNACT%"=="stopc"  goto VCNSTOPC
 if /i "%VCNACT%"=="envc"   goto VCNENVC
 if /i "%VCNACT%"=="status" goto VCNSTAT
 if /i "%VCNACT%"=="savelog" goto VCNSAVELOG
+if /i "%VCNACT%"=="clearlogs" goto VCNCLEARLOGS
 if /i "%VCNACT%"=="deployc" goto VCNDEPLOYC
 if /i "%VCNACT%"=="pushmodel" goto VCNPUSHMODEL
 echo Streaming the Oracle daemon log — Ctrl+C to stop.
@@ -346,6 +350,22 @@ if errorlevel 1 (
   goto END
 )
 echo   Saved to "%LOCALLOG%"
+goto END
+
+:VCNCLEARLOGS
+REM Deletes daemon log files on the Oracle server older than a given cutoff date.
+REM `tradeos vcn clearlogs YYYY-MM-DD` deletes every tradeos_YYYY-MM-DD.log whose
+REM date is strictly before the cutoff. Reachable from the MENU as option C.
+set "CUTOFF=%~3"
+if "%CUTOFF%"=="" (
+    set /p "CUTOFF=Delete logs older than (YYYY-MM-DD): "
+)
+if "%CUTOFF%"=="" goto END
+echo Deleting logs on %SRV% older than %CUTOFF%...
+ssh -i "%KEY%" ubuntu@%SRV% "cd ~/tradeos-v6/backend && python3 -c \"import os,sys; cutoff=sys.argv[1]; deleted=[f for f in os.listdir('logs') if f.startswith('tradeos_') and f.endswith('.log') and f[8:-4] < cutoff]; [os.remove(os.path.join('logs',f)) for f in deleted]; print('Deleted', len(deleted), 'file(s)'); [print(' ', f) for f in deleted]\" %CUTOFF%"
+if errorlevel 1 (
+    echo   Delete failed — check the date format or server connectivity.
+)
 goto END
 
 :VCNSTOP
