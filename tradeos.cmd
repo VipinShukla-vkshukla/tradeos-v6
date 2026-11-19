@@ -336,6 +336,12 @@ REM Pulls that day's already-written daemon log — backend/logs/tradeos_YYYY-MM
 REM on the server, the exact file config.py's loguru sink writes all session and
 REM finalises the moment the daemon self-exits at 15:40 — down to THIS laptop's
 REM backend\logs. Read-only, so no confirmation gate, same as Status above.
+REM
+REM *** MANUAL ONLY ***
+REM This is intentionally NOT automated — no timer, no systemd trigger, no cron.
+REM Run it by hand: `tradeos vcn savelog [YYYY-MM-DD]` or menu option G.
+REM The HTTP log viewer (port 8765) is the primary remote-log path; savelog is
+REM kept as a one-off fallback for archiving specific days locally.
 REM Defaults to today; `tradeos vcn savelog YYYY-MM-DD` backfills a specific day
 REM — the server keeps every day's file, this laptop only has what was fetched.
 set "WANT=%~3"
