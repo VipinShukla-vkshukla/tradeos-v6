@@ -136,19 +136,47 @@ def _today_totals(sb, framework: str = "SWING") -> tuple[int, float, float]:
     """
     try:
         start = datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0)
-        rows = (sb.table("intraday_broker_log").select("price,quantity,action,framework,side")
-                  .eq("channel", "ORDER").gte("ts", start.isoformat())
+        rows = (sb.table("intraday_broker_log").select("price,quantity,action,framework,side,channel")
+                  .gte("ts", start.isoformat())
                   .execute().data or [])
-        placed = [r for r in rows if r.get("action") == "PLACED"]
         fw = (framework or "SWING").upper()
 
         def _val(r):
             return float(r.get("price") or 0) * int(r.get("quantity") or 0)
 
+        # Count BOTH live orders (channel=ORDER, action=PLACED) and paper fills
+        # (channel=PAPER, action=FILLED). Paper entries were previously invisible
+        # to this counter because they write a different channel/action pair,
+        # so the swing ENTRIES log read "0/5" despite real positions existing in
+        # open_positions. Same framework read as paper_entry.py uses (line 118-123).
+        def _is_entry_buy(r, fw):
+            ch = str(r.get("channel") or "").upper()
+            act = str(r.get("action") or "").upper()
+            side = str(r.get("side") or "").upper()
+            row_fw = (r.get("framework") or fw).upper()
+            if side != "BUY" or row_fw != fw:
+                return False
+            # Live orders: action=PLACED. A row with action=PLACED and no
+            # channel/other-channel is a legacy pre-attribution live order —
+            # the pre-change code relied on the DB-level .eq("channel","ORDER")
+            # filter which test fakes don't apply, so PLACED counts regardless.
+            # Paper fills (paper_broker.place writes channel=PAPER, action=FILLED)
+            # are now counted too — paper swing entries were previously invisible
+            # to the ENTRIES log because they wrote a different channel/action pair.
+            return act == "PLACED" or (ch == "PAPER" and act == "FILLED")
+
+        def _is_entry_buy_any_fw(r):
+            ch = str(r.get("channel") or "").upper()
+            act = str(r.get("action") or "").upper()
+            side = str(r.get("side") or "").upper()
+            if side != "BUY":
+                return False
+            return act == "PLACED" or (ch == "PAPER" and act == "FILLED")
+
         # Rows written before the framework column existed are NULL. Counting
         # them against whichever framework is asking is the conservative read:
         # it can only make preflight stricter, never permit more.
-        mine = [r for r in placed if (r.get("framework") or fw).upper() == fw]
+        mine = [r for r in rows if _is_entry_buy(r, fw)]
 
         # BUY ONLY, and that is the whole point of these numbers.
         #
@@ -163,8 +191,8 @@ def _today_totals(sb, framework: str = "SWING") -> tuple[int, float, float]:
         # Exits were already exempt from being BLOCKED by the cap. They were not
         # exempt from CONSUMING it, which is the same bug wearing the opposite
         # face.
-        buys     = [r for r in mine   if (r.get("side") or "").upper() == "BUY"]
-        buys_all = [r for r in placed if (r.get("side") or "").upper() == "BUY"]
+        buys     = [r for r in mine]
+        buys_all = [r for r in rows if _is_entry_buy_any_fw(r)]
         return len(buys), sum(_val(r) for r in buys), sum(_val(r) for r in buys_all)
     except Exception as e:
         # Unknown spend must not read as zero spend. Report the budget as fully

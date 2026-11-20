@@ -3548,7 +3548,14 @@ class IntradayEngine:
             self.swap_store.add(p)
 
         # ── Auto-execution (opt-in, all gates default OFF) ────────────────
-        if cfg_bool("swap_auto_execute", True):
+        # Gated on swap slots available: swing_max_swaps_per_day is a separate
+        # bucket from swing_max_new_per_day (see act_on_candidates).
+        swap_enabled = cfg_bool("swing_swap_enabled", False)
+        swaps_today = self._count_swaps_today()
+        max_swaps = cfg_int("swing_max_swaps_per_day", 2)
+        swap_slots_available = max(0, max_swaps - swaps_today) if swap_enabled else 0
+
+        if cfg_bool("swap_auto_execute", True) and swap_slots_available > 0:
             exec_results = execute_pending_swaps(
                 enriched_proposals, sb=self.sb, atr_pct=2.0,
             )
@@ -3568,6 +3575,11 @@ class IntradayEngine:
                     logger.info(
                         f"AUTO-SWAP BLOCKED: {r.proposal_key} — {r.blocked_reason}"
                     )
+        elif cfg_bool("swap_auto_execute", True):
+            logger.info(
+                f"  Swap auto-execute: daily swap cap {max_swaps} reached "
+                f"({swaps_today} today), skipping"
+            )
 
         # Push the single best proposal as a CRITICAL alert
         if enriched_proposals:
@@ -5402,10 +5414,140 @@ class IntradayEngine:
             # now, so nothing is ordered. Log and skip rather than invent a
             # second, untested decision path.
             if slot_full:
-                logger.info(
-                    f"  {c.get('symbol') if c else '?'}: slot full — no room "
-                    f"({d.reason if d else ''})"
-                )
+                # ── SWAP SLOTS (separate bucket from new entries) ──
+                # swing_max_swaps_per_day does NOT count against swing_max_new_per_day.
+                # Uses existing swap infrastructure: swap_recommendations.py,
+                # swap_execution.py, swap_store in engine.py.
+                swap_enabled = cfg_bool("swing_swap_enabled", False)
+                swaps_today = self._count_swaps_today()
+                max_swaps = cfg_int("swing_max_swaps_per_day", 2)
+                swap_slots_available = max(0, max_swaps - swaps_today) if swap_enabled else 0
+
+                try:
+                    n_today, _m, _a = self._today_totals_cached("SWING")
+                except Exception:
+                    n_today = 0
+                room = (not slot_full) and n_today < cfg_int("swing_max_new_per_day", 2)
+
+                if slot_full and not room and swap_slots_available > 0:
+                    if self._swap_guardrails_ok(c, d):
+                        self._maybe_enter_swap(c, d, ltp)
+                    else:
+                        logger.info(
+                            f"  {c.get('symbol') if c else '?'}: swap blocked by "
+                            f"guardrails — holding period / underwater check / "
+                            f"per-symbol cap / exit R"
+                        )
+                    continue
+                elif slot_full:
+                    logger.info(
+                        f"  {c.get('symbol') if c else '?'}: slot full — no room "
+                        f"({d.reason if d else ''})"
+                    )
+
+    # ── Swap helpers ──────────────────────────────────────────────────────
+
+    def _count_swaps_today(self) -> int:
+        """Count executed swing swaps today from swap_executions table.
+        Same source paper_entry.py uses — no new schema needed."""
+        try:
+            from config import today_ist
+            today = str(today_ist())
+            rows = (self.sb.table("swap_executions")
+                      .select("executed_at")
+                      .eq("status", "EXECUTED")
+                      .gte("executed_at", f"{today} 00:00:00")
+                      .execute().data or [])
+            return len(rows)
+        except Exception:
+            return 0
+
+    def _maybe_enter_swap(self, c: dict, d, ltp: float) -> None:
+        """Attempt a swap entry for a SLOT_FULL candidate via swap bucket.
+        Delegates to _maybe_enter_swing which already runs allocator_permits
+        veto, daily cap, reserve pacing, rank floor, legacy rank gate."""
+        self._maybe_enter_swing(c, d, ltp)
+
+    def _find_weakest_held_position(self, candidate: dict) -> dict | None:
+        """Find the weakest held SWING position that's a swap candidate."""
+        held = [p for p in self.positions
+                if (p.get("framework") or "SWING").upper() == "SWING"
+                and str(p.get("symbol", "")).upper() != str(candidate.get("symbol", "")).upper()]
+        if not held:
+            return None
+        weakest = None
+        weakest_rank = None
+        for p in held:
+            raw = p.get("entry_rationale") or ""
+            try:
+                val = float(raw.split("rank", 1)[1].split("—")[0].strip())
+            except Exception:
+                continue
+            if weakest_rank is None or val < weakest_rank:
+                weakest, weakest_rank = p, val
+        return weakest
+
+    def _symbol_swapped_today(self, symbol: str) -> bool:
+        """Check if this symbol was swapped today (buy or sell leg)."""
+        try:
+            from config import today_ist
+            today = str(today_ist())
+            rows = (self.sb.table("swap_executions")
+                      .select("executed_at")
+                      .eq("status", "EXECUTED")
+                      .gte("executed_at", f"{today} 00:00:00")
+                      .execute().data or [])
+            for r in rows:
+                if (str(r.get("sell_symbol") or "").upper() == symbol
+                        or str(r.get("buy_symbol") or "").upper() == symbol):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _swap_guardrails_ok(self, candidate: dict, decision) -> bool:
+        """
+        Time-based guardrails to prevent swap churn:
+        1. Minimum holding period before a position can be swapped out
+        2. Only swap positions below breakeven (don't sell winners)
+        3. Max one swap per symbol per day (no whipsaw)
+
+        Guardrail 4 (controlled-loss exit threshold) was deliberately dropped:
+        "controlled loss" has no non-arbitrary definition and realizing a loss
+        is an operator decision. Re-addable later as a single config line.
+        """
+        from config import today_ist, cfg_int
+        from datetime import datetime
+
+        sym = str(candidate.get("symbol", "")).upper()
+        today = today_ist().date()
+
+        # ── Guardrail 1: minimum holding period ──
+        min_hold = cfg_int("swap_min_holding_days", 3)
+        weakest = self._find_weakest_held_position(candidate)
+        if weakest is None:
+            return False
+        entry_date_str = str(weakest.get("entry_date") or "")[:10]
+        if entry_date_str:
+            try:
+                entry_date = datetime.fromisoformat(entry_date_str).date()
+                days_held = (today - entry_date).days
+                if days_held < min_hold:
+                    return False
+            except ValueError:
+                pass
+
+        # ── Guardrail 2: only swap underwater positions ──
+        current_r = float(weakest.get("current_r") or 0.0)
+        if current_r >= 0.0:
+            return False  # don't sell winners
+
+        # ── Guardrail 3: max one swap per symbol per day ──
+        max_per_symbol = cfg_int("swap_max_per_symbol_per_day", 1)
+        if self._symbol_swapped_today(sym):
+            return False
+
+        return True
 
     def act_on_setups(self, setups: list) -> None:
         for s in setups:

@@ -483,7 +483,15 @@ def hurdle(bucket: str, slots_left: int, minutes_left: int,
     floored = False
     bar_before_floor = bar
     if bar not in (float("inf"), float("-inf")):
-        floor_edge = cfg_float("alloc_edge_absolute_floor", 0.0)
+        # ── DYNAMIC EDGE FLOOR — decays across the session ──
+        # Master toggle alloc_dynamic_edge_floor_enabled (Supabase system_config),
+        # DEFAULTS OFF so unset reproduces the pre-change static floor exactly.
+        # Set to 'true' to arm it; 'false' reverts without a code change or restart.
+        # Time-decaying floor: strict at open (0.02), relaxed mid-session (0.00),
+        # negative late (-0.01, -0.03) so capital deploys before 3:20 PM square-off.
+        # bar_before_floor is preserved so pre-floor ranking (floor_only_rank)
+        # still lets swap/new-entry logic pick the best candidate first.
+        floor_edge = _dynamic_edge_floor()
         if bar < floor_edge:
             bar, floored = floor_edge, True
 
@@ -523,6 +531,53 @@ def hurdle(bucket: str, slots_left: int, minutes_left: int,
                              else round(bar_before_floor, 5)),
         **base_meta,
     }
+
+
+def _dynamic_edge_floor() -> float:
+    """
+    Time-decaying edge floor for the intraday session (IST).
+
+    Reads four keys from Supabase system_config, falling back to
+    alloc_edge_absolute_floor if unset:
+
+      - alloc_edge_floor_open   (default 0.02) — 09:15–11:00 IST, strict
+      - alloc_edge_floor_mid    (default 0.00) — 11:00–14:00 IST
+      - alloc_edge_floor_late   (default -0.01) — 14:00–14:45 IST
+      - alloc_edge_floor_close  (default -0.03) — 14:45–15:30 IST
+
+    Master toggle alloc_dynamic_edge_floor_enabled — DEFAULTS OFF.
+
+    Unset (or 'false') reproduces the pre-change behaviour exactly — the
+    static alloc_edge_absolute_floor — so nothing about live allocation
+    changes until the operator deliberately arms it. This keeps every
+    existing behaviour and test valid and makes the new mechanism a
+    controlled opt-in rather than a silent default flip.
+
+    `bar_before_floor` is set by the caller BEFORE this floor clamps, so the
+    allocator's RELATIVE ranking (percentile of what arrived) is preserved
+    alongside the ABSOLUTE floor. policies.intraday_stopping and
+    policies.swing_assignment both publish floor_only_rank from
+    bar_before_floor, so swap logic can still pick the best candidate first.
+    """
+    from datetime import time as _time
+
+    # ── MASTER TOGGLE (default OFF — see docstring) ──
+    if not cfg_bool("alloc_dynamic_edge_floor_enabled", False):
+        return cfg_float("alloc_edge_absolute_floor", 0.0)
+
+    floor_open  = cfg_float("alloc_edge_floor_open", 0.02)
+    floor_mid   = cfg_float("alloc_edge_floor_mid", 0.00)
+    floor_late  = cfg_float("alloc_edge_floor_late", -0.01)
+    floor_close = cfg_float("alloc_edge_floor_close", -0.03)
+
+    t = datetime.now(IST).time()
+    if t >= _time(14, 45):
+        return floor_close
+    if t >= _time(14, 0):
+        return floor_late
+    if t >= _time(11, 0):
+        return floor_mid
+    return floor_open
 
 
 def _cold_start(n: int, floor: int, why: str) -> tuple[float, dict]:

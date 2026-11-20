@@ -112,15 +112,27 @@ def test_unset_by_default_leaves_the_rolling_window_untouched():
 def test_floor_date_later_than_the_rolling_window_wins():
     """The whole point: a floor date INSIDE the 90-day window must push
     `since` forward to it, past whatever the rolling window alone would
-    have used — exactly priors_intraday_since's contract."""
+    have used — exactly priors_intraday_since's contract.
+
+    The floor date is computed from `today_ist()` rather than hardcoded so
+    the test is time-independent: `today - 30 days` is always inside the
+    90-day rolling window, so `max(rolling, floor)` must pick the floor no
+    matter when it runs. (A fixed "2026-08-20" went stale as time advanced
+    — the hardcoded version only passed while the 90-day window started
+    after 2026-08-20, which it does not today: 2026-11-20 - 90d = 2026-08-22.)"""
     from allocation.hurdle import _empirical_base
+    from config import today_ist
+    from datetime import timedelta
+    # 30 days back is inside the 90-day rolling window from any run date
+    # where the clock is sane, so the floor must win against it.
+    floor_date = (today_ist() - timedelta(days=30)).isoformat()
     with cfg_ctx({"alloc_hurdle_min_sample": "10", "alloc_hurdle_lookback_days": "90",
-                  "alloc_hurdle_since": "2026-08-20"}):
+                  "alloc_hurdle_since": floor_date}):
         capture: list[str] = []
         sb = _FakeSB(_population(), capture)
         _empirical_base("STRONG", "INTRADAY", sb)
-        assert capture and all(v == "2026-08-20" for v in capture), (
-            f"floor date did not win: got {set(capture)}, expected 2026-08-20")
+        assert capture and all(v == floor_date for v in capture), (
+            f"floor date did not win: got {set(capture)}, expected {floor_date}")
 
 
 def test_floor_date_earlier_than_the_rolling_window_does_not_loosen_it():

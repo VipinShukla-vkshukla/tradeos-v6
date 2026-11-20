@@ -202,6 +202,99 @@ def test_a_bucket_with_settled_history_still_segments():
     assert meta["n"] == 150, f"today's rows were dropped from the percentile ({meta['n']})"
 
 
+# ── 3. THE DYNAMIC EDGE FLOOR (Change 4, 2026-11-20) ─────────────────────────
+#
+# The static floor refused every proposal for a full session when the measured
+# population was negative (2026-11-19: 510 of 610 refusals, zero entries). The
+# dynamic floor decays across the session instead. These pin the parts that
+# must hold: the toggle defaults OFF so nothing changes until armed; each time
+# window maps to its configured value; the same negative population is clamped
+# early but deployable late; and `bar_before_floor` survives so the ranking
+# (floor_only_rank) is never lost.
+
+
+def _at_ist(hour: int, minute: int):
+    """A real IST-aware datetime at the given wall-clock time."""
+    from datetime import datetime as _real_dt
+    import config
+    return config.IST.localize(_real_dt(2026, 11, 20, hour, minute))
+
+
+_DYNAMIC_CFG = {
+    "alloc_dynamic_edge_floor_enabled": "true",
+    "alloc_edge_floor_open": "0.02", "alloc_edge_floor_mid": "0.00",
+    "alloc_edge_floor_late": "-0.01", "alloc_edge_floor_close": "-0.03",
+}
+
+
+def test_dynamic_floor_defaults_off_and_reproduces_static_floor():
+    """Unset toggle must behave exactly like the pre-change static floor —
+    nothing about live allocation changes until the operator arms it."""
+    from allocation.hurdle import hurdle
+    sb = _SB(_rows(200, -1.0937, "STRONG", "2026-08-01"))
+    with cfg_ctx({"alloc_hurdle_min_sample": "40", "alloc_hurdle_cold_start": "",
+                  "alloc_edge_absolute_floor": "0.0"}):
+        bar, inputs = hurdle("STRONG", 4, 20, "INTRADAY", sb, max_slots=4)
+    assert bar == 0.0, f"default-off must reproduce the static floor, got {bar}"
+    assert inputs["absolute_floor_applied"] is True
+
+
+def test_dynamic_floor_windows_map_to_configured_values():
+    from unittest.mock import patch
+    from allocation.hurdle import _dynamic_edge_floor
+    cases = [(9, 30, 0.02), (10, 59, 0.02),      # open window
+             (11, 0, 0.00), (13, 59, 0.00),      # mid window
+             (14, 0, -0.01), (14, 44, -0.01),     # late window
+             (14, 45, -0.03), (15, 20, -0.03)]    # close window
+    with cfg_ctx(_DYNAMIC_CFG):
+        for h, m_, expected in cases:
+            with patch("allocation.hurdle.datetime") as md:
+                md.now.return_value = _at_ist(h, m_)
+                got = _dynamic_edge_floor()
+            assert got == expected, \
+                f"{h:02d}:{m_:02d} expected {expected}, got {got}"
+
+
+def test_dynamic_floor_clamps_early_but_deploys_late():
+    """The whole point: the SAME negative population is refused at the open
+    and deployable near the close, because the floor decays rather than being
+    a single constant all day."""
+    from unittest.mock import patch
+    from allocation.hurdle import hurdle
+    sb = _SB(_rows(200, -0.02, "STRONG", "2026-08-01"))
+
+    with cfg_ctx({**_DYNAMIC_CFG, "alloc_hurdle_min_sample": "40",
+                  "alloc_hurdle_cold_start": ""}):
+        with patch("allocation.hurdle.datetime") as md:
+            md.now.return_value = _at_ist(9, 30)
+            early, ei = hurdle("STRONG", 4, 355, "INTRADAY", sb, max_slots=4)
+        with patch("allocation.hurdle.datetime") as md:
+            md.now.return_value = _at_ist(15, 0)
+            late, li = hurdle("STRONG", 4, 20, "INTRADAY", sb, max_slots=4)
+
+    assert early == 0.02, f"open floor should clamp -0.02 up to 0.02, got {early}"
+    assert ei["absolute_floor_applied"] is True
+    assert late == -0.02, f"close floor -0.03 must NOT clamp -0.02, got {late}"
+    assert li["absolute_floor_applied"] is False
+
+
+def test_bar_before_floor_survives_the_dynamic_clamp():
+    """The ranking is the product: the pre-floor percentile must be published
+    even when the dynamic floor binds, or floor_only_rank cannot exist."""
+    from unittest.mock import patch
+    from allocation.hurdle import hurdle
+    sb = _SB(_rows(200, -0.02, "STRONG", "2026-08-01"))
+    with cfg_ctx({**_DYNAMIC_CFG, "alloc_hurdle_min_sample": "40",
+                  "alloc_hurdle_cold_start": ""}):
+        with patch("allocation.hurdle.datetime") as md:
+            md.now.return_value = _at_ist(9, 30)
+            bar, inputs = hurdle("STRONG", 4, 20, "INTRADAY", sb, max_slots=4)
+    assert bar == 0.02
+    assert inputs["bar_before_floor"] == -0.02, (
+        f"pre-floor bar must be preserved, got {inputs['bar_before_floor']}")
+    assert inputs["base"] is not None and inputs["base"] < 0
+
+
 TESTS = [
     ("an all-negative population cannot produce a negative bar",
      test_all_negative_population_cannot_produce_a_negative_bar),
@@ -217,4 +310,12 @@ TESTS = [
      test_a_bucket_may_not_segment_on_todays_own_rows),
     ("a bucket with settled history still segments",
      test_a_bucket_with_settled_history_still_segments),
+    ("dynamic floor defaults off and reproduces the static floor",
+     test_dynamic_floor_defaults_off_and_reproduces_static_floor),
+    ("dynamic floor windows map to configured values",
+     test_dynamic_floor_windows_map_to_configured_values),
+    ("dynamic floor clamps early but deploys late",
+     test_dynamic_floor_clamps_early_but_deploys_late),
+    ("bar_before_floor survives the dynamic clamp",
+     test_bar_before_floor_survives_the_dynamic_clamp),
 ]
