@@ -76,6 +76,8 @@ def _execution_gates_ok() -> tuple[bool, str]:
 
     Returns (ok, reason). If not ok, reason explains which gate blocked it.
     """
+    if not cfg_bool("swing_swap_enabled", False):
+        return False, "swing_swap_enabled is off"
     if not cfg_bool("swap_auto_execute", True):
         return False, "swap_auto_execute is off"
 
@@ -113,12 +115,13 @@ def _execution_gates_ok() -> tuple[bool, str]:
 
 
 def _daily_swap_count(sb) -> int:
-    """Count how many swaps have been executed today (for circuit breaker)."""
+    """Count how many EXECUTED swaps have been executed today (for circuit breaker)."""
     try:
         today = str(__import__("config", fromlist=["today_ist"]).today_ist())
         rows = (
             sb.table("swap_executions")
             .select("executed_at")
+            .eq("status", "EXECUTED")
             .gte("executed_at", f"{today} 00:00:00")
             .execute()
             .data
@@ -250,7 +253,9 @@ def execute_one_tap_swap(
         )
 
     # ── Daily circuit breaker ─────────────────────────────────────────────
-    max_per_day = cfg_int("swap_auto_execute_max_per_day", 2)
+    # Count swaps against swing_max_swaps_per_day (SWING-only cap, separate
+    # from swing_max_new_per_day so a swap does not consume a new-entry slot).
+    max_per_day = cfg_int("swing_max_swaps_per_day", 2)
     today_count = _daily_swap_count(sb)
     if today_count >= max_per_day:
         return SwapExecutionResult(
@@ -292,6 +297,21 @@ def execute_one_tap_swap(
         f"AUTO-SELL leg done: {sell_sym} qty={sell_result.get('qty')} "
         f"order={sell_result.get('order_id')}"
     )
+
+    # ── Tag the exiting position as swapped ───────────────────────────────
+    # Audit trail: mark exactly when this position leaves the book as part of
+    # a SWING swap. position_lifecycle.py also stamps swapped_at on any full
+    # exit (so the column is never NULL); this overwrites it with the precise
+    # swap-execution timestamp. The tag is read by the dashboard (swap counter)
+    # and is NOT what the entry-cap counts on — that uses swap_executions.
+    try:
+        (sb.table("open_positions")
+           .update({"swapped_at": datetime.now(timezone.utc).isoformat()})
+           .eq("symbol", sell_sym)
+           .eq("status", "ACTIVE")
+           .execute())
+    except Exception as e:
+        logger.warning(f"swapped_at tag failed for {sell_sym}: {e}")
 
     # ── Step 2: Auto-buy the strong candidate ─────────────────────────────
     buy_result = execute_auto_buy(buy_candidate, sb=sb, atr_pct=atr_pct)

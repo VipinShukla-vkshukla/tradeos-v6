@@ -167,16 +167,9 @@ DRY_RUN      = os.getenv("DRY_RUN", "False").lower() == "true"
 # distinguished the two. Position size is the single number that decides how
 # much money a bad signal costs, so it defaults LOW and says so loudly.
 _capital_raw = (os.getenv("TOTAL_CAPITAL") or "").strip()
-CAPITAL_IS_FALLBACK = not _capital_raw
+CAPITAL_IS_FALLBACK_ENV = not _capital_raw
 TOTAL_CAPITAL_FALLBACK = 20000.0
-try:
-    TOTAL_CAPITAL = float(_capital_raw) if _capital_raw else TOTAL_CAPITAL_FALLBACK
-    if TOTAL_CAPITAL <= 0:
-        raise ValueError("must be positive")
-except ValueError:
-    logger.error(f"TOTAL_CAPITAL={_capital_raw!r} is not a usable number — "
-                 f"falling back to ₹{TOTAL_CAPITAL_FALLBACK:,.0f}")
-    TOTAL_CAPITAL, CAPITAL_IS_FALLBACK = TOTAL_CAPITAL_FALLBACK, True
+TOTAL_CAPITAL = TOTAL_CAPITAL_FALLBACK  # placeholder; overwritten below once get_supabase() is defined
 
 
 _capital_warned: set = set()
@@ -262,6 +255,43 @@ def get_supabase() -> Client:
             raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in .env")
         _sb_client = create_client(SUPABASE_URL, SUPABASE_KEY)
     return _sb_client
+
+
+# ── Total capital — Supabase first, .env second, fallback last ──
+def _load_total_capital() -> float:
+    """
+    Read TOTAL_CAPITAL from Supabase system_config, fall back to .env, then fallback.
+
+    Supabase wins so the operator can change capital mid-session without a
+    daemon restart. `.env` is only the fallback when the Supabase row is missing
+    or unreadable. The fallback is deliberate and low (₹20k) so a missing secret
+    never sizes positions at 10x the real account.
+    """
+    try:
+        sb = get_supabase()
+        row = sb.table("system_config").select("value").eq("key", "total_capital").execute().data
+        if row and row[0].get("value"):
+            return float(row[0]["value"])
+    except Exception:
+        pass  # fall through to .env
+    if _capital_raw:
+        try:
+            return float(_capital_raw)
+        except ValueError:
+            pass
+    return TOTAL_CAPITAL_FALLBACK
+
+
+TOTAL_CAPITAL = _load_total_capital()
+CAPITAL_IS_FALLBACK = CAPITAL_IS_FALLBACK_ENV and TOTAL_CAPITAL == TOTAL_CAPITAL_FALLBACK
+
+
+def reload_total_capital() -> float:
+    """Re-read TOTAL_CAPITAL from Supabase (for dashboards/control panel without restart)."""
+    global TOTAL_CAPITAL, CAPITAL_IS_FALLBACK
+    TOTAL_CAPITAL = _load_total_capital()
+    CAPITAL_IS_FALLBACK = CAPITAL_IS_FALLBACK_ENV and TOTAL_CAPITAL == TOTAL_CAPITAL_FALLBACK
+    return TOTAL_CAPITAL
 
 
 # PostgREST returns AT MOST 1000 rows and reports no error when it truncates.

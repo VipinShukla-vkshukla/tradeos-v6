@@ -105,6 +105,31 @@ def run(sb=None, notifier=None) -> dict:
     regime = plans[0].get("regime") if plans else "NEUTRAL"
     max_new = cfg_int("swing_max_new_per_day", 2)
 
+    # ── SWAP-AWARE ENTRY COUNTING (SWING only) ─────────────────────────
+    # A swap (sell weak, buy strong) does NOT consume a new-entry slot: the
+    # sell frees the slot the buy refills. Each executed swap today adds one
+    # to the effective new-entry allowance, so the swap buy never blocks a
+    # fresh entry. Swaps are separately capped at swing_max_swaps_per_day by
+    # swap_execution.py's own circuit breaker.
+    swaps_today = 0
+    if cfg_bool("swing_swap_enabled", False):
+        try:
+            today = str(today_ist())
+            srows = (sb.table("swap_executions")
+                      .select("executed_at")
+                      .eq("status", "EXECUTED")
+                      .gte("executed_at", f"{today} 00:00:00")
+                      .execute().data or [])
+            swaps_today = len(srows)
+        except Exception as e:
+            logger.warning(f"  swap count unavailable ({e}) — "
+                           "treating as 0 swaps today")
+    if swaps_today:
+        logger.info(f"  {swaps_today} swap(s) executed today — "
+                    f"new-entry allowance raised from {max_new} to "
+                    f"{max_new + swaps_today}")
+    max_new_effective = max_new + swaps_today
+
     # Rank on everything the pipeline computed, not just the screener score.
     #
     # final_score is the SCREENER's verdict, formed before the AI reviewed the
@@ -122,7 +147,7 @@ def run(sb=None, notifier=None) -> dict:
                                if p.get("symbol") in _ranked else 0))
 
     for p in plans:
-        if result["taken"] >= max_new:
+        if result["taken"] >= max_new_effective:
             break
         sym = p.get("symbol")
         if not sym or sym in held:
@@ -192,7 +217,8 @@ def run(sb=None, notifier=None) -> dict:
 
     logger.info(f"  swing paper entries for {day}: {result['taken']} taken of "
                 f"{result['considered']} considered"
-                + (f" — skipped: {result['reasons']}" if result["reasons"] else ""))
+                + (f" — skipped: {result['reasons']}" if result["reasons"] else "")
+                + (f" · {swaps_today} swap(s) today" if swaps_today else ""))
     return {**result, "status": "ok", "date": day, "mode": trading_mode("SWING")}
 
 

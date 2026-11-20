@@ -551,6 +551,26 @@ export interface MslHistoryEntry {
 }
 
 // ---------------------------------------------------------------------------
+// swap_executions  (audit trail for swing swap auto-execution)
+// Migration 151 creates this table. SWING only.
+// ---------------------------------------------------------------------------
+export interface SwapExecution {
+  id: number;
+  sell_symbol: string;
+  buy_symbol: string;
+  sell_rank?: number | null;
+  buy_rank?: number | null;
+  margin?: number | null;
+  regime?: string | null;
+  status: string;              // EXECUTED | PARTIAL | BLOCKED | SKIPPED
+  sell_order_id?: string | null;
+  buy_order_id?: string | null;
+  blocked_reason?: string | null;
+  executed_at: string;
+  created_at?: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // Shared response wrappers
 // ---------------------------------------------------------------------------
 export interface ApiResponse<T> {

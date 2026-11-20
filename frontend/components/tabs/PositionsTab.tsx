@@ -12,7 +12,7 @@ import { formatCurrency, formatDate } from '@/lib/formatters';
 import { queries } from '@/lib/supabase';
 import { RLadder } from '@/components/positions/RLadder';
 import { TradeDetailDialog, type TradeDetailTarget } from '@/components/positions/TradeDetailDialog';
-import type { OpenPosition, ClosedPosition } from '@/types/database';
+import type { OpenPosition, ClosedPosition, SwapExecution, ConfigEntry } from '@/types/database';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine,
@@ -441,6 +441,12 @@ export function PositionsTab() {
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
   const [bookFilter, setBookFilter] = useState<'BOTH' | 'SWING' | 'INTRADAY'>('BOTH');
   const [policy, setPolicy] = useState<ExitPolicy>(FALLBACK_POLICY);
+  const [swapCount, setSwapCount] = useState(0);
+  const [swapEnabled, setSwapEnabled] = useState(false);
+  const [swapMaxPerDay, setSwapMaxPerDay] = useState(2);
+  const [swapThesis, setSwapThesis] = useState<SwapExecution[]>([]);
+  const [swapBusy, setSwapBusy] = useState(false);
+  const [swapSaved, setSwapSaved] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -448,16 +454,27 @@ export function PositionsTab() {
     async function load() {
       setLoading(true);
       try {
-        const [o, c, pol] = await Promise.all([
+        const [o, c, pol, swp, cfg] = await Promise.all([
           queries.getOpenPositions(),
           queries.getClosedPositions(200),
           queries.getExitPolicy(),
+          queries.getSwapExecutionsToday(),
+          queries.getSystemConfig(['swing_swap_enabled', 'swing_max_swaps_per_day']),
         ]);
         if (o.error) throw o.error;
         if (c.error) throw c.error;
+        if (swp.error) throw swp.error;
+        if (cfg.error) throw cfg.error;
         setOpen(o.data ?? []);
         setClosed(c.data ?? []);
         setPolicy({ ...FALLBACK_POLICY, ...pol });
+        setSwapThesis(swp.data ?? []);
+        setSwapCount(swp.data?.length ?? 0);
+        const swapCfg = cfg.data ?? [];
+        const swapEnabledRow = swapCfg.find((c: ConfigEntry) => c.key === 'swing_swap_enabled');
+        const swapMaxRow = swapCfg.find((c: ConfigEntry) => c.key === 'swing_max_swaps_per_day');
+        setSwapEnabled(swapEnabledRow ? swapEnabledRow.value === 'true' : false);
+        setSwapMaxPerDay(swapMaxRow ? parseInt(swapMaxRow.value, 10) : 2);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed');
       } finally {
@@ -493,6 +510,30 @@ export function PositionsTab() {
   const paperAvgR = paperR.length
     ? paperR.reduce((s, p) => s + (p.r_multiple ?? 0), 0) / paperR.length : null;
   const errObj = error ? new Error(error) : null;
+
+  // ── Swap toggle — writes to the SAME system_config the Python reads ────
+  // One source of truth, no local cache: set the key here, tomorrow's backend
+  // run sees exactly this value, and the operator panel re-reads it after the
+  // PATCH round-trip rather than trusting the optimistic checkbox.
+  const handleSwapToggle = async () => {
+    setSwapBusy(true);
+    try {
+      const key = 'swing_swap_enabled';
+      const value = swapEnabled ? 'false' : 'true';
+      const res = await fetch(`/api/config/${encodeURIComponent(key)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value, reason: 'swing swap feature toggle (positions tab)' }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'write failed');
+      setSwapSaved(true);
+      setTimeout(() => setSwapSaved(false), 3000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Swap toggle write failed');
+    } finally {
+      setSwapBusy(false);
+    }
+  };
 
   // ── Per-book split for the KPI tiles below ────────────────────────────
   // The four tiles above pool both books into one number each — legitimate
@@ -602,9 +643,103 @@ export function PositionsTab() {
                 ? { value: avgR > 0 ? 'Positive expectancy' : 'Negative expectancy',
                     type: avgR > 0 ? 'increase' : 'decrease' }
                 : undefined} />
+            <KPICard title="Swap Counter" value={swapCount.toString()}
+              description={`Swap enabled: ${swapEnabled ? 'ON' : 'OFF'} · Max/day: ${swapMaxPerDay}`}
+              icon={<TrendingUp className="h-4 w-4" />}
+              change={undefined} />
           </>
         )}
       </div>
+
+      {/* Swap controls — SWING only */}
+      {!loading && (
+        <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 mt-4">
+          <div className="flex items-center gap-2 mb-3">
+            <TrendingUp className="h-4 w-4 text-primary" />
+            <span className="font-semibold text-primary">SWING SWAP CONTROLS</span>
+            <span className="text-xs text-muted-foreground ml-2">(swing only; intraday unaffected)</span>
+          </div>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <div>
+              <div className="text-muted-foreground">Enable swap feature</div>
+              <div className="mt-1">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={swapEnabled}
+                    onChange={(e) => setSwapEnabled(e.target.checked)}
+                    disabled={swapBusy}
+                    className="rounded border border-border w-4 h-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" />
+                  <span className="text-sm font-medium">
+                    {swapEnabled ? 'Disable' : 'Enable'} swap auto-execution
+                  </span>
+                </label>
+              </div>
+            </div>
+            <div>
+              <div className="text-muted-foreground">Max swaps per day</div>
+              <div className="mt-1">
+                <input
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={swapMaxPerDay.toString()}
+                  onChange={(e) => setSwapMaxPerDay(parseInt(e.target.value, 10) || 2)}
+                  disabled={swapBusy}
+                  className="w-full border border-border rounded px-2 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" />
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={handleSwapToggle}
+            disabled={swapBusy}
+            className={`w-full py-2 rounded text-sm font-medium transition-colors ${swapBusy ? 'opacity-40 cursor-not-allowed' : 'bg-primary text-white hover:bg-primary/90'}`}>
+            {swapBusy ? 'Saving…' : swapEnabled ? 'Disable Swaps' : 'Enable Swaps'}
+          </button>
+          {swapSaved && (
+            <div className="mt-2 text-sm text-profit">
+              ✓ Swap config updated in system_config
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Swap thesis table — proposals from today's execution */}
+      {!loading && swapEnabled && swapThesis.length > 0 && (
+        <Panel title="Swap Thesis Table — Today"
+          description={swapCount > 0 ? `${swapCount} swap(s) executed today` : ''}
+          dataSource="supabase" tableName="swap_executions" isLoading={loading}>
+          <DataGuard data={swapThesis} isLoading={loading} error={errObj}
+            loadingContent={<SkeletonTable rows={3} cols={4} />}
+            emptyTitle="No swap proposals today"
+            emptyDescription="Swap proposals appear when auto-swap runs with sufficient margin.">
+            {(data) => (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-muted-foreground text-left border-b border-border/40">
+                      <th className="py-1.5 pr-3">Sell Symbol</th>
+                      <th className="py-1.5 pr-3">Buy Symbol</th>
+                      <th className="py-1.5 pr-3 text-right">Margin (pts)</th>
+                      <th className="py-1.5 pr-3 text-right">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.map((e) => (
+                      <tr key={e.id} className="border-b border-border/20 hover:bg-panel-hover">
+                        <td className="py-1.5 pr-3 font-medium">{e.sell_symbol}</td>
+                        <td className="py-1.5 pr-3">{e.buy_symbol}</td>
+                        <td className="py-1.5 pr-3 text-right">{e.margin != null ? `${e.margin.toFixed(0)}` : '—'}</td>
+                        <td className="py-1.5 pr-3 text-right">{e.status.toUpperCase()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </DataGuard>
+        </Panel>
+      )}
 
       {/* Paper book — deliberately its own row. The question paper mode exists
           to answer is "would this have worked", and that is only readable when

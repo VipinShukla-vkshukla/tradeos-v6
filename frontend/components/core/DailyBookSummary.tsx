@@ -133,7 +133,7 @@ function MiniRow({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-function BookHero({ book, s }: { book: Framework; s: BookSummary | null }) {
+function BookHero({ book, s, mode }: { book: Framework; s: BookSummary | null; mode: string }) {
   const isSwing = book === 'SWING';
   const badgeClass = isSwing ? 'badge-swing' : 'badge-intraday';
   const borderClass = isSwing ? 'border-t-swing' : 'border-t-intraday';
@@ -155,7 +155,7 @@ function BookHero({ book, s }: { book: Framework; s: BookSummary | null }) {
           <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide ${badgeClass}`}>
             {isSwing ? 'Swing' : 'Intraday'}
           </span>
-          {isSwing ? 'CNC · LIVE' : 'MIS · PAPER'}
+          {isSwing ? `CNC · ${mode}` : `MIS · ${mode}`}
         </div>
         <span className="text-[11px] text-muted-foreground">
           {isSwing ? `${s.entriesToday}/${s.entryCap} entries used today` : 'flat by 15:15'}
@@ -196,6 +196,8 @@ function BookHero({ book, s }: { book: Framework; s: BookSummary | null }) {
 export function DailyBookSummary() {
   const [swing, setSwing] = useState<BookSummary | null>(null);
   const [intraday, setIntraday] = useState<BookSummary | null>(null);
+  const [swingMode, setSwingMode] = useState('PAPER');
+  const [intradayMode, setIntradayMode] = useState('PAPER');
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -207,6 +209,7 @@ export function DailyBookSummary() {
         const cfgRes = await queries.getSystemConfig([
           'capital_snapshot', 'swing_capital', 'intraday_capital',
           'swing_max_new_per_day', 'intraday_max_new_per_day',
+          'swing_trading_mode', 'intraday_trading_mode',
         ]);
         if (cfgRes.error) throw cfgRes.error;
         const cfg: Record<string, string> = {};
@@ -214,8 +217,12 @@ export function DailyBookSummary() {
 
         const [sw, id] = await Promise.all([loadBook(cfg, 'SWING'), loadBook(cfg, 'INTRADAY')]);
         if (cancelled) return;
+        const swingMode = (cfg['swing_trading_mode'] ?? 'PAPER').toUpperCase();
+        const intradayMode = (cfg['intraday_trading_mode'] ?? 'PAPER').toUpperCase();
         setSwing(sw);
         setIntraday(id);
+        setSwingMode(swingMode);
+        setIntradayMode(intradayMode);
         setError(null);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : 'could not load book summary');
@@ -236,8 +243,8 @@ export function DailyBookSummary() {
 
   return (
     <div className="flex flex-col md:flex-row gap-4">
-      <BookHero book="SWING" s={swing} />
-      <BookHero book="INTRADAY" s={intraday} />
+      <BookHero book="SWING" s={swing} mode={swingMode} />
+      <BookHero book="INTRADAY" s={intraday} mode={intradayMode} />
     </div>
   );
 }

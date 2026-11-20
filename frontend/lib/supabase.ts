@@ -17,6 +17,7 @@ import type {
   MasterStock,
   PerformanceMetricsRow,
   MslHistoryEntry,
+  SwapExecution,
 } from '@/types/database';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -971,6 +972,18 @@ export const queries = {
       order: { column: 'snapshot_date', ascending: false },
       limit,
     }),
+
+  // swap_executions  ← for swing swap audit trail and counter (Migration 151)
+  getSwapExecutionsToday: async (date?: string) => {
+    const targetDate = date ?? new Date().toISOString().split('T')[0];
+    if (!supabase) return { data: null, error: new Error('Supabase not configured') };
+    return supabase
+      .from('swap_executions')
+      .select('*')
+      .gte('executed_at', `${targetDate}T00:00:00`)
+      .eq('status', 'EXECUTED')
+      .order('executed_at', { ascending: false });
+  },
 
   // NOTE: 'pipeline_runs' table does not exist in this schema.
   // Use brain_analysis_log for run history instead.

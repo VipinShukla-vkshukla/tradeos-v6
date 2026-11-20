@@ -2445,6 +2445,13 @@ def manage_open_positions(sb, trade_date: str, require_live: bool = False) -> di
             # reconcile_with_broker writes the closed_positions row.
             update["exit_signal"]     = decision["reason"]
             update["action_required"] = f"EXIT — {decision['detail']}"
+            # SWAP-AUDIT TAG — marks when this position was exited. The swap
+            # engine (swing/compute/swap_execution.py) overwrites it with the
+            # precise swap timestamp after a one-tap swap's sell leg fills;
+            # plain (non-swap) exits carry the same audit value here, so the
+            # tag is never a NULL and the dashboard can always ask "when did
+            # this position leave the book?".
+            update["swapped_at"]     = datetime.now(IST).isoformat()
         elif act == "TRAIL_SL":
             update["active_sl"] = decision["new_sl"]
             # BREAKEVEN is not a trail and must not be recorded as one.
