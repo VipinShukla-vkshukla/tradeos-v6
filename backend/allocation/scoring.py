@@ -209,6 +209,7 @@ def intraday_priors(sb, rows: list[dict] | None = None) -> dict[str, Prior]:
     never reimplement a decision, import it.
     """
     floor = cfg_int("priors_min_sample_intraday", 30)
+    taken_only = cfg_bool("priors_intraday_taken_only", True)
     if rows is not None:
         return _intraday_priors_from_rows(list(rows), floor)
 
@@ -306,6 +307,8 @@ def intraday_priors(sb, rows: list[dict] | None = None) -> dict[str, Prior]:
                           "entry,stop,direction,cost_verdict,cost_pct,meta,"
                           "confidence")
                   .not_.is_("outcome_pct", "null"))
+        if taken_only:
+            q.eq("cost_verdict", "TAKEN")
         return q.gte("trade_date", since) if since else q
 
     rows = fetch_all(_build, page=PAGE)
