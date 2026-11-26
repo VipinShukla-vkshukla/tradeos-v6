@@ -483,6 +483,13 @@ class IntradayEngine:
         # against read-after-write lag on the broker log — see
         # _maybe_enter_swing().
         self._entries_taken = 0
+
+        # ── Dynamic swing position sizing session state (in-memory, reset daily) ──
+        self._session_realized_pnl: float = 0.0
+        self._session_win_count: int = 0
+        self._session_loss_count: int = 0
+        self._session_consecutive_wins: int = 0
+        self._session_consecutive_losses: int = 0
         # symbol -> Kite order_id, for a BUY submitted but not yet confirmed
         # filled. In-memory guard against re-submitting the same entry on the
         # next 15s cycle; the DB row (status=PENDING_FILL, entry_order_id) is
@@ -2461,6 +2468,23 @@ class IntradayEngine:
                 self._track_trend_quality(p)
                 self._shadow_scale_in(p, float(ltp))
 
+                # ── Scale-out check: partial exit on regime deterioration ──
+                # Only for SWING positions. Reuses evaluate_scale_out() which
+                # checks regime deterioration, losing positions, and MTF conflict.
+                try:
+                    from control.position_lifecycle import evaluate_scale_out
+                    regime = (self._policy or {}).get("_current_regime") or "NEUTRAL"
+                    recent_regimes = [r.get("computed_regime") or r.get("regime")
+                                      for r in (getattr(self, "_regime_history", []) or [])[:5]]
+                    so_d = evaluate_scale_out(
+                        p, float(ltp), regime=regime,
+                        total_capital=capital_for("SWING"),
+                        available_cash=capital_for("SWING"),
+                        regime_history=getattr(self, "_regime_history", []))
+                    if so_d["action"] == "SCALE_OUT":
+                        actions.append({"position": p, "decision": so_d, "ltp": float(ltp)})
+                except Exception as e:
+                    logger.debug(f"  {p.get('symbol')}: scale-out check skipped — {e}")
             # LIVE METRICS ON EVERY CYCLE, INCLUDING WHEN NOTHING IS TO BE DONE.
             #
             # This loop only ever wrote to a position when it was ACTING on it —
@@ -2565,8 +2589,71 @@ class IntradayEngine:
                 from control.exit_rules import assess_trend
                 tq = assess_trend(sig, p)
             regime = (self._policy or {}).get("_current_regime") or "NEUTRAL"
+            intraday_regime = regime  # same source currently
+
+            # ── MTF regime confirmation ──
+            # Derive weekly regime from last 5 daily regimes (already in memory).
+            # Block scale-in if weekly RISK OFF; reduce size by 25% on daily/intraday conflict.
+            mtf_size_mult = 1.0
+            mtf_scale_in_blocked = False
+            if cfg_bool("mtf_regime_confirmation", True):
+                recent_regimes = [r.get("computed_regime") or r.get("regime")
+                                  for r in (getattr(self, "_regime_history", []) or [])[:5]]
+                weekly_risk_off = sum(1 for r in recent_regimes if r == "RISK OFF") >= 3
+                if weekly_risk_off and cfg_bool("mtf_weekly_risk_off_blocks_scale_in", True):
+                    mtf_scale_in_blocked = True
+                    logger.info(f"  {sym}: scale-in blocked — weekly regime RISK OFF (MTF)")
+                    return
+                if regime != intraday_regime:
+                    mtf_size_mult = 0.75
+                    logger.info(f"  {sym}: scale-in size reduced 25% — daily/intraday regime conflict")
+
+            # ── Dynamic sizing inputs (all in-memory, zero Supabase) ──
+            cands = self.candidates or []
+            india_vix = float((cands[0] or {}).get("india_vix", 0) or 0) if cands else 0.0
+            adv_decline = float((cands[0] or {}).get("advance_decline_ratio", 1.0) or 1.0) if cands else 1.0
+            nifty_1d_chg = float((cands[0] or {}).get("nifty_1d_chg_pct", 0) or 0) if cands else 0.0
+
+            conf_score = 0.0
+            if nifty_1d_chg > 0.5:      conf_score += 0.30
+            elif nifty_1d_chg > 0:      conf_score += 0.15
+            elif nifty_1d_chg < -0.5:   conf_score -= 0.30
+            elif nifty_1d_chg < 0:      conf_score -= 0.15
+            if india_vix <= 14:         conf_score += 0.25
+            elif india_vix <= 20:       conf_score += 0.10
+            elif india_vix > 26:        conf_score -= 0.25
+            elif india_vix > 22:        conf_score -= 0.10
+            if adv_decline >= 1.5:      conf_score += 0.20
+            elif adv_decline >= 1.0:    conf_score += 0.10
+            elif adv_decline <= 0.5:    conf_score -= 0.20
+            elif adv_decline <= 0.8:    conf_score -= 0.10
+            regime_confidence = max(0.0, min(1.0, 0.5 + conf_score))
+
+            unrealized_pnl = sum(
+                (float(pp.get("current_price") or pp.get("entry_price") or 0)
+                 - float(pp.get("entry_price") or 0))
+                * float(pp.get("current_qty") or pp.get("actual_qty") or 0)
+                for pp in self.positions
+                if (pp.get("framework") or "SWING").upper() == "SWING"
+            )
+            session_pnl = unrealized_pnl + self._session_realized_pnl
+            session_pnl_pct = session_pnl / capital_for("SWING") if capital_for("SWING") > 0 else 0.0
+
+            total_trades = self._session_win_count + self._session_loss_count
+            recent_win_rate = (self._session_win_count / total_trades) if total_trades > 0 else 0.5
+
+            setup_quality = float((sig or {}).get("setup_quality", 0.5) or 0.5)
+
             d = evaluate_scale_in(p, ltp, tq, self._swing_positions(),
-                                  regime=regime, total_capital=capital_for("SWING"))
+                                  regime=regime, total_capital=capital_for("SWING"),
+                                  available_cash=capital_for("SWING"),
+                                  regime_confidence=regime_confidence,
+                                  session_pnl_pct=session_pnl_pct,
+                                  recent_win_rate=recent_win_rate,
+                                  consecutive_wins=self._session_consecutive_wins,
+                                  consecutive_losses=self._session_consecutive_losses,
+                                  setup_quality=setup_quality,
+                                  vol_mult=(self._overlay_vol_mult or 1.0) * mtf_size_mult)
             if d["action"] != "SCALE_IN":
                 return
             if not cfg_bool("swing_scale_in_auto_entry", False):
@@ -2939,12 +3026,21 @@ class IntradayEngine:
 
         # Fetched ONCE per cycle, not per candidate: it is the same number for
         # every symbol and a REST call per name would be 40 calls every 15s.
+        # In PAPER mode the broker is not spending real rupees — the position
+        # is sized against the paper capital (swing_capital / TOTAL_CAPITAL),
+        # not the real broker cash. Fetching from Kite in paper mode silently
+        # caps every entry at whatever the live account happens to hold, which
+        # for a small/empty broker account is far below the paper sleeve.
+        from execution.gates import is_paper
         cash = None
-        try:
-            from kite import kite_client
-            cash = float((kite_client.fetch_margins() or {}).get("available_cash") or 0) or None
-        except Exception:
-            cash = None
+        if is_paper("SWING"):
+            cash = capital_for("SWING")
+        else:
+            try:
+                from kite import kite_client
+                cash = float((kite_client.fetch_margins() or {}).get("available_cash") or 0) or None
+            except Exception:
+                cash = None
 
         exp_mult = self._swing_exposure().size_mult
 
@@ -3046,12 +3142,69 @@ class IntradayEngine:
             # was already regime-aware (min_rr_to_enter_<REGIME>) and this
             # simply never read it. See trade_decision.regime_min_rr().
             from analysis.trade_decision import chase_limit, regime_min_rr
+            from analysis.portfolio_constraints import compute_dynamic_multiplier
+
+            # ── Dynamic swing position sizing multiplier ──
+            # Computed from in-memory state only — zero Supabase reads.
+            # Base regime comes from evening pipeline; confidence is computed
+            # from live ticks at this symbol's cycle.
+            all_prices = feed.all_prices() if feed else {}
+            nifty_price = float(all_prices.get("NIFTY 50", all_prices.get("^NSEI", 0)) or 0)
+            nifty_1d_chg = float((self.candidates[0] or {}).get("nifty_1d_chg_pct", 0) or 0) if self.candidates else 0.0
+            india_vix = float((self.candidates[0] or {}).get("india_vix", 0) or 0) if self.candidates else 0.0
+            adv_decline = float((self.candidates[0] or {}).get("advance_decline_ratio", 1.0) or 1.0) if self.candidates else 1.0
+
+            # Regime confidence from market structure (price vs VWAP proxy via 1d chg, VIX, breadth)
+            conf_score = 0.0
+            if nifty_1d_chg > 0.5:      conf_score += 0.30
+            elif nifty_1d_chg > 0:      conf_score += 0.15
+            elif nifty_1d_chg < -0.5:   conf_score -= 0.30
+            elif nifty_1d_chg < 0:      conf_score -= 0.15
+            if india_vix <= 14:         conf_score += 0.25
+            elif india_vix <= 20:       conf_score += 0.10
+            elif india_vix > 26:        conf_score -= 0.25
+            elif india_vix > 22:        conf_score -= 0.10
+            if adv_decline >= 1.5:      conf_score += 0.20
+            elif adv_decline >= 1.0:    conf_score += 0.10
+            elif adv_decline <= 0.5:    conf_score -= 0.20
+            elif adv_decline <= 0.8:    conf_score -= 0.10
+            regime_confidence = max(0.0, min(1.0, 0.5 + conf_score))
+
+            # Session P&L: unrealized from open positions + realized from exits this cycle
+            unrealized_pnl = sum(
+                (float(p.get("current_price") or p.get("entry_price") or 0)
+                 - float(p.get("entry_price") or 0))
+                * float(p.get("current_qty") or p.get("actual_qty") or 0)
+                for p in self.positions
+                if p.get("framework") == "SWING"
+            )
+            session_pnl = unrealized_pnl + self._session_realized_pnl
+            session_pnl_pct = session_pnl / capital_for("SWING") if capital_for("SWING") > 0 else 0.0
+
+            # Win rate / streak from in-memory counters
+            total_trades = self._session_win_count + self._session_loss_count
+            recent_win_rate = (self._session_win_count / total_trades) if total_trades > 0 else 0.5
+
+            setup_quality = float(c.get("setup_quality", 0.5) or 0.5)
+
+            size_mult = compute_dynamic_multiplier(
+                regime=regime,
+                regime_confidence=regime_confidence,
+                session_pnl_pct=session_pnl_pct,
+                recent_win_rate=recent_win_rate,
+                consecutive_wins=self._session_consecutive_wins,
+                consecutive_losses=self._session_consecutive_losses,
+                setup_quality=setup_quality,
+                vol_mult=self._overlay_vol_mult * (exp_mult or 1.0),
+            )
+
             d = decide(c, float(ltp), total_capital=capital_for("SWING"),
                        open_positions=self._swing_positions(), regime=regime,
                        min_rr=min_rr_override or regime_min_rr(regime),
                        max_chase_pct=chase_limit(c),
                        available_cash=cash,
-                       vol_mult=self._overlay_vol_mult * (exp_mult or 1.0))
+                       vol_mult=self._overlay_vol_mult * (exp_mult or 1.0),
+                       size_mult=size_mult)
             self._all_swing_decisions.append({"candidate": c, "decision": d})
             if d.action in ("BUY_NOW", "CHASE_LIMIT"):
                 out.append({"candidate": c, "decision": d, "ltp": float(ltp),
@@ -3145,6 +3298,12 @@ class IntradayEngine:
                         f"· reason {d['reason']}"),
                 ltp=ltp, r_multiple=r_now, urgency=urgency,
                 meta={"reason": d["reason"], "book_qty": book},
+                # TRAIL_SL is a book update, not an urgent action — the SL is
+                # persisted to the DB regardless of the notification. Suppress
+                # repeated notifications when the SL ratchets continuously
+                # (AI_TIGHTEN_SL, progressive trail): wait for the full rearm
+                # window (45 min default) instead of re-sending every cycle.
+                restate_on_change=False,
                 # A swing position's exit is swing news even though the intraday
                 # loop noticed it. Routed by the POSITION, not by the process.
                 framework=(p.get("framework") or "SWING").upper(),
@@ -3206,6 +3365,59 @@ class IntradayEngine:
                 except Exception as e:
                     logger.debug(f"  engine: runner telemetry persist failed "
                                 f"for {sym} — {e}")
+
+            # SCALE_OUT is a partial exit — sell a portion, reduce position.
+            if d["action"] == "SCALE_OUT" and d.get("book_qty", 0) > 0:
+                scale_out_qty = int(d["book_qty"])
+                try:
+                    from execution.order_manager import OrderRequest, place
+                    from execution.gates import is_paper, auto_exit_enabled
+                    fw = (p.get("framework") or "SWING").upper()
+                    if auto_exit_enabled(fw):
+                        live = not is_paper(fw)
+                        slip = cfg_int("swing_exit_slip_bps", 30) / 10000.0
+                        limit = round(ltp * (1 - slip), 1)
+
+                        if live:
+                            res = place(OrderRequest(p["symbol"], "SELL", scale_out_qty, "LIMIT",
+                                                    limit, reason=f"SCALE_OUT: {d['detail']}"),
+                                        self.sb, self.notifier, framework=fw)
+                            if res and res.ok:
+                                left = int(p.get("current_qty") or p.get("actual_qty") or 0) - scale_out_qty
+                                upd = {
+                                    "current_qty": max(0, left),
+                                    "actual_qty": max(0, left),
+                                    "kite_qty": max(0, left),
+                                    "partial_booked_qty": int(p.get("partial_booked_qty") or 0) + scale_out_qty,
+                                    "partial_booked_price": ltp,
+                                    "updated_at": datetime.now(IST).isoformat(),
+                                }
+                                if d.get("new_sl"):
+                                    upd["active_sl"] = d["new_sl"]
+                                self._update_position(p, upd)
+                                p.update(upd)
+                                logger.info(f"  {p['symbol']}: SCALE_OUT {scale_out_qty} shares, "
+                                           f"remaining {left}")
+                        else:
+                            from execution import paper_broker
+                            paper_broker.close_partial(p["symbol"], scale_out_qty, ltp,
+                                                     d["reason"], d["detail"], self.sb)
+                            left = int(p.get("current_qty") or p.get("actual_qty") or 0) - scale_out_qty
+                            upd = {
+                                "current_qty": max(0, left),
+                                "actual_qty": max(0, left),
+                                "kite_qty": max(0, left),
+                                "partial_booked_qty": int(p.get("partial_booked_qty") or 0) + scale_out_qty,
+                                "partial_booked_price": ltp,
+                                "updated_at": datetime.now(IST).isoformat(),
+                            }
+                            if d.get("new_sl"):
+                                upd["active_sl"] = d["new_sl"]
+                            self._update_position(p, upd)
+                            p.update(upd)
+                            self.load_state()
+                except Exception as e:
+                    logger.warning(f"  {p.get('symbol')}: scale-out failed — {e}")
 
             # Gate on the POSITION's framework, not a fixed key. This read
             # cfg_bool("intraday_auto_exit") for every position, so a swing
@@ -3355,6 +3567,24 @@ class IntradayEngine:
         # recorded as booked is corrected by the next reconcile against broker
         # holdings, while a filled order NOT recorded sells the position twice.
         if res and res.ok:
+            # ── Track session P&L and win/loss streak for dynamic sizing ──
+            try:
+                exit_px = float(ltp)  # optimistic fill at current price
+                entry_px = float(p.get("entry_price") or 0)
+                exit_qty = int(d.get("book_qty") or 0) or int(p.get("current_qty") or p.get("actual_qty") or 0)
+                exit_pnl = (exit_px - entry_px) * exit_qty
+                self._session_realized_pnl += exit_pnl
+                if exit_pnl > 0:
+                    self._session_win_count += 1
+                    self._session_consecutive_wins += 1
+                    self._session_consecutive_losses = 0
+                elif exit_pnl < 0:
+                    self._session_loss_count += 1
+                    self._session_consecutive_losses += 1
+                    self._session_consecutive_wins = 0
+            except Exception:
+                pass
+
             try:
                 if d["action"].startswith("EXIT"):
                     # exit_signal WAS NEVER WRITTEN HERE — F-43, 20-Aug-2026.

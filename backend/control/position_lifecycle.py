@@ -322,6 +322,14 @@ def load_live_exit_context(sb, base_policy: dict) -> dict:
                        f"neutral default — {e}")
         ctx["_current_regime"] = "NEUTRAL"
 
+    # REGIME HISTORY — last 5 daily regimes for MTF confirmation.
+    try:
+        hist_rows = (sb.table("market_regime").select("regime,computed_regime")
+                      .order("date", desc=True).limit(5).execute().data or [])
+        ctx["_regime_history"] = hist_rows
+    except Exception as e:
+        logger.warning(f"  regime history unavailable — {e}")
+        ctx["_regime_history"] = []
     # CURRENT SECTOR STATE — Track E, Stage E4.
     try:
         dr = (sb.table("sector_strength").select("date")
@@ -902,7 +910,7 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
             floor_sl = hwm - policy["trail_r"] * risk
             if new_sl < floor_sl:
                 new_sl = floor_sl
-            if new_sl > sl:
+            if new_sl > sl and round(new_sl, 2) != round(sl, 2):
                 locked_r = (new_sl - entry) / risk
                 return {
                     "action": "TRAIL_SL",
@@ -1111,7 +1119,15 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
 
 def evaluate_scale_in(pos: dict, ltp: float, tq, open_positions: list[dict],
                       regime: str = "NEUTRAL", total_capital: float | None = None,
-                      available_cash: float | None = None) -> dict:
+                      available_cash: float | None = None,
+                       size_mult: float = 1.0,
+                       regime_confidence: float = 0.5,
+                       session_pnl_pct: float = 0.0,
+                       recent_win_rate: float | None = None,
+                       consecutive_wins: int = 0,
+                       consecutive_losses: int = 0,
+                       setup_quality: float = 0.5,
+                       vol_mult: float = 1.0) -> dict:
     """
     Should this already-held, already-profitable SWING position receive
     ONE add-on today?
@@ -1220,12 +1236,15 @@ def evaluate_scale_in(pos: dict, ltp: float, tq, open_positions: list[dict],
                          f"against", "add_qty": 0}
 
     try:
-        from analysis.portfolio_constraints import check_new_entry
+        from analysis.portfolio_constraints import check_new_entry, compute_dynamic_multiplier
+        if size_mult is None:
+            size_mult = compute_dynamic_multiplier(regime=regime, regime_confidence=regime_confidence, session_pnl_pct=session_pnl_pct, recent_win_rate=recent_win_rate, consecutive_wins=consecutive_wins, consecutive_losses=consecutive_losses, setup_quality=setup_quality, vol_mult=vol_mult)
         v = check_new_entry(
             pos.get("symbol") or "", pos.get("sector") or "", pos.get("industry") or "",
             ltp, add_risk_per_share, open_positions or [],
             regime=regime, total_capital=total_capital,
-            available_cash=available_cash, product="CNC")
+            available_cash=available_cash, product="CNC",
+            size_mult=size_mult)
     except Exception as e:
         return {"action": "NO_ADD", "reason": "sizing_unavailable",
                "detail": f"check_new_entry failed: {e}", "add_qty": 0}
@@ -1245,6 +1264,93 @@ def evaluate_scale_in(pos: dict, ltp: float, tq, open_positions: list[dict],
         "add_risk_per_share": round(add_risk_per_share, 2),
     }
 
+
+def evaluate_scale_out(pos: dict, ltp: float, regime: str = "NEUTRAL",
+                      total_capital: float | None = None,
+                      available_cash: float | None = None,
+                      regime_history: list | None = None) -> dict:
+    """
+    Should this already-held SWING position have a partial exit taken because
+    the regime deteriorated or the position is losing?
+
+    Scale-out is the mirror of scale-in: scale-in adds risk when things
+    work, scale-out removes risk when things deteriorate.
+
+    Returns {action, reason, detail, new_sl, book_qty}.
+
+    action is one of:
+        NO_SCALE_OUT   nothing to do
+        SCALE_OUT      partial exit warranted
+    """
+    from config import cfg_bool, cfg_int, cfg_float
+
+    if not cfg_bool("scale_out_regime_deterioration", True):
+        return {"action": "NO_SCALE_OUT", "reason": "disabled",
+                "detail": "scale_out_regime_deterioration is off",
+                "new_sl": None, "book_qty": 0}
+
+    entry = float(pos.get("entry_price") or 0)
+    stop0 = float(pos.get("planned_stop") or 0)
+    sl = float(pos.get("active_sl") or stop0 or 0)
+    current_qty = int(pos.get("current_qty") or pos.get("actual_qty") or 0)
+
+    if not entry or not ltp or current_qty <= 0:
+        return {"action": "NO_SCALE_OUT", "reason": "missing_data",
+                "detail": "missing entry, ltp, or qty",
+                "new_sl": None, "book_qty": 0}
+
+    risk = entry - stop0 if stop0 and stop0 < entry else entry * 0.05
+    gain_r = (ltp - entry) / risk if risk else 0.0
+    scale_out_min_r = cfg_float("scale_out_min_r", -1.0)
+    regime_u = (regime or "NEUTRAL").upper()
+
+    # ── Trigger 1: Position is losing ──
+    trigger_loss = gain_r <= scale_out_min_r
+
+    # ── Trigger 2: Regime deteriorated ──
+    trigger_regime = regime_u in ("RISK OFF", "RECOVERING")
+
+    # ── Trigger 3: MTF conflict (weekly RISK OFF) ──
+    trigger_mtf = False
+    if cfg_bool("mtf_regime_confirmation", True):
+        recent_regimes = [r.get("computed_regime") or r.get("regime")
+                          for r in (regime_history or [])[:5]]
+        weekly_risk_off = sum(1 for r in recent_regimes if r == "RISK OFF") >= 3
+        if weekly_risk_off and cfg_bool("mtf_weekly_risk_off_blocks_scale_in", True):
+            trigger_mtf = True
+            trigger_regime = True
+
+    if not (trigger_loss or trigger_regime or trigger_mtf):
+        return {"action": "NO_SCALE_OUT", "reason": "no_trigger",
+                "detail": f"{gain_r:+.2f}R, regime={regime_u} — no scale-out trigger",
+                "new_sl": None, "book_qty": 0}
+
+    from analysis.portfolio_constraints import compute_scale_out_qty
+    scale_out_pct = cfg_int("scale_out_pct", 50)
+    so = compute_scale_out_qty(current_qty, float(ltp), scale_out_pct)
+
+    if so["scale_out_qty"] <= 0:
+        return {"action": "NO_SCALE_OUT", "reason": "qty_zero",
+                "detail": so["reason"], "new_sl": None, "book_qty": 0}
+
+    # Tighten stop if regime deteriorated
+    new_sl = None
+    if trigger_regime or trigger_mtf:
+        tighten_pct = cfg_float("scale_out_stop_tighten_pct", 1.0)
+        candidate_sl = round(float(ltp) * (1 - tighten_pct / 100.0), 2)
+        if candidate_sl > sl:
+            new_sl = candidate_sl
+
+    reason_text = "regime deterioration" if (trigger_regime or trigger_mtf) else "position losing"
+    return {
+        "action": "SCALE_OUT",
+        "reason": reason_text,
+        "detail": (f"{gain_r:+.2f}R, regime={regime_u} — scaling out "
+                   f"{so['scale_out_qty']}/{current_qty} shares "
+                   f"({so['scale_out_value']:,.0f})"),
+        "new_sl": new_sl,
+        "book_qty": so["scale_out_qty"],
+    }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIGNAL ATTRIBUTION

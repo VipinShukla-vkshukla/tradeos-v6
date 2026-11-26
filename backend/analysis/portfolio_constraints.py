@@ -41,7 +41,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import cfg_float, cfg_int, cfg, capital_for
+from config import (cfg_float, cfg_int, cfg, capital_for,
+                    SIZING_REGIME_BASE_TRENDING, SIZING_REGIME_BASE_RISK_ON,
+                    SIZING_REGIME_BASE_NEUTRAL, SIZING_REGIME_BASE_RECOVERING,
+                    SIZING_REGIME_BASE_RISK_OFF, SIZING_REGIME_CONF_WEIGHT,
+                    SIZING_REGIME_MAX_MULT, SIZING_DD_THRESHOLD_PCT,
+                    SIZING_DD_STEP_PCT, SIZING_DD_STEP_MULT, SIZING_DD_MIN_MULT,
+                    SIZING_WINRATE_LOOKBACK, SIZING_WINRATE_MIN_PCT,
+                    SIZING_WINRATE_MAX_PCT, SIZING_WINRATE_LOW_MULT,
+                    SIZING_WINRATE_HIGH_MULT, SIZING_MOMENTUM_MAX,
+                    SIZING_CONSECUTIVE_WIN_BONUS, SIZING_CONSECUTIVE_LOSS_PENALTY,
+                    SIZING_MIN_MULT, SIZING_MAX_MULT)
 
 
 # Maximum share of DEPLOYED capital permitted in one sector, by regime.
@@ -83,7 +93,232 @@ def load_constraints(regime: str = "NEUTRAL") -> dict:
     }
 
 
+def compute_dynamic_multiplier(
+    regime: str,
+    regime_confidence: float = 0.5,
+    session_pnl_pct: float = 0.0,
+    recent_win_rate: float | None = None,
+    consecutive_wins: int = 0,
+    consecutive_losses: int = 0,
+    setup_quality: float = 0.5,
+    vol_mult: float = 1.0,
+) -> float:
+    """
+    Composite dynamic position-size multiplier.
+
+    All inputs are optional with safe defaults (1.0x = no behavior change).
+    Returns value between SIZING_MIN_MULT (0.10) and SIZING_MAX_MULT (2.00).
+
+    Components (multiplicative, self-limiting):
+      1. Regime base × confidence scaling      (market structure only, NOT P&L)
+      2. Drawdown scaling                       (from in-memory session P&L)
+      3. Win rate scaling                       (from in-memory trade counter)
+      4. Consecutive wins / losses              (momentum streak)
+      5. Setup quality / momentum               (from candidate row)
+      6. Volatility                             (already computed upstream)
+    """
+    mult = 1.0
+
+    # ── 1. Regime base + confidence scaling (market structure only) ──
+    regime_u = (regime or "NEUTRAL").upper()
+    base_map = {
+        "TRENDING":   cfg_float("sizing_regime_base_trending",
+                                SIZING_REGIME_BASE_TRENDING),
+        "RISK ON":    cfg_float("sizing_regime_base_risk_on",
+                                SIZING_REGIME_BASE_RISK_ON),
+        "NEUTRAL":    cfg_float("sizing_regime_base_neutral",
+                                SIZING_REGIME_BASE_NEUTRAL),
+        "RECOVERING": cfg_float("sizing_regime_base_recovering",
+                                SIZING_REGIME_BASE_RECOVERING),
+        "RISK OFF":   cfg_float("sizing_regime_base_risk_off",
+                                SIZING_REGIME_BASE_RISK_OFF),
+    }
+    regime_mult = base_map.get(regime_u, 1.0)
+
+    # Confidence scales the regime multiplier (up to SIZING_REGIME_MAX_MULT)
+    conf_weight = cfg_float("sizing_regime_conf_weight", SIZING_REGIME_CONF_WEIGHT)
+    conf_steps = int(regime_confidence * 10)  # 0 to 10
+    regime_mult += conf_steps * conf_weight
+    regime_mult = min(regime_mult, cfg_float("sizing_regime_max_mult",
+                                             SIZING_REGIME_MAX_MULT))
+    mult *= regime_mult
+
+    # ── 2. Drawdown scaling (from in-memory session P&L) ──
+    dd_thresh = cfg_float("sizing_dd_threshold_pct", SIZING_DD_THRESHOLD_PCT)
+    dd_step = cfg_float("sizing_dd_step_pct", SIZING_DD_STEP_PCT)
+    dd_step_mult = cfg_float("sizing_dd_step_mult", SIZING_DD_STEP_MULT)
+    dd_min = cfg_float("sizing_dd_min_mult", SIZING_DD_MIN_MULT)
+
+    if session_pnl_pct < -dd_thresh:
+        steps = int(abs(session_pnl_pct + dd_thresh) / dd_step) + 1
+        dd_mult = 1.0 - (steps * dd_step_mult)
+        dd_mult = max(dd_min, dd_mult)
+        mult *= dd_mult
+
+    # ── 3. Win rate scaling (in-memory counter) ──
+    wr_min = cfg_float("sizing_winrate_min_pct", SIZING_WINRATE_MIN_PCT)
+    wr_max = cfg_float("sizing_winrate_max_pct", SIZING_WINRATE_MAX_PCT)
+    if recent_win_rate is not None:
+        if recent_win_rate < wr_min / 100.0:
+            mult *= cfg_float("sizing_winrate_low_mult", SIZING_WINRATE_LOW_MULT)
+        elif recent_win_rate > wr_max / 100.0:
+            mult *= cfg_float("sizing_winrate_high_mult", SIZING_WINRATE_HIGH_MULT)
+
+    # ── 4. Consecutive wins / losses ──
+    win_bonus = cfg_float("sizing_consecutive_win_bonus", SIZING_CONSECUTIVE_WIN_BONUS)
+    loss_penalty = cfg_float("sizing_consecutive_loss_penalty",
+                             SIZING_CONSECUTIVE_LOSS_PENALTY)
+    mult *= (1.0 + min(consecutive_wins * win_bonus, 0.20))
+    mult *= (1.0 - min(consecutive_losses * loss_penalty, 0.30))
+
+    # ── 5. Setup quality / momentum ──
+    momentum_max = cfg_float("sizing_momentum_max", SIZING_MOMENTUM_MAX)
+    momentum_mult = 1.0 + (setup_quality - 0.5) * (momentum_max - 1.0)
+    mult *= max(0.85, min(momentum_mult, momentum_max))
+
+    # ── 6. Volatility (already computed upstream) ──
+    mult *= vol_mult
+
+    # ── 7. Global clamp ──
+    return max(cfg_float("sizing_min_mult", SIZING_MIN_MULT),
+               min(cfg_float("sizing_max_mult", SIZING_MAX_MULT), mult))
+
+
+def compute_blended_stop(entry_qty: int, entry_stop: float,
+                         addon_qty: int, addon_stop: float) -> float:
+    """
+    Blended stop for a combined position after scale-in.
+    Weighted average of entry stop and add-on stop, rounded to 2 decimals.
+    """
+    total_qty = entry_qty + addon_qty
+    if total_qty <= 0:
+        return entry_stop
+    blended = (entry_qty * entry_stop + addon_qty * addon_stop) / total_qty
+    return round(blended, 2)
+
+
+def compute_scale_in_qty(
+    entry_price: float,
+    entry_qty: int,
+    entry_stop: float,
+    current_price: float,
+    capital: float,
+    remaining_risk_budget: float,
+    size_mult: float = 1.0,
+    scale_in_risk_pct: float = 0.5,
+    scale_in_stop_tighten_pct: float = 1.0,
+    max_position_pct: float = 100.0,
+) -> dict:
+    """
+    Compute add-on quantity for scaling into a winning position.
+
+    Returns dict with keys:
+      addon_qty: number of shares to add (0 if no scale-in)
+      addon_stop: stop price for the add-on shares
+      blended_stop: combined stop for the full position
+      addon_value: value of the add-on
+      combined_value: total position value after add-on
+      reason: why scale-in was or wasn't allowed
+    """
+    result = {
+        "addon_qty": 0,
+        "addon_stop": 0.0,
+        "blended_stop": entry_stop,
+        "addon_value": 0.0,
+        "combined_value": entry_qty * entry_price,
+        "reason": "not evaluated",
+    }
+
+    if entry_price <= 0 or current_price <= 0:
+        result["reason"] = "invalid price"
+        return result
+
+    # New stop is tighter: % below current price
+    addon_stop = round(current_price * (1 - scale_in_stop_tighten_pct / 100.0), 2)
+    risk_per_share_addon = current_price - addon_stop
+    if risk_per_share_addon <= 0:
+        result["reason"] = "addon risk per share <= 0"
+        return result
+
+    # Risk budget for the add-on
+    addon_risk_budget = capital * (scale_in_risk_pct / 100.0) * size_mult
+    addon_risk_budget = min(addon_risk_budget, remaining_risk_budget)
+
+    if addon_risk_budget <= 0:
+        result["reason"] = "no risk budget remaining"
+        return result
+
+    addon_qty = int(addon_risk_budget // risk_per_share_addon)
+    if addon_qty <= 0:
+        result["reason"] = "computed qty is 0"
+        return result
+
+    addon_value = addon_qty * current_price
+    combined_value = entry_qty * current_price + addon_value
+    max_combined = capital * (max_position_pct / 100.0)
+
+    # Cap to max_position_pct of capital
+    if combined_value > max_combined:
+        addon_qty = max(0, int((max_combined - entry_qty * current_price) // current_price))
+        if addon_qty <= 0:
+            result["reason"] = "combined position exceeds max_position_pct cap"
+            return result
+        addon_value = addon_qty * current_price
+        combined_value = entry_qty * current_price + addon_value
+
+    blended = compute_blended_stop(entry_qty, entry_stop, addon_qty, addon_stop)
+
+    result.update({
+        "addon_qty": addon_qty,
+        "addon_stop": addon_stop,
+        "blended_stop": blended,
+        "addon_value": round(addon_value, 2),
+        "combined_value": round(combined_value, 2),
+        "reason": "ok",
+    })
+    return result
+
+
+def compute_scale_out_qty(
+    current_qty: int,
+    current_price: float,
+    scale_out_pct: int = 50,
+) -> dict:
+    """
+    Compute partial exit quantity for scaling out of a losing or deteriorating position.
+    Returns dict with keys:
+      scale_out_qty: number of shares to sell (0 if none)
+      remaining_qty: shares left after scale-out
+      scale_out_value: value of the sale
+      reason: why scale-out was or wasn't allowed
+    """
+    result = {
+        "scale_out_qty": 0,
+        "remaining_qty": current_qty,
+        "scale_out_value": 0.0,
+        "reason": "not evaluated",
+    }
+
+    if current_qty <= 0 or current_price <= 0:
+        result["reason"] = "invalid qty or price"
+        return result
+
+    scale_out_qty = max(1, int(current_qty * scale_out_pct / 100.0))
+    if scale_out_qty >= current_qty:
+        scale_out_qty = max(1, current_qty - 1)  # always keep at least 1 share
+
+    result.update({
+        "scale_out_qty": scale_out_qty,
+        "remaining_qty": current_qty - scale_out_qty,
+        "scale_out_value": round(scale_out_qty * current_price, 2),
+        "reason": "ok",
+    })
+    return result
+
+
 def summarise_portfolio(open_positions: list[dict]) -> dict:
+    """Current exposure by sector and industry, plus total open risk."""
+    total_value = 0.0
     """Current exposure by sector and industry, plus total open risk."""
     total_value = 0.0
     by_sector:   dict[str, float] = {}
@@ -136,6 +371,7 @@ def check_new_entry(
     available_cash:  float | None = None,
     product:         str = "CNC",
     vol_mult:        float = 1.0,
+    size_mult:       float = 1.0,
 ) -> ConstraintVerdict:
     """
     Admissibility + maximum size for one prospective entry.
@@ -224,6 +460,11 @@ def check_new_entry(
     qty_by_cash   = int(available_cash // entry_price) if available_cash is not None else qty_by_maxpos
 
     qty = max(0, min(qty_by_risk, qty_by_sector, qty_by_maxpos, qty_by_cash))
+
+    # ── Apply dynamic size multiplier ──
+    # Scales qty up/down based on regime, drawdown, win rate, streak, setup quality.
+    # Defaults to 1.0x = no behavior change.
+    qty = int(qty * size_mult)
 
     # ── Volatility-regime exposure scaling (Stage 9 overlay) ─────────────────
     # Applied to the already-capped qty, not to `capital` upstream of it — so
