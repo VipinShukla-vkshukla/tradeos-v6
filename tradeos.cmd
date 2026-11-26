@@ -385,7 +385,7 @@ REM git checkout on next-env.d.ts first: Next.js REGENERATES this file on every
 REM build, and once it diverges the next pull aborts with "local changes would be
 REM overwritten" and nothing ships until it is restored by hand. It carries no
 REM hand-written content, so restoring it is always safe.
-ssh -i "%KEY%" ubuntu@%SRV% "cd ~/tradeos-v6 && git checkout -- frontend/next-env.d.ts && git pull --ff-only && sudo systemctl restart tradeos-intraday && sleep 8 && systemctl is-active tradeos-intraday && journalctl -u tradeos-intraday -n 25 --no-pager"
+ssh -i "%KEY%" ubuntu@%SRV% "cd ~/tradeos-v6 && if ! git diff --quiet || ! git diff --cached --quiet; then echo 'ABORT: tracked local changes on server:'; git status --short; exit 1; fi && git checkout -- frontend/next-env.d.ts && git pull --ff-only && sudo systemctl restart tradeos-intraday && sleep 8 && systemctl is-active tradeos-intraday && journalctl -u tradeos-intraday -n 25 --no-pager"
 goto END
 
 :VCNDEPLOYC
@@ -414,7 +414,7 @@ REM next ubuntu-run build dies with "EACCES: permission denied, unlink". Re-own
 REM .next to ubuntu before building. Skipped on a fresh clone (no .next yet).
 echo Deploying to %SRV% — pull, frontend build, pm2 restart, daemon restart.
 echo This takes about two minutes (npm run build)...
-ssh -i "%KEY%" ubuntu@%SRV% "cd ~/tradeos-v6 && git checkout -- frontend/next-env.d.ts && git log --oneline -1 && git pull --ff-only && cd frontend && if [ -d .next ]; then sudo chown -R ubuntu:ubuntu .next; fi && npm run build && cd .. && sudo pm2 restart tradeos-dashboard && sudo systemctl restart tradeos-intraday && sleep 8 && echo '--- daemon ---' && systemctl is-active tradeos-intraday && echo '--- dashboard ---' && curl -s -o /dev/null -w 'http_%%{http_code}' http://127.0.0.1:3000"
+ssh -i "%KEY%" ubuntu@%SRV% "cd ~/tradeos-v6 && if ! git diff --quiet || ! git diff --cached --quiet; then echo 'ABORT: tracked local changes on server:'; git status --short; exit 1; fi && git checkout -- frontend/next-env.d.ts && git log --oneline -1 && git pull --ff-only && cd frontend && if [ -d .next ]; then sudo chown -R ubuntu:ubuntu .next; fi && npm run build && cd .. && sudo pm2 restart tradeos-dashboard && sudo systemctl restart tradeos-intraday && sleep 8 && echo '--- daemon ---' && systemctl is-active tradeos-intraday && echo '--- dashboard ---' && curl -s -o /dev/null -w 'http_%%{http_code}' http://127.0.0.1:3000"
 if errorlevel 1 (
   echo.
   echo   DEPLOY FAILED at some step above — the daemon and dashboard were NOT

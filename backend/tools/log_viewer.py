@@ -49,8 +49,15 @@ if BASE_PATH and not BASE_PATH.startswith("/"):
 if BASE_PATH and BASE_PATH.endswith("/"):
     BASE_PATH = BASE_PATH.rstrip("/")
 PASSWORD = os.getenv("LOG_VIEWER_PASSWORD", "")
-MAX_LINES = 2000
-DEFAULT_LINES = 200
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+MAX_LINES = _env_int("LOG_VIEWER_MAX_LINES", 2000)
+DEFAULT_LINES = _env_int("LOG_VIEWER_DEFAULT_LINES", 200)
 REFRESH_SEC = 3
 
 
@@ -156,40 +163,40 @@ def _html_page(date_str: str, lines: int, content: list[str], base_path: str) ->
   <a href="{base_path}/?date={html.escape(date_str)}&lines=2000">max lines</a>
 </div>
 <script>
-  (function () {
+  (function () {{
     const KEY_Y = 'tradeos-log-scroll-y';
     const KEY_PINNED = 'tradeos-log-pinned';
-    function isPinned() {
+    function isPinned() {{
       return (window.innerHeight + window.scrollY) >= (document.body.scrollHeight - 80);
-    }
-    window.addEventListener('scroll', function () {
-      try {
+    }}
+    window.addEventListener('scroll', function () {{
+      try {{
         sessionStorage.setItem(KEY_Y, String(window.scrollY));
         sessionStorage.setItem(KEY_PINNED, isPinned() ? '1' : '0');
-      } catch (e) {}
-    }, { passive: true });
-    window.addEventListener('beforeunload', function () {
-      try {
+      }} catch (e) {{}}
+    }}, {{ passive: true }});
+    window.addEventListener('beforeunload', function () {{
+      try {{
         sessionStorage.setItem(KEY_Y, String(window.scrollY));
         sessionStorage.setItem(KEY_PINNED, isPinned() ? '1' : '0');
-      } catch (e) {}
-    });
-    window.onload = function () {
+      }} catch (e) {{}}
+    }});
+    window.onload = function () {{
       const pre = document.getElementById('log');
       let pinned = false;
-      try { pinned = sessionStorage.getItem(KEY_PINNED) === '1'; } catch (e) {}
-      if (pinned) {
+      try {{ pinned = sessionStorage.getItem(KEY_PINNED) === '1'; }} catch (e) {{}}
+      if (pinned) {{
         window.scrollTo(0, document.body.scrollHeight);
         if (pre) pre.scrollTop = pre.scrollHeight;
-      } else {
+      }} else {{
         let y = 0;
-        try { y = parseInt(sessionStorage.getItem(KEY_Y) || '0', 10) || 0; } catch (e) {}
+        try {{ y = parseInt(sessionStorage.getItem(KEY_Y) || '0', 10) || 0; }} catch (e) {{}}
         const max = Math.max(0, document.body.scrollHeight - window.innerHeight);
         if (y > max) y = max;
         window.scrollTo(0, y);
-      }
-    };
-  })();
+      }}
+    }};
+  }})();
 </script>
 </body>
 </html>"""

@@ -12,9 +12,13 @@ Environment=PYTHONUNBUFFERED=1
 #   LOG_VIEWER_PORT      port to listen on (default 8765)
 #   LOG_VIEWER_BASE_PATH URL path prefix, e.g. /logs  (default "")
 #   LOG_VIEWER_PASSWORD  basic auth password — SET THIS if exposing publicly
+#   LOG_VIEWER_MAX_LINES    max lines tail (default 2000); raise for full-history view
+#   LOG_VIEWER_DEFAULT_LINES default lines shown (default 200)
 Environment=LOG_VIEWER_PORT=8765
 Environment=LOG_VIEWER_BASE_PATH=/logs
 Environment=LOG_VIEWER_PASSWORD=Khiara
+# Environment=LOG_VIEWER_MAX_LINES=1000000
+# Environment=LOG_VIEWER_DEFAULT_LINES=1000000
 ExecStart=/home/ubuntu/tradeos-v6/.venv/bin/python -m tools.log_viewer
 Restart=on-failure
 RestartSec=10

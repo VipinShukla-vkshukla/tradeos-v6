@@ -97,3 +97,20 @@ arriving proves the server is alive independently of your laptop being on.
 Both read and write the same Supabase, so neither has a private view of the
 book. If the server is down the daemon simply stops — positions keep their
 broker-side GTT stops, which is the reason those exist.
+
+## Keeping the server in sync (deploy hygiene)
+
+`tradeos vcn deploy` runs `git pull --ff-only` on the server. That aborts if
+any **tracked** file has uncommitted edits there, so the server's working tree
+must stay clean:
+
+- **Never edit tracked source on the server.** If a setting needs to differ per
+  host (e.g. log viewer line limits), use an environment variable in the
+  systemd unit (`deploy/log_viewer.service`) instead of changing code.
+- **Dependency changes go through the repo.** Do not `npm install` different
+  versions or hand-edit `package.json` on the server; commit them locally first.
+- **Untracked clutter** (`.env.bak.*`, stray clones) does not block a pull but
+  should be cleaned up so `git status` stays readable.
+- If a deploy aborts with `ABORT: tracked local changes on server:`, run
+  `git status` / `git diff` on the server, decide whether to commit the change
+  upstream or discard it (`git checkout -- <file>`), then re-run the deploy.
