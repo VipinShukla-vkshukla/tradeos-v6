@@ -434,6 +434,26 @@ def main(once: bool = False, dry: bool = False) -> None:
                     buyable = result.get("buyable", 0)
                     regime = (engine.candidates[0].get("regime") or "NEUTRAL"
                               if engine.candidates else "NEUTRAL")
+
+                    # Allocator's ACTUAL verdict this cycle. The pre-market
+                    # gate badge only reads regime/VIX and cannot know that the
+                    # edge floor refused the whole book — surface it here so a
+                    # stand-down reads as a decision, not a dead process.
+                    _verdicts = getattr(engine, "_verdicts", None) or {}
+                    if _verdicts:
+                        _takes = sum(1 for x in _verdicts.values()
+                                     if x.get("verdict") == "TAKE")
+                        _floored = any(
+                            (x.get("hurdle_inputs") or {}).get("absolute_floor_applied")
+                            and x.get("verdict") != "TAKE"
+                            for x in _verdicts.values())
+                        allocator_state = (
+                            f"EDGE FLOOR — all {len(_verdicts)} refused"
+                            if _floored and _takes == 0
+                            else f"{_takes}/{len(_verdicts)} take")
+                    else:
+                        allocator_state = None
+
                     log_cycle_summary(
                         cycle_count=cycle_count,
                         positions_held=len(engine.positions),
@@ -450,6 +470,7 @@ def main(once: bool = False, dry: bool = False) -> None:
                         restricted=swing_entries_restricted,
                         same_day_discoveries=len(engine._same_day_candidates),
                         live_requalify_admitted=0,
+                        allocator_state=allocator_state,
                     )
 
                     # ── Intraday log polish: immediate gap detection ──────────

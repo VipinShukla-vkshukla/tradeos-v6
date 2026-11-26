@@ -111,7 +111,11 @@ def format_session_start(
     elif entries_restricted:
         lines.append(f"│     ⚠️  SWING ENTRIES RESTRICTED — {sizing_override or 'HALF'} sizing, max 1 entry   │")
     else:
-        lines.append("│     ✅ SWING ENTRIES ALLOWED                                            │")
+        # The pre-market gate only reads regime/VIX; it cannot know what the
+        # per-cycle allocator decides. Say what this badge actually means so it
+        # stops reading as "entries are happening" when the edge floor has
+        # refused the entire book. The live verdict is shown each cycle.
+        lines.append("│     ✅ PRE-MARKET GATE: ALLOWED — live allocator verdict each cycle     │")
     lines.append("│                                                                         │")
     lines.append("└─────────────────────────────────────────────────────────────────────────┘")
     lines.append("")
@@ -139,6 +143,7 @@ def format_cycle_summary(
     same_day_discoveries: int = 0,
     live_requalify_admitted: int = 0,
     gaps: List[str] | None = None,
+    allocator_state: str | None = None,
 ) -> str:
     """
     Build a per-cycle summary line block.
@@ -177,6 +182,14 @@ def format_cycle_summary(
         lines.append(f"│ ⛔ BLOCKED: {block_reason}                                             │")
     elif restricted:
         lines.append("│ ⚠️  RESTRICTED: VIX > 25 — structural-edge only, min_rr=2.0              │")
+
+    # Allocator's ACTUAL verdict — the pre-market gate cannot know this. When
+    # the edge floor refuses the whole book, entries are impossible even though
+    # the session banner says the pre-market gate is "ALLOWED".
+    if allocator_state:
+        icon = "⚠️" if "FLOOR" in allocator_state else "🟢"
+        inner = f"{icon} ALLOCATOR: {allocator_state}"
+        lines.append("│ " + inner[:71].ljust(71) + " │")
 
     lines.append("└─────────────────────────────────────────────────────────────────────────┘")
     return "\n".join(lines)
