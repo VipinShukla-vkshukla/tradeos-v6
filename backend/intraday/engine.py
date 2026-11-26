@@ -2468,6 +2468,23 @@ class IntradayEngine:
                 self._track_trend_quality(p)
                 self._shadow_scale_in(p, float(ltp))
 
+                # ── Scale-out check: partial exit on regime deterioration ──
+                # Only for SWING positions. Reuses evaluate_scale_out() which
+                # checks regime deterioration, losing positions, and MTF conflict.
+                try:
+                    from control.position_lifecycle import evaluate_scale_out
+                    regime = (self._policy or {}).get("_current_regime") or "NEUTRAL"
+                    recent_regimes = [r.get("computed_regime") or r.get("regime")
+                                      for r in (getattr(self, "_regime_history", []) or [])[:5]]
+                    so_d = evaluate_scale_out(
+                        p, float(ltp), regime=regime,
+                        total_capital=capital_for("SWING"),
+                        available_cash=capital_for("SWING"),
+                        regime_history=getattr(self, "_regime_history", []))
+                    if so_d["action"] == "SCALE_OUT":
+                        actions.append({"position": p, "decision": so_d, "ltp": float(ltp)})
+                except Exception as e:
+                    logger.debug(f"  {p.get('symbol')}: scale-out check skipped — {e}")
             # LIVE METRICS ON EVERY CYCLE, INCLUDING WHEN NOTHING IS TO BE DONE.
             #
             # This loop only ever wrote to a position when it was ACTING on it —
@@ -2572,6 +2589,24 @@ class IntradayEngine:
                 from control.exit_rules import assess_trend
                 tq = assess_trend(sig, p)
             regime = (self._policy or {}).get("_current_regime") or "NEUTRAL"
+            intraday_regime = regime  # same source currently
+
+            # ── MTF regime confirmation ──
+            # Derive weekly regime from last 5 daily regimes (already in memory).
+            # Block scale-in if weekly RISK OFF; reduce size by 25% on daily/intraday conflict.
+            mtf_size_mult = 1.0
+            mtf_scale_in_blocked = False
+            if cfg_bool("mtf_regime_confirmation", True):
+                recent_regimes = [r.get("computed_regime") or r.get("regime")
+                                  for r in (getattr(self, "_regime_history", []) or [])[:5]]
+                weekly_risk_off = sum(1 for r in recent_regimes if r == "RISK OFF") >= 3
+                if weekly_risk_off and cfg_bool("mtf_weekly_risk_off_blocks_scale_in", True):
+                    mtf_scale_in_blocked = True
+                    logger.info(f"  {sym}: scale-in blocked — weekly regime RISK OFF (MTF)")
+                    return
+                if regime != intraday_regime:
+                    mtf_size_mult = 0.75
+                    logger.info(f"  {sym}: scale-in size reduced 25% — daily/intraday regime conflict")
 
             # ── Dynamic sizing inputs (all in-memory, zero Supabase) ──
             cands = self.candidates or []
@@ -2618,7 +2653,7 @@ class IntradayEngine:
                                   consecutive_wins=self._session_consecutive_wins,
                                   consecutive_losses=self._session_consecutive_losses,
                                   setup_quality=setup_quality,
-                                  vol_mult=self._overlay_vol_mult or 1.0)
+                                  vol_mult=(self._overlay_vol_mult or 1.0) * mtf_size_mult)
             if d["action"] != "SCALE_IN":
                 return
             if not cfg_bool("swing_scale_in_auto_entry", False):
@@ -3330,6 +3365,59 @@ class IntradayEngine:
                 except Exception as e:
                     logger.debug(f"  engine: runner telemetry persist failed "
                                 f"for {sym} — {e}")
+
+            # SCALE_OUT is a partial exit — sell a portion, reduce position.
+            if d["action"] == "SCALE_OUT" and d.get("book_qty", 0) > 0:
+                scale_out_qty = int(d["book_qty"])
+                try:
+                    from execution.order_manager import OrderRequest, place
+                    from execution.gates import is_paper, auto_exit_enabled
+                    fw = (p.get("framework") or "SWING").upper()
+                    if auto_exit_enabled(fw):
+                        live = not is_paper(fw)
+                        slip = cfg_int("swing_exit_slip_bps", 30) / 10000.0
+                        limit = round(ltp * (1 - slip), 1)
+
+                        if live:
+                            res = place(OrderRequest(p["symbol"], "SELL", scale_out_qty, "LIMIT",
+                                                    limit, reason=f"SCALE_OUT: {d['detail']}"),
+                                        self.sb, self.notifier, framework=fw)
+                            if res and res.ok:
+                                left = int(p.get("current_qty") or p.get("actual_qty") or 0) - scale_out_qty
+                                upd = {
+                                    "current_qty": max(0, left),
+                                    "actual_qty": max(0, left),
+                                    "kite_qty": max(0, left),
+                                    "partial_booked_qty": int(p.get("partial_booked_qty") or 0) + scale_out_qty,
+                                    "partial_booked_price": ltp,
+                                    "updated_at": datetime.now(IST).isoformat(),
+                                }
+                                if d.get("new_sl"):
+                                    upd["active_sl"] = d["new_sl"]
+                                self._update_position(p, upd)
+                                p.update(upd)
+                                logger.info(f"  {p['symbol']}: SCALE_OUT {scale_out_qty} shares, "
+                                           f"remaining {left}")
+                        else:
+                            from execution import paper_broker
+                            paper_broker.close_partial(p["symbol"], scale_out_qty, ltp,
+                                                     d["reason"], d["detail"], self.sb)
+                            left = int(p.get("current_qty") or p.get("actual_qty") or 0) - scale_out_qty
+                            upd = {
+                                "current_qty": max(0, left),
+                                "actual_qty": max(0, left),
+                                "kite_qty": max(0, left),
+                                "partial_booked_qty": int(p.get("partial_booked_qty") or 0) + scale_out_qty,
+                                "partial_booked_price": ltp,
+                                "updated_at": datetime.now(IST).isoformat(),
+                            }
+                            if d.get("new_sl"):
+                                upd["active_sl"] = d["new_sl"]
+                            self._update_position(p, upd)
+                            p.update(upd)
+                            self.load_state()
+                except Exception as e:
+                    logger.warning(f"  {p.get('symbol')}: scale-out failed — {e}")
 
             # Gate on the POSITION's framework, not a fixed key. This read
             # cfg_bool("intraday_auto_exit") for every position, so a swing
