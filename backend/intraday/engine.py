@@ -3148,7 +3148,7 @@ class IntradayEngine:
             # Computed from in-memory state only — zero Supabase reads.
             # Base regime comes from evening pipeline; confidence is computed
             # from live ticks at this symbol's cycle.
-            all_prices = feed.all_prices() if feed else {}
+            all_prices = prices or {}
             nifty_price = float(all_prices.get("NIFTY 50", all_prices.get("^NSEI", 0)) or 0)
             nifty_1d_chg = float((self.candidates[0] or {}).get("nifty_1d_chg_pct", 0) or 0) if self.candidates else 0.0
             india_vix = float((self.candidates[0] or {}).get("india_vix", 0) or 0) if self.candidates else 0.0
@@ -5750,7 +5750,7 @@ class IntradayEngine:
         from datetime import datetime
 
         sym = str(candidate.get("symbol", "")).upper()
-        today = today_ist().date()
+        today = today_ist()
 
         # ── Guardrail 1: minimum holding period ──
         min_hold = cfg_int("swap_min_holding_days", 3)

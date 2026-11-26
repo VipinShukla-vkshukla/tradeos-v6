@@ -344,9 +344,15 @@ def main(once: bool = False, dry: bool = False) -> None:
                 last_ws_try = now
                 try:
                     from kite import kite_client
-                    if kite_client.get_kite() and feed.start_websocket():
-                        logger.success("  price_feed: websocket connected — a session "
-                                       "appeared after startup, switching off polling")
+                    try:
+                        if kite_client.get_kite() and feed.start_websocket():
+                            logger.success("  price_feed: websocket connected — a session "
+                                           "appeared after startup, switching off polling")
+                        else:
+                            logger.warning("  price_feed: websocket retry did not connect "
+                                           "(no Kite session or start failed)")
+                    except Exception as e:
+                        logger.warning(f"  price_feed: websocket retry failed: {e}")
                 except Exception as e:
                     logger.debug(f"  websocket retry failed: {e}")
 
@@ -382,16 +388,24 @@ def main(once: bool = False, dry: bool = False) -> None:
                     # exits/stops still evaluate on the last known price.
                     stale_symbols = (
                         feed.stale_symbols() if not feed.connected else set())
-                    result = engine.cycle(prices, sync_gtt=sync, feed=feed,
-                                          stale_symbols=stale_symbols)
-                    if sync:
-                        last_gtt = now
+                    try:
+                        result = engine.cycle(prices, sync_gtt=sync, feed=feed,
+                                              stale_symbols=stale_symbols)
+                        if sync:
+                            last_gtt = now
+                    except Exception as e:
+                        logger.exception(f"  engine.cycle failed — {e}")
+                        result = None
 
                     # ── Per-cycle heartbeat — always logged, even with zero actions.
                     #    This is the operator's "is the daemon alive?" signal.
                     #    Before this, nothing was logged when all entries were
                     #    refused, making a silent stand-down indistinguishable
                     #    from a dead process.
+                    if result is None:
+                        last_eval = now
+                        last_guard = now
+                        continue
                     buyable = result.get("buyable", 0)
                     regime = (engine.candidates[0].get("regime") or "NEUTRAL"
                               if engine.candidates else "NEUTRAL")
@@ -709,6 +723,9 @@ def main(once: bool = False, dry: bool = False) -> None:
 
     except KeyboardInterrupt:
         logger.info("Interrupted — shutting down")
+    except Exception as e:
+        logger.exception(f"daemon crashed — {e}")
+        raise
     finally:
         feed.stop()
 

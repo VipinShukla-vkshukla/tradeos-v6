@@ -272,6 +272,15 @@ class PriceFeed:
             for k, v in (instruments or {}).items():
                 self._set(k.split(":", 1)[1], float(v.get("last_price") or 0))
 
+            # Close any previous ticker before opening a fresh one so a
+            # reconnect cannot leave a half-open socket from a 1006 drop.
+            if self._ticker:
+                try:
+                    self._ticker.close()
+                except Exception:
+                    pass
+                self._ticker = None
+
             ticker = KiteTicker(KITE_API_KEY, token)
 
             # CAPTURE IS BROADER THAN CONSUMPTION, AND HAS TO BE.
