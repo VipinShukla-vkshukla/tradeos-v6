@@ -5675,6 +5675,14 @@ class IntradayEngine:
                         f"({d.reason if d else ''})"
                     )
 
+        # Refresh state after acting so pending fills/entries and newly
+        # recorded positions are visible in this session's logs immediately,
+        # not only on the next 300s load_state() timer.
+        try:
+            self.load_state()
+        except Exception as e:
+            logger.warning(f"  post-entry state reload failed: {e}")
+
     # ── Swap helpers ──────────────────────────────────────────────────────
 
     def _count_swaps_today(self) -> int:

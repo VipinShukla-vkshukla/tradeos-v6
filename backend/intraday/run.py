@@ -294,11 +294,36 @@ def main(once: bool = False, dry: bool = False) -> None:
         swing_entries_restricted = rstr and rstr[0]["value"] == "true"
         sz = sb.table("system_config").select("value").eq("key", "swing_block_sizing_override").execute().data
         swing_block_sizing_override = sz[0]["value"] if sz else None
-        # Read current regime/VIX/FII from market_regime table
-        regime_rows = sb.table("market_regime").select("regime,india_vix,fii_flag").order("date", desc=True).limit(1).execute().data
-        regime_label = regime_rows[0]["regime"] if regime_rows else "NEUTRAL"
-        vix_value = regime_rows[0]["india_vix"] if regime_rows else None
-        fii_flag = regime_rows[0]["fii_flag"] if regime_rows else None
+        # Read current regime/VIX/FII. Regime/VIX come from market_regime;
+        # FII comes from fii_dii_flow (not market_regime.fii_flag).
+        regime_rows = sb.table("market_regime").select("regime,india_vix").order("date", desc=True).limit(1).execute().data or []
+        regime_label = (regime_rows[0].get("regime") or "NEUTRAL") if regime_rows else "NEUTRAL"
+        vix_value = regime_rows[0].get("india_vix") if regime_rows else None
+        # If latest market_regime row has null VIX, use latest non-null VIX.
+        if vix_value is None:
+            vix_rows = (sb.table("market_regime").select("india_vix")
+                          .not_.is_("india_vix", "null")
+                          .order("date", desc=True).limit(1).execute().data or [])
+            if vix_rows:
+                vix_value = vix_rows[0].get("india_vix")
+        # Fallback to macro_indicators if market_regime has no VIX.
+        if vix_value is None:
+            try:
+                macro_rows = (sb.table("macro_indicators").select("indicator_value")
+                                .eq("indicator_name", "India VIX")
+                                .order("indicator_date", desc=True).limit(1).execute().data or [])
+                if macro_rows:
+                    vix_value = macro_rows[0].get("indicator_value")
+            except Exception:
+                pass
+        fii_flag = None
+        try:
+            fii_rows = (sb.table("fii_dii_flow").select("fii_flag")
+                          .order("date", desc=True).limit(1).execute().data or [])
+            if fii_rows:
+                fii_flag = fii_rows[0].get("fii_flag") or "NEUTRAL"
+        except Exception:
+            pass
     except Exception as e:
         logger.debug(f"Regime gate read from system_config failed: {e}")
 
@@ -346,8 +371,8 @@ def main(once: bool = False, dry: bool = False) -> None:
                     from kite import kite_client
                     try:
                         if kite_client.get_kite() and feed.start_websocket():
-                            logger.success("  price_feed: websocket connected — a session "
-                                           "appeared after startup, switching off polling")
+                            logger.success("  price_feed: websocket retry started — "
+                                           "a session appeared after startup; waiting for on_connect")
                         else:
                             logger.warning("  price_feed: websocket retry did not connect "
                                            "(no Kite session or start failed)")

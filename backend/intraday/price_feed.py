@@ -57,6 +57,10 @@ class PriceFeed:
         self._bars = BarBuilder()
         self._ticker = None
         self._connected = False
+        self.last_ws_error: str | None = None
+        self.last_ws_error_at: datetime | None = None
+        self.last_ws_event: str | None = None
+        self.last_resubscribe_at: datetime | None = None
         self._token_to_symbol: dict[int, str] = {}
         self.source = "none"
         self.mode = "ltp"
@@ -282,6 +286,12 @@ class PriceFeed:
                 self._ticker = None
 
             ticker = KiteTicker(KITE_API_KEY, token)
+            # KiteTicker has built-in reconnect; cap retries and use safe delays.
+            try:
+                ticker.reconnect_max_tries = cfg_int("kite_ws_reconnect_max_tries", KiteTicker.RECONNECT_MAX_TRIES)
+                ticker.reconnect_max_delay = cfg_int("kite_ws_reconnect_max_delay_s", KiteTicker.RECONNECT_MAX_DELAY)
+            except Exception:
+                pass
 
             # CAPTURE IS BROADER THAN CONSUMPTION, AND HAS TO BE.
             #
@@ -381,15 +391,21 @@ class PriceFeed:
                     self.mode = "ltp"
                 self._connected = True
                 self.source = "kite_ws"
+                self.last_ws_event = "connected"
+                self.last_ws_error = None
                 logger.success(f"  price_feed: websocket connected, "
                                f"{len(self._token_to_symbol)} symbols, mode={self.mode}")
 
             def on_close(ws, code, reason):
                 self._connected = False
+                self.last_ws_event = f"closed:{code}"
                 logger.warning(f"  price_feed: websocket closed ({code}: {reason})")
 
             def on_error(ws, code, reason):
                 self._connected = False
+                self.last_ws_error = f"{code}: {reason}"
+                self.last_ws_error_at = datetime.now(IST)
+                self.last_ws_event = "error"
                 logger.warning(f"  price_feed: websocket error ({code}: {reason})")
 
             ticker.on_ticks = on_ticks
@@ -442,6 +458,7 @@ class PriceFeed:
         if new == self.symbols:
             return
         self.symbols = new
+        self.last_resubscribe_at = datetime.now(IST)
         if self._connected and self._ticker:
             try:
                 from kite import kite_client
