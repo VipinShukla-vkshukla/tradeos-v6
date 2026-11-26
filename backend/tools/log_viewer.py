@@ -156,10 +156,40 @@ def _html_page(date_str: str, lines: int, content: list[str], base_path: str) ->
   <a href="{base_path}/?date={html.escape(date_str)}&lines=2000">max lines</a>
 </div>
 <script>
-  window.onload = () => {{
-    const pre = document.getElementById('log');
-    pre.scrollTop = pre.scrollHeight;
-  }};
+  (function () {
+    const KEY_Y = 'tradeos-log-scroll-y';
+    const KEY_PINNED = 'tradeos-log-pinned';
+    function isPinned() {
+      return (window.innerHeight + window.scrollY) >= (document.body.scrollHeight - 80);
+    }
+    window.addEventListener('scroll', function () {
+      try {
+        sessionStorage.setItem(KEY_Y, String(window.scrollY));
+        sessionStorage.setItem(KEY_PINNED, isPinned() ? '1' : '0');
+      } catch (e) {}
+    }, { passive: true });
+    window.addEventListener('beforeunload', function () {
+      try {
+        sessionStorage.setItem(KEY_Y, String(window.scrollY));
+        sessionStorage.setItem(KEY_PINNED, isPinned() ? '1' : '0');
+      } catch (e) {}
+    });
+    window.onload = function () {
+      const pre = document.getElementById('log');
+      let pinned = false;
+      try { pinned = sessionStorage.getItem(KEY_PINNED) === '1'; } catch (e) {}
+      if (pinned) {
+        window.scrollTo(0, document.body.scrollHeight);
+        if (pre) pre.scrollTop = pre.scrollHeight;
+      } else {
+        let y = 0;
+        try { y = parseInt(sessionStorage.getItem(KEY_Y) || '0', 10) || 0; } catch (e) {}
+        const max = Math.max(0, document.body.scrollHeight - window.innerHeight);
+        if (y > max) y = max;
+        window.scrollTo(0, y);
+      }
+    };
+  })();
 </script>
 </body>
 </html>"""

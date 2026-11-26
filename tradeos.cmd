@@ -288,7 +288,7 @@ if /i "%VCNACT%"=="pushmodel" goto VCNPUSHMODEL
 echo Streaming the Oracle daemon log — Ctrl+C to stop.
 echo   server %SRV%
 echo.
-ssh -i "%KEY%" ubuntu@%SRV% "journalctl -u tradeos-intraday -n 60 -f --no-pager"
+ssh -i "%KEY%" ubuntu@%SRV% "tail -n 100 -f ~/tradeos-v6/backend/logs/tradeos_$(TZ=Asia/Kolkata date +%%Y-%%m-%%d).log"
 goto END
 
 :VCNFIXC
