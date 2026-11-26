@@ -427,6 +427,8 @@ class IntradayEngine:
         self._session_cal: list[str] = []
         self._session_cal_day = None
         self._allocator = None
+        # Last allocator edge-floor snapshot, for diagnostics only.
+        self._last_edge_floor: dict | None = None
         # IGN's bounded lifetime bootstrap-override counter (10 lifetime
         # entries, migration 133) -- see _ign_bootstrap_used_count(). None,
         # not 0, is the "not yet fetched this process lifetime" sentinel,
@@ -6365,6 +6367,14 @@ class IntradayEngine:
             for fw, i in bars.items())
         logger.info(f"  allocator ({mode}): {len(v)} proposal(s) scored, "
                     f"{takes} to take, {len(v)-takes} refused — {detail}")
+
+        # Structured edge-floor snapshot for diagnostics; does not affect trading.
+        self._last_edge_floor = {
+            "proposals": len(v),
+            "taken": takes,
+            "refused": len(v) - takes,
+            "bars": bars,
+        }
 
         # A BOOK THAT STANDS DOWN MUST SAY WHY, LOUDLY — 10-Aug-2026.
         #

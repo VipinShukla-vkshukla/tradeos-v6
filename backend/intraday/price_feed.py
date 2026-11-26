@@ -60,7 +60,9 @@ class PriceFeed:
         self.last_ws_error: str | None = None
         self.last_ws_error_at: datetime | None = None
         self.last_ws_event: str | None = None
+        self.last_ws_connected_at: datetime | None = None
         self.last_resubscribe_at: datetime | None = None
+        self.last_resubscribe_symbol_count: int = 0
         self._token_to_symbol: dict[int, str] = {}
         self.source = "none"
         self.mode = "ltp"
@@ -392,6 +394,7 @@ class PriceFeed:
                 self._connected = True
                 self.source = "kite_ws"
                 self.last_ws_event = "connected"
+                self.last_ws_connected_at = datetime.now(IST)
                 self.last_ws_error = None
                 logger.success(f"  price_feed: websocket connected, "
                                f"{len(self._token_to_symbol)} symbols, mode={self.mode}")
@@ -459,6 +462,7 @@ class PriceFeed:
             return
         self.symbols = new
         self.last_resubscribe_at = datetime.now(IST)
+        self.last_resubscribe_symbol_count = len(new)
         if self._connected and self._ticker:
             try:
                 from kite import kite_client
