@@ -10,7 +10,7 @@ import {
   Database, HeartPulse, SlidersHorizontal,
 } from 'lucide-react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useLayoutStore } from '@/store/layoutStore';
 import { cn } from '@/lib/utils';
 
@@ -29,9 +29,18 @@ export function Sidebar({ intradayLive = false }: { intradayLive?: boolean }) {
   const activeTabId = useLayoutStore((s) => s.activeTabId);
   const setActiveTab = useLayoutStore((s) => s.setActiveTab);
   const pathname = usePathname();
+  const router = useRouter();
   // /health and /control are real routes, not activeTabId values — on those
   // pages nothing in the fixed nav list should read as active.
   const onSeparateRoute = pathname === '/health' || pathname === '/control';
+
+  const handleNavClick = (id: string) => {
+    setActiveTab(id);
+    // On the standalone /health and /control routes the dashboard tabs are
+    // not rendered, so just updating activeTabId leaves the user stranded.
+    // Navigate back to the main route so the selected tab actually shows.
+    if (onSeparateRoute) router.push('/');
+  };
 
   return (
     <nav className="w-56 shrink-0 bg-header border-r border-border flex flex-col py-3 overflow-y-auto">
@@ -39,7 +48,7 @@ export function Sidebar({ intradayLive = false }: { intradayLive?: boolean }) {
         {NAV_ITEMS.map(({ id, label, icon: Icon }) => {
           const active = !onSeparateRoute && activeTabId === id;
           return (
-            <div key={id} onClick={() => setActiveTab(id)}
+            <div key={id} onClick={() => handleNavClick(id)}
               className={cn(
                 'flex items-center gap-2.5 mx-2 px-2.5 py-2 rounded-lg cursor-pointer select-none text-sm transition-colors',
                 active ? 'bg-primary/10 text-foreground shadow-[inset_2px_0_0_var(--accent-primary)]'

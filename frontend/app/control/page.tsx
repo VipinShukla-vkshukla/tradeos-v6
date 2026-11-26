@@ -32,6 +32,8 @@ import {
 import { OperatorPanel } from '@/components/core/OperatorPanel';
 import { Header } from '@/components/core/Header';
 import { Sidebar } from '@/components/core/Sidebar';
+import type { RegimeState } from '@/types/database';
+import { isSupabaseConfigured, queries } from '@/lib/supabase';
 
 interface SectorRow {
   sector: string;
@@ -53,6 +55,27 @@ export default function ControlRoom() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [regime, setRegime] = useState<RegimeState>('NEUTRAL');
+  const [aiStatus, setAiStatus] = useState<'AVAILABLE' | 'DEGRADED' | 'UNAVAILABLE' | 'DISABLED'>('AVAILABLE');
+
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return;
+    queries.getMarketRegime().then(({ data }) => {
+      if (data?.[0]) setRegime((data[0].computed_regime ?? data[0].regime) as RegimeState);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return;
+    queries.getSystemConfig(['ai_active_provider', 'ai_provider', 'ai_fallback_mode']).then(({ data }) => {
+      if (!data) return;
+      const cfg = Object.fromEntries(data.map((r) => [r.key, r.value]));
+      const provider = cfg['ai_active_provider'] || cfg['ai_provider'];
+      if (!provider || provider === 'disabled') setAiStatus('DISABLED');
+      else if (cfg['ai_fallback_mode'] === 'true') setAiStatus('DEGRADED');
+      else setAiStatus('AVAILABLE');
+    });
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -149,7 +172,7 @@ export default function ControlRoom() {
 
   return (
     <div className="h-screen bg-dashboard flex flex-col overflow-hidden">
-      <Header />
+      <Header marketRegime={regime} aiProviderStatus={aiStatus} />
       <div className="flex flex-1 min-h-0">
         <Sidebar />
         <main className="flex-1 min-w-0 overflow-auto p-4">
