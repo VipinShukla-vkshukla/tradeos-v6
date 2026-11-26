@@ -3154,6 +3154,12 @@ class IntradayEngine:
                         f"· reason {d['reason']}"),
                 ltp=ltp, r_multiple=r_now, urgency=urgency,
                 meta={"reason": d["reason"], "book_qty": book},
+                # TRAIL_SL is a book update, not an urgent action — the SL is
+                # persisted to the DB regardless of the notification. Suppress
+                # repeated notifications when the SL ratchets continuously
+                # (AI_TIGHTEN_SL, progressive trail): wait for the full rearm
+                # window (45 min default) instead of re-sending every cycle.
+                restate_on_change=False,
                 # A swing position's exit is swing news even though the intraday
                 # loop noticed it. Routed by the POSITION, not by the process.
                 framework=(p.get("framework") or "SWING").upper(),
