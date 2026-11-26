@@ -1111,7 +1111,15 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
 
 def evaluate_scale_in(pos: dict, ltp: float, tq, open_positions: list[dict],
                       regime: str = "NEUTRAL", total_capital: float | None = None,
-                      available_cash: float | None = None) -> dict:
+                      available_cash: float | None = None,
+                       size_mult: float = 1.0,
+                       regime_confidence: float = 0.5,
+                       session_pnl_pct: float = 0.0,
+                       recent_win_rate: float | None = None,
+                       consecutive_wins: int = 0,
+                       consecutive_losses: int = 0,
+                       setup_quality: float = 0.5,
+                       vol_mult: float = 1.0) -> dict:
     """
     Should this already-held, already-profitable SWING position receive
     ONE add-on today?
@@ -1220,12 +1228,15 @@ def evaluate_scale_in(pos: dict, ltp: float, tq, open_positions: list[dict],
                          f"against", "add_qty": 0}
 
     try:
-        from analysis.portfolio_constraints import check_new_entry
+        from analysis.portfolio_constraints import check_new_entry, compute_dynamic_multiplier
+        if size_mult is None:
+            size_mult = compute_dynamic_multiplier(regime=regime, regime_confidence=regime_confidence, session_pnl_pct=session_pnl_pct, recent_win_rate=recent_win_rate, consecutive_wins=consecutive_wins, consecutive_losses=consecutive_losses, setup_quality=setup_quality, vol_mult=vol_mult)
         v = check_new_entry(
             pos.get("symbol") or "", pos.get("sector") or "", pos.get("industry") or "",
             ltp, add_risk_per_share, open_positions or [],
             regime=regime, total_capital=total_capital,
-            available_cash=available_cash, product="CNC")
+            available_cash=available_cash, product="CNC",
+            size_mult=size_mult)
     except Exception as e:
         return {"action": "NO_ADD", "reason": "sizing_unavailable",
                "detail": f"check_new_entry failed: {e}", "add_qty": 0}

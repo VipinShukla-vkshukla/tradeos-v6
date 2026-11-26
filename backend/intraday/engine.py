@@ -2572,8 +2572,53 @@ class IntradayEngine:
                 from control.exit_rules import assess_trend
                 tq = assess_trend(sig, p)
             regime = (self._policy or {}).get("_current_regime") or "NEUTRAL"
+
+            # ── Dynamic sizing inputs (all in-memory, zero Supabase) ──
+            cands = self.candidates or []
+            india_vix = float((cands[0] or {}).get("india_vix", 0) or 0) if cands else 0.0
+            adv_decline = float((cands[0] or {}).get("advance_decline_ratio", 1.0) or 1.0) if cands else 1.0
+            nifty_1d_chg = float((cands[0] or {}).get("nifty_1d_chg_pct", 0) or 0) if cands else 0.0
+
+            conf_score = 0.0
+            if nifty_1d_chg > 0.5:      conf_score += 0.30
+            elif nifty_1d_chg > 0:      conf_score += 0.15
+            elif nifty_1d_chg < -0.5:   conf_score -= 0.30
+            elif nifty_1d_chg < 0:      conf_score -= 0.15
+            if india_vix <= 14:         conf_score += 0.25
+            elif india_vix <= 20:       conf_score += 0.10
+            elif india_vix > 26:        conf_score -= 0.25
+            elif india_vix > 22:        conf_score -= 0.10
+            if adv_decline >= 1.5:      conf_score += 0.20
+            elif adv_decline >= 1.0:    conf_score += 0.10
+            elif adv_decline <= 0.5:    conf_score -= 0.20
+            elif adv_decline <= 0.8:    conf_score -= 0.10
+            regime_confidence = max(0.0, min(1.0, 0.5 + conf_score))
+
+            unrealized_pnl = sum(
+                (float(pp.get("current_price") or pp.get("entry_price") or 0)
+                 - float(pp.get("entry_price") or 0))
+                * float(pp.get("current_qty") or pp.get("actual_qty") or 0)
+                for pp in self.positions
+                if (pp.get("framework") or "SWING").upper() == "SWING"
+            )
+            session_pnl = unrealized_pnl + self._session_realized_pnl
+            session_pnl_pct = session_pnl / capital_for("SWING") if capital_for("SWING") > 0 else 0.0
+
+            total_trades = self._session_win_count + self._session_loss_count
+            recent_win_rate = (self._session_win_count / total_trades) if total_trades > 0 else 0.5
+
+            setup_quality = float((sig or {}).get("setup_quality", 0.5) or 0.5)
+
             d = evaluate_scale_in(p, ltp, tq, self._swing_positions(),
-                                  regime=regime, total_capital=capital_for("SWING"))
+                                  regime=regime, total_capital=capital_for("SWING"),
+                                  available_cash=capital_for("SWING"),
+                                  regime_confidence=regime_confidence,
+                                  session_pnl_pct=session_pnl_pct,
+                                  recent_win_rate=recent_win_rate,
+                                  consecutive_wins=self._session_consecutive_wins,
+                                  consecutive_losses=self._session_consecutive_losses,
+                                  setup_quality=setup_quality,
+                                  vol_mult=self._overlay_vol_mult or 1.0)
             if d["action"] != "SCALE_IN":
                 return
             if not cfg_bool("swing_scale_in_auto_entry", False):
