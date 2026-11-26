@@ -2939,12 +2939,21 @@ class IntradayEngine:
 
         # Fetched ONCE per cycle, not per candidate: it is the same number for
         # every symbol and a REST call per name would be 40 calls every 15s.
+        # In PAPER mode the broker is not spending real rupees — the position
+        # is sized against the paper capital (swing_capital / TOTAL_CAPITAL),
+        # not the real broker cash. Fetching from Kite in paper mode silently
+        # caps every entry at whatever the live account happens to hold, which
+        # for a small/empty broker account is far below the paper sleeve.
+        from execution.gates import is_paper
         cash = None
-        try:
-            from kite import kite_client
-            cash = float((kite_client.fetch_margins() or {}).get("available_cash") or 0) or None
-        except Exception:
-            cash = None
+        if is_paper("SWING"):
+            cash = capital_for("SWING")
+        else:
+            try:
+                from kite import kite_client
+                cash = float((kite_client.fetch_margins() or {}).get("available_cash") or 0) or None
+            except Exception:
+                cash = None
 
         exp_mult = self._swing_exposure().size_mult
 

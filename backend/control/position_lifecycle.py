@@ -902,7 +902,7 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
             floor_sl = hwm - policy["trail_r"] * risk
             if new_sl < floor_sl:
                 new_sl = floor_sl
-            if new_sl > sl:
+            if new_sl > sl and round(new_sl, 2) != round(sl, 2):
                 locked_r = (new_sl - entry) / risk
                 return {
                     "action": "TRAIL_SL",

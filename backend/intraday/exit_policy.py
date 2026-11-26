@@ -595,7 +595,12 @@ def evaluate_intraday_exit(pos: dict, ltp: float, policy: dict,
         hwm = D.favourable_excursion(float(pos.get("high_water_mark") or 0),
                                      ltp, entry, d)
         trail = hwm - D.sign(d) * policy["trail_r"] * risk
-        if D.is_better_price(trail, sl, d):
+        # Only fire when the new stop is genuinely better AND actually moves
+        # the rounded level. A trail that is 495.591 against a stored 495.59 is
+        # "better" in unrounded terms but rounds to the same number — firing it
+        # produced a TRAIL_SL notification and a DB write for no change, which
+        # flooded Telegram every cycle on a ticking price.
+        if D.is_better_price(trail, sl, d) and round(trail, 2) != round(sl, 2):
             return {
                 "action": "TRAIL_SL", "reason": "TRAIL_UPDATE",
                 "detail": (f"{gain_r:.2f}R — sl {sl:.2f} -> {trail:.2f} "
