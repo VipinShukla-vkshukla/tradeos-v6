@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo } from 'react';
 import {
   AlertTriangle, TrendingUp, DollarSign, CheckCircle,
   ArrowUpRight, ArrowDownRight, ChevronDown, ChevronRight,
-  Bell, Target, Clock, Link as LinkIcon,
+  Bell, Target, Clock, Link as LinkIcon, ArrowLeftRight,
 } from 'lucide-react';
 import { Panel, KPICard } from '@/components/core/Panel';
 import { DataGuard, SkeletonKPI, SkeletonTable } from '@/components/core/DataGuard';
@@ -12,7 +12,7 @@ import { formatCurrency, formatDate } from '@/lib/formatters';
 import { queries } from '@/lib/supabase';
 import { RLadder } from '@/components/positions/RLadder';
 import { TradeDetailDialog, type TradeDetailTarget } from '@/components/positions/TradeDetailDialog';
-import type { OpenPosition, ClosedPosition, SwapExecution, ConfigEntry } from '@/types/database';
+import type { OpenPosition, ClosedPosition, SwapExecution } from '@/types/database';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine,
@@ -90,9 +90,9 @@ const LEVEL_STYLE: Record<AttentionLevel, { border: string; bg: string; dot: str
 };
 
 // ─── Position row — table layout, expand for the exit-ladder detail ───────
-function PositionRow({ p, policy, onSelect, expanded, onToggle }: {
+function PositionRow({ p, policy, onSelect, expanded, onToggle, swapFrom }: {
   p: OpenPosition; policy: ExitPolicy; onSelect?: (symbol: string) => void;
-  expanded: boolean; onToggle: () => void;
+  expanded: boolean; onToggle: () => void; swapFrom?: string | null;
 }) {
   const level = getAttentionLevel(p);
   const s = LEVEL_STYLE[level];
@@ -135,6 +135,11 @@ function PositionRow({ p, policy, onSelect, expanded, onToggle }: {
               {p.symbol}
             </button>
           ) : <span className="font-semibold">{p.symbol}</span>}
+          {swapFrom && (
+            <span title={`Acquired via SWING swap — replaced ${swapFrom}`}>
+              <ArrowLeftRight className="h-3 w-3 inline-block ml-1 text-primary" />
+            </span>
+          )}
         </td>
         <td className="py-2 pr-3">
           <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${isIntraday ? 'badge-intraday' : 'badge-swing'}`}>
@@ -301,7 +306,10 @@ function EquityCurve({ data }: { data: ClosedPosition[] }) {
 }
 
 // ─── Closed positions grouped by month ───────────────────────────────────
-function ClosedByMonth({ data, onSelect }: { data: ClosedPosition[]; onSelect?: (id: number) => void }) {
+function ClosedByMonth({ data, onSelect, swapFromBySymbol }: {
+  data: ClosedPosition[]; onSelect?: (id: number) => void;
+  swapFromBySymbol?: Record<string, string>;
+}) {
   const groups: Record<string, { trades: ClosedPosition[]; pnl: number; wins: number }> = {};
   for (const p of [...data].sort((a, b) => (b.exit_date ?? '').localeCompare(a.exit_date ?? ''))) {
     const key = (p.exit_date ?? '').slice(0, 7);
@@ -372,7 +380,14 @@ function ClosedByMonth({ data, onSelect }: { data: ClosedPosition[]; onSelect?: 
                                     {p.symbol}
                                   </button>
                                 ) : (
-                                  <div className="font-semibold">{p.symbol}</div>
+                                  <div className="font-semibold">
+                                    {p.symbol}
+                                    {swapFromBySymbol?.[p.symbol] && (
+                                      <span title={`Acquired via SWING swap — replaced ${swapFromBySymbol[p.symbol]}`}>
+                                        <ArrowLeftRight className="h-3 w-3 inline-block ml-1 text-primary" />
+                                      </span>
+                                    )}
+                                  </div>
                                 )}
                                 <div className="text-muted-foreground">{p.sector}</div>
                               </div>
@@ -442,11 +457,7 @@ export function PositionsTab() {
   const [bookFilter, setBookFilter] = useState<'BOTH' | 'SWING' | 'INTRADAY'>('BOTH');
   const [policy, setPolicy] = useState<ExitPolicy>(FALLBACK_POLICY);
   const [swapCount, setSwapCount] = useState(0);
-  const [swapEnabled, setSwapEnabled] = useState(false);
-  const [swapMaxPerDay, setSwapMaxPerDay] = useState(2);
   const [swapThesis, setSwapThesis] = useState<SwapExecution[]>([]);
-  const [swapBusy, setSwapBusy] = useState(false);
-  const [swapSaved, setSwapSaved] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -454,27 +465,20 @@ export function PositionsTab() {
     async function load() {
       setLoading(true);
       try {
-        const [o, c, pol, swp, cfg] = await Promise.all([
+        const [o, c, pol, swp] = await Promise.all([
           queries.getOpenPositions(),
           queries.getClosedPositions(200),
           queries.getExitPolicy(),
           queries.getSwapExecutionsToday(),
-          queries.getSystemConfig(['swing_swap_enabled', 'swing_max_swaps_per_day']),
         ]);
         if (o.error) throw o.error;
         if (c.error) throw c.error;
         if (swp.error) throw swp.error;
-        if (cfg.error) throw cfg.error;
         setOpen(o.data ?? []);
         setClosed(c.data ?? []);
         setPolicy({ ...FALLBACK_POLICY, ...pol });
         setSwapThesis(swp.data ?? []);
         setSwapCount(swp.data?.length ?? 0);
-        const swapCfg = cfg.data ?? [];
-        const swapEnabledRow = swapCfg.find((c: ConfigEntry) => c.key === 'swing_swap_enabled');
-        const swapMaxRow = swapCfg.find((c: ConfigEntry) => c.key === 'swing_max_swaps_per_day');
-        setSwapEnabled(swapEnabledRow ? swapEnabledRow.value === 'true' : false);
-        setSwapMaxPerDay(swapMaxRow ? parseInt(swapMaxRow.value, 10) : 2);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed');
       } finally {
@@ -511,29 +515,15 @@ export function PositionsTab() {
     ? paperR.reduce((s, p) => s + (p.r_multiple ?? 0), 0) / paperR.length : null;
   const errObj = error ? new Error(error) : null;
 
-  // ── Swap toggle — writes to the SAME system_config the Python reads ────
-  // One source of truth, no local cache: set the key here, tomorrow's backend
-  // run sees exactly this value, and the operator panel re-reads it after the
-  // PATCH round-trip rather than trusting the optimistic checkbox.
-  const handleSwapToggle = async () => {
-    setSwapBusy(true);
-    try {
-      const key = 'swing_swap_enabled';
-      const value = swapEnabled ? 'false' : 'true';
-      const res = await fetch(`/api/config/${encodeURIComponent(key)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value, reason: 'swing swap feature toggle (positions tab)' }),
-      });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'write failed');
-      setSwapSaved(true);
-      setTimeout(() => setSwapSaved(false), 3000);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Swap toggle write failed');
-    } finally {
-      setSwapBusy(false);
+  // Which open/closed position came from a swap, and which name it replaced.
+  // swapThesis is today's EXECUTED swap rows; buy_symbol is the acquired name.
+  const swapFromBySymbol = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const e of swapThesis) {
+      if (e.status === 'EXECUTED' && e.buy_symbol) m[e.buy_symbol] = e.sell_symbol;
     }
-  };
+    return m;
+  }, [swapThesis]);
 
   // ── Per-book split for the KPI tiles below ────────────────────────────
   // The four tiles above pool both books into one number each — legitimate
@@ -644,68 +634,15 @@ export function PositionsTab() {
                     type: avgR > 0 ? 'increase' : 'decrease' }
                 : undefined} />
             <KPICard title="Swap Counter" value={swapCount.toString()}
-              description={`Swap enabled: ${swapEnabled ? 'ON' : 'OFF'} · Max/day: ${swapMaxPerDay}`}
+              description="SWING swaps executed today"
               icon={<TrendingUp className="h-4 w-4" />}
               change={undefined} />
           </>
         )}
       </div>
 
-      {/* Swap controls — SWING only */}
-      {!loading && (
-        <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 mt-4">
-          <div className="flex items-center gap-2 mb-3">
-            <TrendingUp className="h-4 w-4 text-primary" />
-            <span className="font-semibold text-primary">SWING SWAP CONTROLS</span>
-            <span className="text-xs text-muted-foreground ml-2">(swing only; intraday unaffected)</span>
-          </div>
-          <div className="grid grid-cols-2 gap-3 mb-4">
-            <div>
-              <div className="text-muted-foreground">Enable swap feature</div>
-              <div className="mt-1">
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={swapEnabled}
-                    onChange={(e) => setSwapEnabled(e.target.checked)}
-                    disabled={swapBusy}
-                    className="rounded border border-border w-4 h-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" />
-                  <span className="text-sm font-medium">
-                    {swapEnabled ? 'Disable' : 'Enable'} swap auto-execution
-                  </span>
-                </label>
-              </div>
-            </div>
-            <div>
-              <div className="text-muted-foreground">Max swaps per day</div>
-              <div className="mt-1">
-                <input
-                  type="number"
-                  min={1}
-                  max={10}
-                  value={swapMaxPerDay.toString()}
-                  onChange={(e) => setSwapMaxPerDay(parseInt(e.target.value, 10) || 2)}
-                  disabled={swapBusy}
-                  className="w-full border border-border rounded px-2 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" />
-              </div>
-            </div>
-          </div>
-          <button
-            onClick={handleSwapToggle}
-            disabled={swapBusy}
-            className={`w-full py-2 rounded text-sm font-medium transition-colors ${swapBusy ? 'opacity-40 cursor-not-allowed' : 'bg-primary text-white hover:bg-primary/90'}`}>
-            {swapBusy ? 'Saving…' : swapEnabled ? 'Disable Swaps' : 'Enable Swaps'}
-          </button>
-          {swapSaved && (
-            <div className="mt-2 text-sm text-profit">
-              ✓ Swap config updated in system_config
-            </div>
-          )}
-        </div>
-      )}
-
       {/* Swap thesis table — proposals from today's execution */}
-      {!loading && swapEnabled && swapThesis.length > 0 && (
+      {!loading && swapThesis.length > 0 && (
         <Panel title="Swap Thesis Table — Today"
           description={swapCount > 0 ? `${swapCount} swap(s) executed today` : ''}
           dataSource="supabase" tableName="swap_executions" isLoading={loading}>
@@ -839,6 +776,7 @@ export function PositionsTab() {
                       <PositionRow key={p.symbol} p={p} policy={policy}
                         onSelect={(symbol) => setTradeDetail({ kind: 'open', symbol })}
                         expanded={expandedSymbol === p.symbol}
+                        swapFrom={swapFromBySymbol[p.symbol]}
                         onToggle={() => setExpandedSymbol(expandedSymbol === p.symbol ? null : p.symbol)} />
                     ))}
                   </tbody>
@@ -885,6 +823,7 @@ export function PositionsTab() {
           emptyDescription="Closed trades appear when your pipeline writes to closed_positions.">
           {(data) => (
             <ClosedByMonth data={data}
+              swapFromBySymbol={swapFromBySymbol}
               onSelect={(id) => setTradeDetail({ kind: 'closed', id })} />
           )}
         </DataGuard>
