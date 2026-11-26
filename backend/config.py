@@ -207,6 +207,23 @@ SIZING_MIN_MULT:                  float = 0.10   # global floor for composite mu
 SIZING_MAX_MULT:                  float = 2.00   # global ceiling for composite multiplier
 
 
+# ── Position Scaling (Scale In / Scale Out) ────────────────────────────────
+SCALE_IN_ENABLED:                 bool  = True    # master switch
+SCALE_IN_MIN_R:                   float = 1.5    # min profit R before considering add-on
+SCALE_IN_MAX_ADDONS:              int   = 3       # max add-on tranches per position
+SCALE_IN_RISK_PCT:                float = 0.5    # % of capital to risk on each add-on
+SCALE_IN_STOP_TIGHTEN_PCT:        float = 1.0    # % below current price for new add-on stop
+SCALE_IN_MAX_POSITION_PCT:        float = 100.0  # reuses max_position_pct as combined cap
+
+SCALE_OUT_MIN_R:                  float = -1.0   # min loss R before considering partial exit
+SCALE_OUT_PCT:                    int   = 50      # % of position to sell on scale-out
+SCALE_OUT_STOP_TIGHTEN_PCT:       float = 1.0    # % below current price for tightened stop
+SCALE_OUT_REGIME_DETERIORATION:   bool  = True   # exit partial if regime shifts to RISK OFF
+
+MTF_REGIME_CONFIRMATION:          bool  = True   # require higher timeframe regime alignment
+MTF_WEEKLY_RISK_OFF_BLOCKS_SCALE_IN: bool = True # weekly RISK OFF blocks all scale-ins
+
+
 def capital_for(framework: str) -> float:
     """
     The capital ONE book sizes against — not the shared pool.

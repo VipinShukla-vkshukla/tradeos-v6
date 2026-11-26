@@ -184,7 +184,141 @@ def compute_dynamic_multiplier(
                min(cfg_float("sizing_max_mult", SIZING_MAX_MULT), mult))
 
 
+def compute_blended_stop(entry_qty: int, entry_stop: float,
+                         addon_qty: int, addon_stop: float) -> float:
+    """
+    Blended stop for a combined position after scale-in.
+    Weighted average of entry stop and add-on stop, rounded to 2 decimals.
+    """
+    total_qty = entry_qty + addon_qty
+    if total_qty <= 0:
+        return entry_stop
+    blended = (entry_qty * entry_stop + addon_qty * addon_stop) / total_qty
+    return round(blended, 2)
+
+
+def compute_scale_in_qty(
+    entry_price: float,
+    entry_qty: int,
+    entry_stop: float,
+    current_price: float,
+    capital: float,
+    remaining_risk_budget: float,
+    size_mult: float = 1.0,
+    scale_in_risk_pct: float = 0.5,
+    scale_in_stop_tighten_pct: float = 1.0,
+    max_position_pct: float = 100.0,
+) -> dict:
+    """
+    Compute add-on quantity for scaling into a winning position.
+
+    Returns dict with keys:
+      addon_qty: number of shares to add (0 if no scale-in)
+      addon_stop: stop price for the add-on shares
+      blended_stop: combined stop for the full position
+      addon_value: value of the add-on
+      combined_value: total position value after add-on
+      reason: why scale-in was or wasn't allowed
+    """
+    result = {
+        "addon_qty": 0,
+        "addon_stop": 0.0,
+        "blended_stop": entry_stop,
+        "addon_value": 0.0,
+        "combined_value": entry_qty * entry_price,
+        "reason": "not evaluated",
+    }
+
+    if entry_price <= 0 or current_price <= 0:
+        result["reason"] = "invalid price"
+        return result
+
+    # New stop is tighter: % below current price
+    addon_stop = round(current_price * (1 - scale_in_stop_tighten_pct / 100.0), 2)
+    risk_per_share_addon = current_price - addon_stop
+    if risk_per_share_addon <= 0:
+        result["reason"] = "addon risk per share <= 0"
+        return result
+
+    # Risk budget for the add-on
+    addon_risk_budget = capital * (scale_in_risk_pct / 100.0) * size_mult
+    addon_risk_budget = min(addon_risk_budget, remaining_risk_budget)
+
+    if addon_risk_budget <= 0:
+        result["reason"] = "no risk budget remaining"
+        return result
+
+    addon_qty = int(addon_risk_budget // risk_per_share_addon)
+    if addon_qty <= 0:
+        result["reason"] = "computed qty is 0"
+        return result
+
+    addon_value = addon_qty * current_price
+    combined_value = entry_qty * current_price + addon_value
+    max_combined = capital * (max_position_pct / 100.0)
+
+    # Cap to max_position_pct of capital
+    if combined_value > max_combined:
+        addon_qty = max(0, int((max_combined - entry_qty * current_price) // current_price))
+        if addon_qty <= 0:
+            result["reason"] = "combined position exceeds max_position_pct cap"
+            return result
+        addon_value = addon_qty * current_price
+        combined_value = entry_qty * current_price + addon_value
+
+    blended = compute_blended_stop(entry_qty, entry_stop, addon_qty, addon_stop)
+
+    result.update({
+        "addon_qty": addon_qty,
+        "addon_stop": addon_stop,
+        "blended_stop": blended,
+        "addon_value": round(addon_value, 2),
+        "combined_value": round(combined_value, 2),
+        "reason": "ok",
+    })
+    return result
+
+
+def compute_scale_out_qty(
+    current_qty: int,
+    current_price: float,
+    scale_out_pct: int = 50,
+) -> dict:
+    """
+    Compute partial exit quantity for scaling out of a losing or deteriorating position.
+    Returns dict with keys:
+      scale_out_qty: number of shares to sell (0 if none)
+      remaining_qty: shares left after scale-out
+      scale_out_value: value of the sale
+      reason: why scale-out was or wasn't allowed
+    """
+    result = {
+        "scale_out_qty": 0,
+        "remaining_qty": current_qty,
+        "scale_out_value": 0.0,
+        "reason": "not evaluated",
+    }
+
+    if current_qty <= 0 or current_price <= 0:
+        result["reason"] = "invalid qty or price"
+        return result
+
+    scale_out_qty = max(1, int(current_qty * scale_out_pct / 100.0))
+    if scale_out_qty >= current_qty:
+        scale_out_qty = max(1, current_qty - 1)  # always keep at least 1 share
+
+    result.update({
+        "scale_out_qty": scale_out_qty,
+        "remaining_qty": current_qty - scale_out_qty,
+        "scale_out_value": round(scale_out_qty * current_price, 2),
+        "reason": "ok",
+    })
+    return result
+
+
 def summarise_portfolio(open_positions: list[dict]) -> dict:
+    """Current exposure by sector and industry, plus total open risk."""
+    total_value = 0.0
     """Current exposure by sector and industry, plus total open risk."""
     total_value = 0.0
     by_sector:   dict[str, float] = {}
