@@ -483,6 +483,13 @@ class IntradayEngine:
         # against read-after-write lag on the broker log — see
         # _maybe_enter_swing().
         self._entries_taken = 0
+
+        # ── Dynamic swing position sizing session state (in-memory, reset daily) ──
+        self._session_realized_pnl: float = 0.0
+        self._session_win_count: int = 0
+        self._session_loss_count: int = 0
+        self._session_consecutive_wins: int = 0
+        self._session_consecutive_losses: int = 0
         # symbol -> Kite order_id, for a BUY submitted but not yet confirmed
         # filled. In-memory guard against re-submitting the same entry on the
         # next 15s cycle; the DB row (status=PENDING_FILL, entry_order_id) is
@@ -3055,12 +3062,69 @@ class IntradayEngine:
             # was already regime-aware (min_rr_to_enter_<REGIME>) and this
             # simply never read it. See trade_decision.regime_min_rr().
             from analysis.trade_decision import chase_limit, regime_min_rr
+            from analysis.portfolio_constraints import compute_dynamic_multiplier
+
+            # ── Dynamic swing position sizing multiplier ──
+            # Computed from in-memory state only — zero Supabase reads.
+            # Base regime comes from evening pipeline; confidence is computed
+            # from live ticks at this symbol's cycle.
+            all_prices = feed.all_prices() if feed else {}
+            nifty_price = float(all_prices.get("NIFTY 50", all_prices.get("^NSEI", 0)) or 0)
+            nifty_1d_chg = float((self.candidates[0] or {}).get("nifty_1d_chg_pct", 0) or 0) if self.candidates else 0.0
+            india_vix = float((self.candidates[0] or {}).get("india_vix", 0) or 0) if self.candidates else 0.0
+            adv_decline = float((self.candidates[0] or {}).get("advance_decline_ratio", 1.0) or 1.0) if self.candidates else 1.0
+
+            # Regime confidence from market structure (price vs VWAP proxy via 1d chg, VIX, breadth)
+            conf_score = 0.0
+            if nifty_1d_chg > 0.5:      conf_score += 0.30
+            elif nifty_1d_chg > 0:      conf_score += 0.15
+            elif nifty_1d_chg < -0.5:   conf_score -= 0.30
+            elif nifty_1d_chg < 0:      conf_score -= 0.15
+            if india_vix <= 14:         conf_score += 0.25
+            elif india_vix <= 20:       conf_score += 0.10
+            elif india_vix > 26:        conf_score -= 0.25
+            elif india_vix > 22:        conf_score -= 0.10
+            if adv_decline >= 1.5:      conf_score += 0.20
+            elif adv_decline >= 1.0:    conf_score += 0.10
+            elif adv_decline <= 0.5:    conf_score -= 0.20
+            elif adv_decline <= 0.8:    conf_score -= 0.10
+            regime_confidence = max(0.0, min(1.0, 0.5 + conf_score))
+
+            # Session P&L: unrealized from open positions + realized from exits this cycle
+            unrealized_pnl = sum(
+                (float(p.get("current_price") or p.get("entry_price") or 0)
+                 - float(p.get("entry_price") or 0))
+                * float(p.get("current_qty") or p.get("actual_qty") or 0)
+                for p in self.positions
+                if p.get("framework") == "SWING"
+            )
+            session_pnl = unrealized_pnl + self._session_realized_pnl
+            session_pnl_pct = session_pnl / capital_for("SWING") if capital_for("SWING") > 0 else 0.0
+
+            # Win rate / streak from in-memory counters
+            total_trades = self._session_win_count + self._session_loss_count
+            recent_win_rate = (self._session_win_count / total_trades) if total_trades > 0 else 0.5
+
+            setup_quality = float(c.get("setup_quality", 0.5) or 0.5)
+
+            size_mult = compute_dynamic_multiplier(
+                regime=regime,
+                regime_confidence=regime_confidence,
+                session_pnl_pct=session_pnl_pct,
+                recent_win_rate=recent_win_rate,
+                consecutive_wins=self._session_consecutive_wins,
+                consecutive_losses=self._session_consecutive_losses,
+                setup_quality=setup_quality,
+                vol_mult=self._overlay_vol_mult * (exp_mult or 1.0),
+            )
+
             d = decide(c, float(ltp), total_capital=capital_for("SWING"),
                        open_positions=self._swing_positions(), regime=regime,
                        min_rr=min_rr_override or regime_min_rr(regime),
                        max_chase_pct=chase_limit(c),
                        available_cash=cash,
-                       vol_mult=self._overlay_vol_mult * (exp_mult or 1.0))
+                       vol_mult=self._overlay_vol_mult * (exp_mult or 1.0),
+                       size_mult=size_mult)
             self._all_swing_decisions.append({"candidate": c, "decision": d})
             if d.action in ("BUY_NOW", "CHASE_LIMIT"):
                 out.append({"candidate": c, "decision": d, "ltp": float(ltp),
@@ -3370,6 +3434,24 @@ class IntradayEngine:
         # recorded as booked is corrected by the next reconcile against broker
         # holdings, while a filled order NOT recorded sells the position twice.
         if res and res.ok:
+            # ── Track session P&L and win/loss streak for dynamic sizing ──
+            try:
+                exit_px = float(ltp)  # optimistic fill at current price
+                entry_px = float(p.get("entry_price") or 0)
+                exit_qty = int(d.get("book_qty") or 0) or int(p.get("current_qty") or p.get("actual_qty") or 0)
+                exit_pnl = (exit_px - entry_px) * exit_qty
+                self._session_realized_pnl += exit_pnl
+                if exit_pnl > 0:
+                    self._session_win_count += 1
+                    self._session_consecutive_wins += 1
+                    self._session_consecutive_losses = 0
+                elif exit_pnl < 0:
+                    self._session_loss_count += 1
+                    self._session_consecutive_losses += 1
+                    self._session_consecutive_wins = 0
+            except Exception:
+                pass
+
             try:
                 if d["action"].startswith("EXIT"):
                     # exit_signal WAS NEVER WRITTEN HERE — F-43, 20-Aug-2026.

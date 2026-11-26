@@ -175,6 +175,38 @@ TOTAL_CAPITAL = TOTAL_CAPITAL_FALLBACK  # placeholder; overwritten below once ge
 _capital_warned: set = set()
 
 
+# ── Dynamic Swing Position Sizing ──────────────────────────────────────────
+# All values have safe defaults (1.0x multiplier = no behavior change).
+# Read at runtime from Supabase system_config, fall back to .env/defaults.
+# Zero runtime Supabase reads beyond the normal cfg_*() layer.
+SIZING_REGIME_BASE_TRENDING:      float = 1.10
+SIZING_REGIME_BASE_RISK_ON:       float = 1.05
+SIZING_REGIME_BASE_NEUTRAL:       float = 1.00
+SIZING_REGIME_BASE_RECOVERING:    float = 0.90
+SIZING_REGIME_BASE_RISK_OFF:      float = 0.75
+
+SIZING_REGIME_CONF_WEIGHT:        float = 0.05   # per 10% regime confidence
+SIZING_REGIME_MAX_MULT:           float = 1.70   # cap on regime component alone
+
+SIZING_DD_THRESHOLD_PCT:          float = 3.0    # session drawdown % where scaling starts
+SIZING_DD_STEP_PCT:               float = 3.0    # each additional 3% drawdown steps down
+SIZING_DD_STEP_MULT:              float = 0.10   # multiplier reduction per step
+SIZING_DD_MIN_MULT:               float = 0.25   # floor for drawdown component
+
+SIZING_WINRATE_LOOKBACK:          int   = 20     # trades to consider for win rate
+SIZING_WINRATE_MIN_PCT:           float = 40.0   # below this → reduce size
+SIZING_WINRATE_MAX_PCT:           float = 70.0   # above this → increase size
+SIZING_WINRATE_LOW_MULT:          float = 0.60   # multiplier when win rate < min
+SIZING_WINRATE_HIGH_MULT:         float = 1.30   # multiplier when win rate > max
+
+SIZING_MOMENTUM_MAX:              float = 1.15   # cap on setup-quality momentum boost
+SIZING_CONSECUTIVE_WIN_BONUS:     float = 0.05   # per consecutive win (max +0.20)
+SIZING_CONSECUTIVE_LOSS_PENALTY:  float = 0.10   # per consecutive loss (max -0.30)
+
+SIZING_MIN_MULT:                  float = 0.10   # global floor for composite multiplier
+SIZING_MAX_MULT:                  float = 2.00   # global ceiling for composite multiplier
+
+
 def capital_for(framework: str) -> float:
     """
     The capital ONE book sizes against — not the shared pool.

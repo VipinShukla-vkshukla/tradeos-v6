@@ -180,6 +180,7 @@ def decide(
     max_chase_pct: float | None = None,
     available_cash: float | None = None,
     vol_mult: float = 1.0,
+    size_mult: float = 1.0,
 ) -> Decision:
     """
     row: a signal_output_daily / master_shortlist row carrying planned_stop,
@@ -257,7 +258,8 @@ def decide(
             sym, row.get("sector") or "", row.get("industry") or "",
             px, risk, open_positions or [],
             regime=regime, total_capital=total_capital,
-            available_cash=available_cash, vol_mult=vol_mult)
+            available_cash=available_cash, vol_mult=vol_mult,
+            size_mult=size_mult)
         if v.allowed:
             qty, invested, risk_amt = v.max_qty, v.max_value, round(v.max_qty * risk, 2)
         else:

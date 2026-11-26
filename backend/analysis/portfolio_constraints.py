@@ -41,7 +41,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
-from config import cfg_float, cfg_int, cfg, capital_for
+from config import (cfg_float, cfg_int, cfg, capital_for,
+                    SIZING_REGIME_BASE_TRENDING, SIZING_REGIME_BASE_RISK_ON,
+                    SIZING_REGIME_BASE_NEUTRAL, SIZING_REGIME_BASE_RECOVERING,
+                    SIZING_REGIME_BASE_RISK_OFF, SIZING_REGIME_CONF_WEIGHT,
+                    SIZING_REGIME_MAX_MULT, SIZING_DD_THRESHOLD_PCT,
+                    SIZING_DD_STEP_PCT, SIZING_DD_STEP_MULT, SIZING_DD_MIN_MULT,
+                    SIZING_WINRATE_LOOKBACK, SIZING_WINRATE_MIN_PCT,
+                    SIZING_WINRATE_MAX_PCT, SIZING_WINRATE_LOW_MULT,
+                    SIZING_WINRATE_HIGH_MULT, SIZING_MOMENTUM_MAX,
+                    SIZING_CONSECUTIVE_WIN_BONUS, SIZING_CONSECUTIVE_LOSS_PENALTY,
+                    SIZING_MIN_MULT, SIZING_MAX_MULT)
 
 
 # Maximum share of DEPLOYED capital permitted in one sector, by regime.
@@ -81,6 +91,97 @@ def load_constraints(regime: str = "NEUTRAL") -> dict:
         "risk_pct_per_trade": cfg_float("risk_pct_per_trade", 1.0),
         "max_portfolio_risk_pct": cfg_float("portfolio_max_total_risk_pct", 6.0),
     }
+
+
+def compute_dynamic_multiplier(
+    regime: str,
+    regime_confidence: float = 0.5,
+    session_pnl_pct: float = 0.0,
+    recent_win_rate: float | None = None,
+    consecutive_wins: int = 0,
+    consecutive_losses: int = 0,
+    setup_quality: float = 0.5,
+    vol_mult: float = 1.0,
+) -> float:
+    """
+    Composite dynamic position-size multiplier.
+
+    All inputs are optional with safe defaults (1.0x = no behavior change).
+    Returns value between SIZING_MIN_MULT (0.10) and SIZING_MAX_MULT (2.00).
+
+    Components (multiplicative, self-limiting):
+      1. Regime base × confidence scaling      (market structure only, NOT P&L)
+      2. Drawdown scaling                       (from in-memory session P&L)
+      3. Win rate scaling                       (from in-memory trade counter)
+      4. Consecutive wins / losses              (momentum streak)
+      5. Setup quality / momentum               (from candidate row)
+      6. Volatility                             (already computed upstream)
+    """
+    mult = 1.0
+
+    # ── 1. Regime base + confidence scaling (market structure only) ──
+    regime_u = (regime or "NEUTRAL").upper()
+    base_map = {
+        "TRENDING":   cfg_float("sizing_regime_base_trending",
+                                SIZING_REGIME_BASE_TRENDING),
+        "RISK ON":    cfg_float("sizing_regime_base_risk_on",
+                                SIZING_REGIME_BASE_RISK_ON),
+        "NEUTRAL":    cfg_float("sizing_regime_base_neutral",
+                                SIZING_REGIME_BASE_NEUTRAL),
+        "RECOVERING": cfg_float("sizing_regime_base_recovering",
+                                SIZING_REGIME_BASE_RECOVERING),
+        "RISK OFF":   cfg_float("sizing_regime_base_risk_off",
+                                SIZING_REGIME_BASE_RISK_OFF),
+    }
+    regime_mult = base_map.get(regime_u, 1.0)
+
+    # Confidence scales the regime multiplier (up to SIZING_REGIME_MAX_MULT)
+    conf_weight = cfg_float("sizing_regime_conf_weight", SIZING_REGIME_CONF_WEIGHT)
+    conf_steps = int(regime_confidence * 10)  # 0 to 10
+    regime_mult += conf_steps * conf_weight
+    regime_mult = min(regime_mult, cfg_float("sizing_regime_max_mult",
+                                             SIZING_REGIME_MAX_MULT))
+    mult *= regime_mult
+
+    # ── 2. Drawdown scaling (from in-memory session P&L) ──
+    dd_thresh = cfg_float("sizing_dd_threshold_pct", SIZING_DD_THRESHOLD_PCT)
+    dd_step = cfg_float("sizing_dd_step_pct", SIZING_DD_STEP_PCT)
+    dd_step_mult = cfg_float("sizing_dd_step_mult", SIZING_DD_STEP_MULT)
+    dd_min = cfg_float("sizing_dd_min_mult", SIZING_DD_MIN_MULT)
+
+    if session_pnl_pct < -dd_thresh:
+        steps = int(abs(session_pnl_pct + dd_thresh) / dd_step) + 1
+        dd_mult = 1.0 - (steps * dd_step_mult)
+        dd_mult = max(dd_min, dd_mult)
+        mult *= dd_mult
+
+    # ── 3. Win rate scaling (in-memory counter) ──
+    wr_min = cfg_float("sizing_winrate_min_pct", SIZING_WINRATE_MIN_PCT)
+    wr_max = cfg_float("sizing_winrate_max_pct", SIZING_WINRATE_MAX_PCT)
+    if recent_win_rate is not None:
+        if recent_win_rate < wr_min / 100.0:
+            mult *= cfg_float("sizing_winrate_low_mult", SIZING_WINRATE_LOW_MULT)
+        elif recent_win_rate > wr_max / 100.0:
+            mult *= cfg_float("sizing_winrate_high_mult", SIZING_WINRATE_HIGH_MULT)
+
+    # ── 4. Consecutive wins / losses ──
+    win_bonus = cfg_float("sizing_consecutive_win_bonus", SIZING_CONSECUTIVE_WIN_BONUS)
+    loss_penalty = cfg_float("sizing_consecutive_loss_penalty",
+                             SIZING_CONSECUTIVE_LOSS_PENALTY)
+    mult *= (1.0 + min(consecutive_wins * win_bonus, 0.20))
+    mult *= (1.0 - min(consecutive_losses * loss_penalty, 0.30))
+
+    # ── 5. Setup quality / momentum ──
+    momentum_max = cfg_float("sizing_momentum_max", SIZING_MOMENTUM_MAX)
+    momentum_mult = 1.0 + (setup_quality - 0.5) * (momentum_max - 1.0)
+    mult *= max(0.85, min(momentum_mult, momentum_max))
+
+    # ── 6. Volatility (already computed upstream) ──
+    mult *= vol_mult
+
+    # ── 7. Global clamp ──
+    return max(cfg_float("sizing_min_mult", SIZING_MIN_MULT),
+               min(cfg_float("sizing_max_mult", SIZING_MAX_MULT), mult))
 
 
 def summarise_portfolio(open_positions: list[dict]) -> dict:
@@ -136,6 +237,7 @@ def check_new_entry(
     available_cash:  float | None = None,
     product:         str = "CNC",
     vol_mult:        float = 1.0,
+    size_mult:       float = 1.0,
 ) -> ConstraintVerdict:
     """
     Admissibility + maximum size for one prospective entry.
@@ -224,6 +326,11 @@ def check_new_entry(
     qty_by_cash   = int(available_cash // entry_price) if available_cash is not None else qty_by_maxpos
 
     qty = max(0, min(qty_by_risk, qty_by_sector, qty_by_maxpos, qty_by_cash))
+
+    # ── Apply dynamic size multiplier ──
+    # Scales qty up/down based on regime, drawdown, win rate, streak, setup quality.
+    # Defaults to 1.0x = no behavior change.
+    qty = int(qty * size_mult)
 
     # ── Volatility-regime exposure scaling (Stage 9 overlay) ─────────────────
     # Applied to the already-capped qty, not to `capital` upstream of it — so
