@@ -3,24 +3,32 @@ name: TradeOS v6 — Intraday Position Monitor
 # ─────────────────────────────────────────────────────────────────────────────
 # THIS WORKFLOW DID NOT EXIST.
 #
-# Four files referenced it by name as though it did:
+# Four files used to reference it by name as though it did:
 #   control/sl_monitor.py               "Wire: pipeline_intraday.yml — every 30 min"
 #   control/position_target_monitor.py  "Runs every 30 min alongside sl_monitor"
 #   ingestion/position_event_monitor.py "Wire in pipeline_morning.yml"
 #   .github/workflows/pipeline_morning.yml
 #       "sl_monitor.py runs separately every 30 min via pipeline_intraday.yml"
 #
-# Nothing scheduled any of them. Combined with sl_monitor importing a
-# kite.kite_client module that was never in the repo, the practical result was
-# that no stop-loss, target or trailing-stop check has ever executed. A
-# position could breach its stop by any amount and the first notice would come
-# from the evening pipeline, after the close.
+# Nothing scheduled them: sl_monitor importing a kite.kite_client module that
+# was never in the repo was the visible symptom, but the practical result was
+# that no target or trailing-stop check had ever executed. The position-event
+# monitor is now wired in pipeline_morning.yml, and the target/trailing monitor
+# is scheduled below. sl_monitor itself is a shim — position_lifecycle and
+# GTT stops cover its behavior.
 #
 # WHAT RUNS HERE
+#   intraday/heartbeat_watch.py
+#     Detects a SILENT daemon from outside it. The daemon writes a heartbeat
+#     every 15 min but cannot detect its own death; a passive dashboard tile is
+#     not a notification. Cross-process rearm is backed by intraday_alerts.
 #   control/position_lifecycle.py --manage-only
 #     Live LTP for every ACTIVE position, then the exit policy: stop breach,
 #     hard target, partial booking at 1.5R, breakeven shift, R-based trailing,
 #     and the time stop. Records state and alerts; never places an order.
+#   control/position_target_monitor.py
+#     Target-price hits and high-water-mark trailing SL updates. Uses the
+#     shared Kite session; Telegram only, via credentials_resolver.
 #   control/telegram_position_journal.py
 #     Drains Telegram button/reply actions so a manual fill recorded on the
 #     phone lands in open_positions within the next cycle.
@@ -85,6 +93,23 @@ jobs:
         working-directory: backend
         run: pip install -r requirements.txt
 
+      - name: Watch for a silent intraday daemon
+        # Own check, first in the job: if the daemon died, this is the one
+        # message that tells you why every other alert went quiet.
+        continue-on-error: true
+        working-directory: backend
+        env:
+          SUPABASE_URL:                  ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY:          ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN:            ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:              ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_INTRADAY_BOT_TOKEN:   ${{ secrets.TELEGRAM_INTRADAY_BOT_TOKEN }}
+          TELEGRAM_INTRADAY_CHAT_ID:     ${{ secrets.TELEGRAM_INTRADAY_CHAT_ID }}
+          DISCORD_WEBHOOK_URL:           ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_INTRADAY_WEBHOOK_URL:  ${{ secrets.DISCORD_INTRADAY_WEBHOOK_URL }}
+          TZ: Asia/Kolkata
+        run: python -m intraday.heartbeat_watch
+
       - name: Manage open positions (stops, targets, partials, time stop)
         working-directory: backend
         env:
@@ -101,6 +126,24 @@ jobs:
         # evaluate stops against yesterday and re-fire the same alerts every
         # 30 minutes. Skipping is the correct degradation intraday.
         run: python -m control.position_lifecycle --manage-only --require-live
+
+      - name: Check target prices and trailing stops
+        # The exit policy above handles breaches; this handles a target that
+        # was reached and a high-water-mark trail that needs tightening.
+        # continue-on-error: Kite is allowed to be unavailable intraday.
+        if: always()
+        continue-on-error: true
+        working-directory: backend
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          KITE_API_KEY:         ${{ secrets.KITE_API_KEY }}
+          KITE_API_SECRET:      ${{ secrets.KITE_API_SECRET }}
+          TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
+          TOTAL_CAPITAL:        ${{ secrets.TOTAL_CAPITAL }}
+          TZ: Asia/Kolkata
+        run: python -m control.position_target_monitor
 
       - name: Watch ranked candidates for entry-zone touches
         # The monitor previously covered open positions ONLY. A TIER_1 that

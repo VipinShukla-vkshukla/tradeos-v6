@@ -693,6 +693,37 @@ def place(req: OrderRequest, sb=None, notifier=None,
         permanent = account_wide
 
         _log(sb, req, "BLOCKED_PERMANENT" if permanent else "FAILED", None, msg[:300], framework)
+
+        # A rejected order is a trade event too. This branch used to be
+        # log-only, so the operator learned about a missed fill (or, worse, an
+        # account-wide block that also disabled every EXIT) only by reading the
+        # log after the fact. The success path above already pushes; the
+        # failure path has to as well or the channel reports a book that looks
+        # healthy precisely when nothing can trade.
+        #
+        # No force=True here on purpose: let Notifier's own rearm gate hold a
+        # rejection that keeps failing every 15-second cycle down to one
+        # message per window. The account-level latch above still prevents any
+        # retry at all for configuration errors.
+        if notifier:
+            try:
+                from intraday.notifier import Action
+                headline = f"{req.side} {req.quantity} {req.symbol} REJECTED — {msg[:120]}"
+                detail = (f"{req.reason}\nBroker error: {msg[:300]}\n"
+                          f"No order was placed. Verify in Kite.")
+                if account_wide:
+                    detail = ("ACCOUNT-WIDE BLOCK — no order in EITHER book can "
+                              "succeed, INCLUDING EXITS.\n" + detail)
+                notifier.send(Action(
+                    req.symbol,
+                    "ORDER_BLOCKED_ACCOUNT" if account_wide else "ORDER_REJECTED",
+                    headline, detail, ltp=req.price, urgency="CRITICAL",
+                    framework=framework))
+            except Exception as alert_err:
+                # Alerting must never turn a rejected order into a crash or
+                # delay the caller's handling of the rejection.
+                logger.warning(f"  rejection alert failed: {alert_err}")
+
         return OrderResult(False, None, msg,
                            "BROKER_CONFIG" if permanent else "BROKER_ERROR")
 

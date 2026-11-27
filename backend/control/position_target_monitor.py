@@ -21,8 +21,10 @@ SG7 — TRAILING STOP-LOSS:
     - Telegram: 📈 TRAILING SL UPDATED: SBIN SL ₹798→₹812 (HWM ₹852, trail 4.7%)
     - sl_monitor.py then protects the new SL level
 
-Requires: KITE_ACCESS_TOKEN in environment (set by kite_token_refresh.py daily).
-Non-fatal if Kite unavailable — exits cleanly with a warning.
+Uses the shared kite.kite_client session (env -> system_config -> token_manager)
+rather than a raw KITE_ACCESS_TOKEN env var, which expired daily and made every
+check silently skip itself after the first session. Non-fatal if Kite is
+unavailable — exits cleanly with a warning.
 """
 import os
 import sys
@@ -43,20 +45,23 @@ def get_live_prices(symbols: list[str]) -> dict[str, float]:
     """
     Fetch live LTP from Kite for a list of NSE symbols.
     Returns {symbol: ltp}. Empty dict if Kite unavailable.
+
+    get_kite() is the single broker-session entry point every other live
+    reader uses. It resolves the token from the environment or system_config
+    and refuses a stale one, so this monitor cannot silently quote yesterday's
+    close the way a bare KITE_ACCESS_TOKEN env read could.
     """
-    token = os.getenv("KITE_ACCESS_TOKEN", "")
-    api_key = os.getenv("KITE_API_KEY", "")
-    if not token or not api_key:
-        logger.warning("KITE_ACCESS_TOKEN or KITE_API_KEY not set — target monitor skipped")
+    if not symbols:
         return {}
     try:
-        from kiteconnect import KiteConnect
-        kite = KiteConnect(api_key=api_key)
-        kite.set_access_token(token)
-        instruments = [f"NSE:{sym}" for sym in symbols]
-        quotes = kite.ltp(instruments)
+        from kite.kite_client import get_kite
+        kite = get_kite()
+        if not kite:
+            logger.warning("Kite session unavailable — target monitor skipped")
+            return {}
+        quotes = kite.ltp([f"NSE:{sym}" for sym in symbols]) or {}
         return {
-            sym: quotes.get(f"NSE:{sym}", {}).get("last_price", 0)
+            sym: float((quotes.get(f"NSE:{sym}") or {}).get("last_price") or 0)
             for sym in symbols
         }
     except Exception as e:
@@ -192,8 +197,9 @@ def update_trailing_sl(sb, positions: list[dict], prices: dict[str, float]) -> l
 def send_telegram(message: str):
     """Send Telegram message with retry (SG4 pattern)."""
     import time, requests as _req
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    chat_id   = os.getenv("TELEGRAM_CHAT_ID", "")
+    from credentials_resolver import resolve
+    bot_token = resolve("TELEGRAM_BOT_TOKEN")
+    chat_id   = resolve("TELEGRAM_CHAT_ID")
     if not bot_token or not chat_id or DRY_RUN:
         if DRY_RUN:
             logger.info(f"[DRY RUN] Telegram: {message[:80]}")

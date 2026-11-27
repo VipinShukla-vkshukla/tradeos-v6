@@ -13,8 +13,10 @@ name: TradeOS v6 — Morning Pre-Market Brief
 # Kite reconcile (kite_reconcile.py) is Phase 2+.
 # Wire it here when autonomy_phase is set to 2 and Kite token is active.
 #
-# sl_monitor.py runs separately every 30 min during market hours via pipeline_intraday.yml
-# Evening digest runs at 6 PM via pipeline_daily.yml
+# Position event monitor runs here (after the brief) so a results/board meeting
+# on a held stock reaches you before the open.
+# Stop/target/trailing checks run every 30 min via pipeline_intraday.yml;
+# the evening digest runs via pipeline_evening.yml.
 
 on:
   #schedule:
@@ -61,6 +63,21 @@ jobs:
           TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
           TZ: Asia/Kolkata
         run: python alerts/send_alerts.py --morning
+
+      - name: Pre-market event brief for held positions
+        # Results/board meetings/AGMs inside the lookahead window. Writes
+        # HIGH/MEDIUM rows to data_anomalies and sends one consolidated
+        # Telegram brief. Non-fatal: the morning brief above is already sent.
+        if: always()
+        continue-on-error: true
+        working-directory: backend
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
+          TZ: Asia/Kolkata
+        run: python -m swing.ingestion.position_event_monitor
 
       - name: Upload logs on failure
         if: failure()

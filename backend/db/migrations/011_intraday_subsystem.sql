@@ -143,7 +143,7 @@ VALUES
    'An unchanged alert repeats only after this long'),
   ('intraday_rearm_critical_minutes', '15',
    'Faster re-arm for CRITICAL alerts — a breached stop should keep nagging'),
-  ('intraday_restate_minutes', '5',
+  ('intraday_restate_minutes', '15',
    'Same action, changed numbers — minimum gap before restating'),
   ('intraday_max_orders_per_day', '5',      'Phase 3 rail: order count cap'),
   ('intraday_max_order_value', '10000',     'Phase 3 rail: rupee cap per order'),

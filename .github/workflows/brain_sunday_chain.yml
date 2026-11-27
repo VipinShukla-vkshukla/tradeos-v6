@@ -3,19 +3,18 @@ name: TradeOS Brain Sunday Chain
 # ─────────────────────────────────────────────────────────────────────────────
 # This workflow does NOT run on a clock/cron schedule.
 #
-# It fires automatically when "TradeOS Brain Scheduler" completes.
-# Specifically: it runs weekly_perf_digest only after brain_full_weekly
-# has finished successfully — regardless of when GH Actions actually ran it.
+# It fires automatically when "TradeOS Brain Scheduler" completes. The weekly
+# Telegram digest itself is sent from inside brain_engine.py's Sunday "full"
+# run; this chain now carries only the post-run analysis steps. Keeping the
+# trigger preserves their guaranteed ordering after brain_full completes.
 #
 # WHY THIS EXISTS:
-# GH Actions scheduled jobs can be delayed 30–90 minutes at peak times.
-# brain_full_weekly (Sunday 19:30 IST) and weekly_perf_digest (Sunday 20:00 IST)
-# are only 30 minutes apart. If brain_full is delayed by even 45 minutes,
-# a clock-based digest would fire on stale data before the brain finishes.
-#
-# This file solves that by making weekly_perf_digest event-driven, not time-driven.
-# It always runs after brain_full completes — 5 minutes later or 2 hours later,
-# it doesn't matter. Correct ordering is guaranteed.
+# GH Actions scheduled jobs can be delayed 30–90 minutes at peak times. The
+# post-run analyses below read the output of brain_full_weekly, so a clock-based
+# trigger could start them before the brain had finished writing anything.
+# Keying off workflow_run guarantees ordering — 5 minutes later or 2 hours
+# later, it does not matter. The digest used to live here too; it now ships
+# from brain_engine.py's own full run so it fires exactly once.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -70,14 +69,10 @@ jobs:
           pip install -r requirements.txt
           pip install apscheduler pyyaml scipy
 
-      - name: Send weekly Telegram digest
-        env:
-          SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
-          TELEGRAM_BOT_TOKEN:     ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID:       ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python -c "from swing.brain.performance_tracker import send_weekly_telegram_summary; send_weekly_telegram_summary()"
+      # The weekly Telegram digest is deliberately NOT sent here any more.
+      # brain_engine.py sends it from inside the Sunday "full" run, so it fires
+      # exactly once instead of on every completion of brain_scheduler (which
+      # could be up to 9x a week). See brain_engine.py's weekly digest block.
 
       # The trading-performance half of the weekly learning pass.
       #
