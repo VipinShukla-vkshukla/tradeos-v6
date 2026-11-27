@@ -381,11 +381,16 @@ goto END
 
 :VCNFIX
 echo Pulling latest code on %SRV% and restarting the daemon...
-REM git checkout on next-env.d.ts first: Next.js REGENERATES this file on every
-REM build, and once it diverges the next pull aborts with "local changes would be
-REM overwritten" and nothing ships until it is restored by hand. It carries no
-REM hand-written content, so restoring it is always safe.
-ssh -i "%KEY%" ubuntu@%SRV% "cd ~/tradeos-v6 && git checkout -- frontend/next-env.d.ts && if ! git diff --quiet || ! git diff --cached --quiet; then echo 'ABORT: tracked local changes on server:'; git status --short; exit 1; fi && git pull --ff-only && sudo systemctl restart tradeos-intraday && sleep 8 && systemctl is-active tradeos-intraday && journalctl -u tradeos-intraday -n 25 --no-pager"
+REM Restore next-env.d.ts BEFORE the clean-tree check, but only if git actually
+REM tracks it. Next.js REGENERATES this file on every build; on a clone where it
+REM was committed, the rebuilt copy diverges and the next pull aborts with
+REM "local changes would be overwritten" until it is restored by hand. It carries
+REM no hand-written content, so restoring a tracked copy is always safe.
+REM It is ALSO in .gitignore, so on a normal clone it is UNTRACKED — a bare
+REM `git checkout --` then dies with "pathspec ... did not match any file(s)
+REM known to git" and, because the deploy chains with &&, aborts before the pull.
+REM The ls-files guard makes this work on both tracked and untracked servers.
+ssh -i "%KEY%" ubuntu@%SRV% "cd ~/tradeos-v6 && if git ls-files --error-unmatch -- 'frontend/next-env.d.ts' >/dev/null 2>&1; then git checkout -- 'frontend/next-env.d.ts'; fi && if ! git diff --quiet || ! git diff --cached --quiet; then echo 'ABORT: tracked local changes on server:'; git status --short; exit 1; fi && git pull --ff-only && sudo systemctl restart tradeos-intraday && sleep 8 && systemctl is-active tradeos-intraday && journalctl -u tradeos-intraday -n 25 --no-pager"
 goto END
 
 :VCNDEPLOYC
@@ -393,7 +398,7 @@ REM Menu form of `tradeos vcn deploy` — confirmed, same reason as VCNFIXC:
 REM a mistyped digit must not restart a mid-session daemon.
 echo.
 echo   This does the FULL server publish:
-echo     1. git pull --ff-only on %SRV%  (next-env.d.ts restored, .next re-owned)
+echo     1. git pull --ff-only on %SRV%  (next-env.d.ts restored if tracked, .next re-owned)
 echo     2. npm run build for the dashboard (takes ~2 minutes)
 echo     3. restart the pm2 dashboard (tradeos-dashboard)
 echo     4. restart the intraday daemon (tradeos-intraday)
@@ -412,9 +417,11 @@ REM The chown step is NOT optional: pm2 runs the dashboard as ROOT, so the live
 REM server drops root-owned cache files into frontend/.next at runtime, and the
 REM next ubuntu-run build dies with "EACCES: permission denied, unlink". Re-own
 REM .next to ubuntu before building. Skipped on a fresh clone (no .next yet).
+REM The next-env.d.ts restore is guarded by ls-files because that file is
+REM gitignored/untracked on a normal clone — see the note at :VCNFIX above.
 echo Deploying to %SRV% — pull, frontend build, pm2 restart, daemon restart.
 echo This takes about two minutes (npm run build)...
-ssh -i "%KEY%" ubuntu@%SRV% "cd ~/tradeos-v6 && git checkout -- frontend/next-env.d.ts && if ! git diff --quiet || ! git diff --cached --quiet; then echo 'ABORT: tracked local changes on server:'; git status --short; exit 1; fi && git log --oneline -1 && git pull --ff-only && cd frontend && if [ -d .next ]; then sudo chown -R ubuntu:ubuntu .next; fi && npm run build && cd .. && sudo pm2 restart tradeos-dashboard && sudo systemctl restart tradeos-intraday && sleep 8 && echo '--- daemon ---' && systemctl is-active tradeos-intraday && echo '--- dashboard ---' && curl -s -o /dev/null -w 'http_%%{http_code}' http://127.0.0.1:3000"
+ssh -i "%KEY%" ubuntu@%SRV% "cd ~/tradeos-v6 && if git ls-files --error-unmatch -- 'frontend/next-env.d.ts' >/dev/null 2>&1; then git checkout -- 'frontend/next-env.d.ts'; fi && if ! git diff --quiet || ! git diff --cached --quiet; then echo 'ABORT: tracked local changes on server:'; git status --short; exit 1; fi && git log --oneline -1 && git pull --ff-only && cd frontend && if [ -d .next ]; then sudo chown -R ubuntu:ubuntu .next; fi && npm run build && cd .. && sudo pm2 restart tradeos-dashboard && sudo systemctl restart tradeos-intraday && sleep 8 && echo '--- daemon ---' && systemctl is-active tradeos-intraday && echo '--- dashboard ---' && curl -s -o /dev/null -w 'http_%%{http_code}' http://127.0.0.1:3000"
 if errorlevel 1 (
   echo.
   echo   DEPLOY FAILED at some step above — the daemon and dashboard were NOT
