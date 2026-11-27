@@ -41,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from datetime import datetime
 from loguru import logger
-from config import get_supabase, TOTAL_CAPITAL, CAPITAL_IS_FALLBACK, IST, cfg_float
+from config import get_supabase, TOTAL_CAPITAL, CAPITAL_IS_FALLBACK, IST, cfg_float, capital_for
 
 SNAPSHOT_KEY = "capital_snapshot"
 
@@ -59,9 +59,24 @@ def capital_status(sb=None, persist: bool = True) -> dict:
     now = datetime.now(IST).isoformat()
 
     import socket
+    # Paper-aware: in paper mode the books size against notional sleeves, not
+    # real broker cash, so the configured figure and severity must reflect that.
+    # No new Supabase columns — these are extra keys in the existing JSON value.
+    try:
+        from execution.gates import is_paper as _is_paper
+        paper_mode = bool(_is_paper("SWING") and _is_paper("INTRADAY"))
+    except Exception:
+        paper_mode = False
+    if paper_mode:
+        effective_configured = float(capital_for("SWING") + capital_for("INTRADAY"))
+    else:
+        effective_configured = float(TOTAL_CAPITAL)
+
     out = {
-        "configured":      round(TOTAL_CAPITAL, 2),
-        "is_fallback":     CAPITAL_IS_FALLBACK,
+        "configured":          round(effective_configured, 2),
+        "configured_total_capital": round(float(TOTAL_CAPITAL), 2),
+        "paper_mode":          paper_mode,
+        "is_fallback":         CAPITAL_IS_FALLBACK,
         # WHICH MACHINE believes this. TOTAL_CAPITAL comes from a per-machine
         # .env, but it describes the ACCOUNT — one book, one number. Two hosts
         # manage this account and on 2026-08-06 they disagreed: the laptop
@@ -105,8 +120,8 @@ def capital_status(sb=None, persist: bool = True) -> dict:
         invested += qty * px
 
     total = cash + invested
-    gap     = total - TOTAL_CAPITAL
-    gap_pct = (gap / TOTAL_CAPITAL * 100) if TOTAL_CAPITAL else 0.0
+    gap     = total - effective_configured
+    gap_pct = (gap / effective_configured * 100) if effective_configured else 0.0
 
     out.update({
         "broker_cash":     round(cash, 2),
@@ -120,15 +135,30 @@ def capital_status(sb=None, persist: bool = True) -> dict:
     tol_pct = cfg_float("capital_tolerance_pct", 10.0)
     block_pct = cfg_float("capital_block_pct", 25.0)
 
-    if abs(gap_pct) <= tol_pct:
+    if paper_mode:
+        # Paper books size against notional sleeves, not broker cash — a shortfall
+        # here is informational, never a BLOCK.
+        if abs(gap_pct) <= tol_pct:
+            out["severity"] = "OK"
+            out["message"]  = (f"Paper mode: effective configured Rs "
+                               f"{effective_configured:,.0f} vs broker Rs {total:,.0f} "
+                               f"— within {tol_pct:.0f}%. Broker cash is not consumed "
+                               f"by paper positions.")
+        else:
+            out["severity"] = "WARN"
+            out["message"]  = (f"Paper mode: effective configured Rs "
+                               f"{effective_configured:,.0f} (swing+intraday sleeves) "
+                               f"vs broker Rs {total:,.0f}. Broker cash is not consumed "
+                               f"by paper positions — informational only.")
+    elif abs(gap_pct) <= tol_pct:
         out["severity"] = "OK"
-        out["message"]  = (f"Configured Rs {TOTAL_CAPITAL:,.0f} vs broker "
+        out["message"]  = (f"Configured Rs {effective_configured:,.0f} vs broker "
                            f"Rs {total:,.0f} — within {tol_pct:.0f}%.")
     elif gap < 0:
         # The dangerous direction: sizing against money that is not there.
         out["severity"] = "BLOCK" if abs(gap_pct) > block_pct else "WARN"
         out["message"]  = (
-            f"TOTAL_CAPITAL is Rs {TOTAL_CAPITAL:,.0f} but the account holds "
+            f"TOTAL_CAPITAL is Rs {effective_configured:,.0f} but the account holds "
             f"Rs {total:,.0f} (Rs {cash:,.0f} cash + Rs {invested:,.0f} invested) "
             f"— short by Rs {abs(gap):,.0f} ({abs(gap_pct):.0f}%). New entries are "
             f"being sized against headroom that does not exist; expect orders to "
@@ -140,7 +170,7 @@ def capital_status(sb=None, persist: bool = True) -> dict:
         out["severity"] = "WARN"
         out["message"]  = (
             f"The account holds Rs {total:,.0f} but TOTAL_CAPITAL is set to "
-            f"Rs {TOTAL_CAPITAL:,.0f} — Rs {gap:,.0f} ({gap_pct:.0f}%) is not being "
+            f"Rs {effective_configured:,.0f} — Rs {gap:,.0f} ({gap_pct:.0f}%) is not being "
             f"sized against. Raise TOTAL_CAPITAL to deploy it."
         )
 

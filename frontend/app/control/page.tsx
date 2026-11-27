@@ -58,6 +58,22 @@ export default function ControlRoom() {
   const [regime, setRegime] = useState<RegimeState>('NEUTRAL');
   const [aiStatus, setAiStatus] = useState<'AVAILABLE' | 'DEGRADED' | 'UNAVAILABLE' | 'DISABLED'>('AVAILABLE');
 
+  // ── Advanced tuning (collapsed) ──────────────────────────────────────
+  const ADVANCED_KEYS = [
+    'sizing_max_cost_r', 'sizing_max_mult', 'sizing_min_mult',
+    'exit_runners_enabled', 'exit_deterioration_enabled', 'exit_runner_cap_enforced',
+    'overlay_expiry_enabled', 'overlay_vol_scaling_enabled', 'overlay_liquidity_enabled',
+    'overlay_liquidity_strict', 'governance_freeze_enabled', 'governance_require_oos',
+    'rank_weight_tier', 'rank_weight_conviction', 'intraday_structure_gate',
+    'intraday_news_gate_enabled', 'intraday_gtt_enabled', 'intraday_quote_mode_range',
+    'intraday_quote_mode_vwap', 'intraday_allow_shorts', 'intraday_strategies_enabled',
+    'storage_rolloff_enabled', 'storage_staging_rolloff_enabled', 'storage_fail_pct',
+  ];
+  const [advOpen, setAdvOpen] = useState(false);
+  const [advCfg, setAdvCfg] = useState<Record<string, string>>({});
+  const [advBusy, setAdvBusy] = useState<string | null>(null);
+  const [advMsg, setAdvMsg] = useState<string | null>(null);
+
   useEffect(() => {
     if (!isSupabaseConfigured()) return;
     queries.getMarketRegime().then(({ data }) => {
@@ -75,6 +91,37 @@ export default function ControlRoom() {
       else if (cfg['ai_fallback_mode'] === 'true') setAiStatus('DEGRADED');
       else setAiStatus('AVAILABLE');
     });
+  }, []);
+
+  const loadAdv = useCallback(async () => {
+    if (!isSupabaseConfigured()) return;
+    const { data } = await queries.getSystemConfig(ADVANCED_KEYS);
+    if (data) {
+      const m: Record<string, string> = {};
+      for (const r of data) m[r.key] = r.value;
+      setAdvCfg(m);
+    }
+  }, []);
+
+  const writeAdv = useCallback(async (key: string, value: string) => {
+    setAdvBusy(key);
+    setAdvMsg(null);
+    try {
+      const res = await fetch(`/api/config/${encodeURIComponent(key)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value, reason: 'Control Room advanced tuning' }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.message ?? 'save failed');
+      setAdvCfg((prev) => ({ ...prev, [key]: value }));
+      setAdvMsg(`${key} updated`);
+      setTimeout(() => setAdvMsg(null), 3000);
+    } catch (err) {
+      setAdvMsg((err as Error).message);
+    } finally {
+      setAdvBusy(null);
+    }
   }, []);
 
   const load = useCallback(async () => {
@@ -103,6 +150,7 @@ export default function ControlRoom() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => { if (advOpen) void loadAdv(); }, [advOpen, loadAdv]);
 
   const handleSave = useCallback(
     async (engine: string, patch: { lifecycle?: Lifecycle; gates?: Gates; reason: string; evidence: unknown }) => {
@@ -305,6 +353,59 @@ export default function ControlRoom() {
             <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-xs text-amber-300">
               No engines registered. Run <code className="font-mono">006_engine_registry.sql</code> to
               seed all nine.
+            </div>
+          )}
+        </section>
+
+        {/* ── Advanced tuning (collapsed by default) ───────────────────── */}
+        <section className="mt-6">
+          <button
+            onClick={() => setAdvOpen((v) => !v)}
+            className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground hover:text-foreground"
+          >
+            <span>{advOpen ? '▼' : '▶'}</span>
+            Advanced tuning — sizing multipliers, vol bands, scanner params, overlays, governance, storage
+          </button>
+          {advOpen && (
+            <div className="mt-3 rounded-lg border border-border/50 p-3 space-y-3">
+              {advMsg && (
+                <div className="text-xs text-emerald-300">{advMsg}</div>
+              )}
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                {ADVANCED_KEYS.map((key) => {
+                  const val = advCfg[key] ?? '';
+                  const isBool = val === 'true' || val === 'false' || key.endsWith('_enabled') || key.endsWith('_strict') || key.endsWith('_required');
+                  return (
+                    <div key={key} className="flex flex-col gap-1">
+                      <label className="text-[10px] text-muted-foreground font-mono">{key}</label>
+                      {isBool ? (
+                        <button
+                          disabled={advBusy === key}
+                          onClick={() => writeAdv(key, val === 'true' ? 'false' : 'true')}
+                          className={`rounded border px-2 py-1 text-xs font-mono ${
+                            val === 'true'
+                              ? 'border-emerald-500/40 text-emerald-300'
+                              : 'border-border/50 text-muted-foreground'
+                          }`}
+                        >
+                          {val === 'true' ? 'ON' : 'OFF'}
+                        </button>
+                      ) : (
+                        <input
+                          type="text"
+                          defaultValue={val}
+                          disabled={advBusy === key}
+                          onBlur={(e) => {
+                            const v = e.target.value.trim();
+                            if (v && v !== val) writeAdv(key, v);
+                          }}
+                          className="bg-panel border border-border/50 rounded px-1.5 py-1 text-xs font-mono tabular-nums"
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </section>

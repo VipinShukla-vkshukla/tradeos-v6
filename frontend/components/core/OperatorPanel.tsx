@@ -584,6 +584,15 @@ export function OperatorPanel() {
           </div>
         )}
 
+        {/* Safety status banner — at-a-glance, no new keys */}
+        <div className="rounded-lg border border-border/50 bg-panel-hover/40 p-2.5 text-[11px] flex flex-wrap items-center gap-x-4 gap-y-1">
+          <span className="font-semibold text-foreground">Safety:</span>
+          <span>Swing <b>{mode('swing')}</b></span>
+          <span>Intraday <b>{mode('intraday')}</b></span>
+          <span>Kill switch <b>{killed ? 'ACTIVE' : 'clear'}</b></span>
+          <span>Capital check <b>{(cfg['capital_snapshot'] && JSON.parse(cfg['capital_snapshot'] || '{}').severity) || '—'}</b></span>
+        </div>
+
         {/* Kill switch — first, largest, unmissable */}
         <div className={`rounded-lg border p-3 ${killed
           ? 'border-red-500/50 bg-red-500/10' : 'border-border/50'}`}>
@@ -640,6 +649,11 @@ export function OperatorPanel() {
             books, so it spans both columns rather than sitting beside one. */}
         <RiskExposure cfg={cfg} />
 
+        {/* ── Caps & limits (per book) ──────────────────────────────────────
+            Grouping label only — no fields moved or removed. */}
+        <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">
+          Caps &amp; limits — per book
+        </div>
         {/* The two books, side by side and equal width, so the same control
             lines up across frameworks and a difference is visible rather than
             remembered. Everything scoped to ONE book — old or Phase 4 — lives
@@ -650,6 +664,10 @@ export function OperatorPanel() {
           {framework('intraday', 'Intraday')}
         </div>
 
+        {/* ── Entry discipline & allocator (shared) ───────────────────────── */}
+        <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1 mt-2">
+          Entry discipline &amp; allocator — shared
+        </div>
         {/* Everything that is neither swing-only nor intraday-only: the
             master order gate, the allocator's own mechanics, the two
             structural overlays that apply to both books, and storage. */}
@@ -928,6 +946,31 @@ function SharedControls({ cfg, bool, set, busy }: {
           Hurdle min sample<P4 />
         </div>
         {numField('alloc_hurdle_min_sample')}
+      </div>
+
+      {/* ── Risk sizing — editable denominators (previously read-only) ── */}
+      <SubHead>Risk sizing (editable)</SubHead>
+      <div className="grid grid-cols-2 gap-2 mt-1">
+        <div>
+          <div className="text-[10px] text-muted-foreground">Risk % per trade</div>
+          {numField('risk_pct_per_trade')}
+        </div>
+        <div>
+          <div className="text-[10px] text-muted-foreground">Max open heat %</div>
+          {numField('portfolio_max_total_risk_pct')}
+        </div>
+        <div>
+          <div className="text-[10px] text-muted-foreground">Max position %</div>
+          {numField('max_position_pct')}
+        </div>
+        <div>
+          <div className="text-[10px] text-muted-foreground">Min position %</div>
+          {numField('portfolio_min_position_pct')}
+        </div>
+      </div>
+      <div className="text-[10px] text-muted-foreground mt-1">
+        These denominators are what the caps above MEAN in rupees. Editing them
+        changes position sizes on the next daemon cycle.
       </div>
       <div className="text-[10px] text-muted-foreground mt-1">
         <b>Hurdle min sample</b> is how many scored arrivals a book needs before the
