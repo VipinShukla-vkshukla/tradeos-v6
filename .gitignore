@@ -38,3 +38,5 @@ node_modules/
 
 # TypeScript incremental build cache
 *.tsbuildinfo
+
+frontend/next-env.d.ts
