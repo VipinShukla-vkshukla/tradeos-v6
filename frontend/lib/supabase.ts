@@ -70,6 +70,58 @@ function swingBaseEngines(raw: string | null | undefined): string[] {
 // ---------------------------------------------------------------------------
 // Generic query helper
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Temporary measurement helpers for Phase 1 usage audit.
+// Remove after the egress/log-ingestion reduction work is complete.
+// ---------------------------------------------------------------------------
+export interface SupabaseUsageSample {
+  table: string;
+  rows: number;
+  approxBytes: number;
+  at: number;
+}
+
+const __supabaseUsageSamples: SupabaseUsageSample[] = [];
+
+export function recordSupabaseUsage(sample: SupabaseUsageSample): void {
+  __supabaseUsageSamples.push(sample);
+  if (__supabaseUsageSamples.length % 25 === 0) {
+    // eslint-disable-next-line no-console
+    console.info('[SUPABASE-USAGE] samples:', __supabaseUsageSamples.length);
+  }
+}
+
+export function getSupabaseUsageReport(): {
+  totalRows: number;
+  totalApproxBytes: number;
+  byTable: Array<{ table: string; calls: number; rows: number; approxBytes: number }>;
+} {
+  const byTable = new Map<string, { calls: number; rows: number; approxBytes: number }>();
+  for (const s of __supabaseUsageSamples) {
+    const cur = byTable.get(s.table) ?? { calls: 0, rows: 0, approxBytes: 0 };
+    cur.calls += 1;
+    cur.rows += s.rows;
+    cur.approxBytes += s.approxBytes;
+    byTable.set(s.table, cur);
+  }
+  return {
+    totalRows: __supabaseUsageSamples.reduce((a, s) => a + s.rows, 0),
+    totalApproxBytes: __supabaseUsageSamples.reduce((a, s) => a + s.approxBytes, 0),
+    byTable: [...byTable.entries()]
+      .map(([table, v]) => ({ table, ...v }))
+      .sort((a, b) => b.approxBytes - a.approxBytes),
+  };
+}
+
+export function resetSupabaseUsageReport(): void {
+  __supabaseUsageSamples.length = 0;
+}
+
+if (typeof window !== 'undefined') {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).__tradeosSupabaseUsage = { getSupabaseUsageReport, resetSupabaseUsageReport };
+}
+
 export async function queryTable<T>(
   table: string,
   options?: {
@@ -118,6 +170,12 @@ export async function queryTable<T>(
   }
 
   const { data, error, count } = await query;
+  try {
+    const rows = Array.isArray(data) ? data.length : 0;
+    recordSupabaseUsage({ table, rows, approxBytes: JSON.stringify(data ?? null).length, at: Date.now() });
+  } catch {
+    // Measurement must never affect query results.
+  }
   return { data: data as T[] | null, error, count };
 }
 
