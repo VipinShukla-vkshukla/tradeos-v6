@@ -467,7 +467,7 @@ export function PositionsTab() {
       try {
         const [o, c, pol, swp] = await Promise.all([
           queries.getOpenPositions(),
-          queries.getClosedPositions(200),
+          queries.getClosedPositions(2000),
           queries.getExitPolicy(),
           queries.getSwapExecutionsToday(),
         ]);

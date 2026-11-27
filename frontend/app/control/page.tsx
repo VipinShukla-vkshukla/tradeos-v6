@@ -272,6 +272,59 @@ export default function ControlRoom() {
           </div>
         )}
 
+        {/* ── Advanced tuning (collapsed by default) ───────────────────── */}
+        <section className="mt-6">
+          <button
+            onClick={() => setAdvOpen((v) => !v)}
+            className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground hover:text-foreground"
+          >
+            <span>{advOpen ? '▼' : '▶'}</span>
+            Advanced tuning — sizing multipliers, vol bands, scanner params, overlays, governance, storage
+          </button>
+          {advOpen && (
+            <div className="mt-3 rounded-lg border border-border/50 p-3 space-y-3">
+              {advMsg && (
+                <div className="text-xs text-emerald-300">{advMsg}</div>
+              )}
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                {ADVANCED_KEYS.map((key) => {
+                  const val = advCfg[key] ?? '';
+                  const isBool = val === 'true' || val === 'false' || key.endsWith('_enabled') || key.endsWith('_strict') || key.endsWith('_required');
+                  return (
+                    <div key={key} className="flex flex-col gap-1">
+                      <label className="text-[10px] text-muted-foreground font-mono">{key}</label>
+                      {isBool ? (
+                        <button
+                          disabled={advBusy === key}
+                          onClick={() => writeAdv(key, val === 'true' ? 'false' : 'true')}
+                          className={`rounded border px-2 py-1 text-xs font-mono ${
+                            val === 'true'
+                              ? 'border-emerald-500/40 text-emerald-300'
+                              : 'border-border/50 text-muted-foreground'
+                          }`}
+                        >
+                          {val === 'true' ? 'ON' : 'OFF'}
+                        </button>
+                      ) : (
+                        <input
+                          type="text"
+                          defaultValue={val}
+                          disabled={advBusy === key}
+                          onBlur={(e) => {
+                            const v = e.target.value.trim();
+                            if (v && v !== val) writeAdv(key, v);
+                          }}
+                          className="bg-panel border border-border/50 rounded px-1.5 py-1 text-xs font-mono tabular-nums"
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </section>
+
         {/* ── Sector rotation strip ───────────────────────────────────── */}
         {topSectors.length > 0 && (
           <section className="mb-6">
@@ -357,58 +410,6 @@ export default function ControlRoom() {
           )}
         </section>
 
-        {/* ── Advanced tuning (collapsed by default) ───────────────────── */}
-        <section className="mt-6">
-          <button
-            onClick={() => setAdvOpen((v) => !v)}
-            className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground hover:text-foreground"
-          >
-            <span>{advOpen ? '▼' : '▶'}</span>
-            Advanced tuning — sizing multipliers, vol bands, scanner params, overlays, governance, storage
-          </button>
-          {advOpen && (
-            <div className="mt-3 rounded-lg border border-border/50 p-3 space-y-3">
-              {advMsg && (
-                <div className="text-xs text-emerald-300">{advMsg}</div>
-              )}
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                {ADVANCED_KEYS.map((key) => {
-                  const val = advCfg[key] ?? '';
-                  const isBool = val === 'true' || val === 'false' || key.endsWith('_enabled') || key.endsWith('_strict') || key.endsWith('_required');
-                  return (
-                    <div key={key} className="flex flex-col gap-1">
-                      <label className="text-[10px] text-muted-foreground font-mono">{key}</label>
-                      {isBool ? (
-                        <button
-                          disabled={advBusy === key}
-                          onClick={() => writeAdv(key, val === 'true' ? 'false' : 'true')}
-                          className={`rounded border px-2 py-1 text-xs font-mono ${
-                            val === 'true'
-                              ? 'border-emerald-500/40 text-emerald-300'
-                              : 'border-border/50 text-muted-foreground'
-                          }`}
-                        >
-                          {val === 'true' ? 'ON' : 'OFF'}
-                        </button>
-                      ) : (
-                        <input
-                          type="text"
-                          defaultValue={val}
-                          disabled={advBusy === key}
-                          onBlur={(e) => {
-                            const v = e.target.value.trim();
-                            if (v && v !== val) writeAdv(key, v);
-                          }}
-                          className="bg-panel border border-border/50 rounded px-1.5 py-1 text-xs font-mono tabular-nums"
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </section>
         </main>
       </div>
 
