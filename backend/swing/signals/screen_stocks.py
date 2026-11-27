@@ -1596,7 +1596,7 @@ def log_screener_outcomes(sb, today: str, hold_days_list: list = None):
             latest = (
                 sb.table("stock_data_daily")
                 .select("date")
-                .order("date", { ascending: false })
+                .order("date", desc=True)
                 .limit(1)
                 .execute()
                 .data

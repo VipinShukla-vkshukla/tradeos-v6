@@ -75,6 +75,7 @@ from __future__ import annotations
 
 import statistics
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -720,7 +721,18 @@ def _empirical_base(bucket: str, framework: str, sb=None
             def build():
                 q = base_query()
                 return q.eq("regime_bucket", bucket) if filtered else q
-            return fetch_all(build, page=PAGE)
+            # A 19,710-row window is many separate PostgREST requests; one of
+            # them can hit the server's statement timeout (57014). Retry the
+            # whole read once before giving up — after the second failure the
+            # outer handler still falls back to the cold-start bar.
+            for attempt in range(2):
+                try:
+                    return fetch_all(build, page=PAGE)
+                except Exception as e:
+                    if attempt:
+                        raise
+                    logger.warning(f"  hurdle: arrival read failed ({str(e)[:80]}) — retrying once")
+                    time.sleep(1.0)
 
         rows = _page(filtered=True)
     except Exception as e:

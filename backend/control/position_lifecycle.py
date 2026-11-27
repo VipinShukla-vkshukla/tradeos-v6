@@ -81,7 +81,7 @@ from config import (
 # it too and cannot import this module at load time (it imports the intraday
 # package, so a top-level import here would be circular). Re-exported so
 # existing readers of position_lifecycle are unaffected.
-from control.exit_rules import EXIT_ACTIONS_FULL, EXIT_ACTIONS_SELL, progressive_trail_levels, is_quality_setup  # noqa: E402
+from control.exit_rules import EXIT_ACTIONS_FULL, EXIT_ACTIONS_SELL, progressive_trail_levels, is_quality_setup, structural_exit_check  # noqa: E402
 
 
 # ─────────────────────────────────────────────────────────────────────────────
