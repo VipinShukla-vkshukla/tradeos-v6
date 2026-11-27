@@ -41,12 +41,14 @@ from intraday.engine import IntradayEngine
 from intraday.notifier import Notifier
 from intraday.price_feed import PriceFeed
 from intraday import lease
+from execution.gates import trading_mode, LIVE
 from logs.intraday_formatter import (
     log_session_start,
     log_cycle_summary,
     log_session_end,
     log_immediate_gaps,
 )
+from control.capital_check import log_capital_status
 
 
 def _banner() -> None:
@@ -54,7 +56,8 @@ def _banner() -> None:
     logger.info("=" * 70)
     logger.info(f"TradeOS Intraday | phase {phase} | "
                 f"GTT {'ON' if gtt_enabled() else 'off'} | "
-                f"orders {'ON' if orders_enabled() else 'off'}")
+                f"orders {'ON' if orders_enabled() else 'off'} | "
+                f"mode: intraday={trading_mode('INTRADAY')}, swing={trading_mode('SWING')}")
 
     # Read both intraday and swing caps from Supabase
     sb = get_supabase()
@@ -72,7 +75,12 @@ def _banner() -> None:
     swing_caps = f"₹{sq.get('swing_max_order_value', 0):,.0f}/order, {int(sq.get('swing_max_orders_per_day', 0))}/day, ₹{sq.get('swing_max_notional_per_day', 0):,.0f}/day notional"
 
     if orders_enabled():
-        logger.warning(f"  ORDERS ARE LIVE — intraday: {intraday_caps} | swing: {swing_caps}")
+        if trading_mode("INTRADAY") == LIVE or trading_mode("SWING") == LIVE:
+            logger.warning(f"  ORDERS ARE LIVE — intraday: {intraday_caps} | swing: {swing_caps}")
+        else:
+            logger.info(f"  PAPER EXECUTION — intraday={trading_mode('INTRADAY')}, "
+                        f"swing={trading_mode('SWING')} (simulated fills only, no broker orders) "
+                        f"| intraday: {intraday_caps} | swing: {swing_caps}")
     logger.info("=" * 70)
 
 
@@ -327,6 +335,20 @@ def main(once: bool = False, dry: bool = False) -> None:
     except Exception as e:
         logger.debug(f"Regime gate read from system_config failed: {e}")
 
+    # Capital reconciliation (paper-aware) — surface in banner
+    try:
+        _cap = log_capital_status(sb)
+        _cap_sev = _cap.get("severity")
+        _cap_msg = _cap.get("message")
+    except Exception as _e:
+        _cap_sev = None
+        _cap_msg = str(_e)
+    # Websocket diagnostics snapshot (if feed available)
+    _ws_err = getattr(feed, "last_ws_error", None) if "feed" in locals() else None
+    _mc = getattr(engine, "_last_market_ctx", None)
+    _intraday_regime = getattr(_mc, "state", None)
+    _intraday_size = getattr(_mc, "size_multiplier", None)
+
     # Log session start banner (regime, VIX, FII, entry gate status)
     log_session_start(
         phase=autonomy_phase(),
@@ -339,6 +361,11 @@ def main(once: bool = False, dry: bool = False) -> None:
         entries_blocked=swing_entries_blocked,
         entries_restricted=swing_entries_restricted,
         sizing_override=swing_block_sizing_override,
+        capital_severity=_cap_sev,
+        capital_message=_cap_msg,
+        ws_last_error=_ws_err,
+        intraday_regime=_intraday_regime,
+        intraday_size_mult=_intraday_size,
     )
 
     try:
@@ -471,6 +498,14 @@ def main(once: bool = False, dry: bool = False) -> None:
                         same_day_discoveries=len(engine._same_day_candidates),
                         live_requalify_admitted=0,
                         allocator_state=allocator_state,
+                        scale_outs=getattr(engine, "_cycle_scale_outs", 0),
+                        scale_ins=getattr(engine, "_cycle_scale_ins", 0),
+                        mtf_blocks=getattr(engine, "_cycle_mtf_blocks", 0),
+                        mtf_reduces=getattr(engine, "_cycle_mtf_reduces", 0),
+                        intraday_regime=getattr(engine._last_market_ctx, "state", None)
+                        if getattr(engine, "_last_market_ctx", None) else None,
+                        intraday_size_mult=getattr(engine._last_market_ctx, "size_multiplier", None)
+                        if getattr(engine, "_last_market_ctx", None) else None,
                     )
 
                     # ── Intraday log polish: immediate gap detection ──────────
@@ -842,6 +877,12 @@ def main(once: bool = False, dry: bool = False) -> None:
             unscored_outcomes=unscored_outcomes_count,
             gaps=gaps_summary,
             improvements=improvements_summary,
+            scale_outs=getattr(engine, "_session_scale_outs", 0),
+            scale_ins=getattr(engine, "_session_scale_ins", 0),
+            mtf_blocks=getattr(engine, "_session_mtf_blocks", 0),
+            mtf_reduces=getattr(engine, "_session_mtf_reduces", 0),
+            ws_last_error=getattr(feed, "last_ws_error", None),
+            capital_severity=_cap_sev,
         )
 
 

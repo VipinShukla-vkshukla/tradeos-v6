@@ -70,6 +70,11 @@ def format_session_start(
     entries_blocked: bool = False,
     entries_restricted: bool = False,
     sizing_override: str | None = None,
+    capital_severity: str | None = None,
+    capital_message: str | None = None,
+    ws_last_error: str | None = None,
+    intraday_regime: str | None = None,
+    intraday_size_mult: float | None = None,
 ) -> str:
     """
     Build the intraday daemon start-of-session banner.
@@ -106,6 +111,7 @@ def format_session_start(
     vix_str = f"{vix:.1f}" if vix is not None else "n/a"
     fii_str = fii_flag or "n/a"
     lines.append(f"│     Regime: {regime_str:<12} VIX: {vix_str:>6}   FII: {fii_str:<10}   │")
+    lines.append(f"│ 🌐 INTRADAY REGIME: {intraday_regime or 'n/a'} (live) size x{intraday_size_mult or 0:.2f}   │")
     if entries_blocked:
         lines.append("│     ⛔ SWING ENTRIES BLOCKED — pre-market gate refused new entries     │")
     elif entries_restricted:
@@ -117,6 +123,10 @@ def format_session_start(
         # refused the entire book. The live verdict is shown each cycle.
         lines.append("│     ✅ PRE-MARKET GATE: ALLOWED — live allocator verdict each cycle     │")
     lines.append("│                                                                         │")
+    if capital_severity:
+        lines.append(f"│ 💰 CAPITAL: {capital_severity} — {capital_message or ''}   │")
+    if ws_last_error:
+        lines.append(f"│ 🌐 WS LAST ERROR: {ws_last_error}   │")
     lines.append("└─────────────────────────────────────────────────────────────────────────┘")
     lines.append("")
 
@@ -144,6 +154,12 @@ def format_cycle_summary(
     live_requalify_admitted: int = 0,
     gaps: List[str] | None = None,
     allocator_state: str | None = None,
+    scale_outs: int = 0,
+    scale_ins: int = 0,
+    mtf_blocks: int = 0,
+    mtf_reduces: int = 0,
+    intraday_regime: str | None = None,
+    intraday_size_mult: float | None = None,
 ) -> str:
     """
     Build a per-cycle summary line block.
@@ -156,20 +172,25 @@ def format_cycle_summary(
 
     lines: List[str] = []
     lines.append("┌─────────────────────────────────────────────────────────────────────────┐")
-    lines.append(f"│ 🔄 CYCLE {cycle_count:>4} | {tl} Regime: {regime:<10} VIX: {vix:>5.1f}   │")
+    lines.append(f"│ 🔄 CYCLE {cycle_count:>4} | {tl} Swing: {regime:<10} (EOD) | Intraday: {intraday_regime or "n/a":<9} (live, x{intraday_size_mult or 0:.2f}) | VIX: {vix:>5.1f}   │")
     lines.append("├─────────────────────────────────────────────────────────────────────────┤")
 
     # Entry funnel
     entries_left = max(0, entry_cap - entries_taken)
     lines.append(
         f"│ 🟢 ENTRIES: {entries_taken}/{entry_cap} used ({entries_left} left)  "
-        f"{buyable} buyable of {candidates_watched} watched   │"
+        f"{buyable} post-gate buyable of {candidates_watched} watched   │"
     )
 
     # Exit funnel
     lines.append(
         f"│ 🔴 EXITS:  {exits_executed} executed  {stops_trailed} stops trailed   │"
     )
+    if scale_outs or scale_ins or mtf_blocks or mtf_reduces:
+        lines.append(
+            f"│ 🔄 SCALE: {scale_outs} scale-outs  {scale_ins} scale-ins  "
+            f"MTF blocks {mtf_blocks} reduces {mtf_reduces}   │"
+        )
 
     # Same-day & requalify
     if same_day_discoveries or live_requalify_admitted:
@@ -211,6 +232,12 @@ def format_session_end(
     unscored_outcomes: int,
     gaps: List[str],
     improvements: List[str],
+    scale_outs: int = 0,
+    scale_ins: int = 0,
+    mtf_blocks: int = 0,
+    mtf_reduces: int = 0,
+    ws_last_error: str | None = None,
+    capital_severity: str | None = None,
 ) -> str:
     """
     Build the end-of-session summary banner.
@@ -236,6 +263,10 @@ def format_session_end(
         f"│  {tl} Cycles: {total_cycles:>5}   ⏱ {_fmt_secs(total_duration)}   "
         f"Positions at close: {positions_at_close}   │"
     )
+    if capital_severity:
+        lines.append(f"│ 💰 CAPITAL: {capital_severity}   │")
+    if ws_last_error:
+        lines.append(f"│ 🌐 WS LAST ERROR: {ws_last_error}   │")
     lines.append("│                                                                         │")
 
     # ── Entry/exit funnel ──────────────────────────────────────────────────
@@ -247,6 +278,9 @@ def format_session_end(
     lines.append(f"│  Exits executed: {exits_executed}   Stops trailed: {stops_trailed}   │")
     lines.append(f"│  Unfilled entries: {unfilled_entries}   "
                  f"{'⚠️' if unfilled_entries > 0 else '✅'}   │")
+    if scale_outs or scale_ins or mtf_blocks or mtf_reduces:
+        lines.append(f"│ 🔄 SCALE: {scale_outs} scale-outs  {scale_ins} scale-ins  "
+                     f"MTF blocks {mtf_blocks} reduces {mtf_reduces}   │")
     lines.append("│                                                                         │")
 
     # Zero entries today — only at session end, not every cycle.

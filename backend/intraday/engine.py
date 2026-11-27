@@ -427,6 +427,9 @@ class IntradayEngine:
         self._session_cal: list[str] = []
         self._session_cal_day = None
         self._allocator = None
+        # Observation-only snapshot of the intraday regime already computed
+        # each cycle by market_context.from_context(). Never used in decisions.
+        self._last_market_ctx = None
         # Last allocator edge-floor snapshot, for diagnostics only.
         self._last_edge_floor: dict | None = None
         # IGN's bounded lifetime bootstrap-override counter (10 lifetime
@@ -485,7 +488,11 @@ class IntradayEngine:
         # against read-after-write lag on the broker log — see
         # _maybe_enter_swing().
         self._entries_taken = 0
-
+        # Session-level counters for new capabilities (P0 logging)
+        self._session_scale_outs = 0
+        self._session_scale_ins = 0
+        self._session_mtf_blocks = 0
+        self._session_mtf_reduces = 0
         # ── Dynamic swing position sizing session state (in-memory, reset daily) ──
         self._session_realized_pnl: float = 0.0
         self._session_win_count: int = 0
@@ -2475,6 +2482,7 @@ class IntradayEngine:
                 # checks regime deterioration, losing positions, and MTF conflict.
                 try:
                     from control.position_lifecycle import evaluate_scale_out
+                    from config import capital_for
                     regime = (self._policy or {}).get("_current_regime") or "NEUTRAL"
                     recent_regimes = [r.get("computed_regime") or r.get("regime")
                                       for r in (getattr(self, "_regime_history", []) or [])[:5]]
@@ -2604,12 +2612,15 @@ class IntradayEngine:
                 weekly_risk_off = sum(1 for r in recent_regimes if r == "RISK OFF") >= 3
                 if weekly_risk_off and cfg_bool("mtf_weekly_risk_off_blocks_scale_in", True):
                     mtf_scale_in_blocked = True
+                    self._session_mtf_blocks += 1
+                    self._cycle_mtf_blocks += 1
                     logger.info(f"  {sym}: scale-in blocked — weekly regime RISK OFF (MTF)")
                     return
                 if regime != intraday_regime:
                     mtf_size_mult = 0.75
+                    self._session_mtf_reduces += 1
+                    self._cycle_mtf_reduces += 1
                     logger.info(f"  {sym}: scale-in size reduced 25% — daily/intraday regime conflict")
-
             # ── Dynamic sizing inputs (all in-memory, zero Supabase) ──
             cands = self.candidates or []
             india_vix = float((cands[0] or {}).get("india_vix", 0) or 0) if cands else 0.0
@@ -2662,7 +2673,15 @@ class IntradayEngine:
                 logger.info(f"  {sym}: scale-in shadow — {d['detail']} — "
                            f"swing_scale_in_auto_entry is off")
                 return
+            logger.info(
+                f"  {sym}: SCALE_IN sizing — regime_conf={regime_confidence:.2f} "
+                f"session_pnl={session_pnl_pct:+.2%} win_rate={recent_win_rate:.0%} "
+                f"mtf_mult={mtf_size_mult:.2f} setup_q={setup_quality:.2f} qty={d.get('qty')} "
+                f"swing={regime} intraday="
+                f"{getattr(getattr(self, '_last_market_ctx', None), 'state', 'n/a')}")
             self._execute_scale_in(p, ltp, d)
+            self._session_scale_ins += 1
+            self._cycle_scale_ins += 1
         except Exception as e:
             logger.debug(f"  {sym}: scale-in shadow check skipped — {e}")
 
@@ -3276,6 +3295,9 @@ class IntradayEngine:
         for a in actions:
             p, d, ltp = a["position"], a["decision"], a["ltp"]
             sym = p["symbol"]
+            if (d["action"].startswith("EXIT") or
+                    d["action"] in ("TRAIL_SL", "BOOK_PARTIAL", "SCALE_OUT")):
+                self._log_decision_trace(sym, d["action"], d)
             urgency = "CRITICAL" if d["action"].startswith("EXIT") else "NORMAL"
 
             r_now = None
@@ -3400,6 +3422,8 @@ class IntradayEngine:
                                 p.update(upd)
                                 logger.info(f"  {p['symbol']}: SCALE_OUT {scale_out_qty} shares, "
                                            f"remaining {left}")
+                                self._session_scale_outs += 1
+                                self._cycle_scale_outs += 1
                         else:
                             from execution import paper_broker
                             paper_broker.close_partial(p["symbol"], scale_out_qty, ltp,
@@ -3418,6 +3442,10 @@ class IntradayEngine:
                             self._update_position(p, upd)
                             p.update(upd)
                             self.load_state()
+                            self._session_scale_outs += 1
+                            self._cycle_scale_outs += 1
+                            logger.info(f"  {p['symbol']}: SCALE_OUT {scale_out_qty} shares (paper), "
+                                       f"remaining {left}")
                 except Exception as e:
                     logger.warning(f"  {p.get('symbol')}: scale-out failed — {e}")
 
@@ -4568,6 +4596,7 @@ class IntradayEngine:
                 self._entries_taken += 1
                 self.load_state()
                 self._pending_entries[sym] = str(res.order_id)
+                self._log_decision_trace(sym, "ENTRY RESTING", d)
                 logger.success(f"  🟡 ENTRY RESTING {sym} {qty} @ {resting_price} "
                                f"(order {res.order_id}) — {rationale or 'no rank'} "
                                f"— resting for a better fill, ladder step 0/"
@@ -4703,6 +4732,7 @@ class IntradayEngine:
             # before.
             self.load_state()
             self._pending_fills[sym] = str(res.order_id)
+            self._log_decision_trace(sym, "ENTRY SUBMITTED", d)
             logger.success(f"  🟡 ENTRY SUBMITTED {sym} {qty} @ ~{limit} "
                            f"(order {res.order_id}) — {rationale or 'no rank'} "
                            f"— awaiting fill confirmation")
@@ -5111,6 +5141,13 @@ class IntradayEngine:
         # threaded through separately.
         self._refresh_index_ltp(prices)
         mc = mkt.from_context(self._index_ctx)
+        # OBSERVATION ONLY: expose the already-computed regime to the log
+        # banner and emit a transition event on EVERY state change. No
+        # decision logic reads these lines.
+        self._last_market_ctx = mc
+        if self._last_state.get("_market") != mc.state:
+            mkt.log_state(mc)
+            self._last_state["_market"] = mc.state
         # THE MARKET GATE IS NOW PER DIRECTION, NOT A SINGLE DOOR.
         #
         # `allow_longs` alone returned [] and skipped the whole scan — which in
@@ -5121,9 +5158,6 @@ class IntradayEngine:
         # letting the scan run for whichever side the market is offering.
         shorts_live = cfg_bool("intraday_allow_shorts", False) and mc.allow_shorts
         if not mc.allow_longs and not shorts_live:
-            if self._last_state.get("_market") != mc.state:
-                mkt.log_state(mc)
-                self._last_state["_market"] = mc.state
             return []
 
         stale_symbols = stale_symbols or set()
@@ -6798,6 +6832,31 @@ class IntradayEngine:
             self.act_on_positions(actions)
         return actions
 
+    def _log_decision_trace(self, sym: str, event: str, decision) -> None:
+        """INFO-only trace of parameters an existing decision already computed.
+
+        Read-only by design: this emits values the engine has already decided
+        with. It never recomputes, never gates, never changes an order.
+        """
+        mc = getattr(self, "_last_market_ctx", None)
+        intraday_regime = mc.state if mc else "n/a"
+        swing_regime = (self._policy or {}).get("_current_regime") or "NEUTRAL"
+        if hasattr(decision, "as_dict"):
+            dd = decision.as_dict()
+        elif isinstance(decision, dict):
+            dd = decision
+        else:
+            return
+        keys = (
+            "action", "rr", "min_rr_used", "max_entry", "entry", "stop",
+            "target", "qty", "risk_amount", "invested", "dist_to_zone_pct",
+            "stale_price", "block_reason", "reason", "detail", "new_sl",
+            "book_qty",
+        )
+        parts = [f"{k}={dd[k]}" for k in keys if dd.get(k) is not None]
+        logger.info(f"  {sym}: {event} | swing={swing_regime} intraday={intraday_regime} | "
+                    + " ".join(parts))
+
     def cycle(self, prices: dict[str, float], sync_gtt: bool = False,
               feed=None, stale_symbols: set[str] | None = None) -> dict:
         # Cleared FIRST, unconditionally — every _today_totals_cached() call
@@ -6806,7 +6865,10 @@ class IntradayEngine:
         # survives an early return" discipline _allocate_shadow() already
         # uses for self._verdicts.
         self._today_totals_cache = {}
-
+        self._cycle_scale_outs = 0
+        self._cycle_scale_ins = 0
+        self._cycle_mtf_blocks = 0
+        self._cycle_mtf_reduces = 0
         # ── WARM-START — first cycle after a restart ────────────────────────
         # Contexts are normally built on the 300s slow timer. On the first
         # cycle after a restart they are empty, so the daemon is blind for up
@@ -6928,6 +6990,10 @@ class IntradayEngine:
             "position_actions": len(pos_actions),
             "exit_count": exit_count,
             "trail_count": trail_count,
+            "scale_out_count": getattr(self, "_cycle_scale_outs", 0),
+            "scale_in_count": getattr(self, "_cycle_scale_ins", 0),
+            "mtf_block_count": getattr(self, "_cycle_mtf_blocks", 0),
+            "mtf_reduce_count": getattr(self, "_cycle_mtf_reduces", 0),
             "entry_signals": len(entries),
             "buyable": sum(1 for e in entries if e.get("state") == "BUYABLE"),
             "intraday_setups": len(setups),

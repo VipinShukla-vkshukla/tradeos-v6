@@ -2017,8 +2017,13 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
     # position as "vanished from holdings" and close it mid-session. Filtered
     # explicitly rather than relying on the paper/live axis to keep doing it
     # by accident.
-    db_rows = [r for r in ((sb.table("open_positions").select("*")
-                              .in_("status", ["ACTIVE", "CLOSING"]).execute().data) or [])
+    all_rows = (sb.table("open_positions").select("*")
+                  .in_("status", ["ACTIVE", "CLOSING"]).execute().data) or []
+    # Paper rows stay in the book (the engine watches them, the exit engine
+    # closes them), but must never be fed to the broker-truth rules below —
+    # a simulated position is absent from Kite by design and would otherwise
+    # be closed at its entry price on the first reconcile after it opened.
+    db_rows = [r for r in all_rows
                if (r.get("mode") or "LIVE").upper() != "PAPER"
                and (r.get("product") or "CNC").upper() == "CNC"]
 
@@ -2057,7 +2062,13 @@ def reconcile_with_broker(sb, trade_date: str) -> dict:
     db_map  = {(r["symbol"], (r.get("product") or "CNC").upper()): r
                for r in db_rows}
 
-    logger.info(f"  Reconcile: broker={len(hold_map)} holdings | db={len(db_map)} open")
+    # Report both books so the count agrees with the engine's own position list:
+    # broker=0 is expected in PAPER (Kite never sees simulated fills), and db=0
+    # here means zero LIVE CNC positions, not an empty open_positions table.
+    logger.info(f"  Reconcile: broker={len(hold_map)} holdings | "
+                f"db={len(db_map)} live open | "
+                f"paper={sum(1 for r in all_rows if (r.get('mode') or 'LIVE').upper() == 'PAPER')} "
+                f"open (paper excluded from broker truth)")
 
     opened = closed = adjusted = 0
 
