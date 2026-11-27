@@ -72,8 +72,11 @@ def _rows(n: int, trade_date: str) -> list[dict]:
 
 
 def test_archives_nothing_and_deletes_nothing_when_no_rows_are_old_enough():
+    from datetime import timedelta
+    from config import today_ist
     from tools.archive_allocation_decisions import archive_and_prune
-    sb = FakeSB(_rows(3, "2026-08-26"))
+    recent = (today_ist() - timedelta(days=1)).isoformat()
+    sb = FakeSB(_rows(3, recent))
     result = archive_and_prune(keep_days=60, sb=sb)
     assert result["archived"] == 0
     assert len(sb._store["allocation_decisions"]) == 3
@@ -81,8 +84,12 @@ def test_archives_nothing_and_deletes_nothing_when_no_rows_are_old_enough():
 
 def test_archives_and_deletes_only_rows_older_than_the_cutoff():
     from tools.archive_allocation_decisions import archive_and_prune
-    old = _rows(5, "2026-05-01")
-    recent = _rows(2, "2026-08-26")
+    from datetime import timedelta
+    from config import today_ist
+    old_date = (today_ist() - timedelta(days=120)).isoformat()
+    recent_date = (today_ist() - timedelta(days=1)).isoformat()
+    old = _rows(5, old_date)
+    recent = _rows(2, recent_date)
     for r in recent:
         r["id"] += 1000
     sb = FakeSB(old + recent)
@@ -100,7 +107,7 @@ def test_archives_and_deletes_only_rows_older_than_the_cutoff():
     assert result["archived"] == 5
     remaining = sb._store["allocation_decisions"]
     assert len(remaining) == 2
-    assert {r["trade_date"] for r in remaining} == {"2026-08-26"}
+    assert {r["trade_date"] for r in remaining} == {recent_date}
 
 
 def test_dry_run_reports_the_count_but_deletes_nothing():

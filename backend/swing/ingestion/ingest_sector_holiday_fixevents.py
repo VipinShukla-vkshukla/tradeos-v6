@@ -64,19 +64,19 @@ def capital_status(sb=None, persist: bool = True) -> dict:
     # Query open positions to deduct invested capital
     # open_positions table must have a 'framework' column (SWING/INTRADAY)
     try:
-        swing_holds = sb.table("open_positions").select("value").eq("framework", "SWING").eq("status", "ACTIVE").execute().data or []
-        intraday_holds = sb.table("open_positions").select("value").eq("framework", "INTRADAY").eq("status", "ACTIVE").execute().data or []
+        swing_holds = sb.table("open_positions").select("invested_value").eq("framework", "SWING").eq("status", "ACTIVE").execute().data or []
+        intraday_holds = sb.table("open_positions").select("invested_value").eq("framework", "INTRADAY").eq("status", "ACTIVE").execute().data or []
     except Exception:
         swing_holds = []
         intraday_holds = []
 
     # Sum invested (value field — could be notional, ltp*qty, etc.)
     swing_invested = sum(
-        float(h.get("value") or h.get("notional") or h.get("ltp") or 0)
+        float(h.get("invested_value") or h.get("notional") or h.get("ltp") or 0)
         for h in swing_holds
     )
     intraday_invested = sum(
-        float(h.get("value") or h.get("notional") or h.get("ltp") or 0)
+        float(h.get("invested_value") or h.get("notional") or h.get("ltp") or 0)
         for h in intraday_holds
     )
 

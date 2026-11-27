@@ -170,6 +170,9 @@ class _FakeQuery:
     @property
     def not_(self): return self
     def is_(self, *a, **k): return self
+    def eq(self, col, val):
+        # production chains .eq("cost_verdict", "TAKEN") in intraday_priors()
+        self.log.append((col, val)); return self
     def gte(self, col, val):
         self.log.append((col, val)); return self
     def order(self, col, *a, **k):

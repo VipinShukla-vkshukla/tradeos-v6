@@ -271,10 +271,13 @@ def test_floor_since_explicit_override_wins_outright():
 
 
 def test_floor_since_honours_priors_intraday_since_like_the_allocator_does():
+    from datetime import timedelta
+    from config import today_ist
     from tools.feature_edge_study import _floor_since
+    inside = (today_ist() - timedelta(days=10)).isoformat()
     with cfg_ctx({"priors_intraday_lookback_days": "90",
-                 "priors_intraday_since": "2026-08-20"}):
-        assert _floor_since(None) == "2026-08-20", (
+                  "priors_intraday_since": inside}):
+        assert _floor_since(None) == inside, (
             "a floor date inside the rolling window must win, same contract "
             "as allocation.hurdle's alloc_hurdle_since")
 

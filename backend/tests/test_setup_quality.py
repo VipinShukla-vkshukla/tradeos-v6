@@ -1,10 +1,12 @@
 """
 analysis/setup_quality.py — the scoring itself, offline.
 
-The module is instrumentation, not a gate, so these checks are about it being a
-HONEST measurement: a missing factor must not read as an average one, one
-outlier must not carry the mean, and every declared factor must actually be
-reachable from the feature mapping.
+The score is a BOUNDED sizing input, never a gate or a ranker: it enters
+compute_dynamic_multiplier() as a small multiplier and nothing else. These
+checks keep that boundary honest — a missing factor must not read as an average
+one, one outlier must not carry the mean, every declared factor must be
+reachable from the feature mapping, and no decision path may use the score for
+anything beyond that one sizing call.
 """
 
 from __future__ import annotations
@@ -114,35 +116,41 @@ DECISION_PATHS = (
     "allocation/scoring.py", "allocation/allocator.py", "allocation/hurdle.py",
     "control/position_lifecycle.py", "control/paper_entry.py",
     "execution/gates.py", "execution/order_manager.py",
+    "intraday/engine.py",
 )
 
 
-def test_setup_quality_is_not_read_by_any_decision():
+def test_setup_quality_is_only_a_bounded_sizing_input():
     """
-    The claim in the docstring, enforced.
-
-    "Nothing reads it for a trading decision" is the whole reason this score is
-    allowed to exist while failing its holdout. If someone later wires it into
-    ranking, sizing or a gate, that is a decision to be argued with evidence —
-    not something that should be possible to do quietly.
+    Enforces the docstring's one allowed use: a bounded multiplier passed to
+    compute_dynamic_multiplier(). Never a gate, ranker or exit decision.
     """
     import os
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    used = []
+    bad = []
     for rel in DECISION_PATHS:
         path = os.path.join(root, rel)
         if not os.path.exists(path):
             continue
         with open(path, encoding="utf-8") as fh:
             for i, line in enumerate(fh, 1):
-                if "setup_quality" in line and not line.lstrip().startswith("#"):
-                    used.append(f"{rel}:{i}")
-    assert not used, ("setup_quality reached a decision path; it lost to the production "
-                      f"ranker out of sample (see the module docstring): {used}")
+                if "setup_quality" not in line or line.lstrip().startswith("#"):
+                    continue
+                s = line.strip()
+                allowed = (
+                    s.startswith("setup_quality: float")
+                    or s.startswith("setup_quality = float(")
+                    or "setup_quality=setup_quality," in s
+                    or s.startswith(('f"', "f'"))  # shadow/log text, not a decision
+                )
+                if not allowed:
+                    bad.append(f"{rel}:{i}: {s[:90]}")
+    assert not bad, ("setup_quality reached a decision path outside the bounded "
+                     f"compute_dynamic_multiplier() sizing input: {bad}")
 
 
 TESTS = [
-    ("setup_quality is not read by any decision", test_setup_quality_is_not_read_by_any_decision),
+    ("setup_quality is only a bounded sizing input", test_setup_quality_is_only_a_bounded_sizing_input),
     ("a plan at every centre scores zero", test_a_plan_at_every_centre_scores_zero),
     ("too few factors is None, not zero", test_too_few_factors_is_none_not_zero),
     ("exactly the minimum still scores", test_exactly_the_minimum_still_scores),

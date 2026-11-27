@@ -3946,6 +3946,13 @@ class IntradayEngine:
 
         return plan.to_dict()
 
+    def _surface_entry_alerts(self, entries: list[dict]) -> None:
+        """Swing entry notifications only.
+
+        Placing the entry stays in act_on_candidates()'s action loop so
+        there is exactly one entry path; this helper only narrates what
+        the mechanical gates already decided.
+        """
         contenders = self._swing_contenders()
         for e in entries:
             c, d, ltp = e["candidate"], e["decision"], e["ltp"]
@@ -3957,7 +3964,6 @@ class IntradayEngine:
             sym = c.get("symbol")
             place = contenders.get(sym)
             if not place:
-                self._maybe_enter_swing(c, d, ltp)
                 continue
             pos, rk = place
 
@@ -4116,29 +4122,7 @@ class IntradayEngine:
                 # already applies to their wording.
                 rearm=False,
             ))
-            self._maybe_enter_swing(c, d, ltp)
 
-        # ── End of entries loop: surface swap & rebalance opportunities ──
-        # When the book is full or near-full, tell the operator what better
-        # candidates exist and which weak positions they could replace.
-        # These are alerts only — no order placement happens here.
-        regime = "NEUTRAL"
-        try:
-            regime = (self._policy or {}).get("_current_regime") or "NEUTRAL"
-        except AttributeError:
-            pass
-        if regime == "NEUTRAL" and self.candidates:
-            regime = self.candidates[0].get("regime") or "NEUTRAL"
-
-        held = sum(1 for p in self.positions if (p.get("status") or "ACTIVE").upper() == "ACTIVE")
-        max_pos = cfg_int(
-            f"max_positions_{regime.replace(' ', '_').lower()}",
-            cfg_int("max_positions_neutral", 7),
-        )
-
-        if held >= max_pos or any(e.get("state") == "SLOT_FULL" for e in entries):
-            self._surface_swap_proposals(regime)
-            self._surface_portfolio_plan(regime)
 
     def _swing_liquidity_check(self, sym: str, qty: int, ltp: float) -> tuple[bool, str]:
         """
@@ -5661,6 +5645,8 @@ class IntradayEngine:
         self._alerted_conf = sorted(self._alerted_conf, reverse=True)[:n]
 
     def act_on_candidates(self, entries: list[dict]) -> None:
+        self._surface_entry_alerts(entries)
+
         for e in entries:
             state = e.get("state")
             c = e.get("candidate")
@@ -5710,6 +5696,29 @@ class IntradayEngine:
                         f"  {c.get('symbol') if c else '?'}: slot full — no room "
                         f"({d.reason if d else ''})"
                     )
+
+        # ── End of action loop: surface swap & rebalance opportunities ──
+        # When the book is full or near-full, tell the operator what better
+        # candidates exist and which weak positions they could replace.
+        # These are alerts only — no order placement happens here.
+        regime = "NEUTRAL"
+        try:
+            regime = (self._policy or {}).get("_current_regime") or "NEUTRAL"
+        except AttributeError:
+            pass
+        if regime == "NEUTRAL" and getattr(self, "candidates", None):
+            regime = self.candidates[0].get("regime") or "NEUTRAL"
+
+        held = sum(1 for p in (getattr(self, "positions", None) or [])
+                   if (p.get("status") or "ACTIVE").upper() == "ACTIVE")
+        max_pos = cfg_int(
+            f"max_positions_{regime.replace(' ', '_').lower()}",
+            cfg_int("max_positions_neutral", 7),
+        )
+
+        if held >= max_pos or any(e.get("state") == "SLOT_FULL" for e in entries):
+            self._surface_swap_proposals(regime)
+            self._surface_portfolio_plan(regime)
 
         # Refresh state after acting so pending fills/entries and newly
         # recorded positions are visible in this session's logs immediately,
