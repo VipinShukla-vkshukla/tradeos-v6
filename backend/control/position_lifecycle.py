@@ -782,8 +782,8 @@ def evaluate_exit(pos: dict, ltp: float, sessions_held: int, policy: dict) -> di
             if cfg_bool("swing_ai_tighten_enabled", False):
                 return {
                     "action": "TRAIL_SL", "reason": "AI_TIGHTEN_SL",
-                    "detail": (f"AI recommended TIGHTEN_SL — {reason_text} — "
-                               f"sl {sl:.2f} -> {candidate_sl:.2f}"),
+                    "detail": (f"AI flagged TIGHTEN_SL — {reason_text} — "
+                               f"applying fractional trail sl {sl:.2f} -> {candidate_sl:.2f}"),
                     "new_sl": candidate_sl, "book_qty": 0,
                 }
             logger.info(
